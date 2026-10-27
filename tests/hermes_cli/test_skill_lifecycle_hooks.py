@@ -1,4 +1,6 @@
-"""Contract tests for the 18 skill mutation lifecycle plugin hooks."""
+"""Contract tests for the 18 per-operation skill mutation lifecycle hooks and the
+whole-batch ``pre_skill_batch`` policy gate (payload-bound approval + required-policy
+fail-closed)."""
 
 from __future__ import annotations
 
@@ -461,3 +463,319 @@ def test_full_rewrite_patch_uses_edit_hooks_once(tmp_path):
 
     assert result["success"] is True, result
     assert events == ["pre_edit", "post_edit"]
+
+
+# --- Whole-batch decision point: pre_skill_batch (vernmic contracts, 2026-10-08) ---
+
+from hermes_cli.plugins import SKILL_BATCH_HOOK  # noqa: E402 — re-exported catalog constant
+from tools.skill_manager_tool import (  # noqa: E402
+    _skill_batch_payload_digest,
+    apply_skill_pending as _apply_skill_pending,
+)
+
+
+def _batch_ops():
+    return [
+        {"name": "test-skill", "action": "create", "content": SKILL_CONTENT},
+        {"name": "test-skill", "action": "write_file", "file_path": "references/note.md",
+         "file_content": "note"},
+    ]
+
+
+def _run_batch(ops):
+    return json.loads(skill_manage(action="", name="", operations=ops))
+
+
+def _require_policy(monkeypatch, hook_name="pre_skill_batch"):
+    monkeypatch.setattr("tools.skill_manager_tool._required_skill_policy_hook",
+                        lambda: hook_name)
+
+
+def test_batch_hook_catalog_registration():
+    assert SKILL_BATCH_HOOK == "pre_skill_batch"
+    assert SKILL_BATCH_HOOK in VALID_HOOKS
+    assert SKILL_BATCH_HOOK in SHELL_UNSUPPORTED_HOOKS
+
+
+def test_batch_gate_default_no_hook_no_policy_is_byte_for_byte_unchanged(tmp_path):
+    # No pre_skill_batch callback registered, no skill_policy.required: the gate must
+    # not change behavior — batch succeeds exactly as before the gate existed.
+    with isolated_skills(tmp_path) as (root, _record_success):
+        result = _run_batch(_batch_ops())
+    assert result["success"] is True, result
+    assert result["operations_applied"] == 2
+    assert (root / "test-skill" / "SKILL.md").is_file()
+
+
+def test_batch_gate_full_payload_visible_and_fires_once_before_any_mutation(tmp_path):
+    seen = []
+
+    def policy(**kwargs):
+        seen.append(kwargs)
+        return None  # observer: no decision
+
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, policy)
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is True, result
+    assert len(seen) == 1  # one decision point for the whole batch, not per op
+    payload = seen[0]
+    assert payload["operations"] == _batch_ops()  # every op, verbatim
+    # digest sent to the hook binds the exact payload
+    assert payload["payload_digest"] == _skill_batch_payload_digest(_batch_ops())
+    # decision happened before any mutation: nothing was on disk when the hook saw it
+    assert (root / "test-skill" / "SKILL.md").is_file()  # …and the batch then succeeded
+
+
+def test_batch_gate_block_refuses_whole_batch_before_first_mutation(tmp_path):
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, lambda **_: {"action": "block", "reason": "not allowed"})
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is False
+    assert "not allowed" in result["error"]
+    assert "policy denied" in result["error"]
+    assert not (root / "test-skill").exists()  # refused BEFORE the first mutation
+
+
+def test_batch_gate_approval_binds_exact_payload_tampered_batch_rejected(tmp_path):
+    approved = []
+
+    def policy(**kwargs):
+        approved.append(kwargs["payload_digest"])
+        return {"action": "approve", "payload_digest": kwargs["payload_digest"]}
+
+    with isolated_skills(tmp_path):
+        register_hook(SKILL_BATCH_HOOK, policy)
+        ok = _run_batch(_batch_ops())
+
+    assert ok["success"] is True
+    assert approved and approved[0] == _skill_batch_payload_digest(_batch_ops())
+
+    # An approval minted for payload X cannot authorize a MODIFIED batch: the hook is
+    # gone now (approval was one-shot at decision time), and even a replayed staged
+    # record whose operations were edited fails the digest binding.
+    staged = {"action": "batch", "payload_digest": approved[0],
+              "operations": [dict(_batch_ops()[0], content=SKILL_CONTENT + "tampered")]}
+    replay = json.loads(_apply_skill_pending(staged))
+    assert replay["success"] is False
+    assert "payload binding" in replay["error"]
+
+
+def test_batch_gate_approval_rejects_subset_replay(tmp_path):
+    def policy(**kwargs):
+        return {"action": "approve", "payload_digest": kwargs["payload_digest"]}
+
+    with isolated_skills(tmp_path):
+        register_hook(SKILL_BATCH_HOOK, policy)
+        ok = _run_batch(_batch_ops())
+    assert ok["success"] is True
+
+    full_digest = _skill_batch_payload_digest(_batch_ops())
+    subset = _batch_ops()[:1]  # a later subset of the approved batch
+    assert _skill_batch_payload_digest(subset) != full_digest
+    replay = json.loads(_apply_skill_pending(
+        {"action": "batch", "payload_digest": full_digest, "operations": subset}))
+    assert replay["success"] is False
+    assert "payload binding" in replay["error"]
+    # a wrong-digest echo is never an approval: see
+    # test_batch_gate_mismatched_approve_digest_is_not_an_approval_when_required
+
+
+def test_batch_gate_mismatched_approve_digest_is_not_an_approval_when_required(tmp_path):
+    def policy(**kwargs):
+        return {"action": "approve", "payload_digest": "deadbeef"}  # never echoes
+
+    _require_policy(monkeypatch := pytest.MonkeyPatch())
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, policy)
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is False
+    assert "policy unavailable" in result["error"]
+    monkeypatch.undo()
+
+
+def test_required_policy_absent_fails_closed_as_unavailable(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+    # No plugin registers pre_skill_batch at all.
+    with isolated_skills(tmp_path) as (root, _record_success):
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is False
+    assert "policy unavailable" in result["error"]
+    assert "not registered" in result["error"]
+    assert not (root / "test-skill").exists()
+
+
+def test_required_policy_crash_fails_closed_as_unavailable(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+
+    def boom(**_):
+        raise RuntimeError("policy engine down")
+
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, boom)
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is False
+    assert "policy unavailable" in result["error"]
+    assert not (root / "test-skill").exists()
+
+
+def test_required_policy_invalid_return_fails_closed_as_unavailable(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, lambda **_: {"action": "wat"})
+        register_hook(SKILL_BATCH_HOOK, lambda **_: "not a directive")
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is False
+    assert "policy unavailable" in result["error"]
+    assert "no valid decision" in result["error"]
+
+
+def test_required_policy_explicit_block_is_denied_not_unavailable(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, lambda **_: {"action": "block", "reason": "combo denied"})
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is False
+    assert "policy denied" in result["error"]
+    assert "combo denied" in result["error"]
+    assert "policy unavailable" not in result["error"]  # the two are distinguishable
+
+
+def test_required_policy_valid_approval_proceeds_and_gates_flat_writes_too(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+    seen = []
+
+    def policy(**kwargs):
+        seen.append(kwargs)
+        return {"action": "approve", "payload_digest": kwargs["payload_digest"]}
+
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, policy)
+        batch = _run_batch(_batch_ops())
+        flat = json.loads(skill_manage(
+            action="write_file", name="test-skill",
+            file_path="references/extra.md", file_content="x"))
+
+    assert batch["success"] is True, batch
+    assert flat["success"] is True, flat  # contract 2 gates every write, flat included
+    assert len(seen) == 2  # one decision per call: the batch + the flat write
+    # The flat call's decision payload is its operations[]-shaped equivalent
+    # (replace_all=False serializes, matching the staged-record payload shape).
+    assert seen[1]["operations"] == [{
+        "name": "test-skill", "action": "write_file",
+        "file_path": "references/extra.md", "file_content": "x", "replace_all": False}]
+
+
+def test_required_policy_absent_blocks_flat_write_as_unavailable(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+    with isolated_skills(tmp_path) as (root, _record_success):
+        result = json.loads(skill_manage(
+            action="write_file", name="test-skill",
+            file_path="references/x.md", file_content="x"))
+
+    assert result["success"] is False
+    assert "policy unavailable" in result["error"]
+
+
+def test_required_policy_absent_blocks_sole_delete_operations_call(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+    with isolated_skills(tmp_path) as (root, _record_success):
+        seed_operation(root, "edit")
+        result = _run_batch([{"name": "test-skill", "action": "delete", "absorbed_into": ""}])
+
+    assert result["success"] is False
+    assert "policy unavailable" in result["error"]
+    assert (root / "test-skill" / "SKILL.md").is_file()  # delete refused
+
+
+def test_optional_hook_no_decision_fails_open_for_batch_and_flat(tmp_path):
+    # Contract 2 default: WITHOUT skill_policy.required an optional pre_skill_batch
+    # consumer that crashes / returns nothing changes nothing (fail-open, observer).
+    def boom(**_):
+        raise RuntimeError("observer bug")
+
+    with isolated_skills(tmp_path) as (root, _record_success):
+        register_hook(SKILL_BATCH_HOOK, boom)
+        register_hook(SKILL_BATCH_HOOK, lambda **_: None)
+        batch = _run_batch(_batch_ops())
+        flat = json.loads(skill_manage(
+            action="write_file", name="test-skill",
+            file_path="references/extra.md", file_content="x"))
+
+    assert batch["success"] is True, batch
+    assert flat["success"] is True, flat
+
+
+def test_batch_gate_skips_invalid_names_before_any_hook_dispatch(tmp_path):
+    # The existing invariant (test_traversal_name_never_reaches_a_skill_hook) extends
+    # to the batch gate: a bad name never reaches pre_skill_batch either.
+    seen = []
+    with isolated_skills(tmp_path):
+        register_hook(SKILL_BATCH_HOOK, lambda **kwargs: seen.append(kwargs))
+        result = _run_batch([{"name": "../../evil", "action": "patch",
+                              "old_string": "a", "new_string": "b"}])
+        flat = json.loads(skill_manage(
+            action="patch", name="../../evil", old_string="a", new_string="b"))
+
+    assert result["success"] is False
+    assert flat["success"] is False
+    assert seen == []
+
+
+def test_required_policy_timeout_fails_closed_as_unavailable(tmp_path, monkeypatch):
+    _require_policy(monkeypatch)
+    # Simulate the dispatcher's timeout handling: the bounded fail-closed hook injects
+    # a block directive AND reports the callback as failed — the gate must classify
+    # that combination as "no valid decision" (unavailable), never a denial.
+    from hermes_cli import lifecycle
+
+    def hung(**_):
+        raise TimeoutError  # how a bounded runner surfaces an abandoned worker
+
+    with isolated_skills(tmp_path) as (root, _record_success), \
+            patch.object(lifecycle, "invoke_policy_hook",
+                         lambda name, **kw: ([{"action": "block",
+                                               "message": "pre_skill_batch plugin callback "
+                                                          "timed out or is still running"}],
+                                              [hung])):
+        register_hook(SKILL_BATCH_HOOK, lambda **_: None)  # registered but never decides
+        result = _run_batch(_batch_ops())
+
+    assert result["success"] is False
+    assert "policy unavailable" in result["error"]
+    assert "timed out" in result["error"]
+    assert not (root / "test-skill").exists()
+
+
+def test_staged_flat_record_replay_verifies_digest_binding(tmp_path):
+    def policy(**kwargs):
+        return {"action": "approve", "payload_digest": kwargs["payload_digest"]}
+
+    with isolated_skills(tmp_path):
+        register_hook(SKILL_BATCH_HOOK, policy)
+        created = json.loads(skill_manage(
+            action="create", name="test-skill", content=SKILL_CONTENT))
+    assert created["success"] is True
+
+    ops = [{"name": "test-skill", "action": "create", "content": SKILL_CONTENT}]
+    digest = _skill_batch_payload_digest(ops)
+    # Tamper with the staged flat record after approval: replay must refuse.
+    tampered = {"action": "create", "name": "test-skill",
+                "content": SKILL_CONTENT + "tampered", "payload_digest": digest}
+    replay = json.loads(_apply_skill_pending(tampered))
+    assert replay["success"] is False
+    assert "payload binding" in replay["error"]
+    # Untampered legacy records (no digest) still replay unchanged (the skill the
+    # first block created is still on disk under the same tmp_path root).
+    with isolated_skills(tmp_path):
+        legacy = json.loads(_apply_skill_pending(
+            {"action": "patch", "name": "test-skill",
+             "old_string": "Do the thing.", "new_string": "Still fine."}))
+    assert legacy["success"] is True, legacy

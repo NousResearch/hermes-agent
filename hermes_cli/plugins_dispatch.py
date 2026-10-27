@@ -49,6 +49,10 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "pre_command",
     # Fires inside the compression commit window (lease held): a hung plugin must not wedge the session.
     "post_compaction",
+    # Whole-batch skill policy gate: bounded so a hung policy plugin cannot wedge every
+    # skill_manage call; the gate itself decides fail-open (optional) vs fail-closed
+    # (skill_policy.required) from the failed-callback list.
+    "pre_skill_batch",
 }
 # Hooks whose calls are told apart by another payload field: one session's commands are one
 # sequence, so a still-running callback skips that session's next command, not another session's.
@@ -57,6 +61,11 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
+# pre_tool_call is the dispatcher-level fail-closed policy hook.
+# pre_skill_batch is bounded (below) but deliberately NOT fail-closed here: whether a
+# no-decision outcome blocks is a policy-layer call — the skill batch gate reads the
+# failed-callback list and fails closed only when skill_policy.required names the hook
+# (tools/skill_manager_tool._gate_skill_batch); an optional consumer stays fail-open.
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
@@ -65,6 +74,15 @@ _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+
+
+def _timeout_block_message(hook_name: str) -> str:
+    """Fail-closed timeout directive for *hook_name*. ``pre_tool_call`` keeps the historical
+    literal (re-exported above); other fail-closed hooks name themselves so a gate can tell
+    an injected timeout block from a policy's real decision."""
+    if hook_name == "pre_tool_call":
+        return _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+    return f"{hook_name} plugin callback timed out or is still running"
 
 # The one hook whose callback rewrites the reply the user would otherwise see streaming.
 STREAM_HOLDING_HOOK = "transform_llm_output"
@@ -308,7 +326,8 @@ class PluginDispatchMixin:
                         if failed is not None:
                             failed.append(cb)
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            results.append({"action": "block",
+                                            "message": _timeout_block_message(hook_name)})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -638,7 +657,7 @@ class PluginDispatchMixin:
             except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
-                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                    results.append({"action": "block", "message": _timeout_block_message(hook_name)})
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).

@@ -493,6 +493,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | [`pre_skill_delete:guard`](#pre_skill_delete-guard) | Directive/control (Python only) | After input validation, before lookup/delete guards. | `name`, `absorbed_into` | Skill names and consolidation intent. |
 | [`pre_skill_delete`](#pre_skill_delete) | Directive/control (Python only) | After lookup, org/review/curator/pin/target guards; immediately before archive/delete. | `name`, `absorbed_into` | Skill names and consolidation intent. |
 | [`post_skill_delete`](#post_skill_delete) | Observer | Once after an attempted archive/delete. | `name`, `absorbed_into`, `success`, `error` | Skill names and possible error text. |
+| [`pre_skill_batch`](#pre_skill_batch) | Directive/control (Python only) | Once per `skill_manage` call before any mutation: whole-batch decision point over the complete operations payload (write-approval gate, snapshots and locks all come after it). Timeout-bounded. | `operations`, `payload_digest` | Every operation's type, target and full replacement/patch text. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
@@ -1862,12 +1863,16 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`, `plugin_side_question` for a plugin's [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), which also carries the asking plugin's `plugin_id`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
 
-### Skill mutation hooks (18)
+### Skill mutation hooks (19)
 
-`skill_manage` exposes exactly **18 skill mutation hooks**: six early
+`skill_manage` exposes exactly **19 skill mutation hooks**: six early
 `pre_skill_<action>:guard` directive hooks, six policy-checked
-`pre_skill_<action>` directive hooks, and six `post_skill_<action>` observers
-for `create`, `edit`, `patch`, `write_file`, `remove_file`, and `delete`.
+`pre_skill_<action>` directive hooks, six `post_skill_<action>` observers
+for `create`, `edit`, `patch`, `write_file`, `remove_file`, and `delete`, and
+the whole-batch [`pre_skill_batch`](#pre_skill_batch) decision point — one
+dispatch per call over the complete operations payload (every operation's
+type, target and full replacement/patch text plus the payload digest), before
+the write-approval gate, snapshots and locks, i.e. before the first mutation.
 These are separate from [`on_skill_lifecycle`](#on_skill_lifecycle), which
 reports skill-*usage* state rather than filesystem mutations.
 
@@ -2062,6 +2067,49 @@ after lookup, org-mirror/background-review, curator-consolidation, pin,
 Signature: `callback(name: str, absorbed_into: str | None, success: bool, error: str | None, **kwargs)`.
 Fires once after an attempted hard delete or recoverable curator archive. Return
 values are ignored.
+
+<a id="pre_skill_batch"></a>
+#### `pre_skill_batch`
+
+Signature: `callback(operations: list[dict], payload_digest: str, **kwargs)`. Fires
+once per `skill_manage` call — including the flat single-operation shape, which is
+presented as its one-element equivalent — BEFORE any mutation: before the
+write-approval gate, snapshots and locks, so a policy plugin sees every operation
+together (type, target skill, full replacement/patch text) and decides on the
+combination, not per operation. Per-operation hooks keep firing afterwards with
+unchanged semantics; this hook is the orthogonal whole-batch decision point.
+
+Return directives:
+
+- `{"action": "block", "reason": "..."}` — the whole call is refused before the
+  first mutation. Under a required policy the refusal reports `policy denied`
+  (the policy decided no).
+- `{"action": "approve", "payload_digest": <the digest this call received>}` — the
+  approval is bound to exactly this payload. The digest is a SHA-256 over the
+  canonical JSON of the ordered operations list; a modified batch, a reordered
+  batch or a subset hashes differently, so an approval can never be reused for
+  another payload. When the call is staged under `skills.write_approval`, the
+  digest rides in the staged record and approval replay re-verifies it — a
+  tampered or subset record is refused, not replayed.
+
+The callback is bounded by `plugins.hook_callback_timeout`.
+
+**Required policy (fail-closed).** By default the hook is optional and fail-open:
+absent, crashed, timed-out or undecided callbacks change nothing. An operator who
+needs unattended writes to depend on a policy sets:
+
+```yaml
+skill_policy:
+  required: pre_skill_batch
+```
+
+With `skill_policy.required` naming the hook, a skill write whose policy plugin is
+absent (not registered by any loaded plugin), crashes, times out, or returns no
+valid decision is refused with a `Skill batch policy unavailable: ...` error —
+distinguishable from `Skill batch policy denied: ...` (the policy explicitly
+refused). Flat single-operation calls, `operations[]` batches and sole-op
+`delete` calls are all gated. A refusal stays a refusal: it never depends on a
+side channel succeeding.
 
 ### `on_skill_lifecycle`
 

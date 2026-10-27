@@ -236,17 +236,38 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         nm = operations[0].get("name") or default_name
         if not nm:
             return tool_error("operations[0] (delete) needs a 'name'.", success=False)
+        if not _smt._skill_gate_bypass.get():
+            # The operations[] shape is one call = one whole-batch decision, even when
+            # the single op routes to the sole-delete path below.
+            refusal, _approved_digest = _smt._gate_skill_batch(operations)
+            if refusal is not None:
+                return json.dumps(refusal, ensure_ascii=False)
         return _smt.skill_manage(action="delete", name=nm, task_id=task_id, session_id=session_id,
                                  absorbed_into=operations[0].get("absorbed_into"))
     names, err = _validate_batch_ops(operations, default_name, tool_error)
     if err is not None:
         return err
     if not _smt._skill_gate_bypass.get():
+        # Whole-batch decision point (contract 1&2, vernmic 2026-10-08): one
+        # pre_skill_batch dispatch sees every operation together — before the write
+        # gate, snapshots and locks, i.e. before the first mutation. Approval is
+        # bound to the payload digest; a required policy that cannot decide
+        # fail-closes the batch. Default (no hook, no skill_policy.required):
+        # (None, None) and the path below is byte-for-byte the previous behavior.
+        refusal, approved_digest = _smt._gate_skill_batch(operations)
+        if refusal is not None:
+            return json.dumps(refusal, ensure_ascii=False)
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
+            payload = {"action": "batch", "operations": operations}
+            if approved_digest is not None:
+                # Payload binding (contract 1): the staged record carries the digest the
+                # policy approved; replay re-verifies it, so a modified/subset batch can
+                # never reuse this approval.
+                payload["payload_digest"] = approved_digest
+            return payload, gist
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged

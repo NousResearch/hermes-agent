@@ -1565,14 +1565,18 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`pre_skill_delete:guard`](/user-guide/features/hooks#pre_skill_delete-guard) | Before delete lookup/policy guards | `name, absorbed_into` | `block` or `handled` |
 | [`pre_skill_delete`](/user-guide/features/hooks#pre_skill_delete) | After delete guards, before archive/delete | `name, absorbed_into` | `block` or `handled` |
 | [`post_skill_delete`](/user-guide/features/hooks#post_skill_delete) | After an attempted archive/delete | `name, absorbed_into, success, error` | ignored |
+| [`pre_skill_batch`](/user-guide/features/hooks#pre_skill_batch) | Once per `skill_manage` call before any mutation: whole-batch decision point over the complete operations payload | `operations, payload_digest` | `block`, or `approve` echoing `payload_digest` |
 
-The skill-mutation family contains exactly **18 hooks**: six `:guard`, six
-policy-checked `pre`, and six `post` hooks. Most hooks are fire-and-forget
+The skill-mutation family contains exactly **19 hooks**: six `:guard`, six
+policy-checked `pre`, and six `post` hooks, plus the whole-batch
+`pre_skill_batch` decision point that sees every operation of a call together
+before the first mutation. Most hooks are fire-and-forget
 observers — their return values are ignored. The exceptions are `pre_llm_call`,
 which can inject context into the conversation; `pre_tool_call`, which can
-return a block/approve directive; and the 12 Python-only skill mutation
+return a block/approve directive; the 12 Python-only skill mutation
 directive hooks, which can return `handled`, `block`, or (for create only)
-`redirect`.
+`redirect`; and `pre_skill_batch`, which can return `block` or a
+payload-bound `approve`.
 
 ### Nested guard hooks (`:guard` suffix)
 

@@ -30,7 +30,7 @@ from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_ho
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
-from hermes_cli.middleware import VALID_MIDDLEWARE
+from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
@@ -48,7 +48,7 @@ from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
     _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
-from hermes_cli.plugins_skill_lifecycle import (SKILL_MUTATION_ACTIONS, SKILL_MUTATION_GUARD_HOOKS, SKILL_MUTATION_HOOKS, SKILL_MUTATION_POST_HOOKS, SKILL_MUTATION_PRE_HOOKS, SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS)
+from hermes_cli.plugins_skill_lifecycle import (SKILL_BATCH_HOOK, SKILL_MUTATION_ACTIONS, SKILL_MUTATION_GUARD_HOOKS, SKILL_MUTATION_HOOKS, SKILL_MUTATION_POST_HOOKS, SKILL_MUTATION_PRE_HOOKS, SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS, SKILL_POLICY_HOOKS)
 from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
@@ -209,11 +209,17 @@ VALID_HOOKS: set[str] = {
     # ``redirect``. Post hooks fire once for success or failure. Exact
     # action-specific payloads and timing are in hooks.md.
     *SKILL_MUTATION_HOOKS,
+    # pre_skill_batch: one whole-batch decision point per operations[] call,
+    # before any mutation. Payload carries every operation (type, target,
+    # replacement/patch text) plus the batch payload digest; ``approve`` must
+    # echo that digest so an approval stays bound to exactly this batch.
+    *SKILL_POLICY_HOOKS,
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", *SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {
+    "transform_api_error_classification", *SKILL_MUTATION_SHELL_UNSUPPORTED_HOOKS, *SKILL_POLICY_HOOKS}
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
 
@@ -1822,6 +1828,24 @@ async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """:func:`invoke_hook` for callers on an event loop: ``async def`` callbacks are awaited
     there instead of bridged through a helper thread (see ``PluginManager.ainvoke_hook``)."""
     return await _delivery_manager().ainvoke_hook(hook_name, **kwargs)
+
+
+def invoke_policy_hook(hook_name: str, **kwargs: Any) -> tuple[list[Any], list[Any]]:
+    """:func:`invoke_hook` variant for policy hooks whose caller must fail closed.
+
+    Returns ``(results, failed_callbacks)``. ``failed_callbacks`` names every callback that
+    raised or was skipped by the timeout bound, so a gate can distinguish "the policy decided
+    no" (a block directive with no failures) from "the policy never decided" (failures, or no
+    valid decision at all) — the unavailable-policy case an operator who set
+    ``skill_policy.required`` needs reported as such, not as a denial.
+    """
+    manager = _delivery_manager()
+    if hook_name != "gateway_platform_event":
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+    failed: list[Any] = []
+    results = manager._run_hook_callbacks(hook_name, list(manager._hooks.get(hook_name, [])),
+                                          kwargs, failed)
+    return results, failed
 
 
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> list[RenderedPluginSystemPromptSection]:

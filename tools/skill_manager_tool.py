@@ -987,6 +987,183 @@ _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
 _skill_hook_batch_size: "_ctxvars.ContextVar[int]" = _ctxvars.ContextVar(
     "skill_hook_batch_size", default=0)
 
+# The whole-batch decision point: one ``pre_skill_batch`` dispatch per operations[]
+# call, BEFORE any mutation (write gate, snapshot, locks). Orthogonal to the 18
+# per-operation hooks: those keep firing per op with unchanged semantics.
+SKILL_BATCH_HOOK_NAME = "pre_skill_batch"
+
+
+def _skill_batch_payload_digest(operations: List[Dict[str, Any]]) -> str:
+    """Stable digest of the exact batch payload a policy approves.
+
+    Canonical JSON (sorted keys, no whitespace) over the ordered operations list —
+    order, action, target and full replacement/patch text all feed the digest, so
+    a modified batch, a reordered batch or a subset hashes differently and can
+    never reuse an approval minted for another payload.
+    """
+    import hashlib
+    canonical = json.dumps(operations, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _required_skill_policy_hook() -> Optional[str]:
+    """``skill_policy.required`` (a hook name) or None. Unset/blank keeps the optional,
+    fail-open behavior; a set value names the policy hook that must decide."""
+    try:
+        from hermes_cli.config import load_config
+        value = cfg_get(load_config(), "skill_policy", "required", default=None)
+    except Exception:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _skill_batch_gate_error(kind: str, detail: str) -> Dict[str, Any]:
+    """A distinguishable batch-gate refusal: ``policy unavailable`` (the required policy
+    could not decide) vs ``policy denied`` (it decided no) prefixes the error."""
+    return _err(f"Skill batch {kind}: {detail}")
+
+
+def _gate_skill_batch(operations: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Run the whole-batch decision point. Returns ``(refusal_or_None, digest_or_None)``.
+
+    A refusal is a tool-result dict (batch must not proceed); the digest is the payload
+    binding to carry into the staged record when the batch continues (``None`` when no
+    plugin approved — the unchanged default path). Fail modes:
+      - no policy configured AND no hook registered -> ``(None, None)`` (exact current behavior)
+      - optional hook (no ``skill_policy.required``): block still blocks; any other outcome
+        (no decision, crash, invalid return) fails OPEN — optional plugins stay observers
+      - required hook (``skill_policy.required`` set): absent, crashed, timed out, or no
+        valid decision -> refusal with the ``policy unavailable`` prefix (fail closed);
+        an explicit block -> refusal with the ``policy denied`` prefix; a valid approval
+        (echoing the payload digest) -> ``(None, digest)``
+    """
+    required_hook = _required_skill_policy_hook()
+    # Invariant (see test_traversal_name_never_reaches_a_skill_hook): a name that
+    # fails validation NEVER reaches a skill hook. An invalid name's call is rejected
+    # by the normal validation path moments later — the write never happens — so the
+    # policy is not consulted for it either.
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        nm, act = op.get("name"), op.get("action")
+        if not isinstance(nm, str) or not isinstance(act, str):
+            continue
+        name_err = _validate_name(nm) if act == "create" else _validate_skill_reference(nm)
+        if name_err is not None:
+            return None, None
+    digest = _skill_batch_payload_digest(operations)
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_policy_hook
+        registered = has_hook(SKILL_BATCH_HOOK_NAME)
+    except Exception:
+        logger.warning("Skill batch policy gate could not inspect plugins; continuing", exc_info=True)
+        if required_hook is None:
+            return None, None
+        return _skill_batch_gate_error(
+            "policy unavailable",
+            f"required policy hook '{required_hook}' could not be inspected"), None
+
+    if not registered:
+        if required_hook is None:
+            return None, None  # no consumer, no policy: exact current behavior
+        return _skill_batch_gate_error(
+            "policy unavailable",
+            f"required policy hook '{required_hook}' is not registered by any loaded plugin"), None
+
+    try:
+        hook_results, failed = invoke_policy_hook(
+            SKILL_BATCH_HOOK_NAME, operations=operations, payload_digest=digest)
+    except Exception as exc:
+        logger.warning("Skill batch policy dispatch failed", exc_info=True)
+        if required_hook is None:
+            return None, None  # optional hook: fail open (same contract as _run_pre_skill_hook)
+        return _skill_batch_gate_error(
+            "policy unavailable",
+            f"required policy hook '{required_hook}' dispatch failed: {type(exc).__name__}: {exc}"), None
+
+    block: Optional[str] = None
+    approval: Optional[str] = None  # digest echoed back by a valid approve directive
+    for hook_result in hook_results:
+        if not isinstance(hook_result, dict):
+            continue
+        action = str(hook_result.get("action") or "").strip().lower()
+        if action == "block":
+            reason = hook_result.get("reason") or hook_result.get("message")
+            block = (reason if isinstance(reason, str) and reason.strip()
+                     else "Skill batch blocked by plugin policy")
+            break  # an explicit veto wins over everything scanned so far
+        if action == "approve":
+            echoed = hook_result.get("payload_digest") or hook_result.get("payload_hash")
+            if isinstance(echoed, str) and echoed and echoed == digest:
+                approval = echoed
+            # a mismatched/missing echo is an invalid decision, not an approval
+
+    if block is not None:
+        # A block with NO failed callbacks is the policy deciding no. With failures
+        # present the injected fail-closed timeout block is indistinguishable from a
+        # real veto, but for a REQUIRED policy both mean "no valid decision arrived"
+        # — treat a failure-accompanied block as unavailable, the stricter reading.
+        if required_hook is not None and failed:
+            return _skill_batch_gate_error(
+                "policy unavailable",
+                f"required policy hook '{required_hook}' produced no valid decision "
+                f"({len(failed)} callback(s) raised or timed out)"), None
+        return _skill_batch_gate_error("policy denied", block), None
+
+    if required_hook is not None and approval is None:
+        # Registered but never decided: no decision, only invalid returns, or every
+        # callback crashed/timed out (their injected block was handled above only if
+        # one existed — a crash also lands here via failed without results).
+        detail = (f"required policy hook '{required_hook}' returned no valid decision"
+                  + (f" ({len(failed)} callback(s) raised or timed out)" if failed else ""))
+        return _skill_batch_gate_error("policy unavailable", detail), None
+
+    # Optional hook with no veto: continue unchanged (approval digest still recorded
+    # when one echoed correctly, so staging can bind it).
+    return None, approval
+
+
+def _verify_staged_batch_digest(payload: Dict[str, Any]) -> Optional[str]:
+    """Replay-side payload binding: a staged batch carrying ``payload_digest`` must be
+    re-hashed to the same value before the approved write replays. Returns an error
+    message when the staged payload was modified or trimmed after approval, else None."""
+    recorded = payload.get("payload_digest")
+    operations = payload.get("operations")
+    if not isinstance(recorded, str) or not recorded:
+        return None  # not a digest-bound record: legacy staged writes replay unchanged
+    if operations is None:
+        # A digest-bound staged FLAT single op: rebuild the equivalent operation from
+        # the flat fields with the same construction rule used at stage time.
+        action = payload.get("action")
+        name = payload.get("name")
+        if not isinstance(action, str) or not isinstance(name, str):
+            return None
+        operations = [_flat_gate_operation(action, name, {
+            k: payload.get(k) for k in _FLAT_GATE_KEYS})]
+    if not isinstance(operations, list):
+        return None
+    if _skill_batch_payload_digest(operations) != recorded:
+        return ("Staged skill batch failed its payload binding check: the operations differ "
+                "from what was staged (modified or subset). The approval does not cover this "
+                "payload; stage it again for a fresh decision.")
+    return None
+
+
+# The flat-call fields that feed a digest-bound staged record. ``replace_all`` always
+# serializes (False included) exactly like _apply_skill_write_gate's staging payload.
+_FLAT_GATE_KEYS = ("content", "category", "file_path", "file_content", "old_string",
+                   "new_string", "replace_all", "absorbed_into")
+
+
+def _flat_gate_operation(action: str, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """The operations[]-shaped equivalent of one flat skill_manage call — the ONE
+    construction rule, shared by stage time and replay time, so both hash the same
+    payload bytes for the digest binding."""
+    return {"name": name, "action": action,
+            **{k: v for k, v in args.items() if v is not None}}
+
 
 def _run_write_gate(build_staging):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
@@ -1007,13 +1184,17 @@ def _run_write_gate(build_staging):
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
 
 
-def _apply_skill_write_gate(action, name, **payload_kwargs):
-    """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay."""
+def _apply_skill_write_gate(action, name, approved_digest=None, **payload_kwargs):
+    """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay.
+    ``approved_digest`` (a payload-bound pre_skill_batch approval) rides into the staged
+    record so the replay-side binding check can verify it."""
     if action not in _ACTION_HANDLERS or _skill_gate_bypass.get():
         return None
     def _staging(wa):
         payload = {"action": action, "name": name,
                    **{k: v for k, v in payload_kwargs.items() if v is not None}}
+        if approved_digest is not None:
+            payload["payload_digest"] = approved_digest
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
@@ -1033,7 +1214,15 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
 
 
 def apply_skill_pending(payload: dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+    """Replay a staged skill write, bypassing the gate (the /skills approve handler).
+
+    A digest-bound staged batch (``payload_digest`` recorded at stage time, when a
+    pre_skill_batch policy approved it) is re-verified against the exact operations
+    being replayed: a payload that was modified or trimmed to a subset after approval
+    no longer matches the decision and is refused, not replayed.
+    """
+    if (bind_err := _verify_staged_batch_digest(payload)) is not None:
+        return tool_error(bind_err, success=False)
     token = _skill_gate_bypass.set(True)
     try:
         return _skill_manage_from(payload)
@@ -1118,12 +1307,25 @@ def skill_manage(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
-    # Approval gate: skills are too large to review inline, so they always stage regardless
-    # of origin; bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
                 absorbed_into=absorbed_into)
-    if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
+    # Whole-batch decision point for the flat shape too (contract 2: a REQUIRED policy
+    # must gate every skill write, not only operations[] calls): one pre_skill_batch
+    # dispatch over the equivalent single-op payload, before the write gate. Only real
+    # mutation actions are gated (same condition as the write gate); an unknown action
+    # is rejected below and never reaches a hook. Default (no hook, no
+    # skill_policy.required) returns (None, None) and nothing changes.
+    if action in _ACTION_HANDLERS and not _skill_gate_bypass.get():
+        refusal, approved_digest = _gate_skill_batch(
+            [_flat_gate_operation(action, name, args)])
+        if refusal is not None:
+            return json.dumps(refusal, ensure_ascii=False)
+    else:
+        approved_digest = None
+    # Approval gate: skills are too large to review inline, so they always stage regardless
+    # of origin; bypassed when replaying an approved staged write.
+    if (gate_result := _apply_skill_write_gate(action, name, approved_digest, **args)) is not None:
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:
         return tool_error(shape_err, success=False)

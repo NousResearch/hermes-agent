@@ -300,7 +300,8 @@ export function isSessionBusyError(error: unknown): boolean {
 
 /** A busy refusal because another writer holds the compression lock (`field: 'compression'`). */
 export function isCompressionBusyError(error: unknown): boolean {
-  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+  const data =
+    error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
 
   return data?.reason === 'session_busy' && data.field === 'compression'
 }

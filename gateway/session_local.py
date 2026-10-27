@@ -374,6 +374,23 @@ def _lazy_model(authority, policy):
         return GUEST_MODEL if free_tier_route() else model
 
 
+def _session_provider(authority, agent, policy):
+    """The provider paired with ``session.info``'s reported model.
+
+    A built agent is authoritative because its runtime route may differ from the
+    frozen policy. Before first build, resolve the policy in the owning profile
+    scope so a following session reports the provider its next turn will use.
+    """
+    if agent is not None:
+        return str(getattr(agent, 'provider', '') or '')
+    if policy is None:
+        return ''
+    effective, _ = policy.effective(authority, secrets=False)
+    route = effective.get('model') or {}
+    provider = str(route.get('provider') or '')
+    return '' if provider.lower() == 'auto' else provider
+
+
 def _reasoning_fields(agent, policy, model, authority=None, override=None):
     """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
     resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
@@ -429,6 +446,7 @@ def local_session_info(authority, ref):
     info = {'source': source,
             'model': (getattr(agent, 'model', policy.current_model(authority) if policy else None) if agent is not None
                       else _lazy_model(authority, policy)),
+            'provider': _session_provider(authority, agent, policy),
             'lazy': agent is None,
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.

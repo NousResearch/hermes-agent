@@ -87,10 +87,10 @@ def _observe_process_stop_completion(authority, ref, agent=None):
     if token is None or live is None:
         return
     try:
-        registry, scopes = _process_targets(authority, ref, agent, (), select=lambda p:
-            not p.exited or p._scope_stop_pending or p.systemd_unit
-            or p._result_persisted_generation != p.ownership_generation
-            or (p._reader_thread is not None and not p._completion_event.is_set()))
+        # The original publisher may already have completed resource/result
+        # cleanup while this owner's logical Stop still fences its FIFO.
+        # Existing per-control dedup handles that immediate-ready observation.
+        registry, scopes = _process_targets(authority, ref, agent, (), select=lambda p: True)
         generation = authority._handle(ref).execution_generation
     except (RuntimeStoreError, OSError):
         return  # The durable fence remains; a later native control can recover.

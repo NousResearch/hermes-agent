@@ -117,7 +117,22 @@ async def test_cold_output_failure_stays_fenced_until_real_payload_is_available(
             # A retained complete payload is real evidence even when its source is now unreadable.
             assert current._result_complete and current.output_buffer.count('known original output') == 1
         authority._schedule(REF)  # Existing native recovery pump, no new admission or command.
-        await async_wait_until(lambda: executed == ['queued-human'] and authority.sessions['s'].task.done(), timeout=10)
+        try:
+            await async_wait_until(lambda: executed == ['queued-human'] and authority.sessions['s'].task.done(), timeout=10)
+        except AssertionError:
+            current = module.process_registry.get(own.id)
+            task = authority.sessions['s'].task
+            from hermes_state_runtime import list_session_admissions
+            print({'executed': executed, 'stop': process_stop_pending(db, 's'),
+                   'admissions': [(r['request_id'], r['status'], r['outcome'])
+                                  for r in list_session_admissions(db, session_id='s', pending_only=False)],
+                   'owner_done': task.done(), 'owner_error': repr(task.exception()) if task.done() else None,
+                   'process': {'exited': current.exited, 'complete': current._result_complete,
+                               'persisted_generation': current._result_persisted_generation,
+                               'generation': current.ownership_generation, 'pending': current._scope_stop_pending,
+                               'event': current._completion_event.is_set(), 'quiescent': job_quiescent(current),
+                               'reader_alive': current._reader_thread.is_alive() if current._reader_thread else False}})
+            raise
         assert process_stop_pending(db, 's') is None
         assert effect.read_text() == 'once\n'
         assert not neighbor.exited

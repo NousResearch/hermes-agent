@@ -162,6 +162,63 @@ async def test_finish_between_failed_stop_and_subscription_is_not_a_lost_wake(st
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('reload_registry', [False, True], ids=['live-ready-result', 'cold-ready-result'])
+async def test_already_ready_result_subscribed_after_cleanup_rechecks_logical_stop(stopped_job, monkeypatch,
+                                                                                 reload_registry):
+    from gateway.session_ancillary import (_observe_process_stop_completion, _recover_stopped_processes,
+                                           process_stop_pending)
+    from tools import process_registry as module
+    from tools.process_registry_results import save_completed_result
+    state = stopped_job
+    with state.own._lock:
+        state.own._completion_observers.clear()
+    await _finish_original_reader(state)
+    assert save_completed_result(state.own)
+    assert not state.own._scope_stop_pending and state.executed == []
+    assert process_stop_pending(state.db, 's')
+    if reload_registry:
+        registry = module.ProcessRegistry()
+        monkeypatch.setattr(module, 'process_registry', registry)
+        assert _recover_stopped_processes(state.authority, REF)
+        state.own = registry.get(state.own.id)
+        assert await asyncio.to_thread(state.own._completion_event.wait, 5)
+    assert state.own._completion_event.is_set() and state.own._result_complete
+    assert state.own._result_persisted_generation == state.own.ownership_generation
+    assert not state.own._completion_observers
+    _observe_process_stop_completion(state.authority, REF)
+    _observe_process_stop_completion(state.authority, REF)
+    await async_wait_until(lambda: state.executed == ['only-human'], timeout=5)
+    assert process_stop_pending(state.db, 's') is None
+    assert all(value[2] is None for value in state.own._completion_observers.values())
+
+
+@pytest.mark.asyncio
+async def test_ready_observation_dedup_does_not_poll_an_independent_unknown(stopped_job, monkeypatch):
+    from gateway import session_ancillary
+    from tools.process_registry_results import save_completed_result
+    state = stopped_job
+    with state.own._lock:
+        state.own._completion_observers.clear()
+    await _finish_original_reader(state)
+    assert save_completed_result(state.own) and not state.own._scope_stop_pending
+    attempts = []
+    def unavailable_owner(*args):
+        attempts.append(REF)
+        return False  # Component fault: actual completed job cannot waive another uncertainty.
+    monkeypatch.setattr(session_ancillary, '_recover_stopped_processes', unavailable_owner)
+    session_ancillary._observe_process_stop_completion(state.authority, REF)
+    session_ancillary._observe_process_stop_completion(state.authority, REF)
+    await async_wait_until(lambda: bool(attempts) and state.authority.sessions['s'].task.done(), timeout=5)
+    assert attempts == [REF] and state.executed == []
+    assert session_ancillary.process_stop_pending(state.db, 's')
+    session_ancillary._observe_process_stop_completion(state.authority, REF)
+    barrier = asyncio.Event()
+    asyncio.get_running_loop().call_soon(barrier.set)
+    await barrier.wait()
+    assert attempts == [REF] and state.executed == []
+
+
+@pytest.mark.asyncio
 async def test_completion_wake_keeps_its_profile_when_the_loop_serves_another(stopped_job, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     state = stopped_job

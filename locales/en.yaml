@@ -626,6 +626,7 @@ gateway:
     action_always: "Always Allow"
     action_deny: "Deny"
     deadline: "If you don't answer within {window} it will NOT run."
+    not_requester: "Only {requester} can answer this approval."
     text_choice_once: "Reply `{prefix}approve` to run it once"
     text_choice_session: "`{prefix}approve session` to allow this pattern for the rest of this session"
     text_choice_always: "`{prefix}approve always` to allow it permanently"

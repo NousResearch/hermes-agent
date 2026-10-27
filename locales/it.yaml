@@ -622,6 +622,7 @@ gateway:
     action_always: "Consenti sempre"
     action_deny: "Nega"
     deadline: "Se non rispondi entro {window} NON verrà eseguito."
+    not_requester: "Solo {requester} può rispondere a questa approvazione."
     text_choice_once: "Rispondi `{prefix}approve` per eseguirlo una volta"
     text_choice_session: "`{prefix}approve session` per consentire questo pattern per il resto della sessione"
     text_choice_always: "`{prefix}approve always` per consentirlo in modo permanente"

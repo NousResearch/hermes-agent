@@ -2544,6 +2544,10 @@ class MatrixAdapter(BasePlatformAdapter):
             choices=self._approval_reaction_map)
         if choice is None:
             return handled
+        from gateway.approval_actor import approval_refusal, refusal_text
+        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra):
+            await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
+            return True
         try:
             from tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(prompt.session_key, choice)
@@ -2551,9 +2555,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)
                 self._approval_prompt_by_session.pop(prompt.session_key, None)
-                logger.info(
-                    "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, prompt.session_key, choice, sender)
+                logger.info("Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                            count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
@@ -2614,17 +2617,14 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
         if not self._is_authorized_user(sender, room_id):
-            logger.info(
-                "Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
-            await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
+            logger.info("Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
+            await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
             return False
         requester = getattr(prompt, "requester_user_id", None)
         # getattr: object.__new__-built test doubles may lack the attribute.
         if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
-            await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
+            await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
             return False
         return True
 

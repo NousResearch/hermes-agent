@@ -622,6 +622,7 @@ gateway:
     action_always: "Altyd toelaat"
     action_deny: "Weier"
     deadline: "As jy nie binne {window} antwoord nie, sal dit NIE uitgevoer word nie."
+    not_requester: "Slegs {requester} kan hierdie goedkeuring beantwoord."
     text_choice_once: "Antwoord `{prefix}approve` om dit eenmalig uit te voer"
     text_choice_session: "`{prefix}approve session` om hierdie patroon vir die res van hierdie sessie toe te laat"
     text_choice_always: "`{prefix}approve always` om dit permanent toe te laat"

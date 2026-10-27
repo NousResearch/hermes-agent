@@ -622,6 +622,7 @@ gateway:
     action_always: "항상 허용"
     action_deny: "거부"
     deadline: "{window} 안에 답하지 않으면 실행되지 않아요."
+    not_requester: "{requester}님만 이 승인에 응답할 수 있습니다."
     text_choice_once: "한 번만 실행하려면 `{prefix}approve`"
     text_choice_session: "이 세션이 끝날 때까지 이 패턴을 허용하려면 `{prefix}approve session`"
     text_choice_always: "영구적으로 허용하려면 `{prefix}approve always`"

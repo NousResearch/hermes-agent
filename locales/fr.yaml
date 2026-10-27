@@ -715,6 +715,7 @@ gateway:
     action_always: "Toujours autoriser"
     action_deny: "Refuser"
     deadline: "Sans réponse de votre part dans {window}, elle ne sera PAS exécutée."
+    not_requester: "Seul {requester} peut répondre à cette demande d'approbation."
     text_choice_once: "Répondez `{prefix}approve` pour l'exécuter une fois"
     text_choice_session: "`{prefix}approve session` pour autoriser ce motif jusqu'à la fin de cette session"
     text_choice_always: "`{prefix}approve always` pour l'autoriser définitivement"

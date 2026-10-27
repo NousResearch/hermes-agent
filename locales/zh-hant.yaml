@@ -622,6 +622,7 @@ gateway:
     action_always: "永久允許"
     action_deny: "拒絕"
     deadline: "若你在 {window} 內未回應，指令將「不會」執行。"
+    not_requester: "只有 {requester} 可以回應此核准請求。"
     text_choice_once: "回覆 `{prefix}approve` 執行一次"
     text_choice_session: "`{prefix}approve session` 在本次工作階段內允許此模式"
     text_choice_always: "`{prefix}approve always` 永久允許"

@@ -649,6 +649,10 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
+        from gateway.approval_actor import approval_refusal, refusal_text
+        clicker = getattr(ctx.activity.from_, "aad_object_id", None) or getattr(ctx.activity.from_, "id", "")
+        if requester := approval_refusal(session_key, clicker, extra=self.config.extra):
+            return self._invoke_message(refusal_text(requester))  # shown to the clicker; card keeps its buttons
         if not has_blocking_approval(session_key):
             return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
         resolve_gateway_approval(session_key, choice)

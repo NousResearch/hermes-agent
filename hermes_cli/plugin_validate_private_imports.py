@@ -50,6 +50,7 @@ _PUBLIC = frozenset({
     "utils:atomic_json_write", "utils:read_json_or_empty",
     # adding-platform-adapters.md § Public helpers for platform plugins
     "gateway.platforms.access_policy_mixin:OwnAccessPolicyMixin", "tools.approval:resolve_gateway_approval",
+    "gateway.approval_actor:approval_refusal", "gateway.approval_actor:refusal_text",
     "tools.clarify_gateway:get_pending", "tools.clarify_gateway:resolve_gateway_clarify",
     "tools.clarify_gateway:mark_awaiting_text", "tools.clarify_gateway:SKIPPED",
     "tools.url_safety:is_safe_url", "tools.url_safety:create_ssrf_safe_async_client",

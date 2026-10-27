@@ -622,6 +622,7 @@ gateway:
     action_always: "Разрешать всегда"
     action_deny: "Отклонить"
     deadline: "Если вы не ответите в течение {window}, команда НЕ будет выполнена."
+    not_requester: "Ответить на этот запрос может только {requester}."
     text_choice_once: "Ответьте `{prefix}approve`, чтобы выполнить один раз"
     text_choice_session: "`{prefix}approve session`, чтобы разрешить этот шаблон до конца сеанса"
     text_choice_always: "`{prefix}approve always`, чтобы разрешить навсегда"

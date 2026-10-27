@@ -4753,22 +4753,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         except (ValueError, IndexError):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
+        resolved = _toast("platform.telegram.approval.toast_already_resolved")
         session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _unauthorized(),
-            _toast("platform.telegram.approval.toast_already_resolved"))
+            query, cb, self._approval_state, approval_id, _unauthorized(), resolved, pop=False)
         if not session_key:
             return
+        from gateway.approval_actor import approval_refusal, refusal_text
+        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra):
+            return await query.answer(text=refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
+        if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
+            return await query.answer(text=resolved)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
-        # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
-        # (count == 0) must NOT claim "Approved" — the command was already denied.
+        # Resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501).
         try:
-            # Rendering happens after so the message reflects what actually occurred: a tap that lands after
-            # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
-            # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
             from tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
+            logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0

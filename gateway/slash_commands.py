@@ -1192,7 +1192,11 @@ class GatewaySlashCommandsMixin(
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
-            return session_key, None
+            from gateway.approval_actor import approval_refusal, refusal_text
+            from gateway.slash_access import policy_for_runner_source
+            requester = approval_refusal(session_key, event.source.user_id,
+                                         admin_ids=policy_for_runner_source(self, event.source).admin_user_ids)
+            return (session_key, refusal_text(requester)) if requester else (session_key, None)
         if session_key in self._pending_approvals:
             self._pending_approvals.pop(session_key)
             return session_key, t(stale_key)

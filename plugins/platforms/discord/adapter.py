@@ -5710,9 +5710,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             view = ExecApprovalView(
                 session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
-                allow_session="session" in choices, smart_denied=prompt.smart_denied,
-            )
+                admin_user_ids=admin_user_ids, allow_permanent="always" in choices, allow_session="session" in choices,
+                smart_denied=prompt.smart_denied, approval_extra=getattr(self.config, "extra", None))
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
@@ -6437,11 +6436,14 @@ def _define_discord_view_classes() -> None:
             self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
             require_admin: bool = False, admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
+            approval_extra: Optional[dict] = None,
         ):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.require_admin = require_admin
             self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
+            # The platform block: its admins answer any approval even with require_admin off (approval_actor).
+            self.approval_extra = approval_extra
             self._localize_buttons(
                 allow_once="gateway.exec_approval.action_once", allow_session="gateway.exec_approval.action_session",
                 allow_always="gateway.exec_approval.action_always", deny="gateway.exec_approval.action_deny")
@@ -6466,13 +6468,9 @@ def _define_discord_view_classes() -> None:
             if uid and uid in self.admin_user_ids:
                 return True
             if not self.admin_user_ids:
-                logger.warning(
-                    "[Discord] require_admin_for_exec_approval is enabled but "
-                    "no admins are configured (allow_admin_from is empty) — "
-                    "exec approval buttons are disabled for everyone. Add "
-                    "admin user IDs under the discord platform's "
-                    "allow_admin_from, or disable the toggle."
-                )
+                logger.warning("[Discord] require_admin_for_exec_approval is enabled but no admins are configured "
+                               "(allow_admin_from is empty) — exec approval buttons are disabled for everyone. "
+                               "Add admin user IDs under the discord platform's allow_admin_from, or disable the toggle.")
             return False
 
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
@@ -6482,17 +6480,18 @@ def _define_discord_view_classes() -> None:
                 unauth_msg=_unauthorized(),
             ):
                 return
+            from gateway.approval_actor import approval_refusal, refusal_text
+            if requester := approval_refusal(self.session_key, interaction.user.id, admin_ids=self.admin_user_ids,
+                                             extra=self.approval_extra):
+                return await interaction.response.send_message(refusal_text(requester), ephemeral=True)
             label = t(label_key)
             self.resolved = True
-            # Unblock the waiting agent thread FIRST. A click after the approval
-            # wait timed out (count == 0) must not claim "Approved".
+            # Unblock the waiting agent thread FIRST; a click after the wait timed out (count == 0) is not "Approved".
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
-                logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
-                )
+                logger.info("Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                            count, self.session_key, choice, interaction.user.display_name)
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
                 count = 0

@@ -622,6 +622,7 @@ gateway:
     action_always: "Ceadaigh i gCónaí"
     action_deny: "Diúltaigh"
     deadline: "Mura bhfreagraíonn tú laistigh de {window}, NÍ rithfear é."
+    not_requester: "Ní féidir ach le {requester} an cead seo a fhreagairt."
     text_choice_once: "Freagair `{prefix}approve` chun é a rith uair amháin"
     text_choice_session: "`{prefix}approve session` chun an patrún seo a cheadú don chuid eile den seisiún seo"
     text_choice_always: "`{prefix}approve always` chun é a cheadú go buan"

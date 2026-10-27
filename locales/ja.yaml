@@ -622,6 +622,7 @@ gateway:
     action_always: "常に許可"
     action_deny: "拒否"
     deadline: "{window} 以内に回答がない場合、実行されません。"
+    not_requester: "この承認に応答できるのは {requester} だけです。"
     text_choice_once: "1 回だけ実行するには `{prefix}approve`"
     text_choice_session: "このセッション中このパターンを許可するには `{prefix}approve session`"
     text_choice_always: "永続的に許可するには `{prefix}approve always`"

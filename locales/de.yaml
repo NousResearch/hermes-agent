@@ -622,6 +622,7 @@ gateway:
     action_always: "Immer erlauben"
     action_deny: "Ablehnen"
     deadline: "Wenn Sie nicht innerhalb von {window} antworten, wird er NICHT ausgeführt."
+    not_requester: "Nur {requester} kann diese Freigabe beantworten."
     text_choice_once: "Antworten Sie mit `{prefix}approve`, um ihn einmalig auszuführen"
     text_choice_session: "`{prefix}approve session`, um dieses Muster für den Rest dieser Sitzung zu erlauben"
     text_choice_always: "`{prefix}approve always`, um ihn dauerhaft zu erlauben"

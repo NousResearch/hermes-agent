@@ -24,12 +24,19 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "authority", "cancelled", "data", "event", "expired", "reason", "result", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
+        # Who may answer (gateway.approval_actor): the turn's user, plus ``approvals.approvers`` read
+        # here in the turn's profile scope (the click callbacks that check it run off-turn). Kept off
+        # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
+        approvers = _ctx._get_approval_config().get("approvers")
+        self.authority = {"requester_id": _ctx._session_env("HERMES_SESSION_USER_ID"),
+                          "requester_name": _ctx._session_env("HERMES_SESSION_USER_NAME"),
+                          "approvers": ["*"] if approvers is None else approvers}
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.

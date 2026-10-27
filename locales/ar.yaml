@@ -622,6 +622,7 @@ gateway:
     action_always: "السماح دائمًا"
     action_deny: "رفض"
     deadline: "إن لم تردّ خلال {window} فلن يُنفَّذ."
+    not_requester: "فقط {requester} يمكنه الرد على طلب الموافقة هذا."
     text_choice_once: "أرسل `{prefix}approve` لتشغيله مرة واحدة"
     text_choice_session: "`{prefix}approve session` للسماح بهذا النمط لبقية هذه الجلسة"
     text_choice_always: "`{prefix}approve always` للسماح به دائمًا"

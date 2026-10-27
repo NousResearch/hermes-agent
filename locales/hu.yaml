@@ -625,6 +625,7 @@ gateway:
     action_always: "Engedélyezés mindig"
     action_deny: "Elutasítás"
     deadline: "Ha {window} alatt nem válaszolsz, NEM fut le."
+    not_requester: "Csak {requester} válaszolhat erre a jóváhagyásra."
     text_choice_once: "Válaszolj `{prefix}approve` az egyszeri futtatáshoz"
     text_choice_session: "`{prefix}approve session` a minta engedélyezéséhez a munkamenet hátralévő részére"
     text_choice_always: "`{prefix}approve always` a végleges engedélyezéshez"

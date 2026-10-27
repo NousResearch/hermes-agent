@@ -5628,23 +5628,23 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "approval")
         if started is None:
             return
-        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, _user_id = started
+        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
-        # Double-click guard (atomic pop). Also accept the bare ts: the approval may
-        # have been stored without a team id while the click carries one.
+        from gateway.approval_actor import approval_refusal, refusal_text
+        if requester := approval_refusal(session_key, user_id, extra=self.config.extra):  # others: private note
+            return await self._get_client(channel_id, team_id=team_id or None).chat_postEphemeral(
+                channel=channel_id, user=user_id, text=refusal_text(requester), thread_ts=message.get("thread_ts"))
+        # Double-click guard (atomic pop); the bare ts too: stored without a team id, clicked with one.
         approval_key = self._workspace_message_marker(team_id, msg_ts)
         if msg_ts in self._approval_resolved:
             approval_key = msg_ts
         if self._approval_resolved.pop(approval_key, True):
             return
-        # Resolve FIRST (unblocks the agent); render after so a click past the
-        # timeout (count == 0) shows "expired", not "approved".
+        # Resolve FIRST (unblocks the agent); render after so a click past the timeout shows "expired".
         try:
             from tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
-                session_key, choice, user_name)
+            logger.info("Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_name)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
             count = 0

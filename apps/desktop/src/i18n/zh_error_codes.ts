@@ -8,6 +8,10 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: '此聊天属于一个定时任务',
     body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
   },
+  session_read_only: {
+    title: '此聊天为只读',
+    body: '它是 Hermes 只能显示、无法继续的已保存历史记录，因此你的消息未被执行。请新建聊天后再发送。'
+  },
   workspace_unavailable: {
     title: '此聊天的文件夹已不存在',
     body: '此聊天使用的文件夹已被移动或删除，因此你的消息未被执行。请重新创建该文件夹，或使用“移动到项目”为聊天指定其他文件夹，然后重试。'

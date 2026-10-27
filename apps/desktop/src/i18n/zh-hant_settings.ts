@@ -869,6 +869,9 @@ export const zhHantSettings = {
       loading: '正在載入閘道設定...',
       unavailableTitle: '閘道設定不可用',
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
+      webappHostTitle: 'Hermes 主機',
+      webappHostDesc:
+        'Webapp 一律使用提供它的 Hermes 主機。如需切換閘道、登入 Hermes Cloud 或管理已儲存的連線，請使用 Hermes Desktop 應用程式。',
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:
@@ -971,7 +974,39 @@ export const zhHantSettings = {
       sshErrUpdateRequired: '使用 Desktop SSH 連線前，請更新遠端主機上的 Hermes。',
       sshErrInteractiveAuth:
         'Tailscale SSH 需要互動式瀏覽器驗證。請在終端機執行 `ssh <host> true` 完成驗證後重試——Hermes 以非互動方式執行 SSH。',
-      sshErrUnknown: 'SSH 連線失敗。'
+      sshErrUnknown: 'SSH 連線失敗。',
+      webAccess: {
+        title: '網頁存取',
+        intro: '用手機或其他電腦，以你的 Nous 帳戶登入並開啟這台電腦上的 Hermes。登入的人可以在這台電腦上執行指令。',
+        failed: '無法變更網頁存取',
+        running: '執行中',
+        stopped: '已停止',
+        starting: '正在啟動',
+        stopping: '正在停止',
+        restartNeeded: '需要重新啟動',
+        unavailable: '無法使用',
+        notRunningDetail: '啟動後即可從其他裝置開啟 Hermes。',
+        needsNous: '請先在「供應商」中登入你的 Nous 帳戶。',
+        runningLan: '在同一網路中的裝置上開啟此網址。',
+        runningPublic: '透過你的網址提供服務。',
+        runningLocal: '只有這台電腦可以開啟。要從其他裝置開啟，請先停止，再重新啟動。',
+        pendingOn: '已儲存。閘道重新啟動後將提供網頁應用程式。',
+        pendingOff: '已關閉，但閘道在重新啟動前仍會繼續提供網頁應用程式。',
+        unavailableDetail: reason => `閘道無法提供網頁應用程式：${reason}`,
+        restartBusy: '已儲存。有對話正在進行，因此閘道沒有重新啟動。對話結束後請選擇「重新啟動閘道」。',
+        restartFailed: '已儲存，但閘道無法重新啟動。請選擇「重新啟動閘道」重試。',
+        startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
+        stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
+        start: '啟動',
+        stop: '停止',
+        restartGateway: '重新啟動閘道',
+        modeLan: '目前網路',
+        modeLanDetail: url => `你的 Wi-Fi 中的裝置可開啟 ${url}。僅在你信任的網路中使用。`,
+        lanUnencrypted: '連線未加密：同一網路中的其他人可能讀取你傳送和接收的內容。',
+        noLan: '這台電腦沒有其他裝置可以連到的網路位址。',
+        modePublic: '我自己的網址',
+        modePublicDetail: port => `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
+      }
     },
     keys: {
       loading: '正在載入 API 金鑰和憑證...',

@@ -14,6 +14,7 @@ from contextlib import suppress
 import logging
 import os
 import stat
+import threading
 from pathlib import Path
 import time
 from typing import Optional
@@ -227,11 +228,19 @@ class ProcessOutputLogMixin:
     """The subclass supplies ``_ingest_output``, ``_clean_shell_noise``,
     ``_finish_exited`` and ``_detached_host_fate``. See ProcessRegistry."""
 
-    def _collect_unit_log(self, session):
+    def _finalize_unit_publication(self, session):
+        """This original publisher has finished reading; commit final scoped bytes before its event."""
+        from tools.process_registry_job import unit_quiescent
+        if session.systemd_unit and session.output_log and unit_quiescent(session):
+            self._collect_unit_log(session, _original_publisher=True)
+
+    def _collect_unit_log(self, session, *, _original_publisher=False):
         """Collect final original bytes only after native unit emptiness and reader completion."""
         from tools.process_registry_job import job_quiescent, read_job_receipt
         from tools.process_registry_results import save_completed_result
-        if not job_quiescent(session) or (session._reader_thread is not None and not session._completion_event.wait(1.0)):
+        reader = session._reader_thread
+        publisher = _original_publisher and (reader is None or reader is threading.current_thread())
+        if not job_quiescent(session) or (reader is not None and not publisher and not session._completion_event.wait(1.0)):
             return False
         save_completed_result(session)  # May import an actual same-job finalized retained payload.
         state = session.output_log_state

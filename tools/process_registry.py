@@ -1525,6 +1525,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         Idempotent: kill_process() and the reader thread can both call this; only
         the FIRST move enqueues the completion notification, so no duplicates.
         Returns True when this call is the one that persisted the session."""
+        self._finalize_unit_publication(session)
         with self._lock:
             was_running = session.id in self._running
             if was_running:
@@ -2119,8 +2120,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session.native_job_scope or session.systemd_unit or job_quiescent(session)):
             return self._refuse_backend_stop(session, consume_output)
         if session.exited:
-            if session._reader_thread is not None and not session._completion_event.is_set():
-                return self._refuse_backend_stop(session, consume_output)
             # The primary's exit does not prove detached descendants left its native unit.
             scope_stopped = self._stop_scope(session)
             if not scope_stopped:

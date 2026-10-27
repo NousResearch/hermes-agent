@@ -122,6 +122,7 @@ def mount_spa(application: FastAPI):
     from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
     from hermes_cli.web_deps import _server
     from hermes_cli.web_server_surface import policy
+    from hermes_cli.web_server_static_assets import is_static_asset_path, public_font_file
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
@@ -286,6 +287,11 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
+        if is_static_asset_path(full_path):
+            font = public_font_file(dist, full_path)
+            if font is not None:
+                return FileResponse(font)
+            return JSONResponse({"error": "not found"}, status_code=404)
         return _serve_index(prefix)
 
 

@@ -120,12 +120,16 @@ def _body_decode_reason(exc: Exception) -> tuple[str, Optional[int]]:
     """``(message, position)`` of a body-decode failure, and never any of its bytes.
 
     ``JSONDecodeError`` carries ``msg``/``pos``, ``UnicodeDecodeError`` carries
-    ``reason``/``start``; ``LookupError`` (unknown charset) and ``RecursionError``
-    carry neither and are reported by type name only, so the client-declared
-    charset is not echoed either. Neither
-    ``str(UnicodeDecodeError)`` (the offending byte) nor ``JSONDecodeError.doc``
-    (the whole body) is read, so nothing of the request body can reach the log.
+    ``reason``/``start``; ``LookupError`` (unknown charset) carries neither and is
+    reported by type name only, so the client-declared charset is not echoed
+    either. ``RecursionError`` is a body that may be syntactically valid but is
+    nested past the interpreter's recursion limit, so it gets its own wording.
+    Neither ``str(UnicodeDecodeError)`` (the offending byte) nor
+    ``JSONDecodeError.doc`` (the whole body) is read, so nothing of the request
+    body can reach the log.
     """
+    if isinstance(exc, RecursionError):
+        return "nested too deeply", None
     reason = getattr(exc, "msg", None) or getattr(exc, "reason", None) or type(exc).__name__
     position = getattr(exc, "pos", None)
     if position is None:
@@ -163,14 +167,19 @@ class _AiohttpBridgeAdapter:
 
     def register_route(self, method: HttpMethod, path: str, handler: HttpRouteHandler) -> None:
         async def _aiohttp_handler(request: web.Request) -> web.Response:
+            raw = await request.read()
+            # Parsed here rather than by request.json(), whose failure modes vary
+            # across aiohttp releases (some raise HTTPException subclasses that
+            # would skip this 400 and its log hygiene). Like request.json() on the
+            # pinned 3.14.5, the Content-Type itself is not checked.
             try:
-                body = await request.json()
+                body = json.loads(raw.decode(request.charset or "utf-8"))
             # LookupError: a client-declared charset that does not exist.
             # RecursionError: a body nested past the interpreter's recursion limit.
             except (ValueError, LookupError, RecursionError) as exc:
                 reason, position = _body_decode_reason(exc)
                 logger.warning(
-                    "[teams] refused a request body that is not valid JSON: %s %s from %s "
+                    "[teams] refused a request body that could not be parsed as JSON: %s %s from %s "
                     "(%s bytes): %s (position %s)",
                     request.method,
                     request.path,

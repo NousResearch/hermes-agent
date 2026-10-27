@@ -2017,7 +2017,6 @@ cli:
     cleared_picker_cache: 'Mezipaměť výběru modelů vymazána. Obnovuji...'
     moa_one_shot_queued: 'MoA jednorázově zařazeno do fronty s předvolbou {preset}; předchozí model bude obnoven po tomto tahu.'
     normalized_model: "Normalizoval jsem model '{old}' na '{new}' pro {provider}."
-    normalized_copilot_model: "Normalizoval jsem model Copilot '{old}' na '{new}'."
     stripped_provider_prefix: "Odebral jsem předponu poskytovatele z '{old}'; používám '{new}' pro {provider}."
     restored_from_session: 'Model obnoven z relace: {model}'
     could_not_load_config: '❌ nepodařilo se načíst konfiguraci: {error}'

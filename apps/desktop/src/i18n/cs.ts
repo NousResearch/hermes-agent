@@ -668,6 +668,8 @@ export const csOverrides = {
       microphoneConstraintsUnsupported: 'Toto zařízení nepodporuje požadované parametry mikrofonu.',
       microphoneFailed: 'Mikrofon selhal',
       microphoneInUse: 'Mikrofon již používá jiná aplikace.',
+      microphoneNeedsHttps:
+        'Mikrofon potřebuje zabezpečené připojení. Webapp otevřete přes HTTPS nebo přes SSH tunel na adresu 127.0.0.1, abyste ho mohli použít.',
       microphonePermissionDenied: 'Přístup k mikrofonu byl zamítnut.',
       microphoneStartFailed: 'Nahrávání z mikrofonu se nepodařilo spustit.',
       microphoneUnsupported: 'Toto prostředí nepodporuje nahrávání z mikrofonu.',
@@ -3814,8 +3816,11 @@ export const csOverrides = {
     exported: 'Profil exportován',
     failedImport: 'Nepodařilo se importovat profil',
     failedExport: 'Nepodařilo se exportovat profil.',
+    exportNeedsHost: name =>
+      `Prohlížeč nedokáže uložit archiv profilu. Na hostiteli Hermes spusťte: hermes profile export ${name}`,
     allProfiles: 'Všechny profily',
     showAllProfiles: 'Zobrazit všechny profily',
+    notServedHere: 'Zde není k dispozici',
     switchToProfile: name => `Přepnout na ${name}`,
     switchToConnection: name => `Přepnout na ${name}`,
     switchConnectionFailed: name => `Nelze připojit k ${name}`,
@@ -5521,6 +5526,7 @@ export const csOverrides = {
     terminalCloseAll: 'Zavřít vše',
     addToChat: 'Přidat do chatu',
     terminalDropControl: paths => `Tyto názvy obsahují řídicí znaky, které shell provede jako klávesy: ${paths}`,
+    terminalDropUnquotable: (shell, paths) => `Tyto názvy nelze v ${shell} bezpečně zapsat: ${paths}`,
     terminalDropTooLarge: (names, limit) => `Každý soubor může mít až ${limit}. Nenahráno: ${names}`,
     terminalDropUploadFailed: name => `Soubor ${name} se nepodařilo nahrát`,
     terminalDropControlTitle: 'Nevloženo do terminálu',
@@ -6428,6 +6434,7 @@ export const csOverrides = {
     imageAttach: 'Připojit obrázek',
     imageWriteFailed: 'Nepodařilo se zapsat obrázek na disk.',
     imageAttachFailed: 'Připojit obrázek selhalo',
+    attachFailed: 'Připojení se nezdařilo',
     pastedContent: 'Vložený obsah',
     pasteAttachFailed: 'Vložený text se nepodařilo připojit',
     attachImages: 'Připojit obrázky',
@@ -6435,6 +6442,8 @@ export const csOverrides = {
     noClipboardImage: 'Ve schránce nenalezen žádný obrázek',
     clipboardPasteFailed: 'Vložení ze schránky se nezdařilo',
     dropFiles: 'Přetáhnout soubory',
+    dropFilesMore: (count: number) =>
+      count === 1 ? 'a 1 další' : count >= 2 && count <= 4 ? `a další ${count}` : `a dalších ${count}`,
     handoff: {
       pickPlatform: 'Vyberte cíl',
       success: platform => `Odesláno do ${platform}. Můžete zde kdykoli pokračovat.`,

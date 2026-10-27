@@ -364,8 +364,13 @@ def ensure_python_tool(
 
 
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
-                    project_root: Path | None = None) -> bool:
-    """Check through a ready PM, never bootstrap dependencies for a probe."""
+                    project_root: Path | None = None, if_unknown: bool | None = False) -> bool | None:
+    """Check through a ready PM, never bootstrap dependencies for a probe.
+
+    ``if_unknown`` is the answer when no ready PM can check (a cold or outdated PM runtime).
+    False suits a caller that syncs next, since the sync prepares the runtime. A caller that only
+    gates on the answer passes None and decides itself: a runtime that never comes up must not
+    read as stale dependencies."""
     if is_runtime() and (project_root is None or Path(project_root).resolve() == paths.repo_root().resolve()):
         from pm.install import venv_is_current as direct
         return direct(extras=extras, plugins=plugins, project_root=project_root)
@@ -374,7 +379,7 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
                              project_root=project_root))
     except InstallError as exc:
         if exc.package == "pm-runtime":
-            return False  # Without its checker, currency cannot be established.
+            return if_unknown  # Without its checker, currency cannot be established.
         raise
 
 

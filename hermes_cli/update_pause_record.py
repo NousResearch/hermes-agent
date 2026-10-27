@@ -340,8 +340,9 @@ def _deps_hold_resume(root: Path) -> bool:
     dependencies at the start of every launch (``venv_sync.prepare_launch``), before startup
     recovery runs, so a deferred set comes back on the next launch. Anywhere else nothing a launch
     does makes them current (a developer checkout owns its own venv): the set resumes now, as it
-    did before the pause was durable, and a currency the probe cannot establish never holds it
-    either — the restarted gateway's own launch syncs or reports the remedy.
+    did before the pause was durable, and a currency nothing can establish (neither PM's worker nor
+    this process reading the recorded state) never holds it either — the restarted gateway's own
+    launch syncs or reports the remedy.
     """
     if (os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists() or not (root / "pyproject.toml").is_file()):
@@ -351,7 +352,15 @@ def _deps_hold_resume(root: Path) -> bool:
         if read_install_stamp(root).get("updateMechanism") != "self":
             return False
         import pm
-        return not pm.venv_is_current(project_root=root)
+        current = pm.venv_is_current(project_root=root, if_unknown=None)
+        if current is None:
+            # No ready PM runtime to ask, which is not stale dependencies (#143478): after a
+            # rollback the selected runtime is the older release's, and this probe never
+            # bootstraps one. This process runs on the app dependencies, so it reads the
+            # recorded state itself: a sync that did not land still holds the set.
+            from pm.install import venv_is_current as recorded_is_current
+            current = recorded_is_current(project_root=root)
+        return not current
     except Exception:  # health: allow BLE001 -- unknown currency must not strand the set: resume, the gateway's own launch syncs or names the remedy
         return False
 

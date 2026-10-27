@@ -26,11 +26,13 @@
 import { computed } from 'nanostores'
 
 import { stableArray, stableRecord } from '@/lib/stable-array'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $liveWorkRoster, noteEventFed, rosterLiveIds, rosterSaysIdle } from './live-work-roster'
 import { $pausedQueueSessionIds } from './owner-queue-reconcile'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
+import { sessionOwnerRowKey } from './session-request-router'
 import {
   $attentionSessionIds,
   $draftSessionIds,
@@ -115,6 +117,21 @@ const STATUS_RANK: Record<SessionStatusBucket, number> = {
 /** Loudest first — what ordering by status sorts on. */
 export const sessionStatusRank = (state?: SessionDotState): number => STATUS_RANK[sessionStatusBucket(state)]
 
+export function sessionDotStateForRow(
+  states: Readonly<Record<string, SessionDotState>>,
+  row: Pick<SessionInfo, '_desktop_route_binding' | 'connection_id' | 'id' | 'profile'>
+): SessionDotState {
+  const ownerState = states[sessionOwnerRowKey(row)]
+
+  if (ownerState) {
+    return ownerState
+  }
+
+  const matches = [...$sessions.get(), ...$messagingSessions.get()].filter(candidate => candidate.id === row.id)
+
+  return matches.length <= 1 ? (states[row.id] ?? 'idle') : 'idle'
+}
+
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(
@@ -157,20 +174,22 @@ export const $sessionDotStateById = computed(
     // our own writes is fenced out by the write guard: keep OUR value until a
     // page confirms it or the guard expires.
     const persistedUnread: string[] = []
+    const idCounts = new Map<string, number>()
+    sessions.forEach(session => idCounts.set(session.id, (idCounts.get(session.id) ?? 0) + 1))
 
     for (const s of sessions) {
       const entry = unreadWriteGuard.get(unreadWriteKey(s))
 
       if (entry && Date.now() - entry.at < UNREAD_WRITE_GUARD_MS) {
         if (entry.value) {
-          persistedUnread.push(s.id)
+          persistedUnread.push(idCounts.get(s.id) === 1 ? s.id : sessionOwnerRowKey(s))
         }
 
         continue
       }
 
       if (s.unread === true) {
-        persistedUnread.push(s.id)
+        persistedUnread.push(idCounts.get(s.id) === 1 ? s.id : sessionOwnerRowKey(s))
       }
     }
 
@@ -215,7 +234,7 @@ export function unreadSessionCount(
 
   for (const rows of lists) {
     for (const row of rows) {
-      if (!row.archived && byId[row.id] === 'unread') {
+      if (!row.archived && sessionDotStateForRow(byId, row) === 'unread') {
         n++
       }
     }

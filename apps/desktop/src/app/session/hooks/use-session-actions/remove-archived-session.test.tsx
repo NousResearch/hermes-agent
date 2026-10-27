@@ -161,4 +161,23 @@ describe('removeSession × archived view store', () => {
       sessionRouteId: 'arch-1'
     })
   })
+
+  it('deletes only the clicked owner when archived ids collide', async () => {
+    const ownerA = archivedSession({ _desktop_route_binding: 'binding-a', connection_id: 'gateway-a' })
+    const ownerB = archivedSession({ _desktop_route_binding: 'binding-b', connection_id: 'gateway-b' })
+
+    $archivedSessions.set([ownerA, ownerB])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    const handle = await mountHarness()
+
+    await act(() => handle.removeSession(ownerB))
+
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      sessionRouteBinding: 'binding-b',
+      sessionRouteId: 'arch-1'
+    })
+    expect($archivedSessions.get()).toEqual([ownerA])
+  })
 })

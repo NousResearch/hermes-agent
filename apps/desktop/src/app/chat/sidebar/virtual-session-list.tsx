@@ -12,6 +12,7 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 import { $sessionListDensity } from '@/store/session-list-density'
+import { sessionOwnerRowKey } from '@/store/session-request-router'
 
 import { SidebarDateDivider } from './chrome'
 import { SidebarSessionRow } from './session-row'
@@ -47,12 +48,12 @@ export interface VirtualSessionListProps {
     open: (key: string) => boolean
   }
   rows: SidebarListRow[]
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession: (session: SessionInfo) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
-  onDeleteSession: (sessionId: string) => void
+  onDeleteSession: (session: SessionInfo) => void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onTogglePin: (sessionId: string) => void
-  onToggleUnread: (sessionId: string) => void
+  onToggleUnread: (session: SessionInfo) => void
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
@@ -101,7 +102,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     getItemKey: index => {
       const row = listRows[index]
 
-      return row ? (row.kind === 'divider' ? row.key : row.entry.session.id) : index
+      return row ? (row.kind === 'divider' ? row.key : sessionOwnerRowKey(row.entry.session)) : index
     },
     getScrollElement: () => scrollerRef.current,
     // jsdom-friendly default; the real rect takes over on first observe.
@@ -164,20 +165,18 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       card,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
-      onArchive: () => onArchiveSession(session.id),
+      onArchive: () => onArchiveSession(session),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
+      onDelete: () => onDeleteSession(session),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onToggleUnread: () => onToggleUnread(session.id),
+      onToggleUnread: () => onToggleUnread(session),
       onResume: () => onResumeSession(session.id, session),
       reorderable,
       showProfile: showProfileTags,
       unread: session.unread === true
     }
 
-    // Key by (profile, id): twins with the same stored id in two profiles are
-    // distinct rows (#92454) — a bare-id key misattributes rendered state.
-    const rowKey = `${session.profile ?? ''}::${session.id}`
+    const rowKey = sessionOwnerRowKey(session)
 
     return reorderable ? (
       <div data-index={virtualItem.index} key={rowKey} ref={virtualizer.measureElement} style={itemStyle}>

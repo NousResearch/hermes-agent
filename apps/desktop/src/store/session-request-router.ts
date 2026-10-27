@@ -1,5 +1,6 @@
 import type { ProfileScope } from '@/hermes'
 import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
+import type { SessionInfo } from '@/types/hermes'
 
 import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
 
@@ -107,6 +108,18 @@ export function sessionMutationScopeFromRow(
     sessionRouteBinding,
     sessionRouteId: String(row?.id ?? '').trim()
   }
+}
+
+/** Stable renderer identity for a stored row, including its immutable owner. */
+export function sessionOwnerRowKey(
+  row: Pick<SessionInfo, '_desktop_route_binding' | 'connection_id' | 'id' | 'profile'>
+): string {
+  return JSON.stringify([
+    row.connection_id?.trim() || 'legacy',
+    row.profile?.trim() || 'default',
+    row._desktop_route_binding?.trim() || '-',
+    row.id
+  ])
 }
 
 // ── Session-scoped RPC routing (the #89206 class) ───────────────────────────

@@ -468,7 +468,12 @@ function PluginSchemaSettingsPage({
                 throw new Error('Settings owner changed before the plugin secret was sent.')
               }
 
-              const result = await setEnvVar(env, value, owner.scope)
+              const secretScope =
+                owner.scope && typeof owner.scope === 'object' && !owner.scope.profile?.trim()
+                  ? { ...owner.scope, profile: 'custom' }
+                  : owner.scope
+
+              const result = await setEnvVar(env, value, secretScope)
 
               if (!isCurrent()) {
                 throw new Error('Settings owner changed while the plugin secret was in flight.')

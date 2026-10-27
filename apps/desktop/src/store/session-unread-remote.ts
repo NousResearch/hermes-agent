@@ -25,7 +25,7 @@ import { setSessionUnreadRemote } from '@/hermes'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $sessions, setSessions } from './session'
-import { sessionMutationScopeFromRow } from './session-request-router'
+import { sessionMutationScopeFromRow, sessionOwnerRowKey } from './session-request-router'
 
 export const UNREAD_WRITE_GUARD_MS = 10_000
 
@@ -40,28 +40,32 @@ interface UnreadWriteState {
 const unreadWrites = new Map<string, UnreadWriteState>()
 
 export function unreadWriteKey(row: Pick<SessionInfo, '_desktop_route_binding' | 'connection_id' | 'id' | 'profile'>) {
-  return JSON.stringify([
-    row.connection_id?.trim() || 'legacy',
-    row.profile?.trim() || 'default',
-    row._desktop_route_binding?.trim() || '-',
-    row.id
-  ])
+  return sessionOwnerRowKey(row)
 }
 
-function rowFor(storedId: string) {
-  return $sessions.get().find(row => row.id === storedId)
+function rowFor(session: SessionInfo | string) {
+  if (typeof session === 'string') {
+    const matches = $sessions.get().filter(row => row.id === session)
+
+    return matches.length === 1 ? matches[0] : undefined
+  }
+
+  const key = unreadWriteKey(session)
+
+  return $sessions.get().find(row => unreadWriteKey(row) === key)
 }
 
 /** Toggle the persisted unread flag: optimistic row update, then PATCH, then
  *  roll back visibly if the write fails. No-op for runtime-only sessions (a
  *  brand-new chat with no persisted row yet — there is nothing to flag). */
-export async function markSessionUnread(storedId: string, unread: boolean): Promise<void> {
-  const row = rowFor(storedId)
+export async function markSessionUnread(session: SessionInfo | string, unread: boolean): Promise<void> {
+  const row = rowFor(session)
 
   if (!row) {
     return
   }
 
+  const storedId = row.id
   const revision = Symbol(storedId)
   const scope = sessionMutationScopeFromRow(row) ?? row.profile
   const writeKey = unreadWriteKey(row)
@@ -116,15 +120,15 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
 
 /** Opening a session clears its persisted unread flag (auto-mark-read).
  *  Best-effort: a failed PATCH is healed by the next honest refresh. */
-export async function clearUnreadOnOpen(storedId: string): Promise<void> {
-  const row = rowFor(storedId)
+export async function clearUnreadOnOpen(session: SessionInfo | string): Promise<void> {
+  const row = rowFor(session)
 
   if (!row || row.unread !== true) {
     return
   }
 
   try {
-    await markSessionUnread(storedId, false)
+    await markSessionUnread(row, false)
   } catch {
     // Ignore: the dot simply returns until a refresh reconciles.
   }
@@ -142,6 +146,14 @@ export function watchUnreadWriteGuard(): void {
 
       if (row && row.unread === entry.value) {
         guard.delete(key)
+        const state = unreadWrites.get(key)
+
+        if (state) {
+          state.confirmed = entry.value
+          state.latest = Symbol(key)
+          unreadWrites.delete(key)
+        }
+
         changed = true
       }
     }

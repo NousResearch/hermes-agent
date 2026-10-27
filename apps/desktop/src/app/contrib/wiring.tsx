@@ -80,6 +80,7 @@ import {
   $sessionResumeRequest,
   $sessions,
   forgetSessionOwnerHintsForSession,
+  markSessionRead,
   requestSessionResume,
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
@@ -88,8 +89,8 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { clearUnreadOnOpen } from '@/store/session-unread-remote'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
-import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
@@ -1054,6 +1055,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       requestSessionResume(sessionId)
     }
 
+    if (session) {
+      markSessionRead(session)
+      void clearUnreadOnOpen(session)
+    }
+
     openSession(sessionId, navigate)
   }
 
@@ -1068,13 +1074,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // The sidebar row menu reuses this verb in the Archived view too, where the
     // row is already archived — dispatch by state so the verb restores there
     // instead of re-archiving (#98813).
-    onArchiveSession: sessionId => {
-      const listed = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
-
-      const isArchived =
-        listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
-
-      void (isArchived ? unarchiveSession(sessionId) : archiveSession(sessionId))
+    onArchiveSession: session => {
+      void (session.archived === true ? unarchiveSession(session) : archiveSession(session))
     },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
@@ -1089,7 +1090,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         void removeSession(id)
       }
     },
-    onDeleteSession: sessionId => void removeSession(sessionId),
+    onDeleteSession: session => void removeSession(session),
     onDismissError: dismissError,
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,

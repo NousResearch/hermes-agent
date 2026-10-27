@@ -14,6 +14,7 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from './session'
+import { sessionOwnerRowKey } from './session-request-router'
 import { clearAllSessionStates } from './session-states'
 import {
   $sessionSeenCounts,
@@ -164,7 +165,9 @@ describe('persisted unread (session-unread)', () => {
     ])
 
     // Only alpha's row is past its watermark; beta's sits exactly on it.
-    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+    expect($unreadFinishedSessionIds.get()).toEqual([
+      sessionOwnerRowKey(session({ id: 's1', message_count: 5, profile: 'alpha' }))
+    ])
     expect($sessionSeenCounts.get()).toEqual({ alpha: { s1: 3 }, beta: { s1: 5 } })
 
     // Opening beta's row (the gateway is on beta) acks beta only.

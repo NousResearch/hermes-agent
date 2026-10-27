@@ -347,6 +347,22 @@ class TestCleanupFaults:
         monkeypatch.setattr(inst, "_file_consent_dir", _boom)
         assert _run(_answer(inst, _invoke(token))) is None
         assert (tmp_path / f"{token}.json").exists()  # the offer is untouched, only unclaimable
+        assert "could not be processed" in inst.sent_texts[-1][1]
+
+    def test_claim_fault_log_does_not_carry_the_token_path(self, tmp_path, monkeypatch, caplog) -> None:
+        inst = _adapter(tmp_path, conv_type="personal")
+        _, token = _offer(inst, tmp_path)
+
+        def _rename(src, dst):
+            raise OSError(errno.EIO, "Input/output error", str(src), None, str(dst))
+
+        monkeypatch.setattr("plugins.platforms.teams.adapter.os.rename", _rename)
+        with caplog.at_level(logging.ERROR):
+            assert _run(_answer(inst, _invoke(token))) is None
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "consent directory unusable" in logged
+        assert token not in logged
+        assert token[:8] in logged
 
 
 class TestRejectionDiagnostics:

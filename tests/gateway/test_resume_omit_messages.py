@@ -74,3 +74,36 @@ async def test_omit_messages_resume_reads_no_transcript(tmp_path, monkeypatch):
     assert omitted['message_count'] == authority.db.get_session(physical)['message_count']
     # Both paths report the same plan: the omitted one reads it from the store's bounded todo lookup.
     assert omitted['todo_state'] == full['todo_state'] and omitted['todo_state']
+
+
+@pytest.mark.asyncio
+async def test_omitted_resume_keeps_an_undone_plan_gone_after_a_rotated_compression(tmp_path, monkeypatch):
+    """The rewind removes the child's copy of the Todo turn; the parent's copy must not restore its plan."""
+    from gateway.session_mutations import mutate_session
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    db = authority.db
+    call = {'id': 'todo-1', 'type': 'function', 'function': {'name': 'todo', 'arguments': '{}'}}
+    tail = [{'role': 'user', 'content': 'TAIL_Q'}, {'role': 'assistant', 'content': None, 'tool_calls': [call]},
+            {'role': 'tool', 'content': json.dumps(TODOS), 'tool_name': 'todo', 'tool_call_id': 'todo-1'},
+            {'role': 'assistant', 'content': 'TAIL_A'}]
+    db.append_message(physical, 'user', 'OLD_Q')
+    db.append_message(physical, 'assistant', 'OLD_A')
+    for row in tail:
+        db.append_message(physical, row['role'], row['content'], tool_calls=row.get('tool_calls'),
+                          tool_name=row.get('tool_name'), tool_call_id=row.get('tool_call_id'))
+    assert db.try_acquire_compression_lock(physical, 'fixture')
+    try:
+        db.publish_compression_child(parent_session_id=physical, child_session_id='child', source='gui',
+                                     messages=[{'role': 'user', 'content': SUMMARY_PREFIX + '\nsummary'}, *tail],
+                                     compression_lock_holder='fixture')
+    finally:
+        db.release_compression_lock(physical, 'fixture')
+    handle = authority._handle(ref)
+    await mutate_session(authority, actor, ref, {
+        'session_id': ref.session_id, 'request_id': 'undo', 'operation': 'rewind',
+        'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
+        'payload': {'target_message_id': next(m['id'] for m in db.get_messages('child') if m['content'] == 'TAIL_Q')}})
+    full = await _resume(authority, actor, ref)
+    assert full['todo_state'] is None
+    omitted = await _resume(authority, actor, ref, omit_messages=True)
+    assert omitted['todo_state'] == full['todo_state']

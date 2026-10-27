@@ -597,7 +597,7 @@ class ProcessSession:
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
-    # Set by the _move_to_finished call that moved the session out of _running; only that call
+    # Set by the exit publisher (_move_to_finished or the detached sweeper); only that call
     # publishes the completion, so a duplicate finisher must not release waiters early.
     _finish_claimed: bool = field(default=False, repr=False)
     # The last stop of ``systemd_unit`` failed, so its descendants may still be alive; bulk
@@ -780,16 +780,22 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """Publish the exit of every recovered host-PID session whose PID is gone."""
         with self._lock:
             candidates = [s for s in self._running.values()
-                          if s.detached and not s.exited and s.pid_scope == "host" and not s.output_log]
+                          if s.detached and s.pid_scope == "host" and not s.output_log
+                          and (not s.exited or (s.completion_reason == "lost"
+                               and not s._finish_claimed and not s._completion_event.is_set()))]
         for session in candidates:
-            fate = self._detached_host_fate(session.pid, session.host_start_time)
+            # A status reader can have observed gone already. Keep that observation
+            # even if the PID has since been recycled; the receipt still belongs here.
+            fate = "gone" if session.exited else self._detached_host_fate(session.pid, session.host_start_time)
             if fate == "running":
                 continue
             # Claim the exit exactly once, under the session lock a racing
             # kill_process on the same detached session also honours.
             with session._lock:
-                if session.exited:
+                if session.exited and (session.completion_reason != "lost"
+                        or session._finish_claimed or session._completion_event.is_set()):
                     continue
+                session._finish_claimed = True
                 session.exited = True
                 session.exited_at = time.time()
                 if fate == "reused":
@@ -1099,8 +1105,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Re-attach, close, or prune a recovered host-PID session.
 
-        A completion is not queued here: recovery has no waitable handle, so it
-        never collected an exit status.
+        A gone notifying entry stays pending for the existing detached sweeper.
+        A query may run under another profile: it must not publish a receipt or
+        erase the owner's wake. poll/list still report no collected exit status.
         """
         if session is None or session.exited or not session.detached or session.pid_scope != "host" or session.output_log:
             return session  # a log-backed adoption's reader collects the recorded exit itself
@@ -1108,6 +1115,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         if fate == "running":
             return session
         if fate == "gone":
+            if session.notify_on_complete:
+                with session._lock:
+                    if not session.exited:
+                        session.exited = True
+                        session.completion_reason = "lost"
+                        session.termination_source = "recovery_unobserved"
+                return session if session.systemd_unit else None
             return self._prune_uncollected_detached(session)
         self._close_reused_detached(session)
         return session

@@ -121,18 +121,21 @@ def _email_identity_ready(dossier: dict) -> bool:
                 and dossier_mod.contact_email(dossier))
 
 
+# Open defunct cases worth closing: the states with an ordinary not_found edge plus the
+# in-flight states the ledger lets a defunct broker close from.
+_DEFUNCT_OPEN_STATES = {"found", "blocked", "indirect_exposure"} | ledger_mod.DEFUNCT_CLOSEOUT_FROM
+
+
 def _defunct_closeout_digest(ledger: dict, defunct_ids: set, by_id: dict, subject_id: str) -> list[dict]:
     """One-time digest entries closing the OPEN cases of defunct brokers as not_found.
 
     The plan and batch views exclude dead domains (never scanned, opted-out, or re-checked),
     so this is the only place they surface -- and not_found from an in-flight state is legal
-    only with the defunct evidence cited (see ledger.TRANSITIONS).
+    only for a broker whose record carries `defunct` (see ledger.DEFUNCT_CLOSEOUT_FROM).
     """
     out = []
     for bid, case in sorted(ledger.items()):
-        if bid not in defunct_ids or case.get("state") not in {
-                "found", "action_selected", "submitted", "verification_pending",
-                "awaiting_processing", "human_task_queued"}:
+        if bid not in defunct_ids or case.get("state") not in _DEFUNCT_OPEN_STATES:
             continue
         out.append(_digest(
             {"broker_id": bid, "broker_name": (by_id.get(bid) or {}).get("name") or bid},

@@ -884,10 +884,24 @@ def test_defunct_brokers_excluded_from_all_planning():
         assert close and "not_found" in _json.dumps(close)
 
 
-def test_ledger_allows_not_found_close_out_for_dead_brokers():
-    for st in ("found", "action_selected", "submitted", "verification_pending",
-               "awaiting_processing", "human_task_queued"):
-        assert "not_found" in ledger.TRANSITIONS[st], st
+def test_ledger_not_found_close_out_only_for_defunct_brokers():
+    with temp_env():
+        sid = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",
+                    "--consent"])["subject_id"]
+        assert brokers.get("radaris").get("defunct") and not brokers.get("usphonebook").get("defunct")
+        for bid in ("radaris", "usphonebook"):
+            _run(["record", sid, bid, "found", "--found", f"https://{bid}.example/x"])
+            assert _run(["record", sid, bid, "submitted"])["next_recheck_at"]
+        # a LIVE broker's in-flight request cannot be closed as not_found ...
+        try:
+            _run(["record", sid, "usphonebook", "not_found"])
+        except SystemExit as e:
+            assert "illegal transition 'submitted' -> 'not_found'" in str(e.code)
+        else:
+            raise AssertionError("live broker submitted -> not_found must be refused")
+        # ... a defunct one can, and the closed case schedules no further wake
+        out = _run(["record", sid, "radaris", "not_found", "--reason", "broker defunct"])
+        assert out["state"] == "not_found" and out["next_recheck_at"] is None
 
 
 def test_focus_phone_edge_cases():

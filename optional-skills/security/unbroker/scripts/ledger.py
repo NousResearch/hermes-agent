@@ -30,24 +30,18 @@ TRANSITIONS: dict[str, set[str]] = {
     # request (-> submitted) or a human task. Re-scan can clear it (-> not_found) or upgrade it to a
     # direct listing (-> found).
     "indirect_exposure": {"submitted", "human_task_queued", "not_found", "found", "blocked"},
-    "action_selected": {"submitted", "human_task_queued", "blocked", "not_found"},
-    # not_found from the in-flight states exists for ONE reason: the broker died (domain
-    # seized by court order / NXDOMAIN). A dead site cannot hold the listing, so the honest
-    # close-out is not_found citing the defunct record -- never used for a LIVE broker's
-    # in-flight request, which waits out its processing window instead.
-    "submitted": {"verification_pending", "awaiting_processing", "human_task_queued", "blocked",
-                  "not_found"},
+    "action_selected": {"submitted", "human_task_queued", "blocked"},
+    "submitted": {"verification_pending", "awaiting_processing", "human_task_queued", "blocked"},
     # verification_pending -> awaiting_processing: the verify link was opened/acknowledged and the
     # broker is now processing the removal (their stated window). confirmed_removed still requires a
     # verifying re-scan, never the submission flow's own say-so.
-    "verification_pending": {"awaiting_processing", "confirmed_removed", "human_task_queued",
-                              "blocked", "not_found"},
-    "awaiting_processing": {"confirmed_removed", "human_task_queued", "blocked", "not_found"},
+    "verification_pending": {"awaiting_processing", "confirmed_removed", "human_task_queued", "blocked"},
+    "awaiting_processing": {"confirmed_removed", "human_task_queued", "blocked"},
     "confirmed_removed": {"reappeared", "confirmed_removed"},
     "reappeared": {"found", "indirect_exposure"},
     "human_task_queued": {
         "found", "indirect_exposure", "action_selected", "submitted", "verification_pending",
-        "awaiting_processing", "confirmed_removed", "blocked", "not_found",
+        "awaiting_processing", "confirmed_removed", "blocked",
     },
     # blocked: automated tools (web_extract/proxyless browser) couldn't read the site. A later pass
     # -- a stealth/cloud browser OR guiding the operator's own (residential) browser -- can resolve it
@@ -57,6 +51,13 @@ TRANSITIONS: dict[str, set[str]] = {
     "blocked": {"searching", "found", "not_found", "indirect_exposure", "action_selected",
                 "human_task_queued"},
 }
+
+# A defunct broker (structured `defunct` field in its record: domain seized / NXDOMAIN) cannot
+# hold a listing, so its open case may close as not_found from an in-flight state. Gated on the
+# broker record in `transition(..., broker_defunct=True)`: a LIVE broker's in-flight request
+# waits out its processing window and is confirmed by a verifying re-scan instead.
+DEFUNCT_CLOSEOUT_FROM = frozenset({"action_selected", "submitted", "verification_pending",
+                                   "awaiting_processing", "human_task_queued"})
 
 
 def now() -> str:
@@ -92,7 +93,8 @@ def can_transition(old: str, new: str) -> bool:
     return new == old or new in TRANSITIONS.get(old, set())
 
 
-def transition(subject_id: str, broker_id: str, new_state: str, **fields) -> dict:
+def transition(subject_id: str, broker_id: str, new_state: str, *, broker_defunct: bool = False,
+               **fields) -> dict:
     if new_state not in STATES:
         raise ValueError(f"unknown state {new_state!r}")
     # Lock the whole load-modify-save so a concurrent cron re-scan / other tenant
@@ -101,9 +103,14 @@ def transition(subject_id: str, broker_id: str, new_state: str, **fields) -> dic
         ledger = load(subject_id)
         case = ledger.get(broker_id) or new_case(subject_id, broker_id)
         old = case.get("state", "new")
-        if not can_transition(old, new_state):
+        defunct_closeout = broker_defunct and new_state == "not_found" and old in DEFUNCT_CLOSEOUT_FROM
+        if not (can_transition(old, new_state) or defunct_closeout):
             raise ValueError(f"illegal transition {old!r} -> {new_state!r} for broker {broker_id!r}")
         case["state"] = new_state
+        if new_state == "not_found":
+            # not_found schedules no follow-up; a recheck date left by the prior state would
+            # keep `next` waking for a closed case.
+            case.pop("next_recheck_at", None)
         for key, value in fields.items():
             case[key] = value
         stamp = now()

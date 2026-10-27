@@ -588,7 +588,8 @@ def cmd_record(args) -> None:
         fields["evidence"] = json.loads(args.evidence)
     if args.reason:
         fields["human_task_reason"] = args.reason
-    case = ledger_mod.transition(args.subject, args.broker, args.state, **fields)
+    case = ledger_mod.transition(args.subject, args.broker, args.state,
+                                 broker_defunct=bool((broker or {}).get("defunct")), **fields)
     if args.disclosed:
         ledger_mod.log_disclosure(args.subject, args.broker, args.disclosed, args.channel or "unknown")
     _out({"broker": args.broker, "state": case["state"],

@@ -59,9 +59,11 @@ class ProcessCheckpointMixin:
                 if session.output_log:
                     if not self._collect_unit_log(session):
                         raise OSError('original native unit output is not collected')
-                elif session.exited and not self._reader_finalizing(session):
+                else:
                     from tools.process_registry_results import save_completed_result
-                    if not save_completed_result(session):
+                    if ((session._reader_thread is not None and not session._completion_event.wait(1.0))
+                            or not session.exited
+                            or not save_completed_result(session)):
                         raise OSError('native scope result is not durable')
             except (OSError, ValueError):
                 session._scope_stop_pending = True
@@ -105,7 +107,8 @@ class ProcessCheckpointMixin:
                 retiring = set()
                 persisted = {}
                 for s in {**self._finished, **self._running}.values():
-                    persisted[s.id] = s._result_persisted_generation
+                    persisted[s.id] = (s._result_persisted_generation if s._result_complete
+                                       and type(s.exit_code) is int and s.completion_reason != 'lost' else -1)
                     # Spawn captures identity from its fresh native handle.
                     # A later writer cannot bind an old PID to today's process.
                     entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
@@ -331,10 +334,10 @@ class ProcessCheckpointMixin:
             if session.output_log:
                 self._track_started(session, self._log_reader_loop, f"proc-log-reader-{session.id}")
             elif scope_done:
-                from tools.process_registry_job import read_job_receipt
+                from tools.process_registry_job import primary_exit_code
                 with self._lock:
                     self._running[session.id] = session
-                self._finish_exited(session, read_job_receipt(entry)['exit_code'], output_complete=False)
+                self._finish_exited(session, primary_exit_code(session), output_complete=False)
             else:
                 with self._lock:
                     self._running[session.id] = session

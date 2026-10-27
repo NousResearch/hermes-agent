@@ -62,13 +62,20 @@ def checkpoint_retains_receipt(path):
 
 def job_quiescent(session):
     row = read_job_receipt(session)
-    return bool(row and row['quiescent'] and type(row['exit_code']) is int)
+    return bool(row and row['quiescent'] and (type(row['exit_code']) is int
+                or (isinstance(row.get('unit'), str) and row['unit'].startswith('hermes-worker-'))))
 
 
 def unit_quiescent(session):
     row = read_job_receipt(session)
     return bool(row and row.get('unit') == session.systemd_unit and session.systemd_unit
-                and row['quiescent'] and type(row['exit_code']) is int)
+                and row['quiescent'])
+
+
+def primary_exit_code(session):
+    """Only the original helper's payload status may replace the reader's status."""
+    row = read_job_receipt(session)
+    return row['exit_code'] if row and not row.get('unit') else session.exit_code
 
 
 def inherit_job_scope(entries, previous):
@@ -99,7 +106,7 @@ def job_exit_result(session, exit_code, reason, source):
 
 def finish_detached_scope(registry, session):
     if session.native_job_scope and job_quiescent(session):
-        registry._finish_exited(session, read_job_receipt(session)['exit_code'], output_complete=session._result_complete)
+        registry._finish_exited(session, primary_exit_code(session), output_complete=session._result_complete)
     else:
         session._scope_stop_pending = True
         registry._close_reused_detached(session)  # No collected status and no PID signal.
@@ -117,7 +124,7 @@ def record_scope_quiescence(session):
     target = job_receipt_path(get('session_id') or get('id'))
     make_user_dir(target.parent, mode=0o700, parents=True, exist_ok=True)
     atomic_json_write(target, dict(version=1, pid=get('pid'), birth=get('host_start_time'), unit=unit,
-                                  exit_code=get('exit_code') if type(get('exit_code')) is int else -15,
+                                  exit_code=get('exit_code') if type(get('exit_code')) is int else None,
                                   quiescent=True), mode=0o600)
     if isinstance(session, dict):
         session['native_job_scope'] = True

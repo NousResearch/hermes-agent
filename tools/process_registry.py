@@ -1418,7 +1418,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     try:
                         exit_code = int(exit_str.splitlines()[-1].strip())
                     except (ValueError, IndexError):
-                        exit_code = -1
+                        exit_code = None
                     self._finish_exited(session, exit_code, output_complete=output_complete)
                     return
             except Exception:
@@ -1493,9 +1493,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             except Exception:
                 output_complete = False
                 logger.debug("PTY output flush failed", exc_info=True)
+        from tools.process_registry_output_log import pty_exit_code
         self._finish_reader(
             session, decoder, ingest, "PTY",
-            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1,
+            pty.wait, lambda: pty_exit_code(pty),
             output_complete=output_complete)
 
     def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
@@ -1516,7 +1517,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             from tools.process_registry_job import job_exit_result
             exit_code, reason, source = job_exit_result(session, exit_code, reason, source)
             session.mark_exited(exit_code, reason, source)
-            session._result_complete = output_complete  # Exit alone cannot certify the original payload.
+            session._result_complete = output_complete and type(session.exit_code) is int and session.completion_reason != 'lost'
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession) -> bool:
@@ -2186,11 +2187,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 session.exited = True
-                if session.native_job_scope:
-                    from tools.process_registry_job import read_job_receipt
-                    session.exit_code = read_job_receipt(session)['exit_code']
-                else:
-                    session.exit_code = -15  # SIGTERM
+                from tools.process_registry_job import primary_exit_code
+                session.exit_code = primary_exit_code(session)
                 session.completion_reason = "killed"
                 session.termination_source = source
             # The reader thread can finalise the session while the signal path

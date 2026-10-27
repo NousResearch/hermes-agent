@@ -6,6 +6,7 @@ native grace and leave no later output after its ACK. Real PTYs and processes
 exercise the reader's buffer-lock behavior.
 """
 
+import json
 import shutil
 import threading
 import time
@@ -128,10 +129,11 @@ def test_output_after_the_kill_is_not_added_to_the_killed_session(tmp_path, monk
 
 @pytest.mark.platforms("linux")
 @_POSIX_PTY
-def test_chunk_read_before_the_kill_is_not_added_after_it(tmp_path, native_local):
-    # The reader has read a chunk but not yet buffered it when the kill snapshots the output
-    # and sets ``exited``. The chunk must not land in the killed session afterwards.
+def test_held_original_pty_reader_keeps_stop_unknown_until_full_result_is_published(tmp_path, native_local):
     pytest.importorskip("ptyprocess")
+    from hermes_constants import get_hermes_home
+    from tools.process_registry_job import job_quiescent, read_job_receipt, request_job_stop
+
     registry = ProcessRegistry()
     entered, release = threading.Event(), threading.Event()
     ingest, emit, emitted = registry._ingest_output, registry._emit_output, []
@@ -148,15 +150,35 @@ def test_chunk_read_before_the_kill_is_not_added_after_it(tmp_path, native_local
 
     registry._ingest_output = paused_ingest
     registry._emit_output = recording_emit
+    foreign = registry.spawn_local("exec sleep 30", cwd=str(tmp_path),
+                                   task_id="foreign-worker", session_key="foreign-route")
     session = registry.spawn_local(
         "sleep 0.2; echo RACE-MARKER; exec sleep 15", cwd=str(tmp_path), use_pty=True)
     try:
         assert entered.wait(5), "reader never read the marker"
         result = registry.kill_process(session.id)
+        assert (result["status"], result["error"]) == ("error", "process_stop_unknown")
+        assert job_quiescent(session) and session._scope_stop_pending
+        assert not session._completion_event.is_set()
+        assert foreign.process.poll() is None and not foreign._completion_event.is_set()
+        assert session.id in {row["session_id"] for row in json.loads(module._checkpoint_path().read_text())}
+        release.set()
+        assert session._completion_event.wait(5), "original reader did not publish its captured chunk"
+        original_code = read_job_receipt(session)["exit_code"]
+        assert type(original_code) is int and session.exit_code == original_code
+        retried = registry.kill_process(session.id)
+        assert retried["status"] == "already_exited"
+        assert retried["exit_code"] == original_code
+        assert "RACE-MARKER" in retried["output"] and "RACE-MARKER" in session.output_buffer
+        assert any("RACE-MARKER" in text for text in emitted)
+        retained = json.loads((get_hermes_home() / "logs" / "process-results" / (session.id + ".json")).read_text())
+        assert retained["result_complete"] and retained["exit_code"] == original_code
+        assert retained["output"] == session.output_buffer
+        assert session.id not in {row["session_id"] for row in json.loads(module._checkpoint_path().read_text())}
+        assert foreign.process.poll() is None and not foreign._completion_event.is_set()
     finally:
         release.set()
-    assert result["status"] == "killed"
-    assert _wait_for(lambda: not session._reader_thread.is_alive(), 5)
-    assert "RACE-MARKER" not in result.get("output", "")
-    assert "RACE-MARKER" not in session.output_buffer
-    assert not any("RACE-MARKER" in text for text in emitted)
+        assert request_job_stop(registry, session)
+        assert session._completion_event.wait(5)
+        assert request_job_stop(registry, foreign)
+        assert foreign._completion_event.wait(5)

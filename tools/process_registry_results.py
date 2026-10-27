@@ -27,6 +27,12 @@ _RESULT_FIELDS = (
 )
 
 
+def complete_result(record):
+    """Output completeness cannot manufacture the original process's missing status."""
+    return (record.get('result_complete') is True and type(record.get('exit_code')) is int
+            and record.get('completion_reason') != 'lost')
+
+
 def _result_paths():
     """Prune by completion time, not start time (jobs can take days)."""
     directory = get_hermes_home() / "logs" / "process-results"
@@ -53,7 +59,8 @@ def _refresh_complete_payload(session, record):
     from tools.process_registry import MAX_OUTPUT_CHARS
     from tools.process_registry_output_log import unit_log_pending
     with session._lock:
-        if (not session._result_complete or unit_log_pending(session)
+        if (not session._result_complete or type(session.exit_code) is not int
+                or session.completion_reason == 'lost' or unit_log_pending(session)
                 or (record['result_complete'] and record.get('output_log_state') == session.output_log_state)):
             return
         if (record.get('output_log_state') != session.output_log_state
@@ -73,6 +80,9 @@ def save_completed_result(session) -> bool:
     from tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:
+        if type(session.exit_code) is not int or session.completion_reason == 'lost':
+            session._result_complete, session._result_persisted_generation = False, -1
+            session._scope_stop_pending = True
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
         record["completion_consumed"] = session.completion_consumed
         record.update(pid=session.pid, host_start_time=session.host_start_time, pid_scope=session.pid_scope,
@@ -135,6 +145,7 @@ def save_completed_result(session) -> bool:
                         record[key] = previous[key]
                 # A stale result writer cannot unconsume a completed Stop.
                 record['completion_consumed'] |= completed_result_consumed(session.id)
+                record['result_complete'] = complete_result(record)
                 atomic_json_write(path, record, mode=0o600)
                 _result_paths()
         with session._lock:
@@ -201,6 +212,7 @@ def completed_ownership(entries):
             continue
         if not isinstance(record, dict) or record.get('id') != sid:
             raise ValueError('invalid retained process ownership')
+        record['result_complete'] = complete_result(record)
         records.append(record)
     return records
 
@@ -268,7 +280,7 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
                 systemd_unit=metadata.get(record['id'], {}).get('systemd_unit', record.get('systemd_unit', '')),
             )
             session._completion_event.set()
-            session._result_complete = record.get('result_complete') is True
+            session._result_complete = complete_result(record)
             from tools.process_registry_output_log import valid_unit_log_state
             from tools.process_registry_job import job_quiescent, read_job_receipt
             if (session._result_complete and valid_unit_log_state(session.output_log_state)

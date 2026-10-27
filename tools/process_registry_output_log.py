@@ -96,6 +96,14 @@ def recorded_exit_code(log) -> Optional[int]:
         return None
 
 
+def pty_exit_code(pty):
+    """A reaped PTY reports either an exit status or an actual terminating signal."""
+    code, terminated = getattr(pty, 'exitstatus', None), getattr(pty, 'signalstatus', None)
+    if type(code) is int:
+        return code
+    return -terminated if type(terminated) is int and terminated > 0 else None
+
+
 def complete_log_source(session, stream):
     """A generic helper binds final regular output to its actual inherited fd."""
     from tools.process_registry_job import read_job_receipt
@@ -189,7 +197,8 @@ def merge_unit_log_result(record, previous):
             raise ValueError('native unit result identity mismatch')
         for key in ('exit_code', 'completion_reason', 'termination_source'):
             record[key] = previous[key]  # Scope collection does not change the primary's actual status.
-    if previous.get('result_complete') is True and valid_unit_log_state(state) and state['final']:
+    if (previous.get('result_complete') is True and type(previous.get('exit_code')) is int
+            and previous.get('completion_reason') != 'lost' and valid_unit_log_state(state) and state['final']):
         if any(record.get(k) != previous.get(k) for k in ('id', 'pid', 'host_start_time', 'started_at')):
             raise ValueError('final native unit output identity mismatch')
         for key in ('output', 'exit_code', 'completion_reason', 'termination_source', 'result_complete',
@@ -205,7 +214,8 @@ def finalized_unit_result(entry, receipt):
     """An old writer cannot resurrect a discharged unit whose actual final payload is durable."""
     from tools.process_registry_handoff import OWNERSHIP_FIELDS
     from tools.process_registry_job import job_quiescent, read_job_receipt
-    return bool(receipt and receipt.get('result_complete') is True
+    return bool(receipt and receipt.get('result_complete') is True and type(receipt.get('exit_code')) is int
+                and receipt.get('completion_reason') != 'lost'
                 and valid_unit_log_state(receipt.get('output_log_state')) and receipt['output_log_state']['final']
                 and entry.get('systemd_unit', '') in ('', receipt['output_log_state']['unit'])
                 and (read_job_receipt(entry) or {}).get('unit') == receipt['output_log_state']['unit']
@@ -231,7 +241,7 @@ class ProcessOutputLogMixin:
             return session._result_persisted_generation == session.ownership_generation
         with session._lock:
             session._result_complete, session._result_persisted_generation = False, -1
-        if session.completion_reason == 'lost':
+        if type(session.exit_code) is not int or session.completion_reason == 'lost':
             code = recorded_exit_code(session.output_log)
             if code is None:
                 return False  # Unit emptiness cannot reconstruct the primary's missing status.

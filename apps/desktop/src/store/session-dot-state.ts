@@ -38,7 +38,7 @@ import {
   $stalledSessionIds,
   $workingSessionIds
 } from './session-states'
-import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
+import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS, unreadWriteKey } from './session-unread-remote'
 import { $subagentsBySession, activeSubagentCount } from './subagents'
 
 // Sessions parked in async delegation: the parent turn has ended (busy=false —
@@ -159,7 +159,7 @@ export const $sessionDotStateById = computed(
     const persistedUnread: string[] = []
 
     for (const s of sessions) {
-      const entry = unreadWriteGuard.get(s.id)
+      const entry = unreadWriteGuard.get(unreadWriteKey(s))
 
       if (entry && Date.now() - entry.at < UNREAD_WRITE_GUARD_MS) {
         if (entry.value) {

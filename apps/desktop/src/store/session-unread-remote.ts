@@ -22,13 +22,14 @@
 import { atom } from 'nanostores'
 
 import { setSessionUnreadRemote } from '@/hermes'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $sessions, setSessions } from './session'
 import { sessionMutationScopeFromRow } from './session-request-router'
 
 export const UNREAD_WRITE_GUARD_MS = 10_000
 
-/** id -> the value we wrote and when. Guarded rows outrank list pages. */
+/** Immutable owner + id -> the value we wrote and when. Guarded rows outrank list pages. */
 export const $unreadWriteGuard = atom<Map<string, { at: number; value: boolean }>>(new Map())
 interface UnreadWriteState {
   confirmed: boolean
@@ -37,6 +38,15 @@ interface UnreadWriteState {
 }
 
 const unreadWrites = new Map<string, UnreadWriteState>()
+
+export function unreadWriteKey(row: Pick<SessionInfo, '_desktop_route_binding' | 'connection_id' | 'id' | 'profile'>) {
+  return JSON.stringify([
+    row.connection_id?.trim() || 'legacy',
+    row.profile?.trim() || 'default',
+    row._desktop_route_binding?.trim() || '-',
+    row.id
+  ])
+}
 
 function rowFor(storedId: string) {
   return $sessions.get().find(row => row.id === storedId)
@@ -53,23 +63,23 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
   }
 
   const revision = Symbol(storedId)
+  const scope = sessionMutationScopeFromRow(row) ?? row.profile
+  const writeKey = unreadWriteKey(row)
 
   const state =
-    unreadWrites.get(storedId) ??
+    unreadWrites.get(writeKey) ??
     ({ confirmed: row.unread === true, latest: revision, tail: Promise.resolve() } satisfies UnreadWriteState)
 
   state.latest = revision
-  unreadWrites.set(storedId, state)
+  unreadWrites.set(writeKey, state)
 
   const guard = new Map($unreadWriteGuard.get())
-  guard.set(storedId, { at: Date.now(), value: unread })
+  guard.set(writeKey, { at: Date.now(), value: unread })
   $unreadWriteGuard.set(guard)
 
-  setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread } : r)))
+  setSessions(rows => rows.map(r => (unreadWriteKey(r) === writeKey ? { ...r, unread } : r)))
 
-  const write = state.tail.then(() =>
-    setSessionUnreadRemote(storedId, unread, sessionMutationScopeFromRow(row) ?? row.profile).then(() => undefined)
-  )
+  const write = state.tail.then(() => setSessionUnreadRemote(storedId, unread, scope).then(() => undefined))
 
   // Serialize transport per session so late server completions cannot restore
   // an older value after a newer click. A failed predecessor does not block
@@ -89,13 +99,15 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
 
     // Roll back visibly: the backend kept the old value.
     const guard2 = new Map($unreadWriteGuard.get())
-    guard2.delete(storedId)
+    guard2.delete(writeKey)
     $unreadWriteGuard.set(guard2)
-    setSessions(rows => rows.map(r => (r.id === storedId && r.unread === unread ? { ...r, unread: state.confirmed } : r)))
+    setSessions(rows =>
+      rows.map(r => (unreadWriteKey(r) === writeKey && r.unread === unread ? { ...r, unread: state.confirmed } : r))
+    )
     throw err
   } finally {
     if (state.latest === revision) {
-      unreadWrites.delete(storedId)
+      unreadWrites.delete(writeKey)
     }
   }
 }
@@ -123,11 +135,11 @@ export function watchUnreadWriteGuard(): void {
     const guard = $unreadWriteGuard.get()
     let changed = false
 
-    for (const [id, entry] of guard) {
-      const row = rows.find(r => r.id === id)
+    for (const [key, entry] of guard) {
+      const row = rows.find(r => unreadWriteKey(r) === key)
 
       if (row && row.unread === entry.value) {
-        guard.delete(id)
+        guard.delete(key)
         changed = true
       }
     }

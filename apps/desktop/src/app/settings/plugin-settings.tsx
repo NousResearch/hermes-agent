@@ -116,12 +116,17 @@ function useSettingsGatewayRequest(scope: ProfileScope) {
   return useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       const owner = scope && typeof scope === 'object' ? scope : null
-      const profile = owner?.profile?.trim()
 
-      return owner && profile
-        ? requestGatewayForAgent<T>(owner.connectionId ?? null, profile, method, params, timeoutMs, signal, {
-            ...settingsGatewayRequestOwnership(owner)
-          })
+      return owner
+        ? requestGatewayForAgent<T>(
+            owner.connectionId ?? null,
+            owner.profile?.trim() || 'custom',
+            method,
+            params,
+            timeoutMs,
+            signal,
+            settingsGatewayRequestOwnership(owner)
+          )
         : requestGateway<T>(method, params, timeoutMs, signal)
     },
     [requestGateway, scope]

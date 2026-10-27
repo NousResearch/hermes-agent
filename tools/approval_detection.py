@@ -871,12 +871,12 @@ def _interpreter_family(executable: str) -> str | None:
     return next((family for family, name_re in _INTERPRETER_NAME_RES if name_re.fullmatch(name)), None)
 
 
-def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
+def _shell_segment_tokens(segment: str, start: int, end: int | None = None) -> list[str] | None:
     """Tokenize an already-bounded command segment. ``None`` distinguishes malformed quoting from
     an empty segment so callers can fail closed for a program-bearing option rather than silently
     skip it."""
     try:
-        lexer = shlex.shlex(segment[start:], posix=True, punctuation_chars="<>")
+        lexer = shlex.shlex(segment[start:end], posix=True, punctuation_chars="<>")
         lexer.whitespace_split, lexer.commenters = True, ""
         return list(lexer)
     except ValueError:
@@ -993,11 +993,13 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        for start, _, word, bound in _iter_shell_command_word_spans_bounded(segment):
             executable = _deobfuscate_shell_word_for_detection(word)
-            tokens = _shell_segment_tokens(segment, start)
             executable_name = os.path.basename(executable).lower()
             family = _interpreter_family(executable)
+            if family is None and executable_name not in _SHELL_NAMES and executable_name not in _READ_TOOL_EXEC_FLAGS:
+                continue
+            tokens = _shell_segment_tokens(segment, start, bound)
             if tokens is None:
                 if family is not None or executable_name in _READ_TOOL_EXEC_FLAGS:
                     yield (_MALFORMED_EXEC_DESCRIPTION, None)
@@ -1092,10 +1094,11 @@ def _scan_backtick_end(command: str, start: int) -> int | None:
     return match.end() if match else None
 
 
-def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
+def _read_shell_word(command: str, pos: int, bound: int | None = None) -> tuple[int, int, str]:
     """Read one shell word without executing expansions."""
+    limit = len(command) if bound is None else min(bound, len(command))
     start = end = _skip_shell_whitespace(command, pos)
-    for kind, i, j, quote in _scan_shell(command, start, subst="u", brace=True):
+    for kind, i, j, quote in _scan_shell(command, start, limit, subst="u", brace=True):
         if kind == "char" and quote is None and (command[i].isspace() or command[i] in ";&|<>()"):
             break
         end = j
@@ -1166,8 +1169,8 @@ def _is_shell_comment_start(command: str, index: int) -> bool:
                                       or command[index - 1] in ";&|()<>")
 
 
-def _iter_shell_command_starts(command: str):
-    starts = [0]
+def _iter_shell_command_start_bounds(command: str):
+    starts = [(0, len(command))]
 
     def scan(start: int, end: int) -> None:
         skip = -1
@@ -1176,31 +1179,37 @@ def _iter_shell_command_starts(command: str):
             if kind == "subst":
                 # Record a nested $(...)/backtick command start and scan its body.
                 inner = i + (1 if command[i] == "`" else 2)
-                starts.append(inner)
-                scan(inner, end if j is None else j - 1)
+                body_end = end if j is None else j - 1
+                starts.append((inner, body_end))
+                scan(inner, body_end)
             elif kind == "char" and quote is None and i != skip:
                 # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
                 # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
                 # marked inside either splits the word the flat patterns need to see intact.
                 if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
                                                                    or command[i - 1] in "(;&|)")):
-                    starts.append(i + 1)
+                    starts.append((i + 1, end))
                 elif command[i] in "&|":
                     repeated = i + 1 < end and command[i + 1] == command[i]
                     skip = i + 1 if repeated else skip
-                    starts.append(i + 1 + repeated)
+                    starts.append((i + 1 + repeated, end))
 
     scan(0, len(command))
     seen = set()
-    for start in starts:
+    for start, bound in starts:
         start = _skip_shell_whitespace(command, start)
         if start >= len(command) or start in seen or _is_shell_comment_start(command, start):
             continue
         seen.add(start)
-        yield start
-        _, end, word = _read_shell_word(command, start)
+        yield start, bound
+        _, end, word = _read_shell_word(command, start, bound)
         if word in _SHELL_COMMAND_TRANSITIONS:
-            starts.append(end)
+            starts.append((end, bound))
+
+
+def _iter_shell_command_starts(command: str):
+    for start, _ in _iter_shell_command_start_bounds(command):
+        yield start
 
 
 def _mark_command_starts(command: str, marker: str = "\n") -> str:
@@ -1248,17 +1257,17 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     return "".join(out)
 
 
-def _iter_shell_command_word_spans(command: str):
-    """Yield command-position words that may be executable names."""
-    for pos in _iter_shell_command_starts(command):
+def _iter_shell_command_word_spans_bounded(command: str):
+    """Yield command-position words with the lexical bound of their command."""
+    for pos, bound in _iter_shell_command_start_bounds(command):
         wrapper, positionals = None, 0
         options, skip_arg = True, False
         while pos < len(command):
             redirect = _SHELL_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
             if redirect:
-                _, pos, _ = _read_shell_word(command, redirect.end())
+                _, pos, _ = _read_shell_word(command, redirect.end(), bound)
                 continue
-            word_start, word_end, word = _read_shell_word(command, pos)
+            word_start, word_end, word = _read_shell_word(command, pos, bound)
             if word_start == word_end:
                 break
             pos = word_end
@@ -1287,11 +1296,17 @@ def _iter_shell_command_word_spans(command: str):
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(word):
                 continue
-            yield (word_start, word_end, word)
+            yield (word_start, word_end, word, bound)
             if name not in _COMMAND_WRAPPER_WORDS:
                 break
             wrapper, options = name, True
             positionals = _COMMAND_WRAPPER_POSITIONAL_ARGS.get(name, 0)
+
+
+def _iter_shell_command_word_spans(command: str):
+    """Yield command-position words that may be executable names."""
+    for start, end, word, _ in _iter_shell_command_word_spans_bounded(command):
+        yield start, end, word
 
 
 def _shell_command_segment(command: str, start: int) -> str:

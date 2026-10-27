@@ -765,6 +765,10 @@ export class CanonicalDesktopProtocol {
 
     // `--preview` in the focus argument is a read-only report: no transcript changed.
     if (value?.status === 'preview') { return { ...value, host_ack: { output: (value.lines as string[]).join('\n') } } }
+
+    // Sent while a turn runs: the owner runs it at the next turn boundary and announces it with a
+    // `compacted` status edge, which is what the compress action's `pending` branch waits for.
+    if (value?.status === 'deferred') { return { ...value, status: 'pending' } }
     const resumed = await request('session.resume', { session_id: params.session_id, ...(params.profile !== undefined ? { profile: params.profile } : {}) })
 
     return { ...value, messages: resumed.messages, info: resumed.info, host_ack: { output: `compressed context: ${value.message_count} messages retained` } }

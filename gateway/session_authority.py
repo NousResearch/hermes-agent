@@ -72,6 +72,9 @@ class LiveSession:
     # (principal, effort) of a ``/reasoning`` command that arrived while a turn ran: applied in memory at
     # once, committed to the policy at the next boundary (gateway/session_setting_commands.py).
     pending_reasoning: tuple | None = None
+    # A ``/compress`` that arrived while a turn ran: the drain runs it before the next claim
+    # (gateway/session_deferred_compress.py).
+    deferred_compress: dict | None = None
     # A historic messaging row mounted for reading after its lane moved on (``/new``): ``route`` is
     # the lane's CURRENT key, which names another conversation, so nothing route-keyed (agent, Stop,
     # turns, eviction) may act through it (gateway/session_route_recovery.py). The lane publishing
@@ -1279,8 +1282,10 @@ class SessionAuthority:
 
     async def _drain(self, ref):
         from gateway.session_managed_worker import ManagedExecutionUnknown
+        from gateway.session_deferred_compress import apply_deferred_compress
         live = self.sessions[ref.session_id]
         while True:
+            await apply_deferred_compress(self, ref, live)  # a /compress sent during the last turn
             claimed = await self._claim_with_retry(ref, live)
             if claimed is None:
                 return

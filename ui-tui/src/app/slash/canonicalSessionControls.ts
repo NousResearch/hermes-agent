@@ -440,6 +440,10 @@ export async function runCanonicalSessionControl(
     } else if (result.status === 'noop') {
       // Nothing removable: main's "No changes from compression" report; the transcript is untouched.
       printCompressSummary(result.summary as CompressSummary, ctx)
+    } else if (result.status === 'deferred') {
+      // A turn is running: the owner compresses at the next turn boundary and says so on a
+      // status edge.
+      ctx.transcript.sys(String(result.message ?? 'compress queued'))
     } else {
       await applyCompressResult(gw, ctx.sid, result, ctx)
     }

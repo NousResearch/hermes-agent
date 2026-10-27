@@ -126,8 +126,19 @@ async def _owned_mutation(authority, actor, ref, params):
         # The summarization (an LLM call) runs outside the session gate, so a submit or metadata
         # edit is not parked behind it; the commit is revision/generation-fenced against anything
         # that lands meanwhile. Claims wait on ``claim_gate``, so no turn runs under it.
-        async with live.claim_gate:
-            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock, owner=owner)
+        try:
+            async with live.claim_gate:
+                result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock,
+                                               owner=owner)
+        except RuntimeStoreError as exc:
+            # A running turn: the compress waits for it (run by the drain at the next boundary).
+            from gateway.session_deferred_compress import defer_compress
+            deferred = exc.reason == 'session_busy' and await asyncio.to_thread(
+                defer_compress, authority, actor, ref, owner, params, live)
+            if not deferred:
+                raise
+            authority._schedule(ref)
+            return deferred
     else:
         async with live.mutation_lock:
             try:

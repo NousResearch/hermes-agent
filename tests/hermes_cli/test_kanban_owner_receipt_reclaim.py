@@ -34,7 +34,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli import kanban_owner_recovery
-from hermes_cli.process_identity import process_birth
+from hermes_cli.process_identity import worker_birth
 from hermes_cli.kanban_owner_recovery import (
     bound_interpreter_gone,
     owner_attempt_provably_over,
@@ -268,7 +268,7 @@ def test_a_timed_out_managed_run_is_booked_timed_out_not_left_for_the_crash_swee
     try:
         run = board.dead_attempt(
             "t_slow", worker_pid=worker.pid, worker_fingerprint=kbd._process_fingerprint(worker.pid),
-            owner_pid=os.getpid(), owner_birth=process_birth(psutil.Process()), admission=("started", None))
+            owner_pid=os.getpid(), owner_birth=worker_birth(psutil.Process()), admission=("started", None))
         board.event("t_slow", run, "worker_bound", {"pid": interpreter.pid,
                     "started_at": kbd._process_fingerprint(interpreter.pid)}, NOW)
         board.conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = 't_slow'")
@@ -296,7 +296,7 @@ def test_an_exited_unreaped_owner_no_longer_holds_the_slot(board):
     """A zombie keeps its birth until reaped, but it has exited: it cannot be executing anything."""
     child = subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE)
     try:
-        birth = process_birth(psutil.Process(child.pid))
+        birth = worker_birth(psutil.Process(child.pid))
         child.stdin.close()
         deadline = time.time() + 10
         while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:

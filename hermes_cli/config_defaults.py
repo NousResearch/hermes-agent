@@ -971,7 +971,7 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
-        # config controls visibility not ordering); empty = default set. Available: model,
+        # visibility only); empty = default set. Available: model, reasoning (classic CLI, opt-in),
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
         # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
         # prompt_elapsed, idle_since, focus, yolo,

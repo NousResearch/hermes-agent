@@ -1910,6 +1910,11 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # Classic CLI: opt in to the configured reasoning effort as an independent field.
+  # An empty list keeps the standard status bar. Restart the CLI after a change.
+  # status_bar:
+  #   fields: ["model", "reasoning", "context_detail"]
+
   # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

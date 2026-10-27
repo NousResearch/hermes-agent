@@ -189,6 +189,19 @@ class CLIStatusBarMixin:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
+    def _status_bar_reasoning_level(self) -> str:
+        """Configured effort, not provider-effective effort; MoA has no single level."""
+        agent = getattr(self, "agent", None)
+        owner = agent if agent is not None else self
+        if getattr(owner, "provider", None) == "moa" or getattr(owner, "_moa_preset", None):
+            return ""
+        config = getattr(owner, "reasoning_config", None)
+        if isinstance(config, dict) and config.get("enabled") is False:
+            return "none"
+        from agent.reasoning_effort import requested_effort
+
+        return requested_effort(config) or "default"
+
     def _get_status_bar_snapshot(self) -> dict[str, Any]:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
@@ -212,6 +225,7 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_level": self._status_bar_reasoning_level(),
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -997,7 +1011,7 @@ class CLIStatusBarMixin:
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        (opt-in only), reasoning (opt-in only). Order is fixed; visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1013,6 +1027,13 @@ class CLIStatusBarMixin:
             result = None
         self._status_bar_field_set_cache = result
         return result
+
+    @staticmethod
+    def _status_bar_reasoning_segment(snapshot, field_set) -> list:
+        level = snapshot.get("reasoning_level")
+        if not field_set or "reasoning" not in field_set or not level:
+            return []
+        return [[(_DIM, f"∴ {level}")]]
 
     def _status_bar_segments(
         self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
@@ -1044,6 +1065,7 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"☤ {model_short}")])
+        segs.extend(self._status_bar_reasoning_segment(snapshot, field_set))
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

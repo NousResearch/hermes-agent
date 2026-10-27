@@ -268,42 +268,73 @@ def format_duration_compact(*args, **kwargs):
     return f"{days:.1f}d"
 
 
-# model id -> shortest configured alias (process-lifetime cache; config is read once).
-_REVERSE_ALIAS_CACHE: dict[str, str] | None = None
+# (provider, model_id) -> shortest configured alias; None provider key retains model-only fallback.
+_REVERSE_ALIAS_CACHE: dict[tuple[str | None, str], str] | None = None
 
 
-def _reverse_alias_for_display(model_name: str) -> str:
-    """Shortest alias for ``model_name`` from ``model_aliases:`` or ``model.aliases:``, else ``model_name``."""
+def _normalize_provider_for_alias_display(provider: str | None) -> str:
+    provider_key = str(provider or "").strip().lower()
+    if not provider_key or provider_key == "auto":
+        return provider_key
+    try:
+        from hermes_cli.models import normalize_provider
+
+        provider_key = normalize_provider(provider_key)
+    except ImportError:
+        pass
+    return provider_key[7:] if provider_key.startswith("custom:") and provider_key[7:] else provider_key
+
+
+def _reverse_alias_for_display(model_name: str, provider: str | None = None) -> str:
+    """Shortest alias for ``provider``/``model_name`` from ``model_aliases:`` or ``model.aliases:``, else ``model_name``."""
     global _REVERSE_ALIAS_CACHE
     if not model_name:
         return model_name
     if _REVERSE_ALIAS_CACHE is None:
-        rmap: dict[str, str] = {}
+        rmap: dict[tuple[str | None, str], str] = {}
 
-        def _put(m: str, alias: str) -> None:
-            if m and (m not in rmap or len(alias) < len(rmap[m])):
-                rmap[m] = alias
+        def remember(alias: str, model: str, alias_provider: str | None, *, wildcard: bool = False) -> None:
+            if not model:
+                return
+            provider_key = _normalize_provider_for_alias_display(alias_provider)
+            keys = [(provider_key, model), (None, model)] + ([("*", model)] if wildcard else [])
+            for key in keys:
+                if key not in rmap or len(alias) < len(rmap[key]):
+                    rmap[key] = alias
+
+        def remember_dict_entry(alias: str, entry: dict, default_provider: str) -> None:
+            m = str(entry.get("model", "") or "").strip()
+            explicit = entry.get("provider")
+            remember(alias, m, explicit or default_provider or "custom")
+            if not explicit and default_provider:
+                remember(alias, m, "custom")
 
         try:
             from hermes_cli.config import load_config
             cfg = load_config() or {}
-            ma = cfg.get("model_aliases")
-            if isinstance(ma, dict):
-                for alias, entry in ma.items():
-                    if isinstance(entry, dict):
-                        _put(str(entry.get("model", "") or "").strip(), alias)
             mdl = cfg.get("model", {}) or {}
-            if isinstance(mdl, dict):
-                simple = mdl.get("aliases")
-                if isinstance(simple, dict):
-                    for alias, val in simple.items():
-                        if isinstance(val, str) and val.strip():
-                            v = val.strip()
-                            _put(v.split("/", 1)[1] if "/" in v else v, alias)
+            default_provider = mdl.get("provider", "") if isinstance(mdl, dict) else ""
+            norm_default = _normalize_provider_for_alias_display(default_provider)
+            unscoped_default = not norm_default or norm_default == "auto"
+            ma = cfg.get("model_aliases")
+            for alias, entry in (ma.items() if isinstance(ma, dict) else ()):
+                if isinstance(alias, str) and isinstance(entry, dict):
+                    remember_dict_entry(alias, entry, default_provider)
+            simple = mdl.get("aliases") if isinstance(mdl, dict) else None
+            for alias, val in (simple.items() if isinstance(simple, dict) else ()):
+                if isinstance(alias, str) and isinstance(val, dict):
+                    remember_dict_entry(alias, val, default_provider)
+                elif isinstance(alias, str) and isinstance(val, str) and val.strip():
+                    v = val.strip()
+                    alias_provider, m = v.split("/", 1) if "/" in v else (default_provider, v)
+                    remember(alias, m.strip(), alias_provider, wildcard=("/" not in v and unscoped_default))
         except Exception:
             pass
         _REVERSE_ALIAS_CACHE = rmap
-    return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
+    provider_key = _normalize_provider_for_alias_display(provider)
+    if provider_key and provider_key != "auto":
+        return _REVERSE_ALIAS_CACHE.get((provider_key, model_name)) or _REVERSE_ALIAS_CACHE.get(("*", model_name), model_name)
+    return _REVERSE_ALIAS_CACHE.get((None, model_name), model_name)
 
 
 def format_token_count_compact(*args, **kwargs):

@@ -250,6 +250,8 @@ _SPECS = [
          help="Show a task with comments + events"),
     _cmd("assign", [_TASK_ID, _arg("profile", help="Profile name (or 'none' to unassign)")],
          help="Assign or reassign a task"),
+    _cmd("unguard", [_TASK_ID],
+         help="Lift the active_pr respawn guard on a task (after its PR merged/closed)"),
     _cmd("set-model", [
         _TASK_ID,
         _arg("model", nargs="?", help="Model to pin the worker to (or 'none' to clear the override)"),

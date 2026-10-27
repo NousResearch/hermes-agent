@@ -289,7 +289,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                desktop="advanced"),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("init", "boards", "create", "list", "ls", "show", "assign",
+               subcommands=("init", "boards", "create", "list", "ls", "show", "assign", "unguard",
                             "reclaim", "reassign", "diagnostics", "diag", "link", "unlink",
                             "claim", "comment", "complete", "edit", "block", "unblock",
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",

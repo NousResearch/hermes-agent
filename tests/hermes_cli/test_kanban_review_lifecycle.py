@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Iterator
 
 import pytest
 
@@ -32,6 +34,25 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_ops
+
+# The real PR-state resolver, captured before the autouse fixture swaps it out —
+# the cache test needs the production function.
+_REAL_RESOLVE_PR_STATE = kbd._resolve_pr_state
+
+
+@pytest.fixture(autouse=True)
+def _no_gh_pr_lookup(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test in this file may shell out to ``gh``.
+
+    CI has no GitHub auth and each lookup carries a 10s timeout, so the default
+    PR state is "unknown" (fail closed). Tests that need a state patch
+    ``kbd._resolve_pr_state`` with their own lambda; the cache is cleared on
+    both sides so module state cannot leak between tests.
+    """
+    kbd._reset_pr_state_cache()
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: None)
+    yield
+    kbd._reset_pr_state_cache()
 
 
 @pytest.fixture
@@ -454,7 +475,8 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             expected_run_id=claimed.current_run_id,
         )
         # Ready-lane task with the same fresh PR comment.
-        ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
+        ready_id = kb.create_task(conn, title="already PRed", assignee="worker",
+                                  completion_contract=_IMPLEMENTER_CONTRACT)
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
 
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
@@ -493,6 +515,13 @@ def _backdate_comments(conn, tid, seconds=60):
         )
 
 
+# ``create_task`` normalises an omitted contract to ``local-only``, which the
+# ``active_pr`` guard treats as a report/notify card (no PR to duplicate). These
+# tests are about implementer cards, so they must declare a PR-bearing contract
+# explicitly — a repo slug is the canonical form for "this card publishes a PR".
+_IMPLEMENTER_CONTRACT = "example/repo"
+
+
 def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -514,9 +543,11 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
 
     with kbc.connect() as conn:
-        dev_id = kb.create_task(conn, title="dev own pr", assignee="dev")
+        dev_id = kb.create_task(conn, title="dev own pr", assignee="dev",
+                                completion_contract=_IMPLEMENTER_CONTRACT)
         kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
-        closer_id = kb.create_task(conn, title="closer recovery", assignee="dev")
+        closer_id = kb.create_task(conn, title="closer recovery", assignee="dev",
+                                   completion_contract=_IMPLEMENTER_CONTRACT)
         kb.add_comment(conn, closer_id, author="dev", body=pr_comment)
         _backdate_comments(conn, closer_id)
         assert kb.assign_task(conn, closer_id, "closer") is True
@@ -552,7 +583,8 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="same assign", assignee="dev")
+        tid = kb.create_task(conn, title="same assign", assignee="dev",
+                             completion_contract=_IMPLEMENTER_CONTRACT)
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
         _backdate_comments(conn, tid)
         assert kb.assign_task(conn, tid, "dev") is True
@@ -581,7 +613,8 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
     ``recent_success`` is untouched by the handoff exemption."""
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="changes requested", assignee="dev")
+        tid = kb.create_task(conn, title="changes requested", assignee="dev",
+                             completion_contract=_IMPLEMENTER_CONTRACT)
         claimed = kb.claim_task(conn, tid)
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
         _backdate_comments(conn, tid)
@@ -603,6 +636,189 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (done_id,))
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
+
+
+# ---------------------------------------------------------------------------
+# active_pr: PR state, lane awareness, window knob, operator escape hatch
+# ---------------------------------------------------------------------------
+
+def _dispatch_ready(conn, monkeypatch: pytest.MonkeyPatch):
+    """One dry-run dispatch tick with every profile spawnable and default config."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    return kbd.dispatch_once(conn, dry_run=True)
+
+
+def _pr_card(conn, monkeypatch: pytest.MonkeyPatch, *, contract: str = _IMPLEMENTER_CONTRACT):
+    tid = kb.create_task(conn, title="pr card", assignee="dev",
+                         completion_contract=contract)
+    kb.add_comment(conn, tid, author="dev",
+                   body="Opened https://github.com/example/repo/pull/44 for review.")
+    return tid
+
+
+def test_merged_pr_does_not_guard(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A card whose comment reports an already-merged PR must spawn.
+
+    The duplicate-PR protection exists to stop a second PR being opened; once
+    the referenced PR is merged there is nothing left to duplicate. Before this
+    fix the card's own conclusion ("merged") locked it out of ``ready`` for 24h.
+    """
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: "MERGED")
+    with kbc.connect() as conn:
+        tid = _pr_card(conn, monkeypatch)
+        kb.add_comment(conn, tid, author="dev",
+                       body="Merged https://github.com/example/repo/pull/74 at 15:06Z.")
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+        res = _dispatch_ready(conn, monkeypatch)
+        assert tid in [row[0] for row in res.spawned]
+        assert tid not in [task_id for task_id, _reason in res.respawn_guarded]
+
+
+def test_closed_pr_does_not_guard(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A closed-without-merge PR leaves no duplicate risk either."""
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: "CLOSED")
+    with kbc.connect() as conn:
+        tid = _pr_card(conn, monkeypatch)
+        assert kbd.check_respawn_guard(conn, tid) is None
+        res = _dispatch_ready(conn, monkeypatch)
+        assert tid in [row[0] for row in res.spawned]
+
+
+def test_open_pr_still_guards(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard for the real protection: an OPEN PR still holds the card."""
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: "OPEN")
+    with kbc.connect() as conn:
+        tid = _pr_card(conn, monkeypatch)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        res = _dispatch_ready(conn, monkeypatch)
+        assert tid not in [row[0] for row in res.spawned]
+        assert dict(res.respawn_guarded).get(tid) == "active_pr"
+
+
+def test_unresolved_pr_state_fails_closed(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unavailable/ambiguous lookup (no ``gh``, timeout, 404) must still guard."""
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: None)
+    with kbc.connect() as conn:
+        tid = _pr_card(conn, monkeypatch)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_pr_state_lookup_is_cached(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One ``gh`` call per distinct PR URL per cache window — successes and failures."""
+    from hermes_cli import kanban_db_pr_guard as pr_guard
+
+    calls: list[str] = []
+
+    def _lookup(url: str):
+        calls.append(url)
+        return "OPEN" if len(calls) == 1 else None
+
+    # The resolver reads its subprocess seam in its own module, so patch there.
+    monkeypatch.setattr(kbd, "_resolve_pr_state", _REAL_RESOLVE_PR_STATE)
+    monkeypatch.setattr(pr_guard, "_lookup_pr_state", _lookup)
+    url = "https://github.com/example/repo/pull/44"
+
+    assert kbd._resolve_pr_state(url) == "OPEN"
+    # Cached success: the second call must not fork another lookup.
+    assert kbd._resolve_pr_state(url) == "OPEN"
+    assert calls == [url]
+
+    other = "https://github.com/example/repo/pull/45"
+    assert kbd._resolve_pr_state(other) is None  # a failure...
+    assert kbd._resolve_pr_state(other) is None  # ...is cached too, not re-forked
+    assert calls == [url, other]
+
+
+def test_local_only_report_card_is_exempt_and_costs_no_lookup(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A report/notify card never opens a PR, so mentioning one must not freeze it.
+
+    ``local-only`` is the card's own declaration that it produces no PR; the
+    guard must skip it entirely — including the ``gh`` lookup, so report cards
+    cost zero subprocesses per tick.
+    """
+    calls: list[str] = []
+
+    def _resolve(url: str):
+        calls.append(url)
+        return "OPEN"
+
+    monkeypatch.setattr(kbd, "_resolve_pr_state", _resolve)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="tell gabriel the PR is ready", assignee="chief",
+                             completion_contract="local-only")
+        kb.add_comment(conn, tid, author="chief",
+                       body="PR #78 is ready: https://github.com/example/repo/pull/78")
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+        assert calls == []
+        res = _dispatch_ready(conn, monkeypatch)
+        assert tid in [row[0] for row in res.spawned]
+        assert calls == []
+
+
+def test_local_only_card_that_published_a_pr_stays_guarded(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that recorded ``published_pr`` makes the card implementer work.
+
+    Whatever the card declared, a card that actually published a PR can be
+    re-spawned against that same PR, so the duplicate-work guard must apply.
+    """
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: "OPEN")
+    with kbc.connect() as conn:
+        tid = _pr_card(conn, monkeypatch, contract="local-only")
+        # Backdated beyond the 1h ``recent_success`` window so this test isolates
+        # the active_pr step rather than the completed-run guard.
+        now = int(time.time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at, metadata) VALUES (?, 'dev', 'completed', "
+                "'completed', ?, ?, ?)",
+                (tid, now - 7200, now - 7100,
+                 json.dumps({"published_pr": "https://github.com/example/repo/pull/9"})),
+            )
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_window_knob_disables_and_shortens_the_guard(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``HERMES_KANBAN_RESPAWN_GUARD_PR_WINDOW_SECONDS`` is the window, and 0 disables it."""
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: "OPEN")
+    with kbc.connect() as conn:
+        tid = _pr_card(conn, monkeypatch)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        monkeypatch.setenv("HERMES_KANBAN_RESPAWN_GUARD_PR_WINDOW_SECONDS", "0")
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        monkeypatch.setenv("HERMES_KANBAN_RESPAWN_GUARD_PR_WINDOW_SECONDS", "60")
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        _backdate_comments(conn, tid, seconds=120)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_unguarded_event_lifts_the_guard(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``unguard_task`` is the operator escape hatch for a card that cannot be reassigned."""
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: "OPEN")
+    with kbc.connect() as conn:
+        tid = _pr_card(conn, monkeypatch)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        _backdate_comments(conn, tid)
+        assert kb.unguard_task(conn, tid, actor="user") is True
+        assert kbd.check_respawn_guard(conn, tid) is None
+        assert _events(conn, tid, kind="unguarded") == [("unguarded", {"by": "user"})]
+        assert kb.unguard_task(conn, "t_deadbeefcafe", actor="user") is False
 
 
 def test_dispatch_json_exposes_suppression_reasons(

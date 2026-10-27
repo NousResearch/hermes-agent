@@ -1483,6 +1483,22 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     return True
 
 
+def unguard_task(conn: sqlite3.Connection, task_id: str, *, actor: str) -> bool:
+    """Lift the ``active_pr`` respawn guard explicitly (``hermes kanban unguard <id>``).
+
+    Records an ``unguarded`` event, which ``check_respawn_guard`` treats as a
+    handoff: the sanctioned lever when a card cannot be reassigned to a different
+    profile (a single-owner card, or a report/notify card) and the referenced PR
+    has merged or closed without the dispatcher's lookup seeing it. Returns
+    ``False`` for an unknown id.
+    """
+    with write_txn(conn):
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+            return False
+        _append_event(conn, task_id, "unguarded", {"by": actor})
+    return True
+
+
 def set_model_override(
     conn: sqlite3.Connection, task_id: str, model: Optional[str], provider: Optional[str] = None,
 ) -> bool:

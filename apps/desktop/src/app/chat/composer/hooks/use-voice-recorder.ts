@@ -245,6 +245,13 @@ export function useVoiceRecorder({
     }
   }
 
+  const cancel = () => {
+    clearTimers()
+    handle.cancel()
+    setElapsedSeconds(0)
+    setVoiceStatus('idle')
+  }
+
   const voiceActivityState: VoiceActivityState = {
     elapsedSeconds,
     level,
@@ -252,5 +259,5 @@ export function useVoiceRecorder({
     status: voiceStatus
   }
 
-  return { dictate, voiceActivityState, voiceStatus }
+  return { cancel, dictate, voiceActivityState, voiceStatus }
 }

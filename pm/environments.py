@@ -184,7 +184,7 @@ def _payload_path(payload_root: Path, relative: str, what: str) -> Path:
 
 
 def payload_venv(project_root: Path) -> Path | None:
-    """The environment a sealed payload ships beside its tree, or ``None``."""
+    """The environment a sealed payload ships with its tree, or ``None``."""
     root = Path(project_root).resolve()
     payload = _payload_manifest(root)
     venv = payload[0].get("venv") if payload else None

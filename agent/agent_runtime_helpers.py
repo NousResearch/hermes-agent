@@ -20,7 +20,7 @@ from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
 from agent.message_metadata import (
-    TOOL_CALL_UIDS, fold_tool_call_uids, record_absorbed_message)
+    TOOL_CALL_UIDS, fold_tool_call_uids, prune_tool_call_uids, record_absorbed_message)
 from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
@@ -647,6 +647,7 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
                 _retire_dropped_row(pruned, msg, leading)
                 continue
             if kept_calls:
+                prune_tool_call_uids(msg, kept_calls)
                 msg["tool_calls"] = kept_calls
             else:
                 msg.pop("tool_calls", None)

@@ -625,3 +625,59 @@ def test_an_assistant_merge_rewrite_persists_the_unioned_tool_call_uids(db):
     assert [tc["id"] for tc in stored["tool_calls"]] == ["call_2"]
     assert stored["_tool_call_uids"] == uids
     assert next(m for m in again if m["role"] == "tool")["_tool_call_uid"] == uids["call_2"]
+
+
+@pytest.mark.parametrize("mapped_first", [True, False])
+@pytest.mark.parametrize("result_id", ["fc_1", "fc_2", "call_x"])
+def test_pruned_fold_keeps_the_surviving_occurrence_uid(db, mapped_first, result_id):
+    from agent.message_metadata import tool_call_uid_from_history
+
+    db.create_session("prune", "cli", model="test/model")
+    turns = [_reused_call("", "1" * UID_LEN), _reused_call("")]
+    if not mapped_first:
+        turns.reverse()
+    for n, turn in enumerate(turns, 1):
+        turn["tool_calls"][0]["id"] = f"call_x|fc_{n}"
+    result = {"role": "tool", "content": "old", "tool_call_id": result_id}
+    db.append_messages_batch("prune", [{"role": "user", "content": "q"}, *turns, result])
+    legacy = turns[1 if mapped_first else 0]
+    db._conn.execute("UPDATE messages SET tool_call_uids = NULL WHERE message_uid = ?", (legacy["message_uid"],))
+    db._conn.execute("UPDATE messages SET tool_call_uid = NULL WHERE role = 'tool'")
+    db._conn.commit()
+    live = db.get_messages_as_conversation("prune", repair_alternation=True, include_row_ids=True)
+    survivor = next(m for m in live if m.get("tool_calls"))
+    kept = [f"call_x|{result_id}"] if result_id != "call_x" else ["call_x|fc_1", "call_x|fc_2"]
+    assert [tc["id"] for tc in survivor["tool_calls"]] == kept
+    mapped = result_id == ("fc_1" if mapped_first else "fc_2") or (result_id == "call_x" and not mapped_first)
+    expected = "1" * UID_LEN if mapped else None
+    assert tool_call_uid_from_history(live, len(live) - 1, {}) == expected
+    live.append({"role": "tool", "content": "new", "tool_call_id": result_id})
+    agent = _make_agent(db, "prune")
+    agent._session_db_created = True
+    agent._persist_session(live, conversation_history=None)
+    assert db._conn.execute("SELECT tool_call_uid FROM messages WHERE content = 'new'").fetchone()[0] == expected
+    restored = db.get_messages_as_conversation("prune", repair_alternation=False)
+    assert next(m for m in restored if m.get("content") == "new").get("_tool_call_uid") == expected
+
+
+@pytest.mark.parametrize("mapped_first", [True, False])
+@pytest.mark.parametrize("result_id", ["call_x|fc_1", "fc_1", "call_x|fc_2", "fc_2", "call_x"])
+def test_unmapped_composite_stays_unmapped_live_and_durable(db, mapped_first, result_id):
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from agent.message_metadata import tool_call_uid_from_history
+
+    turns = [_reused_call("", "1" * UID_LEN), _reused_call("")]
+    if not mapped_first:
+        turns.reverse()
+    for n, turn in enumerate(turns, 1):
+        turn["tool_calls"][0]["id"] = f"call_x|fc_{n}"
+    folded, _ = _merge_consecutive_assistants(turns)
+    result = {"role": "tool", "content": "r", "tool_call_id": result_id}
+    first = result_id.endswith("fc_1")
+    expected = "1" * UID_LEN if first == mapped_first else None
+    assert tool_call_uid_from_history([*folded, result], 1, {}) == expected
+    db.create_session("alias", "cli")
+    db.append_messages_batch("alias", [{"role": "user", "content": "q"}, *folded, result])
+    assert db._conn.execute("SELECT tool_call_uid FROM messages WHERE role = 'tool'").fetchone()[0] == expected
+    restored = db.get_messages_as_conversation("alias", repair_alternation=False)
+    assert next(m for m in restored if m["role"] == "tool").get("_tool_call_uid") == expected

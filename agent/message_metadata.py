@@ -280,7 +280,30 @@ def fold_tool_call_uids(prev_uids: Any, prev_calls: List[Mapping[str, Any]], new
     return {call_id: slots if len(slots) > 1 else slots[0] for call_id, slots in occurrences.items() if any(slots)}
 
 
-def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str, Any]) -> frozenset:
+def prune_tool_call_uids(assistant: MutableMapping[str, Any], kept_calls: list) -> None:
+    """Filter occurrence slots by their original call positions before sequence repair removes calls."""
+    from agent.message_sanitization import coalesce_tool_call_id
+
+    uids = assistant.get(TOOL_CALL_UIDS)
+    if not isinstance(uids, dict):
+        return
+    seen: Counter = Counter()
+    kept: dict = {}
+    for tc in assistant.get("tool_calls") or ():
+        call_id = coalesce_tool_call_id(tc)
+        nth = seen[call_id]
+        seen[call_id] += 1
+        if tc not in kept_calls:
+            continue
+        uid = uids.get(call_id)
+        if isinstance(uid, list):
+            kept.setdefault(call_id, []).append(uid[nth] if nth < len(uid) else None)
+        elif call_id in uids:
+            kept[call_id] = uid
+    assistant[TOOL_CALL_UIDS] = kept
+
+
+def index_tool_call_uids(index: MutableMapping[str, Optional[str]], assistant: Mapping[str, Any]) -> frozenset:
     """Register an assistant dict's ``_tool_call_uids`` under every pairing-id variant of its tool calls, so a
     later tool-result row can be resolved by any spelling of its ``tool_call_id``. Provider ids repeat, so
     every id this assistant names first shadows an earlier occurrence's entry: a result pairs with the
@@ -294,7 +317,7 @@ def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str
     calls = [(tc, tool_call_id_variants(tc)) for tc in assistant.get("tool_calls") or ()]
     named = frozenset(variant for _, variants in calls for variant in variants)
     for variant in named:
-        index.pop(variant, None)
+        index[variant] = None
     uids = assistant.get(TOOL_CALL_UIDS)
     if not isinstance(uids, dict) or not uids:
         return named
@@ -309,20 +332,18 @@ def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str
             if isinstance(uid, str) and uid:
                 index[variant] = uid
             else:
-                index.pop(variant, None)
+                index[variant] = None
     return named
 
 
-def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) -> Optional[str]:
+def resolve_tool_call_uid(index: MutableMapping[str, Optional[str]], tool_call_id: Any) -> Optional[str]:
     """The uid an indexed assistant dict minted for ``tool_call_id`` (any variant), else ``None``."""
-    from agent.message_sanitization import tool_result_id_variants
-
     if not index or not isinstance(tool_call_id, str) or not tool_call_id:
         return None
-    for variant in tool_result_id_variants(tool_call_id):
-        uid = index.get(variant)
-        if uid:
-            return uid
+    # Exact/composite and item-specific ownership precede the shared provider id, including null slots.
+    for variant in (tool_call_id, *reversed(tool_call_id.split("|"))):
+        if (variant := variant.strip()) in index:
+            return index[variant]
     return None
 
 

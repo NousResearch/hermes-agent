@@ -1,7 +1,7 @@
 import './catalog-discovery.css'
 
 import { featuredPicks, groupCatalogPlugins, isOfficialSkillSource, PLUGIN_CATEGORIES } from '@hermes/shared'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -47,34 +47,57 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   const [looseRows, setLooseRows] = useState(LOOSE_ROWS_PAGE)
   const title = kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills
 
-  // Same pick as the website: curated ranks from the feed, rotated weekly.
-  // Every curated pick, this week's first; more than one becomes a slider.
-  const featured = narrowed ? [] : featuredPicks(entries, entry => ({
-    featured: entry.featured,
-    official: kind === 'plugins' ? pluginTier(entry) === 'official' : isOfficialSkillSource(entry.source),
-    pictured: Boolean(entry.imageUrl),
-    addedAt: entry.addedAt,
-    stars: entry.stars
-  }))
+  // Shelving walks the whole feed (~100k skills × every category). `card` changes
+  // whenever the browser re-renders, so keep this keyed on the data alone.
+  const { featured, tiered, shelves, loose } = useMemo(() => {
+    // Same pick as the website: curated ranks from the feed, rotated weekly.
+    // Every curated pick, this week's first; more than one becomes a slider.
+    const featured = narrowed
+      ? []
+      : featuredPicks(entries, entry => ({
+          featured: entry.featured,
+          official: kind === 'plugins' ? pluginTier(entry) === 'official' : isOfficialSkillSource(entry.source),
+          pictured: Boolean(entry.imageUrl),
+          addedAt: entry.addedAt,
+          stars: entry.stars
+        }))
 
-  // A slide leaves its shelf, as the single hero always did.
-  const others = entries.filter(entry => !featured.includes(entry))
-  const tiered = kind === 'plugins' && !byCategory ? PLUGIN_TIERS.map(tier => ({ tier, ...t.catalog.tiers[tier], items: others.filter(entry => pluginTier(entry) === tier) })).filter(({ items }) => items.length) : []
-  const remaining = kind === 'plugins' && !byCategory ? others.filter(entry => pluginTier(entry) === 'community') : others
+    // A slide leaves its shelf, as the single hero always did.
+    const others = entries.filter(entry => !featured.includes(entry))
 
-  // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
-  const sections: [string, string, CatalogEntry[]][] = (
-    kind === 'plugins'
-      ? groupCatalogPlugins(remaining).map(([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
-      : catalogCategories(remaining).map(([key, meta]) => [key, meta.label, remaining.filter(entry => entry.category === key)] as [string, string, CatalogEntry[]])
-  ).sort((a, b) => topStars(b[2]) - topStars(a[2]))
+    const tiered =
+      kind === 'plugins' && !byCategory
+        ? PLUGIN_TIERS.map(tier => ({
+            tier,
+            ...t.catalog.tiers[tier],
+            items: others.filter(entry => pluginTier(entry) === tier)
+          })).filter(({ items }) => items.length)
+        : []
 
-  // A category too small to fill a row reads as a stray full-width strip; those
-  // fold into one mixed shelf at the end instead.
-  // (A category the user picked always gets its own shelf, however small.)
-  const minShelf = byCategory ? 1 : MIN_SHELF
-  const shelves = sections.filter(([, , items]) => items.length >= minShelf)
-  const loose = sections.filter(([, , items]) => items.length < minShelf).flatMap(([, , items]) => items)
+    const remaining =
+      kind === 'plugins' && !byCategory ? others.filter(entry => pluginTier(entry) === 'community') : others
+
+    // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
+    const sections: [string, string, CatalogEntry[]][] = (
+      kind === 'plugins'
+        ? groupCatalogPlugins(remaining).map(
+            ([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]]
+          )
+        : catalogCategories(remaining).map(
+            ([key, meta]) =>
+              [key, meta.label, remaining.filter(entry => entry.category === key)] as [string, string, CatalogEntry[]]
+          )
+    ).sort((a, b) => topStars(b[2]) - topStars(a[2]))
+
+    // A category too small to fill a row reads as a stray full-width strip; those
+    // fold into one mixed shelf at the end instead.
+    // (A category the user picked always gets its own shelf, however small.)
+    const minShelf = byCategory ? 1 : MIN_SHELF
+    const shelves = sections.filter(([, , items]) => items.length >= minShelf)
+    const loose = sections.filter(([, , items]) => items.length < minShelf).flatMap(([, , items]) => items)
+
+    return { featured, tiered, shelves, loose }
+  }, [entries, kind, narrowed, byCategory, t])
 
   const bento = (items: CatalogEntry[], rows?: number, flip = false) => (
     <div className="catalog-bento" data-catalog-hover-group>

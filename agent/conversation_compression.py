@@ -3007,15 +3007,8 @@ def _run_summary_dispatch(
 
 def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
     """Strip stale todo snapshots from ``compressed`` and fold the live one in (in place)."""
-    todo_snapshot = agent._todo_store.format_for_injection()
-    # Non-empty store (even all done) is authoritative: drop the old snapshot. A
-    # truly empty store may be un-rehydrated post-compaction: keep the snapshot.
-    _todo_has_items = getattr(agent._todo_store, "has_items", None)
-    # Store may implement only format_for_injection(); unknown authority must
-    # preserve the pending snapshot rather than risk deleting it.
-    _todo_store_is_authoritative = False
-    with contextlib.suppress(Exception):
-        _todo_store_is_authoritative = bool(_todo_has_items()) if callable(_todo_has_items) else False
+    from agent.conversation_compression_todo import compaction_todo_snapshot
+    todo_snapshot, _todo_store_is_authoritative = compaction_todo_snapshot(agent)
     if _todo_store_is_authoritative:
         for _todo_idx in range(len(compressed) - 1, -1, -1):
             _todo_message = compressed[_todo_idx]

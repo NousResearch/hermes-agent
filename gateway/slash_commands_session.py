@@ -712,6 +712,7 @@ class GatewaySessionCommandsMixin:
         """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import compress_now, render_compress_result
+        from gateway.compaction_todo_hydration import hydrate_todos_for_compaction
         from gateway.run import _platform_config_key
 
         session_key = self._session_key_for_source(source)
@@ -742,8 +743,8 @@ class GatewaySessionCommandsMixin:
             # Not a bare run_in_executor: the profile secret scope is a contextvar the default
             # executor hop would drop, failing aux-client credential resolution closed.
             result = await self._run_in_executor_with_context(
-                lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True,
-                                     task_id=session_entry.session_id or "default"))
+                lambda: compress_now(hydrate_todos_for_compaction(tmp_agent, msgs), msgs, request, system_message="",
+                                     skip_without_window=True, task_id=session_entry.session_id or "default"))
             if result.status == "nothing_to_do":
                 return t("gateway.compress.nothing_to_do")
             if result.status != "compressed":

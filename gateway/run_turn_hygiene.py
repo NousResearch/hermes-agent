@@ -703,6 +703,7 @@ class GatewayTurnHygieneMixin:
         """Run one detached hygiene compression attempt end to end; publishes the transcript to
         continue with (compressed or original) on ``attempt.history``."""
         from gateway.run import HygieneTurnHoldExceeded
+        from gateway.compaction_todo_hydration import hydrate_todos_for_compaction
         from agent.conversation_compression import CompressionCommitFence
         _hyg_agent, _hyg_session_db = await self._hmwa_hygiene_build_agent(_hyg_model, _hyg_runtime, session_entry)
         attempt.agent = _hyg_agent
@@ -731,10 +732,9 @@ class GatewayTurnHygieneMixin:
                 # lossy truncation (#100849 bundle).
                 copy_context().run,
                 # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
-                lambda: _hyg_agent._compress_context(
+                lambda: hydrate_todos_for_compaction(_hyg_agent, _hyg_msgs)._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
-                    task_id=session_entry.session_id or "default", trigger="gateway_hygiene",
-                ),
+                    task_id=session_entry.session_id or "default", trigger="gateway_hygiene"),
             )
             # Register the live worker with shutdown NOW, not only once it is deferred: the default
             # executor is outside self._executor's quiesce, so an untracked in-flight summary would let

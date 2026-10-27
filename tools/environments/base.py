@@ -133,6 +133,14 @@ class FileFetchError(RuntimeError):
     """A file could not be extracted from the backend filesystem."""
 
 
+class CommandExecutionUnknown(RuntimeError):
+    """A launched command cannot be retried as a connection/startup failure."""
+
+    def __init__(self, session_id):
+        super().__init__('The command may have run before execution tracking failed. It was not retried.')
+        self.session_id = session_id
+
+
 # Pulling a large artifact over a slow exec channel can outlast the per-command terminal timeout.
 _FETCH_TIMEOUT_SECONDS = 300
 
@@ -505,6 +513,17 @@ class BaseEnvironment(ABC):
         return f"exec 0< {quoted} || exit $?\nrm -f -- {quoted} || exit $?\n{command}"
 
     # --- Process lifecycle ---
+    def _spawn_command(self, command, *, yield_handler=None, **kwargs):
+        """Backend launch boundary for an owned user command, after initialization."""
+        return self._run_bash(command, **kwargs)
+
+    def _failed_native_command(self, proc, error):
+        if getattr(proc, '_hermes_native_foreground', False) is True:
+            from tools.process_registry_job import job_quiescent
+            if not job_quiescent(proc._hermes_job_session):
+                self._kill_spawned_tree(proc)
+            raise CommandExecutionUnknown(proc._hermes_job_session.id) from error
+
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
@@ -539,8 +558,11 @@ class BaseEnvironment(ABC):
         trace.enter()
 
         def _kill_and_join():
-            self._kill_process(proc)
+            verdict = self._kill_process(proc)
             drain_thread.join(timeout=2)
+            if (getattr(proc, '_hermes_native_foreground', False) is True
+                    and verdict.get('status') not in {'killed', 'already_exited'}):
+                raise CommandExecutionUnknown(proc._hermes_job_session.id)
 
         try:
             # Adaptive poll: start at 5ms so fast commands return in ~6ms, back
@@ -716,6 +738,7 @@ class BaseEnvironment(ABC):
         parent_activity_cb = get_activity_callback()
         proc_holder: list = []
         output_holder: list = []
+        expired = threading.Event()
 
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
@@ -724,15 +747,19 @@ class BaseEnvironment(ABC):
                 return {"output": "[host is exiting: command not started]", "returncode": 130}
             spawned = None
             try:
-                spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+                spawned = self._spawn_command(
+                    wrapped, yield_handler=yield_handler, login=login,
+                    timeout=effective_timeout, stdin_data=effective_stdin)
             finally:
                 fenced = _leave_foreground_spawn(self, spawned)
             proc_holder.append(spawned)
-            if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
-                self._force_kill_process(spawned)
-            output = _new_output_collector(spawned, bounded_capture)
-            output_holder.append(output)
             try:
+                if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
+                    self._force_kill_process(spawned)
+                elif expired.is_set():
+                    self._kill_spawned_tree(spawned)
+                output = _new_output_collector(spawned, bounded_capture)
+                output_holder.append(output)
                 return self._wait_for_process(
                     spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
                     watch_interrupt_tid=parent_tid, output=output,
@@ -742,6 +769,7 @@ class BaseEnvironment(ABC):
                     _live_foreground.pop(id(spawned), None)
 
         def _on_timeout() -> None:
+            expired.set()
             if proc_holder:
                 self._kill_spawned_tree(proc_holder[0])
 
@@ -762,32 +790,39 @@ class BaseEnvironment(ABC):
         try:
             bounded = run_bounded_sync(
                 _spawn_and_wait, bound_s, label=f"terminal.wait:{type(self).__name__}", on_timeout=_on_timeout)
+            if bounded.timed_out:
+                suffix = f"\n[Command timed out after {effective_timeout}s]"
+                if output_holder:
+                    collector = output_holder[0]
+                    result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
+                else:
+                    result = {"output": suffix.lstrip(), "returncode": 124}
+                result["hermes_timed_out"] = True
+            else:
+                result = bounded.value
+            self._update_cwd(result)
+            if getattr(self, "_recreated_notice_pending", False):
+                self._recreated_notice_pending = False
+                result["environment_recreated"] = True
+            return result
         except (KeyboardInterrupt, SystemExit):
             _on_timeout()
             raise
+        except Exception as error:
+            if proc_holder:
+                self._failed_native_command(proc_holder[0], error)
+            raise
 
-        if bounded.timed_out:
-            suffix = f"\n[Command timed out after {effective_timeout}s]"
-            if output_holder:
-                collector = output_holder[0]
-                result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
-            else:
-                result = {"output": suffix.lstrip(), "returncode": 124}
-            result["hermes_timed_out"] = True
-        else:
-            result = bounded.value
-        self._update_cwd(result)
-        if getattr(self, "_recreated_notice_pending", False):
-            self._recreated_notice_pending = False
-            result["environment_recreated"] = True
-        return result
-
-    def _kill_spawned_tree(self, spawned) -> None:
+    def _kill_spawned_tree(self, spawned):
         """Best-effort kill of a wedged spawned process and its tree (backstop path)."""
+        native = getattr(spawned, '_hermes_native_foreground', False) is True
         try:
-            self._kill_process(spawned)
+            verdict = self._kill_process(spawned)
         except Exception:
             logger.debug("terminal wait-bound kill_process failed", exc_info=True)
+            verdict = {'status': 'error', 'error': 'process_stop_unknown'}
+        if native:
+            return verdict  # Only the native scope may stop its reaper, even on refusal.
         pid = getattr(spawned, "pid", None)
         if not pid:
             return

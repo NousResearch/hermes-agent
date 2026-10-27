@@ -168,7 +168,7 @@ def _check_all_guards(command: str, env_type: str,
                                   has_host_access=has_host_access)
 
 
-from tools.environments.base import EnvironmentConnectionError
+from tools.environments.base import CommandExecutionUnknown, EnvironmentConnectionError
 
 
 # Tool description for LLM
@@ -1343,6 +1343,9 @@ def _run_foreground(
                                 task_id=task_id, session_key=session_key),
             )
             break
+        except CommandExecutionUnknown as error:
+            return _error_json(str(error), exit_code=None, status='execution_unknown',
+                               session_id=error.session_id, retryable=False)
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
             # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.

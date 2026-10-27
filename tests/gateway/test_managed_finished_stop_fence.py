@@ -127,17 +127,26 @@ def test_late_stop_verifies_processes_after_real_worker_exit(tmp_path, monkeypat
                 ('first',)) != [('started',)], timeout=30, what='finished-frame reconciliation')
             states = dict(query('SELECT request_id,status FROM session_admissions'))
             if refuse:
-                assert states == {'first': 'unknown', 'follower': 'queued'} and alive(child), states
+                assert states == {'first': 'terminal', 'follower': 'queued'} and alive(child), states
+                with closing(sqlite3.connect(home / 'state.db')) as db:
+                    admission_id = db.execute("SELECT admission_id FROM session_admissions WHERE request_id='first'").fetchone()[0]
+                    saved = db.execute('SELECT value FROM state_meta WHERE key=?',
+                        ('gateway.admission.result.v1.' + admission_id,)).fetchone()
+                assert saved and json.loads(saved[0])['result']['final_response'] == 'FINISH_RESULT'
                 assert query('SELECT value FROM state_meta WHERE key=?', marker) and peer.follower_alive == []
                 (home / 'refuse-cleanup').unlink()
                 snapshot = await rpc(ws, 'session.resume', session_id=sid)
-                response = await rpc(ws, 'session.interrupt', session_id=sid,
-                    execution_generation=snapshot['result']['execution_generation'])
-                assert 'result' in response, response
-            else:
-                await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?',
-                    ('follower',)) == [('terminal',)], timeout=30, what='human follower completes')
-                assert peer.follower_alive and not any(peer.follower_alive)
+                if query('SELECT value FROM state_meta WHERE key=?', marker):
+                    response = await rpc(ws, 'session.interrupt', session_id=sid,
+                        execution_generation=snapshot['result']['execution_generation'])
+                    if response.get('error', {}).get('data', {}).get('reason') == 'stale_generation':
+                        assert not query('SELECT value FROM state_meta WHERE key=?', marker)
+                        assert not any(alive(entry) for entry in peer.effect_processes)
+                    else:
+                        assert 'result' in response, response
+            await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?',
+                ('follower',)) == [('terminal',)], timeout=30, what='human follower completes after native cleanup')
+            assert peer.follower_alive == [False]
             assert not alive(child), 'native Stop cleared its fence with physical work still alive'
             assert not any(alive(entry) for entry in peer.effect_processes), 'a captured job descendant survived Stop'
             assert not query('SELECT value FROM state_meta WHERE key=?', marker)

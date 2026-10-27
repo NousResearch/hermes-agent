@@ -1137,7 +1137,6 @@ class SessionAuthority:
                 return 'classic_busy', first
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
-            live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
@@ -1203,6 +1202,7 @@ class SessionAuthority:
         route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
         backoff, conflicted, refusing = 0.0, None, None
         while True:
+            live.rescan = False  # Consume the prior wake; preserve a new one during this attempt.
             # The refusal handling's own reads and writes share the claim's storage retry, which finishes
             # that exact refusal first: once its cancellation commits, the claim no longer sees the row.
             try:
@@ -1233,6 +1233,10 @@ class SessionAuthority:
                             refusing = None
                             if refused:
                                 continue
+                    if live.rescan:
+                        if self._drain_stopping(ref, live):
+                            return None
+                        continue  # Recheck native gates once per new event, never poll an unchanged refusal.
                     import logging
                     logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                     self._pause(ref, exc.reason)

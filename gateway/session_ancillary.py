@@ -50,12 +50,6 @@ def clear_process_stop(authority, ref, token):
     authority.db._execute_write(write)
 
 
-async def finish_process_stop(authority, ref):
-    """A finished frame can predate Stop; only physical cleanup may clear its fence."""
-    if not await retry_process_stop(authority, ref):
-        raise RuntimeStoreError('process_stop_unknown')
-
-
 async def retry_process_stop(authority, ref, agent=None):
     """Reconcile a failed/unfinished Stop before any FIFO handoff, including after reload."""
     token = process_stop_pending(authority.db, ref.session_id)
@@ -70,7 +64,14 @@ async def retry_process_stop(authority, ref, agent=None):
             if not await asyncio.to_thread(_recover_stopped_processes, authority, ref):
                 _observe_process_stop_completion(authority, ref, agent)
                 return False
-        if not await interrupt_processes(authority, ref, agent):
+        try:
+            if not await interrupt_processes(authority, ref, agent):
+                return False
+        except RuntimeStoreError as exc:
+            if exc.reason != 'process_stop_unknown':
+                raise
+            # Unproved process ownership is the same cleanup refusal as False,
+            # independent of an already validated inference result.
             return False
     await tracked_write(authority, partial(clear_process_stop, authority, ref, token))
     return True

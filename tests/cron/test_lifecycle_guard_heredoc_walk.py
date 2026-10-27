@@ -43,6 +43,44 @@ def test_unquoted_heredoc_body_path_still_walked(tmp_path):
     assert guard(f"cat > /tmp/x <<EOF\n{big}\nEOF", cwd=str(tmp_path)) is True
 
 
+class TestCodeConsumerBodyVisibleToLifecycleScan:
+    """#127698: python/osascript heredoc bodies are executable payloads, not data. The direct
+    lifecycle scan must not have them blanked, or an inline gateway command hides in the body
+    while the scanner sees an empty heredoc."""
+
+    def test_python_body_inline_launchctl_blocks(self):
+        command = (
+            "python3 - <<'PY'\n"
+            "import os\n"
+            'os.system("launchctl bootout gui/$(id -u)/ai.hermes.gateway")\n'
+            "PY"
+        )
+        assert guard(command, cwd="/tmp") is True
+
+    def test_osascript_do_shell_script_blocks(self):
+        command = (
+            "osascript <<'EOF'\n"
+            'do shell script "launchctl bootout gui/501/ai.hermes.gateway"\n'
+            "EOF"
+        )
+        assert guard(command, cwd="/tmp") is True
+
+    def test_python_body_plain_data_does_not_block(self):
+        """Visibility cuts both ways but costs nothing: a body that runs no lifecycle and names
+        no path is still allowed (no new false positive from the strict view)."""
+        command = "python3 - <<'PY'\nprint(sum(range(10)))\nPY"
+        assert guard(command, cwd="/tmp") is False
+
+    def test_data_sink_documentation_body_still_allowed(self):
+        """#88336 semantics unchanged: a cat-owned body is documentation, not a command."""
+        command = (
+            "cat > /tmp/runbook.txt <<'EOF'\n"
+            "a human can run: hermes gateway restart\n"
+            "EOF"
+        )
+        assert guard(command, cwd="/tmp") is False
+
+
 def test_inert_heredoc_body_script_path_still_read(tmp_path):
     """Masking hides the body from the *executed* view only: a lifecycle script named inside a
     Python body is still handed to ``os.system`` at runtime, so its contents must still be read."""

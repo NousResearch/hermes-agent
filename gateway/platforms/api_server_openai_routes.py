@@ -689,8 +689,10 @@ class _ResponsesStream:
 
     def _commit_terminal(self, env, full_history, session_id, record):
         """The terminal snapshot plus, when keyed, the replay record and its read-back: one store
-        unit, so no other observer of the same key interleaves between them. -> stored record."""
-        self._persist_snapshot(env, full_history, session_id)
+        unit, so no other observer of the same key interleaves between them. -> stored record.
+        ``store: false`` skips only the snapshot; the keyed replay record is idempotency state."""
+        if self.store:
+            self._persist_snapshot(env, full_history, session_id)
         if not self.durable_key:
             return None
         if record is not None:

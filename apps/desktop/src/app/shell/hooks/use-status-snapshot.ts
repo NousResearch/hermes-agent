@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { getStatus } from '@/hermes'
 import { type I18nContextValue, useI18n } from '@/i18n'
@@ -20,6 +20,11 @@ let freeTierScope: string | undefined
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+interface ScopedStatus {
+  inferenceStatus: RuntimeReadinessResult | null
+  statusSnapshot: StatusResponse | null
+}
+
 export function useStatusSnapshot(
   gatewayState: string | undefined,
   requestGateway: GatewayRequester,
@@ -29,6 +34,7 @@ export function useStatusSnapshot(
   const warningMessage: string = t.notifications.sharedProfileWarning
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
+  const cacheRef = useRef(new Map<string, ScopedStatus>())
 
   useEffect(() => {
     let cancelled = false
@@ -46,11 +52,7 @@ export function useStatusSnapshot(
       setInferenceStatus(next)
     }
 
-    // Status and inference readiness belong to one backend. A source switch
-    // can keep gatewayState="open" throughout, so clear the previous source's
-    // snapshot and start a fresh scoped request explicitly.
-    setStatusSnapshot(null)
-    publishInferenceStatus(null)
+    const cache = cacheRef.current
 
     // The free-tier verdict belongs to one profile too. Drop it on a real switch
     // only: a flap on the same scope keeps the last answer (refreshFreeTierStatus).
@@ -60,11 +62,38 @@ export function useStatusSnapshot(
 
     freeTierScope = gatewayScope
 
-    // A closed/connecting gateway cannot have an authoritative live-runtime
-    // result. Clear readiness before starting the REST status leg so a hung
-    // getStatus() cannot leave a stale "ready" state visible after disconnect.
+    // A disconnect invalidates every scope, including requests still in flight.
     if (gatewayState !== 'open') {
-      publishInferenceStatus(null)
+      cache.clear()
+    }
+
+    const cached = cache.get(gatewayScope)
+
+    const scopedStatus: ScopedStatus = {
+      inferenceStatus: cached?.inferenceStatus ?? null,
+      statusSnapshot: cached?.statusSnapshot ?? null
+    }
+
+    cache.set(gatewayScope, scopedStatus)
+
+    // Revalidate this scope's own last answers without blanking healthy chrome
+    // on a chat switch. An unseen scope still starts with no trusted answers.
+    // A closed/connecting gateway can have no authoritative live-runtime
+    // result, so the restore above also clears readiness instead of leaving a
+    // stale "ready" visible after disconnect.
+    setStatusSnapshot(scopedStatus.statusSnapshot)
+    publishInferenceStatus(scopedStatus.inferenceStatus)
+
+    const remember = (patch: Partial<ScopedStatus>): boolean => {
+      // Entry identity is a run token: a late answer can warm its owner after
+      // a switch, but cannot overwrite a newer run or survive a disconnect.
+      if (cache.get(gatewayScope) !== scopedStatus) {
+        return false
+      }
+
+      Object.assign(scopedStatus, patch)
+
+      return true
     }
 
     const scheduleRefresh = () => {
@@ -105,21 +134,23 @@ export function useStatusSnapshot(
         refreshFreeTierStatus(requestGateway, () => !cancelled)
       ])
 
-      if (cancelled || inferenceResult.status !== 'fulfilled') {
+      if (inferenceResult.status !== 'fulfilled') {
         return
       }
 
       const inference = inferenceResult.value
 
-      if (inference.source !== 'fallback') {
-        // runtime_check/setup_status returned an authoritative boolean.
-        // A fallback means both RPCs failed or returned no boolean, so it
-        // is a transient/unknown transport state, not proof that inference
-        // became unconfigured. Keep the last authoritative result instead
-        // of flashing "Inference not ready" during a gateway flap.
-        publishInferenceStatus(inference)
-        setFreeTierRoute(inference.freeTier)
+      // runtime_check/setup_status returned an authoritative boolean.
+      // A fallback means both RPCs failed or returned no boolean, so it
+      // is a transient/unknown transport state, not proof that inference
+      // became unconfigured. Keep the last authoritative result in both view
+      // and cache instead of flashing "Inference not ready" during a flap.
+      if (inference.source === 'fallback' || !remember({ inferenceStatus: inference }) || cancelled) {
+        return
       }
+
+      publishInferenceStatus(inference)
+      setFreeTierRoute(inference.freeTier)
     }
 
     const refresh = async ({ readiness, force = false }: { readiness: boolean; force?: boolean }) => {
@@ -139,16 +170,19 @@ export function useStatusSnapshot(
           readiness ? refreshReadiness() : Promise.resolve()
         ])
 
-        if (cancelled) {
-          return
-        }
-
         if (statusResult.status === 'fulfilled') {
           const next = statusResult.value
+          const previous = scopedStatus.statusSnapshot
           // Preserve reference identity on a no-op: the 60s tick re-reads a
           // usually-unchanged snapshot, and a fresh object for the same content
           // re-renders every consumer for nothing.
-          setStatusSnapshot(previous => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next))
+          const value = JSON.stringify(previous) === JSON.stringify(next) ? previous : next
+
+          if (!remember({ statusSnapshot: value }) || cancelled) {
+            return
+          }
+
+          setStatusSnapshot(value)
           const warning: boolean = Boolean(statusResult.value.shared_profile_warning)
 
           // Keep dismissal until the conflict clears. A new overlap can warn again.

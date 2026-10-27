@@ -768,11 +768,6 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const killOne = (id: string) =>
     guardLive(() => {
-      // The shared owner serves no subagent.interrupt: the sidecar would answer "session not found".
-      if (gw.isCanonical) {
-        return setFlash(messages().canonical.controls.notAvailable('agents kill'))
-      }
-
       interrupt(id)
         .then(raw => {
           const r = asRpcResult<SubagentInterruptResponse>(raw)
@@ -783,10 +778,6 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const killSubtree = (node: SubagentNode) =>
     guardLive(() => {
-      if (gw.isCanonical) {
-        return setFlash(messages().canonical.controls.notAvailable('agents kill'))
-      }
-
       const ids = [node.item.id, ...descendantIds(node)]
       ids.forEach(id => interrupt(id).catch(() => {}))
       setFlash((ids.length === 1 ? T.flash.killingSubtreeOne : T.flash.killingSubtreeOther)(ids.length))

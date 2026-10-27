@@ -103,7 +103,7 @@ def test_router_holds_only_the_models_free_commit_fits(tmp_path, monkeypatch):
     from hermes_cli.local_runtime import bootstrap
 
     monkeypatch.setattr(bootstrap, "staged_in", lambda mdir: [tmp_path / "a.gguf", tmp_path / "b.gguf"])
-    monkeypatch.setattr(presets, "_launch_footprint", lambda gguf, budget: 12 * G)
+    monkeypatch.setattr(presets, "_launch_footprint", lambda gguf, budget, engine_tag=None: 12 * G)
     capacity = HardwareBudget(int(30 * G), int(50 * G), 0, uma=True)
     live = HardwareBudget(int(16 * G), int(50 * G), 0, uma=True, commit_room_bytes=int(20 * G))
     assert presets.admitted_residency_count(tmp_path, capacity, 4) == 2

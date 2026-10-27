@@ -191,11 +191,20 @@ class ConnectorExecuteSingleRequest(_Wire):
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
+# What a model receiving this result must guarantee; absent when the connector asks nothing.
+DataUseRequirement = Literal["no_training", "zero_retention"]
+
+
+class ConnectorDataUse(_Wire):
+    requires: list[DataUseRequirement]
+
+
 class ConnectorExecuteSingleResult(_Wire):
     connector: str = ""
     tool: str = ""
     data: Any = None
     account: Optional[str] = None
+    data_use: Optional[ConnectorDataUse] = Field(default=None, alias="dataUse")
 
 
 class ConnectorExecuteSingleResponse(_Wire):
@@ -211,6 +220,7 @@ class ConnectorExecuteResult(_Wire):
     error: Optional[ConnectorToolError] = None
     # The alias of the account the call ran under; null when that account has no alias.
     account: Optional[str] = None
+    data_use: Optional[ConnectorDataUse] = Field(default=None, alias="dataUse")
 
 
 class ConnectorExecuteResponse(_Wire):

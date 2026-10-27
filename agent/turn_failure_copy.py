@@ -18,8 +18,24 @@ from hermes_constants import display_hermes_home
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
-    "interpreter_shutdown", "session_busy", "gateway_connection",
+    "interpreter_shutdown", "session_busy", "gateway_connection", "host_error",
 })
+
+
+def launch_credentials_copy(error: Any) -> str:
+    """The refusal for a session whose own launch/route API key changed or is gone (``RuntimeStoreError``
+    or an RPC refusal carrying ``field``/``detail``). A session never sends a different key than it
+    started with, so /retry repeats the refusal: the copy names /new on every surface."""
+    from agent.i18n import t
+
+    data = getattr(error, "data", None)
+    data = data if isinstance(data, dict) else {}
+    field = getattr(error, "field", None) or data.get("field")
+    detail = getattr(error, "detail", None) or data.get("detail")
+    named = f" ({field}: {detail or 'unavailable'})" if field else ""
+    text = t("gateway.errors.launch_credentials_unavailable", detail=named)
+    # The raw code + field stay greppable for bug reports and log matching (untranslated, last line).
+    return f"{text}\n\nDetails: launch_credentials_unavailable{named}" if field else text
 
 
 def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[str, Any]:
@@ -43,6 +59,16 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# A turn no person sent (a cron run, a process completion, a webhook delivery) lost across a gateway
+# restart, or fenced inside the running owner (a lost managed worker): it settles interrupted and is
+# never re-run, so nobody is asked to resend it (#134889 GW-10). Neutral: not every path restarted.
+AUTOMATION_INTERRUPTED_NOTICE = (
+    "An automated delivery was interrupted and was not run again. Some "
+    "actions may already have run; verify their effects."
+)
+# Durable tail roles a failed turn leaves open: its accepted ``user`` row, or the ``tool`` row of a
+# call that ran before the failure. An ``assistant`` tail is already closed (a reply or a boundary).
+OPEN_TURN_TAIL_ROLES = frozenset({"user", "tool"})
 # ``messages.display_kind`` of that row: display-only (stripped before every provider request),
 # so renderers show a Hermes notice and room pollers never read it as the model's reply.
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
@@ -52,7 +78,7 @@ def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
     if role == "assistant" and isinstance(content, str) and content.strip() in (
-        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
     ):
         return FAILED_TURN_DISPLAY_KIND
     return None
@@ -209,6 +235,12 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "didn't answer and retrying won't help. Check the account with the provider, or switch "
         "models with /model."
     ),
+    FailoverReason.data_policy_denied.value: (
+        "This conversation holds a result from a connected app that may only go to a model that "
+        "does not train on your data, and '{model}' on {label} can't promise that. Switch models "
+        "with /model, run /compress to summarize the result away, or start fresh with /new. If you "
+        "are on the free tier, no free model can take this content: upgrade, or use /compress or /new."
+    ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
@@ -253,6 +285,9 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (
         "the AI model service refused the request because of a policy on the account"
+    ),
+    FailoverReason.data_policy_denied.value: (
+        "{possessive} context holds a connected-app result that needs a model that does not train on data"
     ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",

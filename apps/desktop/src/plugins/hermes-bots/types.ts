@@ -120,6 +120,9 @@ export interface RosterRow {
   sourceReachable?: boolean | null
   sourceScoped?: boolean
   targetProfile?: string
+  /** Its source lists this profile but does not serve it (the Webapp's gateway
+   *  lists every installed profile and reaches only those it serves). */
+  unserved?: boolean
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string

@@ -68,8 +68,8 @@ ACT_PREVIEW_SCHEMA = {
     # re-reads pages or loops strobe.
     # See #95681.
     "description": (
-        "Use the web page open in the desktop preview pane (the one "
-        "`desktop_preview` opens): log in, fill forms, click through flows. ALWAYS "
+        "Use the desktop preview-pane page: log in, fill forms, click through flows. "
+        "It is the page `desktop_preview` opens. ALWAYS "
         "start with action='elements' — it inventories clickable/typable "
         "things as refs ('btn-sign-in') with role/label/value; act by ref, "
         "not guessed selectors. Refs survive re-renders and only die on "

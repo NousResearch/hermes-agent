@@ -36,6 +36,7 @@ import type {
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { AllowlistInput } from "@/components/AllowlistInput";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
@@ -708,7 +709,7 @@ export default function ChannelsPage() {
   );
 }
 
-function WhatsAppOnboardingPanel({
+export function WhatsAppOnboardingPanel({
   onChanged,
   onRestartNeeded,
   platform,
@@ -738,6 +739,7 @@ function WhatsAppOnboardingPanel({
     configuredMode ?? "bot",
   );
   const [allowedUsers, setAllowedUsers] = useState("");
+  const [confirmRepair, setConfirmRepair] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
@@ -822,7 +824,9 @@ function WhatsAppOnboardingPanel({
     setError("");
   };
 
-  const start = async () => {
+  const start = async (resetSession = false) => {
+    setConfirmRepair(false);
+    setSetup(null);
     setPhase("starting");
     setError("");
     setQrDataUrl("");
@@ -830,6 +834,7 @@ function WhatsAppOnboardingPanel({
       const res = await api.startWhatsAppOnboarding({
         mode,
         allowed_users: allowedUsers,
+        reset_session: resetSession,
       });
       setSetup(res);
       if (res.qr_payload) {
@@ -949,6 +954,7 @@ function WhatsAppOnboardingPanel({
       : !allowedUsers.trim() && hasSavedAllowedUsers
         ? "Hermes will keep the saved WhatsApp allowlist."
         : C.whatsappPairingFallback;
+  const pairingBusy = ["starting", "waiting", "applying"].includes(phase);
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
@@ -958,10 +964,18 @@ function WhatsAppOnboardingPanel({
             size="sm"
             className="uppercase"
             onClick={() => void start()}
-            disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
+            disabled={pairingBusy}
             prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
           >
             {phase === "starting" ? "Starting…" : C.pairWithQr}
+          </Button>
+          <Button
+            size="sm"
+            outlined
+            onClick={() => setConfirmRepair(true)}
+            disabled={pairingBusy}
+          >
+            Re-pair with QR
           </Button>
           {platform.configured && (
             <span className="text-xs text-muted-foreground">
@@ -969,6 +983,16 @@ function WhatsAppOnboardingPanel({
             </span>
           )}
         </div>
+
+        <ConfirmDialog
+          open={confirmRepair}
+          title="Replace the saved WhatsApp link?"
+          description="Use this if WhatsApp logged out or removed this linked device. Disable WhatsApp and restart the gateway first. The old session will be kept in a private backup. Scan the new QR from Linked Devices on your phone, then Save and restart to enable WhatsApp again."
+          confirmLabel="Back up and re-pair"
+          destructive
+          onCancel={() => setConfirmRepair(false)}
+          onConfirm={() => void start(true)}
+        />
 
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <div className="grid gap-1.5">

@@ -5,8 +5,10 @@ import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { hotkeys } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
+  ConfigFullResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionExportResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -18,6 +20,7 @@ import type {
 import { t } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { writeSessionExport } from '../../../lib/sessionExport.js'
 import {
   configureDetectedTerminalKeybindings,
   configureTerminalKeybindings,
@@ -26,7 +29,7 @@ import {
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
+import { patchUiState, sessionCwd } from '../../uiStore.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -38,6 +41,14 @@ const saveDisplayPref = (ctx: SlashRunCtx, key: string, value: string) => {
 
   ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value, ...session }).catch(() => {})
 }
+
+/** `/config`: the projection as indented `key: value` lines (YAML-shaped, like the classic CLI). */
+const configLines = (value: Record<string, unknown>, indent: string): string[] =>
+  Object.entries(value).flatMap(([key, v]) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? [`${indent}${key}:`, ...configLines(v as Record<string, unknown>, `${indent}  `)]
+      : [`${indent}${key}: ${Array.isArray(v) ? JSON.stringify(v) : String(v)}`]
+  )
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -327,6 +338,63 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['ts'],
+    help: 'toggle [HH:MM] timestamps on transcript messages [on|off|status]',
+    name: 'timestamps',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.timestamps
+
+      // T10: `display.timestamps` (the classic CLI's key) through the owner's config.set; the
+      // transcript repaints on the same frame, as /density does.
+      if (mode === 'status') {
+        return ctx.transcript.sys(`timestamps ${current ? 'on' : 'off'}`)
+      }
+
+      const next = flagFromArg(mode, current)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /timestamps [on|off|status]')
+      }
+
+      patchUiState({ timestamps: next })
+      ctx.transcript.sys(`timestamps ${next ? 'on' : 'off'}`)
+      // A refused write would revert on the next config refresh: say so instead of staying quiet.
+      ctx.gateway.gw
+        .request<ConfigSetResponse>('config.set', { key: 'timestamps', value: next ? 'on' : 'off' })
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'show the presentation settings the gateway serves for this profile',
+    name: 'config',
+    run: (_arg, ctx, cmd) => {
+      // Main's sidecar ran the classic CLI's /config in its slash worker; keep that there.
+      if (!ctx.gateway.gw?.isCanonical) {
+        return void ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(r => !ctx.stale() && ctx.transcript.page(r?.output || '{}', 'Config'))
+          .catch(ctx.guardedErr)
+      }
+
+      // T10: the owner's config.get `full` is the redacted presentation projection (display,
+      // approvals, voice keybinding) — never provider/MCP/terminal config, which can hold secrets.
+      // The client renders it; the classic CLI's full dump stays `hermes config`.
+      ctx.gateway
+        .rpc<ConfigFullResponse>('config.get', { key: 'full', ...(ctx.sid ? { session_id: ctx.sid } : {}) })
+        .then(
+          ctx.guarded<ConfigFullResponse>(r => {
+            const lines = configLines(r.config ?? {}, '')
+
+            ctx.transcript.page(lines.length ? lines.join('\n') : '{}', 'Config')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     aliases: ['detail'],
     help: 'control agent detail visibility (global or per-section)',
     name: 'details',
@@ -585,7 +653,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'save the current transcript to JSON',
     name: 'save',
-    run: (_arg, ctx) => {
+    run: (arg, ctx) => {
       const hasConversation = ctx.local
         .getHistoryItems()
         .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
@@ -596,6 +664,45 @@ export const coreCommands: SlashCommand[] = [
 
       if (!ctx.sid) {
         return ctx.transcript.sys(t('slashCmd.core.save.noActiveSession'))
+      }
+
+      // T10: the shared owner renders the transcript (session.export) and Ink writes the file on
+      // the user's machine, as the classic CLI's `/save [json|md|html] [filename] [redact]` did.
+      // The same verb serves a remote Desktop, where the gateway's disk is not the user's.
+      if (ctx.gateway.gw?.isCanonical) {
+        const parts = arg.trim().split(/\s+/).filter(Boolean)
+        const redact = /^-{0,2}redact$/i.test(parts.at(-1) ?? '')
+
+        if (redact) {
+          parts.pop()
+        }
+
+        const [format = 'json', filename] = parts
+        // The user's folder, fixed now: a local session's cwd, else the launch HERMES_CWD (a remote
+        // session's folder names the gateway host's disk, not this one).
+        const remote = Boolean(process.env.HERMES_TUI_GATEWAY_URL?.trim())
+        const cwd = (remote ? process.env.HERMES_CWD : sessionCwd()) || process.cwd()
+
+        // The write is the user's accepted request: it runs even when another slash has started
+        // since (the stale-flight guard drops only the success notice; a failure always shows).
+        return void ctx.gateway
+          .rpc<SessionExportResponse>('session.export', { format, redact, session_id: ctx.sid })
+          .then(r => {
+            if (!r) {
+              return
+            }
+
+            try {
+              const notice = t('slashCmd.core.save.saved', writeSessionExport(r, filename, cwd))
+
+              if (!ctx.stale()) {
+                ctx.transcript.sys(notice)
+              }
+            } catch (e) {
+              ctx.transcript.sys(`${t('slashCmd.core.save.failed')}: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          })
+          .catch(ctx.guardedErr)
       }
 
       ctx.gateway

@@ -6,6 +6,7 @@ import {
   backendRestarting,
   describeCredentialWarning,
   describeRpcError,
+  describeShellExecError,
   describeSlashExecError,
   describeTurnFailure,
   isVersionSkewError,
@@ -102,6 +103,14 @@ describe('describeRpcError', () => {
     expect(text).toContain('/resume')
   })
 
+  it('explains a read-only stored chat instead of echoing its reason code', () => {
+    const text = describeRpcError(new JsonRpcGatewayError('session_read_only', { code: 4001 }))
+
+    expect(text).not.toContain('session_read_only')
+    expect(text).toContain('/new')
+    expect(describeRpcError(new JsonRpcGatewayError('session_has_children', { code: 4001 }))).toMatch(/not deleted/)
+  })
+
   it('passes ordinary domain errors through unchanged', () => {
     expect(describeRpcError(new JsonRpcGatewayError('hash required', { code: 4014 }))).toBe('hash required')
   })
@@ -114,6 +123,13 @@ describe('describeRpcError', () => {
     expect(
       describeRpcError(new JsonRpcGatewayError('session not found or not owned by this transport', { code: 4001 }))
     ).toContain('/resume')
+  })
+
+  it('names /new for a refusal on a chat whose launch API key changed, never the bare code', () => {
+    const text = describeRpcError(new JsonRpcGatewayError('launch_credentials_unavailable', { code: 4001 }))
+
+    expect(text).toContain('/new')
+    expect(text).not.toContain('launch_credentials_unavailable')
   })
 
   it('records the raw wire text it replaced in the log sink', () => {
@@ -284,5 +300,35 @@ describe('locale-aware resolution', () => {
     expect(backendRestarting()).toBe('RESTART-XX')
     expect(promptTimeoutNotice('sudo', 'timeout')).toBe('SUDO-XX')
     expect(describeTurnFailure({ error_surface: { code: 'auth', layer: 'auth' } }).split('\n')[0]).toBe('AUTH-XX // XX')
+  })
+})
+
+describe('describeShellExecError', () => {
+  it.each(['docker', 'ssh'])('names the %s backend and points at the agent (#134889 TUI-16)', backend => {
+    const err = new JsonRpcGatewayError('unsupported_terminal_backend', {
+      code: 4001,
+      data: { reason: 'unsupported_terminal_backend', field: 'terminal.backend', detail: backend }
+    })
+
+    const text = describeShellExecError(err)
+
+    expect(text).toContain(`terminal backend is ${backend}`)
+    expect(text).toContain('Ask the agent to run it instead')
+    expect(text).not.toContain('unsupported_terminal_backend')
+  })
+
+  it('still names the refusal when an older gateway sends no backend, and passes other errors through', () => {
+    const bare = new JsonRpcGatewayError('unsupported_terminal_backend', {
+      code: 4001,
+      data: { reason: 'unsupported_terminal_backend' }
+    })
+
+    const text = describeShellExecError(bare)
+
+    expect(text).toContain("this session's terminal backend isn't local")
+    expect(text).toContain('Ask the agent to run it instead.')
+    expect(text).not.toContain('not local')
+    expect(text).not.toContain("agent's terminal runs inside")
+    expect(describeShellExecError(new JsonRpcGatewayError('dangerous_command', { code: 4001 }))).toBe('dangerous_command')
   })
 })

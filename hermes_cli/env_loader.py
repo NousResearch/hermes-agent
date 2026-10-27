@@ -15,7 +15,8 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
-from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
+from hermes_cli.left_core_migration import profile_env_names
+from utils import atomic_replace, mkstemp_beside
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +88,11 @@ _SPAWN_CREDENTIAL_KEYS: frozenset[str] = frozenset({"HERMES_DASHBOARD_SESSION_TO
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
 # profile's .env. Credentials are excluded: shell exports are a documented way to supply them, and
 # read-time secret-scope checks (agent/secret_scope.py) own cross-profile credential isolation.
+# Providers that left core keep theirs listed on their ``LEFT_CORE`` row (``profile_env``), read statically:
+# this runs before provider discovery, and with the plugin absent nothing else names them.
 _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
-    "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE", "HERMES_COPILOT_ACP_COMMAND",
-    "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
-})
+    "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE",
+}) | profile_env_names()
 
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
@@ -822,8 +824,10 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
 
 def _load_secrets_config(home_path: Path) -> dict:
     """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
+    from hermes_cli.config_backend import config_exists, read_config_doc_readonly
+
     config_path = home_path / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return {}
     # Prefer the shared raw-config cache: this is the first config.yaml read of a normal startup, so
     # populating it lets main.py's early bridge and hermes_logging reuse one parse instead of 3-4.
@@ -837,7 +841,7 @@ def _load_secrets_config(home_path: Path) -> dict:
             pass
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        data = load_yaml_file_readonly(config_path) or {}
+        data = read_config_doc_readonly(config_path) or {}
     except Exception:
         return {}
     return data.get("secrets") or {}

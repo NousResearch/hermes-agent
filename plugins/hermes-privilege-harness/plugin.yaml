@@ -1,0 +1,8 @@
+name: hermes-vip
+description: "Passive root privilege harness — Hermes handles approval, VIP executes"
+version: 1.0.0
+author: Hermes Community
+license: MIT
+platforms: [macos, linux]
+hooks:
+  - pre_tool_call

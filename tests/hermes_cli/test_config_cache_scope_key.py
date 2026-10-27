@@ -72,15 +72,15 @@ def test_alternating_calls_do_not_reparse(tmp_path):
         cfg.write_text("model:\n  default: test-route\n", encoding="utf-8")
 
         parse_count = 0
-        original_fast_safe_load = config_mod.fast_safe_load
+        original_read_config_doc = config_mod.read_config_doc
 
-        def counting_fast_safe_load(*args, **kwargs):
+        def counting_read_config_doc(*args, **kwargs):
             nonlocal parse_count
             parse_count += 1
-            return original_fast_safe_load(*args, **kwargs)
+            return original_read_config_doc(*args, **kwargs)
 
         with patch("agent.secret_scope.current_secret_scope", return_value=None), \
-             patch.object(config_mod, "fast_safe_load", side_effect=counting_fast_safe_load):
+             patch.object(config_mod, "read_config_doc", side_effect=counting_read_config_doc):
             config_mod._LOAD_CONFIG_CACHE.clear()
             # First unscoped load
             config_mod._load_config_impl(want_deepcopy=False)
@@ -89,7 +89,7 @@ def test_alternating_calls_do_not_reparse(tmp_path):
         # Now alternate scoped/unscoped many times
         with patch("agent.secret_scope.current_secret_scope", return_value={"TEST": "scoped"}), \
              patch("agent.secret_scope.current_secret_scope_home", return_value="/home/user/.hermes/profiles/work"), \
-             patch.object(config_mod, "fast_safe_load", side_effect=counting_fast_safe_load):
+             patch.object(config_mod, "read_config_doc", side_effect=counting_read_config_doc):
             config_mod._load_config_impl(want_deepcopy=False)
             assert parse_count == 2  # first scoped load parses
 
@@ -100,7 +100,7 @@ def test_alternating_calls_do_not_reparse(tmp_path):
 
         # Back to unscoped — must be a cache hit (no re-parse)
         with patch("agent.secret_scope.current_secret_scope", return_value=None), \
-             patch.object(config_mod, "fast_safe_load", side_effect=counting_fast_safe_load):
+             patch.object(config_mod, "read_config_doc", side_effect=counting_read_config_doc):
             for _ in range(50):
                 config_mod._load_config_impl(want_deepcopy=False)
             assert parse_count == 2  # still 2 — no re-parse

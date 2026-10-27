@@ -11,7 +11,7 @@ import pytest
 from agent import secret_scope
 from gateway.run import _profile_runtime_scope
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools import browser_tool_cdp as bt_cdp
+from tools import browser_session_cdp as bs_cdp
 from tools import browser_harness_dirs as harness_dirs
 from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
 
@@ -22,7 +22,7 @@ def profiles(tmp_path, monkeypatch):
     a.mkdir()
     b.mkdir()
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    monkeypatch.setattr(bt_cdp, "_live_overrides", {})
+    monkeypatch.setattr(bs_cdp, "_live_overrides", {})
     return a, b
 
 
@@ -40,18 +40,18 @@ def test_a_bare_thread_on_a_multiplexed_gateway_never_resolves_the_launch_profil
     answer (``get_secret`` fails closed the same way). A bound scope still sees its own."""
     launch = get_hermes_home()
     with _profile_runtime_scope(launch, hydrate_secrets=False):
-        bt_cdp.set_live_cdp_override("http://127.0.0.1:9401")
+        bs_cdp.set_live_cdp_override("http://127.0.0.1:9401")
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
-    assert _in_bare_thread(bt_cdp.live_cdp_override) == ""
-    assert _in_bare_thread(bt_cdp._get_cdp_override_raw) == ""
+    assert _in_bare_thread(bs_cdp.live_cdp_override) == ""
+    assert _in_bare_thread(bs_cdp.get_cdp_override_raw) == ""
     with _profile_runtime_scope(launch, hydrate_secrets=False):
-        assert bt_cdp.live_cdp_override() == "http://127.0.0.1:9401"
+        assert bs_cdp.live_cdp_override() == "http://127.0.0.1:9401"
 
 
 def test_single_profile_bare_thread_keeps_the_process_override(profiles):
-    bt_cdp.set_live_cdp_override("http://127.0.0.1:9402")
-    assert _in_bare_thread(bt_cdp.live_cdp_override) == "http://127.0.0.1:9402"
-    assert hermes_home_key() in bt_cdp._live_overrides
+    bs_cdp.set_live_cdp_override("http://127.0.0.1:9402")
+    assert _in_bare_thread(bs_cdp.live_cdp_override) == "http://127.0.0.1:9402"
+    assert hermes_home_key() in bs_cdp._live_overrides
 
 
 # --- macOS AF_UNIX budget for a served profile's harness sockets -------------------------------------
@@ -275,31 +275,30 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
     """``/browser connect`` reaps, publishes the new endpoint, then reaps again. A tool call that
     resolved the OLD endpoint before the publish but inserted its session after the second reap kept
     driving the old browser. The real ``_browser_connect`` handler runs mid-creation here."""
-    from tools import browser_tool, browser_tool_lifecycle as lifecycle, browser_tool_session as bt_session
+    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
     from tui_gateway import server  # binds methods_browser helpers onto server globals
 
     a, _b = profiles
     sessions = {}
-    monkeypatch.setattr(browser_tool, "_active_sessions", sessions)
-    monkeypatch.setattr(lifecycle, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(bs, "_active_sessions", sessions)
+    monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
     closed = []  # released by object: the stale session is never in ``sessions``
-    monkeypatch.setattr(lifecycle, "_release_session_backend", lambda task_id, info: closed.append(info["cdp_url"]))
-    monkeypatch.setattr(bt_session, "_browser_command_preflight", lambda: {"error": "no CLI in this test"})
+    monkeypatch.setattr(lifecycle, "release_session_backend", lambda task_id, info: closed.append(info["cdp_url"]))
     created = []
 
-    def create(task_id, local):
-        url = bt_cdp._get_cdp_override_raw()  # resolved before the connect publishes
+    def create(task_id, force_local):
+        url = bs_cdp.get_cdp_override_raw()  # resolved before the connect publishes
         if not created:
             assert server._browser_connect("r1", {"url": "http://127.0.0.1:9502"})["result"]["connected"]
         created.append(url)
         return {"session_name": f"s{len(created)}", "cdp_url": url}
-    monkeypatch.setattr(bt_session, "_create_session_for_key", create)
+    monkeypatch.setattr(bs, "_create_session_for_key", create)
 
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bt_cdp.set_live_cdp_override("http://127.0.0.1:9501")
-        info = bt_session._get_session_info("task-a")
+        bs_cdp.set_live_cdp_override("http://127.0.0.1:9501")
+        info = bs.get_session_info("task-a")
     assert info["cdp_url"] == "http://127.0.0.1:9502"
     assert sessions["task-a"] is info
     assert closed == ["http://127.0.0.1:9501"]
@@ -307,63 +306,61 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
 
 def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_caller(profiles, monkeypatch):
     """A session found stale after creation is closed by object, never published first: while its
-    backend ``close`` runs, a concurrent ``_get_session_info`` for the same key must not find it in
+    backend ``close`` runs, a concurrent ``get_session_info`` for the same key must not find it in
     ``_active_sessions`` (it would return a browser that is being closed underneath it)."""
-    from tools import browser_tool, browser_tool_lifecycle as lifecycle, browser_tool_session as bt_session
+    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
     from tui_gateway import server
 
     a, _b = profiles
     sessions = {}
-    monkeypatch.setattr(browser_tool, "_active_sessions", sessions)
-    monkeypatch.setattr(lifecycle, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda key: None)
-    monkeypatch.setattr(bt_cdp, "_stop_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(bs, "_active_sessions", sessions)
+    monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(bs_cdp, "stop_cdp_supervisor", lambda key: None)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
-    monkeypatch.setattr(bt_session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
     visible_during_close = []
-
-    def dispatch(task_id, info, browser_cmd, command, args, timeout, engine):
-        if command == "close":  # what the existing-session path would hand a concurrent caller now
-            visible_during_close.append((info["cdp_url"], (sessions.get(task_id) or {}).get("cdp_url")))
-        return "chrome", {"success": True}
-    monkeypatch.setattr(bt_session, "_dispatch_browser_command", dispatch)
     released = []
-    monkeypatch.setattr(lifecycle, "_release_session_backend", lambda task_id, info: released.append(info["cdp_url"]))
+
+    def release(task_id, info):  # the backend close: what a concurrent caller would be handed now
+        visible_during_close.append((info["cdp_url"], (sessions.get(task_id) or {}).get("cdp_url")))
+        released.append(info["cdp_url"])
+    monkeypatch.setattr(lifecycle, "release_session_backend", release)
     created = []
 
-    def create(task_id, local):
-        url = bt_cdp._get_cdp_override_raw()
+    def create(task_id, force_local):
+        url = bs_cdp.get_cdp_override_raw()
         if not created:
             assert server._browser_connect("r1", {"url": "http://127.0.0.1:9512"})["result"]["connected"]
         created.append(url)
         return {"session_name": f"s{len(created)}", "cdp_url": url, "bb_session_id": None}
-    monkeypatch.setattr(bt_session, "_create_session_for_key", create)
+    monkeypatch.setattr(bs, "_create_session_for_key", create)
 
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bt_cdp.set_live_cdp_override("http://127.0.0.1:9511")
-        info = bt_session._get_session_info("task-a")
+        bs_cdp.set_live_cdp_override("http://127.0.0.1:9511")
+        info = bs.get_session_info("task-a")
     assert visible_during_close == [("http://127.0.0.1:9511", None)]
     assert released == ["http://127.0.0.1:9511"]
     assert info["cdp_url"] == "http://127.0.0.1:9512" and sessions["task-a"] is info
 
 
 def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(profiles, monkeypatch):
-    from tools import browser_tool, browser_tool_lifecycle as lifecycle, browser_tool_session as bt_session
+    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
     a, b = profiles
     sessions = {}
-    monkeypatch.setattr(browser_tool, "_active_sessions", sessions)
-    monkeypatch.setattr(lifecycle, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(bs, "_active_sessions", sessions)
+    monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
     closed = []
-    monkeypatch.setattr(lifecycle, "_cleanup_single_browser_session", closed.append)
+    monkeypatch.setattr(lifecycle, "cleanup_single_session", closed.append)
+    monkeypatch.setattr(lifecycle, "release_session_backend", lambda task_id, info: closed.append(task_id))
 
-    def create(task_id, local):
+    def create(task_id, force_local):
         with _profile_runtime_scope(b, hydrate_secrets=False):
-            bt_cdp.set_live_cdp_override("http://127.0.0.1:9601")
+            bs_cdp.set_live_cdp_override("http://127.0.0.1:9601")
         return {"session_name": "s", "cdp_url": "x"}
-    monkeypatch.setattr(bt_session, "_create_session_for_key", create)
+    monkeypatch.setattr(bs, "_create_session_for_key", create)
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        info = bt_session._get_session_info("task-a")
+        info = bs.get_session_info("task-a")
     assert sessions == {"task-a": info} and closed == []
 
 
@@ -379,7 +376,7 @@ def test_a_browser_exec_that_routed_to_the_old_endpoint_during_a_connect_reloads
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
     monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
-    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda raw: raw)
+    monkeypatch.setattr(bs_cdp, "resolve_cdp_override", lambda raw: raw)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
     latched = {}  # like browser-harness: one daemon per identity latches BU_CDP_URL; --reload stops it
 
@@ -404,7 +401,7 @@ def test_a_browser_exec_that_routed_to_the_old_endpoint_during_a_connect_reloads
 
     import json
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bt_cdp.set_live_cdp_override("http://127.0.0.1:9701")
+        bs_cdp.set_live_cdp_override("http://127.0.0.1:9701")
         first = json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
         assert connects[0]["result"]["connected"]
         nxt = json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
@@ -424,7 +421,7 @@ def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(pr
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
     monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
-    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda raw: raw)
+    monkeypatch.setattr(bs_cdp, "resolve_cdp_override", lambda raw: raw)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
     latched, connects = {}, []
 
@@ -439,8 +436,83 @@ def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(pr
         return subprocess.CompletedProcess(cmd, 0, str(latched.get(ident)), "")
     monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run)
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bt_cdp.set_live_cdp_override("http://127.0.0.1:9711")
+        bs_cdp.set_live_cdp_override("http://127.0.0.1:9711")
         json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
         assert connects[0]["result"]["connected"]
         nxt = json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
     assert nxt["output"] == "http://127.0.0.1:9712"
+
+
+# --- real-profile browser per profile home (one process, many profiles) -----------------------------
+
+@pytest.fixture
+def real_profile_launches(tmp_path, monkeypatch):
+    """Session + launcher registries isolated; the real-profile and fresh launches register a fake browser
+    under whatever key the session layer asks for (what the launcher does), and every stop is recorded."""
+    import os
+    from tools import browser_launcher as launcher, browser_lightpanda, browser_session as bs
+    from tools import browser_session_lifecycle as lifecycle
+    from tools.bot_desktop import placement, runtime
+    import hermes_cli.browser_connect as bc
+    for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
+        monkeypatch.setattr(bs, name, {})
+    monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(launcher, "_browsers", {})
+    monkeypatch.setattr(runtime, "tool_placement", lambda: placement.GATEWAY)
+    monkeypatch.setattr(bs, "ensure_screen_for_headed_chromium", lambda: None)
+    monkeypatch.setattr(browser_lightpanda, "using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr(bc, "detect_default_chromium", lambda system=None: "chrome")
+    monkeypatch.setattr(bc, "chromium_executable", lambda name, system=None: "/usr/bin/chrome")
+    monkeypatch.setattr(bc, "snapshot_real_profile", lambda name: (str(get_hermes_home() / "rp-copy"), None))
+    stopped = []
+    monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: stopped.append(pid))
+
+    def launch(key, **kw):
+        port = 9500 + len(launcher._browsers)
+        browser = launcher.LaunchedBrowser(
+            key=key, pid=os.getpid(), start_time=None, cdp_url=f"ws://127.0.0.1:{port}/devtools/browser/{port}",
+            http_url=f"http://127.0.0.1:{port}", user_data_dir=kw.get("user_data_dir") or str(tmp_path / key),
+            owned=True, ephemeral=False, home_key=hermes_home_key())
+        launcher._browsers[key] = browser
+        return browser, None
+    monkeypatch.setattr(launcher, "launch_chromium", launch)
+    return stopped
+
+
+def _consent(home, on: bool) -> None:
+    (home / "config.yaml").write_text(f"browser:\n  cloud_provider: local\n  use_real_profile: {'true' if on else 'false'}\n",
+                                      encoding="utf-8")
+
+
+def test_a_consent_off_profile_never_stops_another_profiles_real_profile_browser(profiles, real_profile_launches):
+    """Profile B (consent off, the default) creating a local session revokes only ITS real-profile browser;
+    profile A's keeps serving A's session."""
+    from tools import browser_session as bs
+    a, b = profiles
+    _consent(a, True)
+    _consent(b, False)
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        info_a = bs.get_session_info("task@a")
+        assert info_a["features"].get("real_profile")
+    with _profile_runtime_scope(b, hydrate_secrets=False):
+        info_b = bs.get_session_info("task@b")
+        assert not info_b["features"].get("real_profile")
+
+    assert real_profile_launches == [], "B's consent-off must not terminate A's real-profile browser"
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        assert bs._backend_dead(info_a) is False
+        assert bs.get_session_info("task@a")["cdp_url"] == info_a["cdp_url"]
+
+
+def test_a_consenting_profile_never_reuses_another_profiles_real_profile_browser(profiles, real_profile_launches):
+    """Two consenting profiles each get their own real-profile browser (their own snapshot, their own cookies)."""
+    from tools.browser_session_real_profile import real_profile_cdp
+    a, b = profiles
+    _consent(a, True)
+    _consent(b, True)
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        cdp_a, err_a = real_profile_cdp()
+    with _profile_runtime_scope(b, hydrate_secrets=False):
+        cdp_b, err_b = real_profile_cdp()
+    assert err_a is None and err_b is None
+    assert cdp_a != cdp_b

@@ -63,7 +63,6 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
-- Copilot / Copilot ACP
 - Anthropic (native)
 - Google / Gemini (`gemini`)
 - Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)

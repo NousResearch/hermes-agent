@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { cleanReviveSnapshot, isIdlePromptOnly, parseOscCwd } from './use-terminal-session'
+import { parseOscCwd } from './cwd-tracking'
+import { cleanReviveSnapshot, isIdlePromptOnly } from './revive-snapshot'
 
 // A default-PowerShell idle prompt: no blank-line separator before it.
 const PS_PROMPT = 'PS C:\\Users\\Aleksandr>'

@@ -285,11 +285,8 @@ def _model_flow_nous(config, current_model="", args=None):
     from hermes_cli.nous_subscription import prompt_enable_tool_gateway
     state = get_provider_auth_state("nous")
     from hermes_cli import anon_auth
-    if anon_auth.guest_without_free_tier(state):
-        # A guest that carries no inference here: signing in promotes it and keeps its connectors.
-        print(anon_auth.UPGRADE_HINT)
-        return
-    if not state or not state.get("access_token"):
+    # A free tier with no inference here signs in like no account; its apps move to the account after.
+    if not state or not state.get("access_token") or anon_auth.guest_without_free_tier(state):
         _say("Not logged into Nous Portal. Starting login...", "")
 
         def _login_then_offer_gateway(login_args, pconfig):
@@ -341,17 +338,27 @@ def _model_flow_nous(config, current_model="", args=None):
     _policy_notice = nous_policy_notice(removed=_policy_narrowed)
     if _policy_notice:
         print(_policy_notice)
+    from hermes_cli.model_picker_usage import featured_first, nous_picker_usage
+    _usage = nous_picker_usage(warm=True)
+    # Window plans: every model is usable; the plan's featured picks lead the list.
+    if _usage is not None:
+        model_ids = featured_first(model_ids, _usage.featured_model_ids)
     print(f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.')
 
     selected = _prompt_model_selection(
         model_ids, current_model=current_model, pricing=pricing, unavailable_models=unavailable_models,
         portal_url=_nous_portal_url, unavailable_message=unavailable_message, confirm_provider="nous",
-        confirm_base_url=creds.get("base_url", ""), confirm_api_key=creds.get("api_key", ""))
+        confirm_base_url=creds.get("base_url", ""), confirm_api_key=creds.get("api_key", ""),
+        usage=_usage)
     if not selected:
         print("No change.")
         return
     config = _nous_persist_selection(selected, creds)
     print(f"Default model set to: {selected} (via Nous Portal)")
+    if _usage is not None:
+        from hermes_cli.model_picker_usage import large_model_notice
+        if _notice := large_model_notice(selected, "nous"):
+            print(f"⚠ {_notice}")
     # Offer Tool Gateway enablement for paid subscribers
     prompt_enable_tool_gateway(config)
 
@@ -468,157 +475,6 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
     selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
-
-
-def _copilot_model_list(live_ids) -> list:
-    """Live GitHub Copilot ids, or the curated fallback with a warning."""
-    from hermes_cli.models import _PROVIDER_MODELS
-    if live_ids:
-        model_list = [model_id for model_id in live_ids if model_id]
-        print(f"  Found {len(model_list)} model(s) from GitHub Copilot")
-        return model_list
-    model_list = _PROVIDER_MODELS.get("copilot", [])
-    if model_list:
-        _say("  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults.",
-             '    Use "Enter custom model name" if you do not see your model.')
-    return model_list
-
-
-def _copilot_catalog(api_key: str):
-    """``(catalog, catalog_ids, normalize)`` for a GitHub token; *normalize* canonicalizes a
-    model id against the catalog (identity when unknown)."""
-    from hermes_cli.models import fetch_github_model_catalog, normalize_copilot_model_id
-    catalog = fetch_github_model_catalog(api_key)
-    ids = [item.get("id", "") for item in catalog if item.get("id")] if catalog else []
-
-    def _normalize(mid):
-        return normalize_copilot_model_id(mid, catalog=catalog, api_key=api_key) or mid
-
-    return catalog, ids, _normalize
-
-
-def _copilot_obtain_token() -> bool:
-    """No Copilot token yet: offer device-code login or manual entry. False = stop."""
-    from hermes_cli.config import save_env_value
-    _say("No GitHub token configured for GitHub Copilot.", "", "  Supported token types:",
-         "    → OAuth token (gho_*)          via `copilot login` or device code flow",
-         "    → Fine-grained PAT (github_pat_*)  with Copilot Requests permission",
-         "    → GitHub App token (ghu_*)     via environment variable",
-         "    ✗ Classic PAT (ghp_*)          NOT supported by Copilot API", "", "  Options:",
-         "    1. Login with GitHub (OAuth device code flow)", "    2. Enter a token manually", "    3. Cancel", "")
-    choice = _ask("  Choice [1-3]: ", raw=True, cancel_msg="")
-    if choice is None:
-        return False
-    if choice == "1":
-        try:
-            from hermes_cli.copilot_auth import copilot_device_code_login
-            token = copilot_device_code_login()
-            if not token:
-                print("  Login cancelled or failed.")
-                return False
-            save_env_value("COPILOT_GITHUB_TOKEN", token)
-            _say("  Copilot token saved.", "")
-        except Exception as exc:
-            print(f"  Login failed: {exc}")
-            _note_setup_failure("auth")
-            return False
-        return True
-    if choice == "2":
-        new_key = _ask("  Token (COPILOT_GITHUB_TOKEN): ", secret=True, cancel_msg="")
-        if new_key is None:
-            return False
-        if not new_key:
-            print("  Cancelled.")
-            return False
-        # Validate token type
-        with contextlib.suppress(ImportError):
-            from hermes_cli.copilot_auth import validate_copilot_token
-            valid, msg = validate_copilot_token(new_key)
-            if not valid:
-                print(f"  ✗ {msg}")
-                return False
-        save_env_value("COPILOT_GITHUB_TOKEN", new_key)
-        _say("  Token saved.", "")
-        return True
-    print("  Cancelled.")
-    return False
-
-
-def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code. The reasoning-effort step
-    is the shared post-pick one in ``select_provider_and_model`` (Copilot's per-model level set
-    comes from ``github_model_reasoning_efforts`` there)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
-    from hermes_cli.models import fetch_api_models, copilot_model_api_mode
-    provider_id = "copilot"
-    pconfig = PROVIDER_REGISTRY[provider_id]
-    creds = resolve_api_key_provider_credentials(provider_id)
-    api_key = creds.get("api_key", "")
-    source = creds.get("source", "")
-    if not api_key:
-        if not _copilot_obtain_token():
-            return
-        creds = resolve_api_key_provider_credentials(provider_id)
-        api_key = creds.get("api_key", "")
-    else:
-        if source in {"GITHUB_TOKEN", "GH_TOKEN"}:
-            from hermes_cli.env_loader import format_secret_source_suffix
-            _say(f"  GitHub token: {api_key[:8]}... ✓ ({source}{format_secret_source_suffix(source)})", "")
-        else:
-            _say("  GitHub token: ✓ (from `gh auth token`)" if source == "gh auth token" else "  GitHub token: ✓", "")
-
-    effective_base = pconfig.inference_base_url
-    catalog, live_models, _normalize = _copilot_catalog(api_key)
-    if not catalog:
-        live_models = fetch_api_models(api_key, effective_base)
-
-    selected = _pick_model_or_prompt(
-        _copilot_model_list(live_models), "Model name: ", current_model=_normalize(current_model),
-        confirm_provider=provider_id, confirm_base_url=effective_base, confirm_api_key=api_key)
-    if not selected:
-        print("No change.")
-        return
-    selected = _normalize(selected)
-    _persist_model(selected, provider_id, base_url=effective_base,
-                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key))
-    print(f"Default model set to: {selected} (via {pconfig.name})")
-
-
-def _model_flow_copilot_acp(config, current_model=""):
-    """GitHub Copilot ACP flow using the local Copilot CLI."""
-    from hermes_cli.auth import (
-        PROVIDER_REGISTRY, get_external_process_provider_status, resolve_api_key_provider_credentials,
-        resolve_external_process_provider_credentials)
-
-    del config
-    provider_id = "copilot-acp"
-    pconfig = PROVIDER_REGISTRY[provider_id]
-    status = get_external_process_provider_status(provider_id)
-    resolved_command = status.get("resolved_command") or status.get("command") or "copilot"
-    effective_base = status.get("base_url") or pconfig.inference_base_url
-
-    _say("  GitHub Copilot ACP delegates Hermes turns to `copilot --acp`.",
-         "  Hermes currently starts its own ACP subprocess for each request.",
-         "  Hermes uses your selected model as a hint for the Copilot ACP session.",
-         f"  Command: {resolved_command}", f"  Backend marker: {effective_base}", "")
-    try:
-        creds = resolve_external_process_provider_credentials(provider_id)
-    except Exception as exc:
-        _say(f"  ⚠ {exc}", "  Set HERMES_COPILOT_ACP_COMMAND or COPILOT_CLI_PATH if Copilot CLI is installed elsewhere.")
-        return
-    effective_base = creds.get("base_url") or effective_base
-
-    catalog_api_key = ""
-    with contextlib.suppress(Exception):
-        catalog_api_key = resolve_api_key_provider_credentials("copilot").get("api_key", "")
-    _catalog, catalog_ids, _normalize = _copilot_catalog(catalog_api_key)
-    selected = _pick_model_or_prompt(
-        _copilot_model_list(catalog_ids), "Model name: ", current_model=_normalize(current_model),
-        confirm_provider=provider_id, confirm_base_url=effective_base, confirm_api_key=catalog_api_key)
-    if selected:
-        selected = _normalize(selected)
-    _finish_model(selected, provider_id, f"Default model set to: {selected} (via {pconfig.name})",
-                  base_url=effective_base, api_mode="chat_completions")
 
 
 def _model_flow_kimi(config, current_model=""):
@@ -875,8 +731,8 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     ``models._profile_live_catalog``; generic /models probe for unregistered providers).
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, probe_profile_catalog
-    curated = _PROVIDER_MODELS.get(provider_id, [])
+    from hermes_cli.models import fetch_api_models, probe_profile_catalog, static_catalog
+    curated = static_catalog(provider_id)
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
@@ -1140,6 +996,14 @@ _PLUGIN_FLOW_CREDENTIALS = {
     "oauth_device_code": _plugin_flow_oauth,
     "oauth_external": _plugin_flow_oauth,
 }
+
+
+def _profile_model_setup_flow(provider_id: str):
+    """``flow(config, current_model, args)`` for a registered profile that owns its ``hermes model``
+    step (``ProviderProfile.model_setup_flow``), else None."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider_id)
+    return getattr(profile, "model_setup_flow", None) if profile is not None else None
 
 
 def _is_profile_plugin_flow_provider(provider_id: str) -> bool:

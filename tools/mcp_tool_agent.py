@@ -38,8 +38,11 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else enabled
         if disabled_override is not None:
+            from agent.oneshot_footprint import agent_is_oneshot
             from toolsets import session_disabled_toolsets
-            disabled = session_disabled_toolsets(disabled_override, getattr(agent, "platform", None))
+            agent._configured_disabled_toolsets = disabled_override
+            disabled = session_disabled_toolsets(
+                disabled_override, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
     return enabled, disabled
 
@@ -55,6 +58,8 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 
 def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
+    # Drops only: runs after a merge, where a carried or pinned entry keeps the bytes already sent. The one-shot
+    # schema variants (``toolsets.agent_tool_surface``) shape fresh definitions, before any merge.
     from toolsets import agent_tool_drops
     drops = agent_tool_drops(agent)
     if not drops:
@@ -123,7 +128,11 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
-    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
+    from agent.delegation_backends import adopt_built_backend, saved_backend
+    built_backend = saved_backend()
+    from toolsets import agent_tool_surface
+    new_defs = agent_tool_surface(agent, list(
+        get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or []))
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
@@ -143,7 +152,14 @@ def refresh_agent_mcp_tools(
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+    backend_before = getattr(agent, "_delegation_backend", None)
+    published_gen = getattr(agent, "_tool_snapshot_generation", -1)
+    stale = isinstance(published_gen, int) and snapshot_generation < published_gen  # a newer snapshot won
+    if prefix_registered is None and not stale:  # a rebuild: route on the backend its new delegate_task is from
+        adopt_built_backend(agent, new_defs, built_backend)
     if added is None:
+        if getattr(agent, "_delegation_backend", None) != backend_before:
+            persist_agent_tool_names(agent)  # only the backend moved (two backends build one schema): pin it
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order
     return added
@@ -176,7 +192,10 @@ def persist_agent_tool_names(agent) -> None:
     if not db or not session_id:
         return
     try:
-        db.update_session_tool_names(session_id, {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)})
+        pin = {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)}
+        if isinstance(backend := getattr(agent, "_delegation_backend", None), str) and backend:
+            pin["delegation_backend"] = backend  # what its delegate_task was built from: the session routes on it
+        db.update_session_tool_names(session_id, pin)
     except Exception:
         logger.debug("tool_names persist skipped", exc_info=True)
 
@@ -185,12 +204,17 @@ def _config_permitted_names(agent) -> set:
     """Tool names this agent's toolset selection allows before ``check_fn``: all a pin may carry
     forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
     here is no config choice); ``disabled_toolsets`` still strips it."""
+    from agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS, agent_is_oneshot
     from model_tools import _select_tool_names
     from toolsets import CLIENT_SURFACE_TOOLSETS
     enabled = getattr(agent, "enabled_toolsets", None)
     if enabled is not None:
         enabled = [*enabled, *CLIENT_SURFACE_TOOLSETS]
-    return _select_tool_names(enabled, getattr(agent, "disabled_toolsets", None), True)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    if disabled and agent_is_oneshot(agent):  # the one-shot gate is no config choice either: a pinned clarify stays,
+        configured = set(getattr(agent, "_configured_disabled_toolsets", None) or ())  # unless config disables it
+        disabled = [name for name in disabled if name not in ONESHOT_DISABLED_TOOLSETS or name in configured]
+    return _select_tool_names(enabled, disabled, True)
 
 
 def _drop_gated_carried_tools(merged: list, carried: set) -> list:
@@ -227,6 +251,9 @@ def _pinned_tool_defs(saved, fresh, keep_bytes=False) -> tuple:
 def pinned_tool_defs(saved) -> list:
     """``saved``'s tool definitions as a fresh agent restores them, for an estimate with no agent built:
     pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
+    # With no agent built yet (gateway warm-up off, failed or still running), nothing has run tool
+    # discovery, so the registry would resolve no legacy name.
+    import model_tools
     return _pinned_tool_defs(saved, {}, keep_bytes=True)[2]
 
 
@@ -260,6 +287,9 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
         with _agent_tools_lock:
             agent.tools = merged
             agent.valid_tool_names = merged_names
+    if isinstance(saved, dict) and saved.get("delegation_backend"):
+        from agent.delegation_backends import adopt_built_backend
+        adopt_built_backend(agent, pinned, saved["delegation_backend"])
     if not same_code or merged != list(pinned):
         persist_agent_tool_names(agent)
     return changed

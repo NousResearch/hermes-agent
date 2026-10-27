@@ -502,6 +502,9 @@ class TestLoginNousSkipKeepsCurrent:
             lambda ids, p, free_tier=False: (ids, []),
         )
         monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
+        # Not a usage-window account, and no live portal read of the fake token.
+        import hermes_cli.model_picker_usage as mpu
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
         return free_tier_calls
 
     def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):
@@ -916,7 +919,7 @@ def test_shared_store_write_and_read_roundtrip(shared_store_env):
     )
 
     state = _full_state_fixture()
-    _write_shared_nous_state(state)
+    _write_shared_nous_state(state, renewal=False)
 
     path = _nous_shared_store_path()
     assert path.is_file()
@@ -978,7 +981,7 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import auth_nous
 
-    auth_mod._write_shared_nous_state(_full_state_fixture())
+    auth_mod._write_shared_nous_state(_full_state_fixture(), renewal=False)
     fresh_jwt = _invoke_jwt(seconds=7200)
 
     def _fake_refresh(state, **kwargs):

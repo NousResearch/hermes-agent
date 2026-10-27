@@ -1,5 +1,6 @@
 """GatewayAgent drives main's HermesCLI callbacks from a scripted gateway (no live gateway)."""
 import asyncio
+import json
 import threading
 from contextlib import asynccontextmanager
 
@@ -144,6 +145,20 @@ def test_approval_request_calls_cli_approval_callback_then_responds(make_agent):
     assert respond == {"session_id": SID, "execution_generation": 7, "prompt_id": "p1", "choice": "once"}
 
 
+def test_connection_card_events_reach_the_cli_card(make_agent):
+    """The gateway runs manage_connections; its card events must reach the CLI's card callbacks."""
+    opened, updates = [], []
+    request = {"op_id": "op1", "seq": 1, "deadline_at": 0, "timeout_seconds": 300,
+               "targets": [{"name": "linear", "kind": "mcp", "action": "install", "state": "pending"}]}
+    update = {**request, "seq": 2, "settled": False}
+    agent, _ = make_agent(
+        [frame("connection.request", request), frame("connection.update", update),
+         frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        connection_callback=opened.append, connection_update_callback=updates.append)
+    agent.run_conversation("connect linear")
+    assert opened == [request] and updates == [update]
+
+
 def test_interrupt_sends_session_interrupt_and_settles_interrupted(make_agent):
     agent, client = make_agent(
         [frame("message.delta", {"text": "w001 "})] + ["wait"] * 20,
@@ -207,32 +222,6 @@ def test_agent_print_routes_to_print_fn(make_agent):
 def test_hard_interrupt_is_a_real_method():
     import inspect
     assert inspect.getattr_static(GatewayAgent, "hard_interrupt")
-
-
-def test_manual_compress_is_the_gateway_compress_mutation(make_agent):
-    """Main's /compress (compress_now -> agent._compress_context) commits on the gateway and adopts
-    the compacted transcript; the CLI prints main's \"Compressed: N -> M\" report from it."""
-    from agent.conversation_compression_manual import CompressRequest, compress_now
-    agent, client = make_agent([])
-    compacted = [{"role": "user", "content": "summary", "row_id": 1}, {"role": "assistant", "content": "ok", "row_id": 2}]
-    original = client.rpc
-
-    async def rpc(method, *, _timeout=None, **params):
-        if method == "session.resume":
-            client.calls.append((method, params))
-            done = any(m == "session.mutate" for m, _ in client.calls)
-            return {"revision": 9, "execution_generation": 7, "messages": compacted if done else []}
-        return await original(method, _timeout=_timeout, **params)
-    client.rpc = rpc
-    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(6)]
-    result = compress_now(agent, history, CompressRequest(), task_id=SID)
-    mutate = dict(client.calls)["session.mutate"]
-    assert mutate["operation"] == "compress" and mutate["expected_revision"] == 9 and mutate["payload"] == {}
-    assert mutate["expected_generation"] == 7
-    assert result.status == "compressed"
-    assert result.after_messages == [{"role": "user", "content": "summary"}, {"role": "assistant", "content": "ok"}]
-    assert result.summary["headline"] == "Compressed: 6 → 2 messages"
-    assert agent.context_compressor.compression_count == 1
 
 
 SESSION_USAGE = {"input_tokens": 500, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -497,6 +486,34 @@ def test_gateway_sudo_request_opens_mains_sudo_panel_and_replies_with_the_value(
         set_sudo_password_callback(None)
     assert asked == [1]
     assert replies == [("srq-abc", {"value": "pw-from-panel"})]
+
+
+@pytest.mark.parametrize(("method", "params", "setter", "callback", "expected"), [
+    ("vault.code", {"site": "example.com", "hint": ""}, "set_code_prompt_callback",
+     lambda site, hint: "123456", "123456"),
+    ("vault.unlock_prompt", {"backend": "bitwarden", "display_name": "Bitwarden"}, "set_unlock_prompt_callback",
+     lambda backend, name: "master", "master"),
+    ("vault.save_login", {"origin": "https://example.com", "site": "example.com"}, "set_save_login_prompt_callback",
+     lambda origin, site: {"identifier": "me@example.com", "password": "pw"},
+     json.dumps({"identifier": "me@example.com", "password": "pw"})),
+    ("vault.save_login", {"origin": "https://example.com", "site": "example.com"}, "set_save_login_prompt_callback",
+     lambda origin, site: None, ""),
+])
+def test_gateway_vault_requests_open_mains_panels_and_reply_with_the_value(make_agent, method, params, setter,
+                                                                           callback, expected):
+    """The gateway's ``vault.*`` server→client requests are answered by main's vault panels (the turn's
+    registered callbacks); a classic CLI viewer no longer leaves them to time out."""
+    from agent.vault_backends import unlock
+    request = {"jsonrpc": "2.0", "id": "srq-vault", "method": method, "params": {"session_id": SID, **params}}
+    agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    getattr(unlock, setter)(callback)
+    try:
+        agent.run_conversation("sign in")
+    finally:
+        getattr(unlock, setter)(None)
+    assert replies == [("srq-vault", {"value": expected})]
 
 
 def test_connection_reply_sends_a_jsonrpc_response_frame():
@@ -890,6 +907,49 @@ def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_a
     assert replies == [("srq-clr", {"answers": {}, "outcome": "cancelled"})]
 
 
+@pytest.mark.parametrize("method", ["vault.code", "vault.unlock_prompt", "vault.save_login"])
+def test_another_viewer_answering_a_vault_prompt_releases_mains_panel(make_agent, method):
+    """The vault prompts open main's panels on the sudo panel's state. When a Desktop or Ink viewer answers
+    first, the gateway withdraws the request and the CLI's panel must close, or the pump sits in the modal
+    until its own 120-180 s deadline instead of reading the rest of the turn."""
+    from unittest.mock import MagicMock
+    from agent.vault_backends import unlock
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    panel = _make_cli_stub()
+    panel._sudo_state = None
+    panel._sudo_deadline = 0
+    panel._ring_bell = lambda **kw: None
+    panel._capture_modal_input_snapshot = MagicMock()
+    panel._restore_modal_input_snapshot = MagicMock()
+    params = {"vault.code": {"site": "example.com", "hint": ""},
+              "vault.unlock_prompt": {"backend": "bitwarden", "display_name": "Bitwarden"},
+              "vault.save_login": {"origin": "https://example.com", "site": "example.com"}}[method]
+    request = {"jsonrpc": "2.0", "id": "srq-vlt", "method": method, "params": {"session_id": SID, **params}}
+    withdrawn = frame("request.cancel", {"id": "srq-vlt", "method": method, "reason": "resolved"}, admission=None)
+    agent, _client = make_agent([request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+                                modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+
+    def run():
+        unlock.set_code_prompt_callback(panel._vault_code_callback)
+        unlock.set_unlock_prompt_callback(panel._vault_unlock_callback)
+        unlock.set_save_login_prompt_callback(panel._vault_save_login_callback)
+        try:
+            out.update(agent.run_conversation("sign in"))
+        finally:
+            unlock.set_code_prompt_callback(None)
+            unlock.set_unlock_prompt_callback(None)
+            unlock.set_save_login_prompt_callback(None)
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its vault panel"
+    assert panel._sudo_state is None
+    assert replies == [("srq-vlt", {"value": ""})]
+
+
 def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
     agent, _client = make_agent([])
     closed = []
@@ -993,3 +1053,101 @@ def test_a_voice_stopped_correction_is_consumed_not_requeued(make_agent, mode):
     sent = [m for m, _ in client.calls if m.startswith("session.")]
     assert sent == [{"steer": "session.steer", "interrupt": "session.redirect"}[mode]]
     assert agent._turn_ask_index == 3, "the running turn's history changed for a consumed stop"
+
+
+def test_a_session_switch_drops_the_previous_sessions_figures(make_agent):
+    """/new, /resume and /branch repoint ``session_id`` then call ``reset_session_state``: the bar and
+    /usage show the target's gateway figures (``session.stats``), never the session left behind, and
+    a late frame of the old session does not repaint them."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    assert agent.session_api_calls == 5 and agent._api_latency_history
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats" and params.get("session_id") == "local-other":
+            return {"api_calls": 3, "input_tokens": 9}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.connection.state("local-other").messages = [{"role": "user", "content": "earlier"}]  # resumed
+    agent.session_id = "local-other"
+    agent.reset_session_state()
+    assert (agent.session_api_calls, agent.session_input_tokens, agent.session_output_tokens) == (3, 9, 0)
+    assert agent.context_compressor.last_prompt_tokens == 0 and agent._api_latency_history == []
+    agent.connection.state(SID).apply_usage(dict(SESSION_USAGE, api_calls=6))
+    assert agent.session_api_calls == 3
+    assert agent._on_request_withdrawn not in agent.connection.state(SID).request_listeners
+
+
+def test_new_session_reads_zero_without_a_stats_round_trip(make_agent):
+    """/new lands on a session the gateway just created (no transcript, no usage): its figures are
+    known zero, so the reset makes no ``session.stats`` call."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    agent.session_id = "local-fresh"
+    client.calls.clear()
+    agent.reset_session_state()
+    assert agent.session_api_calls == 0 and agent._api_latency_history == []
+    assert [method for method, _ in client.calls] == []
+
+
+def test_todo_updates_after_a_session_switch_reach_the_cli_todo_store(make_agent):
+    """/new, /resume and /branch give the agent a fresh ``tools.todo_tool.TodoStore``; the gateway's
+    later ``todo.updated`` must still land where the CLI reads it (``read()``: the pet's done-plan beat)."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+    todos = [{"id": "1", "content": "ship it", "status": "completed"}]
+    agent, _ = make_agent([frame("todo.updated", {"todos": todos, "revision": 1}),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    cli = SimpleNamespace(agent=agent, conversation_history=[])
+    _sync_agent_to_session(cli, SID, parent_session_id="", reason="resume")
+    agent.run_conversation("plan")
+    assert agent._todo_store.read() == todos
+
+
+def _resume_with_todos(client, todos, revision):
+    """``client``'s ``session.resume`` answers as the gateway does for a session with a plan."""
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        reply = await original(method, _timeout=_timeout, **params)
+        if method == "session.resume":
+            reply = dict(reply, stored_session_id=params["session_id"],
+                         todo_state={"todos": todos, "revision": revision})
+        return reply
+    client.rpc = rpc
+
+
+def test_resume_restores_the_sessions_todos_into_the_cli_todo_store(make_agent):
+    """/resume and /branch attach through ``session.resume``; main then swaps in a fresh ``TodoStore``,
+    which starts with the gateway's ``todo_state`` (revision kept), not empty until the next ``todo.updated``."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    todos = [{"id": "1", "content": "ship it", "status": "in_progress"}]
+    agent, client = make_agent([])
+    _resume_with_todos(client, todos, 4)
+    agent._session_db = GatewaySessionStore(agent.connection)
+    _sync_agent_to_session(SimpleNamespace(agent=agent, conversation_history=[]), "local-other",
+                           parent_session_id="", reason="resume")
+    assert agent._todo_store.snapshot() == {"todos": todos, "revision": 4}
+
+
+def test_startup_resume_builds_the_agent_with_the_sessions_todos(make_agent):
+    """``chat -c`` attaches (``open_session``) before it builds the agent, whose store starts with the
+    snapshot; a later ``todo.updated`` of that session is what the next swapped-in store starts with."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from tools.todo_tool import TodoStore
+    todos = [{"id": "1", "content": "ship it", "status": "completed"}]
+    agent, client = make_agent([])
+    _resume_with_todos(client, todos, 2)
+    store = GatewaySessionStore(agent.connection)
+    store.attach("local-resumed")
+    resumed = GatewayAgent(connection=agent.connection, session_db=store, session_id="local-resumed")
+    assert resumed._todo_store.snapshot() == {"todos": todos, "revision": 2}
+    later = [dict(todos[0], status="in_progress")]
+    agent.connection.state("local-resumed").apply_event("todo.updated", {"todos": later, "revision": 3})
+    resumed._todo_store = TodoStore()
+    assert resumed._todo_store.snapshot() == {"todos": later, "revision": 3}

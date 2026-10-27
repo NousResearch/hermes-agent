@@ -180,46 +180,57 @@ def _home(authority, actor, profile):
 
 
 async def _target(authority, actor):
-    ref = None
+    ref = lane = None
     row = authority.db.get_session_by_title('Bot Chat')
     if row is None or (displaced := displaceable_bot_chat(authority, row)) is not None:
         # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
         # can own is moved aside first, under the same lock (MSG-21, #140769).
         ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
+    if ref is None and (row := authority.db.get_session_by_title('Bot Chat')) is None:
+        # Moved aside since it was read: a lane's /new frees a handed-off Bot Chat's title off the
+        # titled-create lock (``release_superseded_bot_chat``). None again: a concurrent delivery minted.
+        if (ref := await _create_bot_chat(authority, actor)) is None:
+            row = authority.db.get_session_by_title('Bot Chat')
     if ref is None:
-        row = authority.db.get_session_by_title('Bot Chat')
         tip = authority.db.get_compression_tip(row['id'])
         target = authority.db.get_session(tip)
         if target is None:
             raise RuntimeStoreError('not_found')
         from gateway.session_local_migration import resolve_local_target
-        ref = resolve_local_target(authority, actor, target['id'])
+        from gateway.session_route_recovery import handed_off_ref
+        # A Bot Chat handed off to a messaging lane stays the bot's chat there: delivery follows it.
+        ref = lane = handed_off_ref(authority, target['id'])
+        if ref is None:
+            ref = resolve_local_target(authority, actor, target['id'])
     authority.authorize(actor, ref, 'session:submit')
     live = authority.sessions[ref.session_id]
     entry = authority.runner.session_store.lookup_by_session_key(live.route)
-    if live.source.platform != Platform.LOCAL or entry is None:
+    if (live.source.platform != Platform.LOCAL and lane is None) or entry is None:
         raise RuntimeStoreError('admission_conflict')
     return ref, live, entry
 
 
 def displaceable_bot_chat(authority, row):
     """The id holding the canonical title when the Bot Chat is a conversation no FIFO can own (an
-    ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row), else
-    None. Such a row can never be adopted (``validate_legacy_row``), renamed (the canonical title
-    is its identity) or renamed over the API, so it would refuse every delivery for good. A bound
-    local chat and old local history (CLI, TUI, Desktop rows a native open adopts) are never moved."""
+    ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row, an
+    unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
+    adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
+    over the API, so it would refuse every delivery for good. A bound local chat, old local history
+    a native open adopts and a local row a login stamped as its own are never moved."""
     from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX
+    from hermes_state_local_migration import LEGACY_PREFIX
 
-    def owned(candidate):
-        return (str(candidate.get('chat_id') or '').startswith('local-')
-                or candidate.get('source') in LEGACY_LOCAL_SOURCES)
-    if owned(row):  # every delivery asks: a bound local chat answers from its own row, with no read
-        return None
+    if str(row.get('chat_id') or '').startswith('local-'):
+        return None  # every delivery asks: a bound local chat answers from its own row, with no read
     db = authority.db
     tip = db.get_session(db.get_compression_tip(row['id']) or row['id'])
+    from gateway.session_route_recovery import handed_off_ref, superseded_hand_off
+    if tip is not None and (lane := handed_off_ref(authority, tip['id'])) is not None:
+        # Handed off (``/handoff``): still the bot's chat while its lane holds it; history once that
+        # lane moved on (``/new``), so a fresh Bot Chat takes the title (#143286).
+        return row['id'] if superseded_hand_off(authority, lane) else None
     for candidate in (row, tip):
-        if candidate is None or owned(candidate):
+        if candidate is None or str(candidate.get('chat_id') or '').startswith('local-'):
             return None
         chat_id = str(candidate.get('chat_id') or '')
         with db._read_ctx() as conn:
@@ -227,7 +238,67 @@ def displaceable_bot_chat(authority, row):
                             (POLICY_PREFIX + (chat_id or candidate['id']),
                              LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
                 return None
+        if _kept_local_history(db, candidate):
+            return None
     return row['id']
+
+
+def release_superseded_bot_chat(db, store, route, session_id):
+    """The lane on *route* moved off *session_id* (its ``/new``, a reset, another ``/resume`` or
+    ``/handoff``). A Bot Chat handed off there (``/handoff``) is that lane's history now: free the
+    canonical title at once (``_displace_bot_chat``), so the Bots roster and its registry lookup both
+    stop naming it and the next click or delivery mints a fresh Bot Chat (#143286). Every route
+    transition calls this, and so does boot (an older build's transition)."""
+    from gateway.session_route_recovery import _messaging_platform
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    root = (db.get_compression_lineage(session_id) or [session_id])[0]
+    row = db.get_session(root)
+    if (row is None or row.get('title') != 'Bot Chat' or row.get('created_source') not in LEGACY_LOCAL_SOURCES
+            or _messaging_platform(row.get('source')) is None):
+        return
+    with store._lock:
+        entry = store._entry_locked(route)
+    if entry is None or (db.get_compression_lineage(entry.session_id) or [entry.session_id])[0] == root:
+        return  # the lane still holds it
+    if _displace_bot_chat(db, root):
+        logger.info("Bot Chat %s was handed off to %s and that lane moved on: moved it aside", root, route)
+
+
+def release_superseded_bot_chat_at_boot(db, store):
+    row = db.get_session_by_title('Bot Chat')
+    if row is not None:
+        tip = db.get_session(db.get_compression_tip(row['id']) or row['id']) or row
+        release_superseded_bot_chat(db, store, tip.get('session_key'), row['id'])
+
+
+def _kept_local_history(db, row):
+    """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
+    or Desktop row a native open adopts, or one a login stamped as its owner. A local-source row
+    no open can ever adopt (a route column left by a crash or reconnect, another profile's stamp)
+    is not: it held the title and refused every delivery for good (#141243)."""
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
+    if row.get('source') not in LEGACY_LOCAL_SOURCES:
+        return False
+    if row.get('user_id') and not legacy_account_label(row):
+        return True
+    try:
+        validate_legacy_row(db, row)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
+def _moved_aside_by_this_door(authority, holder, pinned):
+    """Whether *pinned*, the Bot Chat the producer discovered, is the title holder this delivery's
+    ``_target`` just moved aside. The producer pins the id it read before asking, so the first
+    delivery after a move would otherwise be refused ``admission_conflict`` for the chat the door
+    itself replaced, and land only on the next beat."""
+    if holder is None:
+        return False
+    db = authority.db
+    if pinned not in (holder['id'], db.get_compression_tip(holder['id'])):
+        return False
+    return str((db.get_session(holder['id']) or {}).get('title') or '').startswith('Bot Chat (')
 
 
 def _displace_bot_chat(db, sid):
@@ -269,7 +340,11 @@ async def _create_bot_chat(authority, actor, *, displace=None):
             if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held) != displace:
                 return None
             logger.warning("Bot Chat title held by %s, a conversation no FIFO can own: moving it aside", displace)
-            if not await tracked_write(authority, partial(_displace_bot_chat, authority.db, displace)):
+            # False: the title moved since the check. A lane's ``/new`` frees a handed-off Bot Chat's
+            # title from the store's worker thread, outside this lock (``release_superseded_bot_chat``):
+            # nobody holds it then, so this delivery mints the replacement.
+            if (not await tracked_write(authority, partial(_displace_bot_chat, authority.db, displace))
+                    and authority.db.get_session_by_title('Bot Chat') is not None):
                 return None
         # The Bot Chat follows its profile whoever mints it (a Bot or cron delivery, a peer DM),
         # the same contract Desktop's create asks for. A later profile change reaches it.
@@ -290,20 +365,24 @@ async def _create_bot_chat(authority, actor, *, displace=None):
 def _bot_chat_creation_id(authority, actor):
     """The first creation identity whose session is not spent. Generation 0 keeps the historical
     ``bot-chat:<profile>`` id; a generation is spent once its session was deleted (retired: a retry
-    must never resurrect it) or renamed (titled, but not "Bot Chat" — or the lookup had found it),
-    and a replacement takes the next one. Derived from durable rows only, so a restart and two
-    concurrent deliveries (serialized by the titled-create lock) pick the same identity. An
-    existing UNtitled session is the same creation interrupted before its title: it is reused."""
+    must never resurrect it), renamed (titled, but not "Bot Chat" — or the lookup had found it) or
+    handed off to a messaging lane, and a replacement takes the next one. Derived from durable rows
+    only, so a restart and two concurrent deliveries (serialized by the titled-create lock) pick the
+    same identity. An existing UNtitled local session is the same creation interrupted before its
+    title: it is reused."""
     from gateway.session_local_recovery import local_identity
+    from gateway.session_route_recovery import _messaging_platform
     from hermes_state_mutation_retirement import first_generation
     base = 'bot-chat:' + authority.profile_id
     request_id = lambda generation: base if generation == 0 else f'{base}:{generation}'
 
-    def titled(conn, sid):
-        row = conn.execute('SELECT title FROM sessions WHERE id=?', (sid,)).fetchone()
-        return row is not None and bool(row[0])
+    def spent(conn, sid):
+        row = conn.execute('SELECT title, source FROM sessions WHERE id=?', (sid,)).fetchone()
+        # Handed off (``/handoff``), it is a messaging lane's conversation: its receipt went with it,
+        # and a reset's head carried its name there (``hermes_state_local.hand_off_conversations``).
+        return row is not None and (bool(row[0]) or _messaging_platform(row[1]) is not None)
     generation, _sid = first_generation(
-        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=titled)
+        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=spent)
     return request_id(generation)
 
 
@@ -312,13 +391,18 @@ def _admission_outcome(authority, admission_id, fallback=None):
     row = get_session_admission(authority.db, admission_id=admission_id)
     if row is None:
         return _expired_outcome(authority, fallback)
+    from gateway.session_results import admission_result
+    saved = admission_result(authority.db, admission_id)
+    if saved is not None and row['status'] != 'terminal':
+        # The settlement committed (from its worker thread) between these two reads. Its result and
+        # terminal outcome commit together, so re-read the row: the stale ``started`` row has no
+        # outcome, and a completed turn would project as a terminal ``failed`` receipt.
+        row = get_session_admission(authority.db, admission_id=admission_id)
     # A terminal row without a result blob is still definitive when the outcome says the
     # input never ran (cancelled) or was refused/failed; ambiguous is reserved for the
     # durable unknown state and for missing evidence (completed/interrupted without result).
     status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous',
               'terminal': {'cancelled': 'cancelled', 'rejected': 'failed', 'failed': 'failed'}.get(row['outcome'], 'ambiguous')}[row['status']]
-    from gateway.session_results import admission_result
-    saved = admission_result(authority.db, admission_id)
     reply = (fallback or {}).get('reply', '')
     if saved is not None:
         reply = saved['result'].get('final_response', '')
@@ -747,8 +831,10 @@ async def _deliver(connection, params):
                 return answer
             if record is not None:
                 raise RuntimeStoreError('unknown_execution')
+            holder = authority.db.get_session_by_title('Bot Chat')
             ref, live, entry = await _target(authority, actor)
-            if params.get('session_id', entry.session_id) != entry.session_id:
+            pinned = params.get('session_id', entry.session_id)
+            if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
                 raise RuntimeStoreError('admission_conflict')
             return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
                                 notification_category=category)

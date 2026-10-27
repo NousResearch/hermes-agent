@@ -9,12 +9,14 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { en } from '@/i18n/en'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as DesktopFs from '@/lib/desktop-fs'
+import { usageContextLabel } from '@/lib/statusbar'
 import { $freeTierStatus } from '@/store/free-tier'
 import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import {
   $connection,
   $currentCwd,
+  $currentUsage,
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
@@ -23,9 +25,9 @@ import {
 } from '@/store/session'
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
-import { $statusbarVisible } from '@/store/statusbar-prefs'
+import { $statusbarVisible, setStatusbarItemVisible } from '@/store/statusbar-prefs'
 import { $desktopVersion, $updateStatus } from '@/store/updates'
-import type { FreeTierStatus } from '@/types/hermes'
+import type { ContextBreakdown, FreeTierStatus, UsageStats } from '@/types/hermes'
 
 import { useStatusbarItems } from './use-statusbar-items'
 
@@ -430,6 +432,16 @@ describe('free-tier Sign in in every interface mode', () => {
     expect($statusbarVisible.get()).toBe(false)
   })
 
+  it('shows the chip to a guest with connected apps but no trial, without the free model', () => {
+    $freeTierStatus.set({ ...freeTier(false), has_guest: true })
+
+    const { leftStatusbarItems, statusbarItems } = renderStatusbarItems()
+    const chip = [...leftStatusbarItems, ...statusbarItems].find(item => item.id === 'free-tier')
+
+    expect(signInChipVisible()).toBe(true)
+    expect(chip?.title).toBe('Nous')
+  })
+
   it('holds the chip while onboarding is open and brings it back after', () => {
     $freeTierStatus.set(freeTier(true))
     setOnboardingSurfaceActive('onboarding', true)
@@ -437,5 +449,91 @@ describe('free-tier Sign in in every interface mode', () => {
 
     setOnboardingSurfaceActive('onboarding', false)
     expect(signInChipVisible()).toBe(true)
+  })
+})
+
+describe('context meter beside an agentless breakdown', () => {
+  const agentless: ContextBreakdown = {
+    categories: [{ color: '#888', id: 'system_prompt', label: 'System prompt', tokens: 3_200 }],
+    context_estimated: false,
+    context_max: 0,
+    context_percent: 0,
+    context_source: 'provider_usage',
+    context_used: 0,
+    estimated_total: 3_200,
+    model: ''
+  }
+
+  const measured: UsageStats = {
+    calls: 1,
+    context_max: 100_000,
+    context_percent: 40,
+    context_used: 40_000,
+    input: 100,
+    output: 10,
+    total: 110
+  }
+
+  async function contextItem(sessionUsage: UsageStats) {
+    setStatusbarItemVisible('context-usage', true)
+    setActiveSessionId('s1')
+    $currentUsage.set(measured)
+    $sessionStates.set({ s1: { ...createClientSessionState(), usage: sessionUsage } as never })
+
+    const requestGateway = vi.fn(async (method: string) =>
+      method === 'session.context_breakdown' ? agentless : undefined
+    ) as never
+
+    const { result } = renderHook(
+      () =>
+        useStatusbarItems({
+          agentsOpen: false,
+          changeSessionCwd: async () => {},
+          chatOpen: true,
+          commandCenterOpen: false,
+          extraLeftItems: [],
+          extraRightItems: [],
+          freshDraftReady: false,
+          gatewayState: 'ready',
+          inferenceStatus: null,
+          openAgents: () => {},
+          openCommandCenterSection: () => {},
+          requestGateway,
+          statusSnapshot: null,
+          toggleCommandCenter: () => {}
+        }),
+      { wrapper }
+    )
+
+    await act(async () => {
+      for (let i = 0; i < 5; i++) {
+        await Promise.resolve()
+      }
+    })
+
+    return result.current.statusbarItems.find(entry => entry.id === 'context-usage')
+  }
+
+  afterEach(() => {
+    setActiveSessionId(null)
+    $currentUsage.set({ calls: 0, input: 0, output: 0, total: 0 })
+    $sessionStates.set({})
+  })
+
+  it("keeps the session's measured reading and still hands the popover the categories", async () => {
+    const item = await contextItem(measured)
+
+    expect(item?.label).toBe(usageContextLabel(measured))
+    expect(item?.detail).toBeDefined()
+
+    const panel = item?.menuContent
+
+    expect(isValidElement<{ breakdown: ContextBreakdown | null }>(panel) && panel.props.breakdown).toBe(agentless)
+  })
+
+  it("never borrows another session's reading from the global usage", async () => {
+    const item = await contextItem({ calls: 0, input: 0, output: 0, total: 0 })
+
+    expect(item?.label).not.toBe(usageContextLabel(measured))
   })
 })

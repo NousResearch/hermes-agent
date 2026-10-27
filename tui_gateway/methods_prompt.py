@@ -1306,7 +1306,18 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
-        return err
+        # Session-not-found (4001) only: accept the STORED id approval.respond accepts, so the
+        # re-list after a fallback answer does not 4001 (and latch the session gone) — scoped to
+        # the requested profile, since a bare stored id can name another profile's run (#100029).
+        if (err.get("error") or {}).get("code") != 4001:
+            return err
+        live = None
+        with contextlib.suppress(Exception):
+            live = _find_live_session_by_key(
+                str(params.get("session_id") or ""), _profile_home(params.get("profile")))
+        if live is None:
+            return err
+        session = live[1]
     return _approval_reply(
         rid, "approvals", lambda a: a.list_gateway_approvals(session["session_key"]))
 

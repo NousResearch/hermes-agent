@@ -531,6 +531,18 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
     return False
 
 
+def _system_content_text(content: Any) -> str:
+    """Leading system content -> Responses ``instructions`` text. A block list (a folded
+    structured system prefill) joins its text blocks verbatim; never a Python repr."""
+    if isinstance(content, list):
+        return "".join(
+            part["text"] for part in content
+            if isinstance(part, dict) and part.get("type", "text") in ("text", "input_text")
+            and isinstance(part.get("text"), str)
+        )
+    return "" if content is None else str(content)
+
+
 def _is_azure_responses(params: dict[str, Any]) -> bool:
     """True for any Azure-hosted Responses endpoint: the ``azure-foundry`` provider, a resource-level
     ``*.openai.azure.com`` host, or the project-scoped ``*.services.ai.azure.com`` gateway."""
@@ -745,7 +757,7 @@ class ResponsesApiTransport(ProviderTransport):
         instructions = params.get("instructions", "")
         payload_messages = messages
         if not instructions and messages and messages[0].get("role") == "system":
-            instructions = str(messages[0].get("content") or "").strip()
+            instructions = _system_content_text(messages[0].get("content")).strip()
             payload_messages = messages[1:]
         instructions = instructions or DEFAULT_AGENT_IDENTITY
 

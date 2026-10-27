@@ -288,3 +288,18 @@ def test_single_block_system_prefill_reads_as_separated_text(loop_agent, send):
     text = content if isinstance(content, str) else "".join(p["text"] for p in content)
     assert text.startswith("You are helpful.")
     assert text.endswith("\n\npersona rules")
+
+
+def test_responses_instructions_read_list_valued_system_as_text_not_repr():
+    from agent.transports.codex import ResponsesApiTransport
+
+    api_messages = fold_system_prefill_messages(
+        [{"role": "system", "content": "base system"}, {"role": "user", "content": "hello"}],
+        [{"role": "system", "content": [{"type": "text", "text": "persona rules", "cache_control": _CACHE}]}],
+    )
+
+    kwargs = ResponsesApiTransport().build_kwargs(
+        model="gpt-5.4", messages=api_messages, tools=None, base_url="https://api.openai.com/v1"
+    )
+
+    assert kwargs["instructions"] == "base system\n\npersona rules"

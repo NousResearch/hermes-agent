@@ -62,7 +62,8 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     pool entry sits in a 429/quota cooldown, so the raise sites could only say "no credentials
     were found. Run hermes auth add …" — wrong on both counts for a valid OAuth grant that is
     merely rate-limited (#56810). Read the persisted pool state (no seeding, no writes) and name
-    the cooldown and its reset time instead; ``None`` when the pool is empty or a credential is
+    the cooldown, its cause (from the entries' ``last_error_code``) and its reset time instead;
+    ``None`` when the pool is empty or a credential is
     usable (the caller keeps the missing-credential diagnostic).
     """
     from agent.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
@@ -84,10 +85,25 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     when = safe_strftime(datetime.fromtimestamp(min(resets)).astimezone(), "%Y-%m-%d %H:%M %Z")
     which = ("its only credential is" if len(live) == 1
              else f"all {len(live)} credentials are")
-    return (f"Provider '{provider_id}' is set in config.yaml but {which} cooling down after a "
-            f"rate limit / quota error (429); the next one resets at {when}. Wait for the reset, "
-            f"add another credential with `hermes auth add {provider_id}`, or switch to a "
-            "different provider with `hermes model`.")
+    cause, remedy = _bench_cause(sorted({e.last_error_code for e in live if e.last_error_code}), provider_id)
+    return (f"Provider '{provider_id}' is set in config.yaml but {which} cooling down after "
+            f"{cause}; the next one resets at {when}. {remedy}, or switch to a different provider "
+            "with `hermes model`.")
+
+
+def _bench_cause(codes: list, provider_id: str) -> tuple[str, str]:
+    """``(cause, remedy)`` for a benched pool, named from the entries' recorded error codes — a 401
+    whose sign-in refresh failed is not a rate limit, and waiting out its reset will not fix it."""
+    add = f"`hermes auth add {provider_id}`"
+    if codes and all(c in (401, 403) for c in codes):
+        return (f"the provider rejected its sign-in ({', '.join(map(str, codes))})",
+                f"Sign in again with {add}")
+    if codes == [402]:
+        return "a billing error (402)", f"Add credits with that provider, add another credential with {add}"
+    if not codes or codes == [429]:
+        return "a rate limit / quota error (429)", f"Wait for the reset, add another credential with {add}"
+    return (f"errors ({', '.join(map(str, codes))})",
+            f"Wait for the reset, sign in again or add another credential with {add}")
 
 
 class ProviderCredentialsExhaustedError(RuntimeError):

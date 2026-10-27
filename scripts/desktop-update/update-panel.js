@@ -242,7 +242,7 @@ function run (argv) {
   } else if (settled === 'manual') {
     line.stringValue = message || 'Reopen Hermes to finish.'
   } else {
-    line.stringValue = 'Run hermes debug share in a terminal to send a report.'
+    line.stringValue = 'Open Hermes and choose Send report to tell us what went wrong.'
   }
   const glyph = wrappedLabel(settled === 'error' ? '✕' : '✓',
     $.NSFont.systemFontOfSize(44), fg, $.NSMakeRect(0, 226, 280, 80))

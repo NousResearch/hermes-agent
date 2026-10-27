@@ -17,6 +17,8 @@ export interface HandoffReportHost {
   shell: Pick<Shell, 'showItemInFolder'>
   /** The menu's open-updates path (queued until the renderer is ready). */
   openUpdates: () => void
+  /** Opens the renderer's Send Diagnostics consent dialog with this context (queued the same way). */
+  sendReport: (errorContext: string) => void
 }
 
 /** The run identity a live marker carried when the boot gate saw it. */
@@ -95,17 +97,19 @@ export function reportHandoffResult(host: HandoffReportHost): void {
           title: 'Hermes update',
           message: "Hermes couldn't finish updating",
           detail:
-            "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
+            "You're still on the previous version and can keep using it. Try the update again, or send a report so we can see what went wrong.\n\n" +
             `Details: ${result.message}`,
-          buttons: ['Try again', 'Open log', 'Close'],
+          buttons: ['Try again', 'Send report', 'Open log', 'Close'],
           defaultId: 0,
-          cancelId: 2,
+          cancelId: 3,
           noLink: true
         })
         .then(({ response }) => {
           if (response === 0) {
             host.openUpdates()
           } else if (response === 1) {
+            host.sendReport(`Desktop update failed (exit ${result.exitCode}): ${result.message}`)
+          } else if (response === 2) {
             host.shell.showItemInFolder(handoffLogPath)
           }
         })

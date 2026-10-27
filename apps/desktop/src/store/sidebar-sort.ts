@@ -10,6 +10,7 @@ import {
   sessionDotStateForRow,
   sessionStatusRank
 } from './session-dot-state'
+import { sessionOwnerRowKey } from './session-request-router'
 import { sessionCostUsd } from './sidebar-archive'
 
 // Same array on every recompute, so the default (unranked) sidebar never churns
@@ -62,6 +63,6 @@ export const $sidebarSessionRankIds: ReadableAtom<string[]> = computed(
       return UNRANKED
     }
 
-    return [...sessions].sort((a, b) => rank(a) - rank(b)).map(session => session.id)
+    return [...sessions].sort((a, b) => rank(a) - rank(b)).map(sessionOwnerRowKey)
   }
 )

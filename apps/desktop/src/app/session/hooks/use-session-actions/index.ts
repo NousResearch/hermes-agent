@@ -65,8 +65,10 @@ import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/s
 import {
   $activeSessionStoredIdRotation,
   $connection,
+  $cronSessions,
   $currentCwd,
   $messages,
+  $messagingSessions,
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
@@ -127,6 +129,7 @@ import {
   patchSessionTile,
   publishSessionState,
   releaseSessionOwnerHold,
+  runtimeSessionOwner,
   type SessionTileWorkspaceScope,
   type TileDock
 } from '@/store/session-states'
@@ -228,6 +231,63 @@ import {
   upsertOptimisticSession,
   upsertUnlistedSessionOwner
 } from './utils'
+
+function ownerScopeMatchesRow(owner: SessionOwnerScope, row: SessionInfo): boolean {
+  if (!owner) {
+    return false
+  }
+
+  const route = sessionOwnerRouteFromRow(row)
+
+  if (!route) {
+    return false
+  }
+
+  if (typeof owner === 'string') {
+    return !route.connectionId && normalizeProfileKey(owner) === normalizeProfileKey(route.profile)
+  }
+
+  return (
+    (owner.connectionId?.trim() || 'local') === (route.connectionId?.trim() || 'local') &&
+    normalizeProfileKey(owner.profile) === normalizeProfileKey(route.profile)
+  )
+}
+
+function selectedRowBelongsToOwner(
+  row: SessionInfo,
+  rows: readonly SessionInfo[],
+  selectedId: null | string,
+  runtimeId: null | string
+): boolean {
+  if (!selectedId || !sessionMatchesStoredId(row, selectedId)) {
+    return false
+  }
+
+  const matches = rows.filter(candidate => sessionMatchesStoredId(candidate, selectedId))
+
+  return matches.length === 1 || ownerScopeMatchesRow(runtimeSessionOwner(runtimeId), row)
+}
+
+function resolveMutationTarget(
+  target: SessionInfo | string,
+  rows: readonly SessionInfo[],
+  runtimeId: null | string
+): null | SessionInfo | string {
+  if (typeof target !== 'string') {
+    return target
+  }
+
+  const matches = rows.filter(row => sessionMatchesStoredId(row, target))
+  const ownerKeys = new Set(matches.map(row => sessionOwnerRowKey(row)))
+
+  if (ownerKeys.size <= 1) {
+    return target
+  }
+
+  const owned = matches.filter(row => ownerScopeMatchesRow(runtimeSessionOwner(runtimeId), row))
+
+  return owned.length === 1 ? owned[0] : null
+}
 
 interface SessionActionsOptions {
   activeSessionId: string | null
@@ -3007,8 +3067,23 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (target: SessionInfo | string) => {
+    async (requestedTarget: SessionInfo | string) => {
       clearNotifications()
+
+      const ownerRows = [
+        ...$sessions.get(),
+        ...$cronSessions.get(),
+        ...$messagingSessions.get(),
+        ...$archivedSessions.get()
+      ]
+
+      const target = resolveMutationTarget(requestedTarget, ownerRows, activeSessionIdRef.current)
+
+      if (!target) {
+        notifyError(new Error('Session ownership could not be resolved'), copy.deleteFailed)
+
+        return
+      }
 
       const storedSessionId = typeof target === 'string' ? target : target.id
 
@@ -3051,7 +3126,18 @@ export function useSessionActions({
       // boundaries. React props can still describe the previous render when a
       // delete lands in the same tick, which used to leave the doomed route in
       // place and let the generic 4001 recovery rebind it.
-      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
+      const duplicateOwnerId = ownerRows.filter(row => sessionMatchesStoredId(row, storedSessionId)).length > 1
+
+      const wasSelected = removed
+        ? selectedRowBelongsToOwner(
+            removed,
+            ownerRows,
+            selectedStoredSessionIdRef.current,
+            activeSessionIdRef.current
+          )
+        : !duplicateOwnerId && selectedStoredSessionIdRef.current === storedSessionId
+
+      const canCleanupSharedState = !duplicateOwnerId || wasSelected
 
       // Resolve the doomed session's live runtime from the SELECTION or the
       // stored→runtime map. Deleting a NON-selected (sidebar/background) session
@@ -3060,7 +3146,7 @@ export function useSessionActions({
       // exists (#75587).
       const closingRuntimeId =
         (wasSelected ? activeSessionIdRef.current : null) ??
-        runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+        (canCleanupSharedState ? runtimeIdByStoredSessionIdRef.current.get(storedSessionId) : null) ??
         null
 
       const previousMessages = $messages.get()
@@ -3080,7 +3166,10 @@ export function useSessionActions({
       // Pin sync resolves the immutable mutation owner synchronously from the
       // loaded row. Remove the pin before dropping that row, or the implicit
       // unpin falls back to the ambient gateway.
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
+      if (canCleanupSharedState) {
+        $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
+      }
+
       dropListedSession(target)
       $archivedSessions.set(
         previousArchived.filter(session =>
@@ -3146,24 +3235,35 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removedMutationOwner)
 
-        dropTranscriptTailEverywhere(storedSessionId)
+        if (canCleanupSharedState) {
+          dropTranscriptTailEverywhere(storedSessionId)
+        }
+
         // Only after the RPC lands — the optimistic eviction above can roll
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(unreadCleanupIds, profile)
-        clearQueuedPrompts(storedSessionId)
+
+        if (canCleanupSharedState) {
+          clearQueuedPrompts(storedSessionId)
+        }
+
         // The journaled in-flight tail holds this session's prompt and tool
         // calls in localStorage; a deleted session must not leave that copy
         // behind to age out on its own. Purge after the RPC lands (same
         // rollback argument as the unread watermark above), passing every id
         // the delete holds: the stored tip, the row id, the lineage root, and
         // the closing runtime id — the journal keys on the stored id.
-        purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
+        if (canCleanupSharedState) {
+          purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
+        }
 
         // Preview tabs are session-owned: drop them with the session (pinned
         // tabs survive — they belong to the workspace, not the session).
-        for (const id of removedIds) {
-          if (id) {
-            prunePreviewTabsForSession(id)
+        if (canCleanupSharedState) {
+          for (const id of removedIds) {
+            if (id) {
+              prunePreviewTabsForSession(id)
+            }
           }
         }
 
@@ -3174,9 +3274,15 @@ export function useSessionActions({
 
         // A tiled copy of this session must not outlive it: collapse the pane
         // and evict its mirrored runtime state so nothing submits to (or renders)
-        // a deleted session.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        // a deleted session. Bare runtime/tile maps cannot distinguish duplicate
+        // owner rows, so only mutate them when the target is uniquely identified.
+        const tiledRuntimeId = canCleanupSharedState
+          ? runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          : undefined
+
+        if (canCleanupSharedState) {
+          closeSessionTile(storedSessionId)
+        }
 
         if (tiledRuntimeId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -3189,11 +3295,13 @@ export function useSessionActions({
         // row is selected, closingRuntimeId is the foreground runtime, which can
         // differ from the stored→runtime mapping (cached/tiled runtime), so
         // clear the stored id and both runtime ids — once per distinct id.
-        for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
-          clearSessionSubagents(sid)
-          clearSessionTodos(sid)
-          clearSessionGoal(sid)
-          resetSessionBackground(sid)
+        if (canCleanupSharedState) {
+          for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+            clearSessionSubagents(sid)
+            clearSessionTodos(sid)
+            clearSessionGoal(sid)
+            resetSessionBackground(sid)
+          }
         }
       } catch (err) {
         if (listed?.session) {
@@ -3247,8 +3355,23 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (target: SessionInfo | string) => {
+    async (requestedTarget: SessionInfo | string) => {
       clearNotifications()
+
+      const ownerRows = [
+        ...$sessions.get(),
+        ...$cronSessions.get(),
+        ...$messagingSessions.get(),
+        ...$archivedSessions.get()
+      ]
+
+      const target = resolveMutationTarget(requestedTarget, ownerRows, activeSessionIdRef.current)
+
+      if (!target) {
+        notifyError(new Error('Session ownership could not be resolved'), copy.archiveFailed)
+
+        return
+      }
 
       const storedSessionId = typeof target === 'string' ? target : target.id
 
@@ -3268,7 +3391,18 @@ export function useSessionActions({
         return
       }
 
-      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
+      const duplicateOwnerId = ownerRows.filter(row => sessionMatchesStoredId(row, storedSessionId)).length > 1
+
+      const wasSelected = archived
+        ? selectedRowBelongsToOwner(
+            archived,
+            ownerRows,
+            selectedStoredSessionIdRef.current,
+            activeSessionIdRef.current
+          )
+        : !duplicateOwnerId && selectedStoredSessionIdRef.current === storedSessionId
+
+      const canCleanupSharedState = !duplicateOwnerId || wasSelected
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -3280,7 +3414,10 @@ export function useSessionActions({
       // Pin sync resolves the immutable mutation owner synchronously from the
       // loaded row. Remove the pin before dropping that row, or the implicit
       // unpin falls back to the ambient gateway.
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+      if (canCleanupSharedState) {
+        $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+      }
+
       // Soft-hide: drop from every sidebar slice immediately, keep the data.
       dropListedSession(target)
       tombstoneSessions(mutationIds)
@@ -3295,9 +3432,16 @@ export function useSessionActions({
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedTargetKey ? [archivedTargetKey] : archivedIds, profile)
+
         // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        // Bare tile/runtime maps cannot distinguish duplicate owner rows.
+        const tiledRuntimeId = canCleanupSharedState
+          ? runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          : undefined
+
+        if (canCleanupSharedState) {
+          closeSessionTile(storedSessionId)
+        }
 
         if (tiledRuntimeId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -3319,6 +3463,7 @@ export function useSessionActions({
       }
     },
     [
+      activeSessionIdRef,
       copy,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,

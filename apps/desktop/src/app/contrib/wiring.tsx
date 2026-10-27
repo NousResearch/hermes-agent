@@ -89,6 +89,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { ackStoredSessionId } from '@/store/session-unread'
 import { clearUnreadOnOpen } from '@/store/session-unread-remote'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
@@ -1056,6 +1057,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     if (session) {
+      ackStoredSessionId(session)
       markSessionRead(session)
       void clearUnreadOnOpen(session)
     }

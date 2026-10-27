@@ -101,6 +101,7 @@ import {
   dropSessionState,
   knownOwnerForSession,
   publishSessionState,
+  recordSessionEventScope,
   requestForOwnedSession,
   sessionTileOwnerRoute
 } from '@/store/session-states'
@@ -501,6 +502,111 @@ describe('connection-qualified session deletion', () => {
       session_id: 'runtime-shared'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it.each([
+    ['delete', (actions: HarnessHandle) => actions.removeSession('shared-session')],
+    ['archive', (actions: HarnessHandle) => actions.archiveSession('shared-session')]
+  ] as const)('routes a bare current-session %s to its runtime owner when stored ids collide', async (_, mutate) => {
+    const ownerA = storedSession({ connection_id: 'source-a', id: 'shared-session', profile: 'worker' })
+    const ownerB = storedSession({ connection_id: 'source-b', id: 'shared-session', profile: 'worker' })
+    let actions: HarnessHandle | null = null
+
+    setSessions([ownerA, ownerB])
+    recordSessionEventScope({ connectionId: 'source-b', profile: 'worker', session_id: 'runtime-shared' })
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId="runtime-shared"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        selectedStoredSessionId="shared-session"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await mutate(actions!)
+    })
+
+    const expectedOwner = { connectionId: 'source-b', profile: 'worker' }
+
+    if (_ === 'delete') {
+      expect(deleteSession).toHaveBeenCalledWith('shared-session', expectedOwner)
+      expect(setSessionArchived).not.toHaveBeenCalled()
+    } else {
+      expect(setSessionArchived).toHaveBeenCalledWith('shared-session', true, expectedOwner)
+      expect(deleteSession).not.toHaveBeenCalled()
+    }
+
+    expect($sessions.get()).toEqual([ownerA])
+    clearAllSessionStates()
+  })
+
+  it('fails a bare duplicate-id delete closed when the current runtime has no proven owner', async () => {
+    const rows = [
+      storedSession({ connection_id: 'source-a', id: 'shared-session', profile: 'worker' }),
+      storedSession({ connection_id: 'source-b', id: 'shared-session', profile: 'worker' })
+    ]
+
+    let actions: HarnessHandle | null = null
+
+    setSessions(rows)
+    render(
+      <Harness
+        activeSessionId="runtime-unknown"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        selectedStoredSessionId="shared-session"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions!.removeSession('shared-session')
+    })
+
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual(rows)
+  })
+
+  it.each([
+    ['delete', (actions: HarnessHandle) => actions.removeSession('shared-session')],
+    ['archive', (actions: HarnessHandle) => actions.archiveSession('shared-session')]
+  ] as const)('fails a bare duplicate-id %s closed across distinct legacy route bindings', async (_, mutate) => {
+    const rows = [
+      storedSession({ _desktop_route_binding: 'binding-a', id: 'shared-session', profile: 'worker' }),
+      storedSession({ _desktop_route_binding: 'binding-b', id: 'shared-session', profile: 'worker' })
+    ]
+
+    let actions: HarnessHandle | null = null
+
+    setSessions(rows)
+    render(
+      <Harness
+        activeSessionId="runtime-unknown"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        selectedStoredSessionId="shared-session"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await mutate(actions!)
+    })
+
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect(setSessionArchived).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual(rows)
   })
 
   it('tears down the selected session from synchronous refs when render state is stale', async () => {

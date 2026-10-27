@@ -154,6 +154,24 @@ const SEEN_COUNTS_CAP = 2000
 const MARKERS_CAP = 200
 
 const rowsFor = (lists: readonly SessionInfo[][]): SessionInfo[] => lists.flat()
+const loadedUnreadRows = (): SessionInfo[] => rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
+let selectedOwnerKey: null | string = null
+
+/** Preserve the legacy lineage key while it is unambiguous; duplicate durable
+ * ids need the immutable owner-row key or one backend advances another's cursor. */
+const seenCountKey = (row: SessionInfo, rows: readonly SessionInfo[] = loadedUnreadRows()): string => {
+  const durableId = sessionPinId(row)
+  const rowKey = sessionOwnerRowKey(row)
+
+  const ownerCollision = rows.some(
+    candidate =>
+      profileKeyForRow(candidate) === profileKeyForRow(row) &&
+      sessionPinId(candidate) === durableId &&
+      sessionOwnerRowKey(candidate) !== rowKey
+  )
+
+  return ownerCollision ? rowKey : durableId
+}
 
 const isSelected = (row: SessionInfo, selected: null | string): boolean =>
   Boolean(selected && sessionMatchesStoredId(row, selected))
@@ -409,27 +427,33 @@ function ackSessionRow(row: SessionInfo): void {
   const profile = profileKeyForRow(row)
   const durableId = sessionPinId(row)
   const ownerKey = sessionOwnerRowKey(row)
+  const countKey = seenCountKey(row)
+
+  selectedOwnerKey = ownerKey
 
   if (Number.isFinite(row.message_count)) {
     const seen = $sessionSeenCounts.get()
     const bucket = seen[profile]
 
-    if (bucket?.[durableId] !== row.message_count) {
-      $sessionSeenCounts.set({ ...seen, [profile]: { ...bucket, [durableId]: row.message_count } })
+    if (bucket?.[countKey] !== row.message_count) {
+      $sessionSeenCounts.set({ ...seen, [profile]: { ...bucket, [countKey]: row.message_count } })
     }
   }
 
   const markers = $unreadFinishedMarkers.get()[profile]
 
-  if (!markers) {
-    return
+  if (markers) {
+    const next =
+      countKey === durableId
+        ? markers.filter(id => id !== durableId && id !== ownerKey && !sessionMatchesStoredId(row, id))
+        : markers.filter(id => id !== ownerKey)
+
+    if (next.length !== markers.length) {
+      setMarkerBucket(profile, next)
+    }
   }
 
-  const next = markers.filter(id => id !== durableId && id !== ownerKey && !sessionMatchesStoredId(row, id))
-
-  if (next.length !== markers.length) {
-    setMarkerBucket(profile, next)
-  }
+  recomputeUnread()
 }
 
 /** Clear persisted unread for a stored id even when its row isn't loaded —
@@ -440,16 +464,30 @@ function ackSessionRow(row: SessionInfo): void {
  *  untouched. Pass the hint whenever the caller knows the owner — a hidden
  *  session can be opened without the gateway ever moving onto its profile,
  *  which would otherwise ack a bucket that never held the marker. */
-export function ackStoredSessionId(storedSessionId: null | string, profileHint?: null | string): void {
-  if (!storedSessionId) {
+export function ackStoredSessionId(target: null | SessionInfo | string, profileHint?: null | string): void {
+  if (!target) {
     return
   }
 
-  const row = resolveLoadedRow(storedSessionId)
+  if (typeof target !== 'string') {
+    ackSessionRow(target)
+
+    return
+  }
+
+  const storedSessionId = target
+  const matches = loadedUnreadRows().filter(row => sessionMatchesStoredId(row, storedSessionId))
+  const row = matches.length === 1 ? matches[0] : undefined
 
   if (row) {
     ackSessionRow(row)
 
+    return
+  }
+
+  // A bare id cannot authorise an owner-scoped acknowledgement when more than
+  // one loaded backend exposes it. The clicked-row overload above is exact.
+  if (matches.length > 1) {
     return
   }
 
@@ -535,10 +573,38 @@ export function forgetSessionUnread(
  *  up green on first sight. Known, unselected rows are left alone — the gap
  *  between their watermark and live count IS the unread signal. */
 function ingestRows(rows: readonly SessionInfo[]): void {
+  const migratedMarkers = new Set<string>()
+
+  for (const row of rows) {
+    const profile = profileKeyForRow(row)
+    const durableId = sessionPinId(row)
+    const migrationKey = `${profile}\0${durableId}`
+
+    if (migratedMarkers.has(migrationKey) || seenCountKey(row, rows) === durableId) {
+      continue
+    }
+
+    migratedMarkers.add(migrationKey)
+    const markers = $unreadFinishedMarkers.get()[profile]
+
+    if (markers?.includes(durableId)) {
+      const ownerKeys = rows
+        .filter(candidate => profileKeyForRow(candidate) === profile && sessionPinId(candidate) === durableId)
+        .map(sessionOwnerRowKey)
+
+      setMarkerBucket(profile, [...markers.filter(id => id !== durableId), ...ownerKeys])
+    }
+  }
+
   const selected = $selectedStoredSessionId.get()
   // Only the OWNING profile's row counts as on-screen: a same-id row in
   // another profile is a different session and keeps its unread gap.
   const selectedProfile = selected ? resolveProfile(selected) : null
+
+  const selectedMatches = selected
+    ? rows.filter(row => profileKeyForRow(row) === selectedProfile && isSelected(row, selected))
+    : []
+
   const seen = $sessionSeenCounts.get()
   let next: null | SeenCounts = null
 
@@ -554,25 +620,40 @@ function ingestRows(rows: readonly SessionInfo[]): void {
 
     const profile = profileKeyForRow(row)
     const durableId = sessionPinId(row)
+    const countKey = seenCountKey(row, rows)
     const bucket = next?.[profile] ?? seen[profile]
 
-    if (profile === selectedProfile && isSelected(row, selected)) {
-      if (bucket?.[durableId] !== row.message_count) {
-        write(profile, durableId, row.message_count)
+    const inheritedLegacyCount =
+      countKey !== durableId && bucket?.[countKey] === undefined && typeof bucket?.[durableId] === 'number'
+
+    if (inheritedLegacyCount) {
+      write(profile, countKey, bucket[durableId])
+    }
+
+    if (
+      (selectedMatches.length === 1
+        ? row === selectedMatches[0]
+        : selectedOwnerKey === sessionOwnerRowKey(row))
+    ) {
+      if (bucket?.[countKey] !== row.message_count) {
+        write(profile, countKey, row.message_count)
       }
 
       // Any lingering explicit marker for the on-screen session is stale.
       const markers = $unreadFinishedMarkers.get()[profile]
 
       if (markers) {
-        const kept = markers.filter(id => id !== durableId && !sessionMatchesStoredId(row, id))
+        const kept =
+          countKey === durableId
+            ? markers.filter(id => id !== durableId && !sessionMatchesStoredId(row, id))
+            : markers.filter(id => id !== sessionOwnerRowKey(row))
 
         if (kept.length !== markers.length) {
           setMarkerBucket(profile, kept)
         }
       }
-    } else if (!bucket || !(durableId in bucket)) {
-      write(profile, durableId, row.message_count)
+    } else if (!inheritedLegacyCount && (!bucket || !(countKey in bucket))) {
+      write(profile, countKey, row.message_count)
     }
   }
 
@@ -603,7 +684,7 @@ function pruneSeenCounts(seen: SeenCounts, rows: readonly SessionInfo[]): SeenCo
   }
 
   for (const row of rows) {
-    keepFor(profileKeyForRow(row)).add(sessionPinId(row))
+    keepFor(profileKeyForRow(row)).add(seenCountKey(row, rows))
   }
 
   const next: SeenCounts = {}
@@ -638,6 +719,15 @@ function recomputeUnread(): void {
       ? sessionOwnerRowKey(row)
       : row.id
 
+  const selectedRows = selected ? loadedRows.filter(row => sessionMatchesStoredId(row, selected)) : []
+
+  const rowIsSelected = (row: SessionInfo): boolean =>
+    Boolean(
+      selected &&
+        sessionMatchesStoredId(row, selected) &&
+        (selectedRows.length === 1 || selectedOwnerKey === sessionOwnerRowKey(row))
+    )
+
   const isMarked = (row: SessionInfo, durableId: string): boolean => {
     const bucket = markers[profileKeyForRow(row)]
 
@@ -649,12 +739,12 @@ function recomputeUnread(): void {
   // by row id, so dotting a same-id row from another profile would just put a
   // dot on the session you have open.
   for (const row of rowsFor([$sessions.get(), $cronSessions.get()])) {
-    if (isSelected(row, selected)) {
+    if (rowIsSelected(row)) {
       continue
     }
 
     const durableId = sessionPinId(row)
-    const watermark = seen[profileKeyForRow(row)]?.[durableId]
+    const watermark = seen[profileKeyForRow(row)]?.[seenCountKey(row, loadedRows)]
 
     const exceedsWatermark =
       typeof watermark === 'number' && Number.isFinite(row.message_count) && row.message_count > watermark
@@ -666,7 +756,7 @@ function recomputeUnread(): void {
 
   // Messaging rows: explicit (live-edge) markers only — see header comment.
   for (const row of $messagingSessions.get()) {
-    if (!isSelected(row, selected) && isMarked(row, sessionPinId(row))) {
+    if (!rowIsSelected(row) && isMarked(row, sessionPinId(row))) {
       unread.push(unreadKey(row))
     }
   }
@@ -757,5 +847,13 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
   // synchronously by setSelectedStoredSessionId — this is the persisted half).
   // Unary on purpose: nanostores hands a listener (value, oldValue), and the
   // old selection would otherwise arrive as the profile hint.
-  $selectedStoredSessionId.listen(id => ackStoredSessionId(id))
+  $selectedStoredSessionId.listen(id => {
+    if (!id) {
+      selectedOwnerKey = null
+
+      return
+    }
+
+    ackStoredSessionId(id)
+  })
 }

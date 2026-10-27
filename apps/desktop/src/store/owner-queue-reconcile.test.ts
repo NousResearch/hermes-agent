@@ -5,11 +5,19 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $queuedPromptsBySession } from './composer-queue'
+import { requestGatewayForProfile } from './gateway'
 import { watchOwnerQueues } from './owner-queue-reconcile'
 import { reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
 import { $connection, $gatewayState, $selectedStoredSessionId, $sessions, setSessions } from './session'
 import { $sessionDotStateById } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
+
+// Pass-through: records which profile's own backend a read is routed to.
+vi.mock('@/store/gateway', async importOriginal => {
+  const actual = await importOriginal<{ requestGatewayForProfile: (...args: unknown[]) => unknown }>()
+
+  return { ...actual, requestGatewayForProfile: vi.fn(actual.requestGatewayForProfile) }
+})
 
 const connectionAt = (wsUrl: string) => ({ mode: 'local', wsUrl }) as HermesConnection
 
@@ -118,4 +126,21 @@ it('each gateway open re-reads, once the list loads, the owner queue of every ch
   $gatewayState.set('open')
   await settle()
   expect(request).not.toHaveBeenCalled()
+})
+
+it('a chat owned by a profile whose backend is not provably local is never read in the background', async () => {
+  // The foreground is a local canonical gateway, but the chat's owner is a bare profile name: the
+  // read would go to that profile's own backend (remote override, possibly legacy, unknown here).
+  $connection.set(connectionAt('ws://127.0.0.1:9/api/ws?native_dial=1'))
+  trackPendingSubmission('elsewhere', { id: 'queued-send', text: 'queued after hold', status: 'queued' })
+  const request = vi.fn(async () => ({}))
+  const stop = watchOwnerQueues(request as unknown as Parameters<typeof watchOwnerQueues>[0])
+
+  $gatewayState.set('open')
+  setSessions([row('elsewhere', { profile: 'work' })])
+  await new Promise(resolve => setTimeout(resolve, 0))
+  stop()
+
+  expect(request).not.toHaveBeenCalled()
+  expect(vi.mocked(requestGatewayForProfile)).not.toHaveBeenCalled()
 })

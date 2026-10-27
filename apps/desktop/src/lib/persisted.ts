@@ -1,6 +1,7 @@
 import { atom, type WritableAtom } from 'nanostores'
 
 import { readKey, writeKey } from './storage'
+import { isSharedPreferenceKey } from './ui-preferences/keys'
 
 // A nanostore that auto-persists. Reads its seed from localStorage through the
 // storage choke point (so every read/write is observable in one place) and
@@ -58,19 +59,20 @@ export const Codecs = {
   }
 }
 
-export function persistentAtom<T>(key: string, fallback: T, codec: Codec<T> = Codecs.json<T>()): WritableAtom<T> {
-  const raw = readKey(key)
-  let initial = fallback
-
-  if (raw !== null) {
-    try {
-      initial = codec.decode(raw)
-    } catch {
-      initial = fallback
-    }
+function decodeOr<T>(raw: null | string, fallback: T, codec: Codec<T>): T {
+  if (raw === null) {
+    return fallback
   }
 
-  const $value = atom<T>(initial)
+  try {
+    return codec.decode(raw)
+  } catch {
+    return fallback
+  }
+}
+
+export function persistentAtom<T>(key: string, fallback: T, codec: Codec<T> = Codecs.json<T>()): WritableAtom<T> {
+  const $value = atom<T>(decodeOr(readKey(key), fallback, codec))
 
   // Persist CHANGES only — never the creation-time value. nanostores'
   // subscribe fires immediately, and writing what was just read back is a
@@ -82,9 +84,13 @@ export function persistentAtom<T>(key: string, fallback: T, codec: Codec<T> = Co
   // the early load wrote `{}` over a populated store between the disk read
   // and the main window's module init.
   let creationEmission = true
+  // A value adopted from storage (another window, or the machine's shared
+  // preferences store) is already persisted; writing it back would turn a
+  // peer's "back to default" removal into a stored fallback.
+  let adopting = false
 
   $value.subscribe(value => {
-    if (creationEmission) {
+    if (creationEmission || adopting) {
       creationEmission = false
 
       return
@@ -92,6 +98,23 @@ export function persistentAtom<T>(key: string, fallback: T, codec: Codec<T> = Co
 
     writeKey(key, codec.encode(value))
   })
+
+  // Machine-level preferences follow changes made elsewhere live (#145213).
+  if (isSharedPreferenceKey(key) && typeof window !== 'undefined') {
+    window.addEventListener('storage', event => {
+      if (event.key !== key) {
+        return
+      }
+
+      adopting = true
+
+      try {
+        $value.set(decodeOr(event.newValue, fallback, codec))
+      } finally {
+        adopting = false
+      }
+    })
+  }
 
   return $value
 }

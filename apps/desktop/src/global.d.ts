@@ -12,6 +12,7 @@ import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { WindowSizeMode } from '../electron/window-size-types'
 
+import type { UiPreferencesBridge } from './lib/ui-preferences/sync'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -417,6 +418,9 @@ declare global {
       assumeFreshInstall?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
+      /** This machine's shared UI preferences store (#145213): preload IPC natively,
+       *  `/api/ui-preferences` on the Webapp. */
+      uiPreferences?: UiPreferencesBridge
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (mode: KeepAwakeMode) => void
       onKeepAwakeOffer?: (callback: () => void) => () => void

@@ -11,6 +11,7 @@ import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { browserApi, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
+import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
@@ -141,6 +142,7 @@ export function installBrowserDesktopBridge(): boolean {
       }
     }),
     ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),
+    uiPreferences: createBrowserUiPreferences(api),
     zoom: createBrowserZoom(bootstrap.basePath)
   }
 

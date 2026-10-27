@@ -21,6 +21,7 @@ import { DESKTOP_PROFILE_NAME_RE } from './desktop-profile'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
 import { registerPluginFilesIpc } from './plugin-files-ipc'
+import { registerUiPreferencesIpc } from './ui-preferences'
 
 export interface FsIpcDeps {
   hermesHome: string
@@ -60,6 +61,18 @@ export function registerFsIpc({
       path.join(app.getPath('home'), '.hermes')
     ],
     trashItem: target => shell.trashItem(target)
+  })
+
+  // The machine's UI preferences file beside the root home (#145213), shared
+  // with this machine's Webapp. `hermesHome` is already the root, never a profile.
+  registerUiPreferencesIpc({
+    ipcMain,
+    hermesHome,
+    broadcast: snapshot => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('hermes:ui-preferences:changed', snapshot)
+      }
+    }
   })
 
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))

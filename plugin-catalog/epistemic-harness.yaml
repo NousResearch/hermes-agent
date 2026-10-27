@@ -1,8 +1,9 @@
 name: epistemic-harness
 repo: https://github.com/quangphucqp/epistemic-harness
-sha: eb45ca676df53cce0629a3cc5dcf8a7bdab1c806
+sha: f7afbceb089a0cae3201e32db1d2a0b8b114b186
 subdir: ""
-description: Record a provisional claim or uncertainty before an evidence-gathering step, then link the actual observation to it.
+version: "1.3.0"
+description: Bounded, session-scoped inquiry workflow with explicit probe capture, conservative presentation detail, and optional hosted method advice.
 maintainer: quangphucqp
 tier: community
 category: general
@@ -15,6 +16,7 @@ capabilities:
   provides_tools:
     - epistemic_model
     - epistemic_probe
+    - epistemic_methods
   provides_hooks:
     - pre_llm_call
     - post_tool_call

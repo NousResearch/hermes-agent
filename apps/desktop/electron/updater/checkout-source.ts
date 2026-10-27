@@ -56,8 +56,9 @@ function probeFlags(probe: SourceUpdateProbe): string[] {
 
 /**
  * Every update child's env: this process's env plus the system proxy when none
- * is set (#123387). The proxy env comes last so its extended NO_PROXY is the
- * one the children read; it is empty whenever the user set a proxy.
+ * is set (#123387). The proxy env overrides process.env, so its extended
+ * NO_PROXY is the one the children read (buildDesktopBackendEnv, spread after
+ * it, sets only PYTHON* and PATH); it is empty whenever the user set a proxy.
  */
 export async function sourceUpdateEnvironment(
   updateRoot: string,

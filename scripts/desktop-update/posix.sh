@@ -135,9 +135,10 @@ update_output_tail() { # $OUT -> the updater's last non-empty output lines, one 
   # user can reach when the update failed; the exit code alone never names
   # the failing layer (#137327). $OUT is the run's slice of the hand-off log,
   # which interleaves our own log() lines (a leading ISO timestamp) with the
-  # updater's output — keep only the updater's, strip progress escapes (ANSI,
-  # CR), and bound it: three lines of at most 120 characters each.
-  printf '%s' "$OUT" | tr -d '\r' | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" \
+  # updater's output — keep only the updater's, strip progress escapes (ANSI;
+  # of a CR-overwritten progress line only the final state the terminal
+  # showed), and bound it: three lines of at most 120 characters each.
+  printf '%s' "$OUT" | awk '{ sub(/\r+$/, ""); n = split($0, seg, "\r"); print seg[n] }' | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" \
     | grep -v -e '^[[:space:]]*$' -e '^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}T' | tail -n 3 \
     | while IFS= read -r _tail_line; do printf '%s\n' "${_tail_line:0:120}"; done
 }

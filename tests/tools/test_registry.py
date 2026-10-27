@@ -731,3 +731,40 @@ class TestGetEntryOverlaySemantics:
             merged = {**reg._tools, **reg._scoped_tools.get(scope or reg.current_scope_key(), {})}
             for name in names:
                 assert reg.get_entry(name, scope=scope) is merged.get(name), (scope, name)
+
+
+class TestToolsetAliasAcrossScopes:
+    """A scope's teardown must not un-name a toolset that another scope still owns.
+
+    Multiplexed-MCP regression: routing one profile's turn tore its scope down, the process-global
+    alias table dropped ``mcp-<server>``, and toolset selection then silently skipped the toolset
+    in every session — including the launch profile that still held all of its tools.
+    """
+
+    @staticmethod
+    def _register_in_two_scopes():
+        registry = ToolRegistry()
+        for scope in ("profile-a", "profile-b"):
+            for name in ("mcp__srv__one", "mcp__srv__two"):
+                registry.register(name=name, toolset="mcp-srv", schema=_make_schema(name),
+                                  handler=_dummy_handler, scope=scope)
+        registry.register_toolset_alias("srv", "mcp-srv")
+        return registry
+
+    def test_alias_survives_while_another_scope_owns_the_toolset(self):
+        registry = self._register_in_two_scopes()
+
+        for name in ("mcp__srv__one", "mcp__srv__two"):
+            registry.deregister(name, scope="profile-b")
+
+        assert registry.get_toolset_alias_target("srv") == "mcp-srv"
+        assert [n for n in registry._merged_tools("profile-a") if n.startswith("mcp__srv__")]
+
+    def test_alias_drops_once_no_scope_owns_the_toolset(self):
+        registry = self._register_in_two_scopes()
+
+        for scope in ("profile-a", "profile-b"):
+            for name in ("mcp__srv__one", "mcp__srv__two"):
+                registry.deregister(name, scope=scope)
+
+        assert registry.get_toolset_alias_target("srv") is None

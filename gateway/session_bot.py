@@ -218,7 +218,8 @@ def displaceable_bot_chat(authority, row):
     unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
     adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
     over the API, so it would refuse every delivery for good. A bound local chat, old local history
-    a native open adopts and a Desktop row a login stamped as its own are never moved."""
+    a native open adopts (``_kept_local_history``) and a Desktop row a login stamped as its own are
+    never moved."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_PREFIX
 
@@ -275,20 +276,26 @@ def release_superseded_bot_chat_at_boot(db, store):
 
 def _kept_local_history(db, row):
     """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
-    or Desktop row a native open adopts, or one a login stamped as its owner. A local-source row
-    no open can ever adopt (a route column left by a crash or reconnect, another profile's stamp)
-    is not: it held the title and refused every delivery for good (#141243)."""
+    or Desktop row a native open adopts (unstamped, or stamped with a subject a native ticket
+    carries: the host's own OS identity, or a structured login subject a same-user peer forwards),
+    or a Desktop row a served login stamped with its label (kept as on main, even with a route
+    column or another profile's name). Any other local-source row no open can ever adopt (a route
+    column left by a crash or reconnect, another profile's stamp, or outside Desktop any other
+    stamp, such as a login label ``basic:alice``) is not: it held the title and refused every
+    delivery for good (#141243, #143715)."""
+    from gateway.session_identity import parse_authenticated_subject
+    from gateway.session_worker_reservation import owner_worker_subject
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
-    if row.get('user_id') and not legacy_account_label(row):
-        # A Desktop row a served login stamped is that login's own chat, adopted in place (#140183).
-        # A stamp on any other local source names no owner this door can reach — it is a submit-only
-        # principal, a foreign stamp is refused, and a bound row is refused by its route — so a row
-        # with no binding at all is unadoptable for everyone and held the title for good (#143715).
-        return row.get('source') == 'desktop' or bool(row.get('chat_id') or row.get('session_key'))
+    user_id = row.get('user_id')
+    if (user_id and not legacy_account_label(row) and user_id != owner_worker_subject()
+            and parse_authenticated_subject(user_id) is None):
+        # A Desktop row a login stamped stays where it is, as on main (#140183). On any other local
+        # source such a stamp names no subject a native ticket carries, so nobody adopts it (#143715).
+        return row.get('source') == 'desktop'
     try:
-        validate_legacy_row(db, row)
+        validate_legacy_row(db, row, subject=user_id)
     except RuntimeStoreError:
         return False
     return True

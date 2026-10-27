@@ -1,6 +1,6 @@
 """``/branch`` destination on thread-capable platforms (#66023).
 
-On Discord, Telegram, Slack and Matrix a plain ``/branch`` opens a NEW sibling thread for the
+On Discord, Telegram, Slack, Matrix and Mattermost a plain ``/branch`` opens a NEW sibling thread for the
 clone and leaves the current chat bound to the original session, so the user can keep both paths
 alive. ``/branch --here`` keeps the legacy in-place switch; platforms without threads (and the CLI)
 always branch in place. Pure helpers only — the handler lives in ``slash_commands_session.py``.
@@ -15,7 +15,9 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 
 # Adapters that override ``BasePlatformAdapter.create_handoff_thread`` (the base returns None).
-BRANCH_THREAD_PLATFORMS = frozenset({Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK, Platform.MATRIX})
+BRANCH_THREAD_PLATFORMS = frozenset({
+    Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK, Platform.MATRIX, Platform.MATTERMOST,
+})
 BRANCH_HERE_FLAG = "--here"
 
 

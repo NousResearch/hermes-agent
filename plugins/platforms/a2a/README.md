@@ -58,7 +58,11 @@ via `tasks/get`.
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to
   widen unless you configure a token *and* set `A2A_HOST`.
   Without a token it also refuses browser-originated POSTs (`Origin`,
-  cross-site `Sec-Fetch-Site`, non-JSON `Content-Type`).
+  cross-site `Sec-Fetch-Site`, a missing or non-JSON `Content-Type`).
+- **No token ⇒ loopback `Host` only.** Every route refuses a `Host` that is
+  not a loopback name (`localhost`, `127.x.x.x`, `[::1]`) or the
+  `A2A_PUBLIC_URL` host, so a DNS-rebound page cannot reach it. Only set
+  `A2A_PUBLIC_URL` to a name you control.
 - **Per-peer tokens**: `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each
   remote agent its own credential; that authenticated name (never anything
   in the request body) drives rate limiting, trust, and audit.
@@ -77,7 +81,7 @@ via `tasks/get`.
 |---|---|---|
 | `A2A_PEER_TOKENS` | _(unset)_ | Per-peer credentials `name:token,…` (preferred). |
 | `A2A_BEARER_TOKEN` | _(unset)_ | Shared token; identity falls back to caller IP. |
-| `A2A_HOST` | `127.0.0.1` | Bind host. Only widens with a token set. Without a token, `Host` must be a loopback name (`localhost`, `127.x.x.x`, `[::1]`) or the `A2A_PUBLIC_URL` host. |
+| `A2A_HOST` | `127.0.0.1` | Bind host. Only widens with a token set. |
 | `A2A_PORT` | `9900` | Inbound port. |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card. |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies). |

@@ -157,5 +157,6 @@ curl -X POST http://your-host:9900/ \
 - **`401 Unauthorized`** — token mismatch; check `A2A_PEER_TOKENS`/`A2A_BEARER_TOKEN` on the server and the peer's `auth:` block.
 - **Server won't bind non-localhost** — by design: set a bearer token first, then `A2A_HOST=0.0.0.0`.
 - **`403` "Host must be a loopback name…" with no token** — without a token the server answers only requests addressed to a loopback name (`localhost`, `127.x.x.x`, `[::1]`) or the `A2A_PUBLIC_URL` host, so a web page on another hostname that resolves to your machine cannot read the card or the served-agent list. Call it by one of those names, set `A2A_PUBLIC_URL` to the name a local proxy forwards, or configure a token.
-- **`403` "Content-Type must be application/json" with no token** — plain `curl -d` sends a form type; add `-H 'Content-Type: application/json'`.
+- **`403` "Content-Type must be application/json" with no token** — the POST had a missing or non-JSON `Content-Type` (plain `curl -d` sends a form type); add `-H 'Content-Type: application/json'`.
+- **`403` "browser-originated" or "cross-site request refused" with no token** — the request carried an `Origin` header or a cross-site `Sec-Fetch-Site`, which only browsers send. Call it from a local script or SDK, or configure a token.
 - **Replies time out on long tasks** — raise `A2A_REPLY_TIMEOUT` (the orphan sweep follows it, so a late reply is stored, not discarded), or have the caller register a push-notification config and poll `GetTask`.

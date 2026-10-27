@@ -666,6 +666,7 @@ class GatewayTurnHygieneMixin:
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
         ``(agent, sync_session_db)``."""
         from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
+        from agent.prompt_caching import refresh_auto_cache_ttl
         from run_agent import AIAgent
         try:
             _hyg_session_row = await self._session_db.get_session(session_entry.session_id)
@@ -689,12 +690,13 @@ class GatewayTurnHygieneMixin:
             **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
             session_id=session_entry.session_id, session_db=_hyg_session_db,
-            platform=_GATEWAY_HYGIENE_PLATFORM,
         )
         _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
         # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
         # restore-identity field, so it no longer forces the next live turn to rebuild; the seed's
         # retain flag is what keeps the reduced-toolset build out of the session row (#122822).
+        _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
+        refresh_auto_cache_ttl(_hyg_agent)
         return _hyg_agent, _hyg_session_db
 
     async def _hmwa_hygiene_detached_attempt(

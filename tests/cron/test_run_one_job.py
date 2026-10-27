@@ -545,3 +545,33 @@ def test_run_one_job_crash_after_save_phase_does_not_write_second_artifact(monke
     assert save_calls[0][2] == 1  # First (and only) call
 
 
+def test_build_scheduler_failure_output_stamps_local_timezone(monkeypatch):
+    """Regression: the failure artifact's run-time line must carry the configured
+    local timezone abbreviation, not a hardcoded 'UTC' suffix.
+
+    `_hermes_now()` returns a tz-aware datetime in the user's configured IANA
+    timezone; stamping it with a literal 'UTC' misleads operators on any host
+    whose local zone is not UTC (e.g. Asia/Tokyo → JST, CET, etc.).
+    """
+    import hermes_time
+
+    monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Tokyo")
+    hermes_time.reset_cache()
+    try:
+        exc = RuntimeError("boom")
+        output = s._build_scheduler_failure_output(
+            {"id": "tz-job", "name": "tz test"}, exc
+        )
+        # Extract the run-time line
+        run_time_line = next(
+            (ln for ln in output.splitlines() if ln.startswith("**Run time:**")),
+            None,
+        )
+        assert run_time_line is not None, "Run time line not found in artifact"
+        # Must carry the JST abbreviation, must NOT claim UTC
+        assert "JST" in run_time_line, f"expected JST in {run_time_line!r}"
+        assert "UTC" not in run_time_line, f"unexpected UTC in {run_time_line!r}"
+    finally:
+        hermes_time.reset_cache()
+
+

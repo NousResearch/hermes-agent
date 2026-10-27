@@ -3210,16 +3210,16 @@ def _build_scheduler_failure_output(job: dict, exc: BaseException) -> str:
     save/compose/deliver phase was never entered. The artifact is saved via
     save_job_output so it lands in cron/output/<job_id>/.
 
-    The document contains: job id, job name, run time (UTC), exception type +
-    message (redacted), and traceback (redacted, bounded to 8KB). Secrets and
-    credentials are stripped by redact_sensitive_text(force=True).
+    The document contains: job id, job name, run time (local timezone), exception
+    type + message (redacted), and traceback (redacted, bounded to 8KB). Secrets
+    and credentials are stripped by redact_sensitive_text(force=True).
     """
     import traceback
     from agent.redact import redact_sensitive_text
 
     job_id = job.get("id") or "unknown"
     job_name = job.get("name") or job_id
-    run_time = _hermes_now().strftime("%Y-%m-%d %H:%M:%S UTC")
+    run_time = safe_strftime(_hermes_now(), "%Y-%m-%d %H:%M:%S %Z")
     exc_type = type(exc).__name__
     exc_msg = str(exc) or "(no message)"
 

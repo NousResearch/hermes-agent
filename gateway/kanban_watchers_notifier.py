@@ -44,10 +44,13 @@ def _pin_first():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+# ``review_reopened`` (review -> ready/todo) closes each review cycle the same
+# way; without it the subscription cursor stalls on the handoff event and the
+# channel keeps showing "ready for review" while the card is back for rework.
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "review_reopened")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "review_reopened", "block_loop_detected")
 
 
 def diagnostic_event(ev) -> bool:
@@ -428,6 +431,23 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_review_reopened(ev, n) -> tuple:
+    # An operator returned the review card to its implementer (review -> ready/todo).
+    # The CLI redacts the reopen reason into the event payload; surface it in the
+    # ping and the wake turn like ``changes_requested`` does. Payload-less events
+    # (a plain ``ready`` landing) keep the bare form.
+    payload = ev.payload or {}
+    status = str(payload.get("status") or "ready")
+    implementer = _safe_review_reason(payload.get("implementer"), 48)
+    reason = _safe_review_reason(payload.get("reason"))
+    provenance = t("gateway.kanban.ping.implementer_suffix", implementer=implementer) if implementer else ""
+    if reason:
+        provenance += t("gateway.kanban.ping.reason_suffix", value=reason)
+    msg = t("gateway.kanban.ping.review_reopened",
+            board_tag=n.board_tag, task_id=n.task_id, status=status, provenance=provenance)
+    return msg, None, (reason or None)
+
+
 def _fmt_block_loop_detected(ev, n) -> tuple:
     """Re-blocked for the same cause past the limit and routed to `triage`.
 
@@ -481,6 +501,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
+    "review_reopened": _fmt_review_reopened,
     "block_loop_detected": _fmt_block_loop_detected,
 }
 

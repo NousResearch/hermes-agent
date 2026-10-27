@@ -30,6 +30,12 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
+# Work-class -> reasoning-effort policy (vocabulary, mechanical->level table, and the
+# one resolver shared by create_task, `hermes kanban show` and the worker policy).
+from hermes_cli.kanban_db_workclass import (
+    VALID_WORK_CLASSES, WORK_CLASS_REASONING_EFFORT, effective_reasoning_effort,
+    normalize_work_class, resolve_work_class_effort,
+)
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -160,6 +166,10 @@ def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
         return value
     allowed = ", ".join(("none", *VALID_REASONING_EFFORTS))
     raise ValueError(f"reasoning_effort must be one of {allowed}, got {effort!r}")
+
+
+# Work-class vocabulary, the mechanical-class effort table and the resolver live in
+# ``kanban_db_workclass`` (imported at the top of this module).
 
 
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -678,6 +688,7 @@ class Task:
     model_override: Optional[str] = None
     provider_override: Optional[str] = None  # provider ``model_override`` belongs to
     reasoning_effort: Optional[str] = None   # VALID_REASONING_EFFORTS | "none"; NULL = profile's
+    work_class: Optional[str] = None         # VALID_WORK_CLASSES; NULL = no class (inherit)
     # Breaker trip count; None -> ``kanban.failure_limit`` -> DEFAULT_FAILURE_LIMIT.
     max_retries: Optional[int] = None
     # ``/goal``-style loop: a judge re-checks each turn IN THE SAME SESSION until
@@ -724,7 +735,7 @@ _TASK_OPTIONAL_COLUMNS = (
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
-    "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
+    "model_override", "provider_override", "reasoning_effort", "work_class", "goal_max_turns", "block_kind",
 )
 
 
@@ -890,6 +901,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- passes --reasoning <level> so the worker runs at that depth regardless
     -- of the profile's agent.reasoning_effort. NULL = profile setting.
     reasoning_effort     TEXT,
+    -- Card work class (VALID_WORK_CLASSES: merge, deploy, approval, qa-handoff,
+    -- dependency-bump, formatting, implementation, design, diagnosis, research).
+    -- Sets the worker's default reasoning effort via
+    -- WORK_CLASS_REASONING_EFFORT unless reasoning_effort is set. NULL (or a
+    -- class with no mapping row) = inherit the profile's setting.
+    work_class           TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1214,6 +1231,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
+    work_class: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
@@ -1228,6 +1246,9 @@ def create_task(
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
+    ``work_class`` names what kind of work the card is (``VALID_WORK_CLASSES``) and
+    supplies the worker's default reasoning effort when ``reasoning_effort`` is unset
+    (``WORK_CLASS_REASONING_EFFORT``); an unknown/unset class inherits the profile.
     ``creator_task_id``: inherit durable session/subscriptions independently of
     dependency edges; an explicit ``session_id`` still wins.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
@@ -1241,6 +1262,7 @@ def create_task(
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    work_class = normalize_work_class(work_class)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1325,9 +1347,9 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
-                        reasoning_effort,
+                        reasoning_effort, work_class,
                         goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1336,6 +1358,7 @@ def create_task(
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
+                        work_class,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                     ),
                 )
@@ -1359,6 +1382,8 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "work_class": work_class,
+                        "reasoning_effort": reasoning_effort,
                     },
                 )
                 if task_status == "blocked":

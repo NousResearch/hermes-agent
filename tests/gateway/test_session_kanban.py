@@ -54,6 +54,53 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
+def test_work_class_supplies_the_dispatched_reasoning_effort(tmp_path, monkeypatch):
+    """The class default and an explicit pin reach the frozen launch policy.
+
+    ``build_kanban_policy`` is the execution path: whatever lands in
+    ``request_json['reasoning']`` is what the worker's session is created with.
+    Substantive classes leave the field absent, so the profile config decides.
+    """
+    from contextlib import closing
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from gateway.session_contract import Principal
+    from gateway.session_kanban import build_kanban_policy
+
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
+    monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
+    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env',
+                        lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    kb.create_board('owned')
+    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor, native_owner=True)
+    config = {'model': {'default': 'loop-model'}, 'platform_toolsets': {'cli': ['terminal', 'file']},
+              'agent': {'reasoning_effort': 'xhigh'}}
+
+    def launch_reasoning(**card):
+        with closing(connect(board='owned')) as conn:
+            task_id = kb.create_task(conn, title='reasoning probe', assignee='default',
+                                     workspace_kind='dir', workspace_path=str(workspace),
+                                     model_override='loop-model', **card)
+            kb.recompute_ready(conn)
+            task = kb.claim_task(conn, task_id)
+        params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
+        policy, _secrets = build_kanban_policy(connection, params, config)
+        return json.loads(policy.request_json).get('reasoning')
+
+    assert launch_reasoning(work_class='dependency-bump') == 'low'
+    assert launch_reasoning(work_class='merge') == 'medium'
+    # Substantive work keeps the profile's own xhigh: the field stays absent.
+    assert launch_reasoning(work_class='implementation') is None
+    # An explicit pin beats the class default.
+    assert launch_reasoning(work_class='merge', reasoning_effort='xhigh') == 'xhigh'
+
+
 @pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
 def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os

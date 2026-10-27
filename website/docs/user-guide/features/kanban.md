@@ -682,6 +682,36 @@ hermes kanban set-model t_abcd none    # clear the override
 
 The dispatcher spawns the worker with the pinned model (`--provider <name>` is passed when set; `--provider` requires a model). The dashboard's per-task model dropdown drives the same `model_override` field. With no override, the worker uses its profile's configured model.
 
+### Per-task reasoning effort and work classes
+
+Reasoning depth is a second per-task lever, independent of the model. A card can pin an explicit level, or name the kind of work it is and let that class pick one:
+
+```bash
+# Explicit pin — thinking off for a pure sign-off card
+hermes kanban create "approve PR #12" --assignee reviewer --reasoning-effort none
+
+# Class default — merge runs at medium, the other mechanical classes at low
+hermes kanban create "merge wt/t_abcd into main" --assignee devops --work-class merge
+hermes kanban create "bump ruff to 0.9" --assignee devops --work-class dependency-bump
+```
+
+The class is an explicit field on the card (`--work-class` on create, `work_class` on the `kanban_create` tool) — it is never inferred from the title or body, because a guess the author cannot audit would silently change a worker's thinking budget. The effective effort resolves in this order:
+
+| Precedence | Source | Effect |
+|---|---|---|
+| 1 | `reasoning_effort` on the card | that level exactly (`none` = thinking off) |
+| 2 | `work_class` in the table below | the class default |
+| 3 | neither | inherit the assignee profile's `agent.reasoning_effort` (and its per-model `reasoning_overrides`) |
+
+| Work class | Default effort |
+|---|---|
+| `merge` | `medium` |
+| `deploy`, `approval`, `qa-handoff`, `dependency-bump`, `formatting` | `low` |
+| `implementation`, `design`, `diagnosis`, `research` | inherit |
+| unknown or unset | inherit |
+
+The class default is resolved at dispatch, not written into the card: the stored `reasoning_effort` stays NULL ("inherit"), so an explicit pin — even one added after creation — still wins, and a later change to the mapping applies to existing cards. `hermes kanban show` and the list JSON print the class and the effective value with its source (`low (class: dependency-bump)`, `xhigh (task)`, `inherit (profile; class: design)`, `inherit (profile)`). Nothing here edits a profile's `agent.reasoning_effort`; a substantive card runs exactly as its profile is configured.
+
 ### Cost strategy: frontier orchestrator, inexpensive workers
 
 Kanban's per-profile configs make the planner/worker cost split natural. Decomposing a project into well-scoped cards takes frontier-level judgment; executing a card that already carries a clear goal, context, and handoff evidence usually doesn't — and the workers are where the vast majority of tokens are spent, so the worker model is where the cost lives. Run your orchestrator/dispatcher profile on a frontier model and point worker profiles at inexpensive models. Each profile has its own `config.yaml` under `~/.hermes/profiles/<name>/`, and the dispatcher injects the profile-scoped `HERMES_HOME` when it spawns `hermes -p <assignee>`, so each worker reads its own profile's model settings:

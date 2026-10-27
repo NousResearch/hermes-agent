@@ -526,6 +526,21 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "the profile's provider and will fail if it belongs "
                 "to a different one. Requires 'model'."
         )),
+        "reasoning_effort": _prop("string", (
+                "Override the worker's reasoning effort for this "
+                "task. Accepts 'none' (thinking off) or one of the "
+                "validated levels (minimal, low, medium, high, xhigh, "
+                "max, ultra). Omit to inherit the profile's own "
+                "setting."
+        )),
+        "work_class": _prop("string", (
+                "What kind of work this card is; supplies the worker's "
+                "default reasoning effort when 'reasoning_effort' is "
+                "omitted. Mechanical classes run cheaper: merge (medium); "
+                "deploy, approval, qa-handoff, dependency-bump, formatting "
+                "(low). implementation, design, diagnosis and research "
+                "inherit the assignee profile's setting. Omit to inherit."
+        )),
     },
     ["title", "assignee"],
 )

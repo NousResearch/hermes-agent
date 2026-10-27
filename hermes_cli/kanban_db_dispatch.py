@@ -2878,7 +2878,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     try:
         proc = subprocess.Popen(
             cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
+            cwd=str(Path(__file__).resolve().parent.parent),
             stdin=subprocess.DEVNULL,
             stdout=log_f,
             stderr=subprocess.STDOUT,

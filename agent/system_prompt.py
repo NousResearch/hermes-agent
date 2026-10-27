@@ -173,23 +173,45 @@ def _plugin_section_blocks(sections: tuple, position: str) -> list[str]:
     return [block] if block else []
 
 
+def _session_start_lineage_root_id(db: Any, session_id: str) -> str:
+    """Walk only through compression parents; resets begin a new displayed conversation."""
+    get_session = getattr(db, "get_session", None)
+    if not callable(get_session):
+        return db.get_conversation_root(session_id)
+
+    current = session_id
+    session = get_session(current)
+    seen: set[str] = set()
+    while current and session and current not in seen and len(seen) < 100:
+        seen.add(current)
+        parent_id = session.get("parent_session_id")
+        if not parent_id or parent_id in seen:
+            break
+        parent = get_session(parent_id)
+        if not parent or parent.get("end_reason") != "compression":
+            break
+        current = parent_id
+        session = parent
+    return current
+
+
 def _session_start_like(agent: Any, now: Any) -> Any:
     """Best-known conversation start time, or ``now`` as a fallback.
     ``Conversation started:`` must be byte-stable across rebuilds (compression,
     resume, fresh gateway turns), so prefer immutable sources in order: the
-    lineage-root session id's embedded stamp (compaction rotates ids, each with
-    its own mint time), the current session id's stamp, ``agent.session_start``,
+    compression-lineage root session id's embedded stamp (compaction rotates
+    ids, each with its own mint time; resets begin a new displayed conversation),
+    the current session id's stamp, ``agent.session_start``,
     then ``now``.  Stamps are box-local wall-clock: attach that zone first, then
     convert to ``now``'s zone so the date matches the per-turn clock.
 
-    0. the LINEAGE-ROOT session id's embedded timestamp — compaction can rotate the session id, and each
-    rotated id embeds its OWN mint time, so after months of compactions rung 1 alone would quietly re-birth
-    the conversation at its latest rotation. Walking to the lineage root (same walk as
-    ``_conversation_root_id``) recovers the ORIGINAL birth stamp — a Bot Mode forever-chat keeps knowing
-    when it was first born, across every compaction (maintainer-directed, #98426); 1. the timestamp embedded
-    in ``session_id`` (``YYYYMMDD_HHMMSS_...``) — immutable for the life of the session, so the line is
-    byte-stable across every rebuild boundary (preserving prefix-cache KV); 2. 3. ``now`` (initial/legacy
-    build without either).
+    0. The root id across compression parents. Compaction rotates ids, each with its own mint
+       time; walking compression parents recovers the original birth stamp (#98426). A parent
+       ended for another reason, such as ``session_reset``, starts a new displayed conversation.
+    1. The timestamp embedded in ``session_id`` (``YYYYMMDD_HHMMSS_...``), immutable for the life
+       of the session and byte-stable across rebuilds (preserving prefix-cache KV).
+    2. ``agent.session_start``.
+    3. ``now`` for an initial or legacy build without either stamp.
     """
     from datetime import datetime
     def _to_display_tz(dt: Any) -> Any:
@@ -205,10 +227,15 @@ def _session_start_like(agent: Any, now: Any) -> Any:
             except (ValueError, OSError):
                 pass
         return dt
+
     session_id = getattr(agent, "session_id", None)
     db = getattr(agent, "_session_db", None)
     try:
-        root_id = db.get_conversation_root(session_id) if db is not None and isinstance(session_id, str) and session_id else None
+        root_id = (
+            _session_start_lineage_root_id(db, session_id)
+            if db is not None and isinstance(session_id, str) and session_id
+            else None
+        )
     except Exception:
         root_id = None
     for candidate in (root_id, session_id):

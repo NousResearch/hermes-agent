@@ -70,10 +70,17 @@ def save_config(cfg: dict) -> Path:
     return storage.write_json(paths.config_path(), merged)
 
 
+CAPABILITY_ENV_KEYS = frozenset({
+    "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST", "EMAIL_SMTP_PORT",
+    "EMAIL_IMAP_HOST", "EMAIL_IMAP_PORT", "BROWSERBASE_API_KEY", "AGENTMAIL_API_KEY",
+})
+
+
 def dotenv_env() -> dict:
-    """Shell env overlaid on `$HERMES_HOME/.env`, so capability detection sees the creds Hermes
-    loads for its own tools (BROWSERBASE_API_KEY, EMAIL_*, AGENTMAIL_API_KEY, ...) even though the
-    terminal-tool shell doesn't export them. Shell env wins; the .env only fills gaps."""
+    """Read only declared mail/browser capabilities; shell values override the file.
+
+    Unrelated Hermes credentials must not enter the skill's configuration dictionary.
+    """
     merged: dict = {}
     p = paths.hermes_home() / ".env"
     if p.exists():
@@ -83,16 +90,17 @@ def dotenv_env() -> dict:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                merged[k.strip()] = v.strip().strip('"').strip("'")
+                if k.strip() in CAPABILITY_ENV_KEYS:
+                    merged[k.strip()] = v.strip().strip('"').strip("'")
         except OSError:
             pass
-    merged.update(os.environ)
+    merged.update({k: os.environ[k] for k in CAPABILITY_ENV_KEYS if k in os.environ})
     return merged
 
 
 def detect_capabilities(env: dict | None = None) -> dict:
     """Report which opt-in upgrades are available without extra setup."""
-    env = os.environ if env is None else env
+    env = dotenv_env() if env is None else env
     home = paths.hermes_home()
     google = (
         (home / "google_token.json").exists()
@@ -112,7 +120,7 @@ def detect_capabilities(env: dict | None = None) -> dict:
 
 
 def auto_configure(env: dict | None = None) -> dict:
-    """Pick the most autonomous configuration this environment supports (no questions).
+    """Choose first-run capabilities without replacing existing saved configuration.
 
     - email: programmatic when SMTP creds exist (CLI sends + IMAP-verifies itself);
       alias mode when only AgentMail exists; draft_only as the capability floor.
@@ -120,8 +128,11 @@ def auto_configure(env: dict | None = None) -> dict:
     - encryption: age when the binary is installed (free privacy, zero human cost).
     - tracker: stays local-json (google-sheets needs a sheet id -> a human choice).
     """
-    caps = detect_capabilities(env)
     cfg = load_config()
+    # Capability discovery cannot authorize replacing saved safety choices.
+    if paths.config_path().exists():
+        return cfg
+    caps = detect_capabilities(env)
     cfg["autonomy"] = "full"
     if caps["smtp_send"]:
         cfg["email_mode"] = "programmatic"
@@ -147,6 +158,6 @@ def browser_clears_captcha(cfg: dict, env: dict | None = None) -> bool:
     if backend == "browserbase":
         return True
     if backend == "auto":
-        env = os.environ if env is None else env
+        env = dotenv_env() if env is None else env
         return bool(env.get("BROWSERBASE_API_KEY"))
     return False

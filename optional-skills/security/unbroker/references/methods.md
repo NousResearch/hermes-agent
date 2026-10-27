@@ -213,13 +213,17 @@ Then follow the **Verification loop** if the broker emails a confirmation link.
 
 - **browser mode (autonomous, no password):** open the broker's confirmation email in the operator's
   webmail (`browser_exec`), then `pdd.py verify-link <subject> <broker> --text '<email body>'` returns
-  the anti-phishing-scored link. Open it with `browser_exec` (`goto_url(link)`) **in the same browser** (several brokers, e.g.
+  a broker-origin HTTPS candidate. Authenticate the email provenance, bind it to the subject's pending
+  request and inspect the final official destination before opening. If unclear, queue a human task.
+  Open only a reviewed link with `browser_exec` (`goto_url(link)`) **in the same browser** (several brokers, e.g.
   PeopleConnect, bind the session to the browser that opens the link), finish the flow, record
   `awaiting_processing`.
 - **programmatic mode (IMAP):** `pdd.py poll-verification <subject>` polls IMAP for every in-flight
-  case, extracts the link (anti-phishing scored: only opt-out-looking links on the broker's own
-  domains), and auto-advances `submitted → verification_pending`. Then open the link with `browser_exec` in
-  the agent's own browser, finish the flow, record `awaiting_processing`.
+  case over verified TLS and returns broker-origin HTTPS candidates without advancing state.
+  Sender headers and link matching do not authenticate mail or establish subject/request identity.
+  Apply the same provenance, pending-request and final-destination review as browser mode; never
+  automatically follow redirects or third-party verification providers. Open only a reviewed link
+  in the agent's own browser, finish the flow, record `awaiting_processing`.
 - **draft_only:** the digest tells the operator to click the link in the subject's inbox; the agent
   records `awaiting_processing` on their word.
 - Either way, the due queue (`pdd.py due`) brings the case back after the broker's processing window

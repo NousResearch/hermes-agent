@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import legal
 import paths
@@ -46,31 +47,45 @@ def render_request_draft(broker: dict, fields: dict, kind: str = "generic",
     return fp
 
 
+def broker_domains(broker: dict) -> set[str]:
+    """Use only explicitly declared domains, never a guessed public-suffix tail."""
+    domains = set()
+    for section in ("optout", "search"):
+        try:
+            host = urlsplit((broker.get(section) or {}).get("url") or "").hostname
+        except ValueError:
+            continue
+        if host:
+            domains.add(host.lower().removeprefix("www."))
+    address = (broker.get("optout") or {}).get("email") or ""
+    if "@" in address:
+        domains.add(address.rsplit("@", 1)[1].lower())
+    return domains
+
+
+def domain_matches(host: str, domains: set[str]) -> bool:
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
 def extract_verification_link(email_body: str, broker: dict | None = None) -> str | None:
-    """Return the most likely opt-out/verification link from an email body.
+    """Return an HTTPS broker-origin candidate, not proof of sender/request identity.
 
-    Anti-phishing: a link is only returned if its URL matches an opt-out hint
-    and/or the broker's own domain; arbitrary links score 0 and are ignored.
+    The operator must bind the email to the pending subject/request and inspect the
+    final official destination before opening it. Third-party verification providers
+    require separate review; generic verification words never authorize an origin.
     """
-    candidates = _LINK_RE.findall(email_body or "")
-    if not candidates:
-        return None
-
-    domain = ""
-    if broker:
-        url = (broker.get("optout") or {}).get("url") or (broker.get("search") or {}).get("url") or ""
-        m = re.search(r"https?://([^/]+)", url)
-        if m:
-            domain = m.group(1).replace("www.", "")
-
+    domains = broker_domains(broker or {})
     best_score, best_link = 0, None
-    for link in candidates:
-        low = link.lower()
-        score = 0
-        if any(h in low for h in _VERIFY_HINTS):
-            score += 2
-        if domain and domain in low:
-            score += 3
+    for link in _LINK_RE.findall(email_body or ""):
+        try:
+            parsed = urlsplit(link)
+            if (parsed.scheme.lower() != "https" or parsed.username is not None
+                    or parsed.password is not None or parsed.port not in (None, 443)
+                    or not domain_matches(parsed.hostname or "", domains)):
+                continue
+        except ValueError:
+            continue
+        score = 1 + 2 * any(h in (parsed.path + parsed.query).lower() for h in _VERIFY_HINTS)
         if score > best_score:
             best_score, best_link = score, link
     return best_link

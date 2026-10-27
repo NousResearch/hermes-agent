@@ -40,7 +40,8 @@ digest at the end of the run (`$PDD tasks`). Between those:
   picks the most autonomous valid config itself.
 - **Never pause before individual submissions** when `autonomy=full` (the default): the consent
   recorded at intake is standing authorization for T0-T2 opt-outs. (`autonomy=assisted` restores
-  per-submission confirmation for cautious operators - honor `confirm_first` flags in `next` output.)
+  per-submission confirmation for cautious operators - honor `confirm_first` flags in `next` output
+  and pass `send-email --confirm` only after the operator approves that request.)
 - **Never interrupt the run for human-only work.** Record it (`record ... human_task_queued
   --reason "..."`) and keep going; it all surfaces once in the final digest.
 - **Drive the whole run as a loop over `$PDD next <subject>`** - it returns the exact ordered actions
@@ -123,9 +124,9 @@ breaks reading the dossier).
 | `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_task` subagents (auto for large runs; batches of 5 - 8+ time out) |
 | `$PDD record <subject> <broker> <state> [--found true] [--evidence JSON] [--disclosed F --channel C] [--reason "..."]` | Update the ledger (validated state machine); **auto-stamps `next_recheck_at`** |
 | `$PDD show <subject> <broker>` | Read back a case's recorded state + evidence + disclosure log (so the parent re-verifies a subagent's `found` without re-deriving the listing URL) |
-| `$PDD send-email <subject> <broker> --listing <url> [--kind ccpa_indirect ...]` | Render + record the request (recipient locked to the broker's own address). **browser** mode returns a `compose` payload to send via webmail (no password); **programmatic** mode SMTP-sends |
+| `$PDD send-email <subject> <broker> --listing <url> [--kind ccpa_indirect ...]` | Require `--confirm` in assisted mode. Recipient-locked **browser** compose payload does not record submission; **programmatic** mode sends over verified TLS and records |
 | `$PDD verify-link <subject> <broker> --text '<body>'` | **browser mode**: extract a broker's verification link from webmail text you read (anti-phishing scored) |
-| `$PDD poll-verification <subject> [--broker <id>]` | **programmatic mode**: poll IMAP for verification links (anti-phishing scored); auto-advances `submitted → verification_pending` |
+| `$PDD poll-verification <subject> [--broker <id>]` | **programmatic mode**: poll verified-TLS IMAP for broker-origin link candidates requiring provenance/request review; no ledger advancement |
 | `$PDD render-email <subject> <broker> --listing <url>` | Draft only (fallback when no email mode is configured) |
 | `$PDD due <subject>` | Cases whose recheck window arrived (the cron re-scan queue) |
 | `$PDD tasks <subject>` | ONE consolidated human-task digest (present at END of run) |
@@ -240,11 +241,13 @@ recording `found` and before any deletion.
      Playbooks may end with a right-to-delete `send-email` follow-up - do it (full erasure, not just
      listing suppression).
     - **email** → `$PDD send-email <subject> <broker> --kind <ccpa|gdpr|generic> --to <addr>
-      --listing <url>` records + discloses in one step (recipient locked to addresses the broker
-      record declares; `next` picks the kind from residency - never claim CCPA/GDPR for someone who
-      can't). In **browser** mode it returns a recipient-locked `compose` payload: compose a new
+      --listing <url>` (add `--confirm` after approval in assisted mode; recipient locked to the broker's
+      declared addresses). SMTP sends and records in one step. `next` picks the kind from residency:
+      never claim CCPA/GDPR for someone who can't. In **browser** mode it returns a recipient-locked `compose` payload: compose a new
       message to `compose.to` with `compose.subject`/`compose.body` exactly in the operator's webmail
-      via `browser_exec` and send (no password); in **programmatic** mode it SMTP-sends. `next` also
+      via `browser_exec` and send (no password). The compose payload does not change the ledger:
+      read back the exact Sent message, then `record ... submitted --disclosed FIELD --channel email_browser`
+      for each disclosed field. In **programmatic** mode it SMTP-sends over verified TLS. `next` also
       routes human-gated forms (phone-callback/gov-ID) through a broker's deletion email when one
       exists - the **rescue lane** (verified Whitepages pattern). Draft-only falls back to
       `render-email` + a digest entry.
@@ -255,9 +258,12 @@ recording `found` and before any deletion.
      never an agent action; `next` already routed these to the digest. Record them:
      `$PDD record <subject> <broker> human_task_queued --reason "..."`.
  6. **Verification (when `next` says so).** In **programmatic** mode `$PDD poll-verification <subject>`
-    finds arrived confirmation links via IMAP (anti-phishing scored, auto-advances state). In
+    returns broker-origin HTTPS candidates via verified IMAP TLS, without advancing state. In
     **browser** mode, open the broker's confirmation email in the operator's webmail and run
-    `$PDD verify-link <subject> <broker> --text '<body>'` to score the link. Either way **open the
+    `$PDD verify-link <subject> <broker> --text '<body>'` to filter link origins. A candidate is NOT
+    authenticated mail or proof of request identity: verify provenance, the subject's pending request,
+    and the final official destination before navigating. If unclear, queue a human task. Do not
+    automatically follow redirects or third-party verification providers. **Open only a reviewed
     link in the same browser** (several brokers bind the verification session to the browser that
     opens it), finish the flow, then record `awaiting_processing`. `confirmed_removed` ONLY after a
     verifying re-scan shows the listing gone - never off the submission flow's own confirmation page.

@@ -22,14 +22,15 @@ import email as _email
 import email.utils
 import imaplib
 import json
-import os
 import re
 import smtplib
+import ssl
 import time
 from email.message import EmailMessage
 from pathlib import Path
 
 import email_modes
+import config as config_mod
 import paths
 
 # provider domain -> (smtp_host, smtp_port, imap_host, imap_port)
@@ -52,7 +53,7 @@ def _domain(address: str) -> str:
 
 def smtp_settings(env: dict | None = None) -> dict | None:
     """SMTP connection settings, or None when sending is not configured."""
-    env = os.environ if env is None else env
+    env = config_mod.dotenv_env() if env is None else env
     address, password = env.get("EMAIL_ADDRESS"), env.get("EMAIL_PASSWORD")
     if not (address and password):
         return None
@@ -66,7 +67,7 @@ def smtp_settings(env: dict | None = None) -> dict | None:
 
 def imap_settings(env: dict | None = None) -> dict | None:
     """IMAP connection settings, or None when inbox reading is not configured."""
-    env = os.environ if env is None else env
+    env = config_mod.dotenv_env() if env is None else env
     address, password = env.get("EMAIL_ADDRESS"), env.get("EMAIL_PASSWORD")
     if not (address and password):
         return None
@@ -164,7 +165,8 @@ def _respect_rate_limit(min_interval: float, sleep, now, state_path=None) -> Non
 
 # SMTP errors that are permanent (don't retry) vs transient (retry with backoff).
 _SMTP_PERMANENT = (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused,
-                   smtplib.SMTPSenderRefused, smtplib.SMTPDataError)
+                   smtplib.SMTPSenderRefused, smtplib.SMTPDataError,
+                   smtplib.SMTPNotSupportedError, ssl.SSLError)
 
 
 def send(broker: dict, body_text: str, to: str | None = None,
@@ -208,18 +210,21 @@ def send(broker: dict, body_text: str, to: str | None = None,
 
     _respect_rate_limit(min_interval, _sleep, _now, _rate_state)
 
-    factory = _smtp_factory or smtplib.SMTP
+    implicit_tls = settings["port"] == 465
+    context = ssl.create_default_context()
+    factory = _smtp_factory or (smtplib.SMTP_SSL if implicit_tls else smtplib.SMTP)
+    connect_kwargs: dict = {"timeout": 30}
+    if implicit_tls:
+        connect_kwargs["context"] = context
     attempts = 0
     while True:
         attempts += 1
         try:
-            with factory(settings["host"], settings["port"], timeout=30) as smtp:
+            with factory(settings["host"], settings["port"], **connect_kwargs) as smtp:
                 smtp.ehlo()
-                try:
-                    smtp.starttls()
+                if not implicit_tls:
+                    smtp.starttls(context=context)
                     smtp.ehlo()
-                except smtplib.SMTPNotSupportedError:
-                    pass  # already-TLS ports / test doubles
                 smtp.login(settings["address"], settings["password"])
                 smtp.send_message(msg)
             break
@@ -260,22 +265,6 @@ def message_text(msg) -> str:
     return "\n".join(c for c in chunks if c)
 
 
-def _broker_domains(broker: dict) -> list[str]:
-    """Domains this broker legitimately mails from (site domains + optout email domain)."""
-    domains: list[str] = []
-    for section in ("optout", "search"):
-        url = ((broker.get(section) or {}).get("url")) or ""
-        m = re.search(r"https?://([^/]+)", url)
-        if m:
-            domains.append(m.group(1).lower().removeprefix("www."))
-    opt_email = (broker.get("optout") or {}).get("email")
-    if opt_email and "@" in opt_email:
-        domains.append(_domain(opt_email))
-    # strip subdomains to the registrable-ish tail (mailer.intelius.com -> intelius.com)
-    tails = {".".join(d.split(".")[-2:]) for d in domains if d}
-    return sorted(tails)
-
-
 def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
                  _imap_factory=None) -> list[dict]:
     """Fetch recent inbox messages: [{from, subject, date, text}], newest first."""
@@ -287,7 +276,7 @@ def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
     since = (_dt.date.today() - _dt.timedelta(days=max(0, since_days))).strftime("%d-%b-%Y")
 
     factory = _imap_factory or imaplib.IMAP4_SSL
-    conn = factory(settings["host"], settings["port"])
+    conn = factory(settings["host"], settings["port"], ssl_context=ssl.create_default_context())
     try:
         conn.login(settings["address"], settings["password"])
         conn.select("INBOX", readonly=True)
@@ -317,16 +306,15 @@ def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
 def link_from_messages(messages: list[dict], broker: dict) -> dict | None:
     """Pure: find the broker's verification link in already-fetched messages.
 
-    A message is only considered if its From domain OR any contained link matches
-    the broker's own domains; the link itself must pass the anti-phishing scorer.
+    Require an exact sender-domain boundary and an HTTPS broker-origin link.
+    From is not authenticated here: review the pending request and mail provenance
+    before navigating any returned candidate.
     """
-    domains = _broker_domains(broker)
+    domains = email_modes.broker_domains(broker)
     for m in messages:
-        sender = (m.get("from") or "").lower()
+        sender = email.utils.parseaddr(m.get("from") or "")[1]
         text = m.get("text") or ""
-        sender_match = any(d in sender for d in domains)
-        body_match = any(d in text.lower() for d in domains)
-        if not (sender_match or body_match):
+        if not email_modes.domain_matches(_domain(sender), domains):
             continue
         link = email_modes.extract_verification_link(text, broker)
         if link:

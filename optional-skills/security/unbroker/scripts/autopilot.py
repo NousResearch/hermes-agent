@@ -20,11 +20,11 @@ only reads. Executing + recording stays with the agent (and the record command).
 from __future__ import annotations
 
 import datetime as _dt
-import os
 from pathlib import Path
 
 import brokers as brokers_mod
 import emailer
+import config as config_mod
 import ledger as ledger_mod
 import paths
 import registry
@@ -135,11 +135,12 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
     if email_addr and can_email:
         kind = request_kind(dossier, deletion.get("kinds"))
         via = "browser" if email_mode == "browser" else "smtp"
-        then = ("send-email records it + returns a recipient-locked payload; compose and send it in "
-                "the operator's webmail via browser_exec, then `verify-link` on the reply and open the link"
+        then = ("compose and send the recipient-locked payload in the operator's webmail; read back "
+                "the exact Sent message, then record submitted with disclosed fields/channel; "
+                "review any verify-link candidate's provenance and subject/request identity before opening"
                 if via == "browser" else
-                "state auto-records as submitted; poll-verification picks up their verification reply, "
-                "open its link, then record")
+                "state auto-records as submitted; poll-verification returns candidates only: authenticate "
+                "provenance, subject/request identity and final official destination before opening")
         return {
             "type": "optout_email_send",
             "broker_id": bid, "broker_name": row.get("broker_name"), "tier": tier,
@@ -203,7 +204,7 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
 
 def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                  ledger: dict | None = None, env: dict | None = None) -> dict:
-    env = os.environ if env is None else env
+    env = config_mod.dotenv_env() if env is None else env
     ledger = ledger or {}
     subject_id = dossier.get("subject_id", "")
     autonomy = cfg.get("autonomy", "full")
@@ -282,16 +283,18 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                     "type": "poll_verification", "via": "imap",
                     "broker_id": bid,
                     "command": f"python3 scripts/pdd.py poll-verification {subject_id} --broker {bid}",
-                    "then": "open the returned link with browser_exec IN THE SAME AGENT BROWSER (sessions are "
-                            "browser-bound), complete the flow, then record: awaiting_processing",
+                    "then": "Candidate only: authenticate email provenance, bind it to the subject's pending request "
+                            "and inspect the final official destination before opening in the same agent browser; "
+                            "complete the flow, then record: awaiting_processing",
                 })
             elif email_mode == "browser":
                 actions.append({
                     "type": "poll_verification", "via": "browser", "broker_id": bid,
                     "how": "open the broker's confirmation email in the operator's logged-in webmail "
                            f"(browser_exec), then `python3 scripts/pdd.py verify-link {subject_id} {bid} "
-                           "--text '<email body>'` to score the link, open it with browser_exec in the SAME "
-                           "browser, then record awaiting_processing",
+                           "--text '<email body>'` for a candidate only: authenticate email provenance, bind it "
+                           "to the subject's pending request and inspect the final official destination before "
+                           "opening in the same browser, then record awaiting_processing",
                 })
             else:
                 digest.append(_digest(

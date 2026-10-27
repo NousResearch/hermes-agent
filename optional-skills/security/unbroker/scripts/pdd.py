@@ -562,7 +562,7 @@ def cmd_render_email(args) -> None:
 
 
 def cmd_send_email(args) -> None:
-    """Mode B: render AND deliver the opt-out/legal request - no human in the loop.
+    """Render/deliver an authorized request; assisted mode requires confirmation.
 
     Sends ONLY to an address the broker record itself declares (emailer enforces it),
     then records the ledger transition + disclosure and auto-stamps the recheck date.
@@ -574,6 +574,8 @@ def cmd_send_email(args) -> None:
         sys.exit(f"error: unknown broker {args.broker!r}")
     cfg = config_mod.load_config()
     mode = cfg.get("email_mode")
+    if cfg.get("autonomy") == "assisted" and not getattr(args, "confirm", False):
+        sys.exit("error: assisted mode requires operator approval; pass --confirm after approval")
     if mode not in ("programmatic", "alias", "browser"):
         sys.exit("error: email_mode is draft_only; run `setup --email-mode browser` (no password; "
                  "sends via your logged-in webmail) or `--email-mode programmatic`, or use "
@@ -589,22 +591,23 @@ def cmd_send_email(args) -> None:
         _out({"skipped": True, "broker": args.broker, "state": current,
               "note": "already submitted; not re-sending (idempotent). Use --force to re-send."})
         return
+    if not ledger_mod.can_transition(current or "new", "submitted"):
+        sys.exit(f"error: cannot submit from state {current or 'new'!r}; record an eligible case first")
     kind = getattr(args, "kind", "generic") or "generic"
     fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None))
     body = legal.render_optout_email(b, fields) if kind == "generic" else legal.render_request(kind, b, fields)
 
     if mode == "browser":
         # No network / no credentials: hand the agent a recipient-locked payload to send in the
-        # operator's webmail via browser_exec. State still records deterministically here.
+        # operator's webmail via browser_exec. A compose payload is NOT a submission.
         payload = emailer.browser_send_payload(b, body, to=args.to)
-        ledger_mod.log_disclosure(args.subject, args.broker, list(disclosed), f"email_browser:{kind}")
-        case = ledger_mod.transition(args.subject, args.broker, "submitted",
-                                     **ledger_mod.followup_fields("submitted", b, d))
         _out({"send_via": "browser", "compose": payload, "kind": kind, "disclosed_fields": disclosed,
-              "state": case["state"], "next_recheck_at": case.get("next_recheck_at"),
+              "state": current,
               "instruction": "In the operator's logged-in webmail, compose a NEW email to compose.to "
                              "with compose.subject/body EXACTLY (disclose nothing beyond it) and send "
-                             "it via browser_exec. Then use `verify-link` on any confirmation reply.",
+                             "it via browser_exec. Read back the exact Sent message before using "
+                             "`record ... submitted --disclosed FIELD --channel email_browser` for "
+                             "each disclosed field. Review any confirmation reply before following it.",
               "note": "recipient is locked to the broker's declared address"})
         return
 
@@ -624,7 +627,8 @@ def cmd_verify_link(args) -> None:
     IMAP-free counterpart to `poll-verification`: the agent opens the broker's confirmation email
     in the operator's webmail, pastes the body here, and gets the anti-phishing-scored link back.
     """
-    _require_subject(args.subject)
+    d = _require_subject(args.subject)
+    dossier_mod.require_authorized(d)
     b = brokers_mod.get(args.broker)
     if not b:
         sys.exit(f"error: unknown broker {args.broker!r}")
@@ -634,8 +638,9 @@ def cmd_verify_link(args) -> None:
     if not text:
         sys.exit("error: provide --text '<email body>' (or --file) from the broker's confirmation email")
     link = email_modes.extract_verification_link(text, b)
-    _out({"broker": args.broker, "verification_link": link,
-          "next": ("open the link with browser_exec IN THE SAME browser (sessions are browser-bound), "
+    _out({"broker": args.broker, "verification_link": link, "requires_review": bool(link),
+          "next": ("Candidate only: authenticate email provenance, bind it to this subject's pending "
+                   "request and inspect the final official destination before opening in the same browser; "
                    f"complete the flow, then `record {args.subject} {args.broker} awaiting_processing`"
                    if link else
                    "no broker/opt-out-scoped link found in that text; confirm you opened the right email")})
@@ -645,9 +650,9 @@ def cmd_poll_verification(args) -> None:
     """Poll the inbox for brokers' verification links (Mode B) - replaces the human click-chase.
 
     For each in-flight case (submitted / verification_pending with email_verification),
-    extract the broker's link (anti-phishing scored). A found link auto-advances
-    submitted -> verification_pending (the email HAS arrived); the agent must then OPEN
-    the link in its own browser (sessions are browser-bound) and record the next state.
+    Return broker-origin candidates without advancing the ledger. Sender headers and
+    link heuristics cannot authenticate mail or bind it to the subject's request;
+    review provenance and request identity before navigating or recording a state.
     """
     d = _require_subject(args.subject)
     dossier_mod.require_authorized(d)
@@ -669,13 +674,12 @@ def cmd_poll_verification(args) -> None:
     for bid, case, b in targets:
         hit = emailer.find_verification_link(b, since_days=args.since_days)
         if hit:
-            if case.get("state") == "submitted":
-                ledger_mod.transition(args.subject, bid, "verification_pending",
-                                      **ledger_mod.followup_fields("verification_pending", b, d))
             results.append({"broker": bid, "verification_link": hit["link"],
                             "email_from": hit.get("from"), "email_subject": hit.get("subject"),
-                            "next": f"open the link with browser_exec IN THE AGENT'S OWN BROWSER, complete "
-                                    f"the flow, then `record {args.subject} {bid} awaiting_processing` "
+                            "requires_review": True,
+                            "next": "Candidate only: authenticate email provenance, bind it to this subject's "
+                                    "pending request and inspect the final official destination before opening; "
+                                    f"complete the flow, then `record {args.subject} {bid} awaiting_processing` "
                                     f"(or confirmed_removed only after a verifying re-scan)"})
         else:
             results.append({"broker": bid, "verification_link": None,
@@ -847,6 +851,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="(ccpa_indirect only) a specific own-identifier to remove; repeatable")
     s.add_argument("--to", help="override recipient (must be an address the broker record declares)")
     s.add_argument("--force", action="store_true", help="re-send even if already submitted (default: idempotent skip)")
+    s.add_argument("--confirm", action="store_true",
+                   help="operator approved this request (required in assisted mode)")
     s.set_defaults(func=cmd_send_email)
 
     s = sub.add_parser("poll-verification",

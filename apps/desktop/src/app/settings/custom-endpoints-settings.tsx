@@ -55,6 +55,10 @@ const API_MODE_OPTIONS: readonly { id: CustomEndpointApiMode; label: string }[] 
   { id: 'anthropic_messages', label: 'Anthropic Messages' }
 ]
 
+// Both Test outcomes name the same toast, so a retest replaces the previous
+// result instead of stacking a stale error beside a fresh success (#145348).
+const TEST_TOAST_ID = 'custom-endpoint-test'
+
 const EMPTY_FORM: EndpointForm = {
   apiKey: '',
   apiMode: '',
@@ -246,18 +250,20 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         const transport = apiModeOptions.find(option => option.id === response.transport_checked)?.label
         const reachable = transport ? ce.endpointReachableTransport(transport) : ce.endpointReachable
         notify({
+          id: TEST_TOAST_ID,
           kind: 'success',
           message: response.models.length ? ce.endpointReachableModels(reachable, response.models.length) : reachable
         })
       } else {
         notify({
+          id: TEST_TOAST_ID,
           kind: response.reachable ? 'warning' : 'error',
           message: response.message || ce.endpointValidationFailed
         })
       }
     } catch (err) {
       if (mounted.current) {
-        notifyError(err, ce.validationFailed)
+        notifyError(err, ce.validationFailed, { id: TEST_TOAST_ID })
       }
     } finally {
       if (mounted.current) {

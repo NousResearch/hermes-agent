@@ -262,4 +262,28 @@ describe('CustomEndpointsSettings', () => {
     // typed bare root would 404 every request even though the test looked green.
     expect(urlInput.value).toBe('http://h.test/v1')
   })
+
+  it('a retest replaces the previous Test toast instead of stacking a stale error (#145348)', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    validateCustomEndpoint
+      .mockResolvedValueOnce({ ok: false, reachable: true, message: 'The endpoint rejected the API key.', models: [] })
+      .mockResolvedValueOnce({ ok: true, message: '', models: ['model-a'], transport_checked: 'chat_completions' })
+    render(<CustomEndpointsSettings />)
+
+    await screen.findByText('No custom endpoints')
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
+      target: { value: 'http://h.test/v1' }
+    })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+
+    expect(notify).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 'custom-endpoint-test', kind: 'warning' })
+    )
+    expect(notify).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 'custom-endpoint-test', kind: 'success' })
+    )
+  })
 })

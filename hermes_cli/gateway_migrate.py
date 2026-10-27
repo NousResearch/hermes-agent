@@ -32,6 +32,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterator, Optional
 
+from agent.deadline import poll_until
+
 logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "gateway_migration.json"
@@ -1105,14 +1107,7 @@ def _wait_for_live_gateway(home: Path, timeout: float) -> Optional[int]:
     timeout on a unit that keeps failing, and taking that for success is how the compensator
     printed "✓ Restored" over a unit respawning every 5 s at ``ExecMainStatus=75``.
     """
-    deadline = time.monotonic() + timeout
-    while True:
-        pid = _live_gateway_pid(home)
-        if pid is not None:
-            return pid
-        if time.monotonic() >= deadline:
-            return None
-        time.sleep(0.5)
+    return poll_until(lambda: _live_gateway_pid(home), timeout, 0.5)
 
 
 def rollback_migration(default_home: Optional[Path] = None) -> bool:

@@ -260,7 +260,8 @@ def test_shell_launcher_survives_pruned_published_interpreter(tmp_path, monkeypa
         "hermes", out, pruned, _launchers._launcher_script("hermes", repo, None))
     assert launcher is not None
     result = subprocess.run([str(launcher)], cwd=tmp_path,
-                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", timeout=30,
+                            check=False)
     assert result.returncode == 7, result.stdout + result.stderr
     receipt = json.loads(result.stdout)
     assert receipt["value"] == "ready"
@@ -275,7 +276,7 @@ def test_shell_launcher_falls_back_to_home_toolchain(tmp_path, monkeypatch):
     carries a toolchain; the fleet toolchain under the user's home is what
     has to keep the launcher runnable there.
     """
-    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
     select_generation(repo, "shared", "ready")
     # No python-* under the fixture HERMES_HOME/tools; the live toolchain the
     # fallback may reach sits under the user's $HOME.
@@ -292,7 +293,8 @@ def test_shell_launcher_falls_back_to_home_toolchain(tmp_path, monkeypatch):
     env = dict(os.environ)
     env["HOME"] = str(user_home)
     result = subprocess.run([str(launcher)], cwd=tmp_path, env=env,
-                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", timeout=30,
+                            check=False)
     assert result.returncode == 7, result.stdout + result.stderr
     receipt = json.loads(result.stdout)
     assert receipt["value"] == "ready"
@@ -313,7 +315,8 @@ def test_shell_launcher_without_any_interpreter_exits_127(tmp_path, monkeypatch)
     env["HERMES_HOME"] = str(tmp_path / "empty-home")
     env["HOME"] = str(tmp_path / "empty-user")
     result = subprocess.run([str(launcher)], cwd=tmp_path, env=env,
-                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", timeout=30,
+                            check=False)
     assert result.returncode == 127, result.stdout + result.stderr
     assert "no runnable Python interpreter" in result.stderr
 

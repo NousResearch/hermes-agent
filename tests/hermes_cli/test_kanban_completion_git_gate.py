@@ -140,7 +140,7 @@ def test_evaluate_git_completion_with_pr(temp_git_repo):
                 result.stdout = json.dumps([mock_pr])
                 return result
             # For git commands, run them normally
-            return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+            return subprocess.run(cmd, capture_output=True, text=True, check=False, **kwargs)
         
         mock_run.side_effect = side_effect
         
@@ -252,7 +252,7 @@ def test_find_open_pr_for_branch_with_pr(temp_git_repo):
                 result.returncode = 0
                 result.stdout = json.dumps([mock_pr])
                 return result
-            return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+            return subprocess.run(cmd, capture_output=True, text=True, check=False, **kwargs)
         
         mock_run.side_effect = side_effect
         

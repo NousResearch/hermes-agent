@@ -120,7 +120,8 @@ class TestLiveKernel:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             ps = subprocess.run(["ps", "-p", str(proc.pid), "-o", "command="],
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=10,
+                                check=False)
             flattened = ps.stdout.strip()
             assert "-c" in flattened.split()
             assert "import time; time.sleep(10)" not in flattened.split(), (

@@ -109,6 +109,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   vi.clearAllMocks()
+  $notifications.set([])
 })
 
 describe('GatewaySettings', () => {
@@ -924,7 +925,7 @@ describe('GatewaySettings', () => {
     // interactive-auth is the Tailscale browser-check class: the notification
     // must carry the "run ssh <host> true" guidance, not the generic
     // "SSH connection failed." fallback the table previously collapsed to.
-    // (This file mocks the notification store, so read what was reported.)
+    // (This file records notification calls, so read what was reported.)
     await waitFor(() =>
       expect(notifyErrorMock).toHaveBeenCalledWith(
         expect.objectContaining({ message: expect.stringContaining('ssh <host> true') }),

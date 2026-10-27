@@ -722,14 +722,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def _approval_notify_sync(self, approval_data: dict) -> None:
         self._refuse_foreign_approval(approval_data)
         past_turn = self._subagent_approval_outlived_turn(approval_data)
-        # Typing pause and the native-stream boundary belong to a turn that is still running.
-        # After it ends, pausing sticks on the shared adapter and suppresses the next turn's
-        # indicator, and the old stream is already closed.
-        if not past_turn:
-            self._ctx._status_adapter.pause_typing_for_chat(self._ctx._status_chat_id)
-            self._close_native_stream_boundary("Approval")
         # A native decline must finish before any observer can authorize work.
-        self._render_approval_sync(approval_data)
+        # The flag is read inside the render. Callers that replace the method (local-viewer
+        # tests) keep the old signature and never touch the adapter.
+        self._approval_live_turn = not past_turn
+        try:
+            self._render_approval_sync(approval_data)
+        finally:
+            self._approval_live_turn = True
         if past_turn or self._approval_owner is None:
             return
         from gateway import local_viewer_events
@@ -739,13 +739,21 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     def _render_approval_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
-        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
+        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps.
+
+        ``_approval_live_turn`` is false when a delegated child's prompt outlived the parent
+        turn. Pausing typing then sticks on the shared adapter and suppresses the next turn's
+        indicator, and the old stream is already closed.
+        """
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
-        # Typing pause and the stream boundary are the caller's: a prompt posted after the
-        # parent turn must not touch chrome that now belongs to a later turn.
+        if getattr(self, "_approval_live_turn", True):
+            # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
+            # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it.
+            adapter.pause_typing_for_chat(ctx._status_chat_id)
+            self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()

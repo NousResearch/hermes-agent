@@ -23,6 +23,7 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { browserLaunchProfile, isBrowserHostedDesktop } from '@/lib/platform'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -69,6 +70,7 @@ import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   currentProfileSelectionRevision,
+  ensureGatewayProfile,
   normalizeProfileKey,
   refreshActiveProfile
 } from '@/store/profile'
@@ -105,6 +107,7 @@ import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warni
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { notifyPrimaryReauth } from './primary-reauth-notice'
 import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
 
@@ -163,6 +166,42 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
   }
 
   return connection.mode === 'local' ? 'local' : null
+}
+
+/**
+ * Open a Webapp tab on the profile it was loaded for, the way a live switch reaches it. The tab's one
+ * socket answers for the profile its gateway runs as (`primary`) when a request names none, as its REST
+ * does; any other profile rides that socket with `profile` on every request. So the tab's `?profile=`
+ * (which a live switch keeps current, so a reload lands where the user was), else on a cold boot the
+ * origin's saved default, is selected on top of the primary instead of becoming it.
+ */
+async function openWebappTabProfile(desktop: Window['hermesDesktop'], primary: string, startup: boolean) {
+  const profile =
+    windowProfileOverride() ??
+    (startup && !isPeerInstanceWindow() ? (await desktop.profile?.getDefault?.())?.profile?.trim() : null)
+
+  if (!profile || normalizeProfileKey(profile) === primary) {
+    return
+  }
+
+  // A stale link or bookmark can name a profile this gateway no longer has or does not serve: stay on its own.
+  const routes = await desktop.getProfileRoutes?.([profile]).catch(() => null)
+
+  if (routes && !routes.some(route => normalizeProfileKey(route.profile) === normalizeProfileKey(profile))) {
+    console.warn(`[gateway] this gateway has no profile "${profile}" or does not serve it; this tab stays on "${primary}"`)
+    await desktop.profile?.remember?.(primary)
+
+    return
+  }
+
+  try {
+    await ensureGatewayProfile(profile)
+    // As a live switch does: the address names the profile the tab is on, so a reload lands here and
+    // files and the terminal, which fall back to the address's profile, follow it.
+    await desktop.profile?.remember?.(normalizeProfileKey(profile))
+  } catch (error) {
+    console.warn(`[gateway] could not open this tab on profile "${profile}"; it stays on "${primary}"`, error)
+  }
 }
 
 // A freshly spawned backend can block its event loop for 15-30s while it
@@ -565,23 +604,7 @@ export function useGatewayBoot({
           primaryReauthError = err instanceof Error ? err.message : String(err)
           syncPrimaryReauthError()
           reauthNotified = true
-          // Plain "signed out" copy; the raw ticket/HTTP text stays under
-          // Details. In the foreground the boot overlay carries the sign-in
-          // flow, so the button hands off to it (desktop-14). A parked
-          // background primary no longer retries by itself, so it must still
-          // offer a way to Settings instead of failing silently.
-          notify({
-            kind: 'error',
-            title: translateNow('boot.errors.gatewaySignInRequired'),
-            message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
-            detail: primaryReauthError,
-            action: isActivePrimary()
-              ? {
-                  label: translateNow('boot.errors.signInAgain'),
-                  onClick: () => failDesktopBoot(primaryReauthError ?? '')
-                }
-              : RECOVERY_ACTIONS.openGateways()
-          })
+          notifyPrimaryReauth(primaryReauthError, () => primaryReauthError ?? '')
         }
       } finally {
         reconnecting = false
@@ -720,6 +743,11 @@ export function useGatewayBoot({
     // default profile's last session (#82285). The override wins over the
     // stored preference; absent, behavior is unchanged.
     async function getWindowBackend(startup = false): Promise<HermesConnection> {
+      // Webapp: the tab's own socket, whatever profile the tab opens on (openWebappTabProfile).
+      if (isBrowserHostedDesktop()) {
+        return desktop.getConnection()
+      }
+
       const profile = windowProfileOverride()
       const peer = isPeerInstanceWindow()
 
@@ -741,11 +769,14 @@ export function useGatewayBoot({
     async function adoptPrimaryProfile(
       connection: HermesConnection,
       selectionRevision: number,
-      shouldPublish: () => boolean = () => true
+      shouldPublish: () => boolean = () => true,
+      startup = false
     ): Promise<boolean> {
+      const webapp = isBrowserHostedDesktop()
       // The resolved descriptor reflects the explicit startup default. The
       // legacy profile.get preference only remembers the last workspace used.
-      const override = windowProfileOverride() ?? connection.profile
+      // A Webapp tab's primary is the profile its gateway runs as.
+      const override = webapp ? browserLaunchProfile() : (windowProfileOverride() ?? connection.profile)
 
       try {
         const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
@@ -769,6 +800,10 @@ export function useGatewayBoot({
 
         if (!userPicked) {
           void ensureGatewayForProfile(key)
+        }
+
+        if (webapp && !userPicked) {
+          await openWebappTabProfile(desktop, key, startup)
         }
       } catch {
         if (!shouldPublish()) {
@@ -1576,7 +1611,7 @@ export function useGatewayBoot({
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile(conn, selectionRevision)
+        await adoptPrimaryProfile(conn, selectionRevision, undefined, true)
 
         setDesktopBootStep({
           phase: 'renderer.config',

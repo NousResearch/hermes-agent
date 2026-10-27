@@ -145,7 +145,7 @@ if [[ ! -e "$X/xfce4-panel.xml" ]]; then
     dock_ids+=("$n")
   }
   add_launcher "Terminal" utilities-terminal "xfce4-terminal"
-  # The bot's browser: runtime.py resolves the executable agent-browser drives plus the profile's
+  # The bot's browser: runtime.py resolves the executable the agent's browser runs plus the profile's
   # persistent user-data-dir, so a human taking over lands in the bot's own cookie jar.
   [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]] && \
     add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC" "${HERMES_BD_BROWSER_EXEC_LINE:-}" && \

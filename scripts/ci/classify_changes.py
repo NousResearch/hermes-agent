@@ -262,6 +262,7 @@ _UPDATE_PIPELINE = (
     "hermes_cli/_launchers.py",
     "hermes_cli/release_channels.py",
     "hermes_cli/gitlock.py",  # git self-heal + partial-clone fetch
+    "hermes_cli/git_commit_graph.py",  # every update starts the install checkout's graph refresh
     "hermes_cli/process_identity.py",  # marker owner liveness
     "hermes_cli/runtime_state.py",
     "hermes_cli/relaunch.py",
@@ -333,6 +334,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
     "hermes_cli/bundled_app.py",
@@ -344,6 +346,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/backup.py",  # pre-update backup
     "hermes_cli/backup_cron_prompts.py",  # restore_cron_prompt_fields_if_degraded (update_cmd_config)
     "hermes_cli/backup_restore.py",
+    "hermes_cli/config_backend.py",  # update_channel writes the channel key through the seam
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
     "hermes_cli/model_catalog.py",
@@ -373,6 +376,9 @@ _UPDATE_DEPENDENCIES = (
     # The compilers source_build / the Desktop build run (freshness, node-deps,
     # tui, web, desktop and their shared frontend-common).
     "scripts/build/",
+    "apps/desktop/scripts/build-webapp.mjs",  # source_build's Webapp renderer build
+    "hermes_cli/webapp.py",  # source_build rebuilds the Webapp bundle a home serves
+    "gateway/webapp_listener.py",  # source_build reads which homes serve the Webapp
 )
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
@@ -425,6 +431,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/old_updater",
         # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
         "hermes_state_holders.py",
+        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
+        "hermes_state_fts.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",

@@ -1,3 +1,5 @@
+import { mergeUsage } from '@hermes/shared'
+
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -15,7 +17,6 @@ import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-ima
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
-import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -75,6 +76,7 @@ import {
   persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
+import { reconcileOwnerApprovalMode } from './runtime-owner'
 
 export { goneSessionVerdict, isSessionGoneError, resolveResumedBusy } from './resume-verdicts'
 
@@ -2370,6 +2372,8 @@ interface ApplyRuntimeInfoOptions {
    * per-session state is unaffected.
    */
   foreground?: boolean
+  /** The backend that produced `info` when it is not the ambient gateway. */
+  owner?: SessionOwnerScope
 }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
@@ -2426,7 +2430,7 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 }
 
 /** Session-independent side effects of one runtime info snapshot. */
-function reportRuntimeInfoAppState(info: SessionRuntimeInfo): void {
+function reportRuntimeInfoAppState(info: SessionRuntimeInfo, owner: SessionOwnerScope): void {
   if (info.stored_session_id) {
     reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions,
       pendingSnapshotFence(info.replay_epoch, info.last_sequence))
@@ -2436,9 +2440,7 @@ function reportRuntimeInfoAppState(info: SessionRuntimeInfo): void {
   // reports backend skew and credential warnings just as usefully.
   reportBackendContract(info.desktop_contract, info.desktop_protocol)
 
-  if (info.approval_mode !== undefined) {
-    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
-  }
+  reconcileOwnerApprovalMode(info, owner)
 
   requestDesktopOnboardingForCredentialWarning(info.credential_warning)
 
@@ -2447,13 +2449,13 @@ function reportRuntimeInfoAppState(info: SessionRuntimeInfo): void {
 
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true }: ApplyRuntimeInfoOptions = {}
+  { foreground = true, owner }: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
 
-  reportRuntimeInfoAppState(info)
+  reportRuntimeInfoAppState(info, owner)
 
   const sessionState: SessionRuntimeStatePatch = {}
 
@@ -2521,10 +2523,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/session.resume is an authoritative session snapshot, not a
-      // partial live tick. Clear a missing compression count so switching from
-      // a counted session to an older/cold runtime cannot leak the old value.
-      setCurrentUsage(current => ({ ...current, ...info.usage, compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
+      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
     }
   }
 

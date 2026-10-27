@@ -1,6 +1,6 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -12,7 +12,10 @@ import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
 import type * as GroupChatModule from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
+import { botsText } from './i18n'
 import { translateBots } from './i18n-test-helper'
+import { renderRosterToolbar } from './roster-pane-toolbar'
+import type { RosterRow } from './types'
 
 const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -58,7 +61,19 @@ const state = {
   gateway: host.state.gateway as WritableAtom<string>
 }
 
-const roster = [{ name: 'alpha', connectionId: 'local' }, { name: 'beta', connectionId: 'local' }]
+const roster: RosterRow[] = [{ name: 'alpha', connectionId: 'local' }, { name: 'beta', connectionId: 'local' }]
+
+const mixedRoster: RosterRow[] = [
+  ...roster,
+  { name: 'remote', connectionId: 'other-box', connectionLabel: 'Other box', remoteSource: true },
+  {
+    name: 'spoofed',
+    connectionId: 'local',
+    remoteSource: true,
+    route: { connectionId: 'other-box', mode: 'remote', profile: 'spoofed', targetProfile: 'spoofed' }
+  }
+]
+
 const unavailable = CANONICAL_GROUP_LOCALES.en.driverUnavailable
 
 // Decision-relevant fields emitted by the actual canonical capabilities producer.
@@ -119,8 +134,14 @@ async function submitDialog() {
   const onClose = vi.fn()
   render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
 
-  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+  for (const checkbox of screen.getAllByRole('checkbox').slice(0, 3)) {fireEvent.click(checkbox)}
+  await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
+  await act(async () => {})
+  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+
+  if (!submit.disabled) {
+    await act(async () => { fireEvent.click(submit) })
+  }
 
   return { onCreated, onClose }
 }
@@ -156,7 +177,9 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
   cleanup()
 
   const { onCreated, onClose } = await submitDialog()
-  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
+  expect(screen.getByRole('status').textContent).toBe(unavailable)
+  expect((screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement).disabled).toBe(true)
+  expect(notify).not.toHaveBeenCalled()
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
   expect(updateGroupChat).not.toHaveBeenCalled()
@@ -179,6 +202,154 @@ it('keeps positive classifications working: legacy renders and creates locally, 
   expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
   expect(updateGroupChat).toHaveBeenCalledOnce()
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
+})
+
+it('canonical creation offers only members on the current connection before submission', async () => {
+  answer({ driver: true, persistent_process: true })
+  const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={mixedRoster} />)
+
+  expect(baseElement.querySelector('[data-bot-face="remote"]')).toBeNull()
+  expect(baseElement.querySelector('[data-bot-face="spoofed"]')).toBeNull()
+  await waitFor(() => {
+    expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities')
+    expect(baseElement.querySelector('[data-bot-face="alpha"]')).not.toBeNull()
+    expect(baseElement.querySelector('[data-bot-face="beta"]')).not.toBeNull()
+  })
+
+  for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
+  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+  await waitFor(() => expect(submit.disabled).toBe(false))
+  expect(baseElement.querySelector('[data-bot-face="remote"]')).toBeNull()
+  expect(baseElement.querySelector('[data-bot-face="spoofed"]')).toBeNull()
+})
+
+it('canonical creation offers only the bots the authority says this caller can seat (#141178)', async () => {
+  // `parked` is on this connection but not served (or a sibling this socket may
+  // not seat): groups.create would refuse it, so the picker must not offer it.
+  const withParked: RosterRow[] = [...roster, { name: 'parked', connectionId: 'local' }]
+  answer({ driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta', 'default'] })
+  const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={withParked} />)
+
+  await waitFor(() => {
+    expect(baseElement.querySelector('[data-bot-face="alpha"]')).not.toBeNull()
+    expect(baseElement.querySelector('[data-bot-face="beta"]')).not.toBeNull()
+  })
+  expect(baseElement.querySelector('[data-bot-face="parked"]')).toBeNull()
+  expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+})
+
+it('rechecks the current mode before creating after a mixed legacy selection', async () => {
+  let capabilityReads = 0
+  const onCreated = vi.fn()
+  const onClose = vi.fn()
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {
+      capabilityReads += 1
+
+      return capabilityReads === 1 ? legacy : { driver: true, persistent_process: true }
+    }
+
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
+
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+
+  const { baseElement } = render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={mixedRoster} />)
+  await waitFor(() => expect(capabilityReads).toBe(1))
+  await waitFor(() => {
+    expect(baseElement.querySelector('[data-bot-face="remote"]')).not.toBeNull()
+    expect(baseElement.querySelector('[data-bot-face="spoofed"]')).not.toBeNull()
+  })
+
+  for (const checkbox of screen.getAllByRole('checkbox').slice(0, 3)) {fireEvent.click(checkbox)}
+  const submit = screen.getByRole('button', { name: 'Create Group (3)' })
+  expect((submit as HTMLButtonElement).disabled).toBe(false)
+
+  await act(async () => { fireEvent.click(submit) })
+  await waitFor(() => expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable }))
+  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
+  expect(onCreated).not.toHaveBeenCalled()
+  expect(onClose).not.toHaveBeenCalled()
+})
+
+it.each(['profile', 'gateway', 'same-route-activation'] as const)('rejects a %s change queued after fresh capability validation', async kind => {
+  let capabilityReads = 0
+  const onCreated = vi.fn()
+  const onClose = vi.fn()
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {
+      capabilityReads += 1
+
+      if (capabilityReads === 2) {
+        queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => moveSource(kind)))))
+      }
+
+      return { driver: true, persistent_process: true }
+    }
+
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
+
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+
+  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
+  await waitFor(() => expect(capabilityReads).toBe(1))
+
+  for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
+  const submit = screen.getByRole('button', { name: 'Create Group (2)' })
+  await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+
+  await act(async () => { fireEvent.click(submit) })
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0))
+  await waitFor(() => expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable }))
+  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
+  expect(updateGroupChat).not.toHaveBeenCalled()
+  expect(onCreated).not.toHaveBeenCalled()
+  expect(onClose).not.toHaveBeenCalled()
+})
+
+it.each(['profile', 'gateway', 'same-route-activation'] as const)('does not persist a legacy group after a %s change queued after fresh capability validation', async kind => {
+  let capabilityReads = 0
+  const onCreated = vi.fn()
+  const onClose = vi.fn()
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {
+      capabilityReads += 1
+
+      if (capabilityReads === 2) {
+        queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => moveSource(kind)))))
+      }
+
+      return legacy
+    }
+
+    if (method === 'profiles.configure') {return {}}
+
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
+
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+
+  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
+  await waitFor(() => expect(capabilityReads).toBe(1))
+
+  for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
+  const submit = screen.getByRole('button', { name: 'Create Group (2)' })
+  await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+
+  await act(async () => { fireEvent.click(submit) })
+  await act(async () => {})
+  expect(request.mock.calls.filter(call => call[1] === 'profiles.configure')).toHaveLength(0)
+  expect(updateGroupChat).not.toHaveBeenCalled()
+  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
+  expect(onCreated).not.toHaveBeenCalled()
+  expect(onClose).not.toHaveBeenCalled()
 })
 
 function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
@@ -214,4 +385,50 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
   expect(pending.serverRooms.size).toBe(0)
   expect(openWorkspace).not.toHaveBeenCalled()
+})
+
+// The New… menu opens New Group Chat. It is offered only when the dialog can
+// seat two bots by the SAME rule the dialog's picker uses; counting the whole
+// roster opened a dialog with one checkbox and a Create button that never woke.
+it.each([
+  ['one seatable bot', ['alpha', 'default'], true],
+  ['two seatable bots', ['alpha', 'beta'], false]
+])('New Group Chat in the New… menu, with %s', async (_label, seatable, disabled) => {
+  const withParked: RosterRow[] = [...roster, { name: 'parked', connectionId: 'local' }]
+  answer({ driver: true, persistent_process: true, seatable_profiles: seatable })
+  const setGroupCreateOpen = vi.fn()
+
+  render(
+    renderRosterToolbar({
+      activeFilterCount: 0,
+      activeSourceRoster: withParked,
+      activityFilter: 'all',
+      activityToasts: false,
+      b: botsText(),
+      gatewayFilter: 'all',
+      gatewayOptions: [],
+      query: '',
+      roster: withParked,
+      rowKindFilter: 'all',
+      setActivityFilter: vi.fn(),
+      setCreateOpen: vi.fn(),
+      setGatewayFilter: vi.fn(),
+      setGroupCreateOpen,
+      setQuery: vi.fn(),
+      setRowKindFilter: vi.fn(),
+      setSectionDialog: vi.fn(),
+      showRosterFilters: false,
+      showRosterSearch: false,
+      showRosterTools: false
+    })
+  )
+
+  fireEvent.keyDown(screen.getByRole('button', { name: botsText().roster.newBotOrGroup }), { key: 'Enter' })
+  const item = await screen.findByRole('menuitem', { name: botsText().group.newTitle })
+
+  // Settles once the authority's seatable roster is in: all three bots are on
+  // this connection, but only the ones it will seat count.
+  await waitFor(() => expect(item.hasAttribute('data-disabled')).toBe(disabled))
+  fireEvent.click(item)
+  expect(setGroupCreateOpen).toHaveBeenCalledTimes(disabled ? 0 : 1)
 })

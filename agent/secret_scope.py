@@ -18,7 +18,7 @@ import threading
 from collections import OrderedDict
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Dict, Mapping, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, Mapping, NamedTuple, Optional, Tuple
 
 
 # Process-global (describes the deployment mode, not a per-task value): set once
@@ -108,6 +108,19 @@ def serves_routed_profile() -> bool:
 
 
 _SECRET_SCOPE: ContextVar[Optional[_BoundScope]] = ContextVar("_SECRET_SCOPE", default=None)
+# A launch-profile body that entered before this process started multiplexing (no scope bound,
+# single-profile semantics): the launch profile's own mapping to read once fail-closed is armed
+# mid-body. Set only by ``tui_gateway.launch_profile_policy.launch_body``; never ``os.environ``.
+_LAUNCH_BODY_SCOPE: ContextVar[Optional[Callable[[], Mapping[str, str]]]] = ContextVar(
+    "_LAUNCH_BODY_SCOPE", default=None)
+
+
+def set_launch_body_scope(resolver: Callable[[], Mapping[str, str]]) -> Token:
+    return _LAUNCH_BODY_SCOPE.set(resolver)
+
+
+def reset_launch_body_scope(token: Token) -> None:
+    _LAUNCH_BODY_SCOPE.reset(token)
 
 
 class UnscopedSecretError(RuntimeError):
@@ -233,6 +246,9 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             return val
         return default if serves_routed_profile() else _environ_or(name, default)
     if is_multiplex_active():
+        launch_scope = _LAUNCH_BODY_SCOPE.get()
+        if launch_scope is not None:
+            return launch_scope().get(name, default)
         raise UnscopedSecretError(
             name,
             f"get_secret({name!r}) called with no profile secret scope active "
@@ -243,6 +259,14 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             f"(Workstream A).",
         )
     return _environ_or(name, default)
+
+
+def secret_source_label(name: str) -> str:
+    """``" (from Bitwarden)"``-style suffix naming the external secret source (a secret-source plugin)
+    that supplied env var *name*; ``""`` for ``.env`` / shell values. Public for plugins' status lines."""
+    from hermes_cli.env_loader import format_secret_source_suffix
+
+    return format_secret_source_suffix(name)
 
 
 def get_secret_str(name: str, default: str = "") -> str:

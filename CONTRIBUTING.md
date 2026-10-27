@@ -118,7 +118,7 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
-| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
+| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `>=26` |
 
 ### PM developer environment
 
@@ -286,13 +286,13 @@ hermes-agent/
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
 │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
 │   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
-│   ├── browser_tool.py           # Browser automation (facade + browser_tool_*.py siblings)
+│   ├── browser_use_cli.py        # browser_exec (Python over CDP); sessions in browser_session*.py, launcher in browser_launcher.py
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
 │   ├── skill_tools.py            # Skill search, load, manage
 │   └── environments/             # Terminal execution backends
 │       ├── base.py                   # BaseEnvironment ABC
-│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
+│       ├── local.py, docker.py, ssh.py, modal.py, daytona.py
 │
 ├── gateway/                  # Messaging gateway
 │   ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
@@ -619,7 +619,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
    Good: `Search arXiv papers by keyword, author, category, or ID.`
    Bad: `A powerful and comprehensive skill that allows the agent to search arXiv for relevant academic papers using various criteria including keywords, authors, and categories.`
 
-2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_exec` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
 
    Do NOT name shell utilities the agent already has wrapped:
 
@@ -834,10 +834,10 @@ that touches the OS, assume *any* platform can hit your code path.
     implementation.
 
 10. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
-    to resolve.** Passing `"agent-browser"` to `Popen` on Windows finds
-    the extensionless POSIX shebang shim in `node_modules/.bin/`, which
+    to resolve.** Passing `"npm"` to `Popen` on Windows finds the
+    extensionless POSIX shebang shim next to `npm.cmd`, which
     `CreateProcessW` can't execute — you'll get `WinError 193 "not a valid
-    Win32 application"`. Use `shutil.which("agent-browser", path=local_bin)`
+    Win32 application"`. Use `shutil.which("npm", path=node_bin)`
     which honors PATHEXT and picks the `.CMD` variant on Windows.
 
 11. **Don't use shell shebangs as a way to run Python.** `#!/usr/bin/env

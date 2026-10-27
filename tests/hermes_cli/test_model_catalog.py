@@ -129,6 +129,114 @@ class TestFetchFailure:
         # Stale cache is better than nothing.
         assert result == manifest
 
+    def test_offline_cold_cache_does_not_refetch_on_every_call(self, isolated_home, monkeypatch):
+        """Offline with no cached manifest: one failed fetch, then later calls answer at once
+        until the retry window ends; an explicit refresh still tries the network."""
+        from hermes_cli import model_catalog
+        calls: list[str] = []
+        failed_at = time.monotonic()
+
+        def offline(url, timeout):
+            calls.append(url)  # returns None: the fetch failed
+
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=offline):
+            assert model_catalog.get_catalog() == {}
+            per_attempt = len(calls)
+            assert per_attempt >= 1
+            assert model_catalog.get_catalog() == {}
+            assert model_catalog.get_catalog() == {}
+            assert len(calls) == per_attempt, "retried the unreachable catalog inside the window"
+            assert model_catalog.get_catalog(force_refresh=True) == {}
+            assert len(calls) == 2 * per_attempt
+
+        # The clock passes the last failure's window: a plain call fetches again and serves it.
+        later = failed_at + model_catalog.FETCH_RETRY_DELAY_SECONDS + 60.0
+        monkeypatch.setattr(model_catalog.time, "monotonic", lambda: later)
+        with patch.object(model_catalog, "_fetch_manifest", return_value=_valid_manifest()):
+            assert model_catalog.get_catalog() == _valid_manifest()
+
+    def test_model_refresh_retries_a_backed_off_catalog(self, isolated_home):
+        """``/model --refresh`` (``clear_provider_models_cache``) must show a catalog that came back
+        inside the backoff window, override URL included."""
+        from hermes_cli import model_catalog
+        from hermes_cli.models import clear_provider_models_cache
+        override = _valid_manifest()
+        override["providers"]["openrouter"]["models"] = [{"id": "vendor/override-model", "description": ""}]
+        cfg = {"enabled": True, "url": "http://master", "ttl_hours": 24.0,
+               "providers": {"openrouter": {"url": "http://override"}}}
+        with patch.object(model_catalog, "_load_catalog_config", return_value=cfg):
+            with patch.object(model_catalog, "_fetch_manifest", return_value=None):
+                assert model_catalog.get_curated_openrouter_models() is None
+
+            def recovered(url, timeout):
+                return override if "override" in url else _valid_manifest()
+
+            with patch.object(model_catalog, "_fetch_manifest", side_effect=recovered):
+                clear_provider_models_cache()
+                assert model_catalog.get_curated_openrouter_models() == [("vendor/override-model", "")]
+
+    def test_override_failure_backs_off_per_profile(self, isolated_home, tmp_path):
+        """A multiplexed gateway serves many profiles: one profile's dead override must not
+        suppress another profile's request to the same URL."""
+        from hermes_cli import model_catalog
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        calls: list[str] = []
+        cfg = {"enabled": True, "url": "http://master", "ttl_hours": 24.0,
+               "providers": {"openrouter": {"url": "http://override"}}}
+
+        def fetch(url, timeout):
+            calls.append(url)
+            return _valid_manifest()
+
+        for name in ("alpha", "beta"):
+            (tmp_path / name).mkdir()
+        with patch.object(model_catalog, "_load_catalog_config", return_value=cfg):
+            token = set_hermes_home_override(str(tmp_path / "alpha"))
+            try:
+                with patch.object(model_catalog, "_fetch_manifest", return_value=None):
+                    model_catalog.get_curated_openrouter_models()
+            finally:
+                reset_hermes_home_override(token)
+            token = set_hermes_home_override(str(tmp_path / "beta"))
+            try:
+                with patch.object(model_catalog, "_fetch_manifest", side_effect=fetch):
+                    model_catalog.get_curated_openrouter_models()
+            finally:
+                reset_hermes_home_override(token)
+        assert "http://override" in calls, "profile beta skipped the override after alpha's failure"
+
+    def test_dead_override_on_the_manifest_url_keeps_the_fallback_chain(self, isolated_home):
+        """An override pointing at the (dead) main URL must not put the manifest's working
+        fallback URL into the override's backoff."""
+        from hermes_cli import model_catalog
+        cfg = {"enabled": True, "url": "http://master", "ttl_hours": 24.0,
+               "providers": {"openrouter": {"url": "http://master"}}}
+        with patch.object(model_catalog, "_load_catalog_config", return_value=cfg), \
+                patch.object(model_catalog, "_fetch_manifest",
+                             side_effect=lambda url, timeout: None if url == "http://master" else _valid_manifest()):
+            models = model_catalog.get_curated_openrouter_models()
+        assert models == [(m["id"], m["description"]) for m in _valid_manifest()["providers"]["openrouter"]["models"]]
+
+    def test_unreachable_provider_override_is_not_refetched_on_every_call(self, isolated_home):
+        from hermes_cli import model_catalog
+        calls: list[str] = []
+
+        def fetch(url, timeout):
+            calls.append(url)
+            return None if "override" in url else _valid_manifest()
+
+        cfg = {"enabled": True, "url": "http://master", "ttl_hours": 24.0,
+               "providers": {"openrouter": {"url": "http://override"}}}
+        with patch.object(model_catalog, "_load_catalog_config", return_value=cfg), \
+                patch.object(model_catalog, "_fetch_manifest", side_effect=fetch):
+            first = model_catalog.get_curated_openrouter_models()
+            second = model_catalog.get_curated_openrouter_models()
+
+        # Both calls fall back to the main manifest; the dead override is asked once.
+        assert first == second == [(m["id"], m["description"]) for m in
+                                   _valid_manifest()["providers"]["openrouter"]["models"]]
+        assert calls.count("http://override") == 1
+
 
 class TestFallbackChain:
     """``_fetch_manifest_with_fallback`` walks ``DEFAULT_CATALOG_FALLBACK_URLS``
@@ -253,7 +361,7 @@ class TestDefaultModelFromCache:
             fetch.assert_not_called()
 
 
-    def test_shipped_manifest_labels_glm52_default(self, isolated_home):
+    def test_shipped_manifest_labels_the_silent_default(self, isolated_home):
         """Contract with the in-repo manifest: both provider blocks label the
         same default entry the code constant points at."""
         from hermes_cli import model_catalog

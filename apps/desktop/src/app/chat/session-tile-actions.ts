@@ -9,6 +9,7 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
+import { isUndeliveredCorrectionRefusal } from '@hermes/shared'
 import { useCallback, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
@@ -272,6 +273,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 path: next.path,
                 mime: next.mime,
                 refText: next.refText,
+                stagedUpload: next.stagedUpload,
                 uploadState: next.uploadState
               })
             } else {
@@ -503,6 +505,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
       } catch (err) {
         discardOptimisticMessage()
+
+        // Refused before any agent saw it: the composer re-queues the words (#141644).
+        if (isUndeliveredCorrectionRefusal(err)) {
+          return false
+        }
+
         notifyError(err, copy.promptFailed)
         throw err
       }

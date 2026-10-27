@@ -29,6 +29,7 @@ import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
 import { migrateQueuedPrompts } from '@/store/composer-queue'
 
+import { type ComposerStoreWriter, createComposerStoreWriter } from '../composer-store-writer'
 import {
   cloneAttachments,
   DRAFT_PERSIST_DEBOUNCE_MS,
@@ -60,6 +61,24 @@ import {
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 import { useComposerVisible } from '../visibility'
+
+/** A draft as this window last loaded or stashed it; attachments by occurrence. */
+interface SavedDraft {
+  attachments: string[]
+  text: string
+}
+
+const attachmentOccurrence = (attachment: ComposerAttachment) => attachment.occurrenceId ?? attachment.id
+
+const savedDraft = (text: string, attachments: ComposerAttachment[]): SavedDraft => ({
+  attachments: attachments.map(attachmentOccurrence),
+  text
+})
+
+const isSavedDraft = (saved: SavedDraft, text: string, attachments: ComposerAttachment[]) =>
+  text === saved.text &&
+  attachments.length === saved.attachments.length &&
+  attachments.every((attachment, index) => attachmentOccurrence(attachment) === saved.attachments[index])
 
 interface UseComposerDraftArgs {
   activeQueueSessionKey: string | null
@@ -109,16 +128,23 @@ export function useComposerDraft({
   // assistant-ui's composer mutators throw when the core isn't bound yet (a
   // startup/thread-swap window); the DOM + draftRef hold the text and the
   // subscription reconciles once it binds, so swallow the premature write.
-  const setComposerText = useCallback(
-    (value: string) => {
-      try {
-        aui.composer().setText(value)
-      } catch {
-        // Composer core not bound yet — DOM/draftRef carry the text.
-      }
-    },
-    [aui]
-  )
+  const auiRef = useRef(aui)
+  auiRef.current = aui
+  const storeWriterRef = useRef<ComposerStoreWriter | null>(null)
+
+  storeWriterRef.current ??= createComposerStoreWriter(value => {
+    try {
+      auiRef.current.composer().setText(value)
+    } catch {
+      // Composer core not bound yet — DOM/draftRef carry the text.
+    }
+  })
+
+  const storeWriter = storeWriterRef.current
+
+  const setComposerText = useCallback((value: string) => storeWriter.now(value), [storeWriter])
+
+  useEffect(() => () => storeWriter.cancel(), [storeWriter])
 
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef('')
@@ -135,6 +161,11 @@ export function useComposerDraft({
   // session switch mid-flight files one session's draft under another's key
   // (#54527).
   const draftScopeRef = useRef(activeQueueSessionKey)
+  // The draft (text + attachment occurrences) this window last loaded from or
+  // stashed for draftScopeRef's scope. Another window can send (clear) or
+  // rewrite that draft while this editor still shows it, so every save path
+  // stashes only state that differs from this baseline: this window's own edits.
+  const savedDraftRef = useRef<SavedDraft>({ attachments: [], text: '' })
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
@@ -307,11 +338,27 @@ export function useComposerDraft({
     }
   }, [appendExternalText, focusInput, inputDisabled, paintDraft, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
-
   const sameDraftScope = (a: string | null | undefined, b: string | null | undefined) =>
     (isFreshDraftScope(a) || !a ? null : a) === (isFreshDraftScope(b) || !b ? null : b)
+
+  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) => {
+    if (sameDraftScope(scope, draftScopeRef.current)) {
+      savedDraftRef.current = savedDraft(text, attachments)
+    }
+
+    stashSessionDraft(scope, text, attachments)
+  }
+
+  // The automatic saves (debounce, session switch, HUD flush): a draft this
+  // window has not edited since it loaded or saved it is left to the stash,
+  // which may hold a newer value (or none, once sent) from another window.
+  const stashOwnEdits = (scope: string | null, text: string, attachments = attachmentScope.$attachments.get()) => {
+    if (sameDraftScope(scope, draftScopeRef.current) && isSavedDraft(savedDraftRef.current, text, attachments)) {
+      return
+    }
+
+    stashAt(scope, text, attachments)
+  }
 
   // A rejected or unconfirmed send is restored with its identity, so Enter on that exact draft is
   // the explicit retry. Recorded per draft scope (it survives a reload with the draft text).
@@ -424,31 +471,89 @@ export function useComposerDraft({
     }
   }, [setComposerText, target])
 
+  // Schedule the debounced per-session stash of `text`. Browsing history /
+  // editing a queued prompt suppress it so recalled text never clobbers the
+  // draft. A text already scheduled for this scope keeps its timer: typed text
+  // is scheduled at the keystroke, and the coalesced store write that lands it
+  // later must not restart the window (a window closed inside it loses the draft).
+  const scheduleDraftPersist = (text: string) => {
+    if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
+      return
+    }
+
+    const scope = draftScopeRef.current
+
+    // An edited (or cleared) restored draft is a new message: it no longer retries the old send.
+    if (draftRetryRef.current && !draftRetryTextMatches(draftRetryRef.current, text)) {
+      draftRetryRef.current = undefined
+      writeDraftRetry(scope, undefined)
+    }
+
+    const pending = pendingDraftPersistRef.current
+
+    if (pending && pending.scope === scope && pending.text === text) {
+      return
+    }
+
+    const entry = { scope, text }
+    pendingDraftPersistRef.current = entry
+    window.clearTimeout(draftPersistTimerRef.current)
+    draftPersistTimerRef.current = window.setTimeout(() => {
+      // Integrity guard (defense-in-depth, #54527): only commit if this is
+      // still the pending write on file. A session swap or a newer
+      // keystroke clears/replaces it before firing in the normal case; this
+      // catches any future call site that skips that bookkeeping instead of
+      // silently filing text under the wrong session.
+      if (!isPendingDraftPersistCurrent(pendingDraftPersistRef.current, entry)) {
+        return
+      }
+
+      pendingDraftPersistRef.current = null
+      stashOwnEdits(scope, text)
+    }, DRAFT_PERSIST_DEBOUNCE_MS)
+  }
+
+  const scheduleDraftPersistRef = useRef(scheduleDraftPersist)
+  scheduleDraftPersistRef.current = scheduleDraftPersist
+
   // Read the editor's current plain text into draftRef + composer state. This
   // closes the "queued rAF flush hasn't run yet" window so scope-swap/pagehide
-  // persistence captures the latest keystrokes.
-  const syncDraftFromEditor = useCallback(() => {
-    const editor = editorRef.current
+  // persistence captures the latest keystrokes. `typing` marks ChatBar's
+  // coalesced per-keystroke flush, whose store write may wait for a typing
+  // pause so the transcript's store subscribers do not re-render on every
+  // character (see composer-store-writer.ts); every other caller lands the
+  // text now, pending keystrokes included.
+  const syncDraftFromEditor = useCallback(
+    (typing = false, editor: HTMLDivElement | null = editorRef.current) => {
+      if (!editor) {
+        return draftRef.current
+      }
 
-    if (!editor) {
-      return draftRef.current
-    }
+      // Same normalize-then-sanitize the rAF flush does. An emptied editor still
+      // holds the placeholder <br> that keeps the contenteditable from collapsing
+      // to a sliver, and that serializes as "\n" — so an editor the user just
+      // cleared would otherwise stash a one-newline draft and come back non-empty.
+      normalizeComposerEditorDom(editor)
 
-    // Same normalize-then-sanitize the rAF flush does. An emptied editor still
-    // holds the placeholder <br> that keeps the contenteditable from collapsing
-    // to a sliver, and that serializes as "\n" — so an editor the user just
-    // cleared would otherwise stash a one-newline draft and come back non-empty.
-    normalizeComposerEditorDom(editor)
+      const text = sanitizeComposerInput(composerPlainText(editor))
 
-    const text = sanitizeComposerInput(composerPlainText(editor))
+      if (text !== draftRef.current) {
+        draftRef.current = text
+        storeWriter[typing ? 'typing' : 'now'](text)
 
-    if (text !== draftRef.current) {
-      draftRef.current = text
-      setComposerText(text)
-    }
+        // The runtime subscription schedules the stash once the store sees
+        // the text; a deferred typing write must not delay it past the keystroke.
+        if (storeWriter.pending()) {
+          scheduleDraftPersistRef.current(text)
+        }
+      } else if (!typing) {
+        storeWriter.flush()
+      }
 
-    return text
-  }, [setComposerText])
+      return text
+    },
+    [storeWriter]
+  )
 
   // Imperative draft sync — the spine of the "work only when work is to be
   // performed" model. Subscribing to the composer runtime directly (not
@@ -457,12 +562,18 @@ export function useComposerDraft({
   // text into draftRef, (2) repaint the editor only when the change came from
   // OUTSIDE it (programmatic clear/restore/insert; the focused editor is the
   // source otherwise), and (3) schedule the debounced per-session stash.
-  // Browsing history / editing a queued prompt suppress the stash so recalled
-  // text never clobbers the draft.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const sync = () => {
+      // Typed text the store has not seen yet is newer than the store: mirroring
+      // it now would roll draftRef (and an unfocused editor) back. The pending
+      // write lands shortly and runs this again.
+      if (storeWriter.pending()) {
+        return
+      }
+
       const text = composerRuntime.getState().text
+      storeWriter.observed(text)
       draftRef.current = text
 
       const editor = editorRef.current
@@ -471,34 +582,7 @@ export function useComposerDraft({
         renderComposerContents(editor, text, { trailingCommitted: true })
       }
 
-      if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
-        return
-      }
-
-      const scope = draftScopeRef.current
-
-      // An edited (or cleared) restored draft is a new message: it no longer retries the old send.
-      if (draftRetryRef.current && !draftRetryTextMatches(draftRetryRef.current, text)) {
-        draftRetryRef.current = undefined
-        writeDraftRetry(scope, undefined)
-      }
-
-      const entry = { scope, text }
-      pendingDraftPersistRef.current = entry
-      window.clearTimeout(draftPersistTimerRef.current)
-      draftPersistTimerRef.current = window.setTimeout(() => {
-        // Integrity guard (defense-in-depth, #54527): only commit if this is
-        // still the pending write on file. A session swap or a newer
-        // keystroke clears/replaces it before firing in the normal case; this
-        // catches any future call site that skips that bookkeeping instead of
-        // silently filing text under the wrong session.
-        if (!isPendingDraftPersistCurrent(pendingDraftPersistRef.current, entry)) {
-          return
-        }
-
-        pendingDraftPersistRef.current = null
-        stashAt(scope, text)
-      }, DRAFT_PERSIST_DEBOUNCE_MS)
+      scheduleDraftPersistRef.current(text)
     }
 
     const unsubscribe = composerRuntime.subscribe(sync)
@@ -507,7 +591,7 @@ export function useComposerDraft({
       unsubscribe()
       window.clearTimeout(draftPersistTimerRef.current)
     }
-  }, [composerRuntime, queueEditRef])
+  }, [composerRuntime, queueEditRef, storeWriter])
 
   const insertText = (text: string) => {
     const base = draftRef.current
@@ -606,6 +690,7 @@ export function useComposerDraft({
     draftRetryRef.current = readDraftRetry(activeQueueSessionKey)
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
+    savedDraftRef.current = savedDraft(text, attachments)
     loadIntoComposer(text, attachments, true)
 
     return () => {
@@ -613,9 +698,9 @@ export function useComposerDraft({
       const editing = queueEditStateRef.current
 
       if (editing?.sessionKey === activeQueueSessionKey) {
-        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
+        stashOwnEdits(activeQueueSessionKey, editing.draft, editing.attachments)
       } else if (!isBrowsingHistory(sessionId)) {
-        stashAt(activeQueueSessionKey, latestText)
+        stashOwnEdits(activeQueueSessionKey, latestText)
       }
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -629,7 +714,7 @@ export function useComposerDraft({
     if (mode === 'flush') {
       window.clearTimeout(draftPersistTimerRef.current)
       pendingDraftPersistRef.current = null
-      stashAt(draftScopeRef.current, syncDraftFromEditor())
+      stashOwnEdits(draftScopeRef.current, syncDraftFromEditor())
 
       return
     }
@@ -637,6 +722,7 @@ export function useComposerDraft({
     reloadPersistedDrafts()
     draftRetryRef.current = readDraftRetry(draftScopeRef.current)
     const stashed = takeSessionDraft(draftScopeRef.current)
+    savedDraftRef.current = savedDraft(stashed.text, stashed.attachments)
     loadIntoComposer(stashed.text, stashed.attachments)
   }
 
@@ -655,6 +741,10 @@ export function useComposerDraft({
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.
+  // beforeunload covers closing the window: Electron tears the renderer down
+  // before a pagehide-time localStorage write lands (live: a close right after
+  // the last keystroke kept the beforeunload write and lost the pagehide one).
+  // The handler never cancels the unload.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const flushPendingDraftPersist = () => {
@@ -666,13 +756,23 @@ export function useComposerDraft({
       }
 
       const latestText = syncDraftFromEditor()
+
+      // Only this window's own unsaved edits: an untouched editor may still
+      // show a draft another window has since sent, and must not restore it.
+      // Text alone: attachments are memory-only and close with the window.
+      if (latestText === savedDraftRef.current.text) {
+        return
+      }
+
       pendingDraftPersistRef.current = null
       stashAt(scope, latestText)
     }
 
+    window.addEventListener('beforeunload', flushPendingDraftPersist)
     window.addEventListener('pagehide', flushPendingDraftPersist)
 
     return () => {
+      window.removeEventListener('beforeunload', flushPendingDraftPersist)
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }

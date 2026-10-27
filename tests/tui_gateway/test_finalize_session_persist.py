@@ -188,13 +188,14 @@ class TestOnSessionEndHook:
 
     @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_fired_with_interrupted_true(self, mock_invoke_hook):
-        """on_session_end is called with interrupted=True when finalizing."""
+        """on_session_end is called with interrupted=True when finalizing mid-turn."""
         from tui_gateway.server import _finalize_session
 
         agent = _make_agent(session_id="hook_test_001")
         agent.model = "claude-sonnet-4"
         agent.platform = "tui"
         session = _make_session(agent=agent, history=[{"role": "user", "content": "test"}])
+        session["running"] = True
 
         _finalize_session(session, end_reason="tui_close")
 
@@ -206,3 +207,14 @@ class TestOnSessionEndHook:
             model="claude-sonnet-4",
             platform="tui",
         )
+
+    @patch("hermes_cli.plugins.invoke_hook")
+    def test_idle_close_fires_no_hook(self, mock_invoke_hook):
+        """Closing between turns fires nothing: the finished run already fired its own on_session_end."""
+        from tui_gateway.server import _finalize_session
+
+        session = _make_session(agent=_make_agent(), history=[{"role": "user", "content": "test"}])
+
+        _finalize_session(session, end_reason="tui_close")
+
+        assert "on_session_end" not in [c.args[0] for c in mock_invoke_hook.call_args_list]

@@ -459,7 +459,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # they fail closed under multiplex (tail never committed) or, on the Desktop backend serving a named
     # profile, commit a secondary's transcript to the launch profile's memory tenant (same class as #110622).
     with _session_profile_runtime_scope(session):
-        if agent is not None:
+        # Mid-turn only, like the CLI exit guard: a finished run already fired its own end (turn_finalizer).
+        if agent is not None and session.get("running"):
             with contextlib.suppress(Exception):
                 from hermes_cli.lifecycle import invoke_hook
                 invoke_hook(

@@ -965,9 +965,10 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
-**Fires:** In two places:
+**Fires:** In three places:
 1. **`agent/turn_finalizer.py`** — at the end of every `run_conversation()` call (`agent/conversation_loop.py`), after all cleanup. Always fires, even if the turn errored.
 2. **`cli.py`** — in the CLI's atexit handler, but **only** if the agent was mid-turn (`_agent_running=True`) when the exit occurred. This catches Ctrl+C and `/exit` during processing. In this case, `completed=False` and `interrupted=True`.
+3. **`tui_gateway/session_lifecycle.py`** — when the TUI, the desktop app or the dashboard chat closes a session, but **only** if a turn was still running at close. In this case, `completed=False` and `interrupted=True`.
 
 **Return value:** Ignored. Despite its name this hook fires after **every turn**, so it can't show the user anything. To show something when a session ends, return a message from [`on_session_finalize`](#on_session_finalize).
 

@@ -6,7 +6,10 @@ the install stamp and the receipt still named the previous release.
 """
 
 import subprocess
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from hermes_cli import update_cmd_check
 from hermes_cli.source_releases import SourceTarget
@@ -47,3 +50,16 @@ def test_stable_update_fetch_brings_the_release_tag(tmp_path, monkeypatch):
 
     info = _git_version_info(checkout)
     assert (info.commit, info.base_version, info.display_version) == (release, "0.22.3", "0.22.3")
+
+
+@pytest.mark.parametrize("git_cmd", [["git"], [sys.executable + "-missing-git"]])
+def test_an_unfetchable_release_tag_is_reported_never_fatal(tmp_path, capsys, git_cmd):
+    """Best effort means the update goes on, but not silently: without the tag every version
+    reader keeps naming the previous release. A git that cannot even run (missing binary, a
+    custody refusal: both OSErrors) is the same non-fatal miss, not a crash of the update."""
+    _git(tmp_path, "init", "-q", "-b", "main")  # no origin: the fetch itself fails
+
+    update_cmd_check.fetch_release_tag(git_cmd, tmp_path, {"release_tag": "v9.9.9"})
+
+    assert "Could not fetch the v9.9.9 tag" in capsys.readouterr().out
+

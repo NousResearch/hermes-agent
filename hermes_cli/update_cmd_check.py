@@ -7,10 +7,13 @@ per function, so test patches on ``hermes_cli.update_cmd`` and the origin module
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -284,13 +287,23 @@ def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
     from hermes_cli.update_cmd import NETWORK_GIT_TIMEOUT_SECONDS
 
     tag = request.get("release_tag")
-    if not tag or _git(git_cmd, root, ["rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"]).returncode == 0:
+    if not tag:
         return
     try:
-        _git(git_cmd, root, ["fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
-             timeout=NETWORK_GIT_TIMEOUT_SECONDS, **no_prompt_git_kwargs())
-    except (OSError, subprocess.SubprocessError):
-        pass
+        if _git(git_cmd, root, ["rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"]).returncode == 0:
+            return
+        fetched = _git(git_cmd, root, ["fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
+                       timeout=NETWORK_GIT_TIMEOUT_SECONDS, **no_prompt_git_kwargs())
+        detail = (fetched.stderr or "").strip().splitlines()[-1:] if fetched.returncode else None
+    except (OSError, subprocess.SubprocessError) as exc:  # custody refusals are OSErrors too
+        detail = [str(exc)]
+    if detail is not None:
+        # Not fatal (a mirror may lack the tag), but say so: without it every version reader keeps
+        # naming the previous release, the symptom this fetch exists to prevent.
+        reason = detail[0] if detail else "git fetch failed"
+        logger.warning("Could not fetch release tag %s: %s", tag, reason)
+        print(f"⚠ Could not fetch the {tag} tag ({reason}); the version shown may name the previous "
+              "release until the next update fetches it.")
 
 
 def hold_channel_release_behind_runtime(git_cmd, target_ref: str, channel: str) -> str | None:

@@ -50,7 +50,7 @@ def test_unit_stop_waits_for_original_reader(tmp_path, monkeypatch, transport, p
         result = registry.kill_process(session.id)
         assert result["status"] == "error" and result["error"] == "process_stop_unknown"
         assert session._scope_stop_pending
-        assert job_quiescent(session) is not primary_exit
+        assert job_quiescent(session) and attempts == [unit]
         assert not session._completion_event.is_set()
         assert original_reader.is_alive()
         assert "RACE-MARKER" not in session.output_buffer

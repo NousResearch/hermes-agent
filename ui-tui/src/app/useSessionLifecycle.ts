@@ -27,6 +27,7 @@ import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
+import { watchHerdrSessionIdentity } from './herdrSessionIdentity.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { renameCanonicalSession } from './slash/canonicalSessionCommands.js'
@@ -168,6 +169,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     setVoiceRecording,
     sys
   } = opts
+
+  // Includes durable-id successors published by session.info after create/resume/activate.
+  useEffect(() => watchHerdrSessionIdentity(), [])
 
   // Plugin on_session_finalize text comes back on the close result and is shown as system lines (never a
   // model turn). `deferMessages`: the caller resets the transcript next and shows them itself afterwards.

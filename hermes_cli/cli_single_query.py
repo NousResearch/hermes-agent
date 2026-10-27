@@ -127,6 +127,7 @@ def _sync_cli_session_id_from_agent(cli) -> None:
     """Keep ``cli.session_id`` in sync when mid-run compression rotated the agent's session."""
     if getattr(cli.agent, "session_id", None) and cli.agent.session_id != cli.session_id:
         cli.session_id = cli.agent.session_id
+        getattr(cli, "_write_terminal_breadcrumb", lambda: None)()
 
 
 # ``failure_reason`` values that say nothing about the task itself: the provider is walled,

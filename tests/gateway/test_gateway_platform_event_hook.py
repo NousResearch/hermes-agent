@@ -36,10 +36,11 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter, filters
 from gateway.run import GatewayRunner
 from gateway.profile_routing import ProfileRoute
 from hermes_cli.plugins import (
+    VALID_HOOKS,
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -607,6 +608,65 @@ class TestRegisterHandlers:
     #64176 review asked to share registration between the initial path and any
     rebuild; these tests pin that the observer (group 99) is included alongside
     the core handlers."""
+
+    _HANDLER_ATTRS = (
+        "_handle_text_message", "_handle_command", "_handle_location_message",
+        "_handle_media_message", "_handle_forum_topic_created", "_handle_callback_query",
+        "_handle_inline_query", "_on_platform_update",
+    )
+
+    def _adapter_with_handlers(self) -> TelegramAdapter:
+        a = _adapter()
+        # Stand-ins for the bound handler methods. _register_handlers only
+        # passes them to add_handler, it never calls them.
+        for name in self._HANDLER_ATTRS:
+            setattr(a, name, object())
+        return a
+
+    @staticmethod
+    def _observer_calls(app):
+        return [c for c in app.add_handler.call_args_list if c.kwargs.get("group") == 99]
+
+    def test_registers_core_handlers_plus_observer(self):
+        a = self._adapter_with_handlers()
+        app = MagicMock()
+        a._register_handlers(app)
+
+        # Seven core handlers (default group, no group kwarg — incl. the inline
+        # command picker and the optional topic-creation service handler), an
+        # optional Telegram Business handler on PTB versions that expose
+        # BUSINESS_MESSAGE, and the observer alone in group 99.
+        calls = app.add_handler.call_args_list
+        has_business = getattr(
+            getattr(filters, "UpdateType", None), "BUSINESS_MESSAGE", None
+        ) is not None
+        has_topic_created = getattr(
+            getattr(filters, "StatusUpdate", None), "FORUM_TOPIC_CREATED", None
+        ) is not None
+        core = 6 + int(has_topic_created)
+        assert len(calls) == core + 1 + int(has_business)
+        assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
+        assert len([c for c in calls if not c.kwargs]) == core + int(has_business)
+
+    def test_rebuild_re_registers_observer(self):
+        """A second call on a fresh app (e.g. a future rebuild) re-registers
+        every handler, observer included."""
+        a = self._adapter_with_handlers()
+        first_app = MagicMock()
+        rebuilt_app = MagicMock()
+
+        a._register_handlers(first_app)
+        a._register_handlers(rebuilt_app)  # the rebuild path
+
+        has_business = getattr(
+            getattr(filters, "UpdateType", None), "BUSINESS_MESSAGE", None
+        ) is not None
+        has_topic_created = getattr(
+            getattr(filters, "StatusUpdate", None), "FORUM_TOPIC_CREATED", None
+        ) is not None
+        core = 6 + int(has_topic_created)
+        assert rebuilt_app.add_handler.call_count == core + 1 + int(has_business)
+        assert len(self._observer_calls(rebuilt_app)) == 1
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):
         """The real connect retry path must call the shared registration method

@@ -246,6 +246,7 @@ async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, c
                 await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True)
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
                 and 'not admitted' in r.getMessage()] == [
-            'Watch notification not admitted for discord chat=42: admission_conflict']
+            'Watch notification not admitted for discord chat=42 (type=completion session_id=proc_x): '
+            'admission_conflict']
     finally:
         authority.db.close()

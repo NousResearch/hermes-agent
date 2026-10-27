@@ -430,6 +430,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   setPreviewGuestHidden: (webContentsId, hidden) =>
     ipcRenderer.send('hermes:preview-guest-hidden', { webContentsId, hidden: Boolean(hidden) }),
+  beginPreviewGuestActivity: webContentsId => ipcRenderer.invoke('hermes:preview-guest-activity:begin', webContentsId),
+  endPreviewGuestActivity: token => ipcRenderer.invoke('hermes:preview-guest-activity:end', token),
+  executePreviewGuestScript: (token, code) => ipcRenderer.invoke('hermes:preview-guest-activity:script', token, code),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   freeTierChallenge: {
     // Load the account service's challenge page in a hidden window (revealed

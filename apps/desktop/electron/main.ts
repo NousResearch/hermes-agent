@@ -434,7 +434,13 @@ import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
-import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
+import {
+  applyPreviewGuestAttachPrefs,
+  beginPreviewGuestActivity,
+  endPreviewGuestActivity,
+  executePreviewGuestScript,
+  PREVIEW_GUEST_PARTITION
+} from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
 import {
@@ -15596,6 +15602,39 @@ ipcMain.on('hermes:preview-guest-hidden', (event, payload) => {
     electronWebContents.fromId(Number(payload?.webContentsId)),
     Boolean(payload?.hidden)
   )
+})
+
+ipcMain.handle('hermes:preview-guest-activity:begin', (event, webContentsId: unknown) => {
+  if (!Number.isSafeInteger(webContentsId)) {
+    throw new Error('Invalid preview guest')
+  }
+
+  const owner = BrowserWindow.fromWebContents(event.sender)
+
+  if (!owner) {
+    throw new Error('Preview owner window is unavailable')
+  }
+
+  return beginPreviewGuestActivity(
+    event.sender,
+    electronWebContents.fromId(webContentsId as number) ?? undefined,
+    session.fromPartition(PREVIEW_GUEST_PARTITION),
+    () => streamThrottle.holdWindow(owner)
+  )
+})
+
+ipcMain.handle('hermes:preview-guest-activity:end', (event, token: unknown) => {
+  if (Number.isSafeInteger(token)) {
+    endPreviewGuestActivity(event.sender, token as number)
+  }
+})
+
+ipcMain.handle('hermes:preview-guest-activity:script', (event, token: unknown, code: unknown) => {
+  if (!Number.isSafeInteger(token) || typeof code !== 'string') {
+    throw new Error('Invalid preview script request')
+  }
+
+  return executePreviewGuestScript(event.sender, token as number, code)
 })
 
 ipcMain.on('hermes:f12ShortcutActive', (event, active) => {

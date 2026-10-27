@@ -1754,6 +1754,15 @@ body.guest-pointer-lock :is(webview, iframe) {
   pointer-events: none;
 }
 
+/* Hidden DOM terminals still parse output, but their rows need no layout.
+   Keep the host and xterm helpers measurable for fitting and live font changes;
+   hiding the whole xterm would cache zero-width glyph measurements. WebGL
+   surfaces are deliberately unchanged. */
+[data-terminal].invisible .xterm-rows,
+[data-persistent-terminal][aria-hidden='true'] .xterm-rows {
+  display: none;
+}
+
 /* Bottom clearance lives on [data-slot='aui_composer-clearance'] —
    virtualized items unmount, so :nth-last-child can't fire reliably. */
 
@@ -1843,7 +1852,9 @@ body.guest-pointer-lock :is(webview, iframe) {
    text-left. direction is never set, so chrome/layout/list-indent stay LTR (the
    issue asks not to flip the whole UI). Covers assistant prose, user lines, and
    both composers (main + edit share composer-rich-input). */
-[data-slot='aui_assistant-message-content'] .aui-md :where(p, [data-tool-media-paragraph], h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_assistant-message-content']
+  .aui-md
+  :where(p, [data-tool-media-paragraph], h1, h2, h3, h4, h5, h6, li, blockquote),
 [data-slot='aui_user-inline-text'],
 [data-slot='composer-rich-input'] {
   unicode-bidi: plaintext;
@@ -1871,7 +1882,9 @@ body.guest-pointer-lock :is(webview, iframe) {
    every block takes the chosen direction (every line of a multi-line draft
    included). Auto stamps no dir, so nothing here matches. Code and KaTeX keep
    their isolated-LTR rules below. */
-[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(p, [data-tool-media-paragraph], h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_assistant-message-content']
+  .aui-md[dir]
+  :where(p, [data-tool-media-paragraph], h1, h2, h3, h4, h5, h6, li, blockquote),
 [data-slot='aui_user-inline-text'][dir],
 [data-slot='composer-rich-input'][dir] {
   unicode-bidi: normal;

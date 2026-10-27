@@ -16,8 +16,9 @@ Routing, so no view ever loses a room it listed before:
   named profile, its handed rooms read from the root gateway.
 
 The call runs locally only when no gateway serves the profile (``absent``, or an ``incompatible``
-one that never imports). A ``starting``/``draining`` gateway is waited for and any other present
-one is a retryable refusal: a local write then would be hidden from the gateway's list. RoomLink's
+one that never imports) and the room was not handed over: a handed room is never written to the
+standalone store, so with its gateway down every call on it is a retryable refusal. A
+``starting``/``draining`` gateway is waited for and any other present one is a retryable refusal: a local write then would be hidden from the gateway's list. RoomLink's
 gateway-to-gateway methods (``groups.peer.*``, replication, promote/demote) stay local.
 """
 
@@ -164,6 +165,11 @@ def forward(server, rid, method: str, params: dict) -> dict | None:
     except ValueError as exc:
         return server._err(rid, 4000, str(exc))
     if endpoint is None:
+        if holder == "gateway":
+            # Only the gateway's store holds this room; the standalone copy is frozen and never
+            # imported again, so a local call would acknowledge a change the owner never sees.
+            return server._err(rid, OWNER_LOST_CODE, "The Hermes gateway that holds this Group Chat "
+                               "is not running. Start it and try again.")
         return None
     return _call(server, rid, home, endpoint, method, params)
 

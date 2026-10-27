@@ -150,3 +150,25 @@ def test_a_named_profile_reaches_the_rooms_handed_to_the_root_gateway(home, owne
     method, params, reached = owner[-1]
     assert (method, reached) == ("groups.state", default_db_path().parent)
     assert "profile" not in params  # the root gateway answers for its own profile
+
+
+def test_a_handed_room_is_never_renamed_in_the_standalone_store_while_its_gateway_is_down(home, monkeypatch):
+    """A room handed to the gateway lives in the gateway's store; the standalone copy is frozen. With
+    the gateway down, a rename (or any call on that room) is a retryable refusal, never a local
+    write the gateway would never see and the import marker would never copy again."""
+    import sqlite3
+    from gateway.hosted_rooms import default_db_path, list_rooms
+    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    from tui_gateway.methods_groups_forward import OWNER_LOST_CODE
+    _discovery(monkeypatch, "absent")
+    srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Before", "members": MEMBERS})
+    target = default_db_path().with_name("state.db")
+    with sqlite3.connect(target) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT)")
+    assert import_standalone_rooms(target) == 1
+
+    reply = srv._methods["groups.rename"](2, {"room_id": "room-desk", "event_id": "rename-1", "name": "After"})
+
+    assert reply.get("error", {}).get("code") == OWNER_LOST_CODE, reply
+    [kept] = list_rooms(default_db_path(), include_disbanded=True)
+    assert kept["name"] == "Before"

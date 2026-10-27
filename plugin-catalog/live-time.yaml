@@ -1,7 +1,7 @@
 name: live-time
 repo: https://github.com/chenfeijiang95-ui/hermes-live-time
 sha: f5e4edcefb19f68f11c0e3faf5f6983577500c75
-description: Inject live current time into every LLM call via the pre_llm_call hook — fixes stale session-start timestamps in long/cross-day conversations.
+description: Hermes Agent plugin: injects the current date, time and timezone into every turn as ephemeral context, so long or cross-day sessions stop using a stale wall clock. Zero dependencies, prompt-cache safe.
 maintainer: chenfeijiang95-ui
 tier: community
 category: general

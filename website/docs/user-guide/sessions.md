@@ -200,6 +200,19 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 `latest` is a reserved keyword for `--resume`. A session literally titled "latest" is still reachable by its ID or via `-c latest` (title match).
 :::
 
+### Pick a Session Interactively
+
+Pass `--resume` with no value and Hermes opens its session browser to choose from — no need to list sessions and copy an ID first:
+
+```bash
+hermes --resume
+hermes -r
+```
+
+The picker is scoped to the current workspace (git repo root, else the current directory), the same identity `-c` and `--resume latest` use, so it never mixes in another project's history. `--in <dir>` scopes it to `<dir>`'s workspace instead. Arrow keys navigate, typing filters, Enter resumes, and `q` cancels.
+
+A bare `--resume` needs a keyboard: in a non-interactive launch (`-z`, `-q`, redirected stdio) Hermes refuses with exit code 2 and tells you to pass `--resume latest`, `-c`, or an ID instead of waiting on a prompt that can never be answered. The same picker is available outside a resume as `hermes sessions browse`, which spans every workspace.
+
 ### Resume in a Specific Directory
 
 Pass `--in <dir>` to change into a directory before starting or resuming. Combined with `--resume latest` (or `-c`), the most recent session for that directory's workspace is picked — no need to `cd` first or remember session IDs:
@@ -228,12 +241,21 @@ Resuming an idle session picks up the profile's current config: toolsets, MCP se
 
 ### Filtering Sessions by Workspace
 
-`hermes sessions list` accepts `--workspace <needle>` to show only sessions whose workspace key (git repo root, else cwd) matches — by path substring or exact directory basename:
+`hermes sessions list` shows this workspace's sessions by default — the workspace key is the git repo root when you're inside a repo, else the current directory, the same identity `-c` and `--resume latest` use. A header line names the scope (`Sessions in my-project — use --all for every session`), so a short listing is never mistaken for your whole history.
 
 ```bash
+# This workspace's sessions (the default)
+hermes sessions list
+
+# Every session in the store, whichever folder it belongs to
+hermes sessions list --all
+
+# One workspace, by path substring or exact directory basename
 hermes sessions list --workspace my-project
 hermes sessions list --workspace ~/code/hermes-agent
 ```
+
+`--workspace` searches across every workspace, so it implies `--all`. Sessions with no recorded directory (messaging-platform chats, and rows written before Hermes stored per-session git metadata) only appear under `--all` / `--workspace`; the workspace column shows `—` for them.
 
 ### Conversation Recap on Resume
 
@@ -361,7 +383,7 @@ Hermes provides a full set of session management commands via `hermes sessions`:
 # Pick a recent conversation with the arrow keys and resume it (prints the list when not on a terminal)
 hermes sessions
 
-# List recent sessions (default: last 20)
+# List this workspace's recent sessions (default limit: 20)
 hermes sessions list
 
 # Filter by platform
@@ -370,11 +392,11 @@ hermes sessions list --source telegram
 # Show more sessions
 hermes sessions list --limit 50
 
-# Show every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages
+# Everything: every workspace, every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages
 hermes sessions list --all
 ```
 
-The list holds the conversations you resume: one row per thread, ranked by its last message. A thread that was compressed shows once, under the id of its live continuation (the one `hermes --resume` continues) and the title of the most recent part of the thread that has one. Subagent runs never appear here. Cron, webhook, push, kanban, tool and one-shot runs and empty sessions stay out unless you pass `--all` (or name a `--source`).
+The list holds this workspace's conversations you resume: one row per thread, ranked by its last message. A thread that was compressed shows once, under the id of its live continuation (the one `hermes --resume` continues) and the title of the most recent part of the thread that has one. Subagent runs never appear here. Cron, webhook, push, kanban, tool and one-shot runs and empty sessions stay out unless you pass `--all` (or name a `--source`).
 
 When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
 

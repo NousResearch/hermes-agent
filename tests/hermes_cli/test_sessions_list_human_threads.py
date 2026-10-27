@@ -17,6 +17,12 @@ import pytest
 from hermes_cli import sessions_cmd
 
 
+@pytest.fixture(autouse=True)
+def _no_workspace_scope(monkeypatch):
+    """These rows carry no cwd; this file is about lineages and sources, not the workspace scope."""
+    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     from persistence_assembly import open_persistence, profile_scope

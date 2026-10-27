@@ -53,8 +53,9 @@ def corrupt_db(backend_store):
 
 def test_list_export_and_insights_survive_corrupt_timestamp_rows(backend_store, corrupt_db, capsys, caplog):
     with caplog.at_level(logging.WARNING, logger="hermes_cli.timefmt"):
+        # --all: these rows carry no cwd, and this test is about corrupt timestamps, not scope.
         with open_persistence_reader(corrupt_db.db_path) as store:
-            _cmd_list(argparse.Namespace(limit=20, source=None, all=False, workspace=None), persistence=store)
+            _cmd_list(argparse.Namespace(limit=20, source=None, all=True, workspace=None), persistence=store)
         listing = capsys.readouterr().out
         exported = [to_legacy_export_dict(s) for s in backend_store.maintenance.export_all()]
         records = list(iter_user_prompt_records(exported))

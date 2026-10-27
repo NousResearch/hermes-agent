@@ -201,8 +201,10 @@ def release_after_refused_rename(
     holders = find_release_cwd_holders(release_dir)
     if not holders:
         return [], []
+    # Human lines only: the machine lines go out once, for the holders still in the way when the
+    # swap is given up (describe_block), so a holder closed here is not offered to the Desktop again.
     for holder in holders:
-        print(f"  {holder.holder_line()}")
+        print(f"  {holder.describe()}")
     chosen = [h for h in holders if consent.covers(h)]
     # A holder whose program path cannot be read is usually protected (another user, elevated):
     # it cannot be closed from here either, so the user closes it themselves.
@@ -221,10 +223,12 @@ def release_after_refused_rename(
 
 
 def describe_block(holders: list[ReleaseHolder], release_dir: Path) -> str:
+    """The final report of a refused swap; ``holders`` are the ones still holding the folder."""
     names = ", ".join(h.describe() for h in holders)
     pids = " ".join(f"/PID {h.pid}" for h in holders)
     return (
-        f"✗ Windows would not replace the desktop app: {names} is using a folder inside {release_dir}.\n"
+        "".join(f"  {h.holder_line()}\n" for h in holders)
+        + f"✗ Windows would not replace the desktop app: {names} is using a folder inside {release_dir}.\n"
         f"    It is not part of Hermes, so it was left running. Close it (Task Manager, or `taskkill {pids}`)\n"
         "    and run `hermes desktop --force-build`, or run Update now in Hermes Desktop and choose to close it."
     )

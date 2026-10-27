@@ -18,7 +18,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli import main_desktop
+from hermes_cli import desktop_release_holders, main_desktop
 
 pytestmark = pytest.mark.platforms("windows")
 
@@ -110,3 +110,37 @@ def test_consented_retry_closes_exactly_the_holder_and_promotes(swap_fixture, ca
     assert not [p.pid for p in tree if p.is_running()]
     assert not consent.exists(), "a consent covers one retry only"
     assert "Closed with your consent: " in capsys.readouterr().out
+
+
+def test_a_partial_close_reports_only_the_holder_still_in_the_way(swap_fixture, tmp_path, capsys, monkeypatch):
+    """The consented holder closes but a protected one keeps the folder: the machine lines
+    windows.ps1 hands the Desktop must name only the protected one, or the next dialog offers
+    to close a program that already exited."""
+    desktop_dir, staging, live_root, helper = swap_fixture
+    _consent, closed_tree = _consent_for_run(desktop_dir, helper, "desktop-retry-1")
+    protected = subprocess.Popen(
+        [sys.executable, str(tmp_path / "foreign_helper.py")], cwd=live_root, stdout=subprocess.PIPE,
+        text=True, encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        assert protected.stdout.readline().strip() == "ready"
+        protected_pids = {protected.pid, *(p.pid for p in psutil.Process(protected.pid).children(recursive=True))}
+        real_exe = desktop_release_holders._exe_or_empty
+        # What psutil answers for a protected process (elevated, another user's): no program path.
+        monkeypatch.setattr(desktop_release_holders, "_exe_or_empty",
+                            lambda proc: "" if proc.pid in protected_pids else real_exe(proc))
+        monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", "desktop-retry-1")
+
+        promoted, error = _promote(desktop_dir, staging)
+
+        assert promoted is None and f"pid {protected.pid}" in error, error
+        assert helper.wait(10) is not None
+        reported = {int(ln.split("(pid ", 1)[1].split(",", 1)[0])
+                    for ln in capsys.readouterr().out.splitlines() if "Desktop app folder held by: " in ln}
+        assert protected.pid in reported, reported
+        assert not reported & {p.pid for p in closed_tree}, f"an exited holder was reported again: {reported}"
+        assert (live_root / "Hermes.exe").read_text(encoding="utf-8") == "old"
+    finally:
+        for proc in [*psutil.Process(protected.pid).children(recursive=True), psutil.Process(protected.pid)]:
+            proc.kill()
+        protected.wait(10)

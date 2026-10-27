@@ -89,8 +89,7 @@ def test_a_consent_closes_only_what_the_user_saw_in_the_run_it_was_given_for(hol
         holders, closed = release_after_refused_rename(release, consent=consent, input_fn=_never_asked)
         assert proc.pid in [h.pid for h in holders], case
         assert closed == [] and proc.poll() is None, f"closed without consent ({case})"
-    line = f"Desktop app folder held by: {psutil.Process(proc.pid).name()} (pid {proc.pid}, started {started:.3f}, "
-    assert line in capsys.readouterr().out
+    assert f"{psutil.Process(proc.pid).name()} (pid {proc.pid}, " in capsys.readouterr().out
 
     _desktop_consent(release, proc, "desktop-retry-1")
     _holders, closed = release_after_refused_rename(
@@ -115,6 +114,7 @@ def test_a_holder_whose_program_path_is_unreadable_is_left_for_the_user(holder, 
 
     assert proc.pid in [h.pid for h in holders] and closed == []
     assert proc.poll() is None
-    out = capsys.readouterr().out
-    assert f"(pid {proc.pid}, started " in out and "path unreadable)" in out
-    assert f"(pid {proc.pid}) yourself" in out
+    assert f"(pid {proc.pid}) yourself" in capsys.readouterr().out
+    line = next(ln for ln in desktop_release_holders.describe_block(holders, release).splitlines()
+                if f"(pid {proc.pid}, started " in ln)
+    assert line.endswith("path unreadable)")

@@ -76,9 +76,9 @@ export const GLASS_SUPPORTED =
     : isMacPlatform() || isWindowsPlatform())
 
 /**
- * Whether the setting is worth showing at all. Linux has neither half —
- * `setOpacity` is a documented no-op and there is no native material — so
- * Settings hides the row rather than offering a lever that does nothing.
+ * Whether the setting is offered at all. Linux has no native material and
+ * Settings hides the row there, so the setting also resolves to off there
+ * (see `$translucency`): a hidden lever must not move the window.
  */
 export const TRANSLUCENCY_SUPPORTED =
   !isBrowserHostedDesktop() &&
@@ -117,10 +117,20 @@ export function setAppearance(appearance: Appearance): void {
   }
 }
 
-/** The resolved state for the painted appearance — the shape every consumer reads. */
-export const $translucency = computed([$translucencyBook, $appearance], (book, appearance) =>
-  resolveTranslucency(book, appearance, isWindowsPlatform())
-)
+/**
+ * The resolved state for the painted appearance — the shape every consumer reads.
+ *
+ * Where Settings hides the row, the setting resolves to off. The platform
+ * defaults (29% tint) would otherwise still resolve there, reach main over IPC
+ * and land in translucency.json, and Electron 44 does fade a Linux window when
+ * handed that value. Resolving to off also rewrites a value an earlier build
+ * persisted, so a stuck profile heals on its first launch.
+ */
+export const $translucency = computed([$translucencyBook, $appearance], (book, appearance) => {
+  const state = resolveTranslucency(book, appearance, isWindowsPlatform())
+
+  return TRANSLUCENCY_SUPPORTED ? state : { ...state, intensity: 0, fade: 0 }
+})
 
 /** Write an edit against the appearance being painted. */
 const edit = (patch: Partial<TranslucencyValues>): void => {

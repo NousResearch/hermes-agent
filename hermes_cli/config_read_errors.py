@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +75,8 @@ def _warn_config_parse_failure(
     in ``hermes_cli.config._load_config_impl``).
     """
     try:
-        st = config_path.stat()
-        sig = file_signature(st)
+        from hermes_cli.config_backend import config_version
+        sig = config_version(config_path)
         key = (str(config_path), *sig)
         _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc))
     except OSError:
@@ -104,9 +103,10 @@ def get_active_config_parse_failure() -> Optional[str]:
     (mtime_ns + size + ino + ctime_ns) to the file that failed to parse; else None."""
     from hermes_cli.config import get_config_path
     try:
+        from hermes_cli.config_backend import config_version
         record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
-        st = path.stat()
-        return record[4] if file_signature(st) == record[:4] else None
+        sig = config_version(path)
+        return record[len(sig)] if sig == record[:len(sig)] else None
     except Exception:
         return None
 

@@ -6,6 +6,7 @@ over the control socket and opens it. It never serves anything itself. ``--sign-
 the gateway did, waits for a gateway that is still starting, and replaces the stored credential
 itself only when no gateway runs.
 """
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -417,11 +418,92 @@ def test_the_webapp_command_takes_one_action_at_a_time():
 
 def test_a_link_for_the_user_to_open_by_hand_is_printed_and_never_handed_to_a_browser_launcher(world, capsys):
     """Where the gateway cannot check who redeems a launch link (macOS, the BSDs) it marks the link
-    private: the command prints it with its lifetime and never passes it to a browser launcher, whose
-    arguments other local users can read."""
+    private. With no browser to carry it there in a user-only page, the command prints it with its
+    lifetime and never passes it to a browser launcher, whose arguments other local users can read."""
     world["answers"]["webapp-launch"] = {"ok": True, "result": {"url": LINK, "private": True,
                                                                 "expires_in_seconds": 60}}
+    world["monkeypatch"].setattr(launcher, "_open", lambda url: world["calls"]["opened"].append(url) and False)
     assert launcher.cmd_webapp(_args()) == 0
-    assert world["calls"]["opened"] == []
+    assert all("ticket" not in url for url in world["calls"]["opened"])
     out = capsys.readouterr().out
     assert LINK in out and "keep it private" in out and "60 seconds" in out and "once" in out
+
+
+def _says_what_plain_http_loses(out: str) -> bool:
+    lowered = out.lower()
+    return all(part in lowered for part in ("plain http", "bot screen", "microphone", "wake word",
+                                            "reading the clipboard", "notifications", "https"))
+
+
+@pytest.mark.parametrize("no_open", [False, True])
+def test_a_webapp_opened_over_plain_http_on_the_lan_says_what_the_browser_loses(world, capsys, no_open):
+    """Browsers keep secure-context features (the bot screen's viewer, the microphone, notifications)
+    from a plain-HTTP origin that is not loopback: the launcher says so wherever it opens or prints one."""
+    url = "http://192.168.1.20:9120/"
+    world["answers"]["webapp-launch"] = {"ok": True, "result": {
+        "url": url, "private": False, "expires_in_seconds": None, "sign_in": True}}
+    assert launcher.cmd_webapp(_args(no_open=no_open)) == 0
+    assert _says_what_plain_http_loses(capsys.readouterr().out)
+
+
+def _register_lan_sign_in(world, address: str, port: int = 9120) -> None:
+    """Web Access Start registered Nous sign-in for ``http://<address>:<port>``, this machine's LAN address."""
+    from hermes_cli import webapp_access
+    record = world["root"] / "webapp" / "sign-in-registration.json"
+    record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record.write_text(json.dumps({"portal": "https://portal.example", "client_id": "agent:x",
+                                  "callback": f"http://{address}:{port}/auth/callback"}) + "\n", encoding="utf-8")
+    world["monkeypatch"].setattr(webapp_access, "lan_address", lambda: address)
+
+
+@pytest.mark.parametrize("browser_address", ["public_url", "lan_sign_in"])
+def test_status_of_a_webapp_browsers_open_over_plain_http_on_the_lan_says_what_the_browser_loses(
+        world, capsys, browser_address):
+    """The gateway reports its loopback dial origin; browsers open webapp.public_url, else the LAN address
+    Web Access registered sign-in for, as hermes webapp does. --status warns about that address."""
+    if browser_address == "public_url":
+        _home(world["root"], "webapp:\n  enabled: true\n  host: 0.0.0.0\n  public_url: http://192.168.1.20:9120\n")
+    else:
+        _home(world["root"], "webapp:\n  enabled: true\n  host: 0.0.0.0\n")
+        _register_lan_sign_in(world, "192.168.1.20")
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    out = capsys.readouterr().out
+    assert "Serving at http://127.0.0.1:9120" in out
+    assert _says_what_plain_http_loses(out)
+
+
+@pytest.mark.parametrize("public_url", ["", "https://hermes.example.ts.net"])
+def test_status_gets_no_plain_http_warning_when_browsers_open_a_secure_address(world, capsys, public_url):
+    """A wildcard bind with no public URL or LAN sign-in opens loopback; an HTTPS public URL is secure."""
+    _home(world["root"], "webapp:\n  enabled: true\n  host: 0.0.0.0\n"
+          + (f"  public_url: {public_url}\n" if public_url else ""))
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    assert "plain http" not in capsys.readouterr().out.lower()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_status_of_a_private_webapp_ignores_a_lan_sign_in_registration_it_kept(world, capsys, host):
+    """Web Access keeps its LAN sign-in registration after webapp.host goes back to loopback. With no
+    sign-in gate, hermes webapp opens the loopback launch link, so --status does not warn."""
+    _home(world["root"], f"webapp:\n  enabled: true\n  host: {host}\n")
+    _register_lan_sign_in(world, "192.168.1.20")
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    out = capsys.readouterr().out
+    assert "Serving at http://127.0.0.1:9120" in out
+    assert "plain http" not in out.lower()
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:9120/", "http://127.0.0.2:9120/", "http://localhost:9120/",
+                                 "http://hermes.localhost:9120/", "http://[::1]:9120/",
+                                 "https://hermes.example.ts.net/"])
+def test_loopback_and_https_addresses_are_secure_contexts_and_get_no_warning(world, capsys, url):
+    world["answers"]["webapp-launch"] = {"ok": True, "result": {
+        "url": url, "private": False, "expires_in_seconds": None, "sign_in": True}}
+    assert launcher.cmd_webapp(_args(no_open=True)) == 0
+    assert "plain http" not in capsys.readouterr().out.lower()
+
+
+def test_a_one_use_link_on_loopback_gets_no_plain_http_warning(world, capsys):
+    assert launcher.cmd_webapp(_args(no_open=True)) == 0
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    assert "plain http" not in capsys.readouterr().out.lower()

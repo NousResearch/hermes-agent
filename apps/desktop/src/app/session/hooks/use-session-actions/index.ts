@@ -1,4 +1,4 @@
-import { mergeUsage } from '@hermes/shared'
+import { mergeUsage, randomUuid } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
@@ -620,7 +620,7 @@ export function useSessionActions({
     async (preview: string | null = null, createOverrides?: SessionCreateOverrides): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
-      const createIntent = (createIntentRef.current ??= crypto.randomUUID())
+      const createIntent = (createIntentRef.current ??= randomUuid())
 
       creatingSessionRef.current = true
 
@@ -1076,7 +1076,7 @@ export function useSessionActions({
             options?.route === null || defaultTarget?.route === null,
             workspaceScope.workspaceMode !== 'bots'
           )),
-          request_id: crypto.randomUUID()
+          request_id: randomUuid()
         }
 
         // Same lease chain as createBackendSessionForSend: owner socket held

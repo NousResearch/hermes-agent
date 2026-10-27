@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { HermesStagedUpload } from '@/global'
@@ -106,7 +107,7 @@ export const $composerTerminalSelections = atom<Record<string, string>>({})
 export const $voiceConversationStartRequest = atom(0)
 let nextVoiceStartRequest = 0
 let handledVoiceStartRequest = 0
-export const createComposerAttachmentOccurrenceId = (): string => crypto.randomUUID()
+export const createComposerAttachmentOccurrenceId = (): string => randomUuid()
 
 export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
 
@@ -270,8 +271,7 @@ export interface SessionDraft {
 // cannot bleed into the next lifecycle.
 const FRESH_DRAFT_STORAGE_KEY = 'hermes.desktop.freshDraftKey'
 
-const createFreshDraftKey = (): string =>
-  `__new__:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+const createFreshDraftKey = (): string => `__new__:${randomUuid()}`
 
 export const $freshDraftKey = atom<string>(storedString(FRESH_DRAFT_STORAGE_KEY) ?? NEW_SESSION_DRAFT_KEY)
 

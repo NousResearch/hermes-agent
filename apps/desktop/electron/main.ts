@@ -55,6 +55,7 @@ import {
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
+import { relaunchApp } from './app-relaunch'
 import {
   appVersionInfo,
   type AppVersionInfo,
@@ -322,31 +323,26 @@ import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
+import { launchBuildIdentity } from './launch-build-identity'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
+  createLinuxGpuBootWindow,
   decideLinuxGpuLaunch,
   disableGpuSwitchNeededForReason,
   LINUX_GPU_SILENT_RETRY_GRACE_S,
   linuxGpuChildDeathPath,
   linuxGpuFallbackMarker,
+  linuxGpuFallbackReasonForDeath,
   linuxGpuMarkerAfterSuccessfulBoot,
   readLinuxGpuMarker,
   shouldEngageSilentGpuRetryFallback,
   writeLinuxGpuMarker
 } from './linux-gpu-fallback'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
-import {
-  decideNvidiaEglFallback,
-  nvidiaEglFallbackMarker,
-  nvidiaEglMarkerAfterSuccessfulBoot,
-  parseNvidiaDriverMajor,
-  parseNvidiaDriverVersion,
-  readNvidiaEglMarker,
-  shouldRelaunchForNvidiaGpuDeath,
-  writeNvidiaEglMarker
-} from './linux-nvidia-egl-fallback'
+import { parseNvidiaDriverMajor, parseNvidiaDriverVersion } from './linux-nvidia-egl-fallback'
+import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
@@ -727,6 +723,43 @@ if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
   app.setPath('userData', resolvedUserData)
 }
 
+// Only the lock owner may persist launch recovery markers, adopt a workspace or start a
+// backend, so the lock is taken as soon as userData is final (#131055, #143056).
+// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
+// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
+// so Chromium's own liveness probe keeps refusing every later launch and the
+// app silently exits. Clear a provably-dead owner and retry once; always log
+// when the lock is legitimately lost so the exit is diagnosable.
+function acquireSingleInstanceLock(): boolean {
+  if (app.requestSingleInstanceLock()) {
+    return true
+  }
+
+  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
+
+  if (stalePid !== null) {
+    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
+
+    return app.requestSingleInstanceLock()
+  }
+
+  return false
+}
+
+const isPrimaryInstance: boolean = acquireSingleInstanceLock()
+
+if (!isPrimaryInstance) {
+  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
+  app.exit(0)
+}
+
+// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
+// backend and every other child get the real one (the profile scratch dir) back.
+if (process.env.HERMES_DESKTOP_TMPDIR) {
+  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
+  delete process.env.HERMES_DESKTOP_TMPDIR
+}
+
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
@@ -804,10 +837,12 @@ if (IS_WINDOWS) {
   windowsGpuStackCookieFallbackActive = gpuStackCookieDecision.enable
   windowsGpuStackCookieFallbackSticky = gpuStackCookieDecision.nextMarker.state === 'fallback'
 
-  try {
-    writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker)
-  } catch {
-    void 0
+  if (isPrimaryInstance) {
+    try {
+      writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker)
+    } catch {
+      void 0
+    }
   }
 
   if (gpuStackCookieDecision.enable && !REMOTE_DISPLAY_REASON) {
@@ -858,18 +893,9 @@ if (
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
 }
 
-// #40077 / #124255: NVIDIA driver 580.x breaks ANGLE's EGL probing (Invalid
-// visual ID), killing the GPU process at startup. Route ANGLE through its
-// SwiftShader backend when the breakage is WITNESSED, not assumed: the same
-// point release breaks hosts where NVIDIA drives the display and renders fine
-// on hybrid hosts whose session EGL lands on the iGPU, so a driver-series gate
-// burns 4-9 CPU cores on healthy hosts (#124255). The gate is now behavioral —
-// boot with hardware GL and a marker; a GPU-process death before the first
-// window flips the marker sticky (per app + full driver version) and relaunches
-// once with SwiftShader. Deliberately NOT disableHardwareAcceleration(): on
-// 580.173.02 + Electron 40 that SIGKILLs the renderer (see the closed #40119).
-// Must run before app `ready` — the switch only applies pre-launch. Override
-// with HERMES_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
+// NVIDIA EGL failures use a build-qualified, lock-owned recovery witness.
+// Healthy launches retain hardware rendering; source rebuilds re-probe old failures.
+// Keep this before app ready because ANGLE switches apply only at startup.
 const NVIDIA_PROC_VERSION = (() => {
   try {
     return fs.readFileSync('/proc/driver/nvidia/version', 'utf8')
@@ -881,85 +907,40 @@ const NVIDIA_PROC_VERSION = (() => {
 const NVIDIA_DRIVER_MAJOR = parseNvidiaDriverMajor(NVIDIA_PROC_VERSION)
 const NVIDIA_DRIVER_VERSION = parseNvidiaDriverVersion(NVIDIA_PROC_VERSION)
 
-let nvidiaEglFallbackActive = false
-let nvidiaEglRelaunchAttempted = false
+// Every Linux launch's boot clock, NVIDIA or not; set at the first window reveal.
+const linuxGpuBootWindow = createLinuxGpuBootWindow()
 
-const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
+const nvidiaEglRecovery = createNvidiaEglRecovery({
+  bootWindow: linuxGpuBootWindow,
   driverMajor: NVIDIA_DRIVER_MAJOR,
   driverVersion: NVIDIA_DRIVER_VERSION,
-  marker: readNvidiaEglMarker(app.getPath('userData')),
+  userData: app.getPath('userData'),
   appVersion: app.getVersion(),
+  buildIdentity: launchBuildIdentity({ appVersion: app.getVersion(), installStamp: INSTALL_STAMP }),
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,
-  remoteDisplayReason: REMOTE_DISPLAY_REASON
+  remoteDisplayReason: REMOTE_DISPLAY_REASON,
+  primary: isPrimaryInstance,
+  log: message => {
+    console.warn(`[hermes] ${message}`)
+    void app.whenReady().then(() => {
+      rememberLog(message)
+      flushDesktopLogBufferSync()
+    })
+  },
+  relaunch: extraArgs => {
+    // The persisted witness selects ANGLE next launch; argv carries it only when unwritable.
+    relaunchApp(app, { args: [...process.argv.slice(1), ...extraArgs] })
+    void exitAfterBackendShutdown(0)
+  }
 })
 
-nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
-
-// Persist the launch decision before GPU children start: a `booting` marker
-// left behind by a launch that never reached first paint is itself evidence
-// of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
-// against our relaunch handler), and the next launch engages from it.
-if (NVIDIA_DRIVER_MAJOR !== null) {
-  try {
-    writeNvidiaEglMarker(app.getPath('userData'), NVIDIA_EGL_FALLBACK.nextMarker)
-  } catch {
-    void 0
-  }
-}
+const NVIDIA_EGL_FALLBACK = nvidiaEglRecovery.decision
 
 if (NVIDIA_EGL_FALLBACK.enable) {
   app.commandLine.appendSwitch('use-angle', 'swiftshader')
-  console.log(
-    `[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
-      'through SwiftShader. Witnessed GPU-process death probe (#40077, #124255); an app or ' +
-      'driver update re-probes hardware GL once. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
-  )
-}
-
-// The behavioral half of the gate: a GPU-process death on a Linux NVIDIA host
-// that booted with hardware GL is the #40077 signature. Catch it before
-// Chromium's "GPU process isn't usable" FATAL abort ends the process, flip the
-// marker sticky, and relaunch once with SwiftShader. `killed` counts (the
-// #40077 GPU process died to Chromium's health-check SIGTERM, exit_code=15).
-if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
-  app.on('child-process-gone', (_event, details) => {
-    if (
-      !shouldRelaunchForNvidiaGpuDeath({
-        details,
-        fallbackActive: nvidiaEglFallbackActive,
-        relaunchAttempted: nvidiaEglRelaunchAttempted
-      })
-    ) {
-      return
-    }
-
-    nvidiaEglRelaunchAttempted = true
-
-    try {
-      writeNvidiaEglMarker(
-        app.getPath('userData'),
-        nvidiaEglFallbackMarker(app.getVersion(), NVIDIA_DRIVER_VERSION ?? String(NVIDIA_DRIVER_MAJOR))
-      )
-    } catch {
-      void 0
-    }
-
-    console.warn(
-      `[hermes] NVIDIA GPU process died (reason=${details?.reason}, exit=${details?.exitCode}); ` +
-        'relaunching once with --use-angle=swiftshader (#40077, #124255)'
-    )
-
-    try {
-      app.relaunch({
-        args: [...process.argv.slice(1), '--use-angle=swiftshader']
-      })
-      void exitAfterBackendShutdown(0)
-    } catch (error) {
-      console.error(`[hermes] NVIDIA SwiftShader relaunch failed: ${error?.message || error}`)
-    }
-  })
+  console.log(`[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE through SwiftShader`)
 }
 
 // #124843: on Mesa/Wayland the Chromium GPU child can fail init
@@ -991,10 +972,12 @@ if (process.platform === 'linux') {
   linuxGpuFallbackActive = linuxGpuDecision.enable
   linuxGpuFallbackSticky = linuxGpuDecision.nextMarker.state === 'fallback'
 
-  try {
-    writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
-  } catch {
-    void 0
+  if (isPrimaryInstance) {
+    try {
+      writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
+    } catch {
+      void 0
+    }
   }
 
   if (linuxGpuDecision.enable && linuxGpuDecision.reason !== 'already-enabled' && !LINUX_GPU_SOFTWARE_ACTIVE) {
@@ -1093,47 +1076,57 @@ if (IS_WINDOWS || process.platform === 'linux') {
     )
   }
 
-  writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
+  if (isPrimaryInstance) {
+    writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
+  }
 
   // One coalesced Linux GPU-child recovery (#86073, #124843, #121954): the
   // sandbox signature is tried first (that host's matrix shows --disable-gpu
   // still crashes), then the software ladder — including the relapse after a
   // --no-sandbox boot died again. One death, one bounded relaunch; Windows
   // keeps its breakpoint-signature fast path unchanged.
+  const recoverWindowsGpuSandbox = (details: Electron.Details): void => {
+    if (
+      !shouldRelaunchForGpuSandboxCrash({
+        details,
+        alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+        relaunchAttempted: windowsNoSandboxRelaunchAttempted
+      })
+    ) {
+      return
+    }
+
+    windowsNoSandboxRelaunchAttempted = true
+    windowsSandboxFallbackActive = true
+    windowsSandboxFallbackSticky = true
+    windowsSandboxFallbackReason = 'gpu-breakpoint'
+
+    try {
+      writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+    } catch {
+      void 0
+    }
+
+    console.warn(
+      `[hermes] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
+    )
+
+    try {
+      relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+      void exitAfterBackendShutdown(0)
+    } catch (error) {
+      console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+    }
+  }
+
   app.on('child-process-gone', (_event, details) => {
     if (IS_WINDOWS) {
-      if (
-        !shouldRelaunchForGpuSandboxCrash({
-          details,
-          alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
-          relaunchAttempted: windowsNoSandboxRelaunchAttempted
-        })
-      ) {
-        return
-      }
+      recoverWindowsGpuSandbox(details)
 
-      windowsNoSandboxRelaunchAttempted = true
-      windowsSandboxFallbackActive = true
-      windowsSandboxFallbackSticky = true
-      windowsSandboxFallbackReason = 'gpu-breakpoint'
+      return
+    }
 
-      try {
-        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
-      } catch {
-        void 0
-      }
-
-      console.warn(
-        `[hermes] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
-      )
-
-      try {
-        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-        void exitAfterBackendShutdown(0)
-      } catch (error) {
-        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
-      }
-
+    if (rendererTeardownInProgress() || quitInProgress) {
       return
     }
 
@@ -1145,8 +1138,14 @@ if (IS_WINDOWS || process.platform === 'linux') {
       alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
       alreadySoftware,
       sandboxRelaunchAttempted: windowsNoSandboxRelaunchAttempted,
-      softwareRelaunchAttempted: linuxGpuRelaunchAttempted
+      softwareRelaunchAttempted: linuxGpuRelaunchAttempted,
+      runtimeDeath: linuxGpuBootWindow.afterBootWindow()
     })
+
+    // One event must not schedule both ANGLE and disable-gpu relaunches.
+    if (path !== 'no-sandbox' && nvidiaEglRecovery.gpuDied(details)) {
+      return
+    }
 
     if (path === 'no-sandbox') {
       windowsNoSandboxRelaunchAttempted = true
@@ -1165,7 +1164,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
@@ -1179,8 +1178,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       linuxGpuFallbackActive = true
       linuxGpuFallbackSticky = true
 
-      const reason =
-        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+      const reason = linuxGpuFallbackReasonForDeath(details?.reason)
 
       try {
         writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
@@ -1193,7 +1191,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(app, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
@@ -1240,42 +1238,6 @@ if (INSTALL_STAMP) {
 }
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
-
-// Only the lock-owning destination may adopt a workspace or start a backend.
-// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
-// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
-// so Chromium's own liveness probe keeps refusing every later launch and the
-// app silently exits. Clear a provably-dead owner and retry once; always log
-// when the lock is legitimately lost so the exit is diagnosable.
-function acquireSingleInstanceLock(): boolean {
-  if (app.requestSingleInstanceLock()) {
-    return true
-  }
-
-  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
-
-  if (stalePid !== null) {
-    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
-
-    return app.requestSingleInstanceLock()
-  }
-
-  return false
-}
-
-const isPrimaryInstance: boolean = acquireSingleInstanceLock()
-
-if (!isPrimaryInstance) {
-  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
-  app.exit(0)
-}
-
-// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
-// backend and every other child get the real one (the profile scratch dir) back.
-if (process.env.HERMES_DESKTOP_TMPDIR) {
-  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
-  delete process.env.HERMES_DESKTOP_TMPDIR
-}
 
 const HERMES_HOME: string = resolveDesktopHermesHome({
   home: app.getPath('home'),
@@ -2906,7 +2868,7 @@ async function waitForUpdateToFinish() {
       running: INSTALL_STAMP,
       resourcesPath: process.resourcesPath,
       relaunch: extraArgs =>
-        app.relaunch({ args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
+        relaunchApp(app, { args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
       exit: () => void exitAfterBackendShutdown(0),
       log: rememberLog
     })
@@ -11732,6 +11694,8 @@ async function teardownSshForQuit(): Promise<void> {
 }
 
 async function exitAfterBackendShutdown(code) {
+  nvidiaEglRecovery.cleanExit()
+
   try {
     await backendShutdown.run()
   } catch {
@@ -13735,23 +13699,8 @@ function createWindow() {
       // window is on screen (a STARTING gnome-shell app must not see its entry change).
       notifyLauncherWindowRevealed()
 
-      // #124255: the first revealed window means the GPU survived this boot.
-      // Keep a sticky SwiftShader marker when we launched with the fallback;
-      // otherwise mark the probe healthy so future launches trust hardware GL.
-      if (NVIDIA_DRIVER_MAJOR !== null) {
-        try {
-          writeNvidiaEglMarker(
-            app.getPath('userData'),
-            nvidiaEglMarkerAfterSuccessfulBoot({
-              fallbackActive: nvidiaEglFallbackActive,
-              appVersion: app.getVersion(),
-              driverVersion: NVIDIA_DRIVER_VERSION
-            })
-          )
-        } catch {
-          void 0
-        }
-      }
+      linuxGpuBootWindow.revealed()
+      nvidiaEglRecovery.healthy()
 
       // #38216/#121954: clear the mid-boot marker only after a window is
       // actually usable. Keep sticky `fallback` when we launched with
@@ -13948,7 +13897,7 @@ function createWindow() {
           )
 
           try {
-            app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+            relaunchApp(app, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
             void exitAfterBackendShutdown(0)
           } catch (err) {
             rememberLog(`[renderer] GPU-disable relaunch failed: ${err?.message || err}`)
@@ -14002,7 +13951,7 @@ function createWindow() {
         rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
 
         try {
-          app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+          relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
           void exitAfterBackendShutdown(0)
         } catch (err) {
           rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
@@ -17320,7 +17269,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
 // bundle now lives there.
 ipcMain.handle('hermes:app:relaunch', async () => {
   rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
-  app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+  relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
   void exitAfterBackendShutdown(0)
 })
 
@@ -17863,6 +17812,10 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  if (NVIDIA_DRIVER_MAJOR !== null) {
+    rememberLog(nvidiaEglRecovery.startupMessage)
+  }
+
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
   // an OS package swap, consume it here — the renderer toasts "Hermes
@@ -18194,6 +18147,7 @@ app.on('before-quit', event => {
   // (#55920).
   appQuitting = true
   quitInProgress = true
+  nvidiaEglRecovery.cleanExit()
 
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()

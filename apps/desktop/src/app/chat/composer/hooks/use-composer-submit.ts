@@ -1,4 +1,4 @@
-import { SLASH_COMMAND_RE } from '@hermes/shared'
+import { randomUuid, SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
@@ -156,7 +156,7 @@ export function useComposerSubmit({
     // The composer owns this send's identity: the caller's (a queue entry), the restored draft's
     // (the explicit retry), else a new one. Equal text never inherits an identity, so a new
     // message that repeats an uncertain send, in this pane or another, is its own turn.
-    const submissionId = target?.submission_id ?? crypto.randomUUID()
+    const submissionId = target?.submission_id ?? randomUuid()
 
     const restore = () => {
       stashAt(restoreScope, text, submittedAttachments)
@@ -172,15 +172,19 @@ export function useComposerSubmit({
     // typed), so a rejection drops it instead of loading it into the draft.
     const rejected = displayKind ? () => {} : restore
 
-    void Promise.resolve(
-      onSubmit(text, {
-        ...target,
-        submission_id: submissionId,
-        ...(attachments ? { attachments } : {}),
-        composerScope: submittedScope,
-        ...assignment,
-        ...(displayKind ? { displayKind } : {})
-      })
+    // A synchronous throw takes the rejection path too: the caller has already cleared the
+    // composer, so a send that fails while it is being prepared must not take the words with it.
+    void new Promise<boolean>(resolve =>
+      resolve(
+        onSubmit(text, {
+          ...target,
+          submission_id: submissionId,
+          ...(attachments ? { attachments } : {}),
+          composerScope: submittedScope,
+          ...assignment,
+          ...(displayKind ? { displayKind } : {})
+        })
+      )
     )
       .then(accepted => {
         if (accepted === false) {

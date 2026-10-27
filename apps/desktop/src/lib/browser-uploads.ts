@@ -20,6 +20,11 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   '.webp': 'image/webp'
 }
 
+// Image types the composer attaches but the browser cannot stage: /api/chat/image-upload
+// takes only the raster formats it can sniff, and the send reads an image chip
+// back from that host path. A blob: URL here would become a chip whose Send fails.
+const UNSENDABLE_IMAGE_EXTENSIONS = new Set(['.ico', '.svg'])
+
 export const IMAGE_EXTENSION_BY_MIME: Record<string, string> = Object.fromEntries(
   Object.entries(IMAGE_MIME_BY_EXTENSION).map(([extension, mime]) => [mime, extension])
 )
@@ -242,6 +247,10 @@ export function createBrowserUploadsBridge({
 
     const extension = normalizedExtension(ext)
     const imageMime = IMAGE_MIME_BY_EXTENSION[extension]
+
+    if (UNSENDABLE_IMAGE_EXTENSIONS.has(extension)) {
+      throw new Error("SVG and ICO images can't be attached in the browser. Attach a PNG, JPEG, GIF, WebP or BMP instead.")
+    }
 
     // /api/chat/image-upload stores images up to 25 MiB, but the send reads the staged image back
     // with the 16 MiB file-read cap: refuse a larger one here, before it shows as attached.

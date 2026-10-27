@@ -116,4 +116,21 @@ describe('machine UI preferences sync', () => {
     expect($density.get()).toBe('comfortable')
     expect(store.writes).toHaveLength(1)
   })
+
+  it('keeps a change made right before a reload and writes it on the next load', async () => {
+    const store = memoryStore({ [DENSITY]: 'compact' })
+
+    stop = startUiPreferencesSync(store.bridge)
+    await vi.runAllTimersAsync()
+    writeKey(DENSITY, 'detailed')
+    stop() // the tab reloads before the debounced write leaves
+
+    expect(store.writes).toEqual([])
+
+    stop = startUiPreferencesSync(store.bridge)
+    await vi.runAllTimersAsync()
+
+    expect(window.localStorage.getItem(DENSITY)).toBe('detailed')
+    expect(store.snapshot().values).toEqual({ [DENSITY]: 'detailed' })
+  })
 })

@@ -15,7 +15,11 @@ export interface UiPreferencesBridge {
   onChanged?(callback: (snapshot: UiPreferencesSnapshot) => void): () => void
 }
 
-const FLUSH_DELAY_MS = 250
+const FLUSH_DELAY_MS = 150
+// Local changes not yet confirmed by the store, kept across reloads: a change
+// made right before the tab reloads or closes must still win over the older
+// store value on the next load, and be written then. Not a shared key itself.
+const OUTBOX_KEY = 'hermes:ui-preferences:outbox'
 const RETRY_DELAY_MS = 5000
 const MAX_RETRY_DELAY_MS = 60_000
 
@@ -78,11 +82,36 @@ export function hydrateFromSnapshot(snapshot: null | undefined | UiPreferencesSn
     return
   }
 
+  const outbox = readOutbox()
+
   for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values)])) {
-    if (isSharedPreferenceKey(key)) {
+    if (isSharedPreferenceKey(key) && !outbox.has(key)) {
       writeRaw(key, snapshot.values[key] ?? null)
     }
   }
+}
+
+function readOutbox(): Map<string, null | string> {
+  try {
+    const parsed = JSON.parse(readRaw(OUTBOX_KEY) ?? '{}') as unknown
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return new Map()
+    }
+
+    return new Map(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, null | string] =>
+          isSharedPreferenceKey(entry[0]) && (entry[1] === null || typeof entry[1] === 'string')
+      )
+    )
+  } catch {
+    return new Map()
+  }
+}
+
+function saveOutbox(pending: Map<string, null | string>) {
+  writeRaw(OUTBOX_KEY, pending.size === 0 ? null : JSON.stringify(Object.fromEntries(pending)))
 }
 
 function announce(key: string, oldValue: null | string, newValue: null | string) {
@@ -105,7 +134,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
   }
 
   const known = new Map<string, null | string>()
-  const pending = new Map<string, null | string>()
+  const pending = readOutbox()
   let revision = -1
   let flushTimer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
@@ -166,6 +195,8 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
         }
       }
 
+      saveOutbox(pending)
+
       apply(snapshot, { live: true })
     } catch {
       schedule(RETRY_DELAY_MS)
@@ -186,6 +217,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     }
 
     pending.set(event.key, event.value)
+    saveOutbox(pending)
     schedule(FLUSH_DELAY_MS)
   })
 

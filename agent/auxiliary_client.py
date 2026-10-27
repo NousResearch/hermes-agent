@@ -33,6 +33,7 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_custom_credentials import _normalize_api_key, declared_custom_key_for_base_url
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
@@ -4876,13 +4877,6 @@ class _ResolveRequest(NamedTuple):
 _ResolveResult = tuple[Optional[Any], Optional[str]]
 
 
-def _normalize_api_key(raw: Any) -> str | Callable[[], str]:
-    """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
-    if callable(raw) and not isinstance(raw, str):
-        return raw
-    return raw.strip() if isinstance(raw, str) else ""
-
-
 def _log_once_debug(seen: set, key: Any, msg: str, *args: Any) -> None:
     """Debug-log ``msg`` the first time ``key`` is seen so per-call retries stay silent."""
     if key not in seen:
@@ -5076,10 +5070,16 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
+            # Only THIS route's credentials may reach an explicit custom URL: the same-origin main
+            # key or the owning providers: entry's own key. A global OPENAI_API_KEY is never a
+            # route credential — sending a live OpenAI key to a third-party endpoint is
+            # credential misdirection (#145452). The env-driven custom route resolves elsewhere
+            # (config through _try_custom_endpoint, bare env OPENAI_BASE_URL deliberately not at
+            # all); this arm is reached only for an explicit base_url.
             custom_key = (
                 _normalize_api_key(req.explicit_api_key)
-                or _scoped_key_env("OPENAI_API_KEY")
                 or _read_main_api_key_if_same_origin(custom_base)
+                or declared_custom_key_for_base_url(custom_base, req.original_provider or provider)
                 or "no-key-required"  # local servers don't need auth
             )
         if not custom_base:

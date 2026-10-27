@@ -101,3 +101,28 @@ def test_a_silent_failure_names_its_exit_code_not_an_earlier_runs_error(client, 
 
     failure = _status_after_child_exits(client, answer["restart_pid"])["restart_failure"]
     assert failure["reason"] == "exit code 3"
+
+
+def test_a_retry_that_fails_to_spawn_does_not_lend_its_error_to_the_recorded_child(
+        client, restart_child, monkeypatch):
+    """A retry writes its own log header before it spawns; when that spawn fails, the child still on
+    record keeps its own reason."""
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(web_server, "GATEWAY_RESTART_COOLDOWN_SECONDS", 0.0)
+    restart_child["script"] = "import sys; print('first child: run `hermes pm repair`'); sys.exit(1)"
+    first = client.post("/api/webapp-access/restart").json()
+    web_server._LAST_GATEWAY_RESTART[1].wait(timeout=10)
+
+    import hermes_cli.web_server_gateway as gw
+
+    def _spawn_refused(_subcommand, _overrides=None):
+        raise RuntimeError("retry could not start")
+
+    monkeypatch.setattr(gw, "_profile_action_environment", _spawn_refused)
+    retry = client.post("/api/webapp-access/restart").json()
+    assert retry["restart_started"] is False
+
+    failure = client.get("/api/webapp-access/status").json()["restart_failure"]
+    assert failure["pid"] == first["restart_pid"]
+    assert failure["reason"] == "first child: run `hermes pm repair`"

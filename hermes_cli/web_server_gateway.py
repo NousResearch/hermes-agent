@@ -314,6 +314,9 @@ _ACTION_COMMANDS: dict[str, tuple[str, ...]] = {}
 _ACTION_IDS: dict[str, str] = {}
 # ``name`` → synthetic result for actions handled without a subprocess (e.g. unsupported Docker updates).
 _ACTION_RESULTS: dict[str, dict[str, Any]] = {}
+# ``name`` → (pid, byte offset of that child's section in its log): a later spawn that fails after
+# writing its own header must not lend its text to the child that is still on record.
+_ACTION_LOG_STARTS: dict[str, tuple[int, int]] = {}
 
 
 def _terminate_desktop_managed_gateway() -> None:
@@ -479,6 +482,7 @@ def _spawn_hermes_action(
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
+    section_start = os.fstat(log_file.fileno()).st_size
     # The header carries the action id durably: the update's completion marker lands in the ROOT
     # update.log every profile shares, and only this id ties one to the action THIS log started.
     action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
@@ -550,6 +554,7 @@ def _spawn_hermes_action(
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
+    _ACTION_LOG_STARTS[name] = (proc.pid, section_start)
     if action_id:
         _ACTION_IDS[name] = action_id
     else:
@@ -694,18 +699,24 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _RESTART_REASON_MAX = 300
 
 
-def _last_restart_log_line() -> str:
-    """The last line the newest ``gateway-restart`` child wrote to its log, or ``""``. Each spawn
-    starts its section with ``=== gateway-restart started ... ===`` (``_spawn_hermes_action``)."""
+def _restart_log_last_line(pid: int) -> str:
+    """The last line the ``gateway-restart`` child *pid* wrote to its log, or ``""``: its section
+    runs from the offset ``_spawn_hermes_action`` recorded to the next spawn's header."""
+    start = _ACTION_LOG_STARTS.get("gateway-restart")
+    if start is None or start[0] != pid:
+        return ""
     log_path = _ACTION_LOG_DIR / _ACTION_LOG_FILES["gateway-restart"]
     try:
         with log_path.open("rb") as log:
-            log.seek(max(0, log.seek(0, os.SEEK_END) - 64 * 1024))
-            tail = log.read().decode("utf-8", errors="replace")
+            log.seek(start[1])
+            section = log.read(256 * 1024).decode("utf-8", errors="replace")
     except OSError:
         return ""
-    section = tail.rsplit("=== gateway-restart started", 1)[-1].split("\n", 1)[-1]
-    lines = [_ANSI_ESCAPE.sub("", line).strip() for line in section.splitlines()]
+    header, _, body = section.lstrip("\n").partition("\n")
+    if not header.startswith("=== gateway-restart started"):
+        return ""  # the log was rotated or truncated since
+    body = body.split("\n=== gateway-restart started", 1)[0]
+    lines = [_ANSI_ESCAPE.sub("", line).strip() for line in body.splitlines()]
     last = next((line for line in reversed(lines) if line), "")
     return last[:_RESTART_REASON_MAX]
 
@@ -725,7 +736,7 @@ def gateway_restart_failure(profile: Optional[str]) -> Optional[dict[str, Any]]:
     exit_code = proc.poll()
     if not exit_code:
         return None
-    return {"pid": proc.pid, "exit_code": exit_code, "reason": _last_restart_log_line() or f"exit code {exit_code}"}
+    return {"pid": proc.pid, "exit_code": exit_code, "reason": _restart_log_last_line(proc.pid) or f"exit code {exit_code}"}
 
 
 def _split_text_for_speak_stream(text: str, cap: int) -> list:

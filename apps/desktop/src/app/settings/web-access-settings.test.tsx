@@ -265,6 +265,24 @@ describe('WebAccessSettings', () => {
     expect(toast.message).toBe("The gateway couldn't restart: run `hermes pm repair`")
   }, 15_000)
 
+  it('names the cause when a Stop restart fails while the gateway could not serve the web app', async () => {
+    // Saved `enabled: false` reads as applied at once (the gateway serves nothing), but the restart
+    // the user asked for exited.
+    const unavailable: WebAccessStatus = { ...OFF, gateway: { reason: 'port 9120 is in use', state: 'unavailable', url: null } }
+    mocked.stopWebAccess.mockResolvedValue({ ...unavailable, restart_pid: 7, restart_started: true })
+    renderPane({ ...unavailable, enabled: true, mode: 'lan' })
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    mocked.getWebAccessStatus.mockResolvedValue({
+      ...unavailable,
+      restart_failure: { exit_code: 1, pid: 7, reason: 'run `hermes pm repair`' }
+    })
+
+    fireEvent.click(stop)
+
+    await waitFor(() => expect($notifications.get()).toHaveLength(1), { timeout: 8000 })
+    expect($notifications.get()[0].message).toBe("The gateway couldn't restart: run `hermes pm repair`")
+  }, 15_000)
+
   it('shows no LAN address under My own URL while the URL is empty', async () => {
     renderPane(OFF)
     fireEvent.click(await screen.findByRole('button', { name: 'My own URL' }))

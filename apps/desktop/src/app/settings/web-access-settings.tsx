@@ -89,12 +89,14 @@ async function waitForRestart(restartPid?: number): Promise<WebAccessStatus> {
     // The backend answering this may be the gateway being restarted.
     const status = await getWebAccessStatus().catch(() => null)
 
-    if (status && appliesConfig(status)) {
-      return status
-    }
-
+    // Before the config check: a Stop of a web app the gateway could not serve reads as applied
+    // while the restart the user asked for failed.
     if (restartPid !== undefined && status?.restart_failure?.pid === restartPid) {
       throw new RestartFailed(status.restart_failure.reason)
+    }
+
+    if (status && appliesConfig(status)) {
+      return status
     }
   }
 

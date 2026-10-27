@@ -108,6 +108,68 @@ def model_only(row):
     from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
     metadata = row.get('display_metadata')
     return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
+# Owner-death orphan reap. The canonical Stop exists only if some client sends prompt.cancel or
+# session.interrupt. A client that submits a turn and then dies - killed, crashed, or gone before
+# its cancel RPC lands - leaves that turn running with nobody left to stop it, renewing its
+# session_turn_leases row until it finishes naturally.
+#
+# On transport close the gateway schedules a reap for that principal's still queued/started
+# admissions. A grace window lets a reconnecting client keep its turn: attach() by the same
+# principal for the same session cancels the reap. Whatever is still unclaimed or unstopped
+# after the grace gets the canonical Stop. Platform pollers and the API server submit in-process
+# (no AuthorityConnection, no transport close), so this path cannot reach them.
+ORPHAN_REAP_GRACE_SECONDS = 10.0
+
+
+async def _reap_stop_admission(authority, actor, ref, generation, admission_id):
+    """Deliver the canonical Stop to one orphaned admission; the ledger records the outcome."""
+    from gateway.session_managed_worker import interrupt_managed
+    try:
+        if not interrupt_managed(authority, actor, ref, generation):
+            await authority.interrupt(actor, ref, generation)
+    except RuntimeStoreError as exc:
+        if exc.reason != 'stale_generation':
+            # No client is left to report to, so the gateway log is the record of the failure.
+            logging.getLogger(__name__).error(
+                'orphan reap could not stop admission %s (session %s): %s',
+                admission_id, ref.session_id, exc.reason)
+        return
+    logging.getLogger(__name__).warning(
+        'orphan reap: stopped admission %s (session %s) after its submitting transport died',
+        admission_id, ref.session_id)
+
+
+async def _reap_owner_orphans(authority, subject, session_id):
+    try:
+        await asyncio.sleep(ORPHAN_REAP_GRACE_SECONDS)
+        # A live subscriber (the client itself reloading, or any watcher) keeps the turn owned.
+        live = authority.sessions.get(session_id)
+        if live is not None and any(member.transport_id in authority.events
+                                    for member in list(live.subscribers.values())):
+            return
+        ref = SessionRef(authority.profile_id, session_id)
+        actor = Principal(subject, authority.profile_id,
+                          frozenset({'session:read', 'session:submit', 'session:control'}),
+                          'orphan-reap')
+        with authority.db._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT admission_id, status, generation FROM session_admissions "
+                "WHERE principal_id=? AND target_session_id=? AND status IN ('queued','started')",
+                (subject, session_id)).fetchall()
+        for row in rows:
+            if row['status'] == 'started':
+                await _reap_stop_admission(authority, actor, ref, row['generation'], row['admission_id'])
+            else:
+                # Still queued: the drain would claim it into exactly the same ownerless turn.
+                claimed = await authority.cancel_or_claimed(actor, ref, row['admission_id'])
+                if claimed is not None:
+                    await _reap_stop_admission(authority, actor, ref, claimed['generation'],
+                                               row['admission_id'])
+    except asyncio.CancelledError:
+        raise  # the client came back: attach() cancelled the reap
+    except Exception:
+        logging.getLogger(__name__).exception(
+            'orphan reap failed for principal=%r session=%r', subject, session_id)
 
 
 class AuthorityConnection:
@@ -902,7 +964,32 @@ class AuthorityConnection:
         return await self.authority.respond(self.actor, ref, params["execution_generation"],
             params["prompt_id"], {"answer": params["answer"]}, kind="clarify")
 
+    def _schedule_owner_death_reap(self):
+        """Schedule the orphan reap for every queued/started admission this principal owns.
+
+        Keyed per (principal, session): a successor run by the same principal attaches a
+        different session and must not cancel this reap; only a re-attach to this session
+        does (attach()).
+        """
+        authority = self.authority
+        subject = self.actor.subject
+        with authority.db._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT target_session_id FROM session_admissions "
+                "WHERE principal_id=? AND status IN ('queued','started')", (subject,)).fetchall()
+        for row in rows:
+            session_id = row['target_session_id']
+            key = (subject, session_id)
+            pending = authority._pending_orphan_reaps.get(key)
+            if pending is not None and not pending.done():
+                continue
+            authority._pending_orphan_reaps[key] = asyncio.get_running_loop().create_task(
+                _reap_owner_orphans(authority, subject, session_id))
+
     async def close(self):
+        # Owner-death reap first: from here on no client can send the canonical Stop for this
+        # principal's in-flight admissions, so the gateway itself must own stopping them.
+        self._schedule_owner_death_reap()
         for sibling in self._siblings.values():
             await sibling.close()
         self._siblings.clear()

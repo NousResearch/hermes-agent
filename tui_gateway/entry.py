@@ -324,6 +324,12 @@ def _serve():
     except Exception:
         logger.debug("truststore install skipped", exc_info=True)
 
+    # Import on one thread before picker/MCP workers can race the first SDK import (#145661).
+    try:
+        import openai
+    except Exception:
+        logger.debug("openai pre-import skipped", exc_info=True)
+
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
     # so it must start BEFORE the sweep.
     for start, what in (

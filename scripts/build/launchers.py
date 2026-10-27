@@ -60,7 +60,7 @@ done
 root="$(cd "$(dirname "$self")/.." && pwd)"
 PYTHON={shell_path(python)}
 REPO={shell_path(repo)}
-SITE={shell_path(site)}
+SITE="${{HERMES_SITE:-{shell_path(site)}}}"
 [ -x "$PYTHON" ] || {{ printf '%s\\n' 'Bundled interpreter missing; reinstall Hermes.' >&2; exit 2; }}
 unset PYTHONPATH PYTHONHOME
 export PYTHONPATH="$REPO:$SITE"

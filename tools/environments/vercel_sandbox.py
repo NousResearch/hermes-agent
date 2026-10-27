@@ -21,8 +21,9 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
+from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
 
@@ -79,6 +80,21 @@ def _extract_status_code(exc: BaseException) -> int | None:
             return value
     return None
 
+@cache
+def _transport_error_types() -> tuple[type[BaseException], ...]:
+    """Network exceptions of every HTTP stack the SDK may raise from.
+
+    vercel >= 0.12 moved the sandbox client from httpx to httpx2, a separate
+    distribution whose exceptions do not subclass httpx's.
+    """
+    types: list[type[BaseException]] = [httpx.NetworkError, httpx.ProtocolError, httpx.ReadError]
+    try:
+        import httpx2
+    except ImportError:
+        return tuple(types)
+    return (*types, httpx2.NetworkError, httpx2.ProtocolError, httpx2.ReadError)
+
+
 def _is_transient_vercel_error(exc: BaseException) -> bool:
     """True when any exception in the cause/context chain looks retryable."""
     seen: set[int] = set()
@@ -89,7 +105,7 @@ def _is_transient_vercel_error(exc: BaseException) -> bool:
         status = next((c for c in codes if isinstance(c, int)), None)
         name = type(error).__name__.lower()
         if (status in _TRANSIENT_STATUS_CODES
-                or isinstance(error, (httpx.NetworkError, httpx.ProtocolError, httpx.ReadError))
+                or isinstance(error, _transport_error_types())
                 or "ratelimit" in name or "servererror" in name):
             return True
         error = error.__cause__ or error.__context__
@@ -129,15 +145,16 @@ def _load_snapshots() -> dict:
 
 def _store_snapshot(task_id: str, snapshot_id: str) -> None:
     if task_id and snapshot_id:
-        _save_json_store(_snapshot_store(), {**_load_snapshots(), task_id: snapshot_id})
+        _update_json_store(_snapshot_store(), lambda snapshots: snapshots.update({task_id: snapshot_id}))
 
 
 def _delete_snapshot(task_id: str, snapshot_id: str) -> None:
     """Drop the stored id for ``task_id`` only if it still equals ``snapshot_id``."""
-    snapshots = _load_snapshots()
-    if task_id and snapshots.get(task_id) == snapshot_id:
-        snapshots.pop(task_id)
-        _save_json_store(_snapshot_store(), snapshots)
+    def update(snapshots: dict) -> None:
+        if task_id and snapshots.get(task_id) == snapshot_id:
+            snapshots.pop(task_id)
+
+    _update_json_store(_snapshot_store(), update)
 
 
 def _extract_snapshot_id(snapshot: Any) -> str | None:
@@ -166,7 +183,8 @@ class VercelSandboxEnvironment(BaseEnvironment):
 
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,
-                 persistent_filesystem: bool = True, task_id: str = "default"):
+                 persistent_filesystem: bool = True, task_id: str = "default",
+                 image: str | None = None):
         super().__init__(cwd=cwd, timeout=timeout)
         if disk not in {0, _DEFAULT_CONTAINER_DISK_MB}:
             raise ValueError(
@@ -180,9 +198,15 @@ class VercelSandboxEnvironment(BaseEnvironment):
         _ensure_vercel_sdk()
         from vercel.sandbox import Resources
         vcpus, memory_mb = (math.floor(cpu) if cpu > 0 else None), (memory if memory > 0 else None)
+        # Vercel rejects runtime+image together; runtimes are deprecated (Aug 2026), so a runtime is
+        # only sent when the user still pins one, and then the image is dropped.
+        if runtime:
+            logger.warning("Vercel: terminal.vercel_runtime is deprecated by Vercel; set terminal.vercel_image "
+                           "(default %s) instead", DEFAULT_VERCEL_IMAGE)
         self._create_kwargs = {
             "timeout": max(timedelta(seconds=max(self.timeout, 0)), timedelta(minutes=5)),
             "runtime": runtime or None,
+            "image": None if runtime else (image or DEFAULT_VERCEL_IMAGE),
             "resources": Resources(vcpus=vcpus, memory=memory_mb) if (vcpus, memory_mb) != (None, None) else None}
         self._attach_fresh_sandbox(cwd)
         self._sync_manager.sync(force=True)
@@ -203,8 +227,11 @@ class VercelSandboxEnvironment(BaseEnvironment):
         if isinstance(snapshot_id, str) and snapshot_id:
             try:
                 source = {"type": "snapshot", "snapshot_id": snapshot_id}
+                # A snapshot carries its own filesystem: Vercel refuses runtime with a snapshot
+                # source, and the image would describe a base the snapshot already replaced.
+                restore_kwargs = {k: v for k, v in self._create_kwargs.items() if k not in ("runtime", "image")}
                 return _retry_vercel_call(
-                    "sandbox restore", lambda: Sandbox.create(**self._create_kwargs, source=source),
+                    "sandbox restore", lambda: Sandbox.create(**restore_kwargs, source=source),
                     attempts=_CREATE_RETRY_ATTEMPTS)
             except Exception as exc:
                 logger.warning("Vercel: failed to restore snapshot %s for task %s; falling back to a fresh sandbox: %s",
@@ -407,11 +434,3 @@ class VercelSandboxEnvironment(BaseEnvironment):
         # Always stop the sandbox during cleanup to avoid resource leaks (matches Modal/Daytona).
         self._stop_sandbox(sandbox)
         self._close_sandbox_client(sandbox)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import dataclass  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -28,7 +28,6 @@ from agent.model_metadata import (
 )
 from agent.turn_failure_copy import site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
-from utils import base_url_host_matches
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -38,14 +37,6 @@ _RETRY_HINT = "   💡 Try /new to start a fresh conversation, or /compress to r
 # of the known window is not explained by the transcript; the rough estimator is ±30%, so a real
 # overflow (request ≈ window) never lands below half.
 _UNEXPLAINED_REJECTION_FRACTION = 0.5
-
-_GITHUB_MODELS_HINT = (
-    "   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
-    "      request at ~8K tokens. Hermes' system prompt + tool schemas baseline",
-    "      exceeds that floor, so this endpoint cannot run an agentic loop.",
-    "      Use the `copilot` provider with a Copilot subscription token (`hermes",
-    "      setup` → GitHub Copilot), or pick any other provider.",
-)
 
 _MINIMAX_ANTHROPIC_URLS = ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
 
@@ -61,8 +52,8 @@ class OverflowVerdict:
     fields are the loop locals the handler may have rebound."""
 
     action: str
-    result: Optional[Dict[str, Any]]
-    messages: List[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Any
     conversation_history: Any
     approx_tokens: int
@@ -83,12 +74,13 @@ class _Recovery(OverflowVerdict):
     effective_task_id: Any
     api_call_count: int
     max_compression_attempts: int
+    overflow_reason: Optional[str] = None  # the classifier's reason, recorded on each compression attempt
     action: str = "fallthrough"
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
     provider_overflow_recovery_pending: bool = False
     is_context_length_error: bool = False
 
-    def done(self, action: str, result: Optional[Dict[str, Any]] = None) -> OverflowVerdict:
+    def done(self, action: str, result: Optional[dict[str, Any]] = None) -> OverflowVerdict:
         self.action, self.result = action, result
         return self
 
@@ -161,7 +153,8 @@ class _Recovery(OverflowVerdict):
         before = self.messages
         self.messages, self.active_system_prompt = agent._compress_context(
             before, self.system_message, approx_tokens=request_tokens,
-            task_id=self.effective_task_id, bypass_cooldown=True,
+            task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
+            overflow_reason=self.overflow_reason,
         )
         if self.messages is before:
             deferred = None
@@ -186,7 +179,7 @@ class _Recovery(OverflowVerdict):
 
     def compress_scored_by_tokens(
         self, request_tokens: int, *, fail_on_timeout: bool = False,
-    ) -> Tuple[Optional[OverflowVerdict], bool, int]:
+    ) -> tuple[Optional[OverflowVerdict], bool, int]:
         """``compress`` scored in message count / tokens (context-overflow errors ARE
         token-budget errors). Same-message-count compression (tool-result pruning,
         in-place summarization) can shrink the request, so re-estimate rather than trust
@@ -458,16 +451,24 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     )
 
 
+def _request_rejection_hint(status_code: Optional[int], base_url: str) -> tuple[str, ...]:
+    """Every registered profile's ``request_rejection_hint`` for this endpoint, whatever route reached
+    it (a free tier is commonly reached as ``custom``)."""
+    from providers import list_providers
+    return tuple(line for profile in list_providers()
+                 for line in profile.request_rejection_hint(status_code=status_code, base_url=base_url))
+
+
 def recover_from_overflow(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_msg: str, wrapped_output_cap_budget: Optional[int],
-    messages: List[Dict[str, Any]], api_messages: Any, system_message: Any,
+    messages: list[dict[str, Any]], api_messages: Any, system_message: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: int,
     compression_attempts: int, max_compression_attempts: int, api_call_count: int,
     effective_task_id: Any,
 ) -> OverflowVerdict:
     """413 payload-too-large and context-length recovery (compress + retry, output-cap
-    clamp, provider-reported context limit, GitHub Models free-tier hint). Order is
+    clamp, provider-reported context limit, endpoint hard-cap hints). Order is
     load-bearing: 413 is checked BEFORE the generic 4xx handler, and context-length
     errors (incl. relay-wrapped output-cap 429s) BEFORE non-retryable client errors.
     Compression progress is scored in payload BYTES for 413 (never the byte-blind token
@@ -478,16 +479,13 @@ def recover_from_overflow(
         max_compression_attempts=max_compression_attempts, messages=messages,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
         approx_tokens=approx_tokens, compression_attempts=compression_attempts,
+        overflow_reason=getattr(classified.reason, "value", None),
     )
 
-    # GitHub Models free tier caps requests at 8K tokens, under the system prompt +
-    # tool schema floor; compression can't help, so say so.
-    if (
-        status_code == 413
-        and isinstance(agent.base_url, str)
-        and base_url_host_matches(agent.base_url, "models.inference.ai.azure.com")
-    ):
-        for line in _GITHUB_MODELS_HINT:
+    # An endpoint whose hard cap no recovery can meet (a provider profile's
+    # ``request_rejection_hint``, whatever route reached it): say so.
+    if isinstance(agent.base_url, str):
+        for line in _request_rejection_hint(status_code, agent.base_url):
             agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
 
     if classified.reason == FailoverReason.payload_too_large:

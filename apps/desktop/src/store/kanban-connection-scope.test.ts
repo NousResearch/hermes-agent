@@ -30,7 +30,7 @@ vi.mock('@/hermes', async importOriginal => {
     }
   }
 })
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 const { getApiRequestConnection, setApiRequestConnection, setApiRequestProfile } = await import('@/api/client')
 const { queryClient } = await import('@/lib/query-client')
@@ -83,8 +83,7 @@ describe('connection-switch query invalidation', () => {
           })
         ),
         getGatewayWsUrl: vi.fn(async () => 'wss://pool.invalid/api/ws?ticket=fake'),
-        getGatewayWsUrlFor: vi.fn(async () => 'wss://spark.invalid/api/ws?ticket=fake'),
-        touchBackend: vi.fn(async () => ({ ok: true }))
+        getGatewayWsUrlFor: vi.fn(async () => 'wss://spark.invalid/api/ws?ticket=fake')
       },
       localStorage: new Map<string, string>() as unknown as Storage
     })

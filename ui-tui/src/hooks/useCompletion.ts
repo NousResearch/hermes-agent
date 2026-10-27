@@ -3,10 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
-import { getUiState } from '../app/uiStore.js'
+import { getUiState, sessionCwd } from '../app/uiStore.js'
 import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { listWidgetApps } from '../sdk/registry.js'
 
@@ -33,7 +34,7 @@ const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))
 export function completionRequestForInput(
   input: string
 ):
-  | { method: 'complete.path'; params: { word: string }; replaceFrom: number }
+  | { method: 'complete.path'; params: { word: string; cwd?: string; session_id?: string }; replaceFrom: number }
   | { method: 'complete.slash'; params: { text: string }; replaceFrom: number; skillsOnly?: boolean }
   | null {
   const isSlashCommand = looksLikeSlashCommand(input)
@@ -71,9 +72,13 @@ export function completionRequestForInput(
     return null
   }
 
+  const cwd = sessionCwd()
+  // The shared gateway lists the session's own folder, so it must know which session is asking.
+  const sid = getUiState().sid
+
   return {
     method: 'complete.path',
-    params: { word: pathWord },
+    params: { word: pathWord, ...(cwd ? { cwd } : {}), ...(sid ? { session_id: sid } : {}) },
     replaceFrom: input.length - pathWord.length
   }
 }
@@ -112,7 +117,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       return
     }
 
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (ref.current !== input) {
         return
       }
@@ -162,8 +167,8 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           setCompletions([
             {
               text: '',
-              display: 'completion unavailable',
-              meta: e instanceof Error && e.message ? e.message : 'unavailable'
+              display: t('libText.completion.unavailable'),
+              meta: e instanceof Error && e.message ? e.message : t('libText.completion.unavailableMeta')
             }
           ])
           setCompIdx(0)
@@ -171,7 +176,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         })
     }, 60)
 
-    return () => clearTimeout(t)
+    return () => clearTimeout(timer)
   }, [blocked, gw, input])
 
   return { completions, compIdx, setCompIdx, compReplace }

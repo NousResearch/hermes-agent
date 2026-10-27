@@ -1,41 +1,51 @@
 name: Lint (ruff + ty)
 
-# Two things here:
+# Three things here:
 #   1. Advisory diff — ruff + ty diagnostics as a diff vs the target branch.
 #      Writes a Markdown summary to the run page. Exit zero always.
 #   2. Blocking ``ruff check .`` — enforces the explicit rules in
 #      ``[tool.ruff.lint.select]`` (currently PLW1514). Failure blocks merge.
 #      Separate job so the advisory diff still runs even when enforcement
 #      fails.
+#   3. Blocking code-health ratchet (``scripts/code_health``) for Python and TypeScript.
+# ``python scripts/check`` runs every blocking check here locally with the same pinned tools.
 #
-# CI-sensitive file review was previously here as a ``ci-review`` job but
-# has moved to ``review-labels.yml`` so it can be rerun independently.
+# CI-sensitive file review is enforced by .github/CODEOWNERS, not a CI job.
 
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       event_name:
         description: The event name from the calling orchestrator (pull_request or push).
         type: string
         required: true
+      python:
+        description: Python changed. A frontend-only PR runs just the code-health ratchet (TS).
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: lint-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
   lint-diff:
     name: ruff + ty diff
-    if: inputs.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    if: inputs.event_name == 'pull_request' && inputs.python
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0 # need full history for merge-base + worktree
 
       - uses: ./.github/actions/setup-pm
@@ -46,7 +56,7 @@ jobs:
       - name: Install ruff + ty
         uses: ./.github/actions/retry
         with:
-          command: python -m scripts.ci.python_packages ruff==0.15.10 ty==0.0.82
+          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)" ty==0.0.89
 
       - name: Determine base ref
         id: base
@@ -65,19 +75,23 @@ jobs:
           echo "Base SHA: ${BASE_SHA}"
           echo "Base ref: ${BASE_REF}"
 
+      # Reports live under $RUNNER_TEMP, not the checkout: the clean-worktree step at the end of
+      # every job fails (or warns) on untracked files, and .lint-reports/ is not gitignored.
       - name: Run ruff + ty on HEAD
         run: |
-          mkdir -p .lint-reports/head
+          R="$RUNNER_TEMP/lint-reports"
+          mkdir -p "$R/head"
           ruff check --output-format json --exit-zero \
-            > .lint-reports/head/ruff.json || true
+            > "$R/head/ruff.json" || true
           ty check --output-format gitlab --exit-zero \
-            > .lint-reports/head/ty.json || true
-          echo "HEAD ruff: $(wc -c < .lint-reports/head/ruff.json) bytes"
-          echo "HEAD ty:   $(wc -c < .lint-reports/head/ty.json) bytes"
+            > "$R/head/ty.json" || true
+          echo "HEAD ruff: $(wc -c < "$R/head/ruff.json") bytes"
+          echo "HEAD ty:   $(wc -c < "$R/head/ty.json") bytes"
 
       - name: Run ruff + ty on base (via git worktree)
         run: |
-          mkdir -p .lint-reports/base
+          R="$RUNNER_TEMP/lint-reports"
+          mkdir -p "$R/base"
           # Use a worktree so we don't clobber the main checkout. If the basex
           # SHA is identical to HEAD (e.g. first commit), skip and leave the
           # base reports empty — the diff script handles missing files.
@@ -85,35 +99,43 @@ jobs:
           BASE_SHA="${{ steps.base.outputs.sha }}"
           if [ "$BASE_SHA" = "$HEAD_SHA" ]; then
             echo "Base SHA == HEAD SHA, skipping base scan."
-            echo '[]' > .lint-reports/base/ruff.json
-            echo '[]' > .lint-reports/base/ty.json
+            echo '[]' > "$R/base/ruff.json"
+            echo '[]' > "$R/base/ty.json"
           else
             git worktree add --detach /tmp/lint-base "$BASE_SHA"
             (
               cd /tmp/lint-base
               ruff check --output-format json --exit-zero \
-                > "$GITHUB_WORKSPACE/.lint-reports/base/ruff.json" || true
+                > "$R/base/ruff.json" || true
               ty check --output-format gitlab --exit-zero \
-                > "$GITHUB_WORKSPACE/.lint-reports/base/ty.json" || true
+                > "$R/base/ty.json" || true
             )
             git worktree remove --force /tmp/lint-base
           fi
-          echo "base ruff: $(wc -c < .lint-reports/base/ruff.json) bytes"
-          echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
+          echo "base ruff: $(wc -c < "$R/base/ruff.json") bytes"
+          echo "base ty:   $(wc -c < "$R/base/ty.json") bytes"
 
       - name: Generate diff summary
         env:
           HEAD_REF: ${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
+          R="$RUNNER_TEMP/lint-reports"
           python scripts/lint_diff.py \
-            --base-ruff .lint-reports/base/ruff.json \
-            --head-ruff .lint-reports/head/ruff.json \
-            --base-ty   .lint-reports/base/ty.json \
-            --head-ty   .lint-reports/head/ty.json \
+            --base-ruff "$R/base/ruff.json" \
+            --head-ruff "$R/head/ruff.json" \
+            --base-ty   "$R/base/ty.json" \
+            --head-ty   "$R/head/ty.json" \
             --base-ref  "${{ steps.base.outputs.ref }}" \
             --head-ref  "$HEAD_REF" \
-            --output    .lint-reports/summary.md
-          cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+            --output    "$R/summary.md"
+          cat "$R/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
 
   ruff-blocking:
     # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently
@@ -123,11 +145,14 @@ jobs:
     # ``lint-diff`` job above runs independently so reviewers still get
     # the diff comment even when enforcement fails.
     name: ruff enforcement (blocking)
-    runs-on: ubuntu-latest
+    if: inputs.python
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       - uses: ./.github/actions/setup-pm
         with:
@@ -137,13 +162,56 @@ jobs:
       - name: Install ruff
         uses: ./.github/actions/retry
         with:
-          command: python -m scripts.ci.python_packages ruff==0.15.10
+          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
 
-      - name: ruff check .
+      - name: ruff check  .
         # No --exit-zero, no || true. Exit code propagates to the job,
         # which propagates to the required-check gate.
         run: |
           ruff check .
+
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
+
+  code-health:
+    # Per-unit ratchet: every function and file keeps its own cap (its value on main when it is
+    # already over target, else the target) and pattern rules compare fingerprints, so a PR
+    # cannot trade one violation for another. The merge commit is compared with its first
+    # parent (current main), so an improvement that lands on main is locked in at once.
+    name: code health ratchet (blocking)
+    if: inputs.event_name == 'pull_request'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 2 # the merge commit and its first parent (the base branch tip)
+
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: true
+          prune-python-cache: true
+
+      - name: Install pinned ruff
+        uses: ./.github/actions/retry
+        with:
+          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
+
+      - name: Ratchet the PR against the base branch tip
+        run: python scripts/check --only health --base HEAD^1
+
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
 
   windows-footguns:
     # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
@@ -151,11 +219,14 @@ jobs:
     # shebang scripts via subprocess, bare open() without encoding=, etc.
     # See scripts/check-windows-footguns.py for the full rule list.
     name: Windows footguns (blocking)
-    runs-on: ubuntu-latest
+    if: inputs.python
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       - uses: ./.github/actions/setup-pm
         with:
@@ -168,12 +239,6 @@ jobs:
       - name: Require portable Bash shebangs
         run: python scripts/check_bash_shebangs.py
 
-      # The Sep 2026 decomposition kept old import paths alive for external plugins
-      # (PLUGIN-COMPAT blocks, see COMPAT_MANIFEST.md). They are removed on schedule by
-      # reverting one commit, so in-tree code must never depend on them.
-      - name: Forbid in-tree use of plugin-compat pointers
-        run: python scripts/check_compat_pointers.py
-
       # /tmp is not portable (Termux has none, native Windows has none, macOS aliases it to
       # /private/tmp, Linux mounts it as a small tmpfs). Production code resolves scratch space
       # through the scratch-dir helper; skills, docs and prompts must not teach the model a
@@ -183,20 +248,30 @@ jobs:
         run: python scripts/check_no_tmp_literals.py
 
       # config.yaml is hand-edited and commented; a PyYAML dump of it destroys every comment
-      # (#92554, regressed repeatedly). All writers go through hermes_cli.config.atomic_config_write.
+      # (#92554, regressed repeatedly). All writers go through the hermes_cli.config writer seam.
       - name: Forbid config.yaml writers that bypass the comment-preserving writer
         run: python scripts/check_config_yaml_writers.py
 
+      # Every read of a user config.yaml goes through hermes_cli.config_backend, so a non-file
+      # config backend (config-config design §4.1) sees every reader.
+      - name: Forbid config.yaml readers that bypass the config backend
+        run: python scripts/check_config_yaml_readers.py
+
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `platforms("macos")` is green on
-      # Linux over a faked branch and never runs on macOS (#111866, AGENTS.md § Don't fake the host OS).
+      # Linux over a faked branch and never runs on macOS (#111866, tests/AGENTS.md § Don't fake the host OS).
       - name: Forbid unmarked macOS fakes in tests
         run: python scripts/ci/check_os_marker_fakes.py
+
+      # Every AGENTS.md from the git root down to the working directory loads as one
+      # project-context block (30,720 chars on a 128k window); chains are capped at 30k.
+      - name: Keep every AGENTS.md under its truncation cap
+        run: python scripts/ci/check_agents_md_size.py
 
       # Advisory: profile-scope hazard shapes on the lines this PR adds (child env from os.environ,
       # raw os.getenv of a platform credential, HOME-only RPC binding, bare-PID liveness). One
       # process serves many profiles; every pattern leaked the launch profile at least once. Printed
-      # into the log for the reviewer; never fails the job (root AGENTS.md § Code Shape Rules).
+      # into the log for the reviewer; never fails the job (root AGENTS.md § Rules that apply everywhere).
       - name: Profile-scope patterns on added lines (advisory)
         if: github.event_name == 'pull_request'
         continue-on-error: true
@@ -238,3 +313,9 @@ jobs:
             git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
           done
           python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree

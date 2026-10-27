@@ -9,7 +9,7 @@
  * store, one writer.
  */
 
-import { atom, host } from '@hermes/plugin-sdk'
+import { atom, host, randomUuid } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
@@ -1478,7 +1478,9 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
   if (boundary !== -1) {
     const connection = trimmed.slice(0, boundary)
     const profile = trimmed.slice(boundary + 2)
-    const title = String(meta?.[trimmed]?.title || meta?.[profile]?.title || '').trim()
+    // Exact key only: the bare `profile` key is a single-source record and
+    // names whichever machine wrote it, never this connection's bot.
+    const title = String(meta?.[trimmed]?.title || '').trim()
     const label = title || (profile.toLowerCase() === 'default' ? 'Hermes' : profile)
 
     // Another connection still exposes this name: keep them tellable apart.
@@ -1495,8 +1497,11 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
   }
 
   // Legacy rungs for names the roster cannot place: a bare-keyed Bot Mode
-  // title, then the local row's display_name, then default → Hermes.
-  const title = String(meta?.[trimmed]?.title || '').trim()
+  // title (single-source rosters only — once rows are connection-scoped the
+  // bare key cannot say which machine it named), then the local row's
+  // display_name, then default → Hermes.
+  const scoped = rows.some(bot => bot.sourceScoped || bot.remoteSource)
+  const title = scoped ? '' : String(meta?.[trimmed]?.title || '').trim()
 
   if (title) {
     return title
@@ -1698,11 +1703,7 @@ export function setGroupChatImage(group: string, image: null | string | undefine
 }
 
 function groupChatEntryId(): string {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID()
-  }
-
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return randomUuid()
 }
 
 /** The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is
@@ -1727,9 +1728,17 @@ export function appendGroupChatEntry(
   thread?: null | string,
   images?: Attachment[]
 ): GroupMessage {
+  const priorLog = ($groupChats.get()[group] || {}).log || []
+  const lastEntry = priorLog[priorLog.length - 1]
+
   const entry: GroupMessage = {
     id: groupChatEntryId(),
-    at: Date.now(),
+    // Strictly after the tail: the gateway mirror merge re-sorts the log by
+    // `at` (id breaks ties), and watermarks are log INDICES. Two rows in one
+    // millisecond (or a clock step back) would come back shuffled — a user
+    // follow-up landing under a member's watermark is lost, or a reply moved
+    // past it is fed back as news and re-drives the member.
+    at: Math.max(Date.now(), Number(lastEntry?.at || 0) + 1),
     from,
     // Stored bodies share the prompt's per-line cap (see trimGroupChatLog);
     // cutting here too keeps the duplicate-echo guard comparing like with like.
@@ -1747,9 +1756,6 @@ export function appendGroupChatEntry(
   // loop both committing the same member reply) lands back-to-back and
   // byte-identical. Drop the echo instead of flooding the room. User
   // entries and non-adjacent repeats are never touched.
-  const priorLog = ($groupChats.get()[group] || {}).log || []
-  const lastEntry = priorLog[priorLog.length - 1]
-
   if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
     return lastEntry
   }

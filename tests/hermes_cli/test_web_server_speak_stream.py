@@ -52,7 +52,7 @@ class _FakeStreamer:
 
 def _patch_provider(monkeypatch, streamer, cap=4000):
     monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
-    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {})
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
     monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")
     monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: cap)
 

@@ -17,9 +17,12 @@ import sys
 import threading
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
+from time import monotonic as _monotonic
 from typing import Optional, Sequence
 
-from hermes_constants import get_config_path, get_hermes_home, mkdir_under_hermes_home
+from hermes_constants import (
+    get_config_path, get_hermes_home, mkdir_under_hermes_home, named_profile_is_deleted,
+)
 
 # setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
 _logging_initialized = False
@@ -80,7 +83,7 @@ def _portalocker_probe() -> bool:
 # 0660 chmod and eager file creation; CLH opens lazily and rotates differently.
 if sys.platform == "win32":
     if _portalocker_probe():
-        from concurrent_log_handler import (  # noqa: E402
+        from concurrent_log_handler import (
             ConcurrentRotatingFileHandler as RotatingFileHandler,
         )
     else:
@@ -91,11 +94,11 @@ if sys.platform == "win32":
         # below; fall back to stdlib rotation instead. Rollover is disabled in
         # the fallback: multi-process appends make Windows renames fail with
         # WinError 32, the exact #44873 trap CLH exists to avoid.
-        from logging.handlers import RotatingFileHandler  # noqa: E402
+        from logging.handlers import RotatingFileHandler
 
         _WINDOWS_CLH_FALLBACK = True
 else:
-    from logging.handlers import RotatingFileHandler  # noqa: E402
+    from logging.handlers import RotatingFileHandler
 
 # Thread-local per-conversation session context.
 _session_context = threading.local()
@@ -158,6 +161,30 @@ def _safe_stderr():  # type: ignore[return]
         return wrapped
     except Exception:
         return stream  # best-effort: no buffer / wrapping failed -> original stream
+
+
+class _RedactingStdio:
+    """Text stream proxy that redacts each write: a detached gateway's stdout/stderr IS a
+    persisted log (``logs/gateway-stdio.log``), and agent status lines (provider error echoes)
+    reach it through ``print``, never through ``RedactingFormatter``."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        from agent.redact import redact_sensitive_text
+        return self._stream.write(redact_sensitive_text(text) if isinstance(text, str) else text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def redact_detached_stdio() -> None:
+    """Route a detached process's stdout/stderr through secret redaction (idempotent)."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if stream is not None and not isinstance(stream, _RedactingStdio):
+            setattr(sys, name, _RedactingStdio(stream))
 
 
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
@@ -279,8 +306,9 @@ class _ComponentFilter(logging.Filter):
 COMPONENT_PREFIXES = {
     # ``plugins.platforms``: messaging adapters that migrated out of
     # ``gateway/platforms/`` into bundled plugins (#41112) are still gateway
-    # components and belong in gateway.log.
-    "gateway": ("gateway", "hermes_plugins", "plugins.platforms"),
+    # components and belong in gateway.log. ``agent.memory_caller_scope``: a multiplexed gateway's
+    # memory-provider profile refusals (#140058), which the operator reads in gateway.log.
+    "gateway": ("gateway", "hermes_plugins", "plugins.platforms", "agent.memory_caller_scope"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
@@ -444,6 +472,13 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
         self._unavailable_reported = False
+        # Set by _ProfileRoutingFileHandler: a vanished logs/ dir means the profile was deleted,
+        # so skip the write (the router re-routes the record) instead of a FileNotFoundError traceback.
+        self._skip_write_when_dir_missing = False
+        self.skipped_missing_dir = False
+        # Set by _ProfileRoutingFileHandler: once closed (router close, logging.shutdown, a released
+        # profile) never reopen. The stdlib reopens an append-mode file on emit after close.
+        self._never_reopen_after_close = False
         super().__init__(*args, **kwargs)
         self._record_stream_stat()
 
@@ -497,9 +532,24 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._reopen_stream(st)
 
     def emit(self, record: logging.LogRecord) -> None:
+        self.skipped_missing_dir = False
+        # Under this handler's own lock (Handler.handle), which close() also takes: a record that
+        # picked this handler before its router retired it is dropped, never written to a reopened
+        # file (on Windows that reopened file keeps the profile's logs/ locked until exit).
+        if self._never_reopen_after_close and getattr(self, "_closed", False):
+            return
+        had_stream = self.stream is not None
         # The kernel caches inode metadata, so this stat is sub-microsecond on a hot file.
-        if self.stream is not None or os.path.exists(self.baseFilename):
+        file_exists = had_stream or os.path.exists(self.baseFilename)
+        if file_exists:
             self._reopen_if_externally_rotated()
+        # Only when the file is gone (or its reopen just failed), so a healthy emit pays no extra
+        # stat. ``stream is None`` alone is not a signal: on Windows concurrent-log-handler closes
+        # the stream after every write.
+        if (self.stream is None and (had_stream or not file_exists) and self._skip_write_when_dir_missing
+                and not os.path.isdir(os.path.dirname(self.baseFilename))):
+            self.skipped_missing_dir = True
+            return
         super().emit(record)
         # A record actually reached the file: only now has the destination recovered. Resetting
         # in _open() is wrong — open() succeeds on a device whose write/flush still raise EIO,
@@ -540,7 +590,22 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
+        # The stdlib rollover opens a fresh baseFilename owned by whichever process crossed
+        # maxBytes. With one rotating handler per profile that is usually the long-lived root
+        # gateway, and a worker on another uid can never reopen its own agent.log (#120151).
+        # Only root can hand the file back; an unprivileged process never changed the owner.
+        try:
+            previous = os.stat(self.baseFilename)
+        except OSError:
+            previous = None
         super().doRollover()
+        if previous is not None:
+            try:
+                if getattr(os, "geteuid", lambda: -1)() == 0:
+                    os.chown(self.baseFilename, previous.st_uid, previous.st_gid)
+                os.chmod(self.baseFilename, previous.st_mode & 0o7777)
+            except OSError:
+                pass  # a log that cannot be chowned is still a working log
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot so
         # the next emit doesn't mistake it for external rotation.
@@ -549,7 +614,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
 
 def _new_file_handler(
     path: Path, *, level: int, max_bytes: int, backup_count: int, formatter
-) -> "_ManagedRotatingFileHandler":
+) -> _ManagedRotatingFileHandler:
     """Create the ``logs/`` directory and a configured ``_ManagedRotatingFileHandler``."""
     mkdir_under_hermes_home(path.parent)
     if _WINDOWS_CLH_FALLBACK:
@@ -562,6 +627,14 @@ def _new_file_handler(
     handler.setLevel(level)
     handler.setFormatter(formatter)
     return handler
+
+
+# A routed profile home is re-checked for an out-of-band delete (missing dir or tombstone) at
+# most this often. WHY: the check is two stats per record per router on the listener thread,
+# nearly doubling the syscalls of every live-profile emit; a deleted home only needs catching
+# within a couple of seconds. Inside that window a tombstoned (not yet removed) home still gets
+# its records; an rmtree is caught at once by the write that finds the directory gone.
+_PROFILE_LIVENESS_RECHECK_S = 2.0
 
 
 class _ProfileRoutingFileHandler(logging.Handler):
@@ -584,6 +657,9 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self._backup_count = getattr(existing, "backupCount", 0)
         self._profile_handlers: dict[Path, _ManagedRotatingFileHandler] = {}
         self._profile_handlers_lock = threading.RLock()
+        self._router_closed = False  # under _profile_handlers_lock; close() is final
+        # Home -> monotonic time of its last liveness check (see _PROFILE_LIVENESS_RECHECK_S).
+        self._liveness_checked_at: dict[Path, float] = {}
         self.setFormatter(existing.formatter)
         for log_filter in existing.filters:
             self.addFilter(log_filter)
@@ -594,21 +670,77 @@ class _ProfileRoutingFileHandler(logging.Handler):
             candidate = Path(raw_home).expanduser().resolve()
         except (TypeError, ValueError, OSError):
             candidate = self._default_home
-        return candidate if candidate in self._profile_homes else self._default_home
+        if candidate == self._default_home or candidate not in self._profile_homes:
+            return self._default_home
+        last = self._liveness_checked_at.get(candidate)
+        if last is None or _monotonic() - last >= _PROFILE_LIVENESS_RECHECK_S:
+            # First sighting always checks, so a home deleted before it ever logged is caught on
+            # its first record; afterwards at most once per interval. An rmtree inside the
+            # interval is caught by emit() on the record whose write finds the dir gone.
+            if self._release_if_deleted(candidate):
+                return self._default_home
+        return candidate
 
-    def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:
+    def _release_if_deleted(self, home: Path) -> bool:
+        """Release *home* if it was deleted out of band; True when it was."""
+        self._liveness_checked_at[home] = _monotonic()
+        if home.is_dir() and not named_profile_is_deleted(home):
+            return False
+        # Deleted out of band (CLI ``hermes profile delete`` while this process runs; it
+        # tombstones before rmtree). The startup snapshot still names it, so its handler would
+        # retry the vanished logs/ path on every record (#103777). Release it the way an
+        # in-process delete does: the stale fd is closed on this routed record and the home is
+        # dropped from the routing set, so later records fall back to the default home. This
+        # does not reach into another process: a CLI delete racing a live server's open fd
+        # still relies on release_profile_log_handlers in-process and #130285.
+        self.release_profile(home)
+        return True
+
+    def _handler_for_home(self, home: Path) -> Optional[_ManagedRotatingFileHandler]:
+        """The open handler for *home*; ``None`` once the router or that home is retired."""
         with self._profile_handlers_lock:
-            if home not in self._profile_handlers:
-                self._profile_handlers[home] = _new_file_handler(
-                    home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
-                    backup_count=self._backup_count, formatter=self.formatter,
-                )
-            return self._profile_handlers[home]
+            handler = self._profile_handlers.get(home)
+        if handler is not None:
+            return handler
+        # Built with no router lock held: ``Handler.__init__`` takes ``logging._lock``, and
+        # ``logging.shutdown`` (uvicorn's ``dictConfig``) holds that lock while it acquires each
+        # handler's lock and closes it (``close`` takes ``_profile_handlers_lock``). Holding
+        # either router lock here deadlocked the QueueListener against ``dictConfig`` (T23).
+        built = _new_file_handler(
+            home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
+            backup_count=self._backup_count, formatter=self.formatter,
+        )
+        built._skip_write_when_dir_missing = home != self._default_home
+        built._never_reopen_after_close = True
+        with self._profile_handlers_lock:
+            # Closed (logging.shutdown) or released while this was built: publishing now would leak
+            # the new handler's fd into a router nothing will close again.
+            retired = self._router_closed or (home != self._default_home and home not in self._profile_homes)
+            handler = None if retired else self._profile_handlers.setdefault(home, built)
+        if handler is not built:  # retired, or another thread opened it first
+            _quietly(built.close)
+        return handler
+
+    def handle(self, record: logging.LogRecord):
+        """``Handler.handle`` without this router's own I/O lock: each per-home handler takes its
+        own lock to write, and routing state has ``_profile_handlers_lock``. Holding ``self.lock``
+        across ``emit`` (which can open a handler, taking ``logging._lock``) inverted the order
+        ``logging.shutdown`` uses (module lock, then handler lock) (T23)."""
+        rv = self.filter(record)
+        if isinstance(rv, logging.LogRecord):
+            record = rv
+        if rv:
+            self.emit(record)
+        return rv
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             home = self._home_for_record(record)
             handler = self._handler_for_home(home)
+            if handler is None and home != self._default_home:  # released in flight
+                home, handler = self._default_home, self._handler_for_home(self._default_home)
+            if handler is None:  # the router is closed
+                return
             if home == self._default_home:
                 handler.handle(record)
                 return
@@ -620,11 +752,19 @@ class _ProfileRoutingFileHandler(logging.Handler):
                 handler.handle(record)
             finally:
                 reset_hermes_home_override(token)
+            # The write was skipped because logs/ is gone (an rmtree inside the liveness interval,
+            # see _ManagedRotatingFileHandler.emit): re-check now, and keep the record in the
+            # default log either way (a live profile whose logs/ was removed by hand included).
+            if handler.skipped_missing_dir:
+                self._release_if_deleted(home)
+                if (fallback := self._handler_for_home(self._default_home)) is not None:
+                    fallback.handle(record)
         except Exception:
             self.handleError(record)
 
     def close(self) -> None:
         with self._profile_handlers_lock:
+            self._router_closed = True
             handlers = list(self._profile_handlers.values())
             self._profile_handlers.clear()
         for handler in handlers:
@@ -636,6 +776,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
         with self._profile_handlers_lock:
             handler = self._profile_handlers.pop(home, None)
             self._profile_homes.discard(home)
+            self._liveness_checked_at.pop(home, None)
         if handler is None:
             return False
         _quietly(handler.close)
@@ -647,7 +788,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
 # drops WebSocket clients. Every file handler is therefore driven by a single
 # QueueListener thread; loggers only do a non-blocking enqueue.
 
-_log_queue: "Optional[queue.SimpleQueue]" = None
+_log_queue: Optional[queue.SimpleQueue] = None
 _queue_listener: Optional[QueueListener] = None
 _queued_file_handlers: list = []
 _queue_atexit_registered = False
@@ -830,7 +971,7 @@ def _reset_queued_handlers() -> None:
         for h in list(root.handlers):
             if getattr(h, "_hermes_queue", False):
                 root.removeHandler(h)
-        for h in list(_queued_file_handlers):
+        for h in _queued_file_handlers:
             _quietly(h.close)
         _queued_file_handlers.clear()
         _log_queue = None
@@ -889,12 +1030,9 @@ def _read_logging_config():
             from hermes_cli.config_effective import load_user_config_effective
             cfg = load_user_config_effective(get_config_path())
         except Exception:
-            from utils import fast_safe_load
+            from hermes_cli.config_backend import config_exists, read_config_doc
             config_path = get_config_path()
-            cfg = {}
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8-sig") as f:
-                    cfg = fast_safe_load(f) or {}
+            cfg = (read_config_doc(config_path) or {}) if config_exists(config_path) else {}
         if not cfg:
             return (None, None, None)
         log_cfg = cfg.get("logging", {})
@@ -903,18 +1041,3 @@ def _read_logging_config():
     except Exception:
         pass
     return (None, None, None)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def rotating_file_handlers() -> list:
-    """Return the live rotating file handlers.
-
-    They are attached to the async ``QueueListener`` rather than the root
-    logger, so callers/tests must use this instead of scanning
-    ``logging.getLogger().handlers``."""
-    return list(_queued_file_handlers)
-# ---- END PLUGIN-COMPAT ----

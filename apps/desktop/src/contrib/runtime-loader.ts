@@ -34,11 +34,13 @@
 
 import { atom } from 'nanostores'
 
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
+import { forgetPluginPreviewAccess } from '@/store/plugin-preview-grants'
 
 import { trackGatewayEventDisposers } from './events'
-import { createPluginContext, type HermesPlugin } from './plugin'
+import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
@@ -357,8 +359,23 @@ function unsupportedImports(source: string): string[] {
 }
 
 export function unloadRuntimePlugin(id: string): void {
-  loaded.get(id)?.forEach(dispose => dispose())
+  const disposers = loaded.get(id)
+
+  // Released BEFORE the disposers run, and each disposer in its own
+  // try/catch: a disposer with its own bug must not wedge the registry
+  // (#126338). With a bare forEach the throw aborted the loop and stranded
+  // the delete, so every later reload re-ran the same broken disposers and
+  // died before the fresh register() — file edits looked inert until an
+  // app restart.
   loaded.delete(id)
+
+  disposers?.forEach(dispose => {
+    try {
+      dispose()
+    } catch (error) {
+      console.error(`[plugins] ${id}: disposer failed during unload`, error)
+    }
+  })
 }
 
 /** Evaluate + register one runtime plugin. Returns its id, or null on failure. */
@@ -440,23 +457,29 @@ export async function loadRuntimePlugin(
       throw new Error(`duplicate id "${plugin.id}", already loaded from ${owner.file ?? owner.kind}`)
     }
 
+    const capabilities = declaredCapabilities(plugin)
+
     const record = {
       id: plugin.id,
       name: plugin.name ?? plugin.id,
       description: plugin.description,
+      capabilities,
       kind: options.kind ?? 'disk',
       file: options.file,
       packageName: options.packageName,
       packageOrigin: options.packageOrigin
     }
 
-    const failRegistration = (disposers: (() => void)[], error: unknown) => {
+    const failRegistration = (error: unknown) => {
       // Roll back everything register() managed before it failed — a
       // half-registered plugin must not leave live contributions/listeners
       // nobody can ever dispose — and land the failure on the plugin's OWN
       // row so Capabilities → Plugins shows it (the toggle stays usable).
-      disposers.forEach(dispose => dispose())
-      loaded.delete(plugin.id)
+      // unloadRuntimePlugin() tolerates a throwing disposer, so a cleanup
+      // bug in the rollback can neither strand the remaining disposers nor
+      // hold the registration — the #126338 wedge where every later reload
+      // re-ran the same broken disposers instead of the fixed file.
+      unloadRuntimePlugin(plugin.id)
       console.error(`[plugins] ${plugin.id} failed to register (${origin})`, error)
       notifyError(error, `Plugin "${record.name}" failed to register`)
       publishPlugin({ ...record, status: 'error', error: error instanceof Error ? error.message : String(error) })
@@ -474,10 +497,10 @@ export async function loadRuntimePlugin(
       try {
         result = trackGatewayEventDisposers(
           dispose => disposers.push(dispose),
-          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose), capabilities))
         )
       } catch (error) {
-        failRegistration(disposers, error)
+        failRegistration(error)
 
         return
       }
@@ -489,7 +512,7 @@ export async function loadRuntimePlugin(
       if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
         void Promise.resolve(result).catch((error: unknown) => {
           if (loaded.get(plugin.id) === disposers) {
-            failRegistration(disposers, error)
+            failRegistration(error)
           }
         })
       }
@@ -568,6 +591,8 @@ async function diskRoots(): Promise<DiskRoot[]> {
 const PACKAGE_MARKER = '.hermes-package.json'
 
 interface PackageMarker {
+  /** The package is a symlinked dev checkout; `source` is its `desktop/` dir. */
+  linkedSource?: string
   origin?: { catalogName?: string; repo?: string; sha?: string }
   package: string
 }
@@ -581,11 +606,19 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
       return null
     }
 
-    const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
+    const read = await desktop.readFileText(marker.path)
+
+    if (isReadFileErrorResult(read)) {
+      return null
+    }
+
+    const parsed = JSON.parse(read.text) as {
       catalogName?: string
+      linked?: boolean
       package?: string
       repo?: string
       sha?: string
+      source?: string
     }
 
     if (!parsed.package) {
@@ -593,6 +626,7 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
     }
 
     return {
+      linkedSource: parsed.linked && parsed.source ? parsed.source : undefined,
       origin: parsed.repo ? { catalogName: parsed.catalogName, repo: parsed.repo, sha: parsed.sha } : undefined,
       package: parsed.package
     }
@@ -612,6 +646,10 @@ interface DiskPlugin {
   id: null | string
   /** Origin label (folder name) — the toast/inventory name for load errors. */
   origin: string
+  /** Linked dev package only: the SOURCE `desktop/plugin.js` this copy came from. */
+  sourceFile?: string
+  /** Watch on `sourceFile` — a save re-syncs the copy, then reloads it. */
+  sourceWatchId?: null | string
   watchId: null | string
 }
 
@@ -650,6 +688,10 @@ async function readPluginSourceText(file: string): Promise<string> {
   }
 
   const result = await desktop.readFileText(file)
+
+  if (isReadFileErrorResult(result)) {
+    throw new Error(result.message || `Plugin read failed: ${result.error}`)
+  }
 
   if (result.truncated) {
     throw new PluginSourceOversizeError(
@@ -762,10 +804,57 @@ async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>
   }
 
   try {
-    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+    const watch = await desktop.watchPreviewFile(record.file)
+
+    // Structured "folder gone" answer — nothing to watch; the poll still
+    // reconciles new folders and edits need a manual reload.
+    record.watchId = isReadFileErrorResult(watch) ? null : watch.id
   } catch {
     // Unwatchable — the poll still reconciles new folders; edits need a
     // manual "Reload desktop plugins".
+  }
+}
+
+/** Watch a linked dev package's SOURCE `plugin.js`. Without it the developer
+ *  edits their checkout while the app keeps running the copy in
+ *  `desktop-plugins/` — the copy is only refreshed on Rescan or restart. */
+async function watchDiskPluginSource(desktop: NonNullable<Window['hermesDesktop']>, record: DiskPlugin): Promise<void> {
+  if (!record.sourceFile || record.sourceWatchId) {
+    return
+  }
+
+  try {
+    const watch = await desktop.watchPreviewFile(record.sourceFile)
+
+    record.sourceWatchId = isReadFileErrorResult(watch) ? null : watch.id
+  } catch {
+    record.sourceWatchId = null
+  }
+}
+
+/** A linked source changed: copy it over the app-root half (Electron's
+ *  reconcile — the one writer of that folder), then reload every copy that
+ *  pass replaced and re-bind its watch, which the folder swap orphaned. */
+async function resyncLinkedDiskPlugins(): Promise<void> {
+  const desktop = window.hermesDesktop
+
+  if (!desktop?.reconcileDesktopPlugins) {
+    return
+  }
+
+  const touched = new Set((await desktop.reconcileDesktopPlugins().catch(() => [])) ?? [])
+
+  for (const record of disk.values()) {
+    // The folder of `<root>/<name>/plugin.js`, either separator (Windows paths).
+    if (!touched.has(record.file.replace(/[\\/][^\\/]*$/, ''))) {
+      continue
+    }
+
+    if (await loadDiskPlugin(record)) {
+      await watchDiskPluginFile(desktop, record)
+    } else {
+      void scanDiskPlugins()
+    }
   }
 }
 
@@ -842,6 +931,8 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
           origin: dir.name,
           packageName: marker?.package,
           packageOrigin: marker?.origin,
+          sourceFile: marker?.linkedSource ? `${marker.linkedSource}/plugin.js` : undefined,
+          sourceWatchId: null,
           watchId: null
         }
 
@@ -854,6 +945,7 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
         }
 
         await watchDiskPluginFile(desktop, record)
+        await watchDiskPluginSource(desktop, record)
       }
     }
 
@@ -873,17 +965,23 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
 }
 
 /** Forget a disk entry whose folder is gone: unload its registration, drop
- *  its inventory rows, stop its file watch. */
+ *  its inventory rows and its preview-script grants, stop its file watch. */
 function retireDiskPlugin(file: string, record: DiskPlugin): void {
   if (record.id) {
     unloadRuntimePlugin(record.id)
     dropPlugin(record.id)
+    // A later plugin reusing this id must ask the user again, never inherit.
+    forgetPluginPreviewAccess(record.id)
   }
 
   dropOriginRecord(record.origin, record)
 
   if (record.watchId) {
     void window.hermesDesktop?.stopPreviewFileWatch(record.watchId)
+  }
+
+  if (record.sourceWatchId) {
+    void window.hermesDesktop?.stopPreviewFileWatch(record.sourceWatchId)
   }
 
   disk.delete(file)
@@ -915,6 +1013,20 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   retireDiskPlugin(file, record)
+
+  // A reinstall under the same id must ask for its folders again (ctx.files).
+  // A revoke that fails is reported: the plugin's row is gone, so the user
+  // could not revoke it there any more.
+  if (record.id) {
+    try {
+      await window.hermesDesktop?.pluginFiles?.revoke(record.id)
+    } catch (error) {
+      return {
+        ok: false,
+        error: `removed, but its folder access could not be revoked: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+  }
 
   return { ok: true }
 }
@@ -952,6 +1064,12 @@ export function watchRuntimePlugins(): void {
     }
 
     for (const record of disk.values()) {
+      if (record.sourceWatchId === id) {
+        void resyncLinkedDiskPlugins()
+
+        return
+      }
+
       if (record.watchId === id) {
         void loadDiskPlugin(record).then(readable => {
           if (!readable) {

@@ -8,7 +8,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
-**当前注册表快速统计：** 约 71 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
+**当前注册表快速统计：** 约 63 个工具 —— 4 个浏览器工具（`browser_exec`、`browser_cdp`、`browser_dialog`、`browser_vault`）、4 个文件工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、5 个 Yuanbao 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
 
 :::tip MCP 工具
 除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](../user-guide/features/mcp.md)。
@@ -16,27 +16,14 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `browser` 工具集
 
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `browser_back` | 在浏览器历史记录中导航回上一页。需先调用 `browser_navigate`。 | — |
-| `browser_click` | 点击快照中由 ref ID 标识的元素（如 `@e5`）。ref ID 显示在快照输出的方括号中。需先调用 `browser_navigate` 和 `browser_snapshot`。 | — |
-| `browser_console` | 获取当前页面的浏览器控制台输出和 JavaScript 错误。返回 `console.log`/`warn`/`error`/`info` 消息及未捕获的 JS 异常。用于检测静默 JavaScript 错误、失败的 API 调用和应用警告。需先调用… | — |
-| `browser_get_images` | 获取当前页面所有图片的列表，包含 URL 和 alt 文本。可用于查找供 vision 工具分析的图片。需先调用 `browser_navigate`。 | — |
-| `browser_navigate` | 在浏览器中导航到某个 URL，初始化会话并加载页面。必须在其他浏览器工具之前调用。对于简单信息检索，优先使用 `web_search` 或 `web_extract`（更快、更省）。当需要… 时使用浏览器工具。 | — |
-| `browser_press` | 按下键盘按键。适用于提交表单（Enter）、导航（Tab）或键盘快捷键。需先调用 `browser_navigate`。 | — |
-| `browser_scroll` | 向某个方向滚动页面。用于显示当前视口上方或下方的更多内容。需先调用 `browser_navigate`。 | — |
-| `browser_snapshot` | 获取当前页面无障碍树的文本快照。返回带 ref ID（如 `@e1`、`@e2`）的交互元素，供 `browser_click` 和 `browser_type` 使用。`full=false`（默认）：仅含交互元素的紧凑视图。`full=true`：完整… | — |
-| `browser_type` | 向由 ref ID 标识的输入框中输入文本。先清空字段，再输入新文本。需先调用 `browser_navigate` 和 `browser_snapshot`。 | — |
-| `browser_vision` | 对当前页面截图并用视觉 AI 分析。当需要直观理解页面内容时使用——尤其适用于 CAPTCHA、视觉验证挑战、复杂布局，或文本快照… 时。 | — |
-
-## `browser` 工具集（CDP 门控工具）
-
-这两个工具属于 `browser` 工具集，但仅在会话启动时可访问 Chrome DevTools Protocol（CDP）端点时才注册——通过 `/browser connect`、`browser.cdp_url` 配置、Browserbase 会话或 Camofox。
+`browser_exec` 和 `browser_vault` 驱动浏览器会话——Hermes 启动的 Chromium、云端浏览器，或通过 `/browser connect` 连接的浏览器。`browser_cdp` 和 `browser_dialog` 仅在配置了 CDP 端点（`/browser connect`、`BROWSER_CDP_URL` 或 `browser.cdp_url`）时提供，并作用于该浏览器；Hermes 启动的会话和云端会话中没有这两个工具。参见[浏览器自动化](../user-guide/features/browser.md)。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
-| `browser_cdp` | 发送原始 Chrome DevTools Protocol 命令。用于高层 `browser_*` 工具未覆盖的浏览器操作的逃生舱口。参见 https://chromedevtools.github.io/devtools-protocol/ | CDP 端点 |
-| `browser_dialog` | 响应原生 JavaScript 对话框（alert / confirm / prompt / beforeunload）。先调用 `browser_snapshot`——待处理的对话框会出现在其 `pending_dialogs` 字段中。然后调用 `browser_dialog(action='accept'\|'dismiss')`。 | CDP 端点 |
+| `browser_exec` | 通过运行预导入辅助函数（`new_tab`、`goto_url`、`wait_for_load`、`page_info`、`js`、`fill_input`、`click_at_xy`、`capture_screenshot`、`cdp`、`ensure_real_tab`）的 Python 驱动真实浏览器。浏览器状态在调用之间保持，Python 变量不保留。`session` 用于隔离并发任务；`timeout_s` 默认 300（最大 1800）。 | `terminal` 工具集 |
+| `browser_cdp` | 发送原始 Chrome DevTools Protocol 命令。用于 `browser_exec` 辅助函数未覆盖的浏览器操作的逃生舱口。参见 https://chromedevtools.github.io/devtools-protocol/ | CDP 端点 |
+| `browser_dialog` | 响应阻塞页面的原生 JavaScript 对话框（alert / confirm / prompt / beforeunload）：`browser_dialog(action='accept'\|'dismiss')`，`prompt()` 使用 `prompt_text`，多个对话框排队时使用 `dialog_id`。 | CDP 端点 |
+| `browser_vault` | 在当前页面使用已保存的登录信息、密码、银行卡、地址和一次性验证码，机密信息不会进入对话。操作：`list`、`fill`、`save_login`、`enter_code`、`unlock`。 | — |
 
 ## `clarify` 工具集
 
@@ -90,15 +77,6 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `search_files` | 搜索文件内容或按名称查找文件。用于替代终端中的 `grep`/`rg`/`find`/`ls`。基于 Ripgrep，比 shell 等效命令更快。内容搜索（`target='content'`）：在文件内进行正则搜索。输出模式：带行号的完整匹配… | — |
 | `write_file` | 将内容写入文件，完全替换现有内容。用于替代终端中的 `echo`/`cat heredoc`。自动创建父目录。**覆盖整个文件** —— 精准编辑请使用 `patch`。 | — |
 
-## `homeassistant` 工具集
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `ha_call_service` | 调用 Home Assistant 服务以控制设备。使用 `ha_list_services` 发现各域的可用服务及其参数。 | — |
-| `ha_get_state` | 获取单个 Home Assistant 实体的详细状态，包括所有属性（亮度、颜色、温度设定值、传感器读数等）。 | — |
-| `ha_list_entities` | 列出 Home Assistant 实体。可按域（light、switch、climate、sensor、binary_sensor、cover、fan 等）或区域名称（客厅、厨房、卧室等）过滤。 | — |
-| `ha_list_services` | 列出用于设备控制的可用 Home Assistant 服务（动作）。显示每种设备类型可执行的操作及其接受的参数。用于发现如何控制通过 `ha_list_entities` 找到的设备。 | — |
-
 ## `computer_use` 工具集
 
 | 工具 | 描述 | 所需环境 |
@@ -106,7 +84,11 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `computer_use` | 通过 cua-driver 在后台控制 macOS 桌面——截图（SOM / vision / AX）、点击 / 拖拽 / 滚动 / 输入 / 按键 / 等待、`list_apps`、`focus_app`。**不会**抢占用户的光标或键盘焦点。适用于任何支持工具的模型。仅限 macOS。 | `cua-driver` 在 `$PATH` 中（通过 `hermes tools` 安装）。 |
 
 :::note
-**Honcho 工具**（`honcho_profile`、`honcho_search`、`honcho_context`、`honcho_reasoning`、`honcho_conclude`）不再是内置工具。它们通过 `plugins/memory/honcho/` 的 Honcho 记忆提供者插件提供。安装和使用方法见 [Memory Providers](../user-guide/features/memory-providers.md)。
+**Honcho 工具**（`honcho_profile`、`honcho_search`、`honcho_context`、`honcho_reasoning`、`honcho_conclude`）不再是内置工具。它们由插件目录中的 Honcho 记忆提供者插件提供（`hermes plugins install honcho`）。安装和使用方法见 [Memory Providers](../user-guide/features/memory-providers.md)。
+
+**Home Assistant 工具**（`ha_list_entities`、`ha_get_state`、`ha_list_services`、`ha_call_service`，工具集 `homeassistant`）不再是内置工具。它们由插件目录中的 `homeassistant` 插件提供（`hermes plugins install homeassistant`）。详见 [Home Assistant](../user-guide/messaging/homeassistant.md)。
+
+**Spotify 工具**（`spotify_playback`、`spotify_devices`、`spotify_queue`、`spotify_search`、`spotify_playlists`、`spotify_albums`、`spotify_library`，工具集 `spotify`）不再是内置工具。它们由插件目录中的 `spotify` 插件提供（`hermes plugins install spotify`，然后运行 `hermes spotify login`）。详见 [Spotify](../user-guide/features/spotify.md)。
 :::
 
 ## `image_gen` 工具集
@@ -233,20 +215,6 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
 | `discord_admin` | 通过 REST API 管理 Discord 服务器：列出 guild/频道/角色，创建/编辑/删除频道，管理角色授予、禁言、踢出和封禁。 | `DISCORD_BOT_TOKEN` + bot 权限 |
-
-## `spotify` 工具集
-
-由内置 `spotify` 插件注册。需要 OAuth token——运行一次 `hermes spotify setup` 进行授权。
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `spotify_playback` | 控制 Spotify 播放、查看当前播放状态或获取最近播放的曲目。 | Spotify OAuth |
-| `spotify_devices` | 列出 Spotify Connect 设备或将播放转移到其他设备。 | Spotify OAuth |
-| `spotify_queue` | 查看用户的 Spotify 队列或向其添加项目。 | Spotify OAuth |
-| `spotify_search` | 在 Spotify 目录中搜索曲目、专辑、艺术家、播放列表、节目或单集。 | Spotify OAuth |
-| `spotify_playlists` | 列出、查看、创建、更新和修改 Spotify 播放列表。 | Spotify OAuth |
-| `spotify_albums` | 获取 Spotify 专辑元数据或专辑曲目。 | Spotify OAuth |
-| `spotify_library` | 列出、保存或移除用户已保存的 Spotify 曲目或专辑。 | Spotify OAuth |
 
 ## `hermes-yuanbao` 工具集
 

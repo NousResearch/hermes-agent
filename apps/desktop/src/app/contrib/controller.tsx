@@ -6,10 +6,8 @@ import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
-import { AskDirective } from '@/components/assistant-ui/ask-directive'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
-import { OnboardingChatDirective } from '@/components/onboarding-chat/directive'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
@@ -54,10 +52,10 @@ import {
   Zap
 } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { watchDeadSessionPrune } from '@/store/dead-session-prune'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -117,10 +115,13 @@ import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
+import { Butterbar } from '../shell/butterbar'
+import { TermsButterbar } from '../shell/terms-butterbar'
 
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
+import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
 import { ContribWiring, WiredPane } from './wiring'
 import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
@@ -348,28 +349,6 @@ registry.registerMany([
       render: ({ attrs, streaming }) => <InlinePreviewDirective attrs={attrs} streaming={streaming} />
     } satisfies TranscriptDirectiveContribution
   },
-  ...(isOnboardingEnabled()
-    ? [
-        {
-          id: 'transcript.onboarding',
-          area: TRANSCRIPT_DIRECTIVE_AREA,
-          data: {
-            name: 'onboarding',
-            render: ({ attrs, streaming }) => <OnboardingChatDirective attrs={attrs} streaming={streaming} />
-          } satisfies TranscriptDirectiveContribution
-        },
-        // ::ask is the guided chat's question card, registered only with the
-        // onboarding flag. B4 decides its wider use.
-        {
-          id: 'transcript.ask',
-          area: TRANSCRIPT_DIRECTIVE_AREA,
-          data: {
-            name: 'ask',
-            render: ({ attrs, streaming }) => <AskDirective attrs={attrs} streaming={streaming} />
-          } satisfies TranscriptDirectiveContribution
-        }
-      ]
-    : []),
   {
     id: 'layout.reset',
     area: PALETTE_AREA,
@@ -496,6 +475,10 @@ watchSessionPins()
 
 // Release unread-write guards once a list page confirms the value we wrote.
 watchUnreadWriteGuard()
+
+// Drop local pins/drafts/queued prompts whose sessions no longer exist on the
+// backend — otherwise every boot re-requests the dead ids and 404s on each.
+watchDeadSessionPrune()
 
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
@@ -808,6 +791,7 @@ export function ContribController() {
       <ContribWiring>
         <AppContextMenu />
         <HudShell />
+        <PluginPreviewConsentDialog />
       </ContribWiring>
     )
   }
@@ -816,21 +800,25 @@ export function ContribController() {
     return (
       <ContribWiring>
         <BrowserPopoutShell />
+        <PluginPreviewConsentDialog />
       </ContribWiring>
     )
   }
 
   return (
     <SidebarProvider
-      className="h-screen min-h-0 flex-col bg-background"
+      className="h-full min-h-0 flex-col bg-background"
       onOpenChange={setSidebarOpen}
       open={sidebarOpen}
       style={{ '--sidebar-width': '100%' } as CSSProperties}
     >
       <ContribWiring>
         <AppContextMenu />
+        {/* App-owned answer to a plugin's ctx.preview.executeJavaScript. Plugins
+            run in every window kind, so each shell mounts it. */}
+        <PluginPreviewConsentDialog />
         <div
-          className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
+          className="flex h-full min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
           // Window-glass hook: this div and the sidebar-wrapper above it are
           // the app shell's two full-window opaque painters; the
           // [data-hermes-glass] rules in styles.css clear them so the tint
@@ -848,6 +836,10 @@ export function ContribController() {
               statusBar.left/right contributions merged in. Unmounted — not
               just hidden — while toggled off, so its 15s status poll and the
               per-turn readouts stop with it. */}
+          {/* Notices registered through `registerButterbar` / `useButterbar`;
+              renders nothing while none are registered. */}
+          <Butterbar />
+          <TermsButterbar />
           {statusbarVisible && <WiredPane part="statusbar" />}
         </div>
       </ContribWiring>

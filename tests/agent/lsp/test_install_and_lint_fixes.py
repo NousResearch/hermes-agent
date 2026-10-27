@@ -76,7 +76,8 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path, monkeypatch)
         return result
 
     # Local .ts lint runs PM's npx directly, not through the terminal shell's _exec.
-    with patch.object(fops, "_run_managed_node_linter", side_effect=lambda ext, path: fake_exec(path)):
+    with patch.object(fops, "_run_managed_node_linter", side_effect=lambda ext, path: fake_exec(path)), \
+         patch.object(fops, "_local_workspace_untrusted", return_value=False):
         lint = fops._check_lint(str(ts_file))
 
     assert lint.skipped is False

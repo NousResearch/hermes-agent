@@ -34,10 +34,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  dropdownMenuSectionLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
@@ -52,6 +50,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { profileShortLabel } from '@/lib/profile-short-label'
 import {
@@ -79,6 +78,7 @@ import {
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
+  prewarmProfilePick,
   profileLabel,
   refreshActiveProfile,
   selectProfile,
@@ -87,12 +87,7 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
-import {
-  $profileDotStateByScope,
-  type ProfileDotState,
-  type ProfileDotSummary,
-  profileDotSummaryFor
-} from '@/store/profile-dot-state'
+import { $profileDotStateByScope, type ProfileDotSummary, profileDotSummaryFor } from '@/store/profile-dot-state'
 import {
   $profileRemoteOverrides,
   openRemoteOverrideDialog,
@@ -105,12 +100,15 @@ import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
+import { sessionDotClassName } from '../session-status-dot'
 
 import { ConnectionGlyph } from './connection-glyph'
+import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu, ProfileLaunchMenuSection } from './profile-launch-menu'
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
+import { ProfileRowGlyph, UnservedProfileNote, useUnservedProfiles } from './unserved-profiles'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
@@ -122,15 +120,30 @@ const RAIL_GAP = 4 // px — matches gap-1 between squares.
 // menu. Drag-reorder and long-press-recolor live only on the squares path.
 const PROFILE_DROPDOWN_THRESHOLD = 13
 
+// The Webapp always takes the dropdown: squares are a native-window gesture
+// surface (drag, hold-to-recolor), and in a browser tab they read as chrome.
+const ALWAYS_CONDENSED = isBrowserHostedDesktop()
+
+// The home pill's profile when the multi-profile rail shows one: the default profile. A gateway that
+// does not serve default (one launched as another profile, in the Webapp) refuses the switch, so the
+// pill is then the plain all toggle, as on a gateway without a default.
+function servedHomeProfile(defaultProfile: ProfileInfo | undefined, unserved: ReadonlySet<string>) {
+  return defaultProfile && !unserved.has(normalizeProfileKey(defaultProfile.name)) ? defaultProfile : undefined
+}
+
+// The threshold counts the whole fleet: fourteen squares are fourteen squares
+// wherever they live.
+function railCondensed(profileCount: number, restGroups: readonly FleetGroup[]): boolean {
+  return ALWAYS_CONDENSED || profileCount + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+}
+
 // #91710: a profile that finished (or blocked, or is still working) while
 // another was selected carries an indicator on its rail square and dropdown
-// row. The colors mirror the session status dot's palette — amber for "needs
-// your answer", accent for running, success green for unread — so a profile's
-// loudest state reads the same as its sessions' dots in the sidebar below.
-const PROFILE_STATUS_DOT_CLASS: Record<ProfileDotState, string> = {
-  'needs-input': 'bg-amber-500',
-  working: 'bg-(--ui-accent)',
-  unread: 'bg-(--ui-success)'
+// row. It paints the session status dot's own class for the same state, so a
+// profile's loudest state reads the same as its sessions' dots below. The
+// `profile-status-dot` slot lets tests (and tours) find it.
+function ProfileStatusDot({ summary }: { summary: ProfileDotSummary }) {
+  return <span aria-hidden="true" className={sessionDotClassName(summary.state)} data-slot="profile-status-dot" />
 }
 
 /** The a11y/tooltip text for one square's summary — every non-zero count,
@@ -161,18 +174,6 @@ function profileStatusLabel(p: Translations['profiles'], summary: ProfileDotSumm
 function useProfileStatus(profile: null | string, connectionId: null | string | undefined): ProfileDotSummary | null {
   return useStoreSelector($profileDotStateByScope, byScope =>
     profile ? (profileDotSummaryFor(byScope, connectionId, profile) ?? null) : null
-  )
-}
-
-/** The dot a square/dropdown row paints for a summary. `status-dot` slot so
- *  tests (and tours) can find it without duplicating the class string. */
-function ProfileStatusDot({ summary }: { summary: ProfileDotSummary }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn('size-1.5 rounded-full', PROFILE_STATUS_DOT_CLASS[summary.state])}
-      data-slot="profile-status-dot"
-    />
   )
 }
 
@@ -245,6 +246,7 @@ export function ProfileRail() {
   const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
 
   useFleetRoster(multipleConnections)
+  const unserved = useUnservedProfiles(profiles)
 
   const connections = registry?.connections
 
@@ -296,9 +298,7 @@ export function ProfileRail() {
 
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
-  // The threshold counts the whole fleet: fourteen squares are fourteen
-  // squares wherever they live.
-  const condensed = profiles.length + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+  const condensed = railCondensed(profiles.length, restGroups)
 
   const measureScroll = useCallback(() => {
     const el = scrollRef.current
@@ -399,6 +399,7 @@ export function ProfileRail() {
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
   const defaultProfile = profiles.find(profile => profile.is_default)
+  const homeProfile = servedHomeProfile(defaultProfile, unserved)
   const onDefault = !isAll && activeKey === 'default'
 
   const named = sortByProfileOrder(
@@ -558,16 +559,16 @@ export function ProfileRail() {
           Hidden until a second profile exists. */}
       {!fleet &&
         multiProfile &&
-        (defaultProfile ? (
+        (homeProfile ? (
           // On default → toggle to all. Anywhere else (all view or a named
           // profile) → return to default. So leaving a profile never lands on all.
           <ProfilePill
             active={isAll || onDefault}
             connectionId={activeConnectionId ?? undefined}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
-            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
-            profile={defaultProfile.name}
+            label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(homeProfile))}
+            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(homeProfile.name))}
+            profile={homeProfile.name}
           />
         ) : (
           <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
@@ -594,12 +595,16 @@ export function ProfileRail() {
             activeKey={isAll ? null : activeKey}
             colors={colors}
             connectionId={namedProfileConnectionId}
+            homeConnectionId={activeConnectionId}
             onCreate={() => setCreateOpen(true)}
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            // Fleet drops the home pill, so the menu is the active default's
+            // only door; every at-rest group already lists its own (#106017, #131632).
+            profiles={fleet && defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
+            unserved={unserved}
           />
         </div>
       ) : (
@@ -879,23 +884,28 @@ function ImportProfileButton({ label }: { label: string }) {
   )
 }
 
-// The condensed rail: every named profile in one compact menu. The trigger
-// shows the active profile (tinted initial + name); on default/all scope it
-// falls back to the placeholder since the left toggle pill carries that state.
+// The condensed rail: the active gateway's profiles in one compact menu. The
+// trigger shows the active profile (tinted initial, or home for the default);
+// on all scope — or on a default the left toggle pill carries — it falls back
+// to the placeholder.
 function ProfileDropdown({
   activeKey,
   colors,
   connectionId,
+  homeConnectionId,
   onCreate,
   onImport,
   onSelect,
   onSelectRest,
   profiles,
-  restGroups
+  restGroups,
+  unserved
 }: {
   activeKey: null | string
   colors: Record<string, string>
   connectionId: null | string
+  /** The default row's route, like the home pill's: the active connection. */
+  homeConnectionId: null | string
   onCreate: () => void
   onImport: () => void
   onSelect: (name: string) => void
@@ -903,6 +913,8 @@ function ProfileDropdown({
   profiles: ProfileInfo[]
   // Fleet: the other gateways' agents, each under its own section header.
   restGroups: readonly FleetGroup[]
+  /** Profiles the gateway lists but does not serve (the Webapp): shown, never picked. */
+  unserved: ReadonlySet<string>
 }) {
   const { t } = useI18n()
   const p = t.profiles
@@ -927,7 +939,7 @@ function ProfileDropdown({
                 <ProfileGlyph
                   aria-hidden="true"
                   color={resolveProfileColor(activeProfile.name, colors)}
-                  isDefault={false}
+                  isDefault={activeProfile.is_default}
                   name={activeProfile.name}
                 />
                 <span className="truncate">{profileLabel(activeProfile)}</span>
@@ -953,52 +965,33 @@ function ProfileDropdown({
           {profiles.map(profile => (
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
-              connectionId={connectionId}
+              connectionId={profile.is_default ? homeConnectionId : connectionId}
               hideStatus={profile.name === value}
+              isDefault={profile.is_default}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
+              unserved={unserved.has(normalizeProfileKey(profile.name))}
             />
           ))}
         </DropdownMenuRadioGroup>
         {restGroups.map(group => (
-          <div data-connection-id={group.connectionId} data-slot="profile-dropdown-gateway" key={group.connectionId}>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
-              <ConnectionGlyph connection={group} />
-              <span className="truncate">{group.label}</span>
-              {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
-            </DropdownMenuLabel>
-            {[group.defaultAgent, ...group.named].map(agent => {
-              const localDefault = agent.connectionKind === 'local' && agent.isDefault
-              const label = localDefault ? p.fleet.localDevice : p.fleet.onGateway(agent.profile, group.label)
-
-              return (
-                <ProfileLaunchContextMenu
-                  connectionId={agent.connectionId}
-                  key={agent.profile}
-                  label={label}
-                  profile={agent.profile}
-                >
-                  <DropdownMenuItem aria-label={label} className="min-w-0" onSelect={() => onSelectRest(agent)}>
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      {localDefault ? (
-                        <Codicon aria-hidden="true" name="device-desktop" size="0.875rem" />
-                      ) : (
-                        <ProfileGlyph
-                          aria-hidden="true"
-                          color={resolveProfileColor(agent.profile, colors)}
-                          isDefault={agent.isDefault}
-                          name={agent.profile}
-                        />
-                      )}
-                      <span className="truncate">{agent.profile}</span>
-                    </span>
-                  </DropdownMenuItem>
-                </ProfileLaunchContextMenu>
-              )
-            })}
-          </div>
+          <FleetGatewayMenuGroup
+            group={group}
+            key={group.connectionId}
+            onSelect={onSelectRest}
+            slot="profile-dropdown-gateway"
+            wrapRow={(row, agent, label) => (
+              <ProfileLaunchContextMenu
+                connectionId={agent.connectionId}
+                key={agent.profile}
+                label={label}
+                profile={agent.profile}
+              >
+                {row}
+              </ProfileLaunchContextMenu>
+            )}
+          />
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1011,20 +1004,24 @@ function ProfileDropdownItem({
   color,
   connectionId,
   hideStatus,
+  isDefault,
   label,
-  name
+  name,
+  unserved
 }: {
   color: null | string
   connectionId: null | string
   /** The dropdown's own selected row: its sessions are on screen in the
    *  sidebar, so its rollup is suppressed like the active square (#91710). */
   hideStatus?: boolean
+  isDefault: boolean
   label: string
   name: string
+  unserved: boolean
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
   const summary = useProfileStatus(name, connectionId)
   const statusText = summary && !hideStatus ? profileStatusLabel(p, summary) : null
 
@@ -1032,17 +1029,19 @@ function ProfileDropdownItem({
     <ProfileLaunchContextMenu connectionId={connectionId} label={label} profile={name}>
       <DropdownMenuRadioItem
         className="min-w-0"
+        disabled={unserved}
         onPointerEnter={startPrewarm}
         onPointerLeave={cancelPrewarm}
         onPointerMove={notePointerMove}
         value={name}
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+          <ProfileRowGlyph color={color} isDefault={isDefault} name={name} unserved={unserved} />
           <span className="truncate">{label}</span>
           {summary && !hideStatus && <ProfileStatusDot summary={summary} />}
         </span>
         {statusText && <span className="sr-only">{`, ${statusText}`}</span>}
+        {unserved && <UnservedProfileNote />}
       </DropdownMenuRadioItem>
     </ProfileLaunchContextMenu>
   )
@@ -1142,11 +1141,7 @@ function ProfilePill({
         type="button"
         variant="ghost"
       >
-        {pending ? (
-          <Loader2 aria-hidden="true" className="size-3 animate-spin" />
-        ) : (
-          <Codicon name={glyph} size="0.875rem" />
-        )}
+        {pending ? <Loader2 className="animate-spin" /> : <Codicon name={glyph} size="0.875rem" />}
         {summary && !active && (
           <span className="absolute -right-0.5 -top-0.5">
             <ProfileStatusDot summary={summary} />
@@ -1465,7 +1460,7 @@ function ProfileSquare({
   const suppressClick = useRef(false)
   // Hovering a square telegraphs the switch — start that profile's backend
   // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
 
   // The square carries its profile's session rollup — but never when active:
   // the workspace is homed there and the sidebar below already shows that

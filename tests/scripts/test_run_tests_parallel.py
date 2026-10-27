@@ -101,6 +101,7 @@ def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> Non
         stderr=subprocess.STDOUT,
         text=True,
         timeout=60,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stdout
@@ -195,6 +196,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        check=False,
     )
 
     assert handoff.exists(), (
@@ -233,6 +235,43 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             f"runner output:\n{proc.stdout}"
         )
 
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass
+def test_detached_grandchild_is_killed_by_runner(tmp_path: Path) -> None:
+    """A child in its OWN session (an auto-started ``gateway run``) escapes the process-group
+    kill; the runner still finds it by the attempt's temp root in its environment."""
+    repo_root = _probe_root(tmp_path)
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    handoff = tmp_path / "detached.json"
+    (probe_dir / "test_probe_detached.py").write_text(textwrap.dedent(f"""
+        import json, os, subprocess, sys
+        from pathlib import Path
+
+        def test_spawns_detached_child_and_walks_away():
+            child = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"],
+                start_new_session=True,
+            )
+            Path({str(handoff)!r}).write_text(json.dumps({{"pid": child.pid}}), encoding="utf-8")
+    """).lstrip(), encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         "--paths", str(probe_dir), "-j", "1", "--file-timeout", "30"],
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60, check=False,
+    )
+    pid = json.loads(handoff.read_text(encoding="utf-8-sig"))["pid"]
+    deadline = time.monotonic() + 5.0
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _pid_alive(pid):
+        os.kill(pid, 9)
+        pytest.fail(f"detached child {pid} survived the runner; output:\n{proc.stdout}")
+    assert proc.returncode == 0, proc.stdout
 
 # ── Bare pytest-flag passthrough ─────────────────────────────────────────────
 #
@@ -274,6 +313,7 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        check=False,
     )
 
 
@@ -293,6 +333,7 @@ def test_help_prints_usage_without_discovering_or_running_tests(
         encoding="utf-8",
         errors="replace",
         timeout=10,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stdout
@@ -374,6 +415,7 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
         stderr=subprocess.STDOUT,
         text=True,
         timeout=60,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stdout
@@ -405,6 +447,36 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
 
 
 
+def test_fail_on_skip_fails_a_run_with_any_skip_even_beside_an_xfail(tmp_path: Path) -> None:
+    """--fail-on-skip reads the parsed skip count, not the progress line.
+
+    The remote-backends lane once grepped the line for an ``<n>s,`` suffix,
+    which an xfail printed after the skip (``1✓ 1s 1xf, ...``) hid.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_skipprobe.py").write_text(
+        "import pytest\n\n"
+        "def test_runs():\n    assert True\n\n"
+        "def test_skips():\n    pytest.skip('host not wired')\n\n"
+        "@pytest.mark.xfail(strict=True)\ndef test_xfails():\n    assert False\n"
+    )
+    plain = _run_runner(probe_dir)
+    assert plain.returncode == 0, plain.stdout
+    assert "1s 1xf," in plain.stdout, plain.stdout
+
+    gated = _run_runner(probe_dir, "--fail-on-skip")
+    assert gated.returncode == 1, gated.stdout
+    assert "1 test SKIPPED under --fail-on-skip" in gated.stdout
+    assert "test_skipprobe.py  (1 skipped)" in gated.stdout
+
+
+def test_fail_on_skip_passes_a_run_without_skips(tmp_path: Path) -> None:
+    proc = _run_runner(_make_probe_dir(tmp_path), "--fail-on-skip")
+    assert proc.returncode == 0, proc.stdout
+    assert "SKIPPED" not in proc.stdout
+
+
 @pytest.mark.parametrize("form,expected", [
     ("positional", ["alpha", "beta"]), ("bare-k", ["alpha"]),
     ("node-id", ["alpha"]), ("explicit-k", ["beta"]),
@@ -432,9 +504,40 @@ def test_runner_selection_records_actual_test_identity(tmp_path, form, expected)
     }[form]
     runner = _probe_root(tmp_path) / "scripts/run_tests_parallel.py"
     result = subprocess.run([sys.executable, str(runner), *arguments, "-j", "1", "--file-timeout", "30"],
-                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60)
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert sorted(path.name for path in receipt.iterdir()) == expected
+
+
+@pytest.mark.parametrize("selector", ["files", "discovery"])
+@pytest.mark.parametrize("ignore", ["glob", "glob-spaced", "path"])
+def test_passthrough_ignore_drops_files_the_runner_hands_pytest_explicitly(
+    tmp_path, selector, ignore,
+):
+    """Each file reaches its own pytest as an explicit argument, which pytest's
+    --ignore/--ignore-glob never filter; the runner must apply them itself. The
+    Windows lane's ``--ignore-glob='*test_desktop_update_windows_*.py'`` gate was a
+    no-op, so those files ran (and hit the per-file cap) on PRs it meant to spare."""
+    root = _probe_root(tmp_path)   # relative globs anchor at the repo root (per-file pytest's cwd)
+    probe = root / "tests" / "probe"
+    probe.mkdir(parents=True)
+    receipt = tmp_path / "witnesses"
+    receipt.mkdir()
+    for name in ("keep", "gated_skipme"):
+        (probe / f"test_{name}.py").write_text(
+            f"from pathlib import Path\ndef test_{name}():\n    Path({str(receipt / name)!r}).touch()\n",
+            encoding="utf-8")
+    pick = (["--files", os.pathsep.join(f"tests/probe/test_{n}.py" for n in ("keep", "gated_skipme"))]
+            if selector == "files" else ["--paths", str(probe)])
+    flag = {"glob": ["--ignore-glob=*test_gated_*.py"],
+            "glob-spaced": ["--ignore-glob", "*test_gated_*.py"],
+            "path": ["--ignore=tests/probe/test_gated_skipme.py"]}[ignore]
+    runner = root / "scripts/run_tests_parallel.py"
+    result = subprocess.run([sys.executable, str(runner), *pick, "-j", "1", "--file-timeout", "30", "--", *flag],
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(path.name for path in receipt.iterdir()) == ["keep"], result.stdout
+    assert "excluded 1 test file" in result.stdout, result.stdout
 
 
 
@@ -472,6 +575,120 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
     assert "SIGSEGV" in proc.stdout
     assert "where no tests ran" not in proc.stdout
     assert "NO TESTS RAN" not in proc.stdout
+
+
+def test_parse_summary_counts_setup_errors() -> None:
+    """"41 passed, 7 errors" parses both counts (the input the Summary relies on)."""
+    import importlib.util
+
+    runner = Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("_rtp_errors_probe", runner)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fake = (
+        "tests/tools/test_plugin_guard.py ....EEEEEEE\n"
+        "ERROR tests/tools/test_plugin_guard.py::test_x - RuntimeError: boom\n"
+        "======= 41 passed, 7 errors in 3.21s =======\n"
+    )
+    assert mod._parse_pytest_summary(fake) == {"passed": 41, "errors": 7}
+
+
+def test_setup_errors_are_named_on_the_summary_line(tmp_path: Path) -> None:
+    """Setup ERRORs must appear on the Summary line, not hide behind "0 failed".
+
+    A file whose tests all pass except for fixture-setup ERRORs exits 1, but
+    the Summary used to read "N tests passed, 0 failed" and the file was
+    filed under "all tests passed but pytest exited non-zero". The error
+    count must be on the Summary line and in its own failure bucket.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_probe_setup_errors.py").write_text(
+        textwrap.dedent(
+            """
+            import pytest
+
+            @pytest.fixture
+            def broken():
+                raise RuntimeError("setup boom")
+
+            def test_ok_one():
+                assert True
+
+            def test_ok_two():
+                assert True
+
+            @pytest.mark.parametrize("n", range(3))
+            def test_needs_broken(broken, n):
+                assert True
+            """
+        )
+    )
+
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+
+    assert proc.returncode == 1, proc.stdout
+    summary = next(l for l in proc.stdout.splitlines() if "=== Summary:" in l)
+    assert "2 tests passed, 0 failed, 3 errors" in summary, summary
+    assert "with pytest ERRORs" in proc.stdout
+    assert "(2 passed, 3 errors)" in proc.stdout
+    assert "all tests passed but pytest exited non-zero" not in proc.stdout
+    assert "where no tests ran" not in proc.stdout
+
+
+def test_clean_run_summary_has_no_errors_note(tmp_path: Path) -> None:
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir)
+    assert proc.returncode == 0, proc.stdout
+    summary = next(l for l in proc.stdout.splitlines() if "=== Summary:" in l)
+    assert "error" not in summary, summary
+
+
+def test_import_error_file_is_a_failed_file_on_the_summary_line(tmp_path: Path) -> None:
+    """A file that dies at import is a FAILED file on the Summary line, with its cause.
+
+    pytest interrupts it with exit 2 and ``collected 0 items / 1 error``, so
+    it has no failed-test count: the Summary used to read "2 tests passed,
+    0 failed" beside it. A file that collects nothing (pytest exit 5, e.g.
+    platform-gated) stays a pass.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    (probe_dir / "test_probe_import_error.py").write_text(
+        "@pytest.mark.parametrize('n', [1])\ndef test_n(n):\n    assert n\n"
+    )
+    (probe_dir / "test_probe_collects_nothing.py").write_text("VALUE = 1\n")
+
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+
+    assert proc.returncode == 1, proc.stdout
+    summary = next(l for l in proc.stdout.splitlines() if "=== Summary:" in l)
+    assert "2 tests passed, 0 failed, 1 error" in summary, summary
+    assert "FAILED: 1 of 3 files (1 at import/collection)" in summary, summary
+    lines = proc.stdout.splitlines()
+    header = lines.index("=== 1 file that FAILED AT IMPORT/COLLECTION (0 tests ran) ===")
+    cause = lines[header + 1]
+    assert "test_probe_import_error.py" in cause, proc.stdout
+    assert "NameError: name 'pytest' is not defined" in cause, proc.stdout
+    assert "where no tests ran" not in proc.stdout
+
+
+def test_named_test_path_that_does_not_exist_fails_the_run(tmp_path: Path) -> None:
+    """A mistyped or deleted file named on the command line must not run green without it."""
+    probe_dir = _make_probe_dir(tmp_path)
+    runner = _probe_root(tmp_path) / "scripts" / "run_tests_parallel.py"
+    missing = probe_dir / "test_probe_not_there.py"
+
+    proc = subprocess.run(
+        [sys.executable, str(runner), str(probe_dir / "test_flagprobe.py"), str(missing),
+         "-j", "1", "--file-timeout", "30"],
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60, check=False,
+    )
+
+    assert proc.returncode == 2, proc.stdout
+    assert f"no such test path: {missing}" in proc.stdout
+    assert "=== Summary:" not in proc.stdout
 
 
 # ── --files-from: file-backed explicit file lists ───────────────────────────
@@ -517,6 +734,7 @@ def test_files_from_dash_reads_the_list_from_stdin(tmp_path: Path) -> None:
         input=f"{probe_dir / 'test_flagprobe.py'}\n",
         cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stdout
     assert "Running 1 test files" in proc.stdout, proc.stdout
@@ -574,3 +792,19 @@ def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Pa
         off_host.add("posix")
     assert {n.split("platforms(")[1].split(")")[0].strip("'") for n in notes} == off_host, proc.stdout
     assert all("they run on the" in n for n in notes), proc.stdout
+
+
+def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(capsys) -> None:
+    """Each CI slice job restores its own duration cache; the slices must still cover every file once."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rtp_slices", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    rtp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rtp)
+    root = Path("/repo")
+    files = [root / f"tests/t_{i:03d}.py" for i in range(101)]
+    caches = [{f"tests/t_{i:03d}.py": float(i) for i in range(101)}, {"tests/t_000.py": 500.0}, {}]
+    slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
+              for i in range(3)]
+    assert sorted(f for s in slices for f in s) == sorted(files)

@@ -9,10 +9,12 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffortWire,
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
 
@@ -21,6 +23,7 @@ import { deferred } from '../../../test/deferred'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
+const tile = vi.hoisted(() => ({ delegate: null as unknown }))
 const confirmMock = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
@@ -37,7 +40,7 @@ vi.mock('@/store/session-states', async importOriginal => {
 
   return {
     ...actual,
-    sessionTileDelegate: () => null
+    sessionTileDelegate: () => tile.delegate
   }
 })
 
@@ -49,7 +52,8 @@ vi.mock('@/i18n', async importOriginal => ({
     t: {
       desktop: {
         modelSwitchFailed: 'Model switch failed'
-      }
+      },
+      shell: { modelMenu: { pickDeferred: (model: string) => `${model} applies from your next message` } }
     }
   })
 }))
@@ -304,6 +308,22 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('xai')
     expect(invalidate).not.toHaveBeenCalled()
     expect(notifyError).not.toHaveBeenCalled()
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'grok-4.5 applies from your next message' }))
+  })
+
+  it('names the owner refusal of a pick in the failure toast', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('old')
+    setCurrentProvider('xai')
+    const refusal = Object.assign(new Error('model_resolution_failed'), { data: { reason: 'model_resolution_failed' } })
+    const requestGateway = vi.fn(async () => { throw refusal })
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'nope', provider: 'xai' })).resolves.toBe(false)
+    expect(notifyError).toHaveBeenCalledWith(refusal, 'Model switch failed')
+    expect($currentModel.get()).toBe('old')
   })
 
   it('still refetches after a switch that applied immediately', async () => {
@@ -431,6 +451,7 @@ describe('useModelControls', () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
     setCurrentProvider('nous')
+    setCurrentReasoningEffortWire('max')
 
     const requestGateway = vi.fn(async () => {
       throw new Error('no such model')
@@ -444,6 +465,8 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('fable-5')
     expect($currentProvider.get()).toBe('nous')
+    // The old route's clamp is true again once the switch is undone.
+    expect($currentReasoningEffortWire.get()).toBe('max')
     expect(notifyError).toHaveBeenCalled()
   })
 
@@ -712,6 +735,32 @@ describe('useModelControls', () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b')
     })
+  })
+
+  it("withdraws the old route's wire stamp when a tile switches model", async () => {
+    let tileState: Record<string, unknown> = {
+      model: 'gpt-6.1-sol',
+      provider: 'openai-codex',
+      reasoningEffortWire: 'max'
+    }
+
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        tileState = update(tileState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'gpt-6.1-luna' }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await result.current.selectModel({ model: 'gpt-6.1-luna', provider: 'openai-codex', sessionId: 'runtime-b' })
+    } finally {
+      tile.delegate = null
+    }
+
+    // Until session.info re-stamps it, the tile pill must not present the old route's clamp.
+    expect(tileState).toMatchObject({ model: 'gpt-6.1-luna', reasoningEffortWire: '' })
   })
 
   it('rolls a failed focused-B selection back only in B cache', async () => {

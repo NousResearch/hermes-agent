@@ -130,7 +130,7 @@ class TestModelOptionsSkewGuard:
         monkeypatch.setattr(
             _web_server_profiles, "_profile_scope", lambda profile: contextlib.nullcontext()
         )
-        monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: {})
+        monkeypatch.setattr("hermes_cli.inventory.load_picker_context", dict)
 
         payload_calls: list = []
         expected = {"providers": [], "model": {}, "provider": None}
@@ -143,3 +143,42 @@ class TestModelOptionsSkewGuard:
 
         assert result == expected
         assert payload_calls == [1]
+
+
+class TestModelSetSkewGuard:
+    """#99859 (R2): POST /api/model/set is the WRITE twin of the guarded picker —
+    a stale process persisting a post-update model string serves an invalid model
+    after the restart it itself needs. It must refuse with the same 503 and never
+    reach the assignment apply."""
+
+    def test_stale_model_set_returns_503_and_skips_assignment(self, monkeypatch):
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+
+        applied: list = []
+        monkeypatch.setattr(_rt_models, "_apply_model_assignment_sync", lambda *a, **k: applied.append(1))
+
+        body = _rt_models.ModelAssignment(scope="main", provider="nous", model="some-model")
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(_rt_models.set_model_assignment(body))
+
+        assert excinfo.value.status_code == 503
+        assert "restart" in str(excinfo.value.detail).lower()
+        assert applied == []
+
+    def test_fresh_model_set_proceeds(self, monkeypatch):
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
+
+        async def _to_thread(fn):
+            return fn()
+
+        monkeypatch.setattr(_rt_models.asyncio, "to_thread", _to_thread)
+        monkeypatch.setattr(_web_server_profiles, "_profile_scope", lambda profile: contextlib.nullcontext())
+        monkeypatch.setattr(_rt_models, "_prepare_main_assignment", lambda cfg, *a: {"ok": True})
+        monkeypatch.setattr(_rt_models, "_apply_model_assignment_sync",
+                            lambda *a, **k: {"ok": True, "scope": "main"})
+
+        body = _rt_models.ModelAssignment(scope="main", provider="nous", model="some-model")
+        result = asyncio.run(_rt_models.set_model_assignment(body))
+        assert result["ok"] is True

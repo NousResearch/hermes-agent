@@ -3735,6 +3735,9 @@ def _prepare_same_provider_retry(
     retry_client_out: Optional[list] = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
+    if retry_client_out is not None:  # post-rotation retry: auto routes must not resend the benched key
+        from agent.auxiliary_pool_retry import runtime_with_rotated_pool_key
+        main_runtime = runtime_with_rotated_pool_key(main_runtime)
     if task == "vision":
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
@@ -7771,9 +7774,8 @@ def _ladder_credential_rungs(
                 return (yield _LadderStep(
                     "retry_same_provider", (resolved_provider, route.resolved_model, retry_clients))), None
             except Exception as retry2_err:
-                # Auto routes can rebuild with stale runtime credentials; explicit routes
-                # can use the newly selected key. Neither the original client nor the
-                # pool's current entry identifies the retry. Use its actual client.
+                # Neither the original client nor the pool's current entry reliably
+                # identifies the retry (another process may rotate). Use its actual client.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
                     retry_key = str(getattr(retry_clients[0], "api_key", "") or "") if retry_clients else ""

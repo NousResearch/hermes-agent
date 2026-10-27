@@ -73,12 +73,13 @@ def test_retry_exhausts_only_keys_that_failed_over_http(tmp_path, monkeypatch, c
         assert response.choices[0].message.content == "Recovered."
         attempted = set(seen)
         assert "fixture-0" in attempted and "fixture-fallback" in attempted
-        assert ("fixture-1" in attempted) is not stale_auto
+        # Auto routes rebuild from the main runtime: the retry must carry the rotated-to key too.
+        assert "fixture-1" in attempted
         assert "fixture-2" not in attempted
         # Inspect durable state, not the warm pool object or a mocked rotation call.
         stored = read_credential_pool("zai")
         states = {e["id"]: e.get("last_status") for e in stored}
-        assert states == {"key-0": "exhausted", "key-1": None if stale_auto else "exhausted", "key-2": None}
+        assert states == {"key-0": "exhausted", "key-1": "exhausted", "key-2": None}
         error_metadata = json.dumps([{k: v for k, v in e.items() if k.startswith("last_")} for e in stored])
         assert all(key not in caplog.text + error_metadata for key in attempted)
     finally:

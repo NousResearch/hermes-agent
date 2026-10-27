@@ -10,10 +10,10 @@ from agent.vault_login_classifier import (
 )
 
 
-def inspect_fixture(instruction, labels=("Code",), *, visible=True, same_form=True):
+def inspect_fixture(instruction, labels=("Code",), *, visible=True, same_form=True, autocomplete=""):
     # A minimal DOM contract harness: execute the production JS in Node, not a
     # Python reimplementation of its recognition. No browser or vault state.
-    fixture = {"instruction": instruction, "labels": labels, "visible": visible, "sameForm": same_form}
+    fixture = {"instruction": instruction, "labels": labels, "visible": visible, "sameForm": same_form, "autocomplete": autocomplete}
     script = r'''
 const vm = require('node:vm');
 const data = JSON.parse(process.argv[1]);
@@ -22,7 +22,7 @@ const instruction = {innerText: context.instruction, visible: context.visible,
   getClientRects() { return this.visible ? [1] : []; }};
 const form = {querySelectorAll() { return context.sameForm ? [instruction] : []; }};
 const inputs = context.labels.map((label, i) => ({
-  type: 'text', tagName: 'INPUT', id: 'floatingLabelInput' + i, name: '', autocomplete: '',
+  type: 'text', tagName: 'INPUT', id: 'floatingLabelInput' + i, name: '', autocomplete: context.autocomplete,
   labels: [{textContent: label}], form, maxLength: -1,
   getClientRects() { return [1]; }, getAttribute() { return ''; },
   setAttribute(k,v) {this[k] = v;}, removeAttribute(k) {delete this[k];},
@@ -54,6 +54,7 @@ console.log(JSON.stringify({probe,controls,result}));
     ("Enter your verification code", ("Code",), True, True, True),
     ("ONE-TIME code", ("Code",), True, True, True),
     ("Enter a coupon code", ("Code",), True, True, False),
+    ("", ("Verification_code",), True, True, True),
     ("", ("Code",), True, True, False),
     ("Enter authenticator code", ("Promo code",), True, True, False),
     ("Enter authenticator code", ("Code",), False, True, False),
@@ -66,6 +67,12 @@ def test_contextual_probe_and_classifier_agree(instruction, labels, visible, sam
     assert bool(controls) is expected
     assert result["probe"] is expected
     assert result["result"]["refused"] == "origin_changed"
+
+
+def test_autocomplete_token_list_probe_parity():
+    result = inspect_fixture("", ("Unlabelled",), autocomplete="section-login one-time-code")
+    assert result["probe"] is True
+    assert classify_otp_controls([LoginControl.from_dict(c) for c in result["controls"]])
 
 
 def test_ambiguous_page_refuses_before_vault_resolution(monkeypatch):

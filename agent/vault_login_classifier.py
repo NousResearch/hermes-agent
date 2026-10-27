@@ -257,15 +257,16 @@ def build_otp_probe_js() -> str:
     """Use the same inspected metadata for tab discovery, without stamping controls."""
     inspect = build_inspection_js("")
     pattern = json.dumps(_RE_OTP.pattern)
-    return """(() => {
+    return r"""(() => {
       const controls = JSON.parse(__INSPECT__);
+      const normalize = value => value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       const explicit = new RegExp(__PATTERN__);
-      const matches = controls.filter(c => c.autocomplete.toLowerCase().split(/\\s+/).includes('one-time-code') ||
+      const matches = controls.filter(c => c.autocomplete.toLowerCase().split(/\s+/).includes('one-time-code') ||
         (['text', 'tel', 'number', 'password', ''].includes(c.type) &&
-         explicit.test((c.name + ' ' + c.label).toLowerCase())));
+         explicit.test(normalize(c.name + ' ' + c.label))));
       if (matches.length) return true;
       return controls.filter(c => c.otpContext && c.formIndex !== null &&
-        ['text', 'tel', 'number'].includes(c.type) && c.label.trim().toLowerCase() === 'code').length === 1;
+        ['text', 'tel', 'number'].includes(c.type) && normalize(c.label) === 'code').length === 1;
     })()""".replace("__INSPECT__", inspect).replace("__PATTERN__", pattern)
 
 

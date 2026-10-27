@@ -698,9 +698,18 @@ def _run_after_agent_ready(
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")})
             return
+    # Hosted-room tasks, authored turns and hidden (widget/onboarding) sends are not typed by this client.
+    viewer_typed = hosted_terminal_callback is None and turn_author is None and display_kind != "hidden"
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author, viewer_typed=viewer_typed)
+
+
+def _session_has_approving_client(sid: str) -> bool:
+    """A client that can answer this session's approval prompt is attached now: a live, non-canonical WebSocket
+    client (Desktop against ``hermes serve``, the dashboard's embedded TUI) that advertised server→client
+    requests (``client.capabilities``). Stdio transports are excluded by ``_transport_is_live_peer``."""
+    return bool(_session_answering_clients(sid))  # server's rebound copy (session_transports.py)
 
 
 _TRUNCATION_PARAMS = (

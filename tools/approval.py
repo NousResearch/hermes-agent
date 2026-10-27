@@ -1206,9 +1206,12 @@ def _is_local_viewer_turn() -> bool:
     admission) and a viewer holding ``session:approve`` is attached now, it is not a delegate_task child (sync or
     async; they inherit the parent's policy), and the turn's approval notifier is registered under the bound
     session key. The notifier is registered for every session turn, so it only tells side tasks (their own task
-    key, none registered) apart; it does not show anyone is attached."""
+    key, none registered) apart; it does not show anyone is attached. A legacy tui_gateway turn has no frozen policy
+    or ``viewer_turn``; its runner's marker (``approval_context.is_tui_viewer_turn_with_approver``) stands in for both."""
     from agent.delegation_context import is_delegated_child_process_context
-    return (approval_context.is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
+    viewer_turn = ((approval_context.is_local_interactive_session() and approval_context.is_viewer_turn_with_approver())
+                   or approval_context.is_tui_viewer_turn_with_approver())
+    return (viewer_turn
             and not is_delegated_child_process_context()
             and _gateway_notify_cb(get_current_session_key()) is not None)
 

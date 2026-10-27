@@ -254,6 +254,7 @@ Local sessions (classic CLI, TUI, Desktop, ACP editor) follow the interactive CL
 - turns nobody typed in it: plugin `inject_message` turns, delegation completions, background-process and watch-pattern notices, `/loop` ticks, heartbeats, hosted-room tasks
 - `delegate_task` children and `/bg` / `/btw` side tasks
 - a viewer's turn that runs while no viewer who can approve is attached
+- on a Desktop or dashboard connection to `hermes serve` (not attached to the shared gateway): a prompt typed while a turn was running and drained after it, and turns run on an isolated compute host
 
 ### Approval Flow (CLI)
 

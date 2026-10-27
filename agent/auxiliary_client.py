@@ -121,7 +121,7 @@ def aux_probe_mode():
 
 from agent.credential_pool import load_pool
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
-from agent.auxiliary_plugin_oauth import is_plugin_oauth_pool, pool_superseded_key, refresh_pooled_row
+from agent import auxiliary_plugin_oauth as _plugin_oauth
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
@@ -3874,8 +3874,8 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
     """Refresh short-lived OAuth credentials; a plugin OAuth pool refreshes the row that sent the rejected key."""
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
-    if refresher is None and is_plugin_oauth_pool(normalized):
-        refresher = lambda: refresh_pooled_row(normalized, failed_api_key)
+    if refresher is None and _plugin_oauth.is_plugin_oauth_pool(normalized):
+        refresher = lambda: _plugin_oauth.refresh_pooled_row(normalized, failed_api_key)
     elif refresher is None:
         from providers import get_provider_profile
         profile = get_provider_profile(normalized)
@@ -4597,7 +4597,7 @@ def _try_main_provider_route(
             explicit_api_key = runtime_api_key
     elif runtime_api_key:
         # Pin the session's working key over a re-selected pool key, unless its plugin OAuth pool knows it is dead.
-        explicit_api_key = None if pool_superseded_key(main_provider, runtime_api_key) else runtime_api_key
+        explicit_api_key = None if _plugin_oauth.pool_superseded_key(main_provider, runtime_api_key) else runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
     if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):
@@ -7733,20 +7733,20 @@ def _ladder_credential_rungs(
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
         failed_key = getattr(client, "api_key", "")
+        refreshed_row = _plugin_oauth.pooled_row_id(auth_refresh_provider, failed_key)
         if _refresh_provider_credentials(auth_refresh_provider, failed_api_key=failed_key if isinstance(failed_key, str) else ""):
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
-                # The stale client is cached under the route label (e.g. "auto"), not the
-                # concrete backend we refreshed.
+                # The stale client is cached under the route label (e.g. "auto"), not the backend.
                 _evict_cached_clients(resolved_provider)
             logger.info("Auxiliary %s%s: refreshed %s credentials after auth error, retrying",
                         task or "call", tag, auth_refresh_provider)
-            step = _LadderStep(
-                "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))
+            step = _LadderStep("retry_same_provider",
+                               (auth_refresh_provider, route.resolved_model or route.final_model))
             resp, first_err = yield from _rung(
                 step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
             if first_err is None:
                 return resp, None
+            _plugin_oauth.bench_pooled_row(auth_refresh_provider, refreshed_row, first_err)  # no-op unless a 401
             # ``first_err`` is now the retry's own failure, not the original auth error: the
             # pool gate below and the ladder tail's eviction check both read this narrowed
             # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above

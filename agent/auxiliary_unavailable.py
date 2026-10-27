@@ -85,22 +85,29 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     when = safe_strftime(datetime.fromtimestamp(min(resets)).astimezone(), "%Y-%m-%d %H:%M %Z")
     which = ("its only credential is" if len(live) == 1
              else f"all {len(live)} credentials are")
-    cause, remedy = _bench_cause(sorted({e.last_error_code for e in live if e.last_error_code}), provider_id)
+    codes = {e.last_error_code for e in live}
+    cause, remedy = _bench_cause(sorted(c for c in codes if c), None in codes or 0 in codes, provider_id)
     return (f"Provider '{provider_id}' is set in config.yaml but {which} cooling down after "
             f"{cause}; the next one resets at {when}. {remedy}, or switch to a different provider "
             "with `hermes model`.")
 
 
-def _bench_cause(codes: list, provider_id: str) -> tuple[str, str]:
+def _bench_cause(codes: list, uncoded: bool, provider_id: str) -> tuple[str, str]:
     """``(cause, remedy)`` for a benched pool, named from the entries' recorded error codes — a 401
-    whose sign-in refresh failed is not a rate limit, and waiting out its reset will not fix it."""
+    whose sign-in refresh failed is not a rate limit, and waiting out its reset will not fix it. An
+    entry benched without a code (a failed token refresh, a transport error) is named as such, never
+    as a 429 it may not have been."""
     add = f"`hermes auth add {provider_id}`"
+    if uncoded:
+        known = f" or errors ({', '.join(map(str, codes))})" if codes else ""
+        return (f"a failed request or token refresh{known}",
+                f"Wait for the reset, sign in again or add another credential with {add}")
     if codes and all(c in (401, 403) for c in codes):
         return (f"the provider rejected its sign-in ({', '.join(map(str, codes))})",
                 f"Sign in again with {add}")
     if codes == [402]:
         return "a billing error (402)", f"Add credits with that provider, add another credential with {add}"
-    if not codes or codes == [429]:
+    if codes == [429]:
         return "a rate limit / quota error (429)", f"Wait for the reset, add another credential with {add}"
     return (f"errors ({', '.join(map(str, codes))})",
             f"Wait for the reset, sign in again or add another credential with {add}")

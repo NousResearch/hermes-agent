@@ -53,7 +53,7 @@ class RelayTransportLike(Protocol):
     async def disconnect(self) -> None:
         ...
 
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_outbound(self, action: dict[str, Any]) -> dict[str, Any]:
         ...
 
     @property
@@ -72,7 +72,7 @@ class RelayTransportLike(Protocol):
 class SSERelayMessage:
     """A single event from an SSE relay stream."""
     event_type: str  # e.g. "task_offer", "task_result", "peer_announce"
-    data: Dict[str, Any]
+    data: dict[str, Any]
     sequence: int
     timestamp: float
 
@@ -161,7 +161,7 @@ class HttpSSETransport:
 
     # ── Outbound ─────────────────────────────────────────────────────
 
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_outbound(self, action: dict[str, Any]) -> dict[str, Any]:
         """POST a relay action to the peer via HTTP."""
         if not self._connected or not self._session:
             return {"success": False, "error": "not_connected"}
@@ -191,7 +191,7 @@ class HttpSSETransport:
                     )
                     self.audit_log.append(ev)
                 return data
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {"success": False, "error": "timeout"}
         except Exception as exc:
             logger.warning("HttpSSE: send_outbound failed: %s", exc)
@@ -250,14 +250,14 @@ class HttpSSETransport:
                 )
                 if hasattr(self, "_inbound_handler") and self._inbound_handler:
                     await self._inbound_handler(msg.data)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             except Exception as exc:
                 logger.warning("HttpSSE: inbound forward error: %s", exc)
 
     # ── Helpers ──────────────────────────────────────────────────────
 
-    def _auth_headers(self) -> Dict[str, str]:
+    def _auth_headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.cluster_secret}",
             "X-Device-ID": self.local_device_id,
@@ -310,8 +310,8 @@ class FederationTransportRouter:
     def __init__(self, local_device_id: str) -> None:
         self.local_device_id = local_device_id
         # name -> (transport, score)
-        self._transports: Dict[str, RelayTransportLike] = {}
-        self._transport_scores: Dict[str, float] = {}
+        self._transports: dict[str, RelayTransportLike] = {}
+        self._transport_scores: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     def register_transport(self, name: str, transport: RelayTransportLike) -> None:
@@ -322,7 +322,7 @@ class FederationTransportRouter:
     async def get_best_transport(
         self,
         peer_id: str,
-        latency_hints: Optional[Dict[str, float]] = None,
+        latency_hints: Optional[dict[str, float]] = None,
     ) -> Optional[TransportScore]:
         """Return the best available transport for a peer.
 
@@ -336,7 +336,7 @@ class FederationTransportRouter:
         if not self._transports:
             return None
 
-        candidates: List[TransportScore] = []
+        candidates: list[TransportScore] = []
         hints = latency_hints or {}
 
         for name, transport in self._transports.items():
@@ -389,9 +389,9 @@ class FederationTransportRouter:
     async def relay_task(
         self,
         peer_id: str,
-        task_payload: Dict[str, Any],
-        latency_hints: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, Any]:
+        task_payload: dict[str, Any],
+        latency_hints: Optional[dict[str, float]] = None,
+    ) -> dict[str, Any]:
         """Relay a task to the best available transport for the peer.
 
         Args:
@@ -415,15 +415,15 @@ class FederationTransportRouter:
             logger.warning("TransportRouter: relay via %s failed: %s", best.transport_name, exc)
             return {"success": False, "error": str(exc), "via_transport": best.transport_name}
 
-    def get_transport_names(self) -> List[str]:
+    def get_transport_names(self) -> list[str]:
         """Return registered transport names in priority order."""
         return [t for t in self.TRANSPORT_PRIORITY if t in self._transports]
 
 
 __all__ = [
-    "HttpSSETransport",
     "FederationTransportRouter",
+    "HttpSSETransport",
     "RelayTransportLike",
-    "TransportScore",
     "SSERelayMessage",
+    "TransportScore",
 ]

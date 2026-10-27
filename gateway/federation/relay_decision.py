@@ -58,7 +58,7 @@ class ApprovalMode(str, enum.Enum):
     REVIEW = "review" # Relay immediately, detailed report after
 
     @classmethod
-    def from_str(cls, s: str) -> "ApprovalMode":
+    def from_str(cls, s: str) -> ApprovalMode:
         try:
             return cls(s.lower())
         except ValueError:
@@ -111,7 +111,7 @@ class RelayDecision:
             DecisionOutcome.ASK,  # user will decide
         )
 
-    def to_audit_dict(self) -> Dict[str, Any]:
+    def to_audit_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
             "outcome": self.outcome.value,
@@ -135,12 +135,12 @@ class DecisionThresholds:
     ask: float = 0.0              # < ask_threshold → ASK
 
     @classmethod
-    def strict(cls) -> "DecisionThresholds":
+    def strict(cls) -> DecisionThresholds:
         """Stricter thresholds for sensitive environments."""
         return cls(auto_approve=0.85, review=0.50)
 
     @classmethod
-    def permissive(cls) -> "DecisionThresholds":
+    def permissive(cls) -> DecisionThresholds:
         """Permissive thresholds for trusted clusters."""
         return cls(auto_approve=0.50, review=0.20)
 
@@ -157,7 +157,7 @@ class PeerCapability:
     load_avg: float = 0.0
     trust: TrustLevel = TrustLevel.UNKNOWN
     # Task categories this peer is good at
-    specialties: Set[str] = field(default_factory=set)
+    specialties: set[str] = field(default_factory=set)
     # Latency to this peer (ms); None = unknown
     latency_ms: Optional[float] = None
     # Last time this peer was responsive (unix ts)
@@ -186,7 +186,7 @@ class TaskDescriptor:
     task_id: str
     description: str              # raw task description for sensitivity inference
     sensitivity: TaskSensitivity  # explicit sensitivity (or inferred)
-    required_capabilities: Set[str] = field(default_factory=set)
+    required_capabilities: set[str] = field(default_factory=set)
     required_cpu_cores: int = 1
     required_memory_gb: float = 0.5
     max_latency_ms: Optional[float] = None  # task can't tolerate >N ms latency
@@ -219,7 +219,7 @@ class RelayDecisionEngine:
     async def evaluate_relay(
         self,
         task: TaskDescriptor,
-        candidate_peers: List[PeerCapability],
+        candidate_peers: list[PeerCapability],
     ) -> RelayDecision:
         """Evaluate relay for a task across candidate peers.
 
@@ -289,7 +289,7 @@ class RelayDecisionEngine:
     def evaluate_relay_sync(
         self,
         task: TaskDescriptor,
-        candidate_peers: List[PeerCapability],
+        candidate_peers: list[PeerCapability],
     ) -> RelayDecision:
         """Synchronous version of evaluate_relay for non-async contexts."""
         if not candidate_peers:
@@ -525,7 +525,7 @@ def make_task_descriptor(
     description: str,
     *,
     sensitivity: Optional[TaskSensitivity] = None,
-    required_capabilities: Optional[Set[str]] = None,
+    required_capabilities: Optional[set[str]] = None,
     required_cpu_cores: int = 1,
     required_memory_gb: float = 0.5,
     approval_mode: ApprovalMode = ApprovalMode.AUTO,
@@ -555,7 +555,7 @@ def make_peer_capability(
     memory_gb: float = 0.0,
     load_avg: float = 0.0,
     trust: TrustLevel = TrustLevel.UNKNOWN,
-    specialties: Optional[Set[str]] = None,
+    specialties: Optional[set[str]] = None,
     latency_ms: Optional[float] = None,
     last_seen: float = 0.0,
 ) -> PeerCapability:
@@ -574,13 +574,13 @@ def make_peer_capability(
 
 __all__ = [
     "ApprovalMode",
+    "ConfidenceBreakdown",
     "DecisionOutcome",
     "DecisionThresholds",
-    "ConfidenceBreakdown",
-    "RelayDecision",
     "PeerCapability",
-    "TaskDescriptor",
+    "RelayDecision",
     "RelayDecisionEngine",
-    "make_task_descriptor",
+    "TaskDescriptor",
     "make_peer_capability",
+    "make_task_descriptor",
 ]

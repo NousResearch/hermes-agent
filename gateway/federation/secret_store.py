@@ -80,6 +80,7 @@ class MacOSKeychainBackend(SecretBackend):
             r = subprocess.run(
                 ["security", "find-generic-password", "-w"]
                 + self._key_args(key),
+                check=False,
                 capture_output=True, text=True, timeout=5,
                 env={},  # clear env so we don't leak it
             )
@@ -99,6 +100,7 @@ class MacOSKeychainBackend(SecretBackend):
             r = subprocess.run(
                 ["security", "add-generic-password", "-U", "-w", value]
                 + self._key_args(key),
+                check=False,
                 capture_output=True, text=True, timeout=5,
                 env={},
             )
@@ -108,6 +110,7 @@ class MacOSKeychainBackend(SecretBackend):
                 r = subprocess.run(
                     ["security", "add-generic-password", "-w", value]
                     + self._key_args(key),
+                    check=False,
                     capture_output=True, text=True, timeout=5,
                     env={},
                 )
@@ -121,6 +124,7 @@ class MacOSKeychainBackend(SecretBackend):
             subprocess.run(
                 ["security", "delete-generic-password"]
                 + self._key_args(key),
+                check=False,
                 capture_output=True, text=True, timeout=5,
                 env={},
             )
@@ -168,6 +172,7 @@ class EncryptedFileBackend(SecretBackend):
         try:
             mid = subprocess.run(
                 ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                check=False,
                 capture_output=True, text=True, timeout=2,
             )
             for line in mid.stdout.splitlines():
@@ -462,12 +467,12 @@ def resolve_auth_token(explicit: Optional[str] = None) -> Optional[str]:
 
 
 __all__ = [
-    "SecretStore",
-    "SecretBackend",
-    "MacOSKeychainBackend",
     "EncryptedFileBackend",
+    "MacOSKeychainBackend",
+    "SecretBackend",
+    "SecretStore",
     "get_default_store",
     "get_token",
-    "set_token",
     "resolve_auth_token",
+    "set_token",
 ]

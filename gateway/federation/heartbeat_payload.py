@@ -41,7 +41,7 @@ import time
 # Whitelist of fields allowed in heartbeat. Any field NOT in this set
 # is stripped before broadcast. Defense-in-depth: even if a developer
 # accidentally adds a sensitive field, it won't leak.
-HEARTBEAT_WHITELIST: Set[str] = {
+HEARTBEAT_WHITELIST: set[str] = {
     # Identity
     "node_id",
     "hostname",
@@ -66,7 +66,7 @@ HEARTBEAT_WHITELIST: Set[str] = {
 
 # Blacklist of NEVER allowed fields. Anyone setting these causes an
 # audit log warning.
-HEARTBEAT_BLACKLIST: Set[str] = {
+HEARTBEAT_BLACKLIST: set[str] = {
     # Task content
     "task_payload",
     "task_partial_result",
@@ -131,7 +131,7 @@ class HeartbeatPayload:
     # Trust
     trust_level: str = "unknown"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     def to_json(self) -> str:
@@ -149,7 +149,7 @@ _SUSPICIOUS_KEYWORDS = (
 )
 
 
-def sanitize_heartbeat(raw: Dict[str, Any]) -> HeartbeatPayload:
+def sanitize_heartbeat(raw: dict[str, Any]) -> HeartbeatPayload:
     """Sanitize a raw heartbeat dict into a safe HeartbeatPayload.
 
     Strips any field not in HEARTBEAT_WHITELIST or that matches a
@@ -158,10 +158,10 @@ def sanitize_heartbeat(raw: Dict[str, Any]) -> HeartbeatPayload:
     Audit log WARNING if any field is stripped (potential privacy leak).
     """
     from gateway.federation.audit import SecurityEvent
-    stripped: List[str] = []
+    stripped: list[str] = []
 
     # First pass: whitelist
-    safe: Dict[str, Any] = {}
+    safe: dict[str, Any] = {}
     for k, v in raw.items():
         if k in HEARTBEAT_WHITELIST:
             safe[k] = v
@@ -224,7 +224,7 @@ def is_safe_field(field_name: str) -> bool:
     return True
 
 
-def assert_safe(payload: Dict[str, Any], raise_on_violation: bool = True) -> bool:
+def assert_safe(payload: dict[str, Any], raise_on_violation: bool = True) -> bool:
     """Check a payload against the heartbeat contract.
 
     Returns True if all fields are safe. If `raise_on_violation` is True
@@ -234,9 +234,7 @@ def assert_safe(payload: Dict[str, Any], raise_on_violation: bool = True) -> boo
     """
     bad = []
     for k in payload:
-        if k not in HEARTBEAT_WHITELIST:
-            bad.append(k)
-        elif k in HEARTBEAT_BLACKLIST:
+        if k not in HEARTBEAT_WHITELIST or k in HEARTBEAT_BLACKLIST:
             bad.append(k)
     if bad:
         msg = f"Unsafe heartbeat fields: {bad}"
@@ -247,10 +245,10 @@ def assert_safe(payload: Dict[str, Any], raise_on_violation: bool = True) -> boo
 
 
 __all__ = [
-    "HEARTBEAT_WHITELIST",
     "HEARTBEAT_BLACKLIST",
+    "HEARTBEAT_WHITELIST",
     "HeartbeatPayload",
-    "sanitize_heartbeat",
-    "is_safe_field",
     "assert_safe",
+    "is_safe_field",
+    "sanitize_heartbeat",
 ]

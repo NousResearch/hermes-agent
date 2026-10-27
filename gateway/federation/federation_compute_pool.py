@@ -77,7 +77,7 @@ class DistributedResult:
     total_chunks: int
     successful_chunks: int
     failed_chunks: int
-    results: List[ChunkResult] = field(default_factory=list)
+    results: list[ChunkResult] = field(default_factory=list)
     aggregated_data: Any = None
     duration_ms: float = 0.0
 
@@ -112,9 +112,9 @@ class FederationComputePool:
         self.chunk_timeout = chunk_timeout
         self.max_retries = max_retries
 
-        self._capabilities: Dict[str, ComputeCapability] = {}
-        self._pending_results: Dict[str, Dict[str, ChunkResult]] = {}
-        self._handlers: Dict[str, Callable] = {}
+        self._capabilities: dict[str, ComputeCapability] = {}
+        self._pending_results: dict[str, dict[str, ChunkResult]] = {}
+        self._handlers: dict[str, Callable] = {}
         self._running = False
 
     # ----------------------------------------------------------------
@@ -154,6 +154,7 @@ class FederationComputePool:
             import subprocess
             mem = subprocess.run(
                 ["sysctl", "-n", "hw.memsize"],
+                check=False,
                 capture_output=True, text=True, timeout=3,
             ).stdout.strip()
             memory_gb = int(mem) / (1024 ** 3)
@@ -175,7 +176,7 @@ class FederationComputePool:
             device_id, capability.compute_score,
         )
 
-    def get_all_capabilities(self) -> Dict[str, ComputeCapability]:
+    def get_all_capabilities(self) -> dict[str, ComputeCapability]:
         """Get all known peer capabilities."""
         return dict(self._capabilities)
 
@@ -187,7 +188,7 @@ class FederationComputePool:
             cap = self._capabilities.get(self.device_id)
         return cap.compute_score if cap else 0.0
 
-    def _get_distribution_plan(self, total_chunks: int) -> Dict[str, int]:
+    def _get_distribution_plan(self, total_chunks: int) -> dict[str, int]:
         """Plan how to distribute chunks across peers based on capability.
 
         Returns {device_id: chunk_count} plan.
@@ -203,7 +204,7 @@ class FederationComputePool:
         if total_score == 0:
             return {self.device_id: total_chunks}
 
-        plan: Dict[str, int] = {}
+        plan: dict[str, int] = {}
         remaining = total_chunks
         sorted_peers = sorted(
             available.items(),
@@ -216,7 +217,7 @@ class FederationComputePool:
                 # Last peer gets remainder
                 plan[did] = remaining
             else:
-                share = int(round(cap.compute_score / total_score * total_chunks))
+                share = round(cap.compute_score / total_score * total_chunks)
                 plan[did] = min(share, remaining)
                 remaining -= plan[did]
 
@@ -272,7 +273,7 @@ class FederationComputePool:
         plan = self._get_distribution_plan(total_chunks)
 
         # Assign chunks to peers
-        chunk_assignments: List[tuple[str, int, list]] = []
+        chunk_assignments: list[tuple[str, int, list]] = []
         chunk_idx = 0
         for device_id, count in plan.items():
             for _ in range(count):
@@ -386,19 +387,6 @@ class FederationComputePool:
     ) -> ChunkResult:
         """Send a chunk to a peer for execution."""
         start = time.time()
-
-        # Send compute request
-        msg = FedMessage(
-            msg_type=MessageType.COMPUTE_REQUEST.value,
-            sender_id=self.device_id,
-            target_id=device_id,
-            payload={
-                "task_id": chunk_id.split("-")[0],
-                "chunk_id": chunk_id,
-                "task_type": task_type,
-                "data": chunk_data,
-            },
-        )
 
         # For now, simulate (real implementation would use a response protocol)
         # In production, we'd use a request-response pattern with timeouts

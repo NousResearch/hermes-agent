@@ -55,7 +55,7 @@ class CronJobInfo:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "CronJobInfo":
+    def from_dict(cls, d: dict) -> CronJobInfo:
         return cls(**d)
 
 
@@ -85,8 +85,8 @@ class FederationCronRelay:
         self.heartbeat_interval = heartbeat_interval
         self.offline_threshold = offline_threshold
 
-        self._jobs: Dict[str, CronJobInfo] = {}  # job_id -> info
-        self._leadership: Dict[str, bool] = {}  # job_id -> am I leader?
+        self._jobs: dict[str, CronJobInfo] = {}  # job_id -> info
+        self._leadership: dict[str, bool] = {}  # job_id -> am I leader?
         self._running = False
 
     async def start(self) -> None:
@@ -215,14 +215,14 @@ class FederationCronRelay:
         """Check if this device is the leader for a job."""
         return self._leadership.get(job_id, False)
 
-    def get_my_jobs(self) -> List[CronJobInfo]:
+    def get_my_jobs(self) -> list[CronJobInfo]:
         """Get all jobs where this device is the leader."""
         return [
             job for job in self._jobs.values()
             if job.leader_device == self.device_id
         ]
 
-    def get_all_jobs(self) -> List[CronJobInfo]:
+    def get_all_jobs(self) -> list[CronJobInfo]:
         """Get all known jobs."""
         return list(self._jobs.values())
 
@@ -261,7 +261,7 @@ class SkillInfo:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SkillInfo":
+    def from_dict(cls, d: dict) -> SkillInfo:
         return cls(**d)
 
 
@@ -281,7 +281,7 @@ class FederationSkillSync:
         self.device_id = device_id
         self.adapter = adapter
         self.hermes_home = hermes_home or str(Path.home() / ".hermes")
-        self._skills: Dict[str, SkillInfo] = {}
+        self._skills: dict[str, SkillInfo] = {}
         self._running = False
 
     async def start(self) -> None:

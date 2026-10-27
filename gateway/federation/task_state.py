@@ -54,7 +54,7 @@ class SignedTaskState:
     status: str = "pending"
     started_at: float = 0.0
     last_heartbeat: float = 0.0
-    partial_result: Dict[str, Any] = field(default_factory=dict)
+    partial_result: dict[str, Any] = field(default_factory=dict)
     required_capability: list = field(default_factory=list)
     sensitivity: str = "medium"
     signature: str = ""
@@ -99,7 +99,7 @@ class SignedTaskState:
         ).hexdigest()
         return hmac.compare_digest(self.signature, expected)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to dict (including signature)."""
         return asdict(self)
 
@@ -108,7 +108,7 @@ class SignedTaskState:
         return json.dumps(self.to_dict(), separators=(",", ":"), sort_keys=True)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SignedTaskState":
+    def from_dict(cls, data: dict[str, Any]) -> SignedTaskState:
         """Deserialize from dict. Verify separately."""
         # Filter to known fields
         known = set(cls.__dataclass_fields__.keys())
@@ -116,15 +116,15 @@ class SignedTaskState:
         return cls(**clean)
 
     @classmethod
-    def from_json(cls, raw: str) -> "SignedTaskState":
+    def from_json(cls, raw: str) -> SignedTaskState:
         """Deserialize from JSON. Verify separately."""
         return cls.from_dict(json.loads(raw))
 
 
-def integrity_check(payload: Dict[str, Any], cluster_secret: str) -> bool:
+def integrity_check(payload: dict[str, Any], cluster_secret: str) -> bool:
     """One-shot verification of a serialized task state."""
     state = SignedTaskState.from_dict(payload)
     return state.verify(cluster_secret)
 
 
-__all__ = ["SignedTaskState", "SIGNATURE_ALGO", "integrity_check"]
+__all__ = ["SIGNATURE_ALGO", "SignedTaskState", "integrity_check"]

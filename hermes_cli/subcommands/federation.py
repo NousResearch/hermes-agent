@@ -100,7 +100,6 @@ def _cmd_fed_status(args) -> int:
     from gateway.federation.federation_adapter import create_federation_adapter
     from gateway.config import FederationConfig
 
-    cfg = FederationConfig()  # Will be overridden by config loading
     adapter = create_federation_adapter(enabled=True, mode="lan")
 
     peers = adapter.get_peers()
@@ -123,7 +122,7 @@ def _cmd_fed_status(args) -> int:
         }
         print(json.dumps(output, indent=2))
     else:
-        print(f"🔗 Federation Status")
+        print("🔗 Federation Status")
         print(f"  Device: {adapter.device_id}")
         print(f"  Connected: {'✅ Yes' if is_connected else '❌ No'}")
         print(f"  Peers: {len(peers)}")

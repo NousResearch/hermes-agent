@@ -56,7 +56,7 @@ class MemoryEntry:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "MemoryEntry":
+    def from_dict(cls, d: dict) -> MemoryEntry:
         return cls(**d)
 
 
@@ -84,7 +84,7 @@ class FederationMemorySync:
         self.device_id = device_id
         self.adapter = adapter
         self.hermes_home = hermes_home or Path.home() / ".hermes"
-        self._local_memories: Dict[str, MemoryEntry] = {}
+        self._local_memories: dict[str, MemoryEntry] = {}
         self._running = False
         self._sync_interval = 60  # seconds between full sync broadcasts
         self._on_apply: Optional[Callable[[MemoryEntry], None]] = None
@@ -288,7 +288,7 @@ class FederationDistributedSearch:
         self.device_id = device_id
         self.adapter = adapter
         self.request_timeout = request_timeout
-        self._pending_queries: Dict[str, Dict[str, list]] = {}  # query_id -> {device_id: [results]}
+        self._pending_queries: dict[str, dict[str, list]] = {}  # query_id -> {device_id: [results]}
         self._running = False
 
     async def start(self) -> None:
@@ -306,7 +306,7 @@ class FederationDistributedSearch:
         limit: int = 10,
         sort: str = "newest",
         profile: Optional[str] = None,
-    ) -> List[SearchResult]:
+    ) -> list[SearchResult]:
         """Execute a distributed search across all peers.
 
         Returns aggregated results from all devices, deduplicated and sorted.

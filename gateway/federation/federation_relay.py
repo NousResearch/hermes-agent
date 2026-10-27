@@ -102,8 +102,8 @@ class TaskExecutorRelay:
         self.progress_interval = progress_interval
         self.checkpoint_interval = checkpoint_interval
 
-        self._active_tasks: Dict[str, TaskExecutionState] = {}
-        self._task_handlers: Dict[str, Callable] = {}
+        self._active_tasks: dict[str, TaskExecutionState] = {}
+        self._task_handlers: dict[str, Callable] = {}
         self._running = False
 
     # ----------------------------------------------------------------
@@ -383,7 +383,6 @@ class TaskExecutorRelay:
     ) -> None:
         """Register a handler for tasks matching a pattern (future)."""
         # TODO: Implement pattern matching for task routing
-        pass
 
     # ----------------------------------------------------------------
     # Default handler
@@ -466,7 +465,7 @@ class TaskExecutorRelay:
         """Get state for an active task."""
         return self._active_tasks.get(task_id)
 
-    def get_all_active_tasks(self) -> Dict[str, TaskExecutionState]:
+    def get_all_active_tasks(self) -> dict[str, TaskExecutionState]:
         """Get all active tasks."""
         return dict(self._active_tasks)
 

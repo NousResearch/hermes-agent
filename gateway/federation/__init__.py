@@ -28,13 +28,13 @@ from gateway.federation.federation_relay import TaskExecutorRelay, TaskCheckpoin
 from gateway.federation.federation_discovery import FederationMDNS, DiscoveredPeer
 
 __all__ = [
+    "DiscoveredPeer",
     "FedMessage",
+    "FederationConsensus",
+    "FederationMDNS",
     "MessageType",
     "PeerInfo",
-    "FederationConsensus",
-    "TaskExecutorRelay",
     "TaskCheckpoint",
     "TaskExecutionState",
-    "FederationMDNS",
-    "DiscoveredPeer",
+    "TaskExecutorRelay",
 ]

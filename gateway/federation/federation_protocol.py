@@ -134,7 +134,7 @@ class FedMessage:
         return json.dumps(d, separators=(",", ":"))
 
     @classmethod
-    def from_json(cls, raw: str) -> "FedMessage":
+    def from_json(cls, raw: str) -> FedMessage:
         """Deserialize from JSON wire format."""
         d = json.loads(raw)
         return cls(
@@ -171,7 +171,7 @@ class FedMessage:
         return (time.time() - self.timestamp) > ttl
 
     @classmethod
-    def peer_join(cls, device_id: str, info: PeerInfo) -> "FedMessage":
+    def peer_join(cls, device_id: str, info: PeerInfo) -> FedMessage:
         """Create a PEER_JOIN message."""
         return cls(
             msg_type=MessageType.PEER_JOIN.value,
@@ -191,7 +191,7 @@ class FedMessage:
         )
 
     @classmethod
-    def peer_leave(cls, device_id: str, reason: str = "offline") -> "FedMessage":
+    def peer_leave(cls, device_id: str, reason: str = "offline") -> FedMessage:
         """Create a PEER_LEAVE message."""
         return cls(
             msg_type=MessageType.PEER_LEAVE.value,
@@ -208,7 +208,7 @@ class FedMessage:
         description: str = "",
         priority: int = 3,
         context_snapshot: Optional[dict] = None,
-    ) -> "FedMessage":
+    ) -> FedMessage:
         """Create a TASK_SUBMIT message."""
         return cls(
             msg_type=MessageType.TASK_SUBMIT.value,
@@ -227,7 +227,7 @@ class FedMessage:
         cls,
         device_id: str,
         task_id: str,
-    ) -> "FedMessage":
+    ) -> FedMessage:
         """Create a TASK_CLAIM message."""
         return cls(
             msg_type=MessageType.TASK_CLAIM.value,
@@ -242,7 +242,7 @@ class FedMessage:
         task_id: str,
         progress: float,
         note: str = "",
-    ) -> "FedMessage":
+    ) -> FedMessage:
         """Create a TASK_PROGRESS message."""
         return cls(
             msg_type=MessageType.TASK_PROGRESS.value,
@@ -263,7 +263,7 @@ class FedMessage:
         success: bool,
         result_data: Optional[dict] = None,
         error_info: str = "",
-    ) -> "FedMessage":
+    ) -> FedMessage:
         """Create a TASK_RESULT message."""
         return cls(
             msg_type=MessageType.TASK_RESULT.value,
@@ -281,7 +281,7 @@ class FedMessage:
         cls,
         device_id: str,
         task_id: str,
-    ) -> "FedMessage":
+    ) -> FedMessage:
         """Create a TASK_HEARTBEAT — task executor still alive."""
         return cls(
             msg_type=MessageType.TASK_HEARTBEAT.value,

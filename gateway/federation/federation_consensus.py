@@ -56,8 +56,8 @@ class FederationConsensus:
         self.device_id = device_id
         self.total_peers = total_peers  # Including self
         self.vote_timeout = vote_timeout
-        self._active_rounds: Dict[str, ConsensusState] = {}
-        self._pending_votes: Dict[str, Dict[str, bool]] = {}  # task_id -> {voter: vote}
+        self._active_rounds: dict[str, ConsensusState] = {}
+        self._pending_votes: dict[str, dict[str, bool]] = {}  # task_id -> {voter: vote}
 
     # ----------------------------------------------------------------
     # Claim initiation
@@ -77,7 +77,6 @@ class FederationConsensus:
         self._active_rounds[task_id] = state
 
         # Broadcast claim request
-        claim_msg = FedMessage.task_claim(self.device_id, task_id)
         logger.info(
             "Federation consensus: initiating claim for task %s (peers=%d, current_votes=%d)",
             task_id, self.total_peers, len(self._pending_votes[task_id]),
@@ -183,7 +182,7 @@ class FederationConsensus:
         """Get state for an active consensus round."""
         return self._active_rounds.get(task_id)
 
-    def get_pending_votes(self, task_id: str) -> Dict[str, bool]:
+    def get_pending_votes(self, task_id: str) -> dict[str, bool]:
         """Get current vote tally for a task."""
         return dict(self._pending_votes.get(task_id, {}))
 

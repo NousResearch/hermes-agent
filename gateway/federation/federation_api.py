@@ -99,7 +99,7 @@ class FederationAPIConfig:
     enabled: bool = True
     port: int = 18766
     host: str = "127.0.0.1"  # localhost only (security)
-    cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:5173"])
     require_auth: bool = True  # Admin endpoints require auth token
 
 @dataclass
@@ -349,7 +349,7 @@ class FederationAPI:
             hermes_version=self.hermes_version,
         )
 
-    def get_peers(self) -> List[dict]:
+    def get_peers(self) -> list[dict]:
         """Get list of all peers (for API response)."""
         peers = getattr(self.adapter, "_peers", {})
         result = []
@@ -361,7 +361,7 @@ class FederationAPI:
             })
         return result
 
-    def get_tasks(self) -> List[dict]:
+    def get_tasks(self) -> list[dict]:
         """Get list of all tasks (for API response)."""
         relay = getattr(self.adapter, "_relay", None)
         if not relay:

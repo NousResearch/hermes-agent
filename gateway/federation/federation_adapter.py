@@ -59,6 +59,7 @@ def _resolve_device_id(configured: Optional[str]) -> str:
         import subprocess
         name = subprocess.run(
             ["scutil", "--get", "LocalHostName"],
+            check=False,
             capture_output=True, text=True, timeout=3,
         ).stdout.strip()
         if name:
@@ -82,8 +83,8 @@ class FederationAdapter:
         self.device_id = _resolve_device_id(config.device_id)
         self._conn_manager: Optional[FederationConnectionManager] = None
         self._running = False
-        self._task_handlers: Dict[str, Callable] = {}
-        self._task_state: Dict[str, dict] = {}  # task_id -> state
+        self._task_handlers: dict[str, Callable] = {}
+        self._task_state: dict[str, dict] = {}  # task_id -> state
 
         # Phase 3: Consensus + Relay
         self._consensus: Optional[FederationConsensus] = None
@@ -427,7 +428,7 @@ class FederationAdapter:
     # State queries
     # ----------------------------------------------------------------
 
-    def get_peers(self) -> List[PeerInfo]:
+    def get_peers(self) -> list[PeerInfo]:
         """Get list of connected peers."""
         if not self._conn_manager:
             return []
@@ -443,7 +444,7 @@ class FederationAdapter:
         """Get local state for a task."""
         return self._task_state.get(task_id)
 
-    def get_all_task_states(self) -> Dict[str, dict]:
+    def get_all_task_states(self) -> dict[str, dict]:
         """Get all task states."""
         return dict(self._task_state)
 
@@ -1068,8 +1069,8 @@ def create_federation_adapter(
     require_auth: bool = True,
     tls_cert: Optional[str] = None,
     tls_key: Optional[str] = None,
-    ip_whitelist: Optional[List[str]] = None,
-    peers: Optional[List[str]] = None,
+    ip_whitelist: Optional[list[str]] = None,
+    peers: Optional[list[str]] = None,
     db_path: Optional[str] = None,
     offline_threshold_s: int = 30,
     heartbeat_interval_s: int = 60,

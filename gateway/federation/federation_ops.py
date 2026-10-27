@@ -87,7 +87,7 @@ class PeerHealthStatus:
         }
 
     @classmethod
-    def from_payload(cls, device_id: str, payload: dict) -> "PeerHealthStatus":
+    def from_payload(cls, device_id: str, payload: dict) -> PeerHealthStatus:
         """Rebuild from a heartbeat payload fragment."""
         return cls(
             device_id=device_id,
@@ -130,9 +130,9 @@ class HealthMonitor:
     def __init__(self, device_id: str, offline_threshold_s: float = 30.0):
         self.device_id = device_id
         self.offline_threshold_s = offline_threshold_s
-        self._peers: Dict[str, PeerHealthStatus] = {}
+        self._peers: dict[str, PeerHealthStatus] = {}
         self._death = DeathDetector(dead_threshold=3)
-        self._alerts: List[OpsAlert] = []
+        self._alerts: list[OpsAlert] = []
         self._max_alerts = 200
 
     # -- state ----------------------------------------------------------
@@ -201,7 +201,7 @@ class HealthMonitor:
     def get_health(self, device_id: str) -> Optional[PeerHealthStatus]:
         return self._peers.get(device_id)
 
-    def get_all_health(self) -> Dict[str, PeerHealthStatus]:
+    def get_all_health(self) -> dict[str, PeerHealthStatus]:
         return dict(self._peers)
 
     def compute_health_score(self, device_id: str) -> float:
@@ -240,7 +240,7 @@ class HealthMonitor:
 
     # -- alerts ---------------------------------------------------------
 
-    def get_alerts(self, limit: int = 50) -> List[dict]:
+    def get_alerts(self, limit: int = 50) -> list[dict]:
         return [
             {
                 "alert_id": a.alert_id,
@@ -296,12 +296,12 @@ class LostContactSOS:
         self.health = health
         self.on_alert = on_alert          # e.g. send to operator channel
         self.on_assist = on_assist        # e.g. SSH probe / remote restart
-        self._escalated: Dict[str, str] = {}  # device -> level (soft|confirmed|critical)
-        self._lost_at: Dict[str, float] = {}
+        self._escalated: dict[str, str] = {}  # device -> level (soft|confirmed|critical)
+        self._lost_at: dict[str, float] = {}
 
-    def update(self) -> List[OpsAlert]:
+    def update(self) -> list[OpsAlert]:
         """Check all peers against escalation windows. Returns new alerts."""
-        alerts: List[OpsAlert] = []
+        alerts: list[OpsAlert] = []
         now = time.time()
         for device_id, status in self.health.get_all_health().items():
             if status.level not in (HEALTH_CRITICAL, HEALTH_OFFLINE):
@@ -369,6 +369,7 @@ def collect_local_health(hermes_version: str = "") -> dict:
             result = _subprocess.run(
                 ["sysctl", "-n", "hw.memsize"],
                 capture_output=True, encoding="utf-8", timeout=3,
+                check=False,
             )
             raw = result.stdout.strip()
             memory_gb = float(raw) / (1024 ** 3) if raw else 0.0
@@ -378,12 +379,14 @@ def collect_local_health(hermes_version: str = "") -> dict:
             result = _subprocess.run(
                 ["cat", "/sys/fs/cgroup/memory.max"],
                 capture_output=True, encoding="utf-8", timeout=3,
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip() != "max":
                 memory_gb = int(result.stdout.strip()) / (1024 ** 3)
             else:
                 result = _subprocess.run(
                     ["awk", "/MemTotal/ {print $2}", "/proc/meminfo"],
+                    check=False,
                     capture_output=True, encoding="utf-8", timeout=3,
                 )
                 kb = result.stdout.strip()
@@ -393,6 +396,7 @@ def collect_local_health(hermes_version: str = "") -> dict:
             import subprocess as _subprocess
             result = _subprocess.run(
                 ["wmic", "OS", "get", "TotalVisibleMemorySize", "/value"],
+                check=False,
                 capture_output=True, encoding="utf-8", timeout=3,
             )
             m = _re.search(r"=(\d+)", result.stdout)

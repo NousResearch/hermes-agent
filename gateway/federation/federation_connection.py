@@ -357,7 +357,7 @@ class FederationConnectionManager:
 
                 await self._receive_loop(device_id, ws)
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Federation: handshake timeout from %s", ip)
             except Exception as e:
                 logger.warning("Federation: inbound error from %s: %s", ip, e)
@@ -531,6 +531,7 @@ class FederationConnectionManager:
             import subprocess
             mem = subprocess.run(
                 ["sysctl", "-n", "hw.memsize"],
+                check=False,
                 capture_output=True, text=True, timeout=3,
             ).stdout.strip()
             memory_gb = round(int(mem) / (1024 ** 3), 1)

@@ -71,9 +71,9 @@ class CapabilityMatcher:
 
     def get_all_peer_capabilities(
         self,
-        trust_registry: Optional[Dict[str, TrustLevel]] = None,
-        latency_registry: Optional[Dict[str, float]] = None,
-    ) -> List[PeerCapability]:
+        trust_registry: Optional[dict[str, TrustLevel]] = None,
+        latency_registry: Optional[dict[str, float]] = None,
+    ) -> list[PeerCapability]:
         """Get all known peers as PeerCapabilities.
 
         Args:
@@ -86,7 +86,7 @@ class CapabilityMatcher:
         latency = latency_registry or {}
         capabilities = self._pool.get_all_capabilities()
 
-        peers: List[PeerCapability] = []
+        peers: list[PeerCapability] = []
         for node_id, cap in capabilities.items():
             if not cap.is_available:
                 continue
@@ -103,10 +103,10 @@ class CapabilityMatcher:
     def get_best_peer_for_task(
         self,
         task: TaskDescriptor,
-        trust_registry: Optional[Dict[str, TrustLevel]] = None,
-        latency_registry: Optional[Dict[str, float]] = None,
+        trust_registry: Optional[dict[str, TrustLevel]] = None,
+        latency_registry: Optional[dict[str, float]] = None,
         top_n: int = 3,
-    ) -> List[PeerCapability]:
+    ) -> list[PeerCapability]:
         """Return the top-N best peers for a task, sorted by confidence."""
         all_peers = self.get_all_peer_capabilities(
             trust_registry=trust_registry,
@@ -127,8 +127,8 @@ class CapabilityMatcher:
     def evaluate_relay(
         self,
         task: TaskDescriptor,
-        trust_registry: Optional[Dict[str, TrustLevel]] = None,
-        latency_registry: Optional[Dict[str, float]] = None,
+        trust_registry: Optional[dict[str, TrustLevel]] = None,
+        latency_registry: Optional[dict[str, float]] = None,
     ) -> RelayDecision:
         """Evaluate relay decision for a task across all available peers.
 
@@ -143,8 +143,8 @@ class CapabilityMatcher:
     async def evaluate_relay_async(
         self,
         task: TaskDescriptor,
-        trust_registry: Optional[Dict[str, TrustLevel]] = None,
-        latency_registry: Optional[Dict[str, float]] = None,
+        trust_registry: Optional[dict[str, TrustLevel]] = None,
+        latency_registry: Optional[dict[str, float]] = None,
     ) -> RelayDecision:
         """Async version — queries peer capabilities in parallel if needed."""
         peers = self.get_all_peer_capabilities(
@@ -156,10 +156,10 @@ class CapabilityMatcher:
     def get_task_routing_report(
         self,
         task: TaskDescriptor,
-        trust_registry: Optional[Dict[str, TrustLevel]] = None,
-        latency_registry: Optional[Dict[str, float]] = None,
+        trust_registry: Optional[dict[str, TrustLevel]] = None,
+        latency_registry: Optional[dict[str, float]] = None,
         top_n: int = 5,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get a detailed routing report for the task.
 
         Useful for the REVIEW mode report and for dashboard display.
@@ -223,28 +223,28 @@ def register_default_capability_handlers(pool: FederationComputePool) -> None:
     pool.register_handler("deployment.execute", lambda state: _deployment_execute(state))
 
 
-def _security_scan(state: Any) -> Dict[str, Any]:
+def _security_scan(state: Any) -> dict[str, Any]:
     """Handler for security.scan tasks."""
     return {"type": "security_scan", "handler": "default"}
 
 
-def _code_search(state: Any) -> Dict[str, Any]:
+def _code_search(state: Any) -> dict[str, Any]:
     """Handler for code.search tasks."""
     return {"type": "code_search", "handler": "default"}
 
 
-def _data_analysis(state: Any) -> Dict[str, Any]:
+def _data_analysis(state: Any) -> dict[str, Any]:
     """Handler for data.analysis tasks."""
     return {"type": "data_analysis", "handler": "default"}
 
 
-def _deployment_execute(state: Any) -> Dict[str, Any]:
+def _deployment_execute(state: Any) -> dict[str, Any]:
     """Handler for deployment.execute tasks."""
     return {"type": "deployment", "handler": "default"}
 
 
 __all__ = [
-    "compute_capability_to_peer_capability",
     "CapabilityMatcher",
+    "compute_capability_to_peer_capability",
     "register_default_capability_handlers",
 ]

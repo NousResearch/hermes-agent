@@ -612,9 +612,9 @@ class FederationConfig:
     tls_cert: Optional[str] = None
     tls_key: Optional[str] = None
     # IP whitelist (optional — restrict which IPs can connect)
-    ip_whitelist: List[str] = field(default_factory=list)
+    ip_whitelist: list[str] = field(default_factory=list)
     # For 'lan' mode: manually configured peer WebSocket URLs
-    peers: List[str] = field(default_factory=list)
+    peers: list[str] = field(default_factory=list)
     # CRITICAL-1: TLS mandatory by default. Override only for local testing.
     # Allow insecure (plaintext) only if explicitly opted in.
     require_tls: bool = True
@@ -628,13 +628,13 @@ class FederationConfig:
     # Seconds between heartbeat cycles.
     heartbeat_interval_s: int = 60
 
-    def validate_security(self) -> List[str]:
+    def validate_security(self) -> list[str]:
         """Audit security posture. Returns list of warnings.
 
         Call on federation startup; raise FederationSecurityError if
         critical issues are found.
         """
-        issues: List[str] = []
+        issues: list[str] = []
         if self.enabled and self.require_tls and not self.allow_insecure:
             if not self.tls_cert and not self.tls_key:
                 if self.mode in ("lan", "auto"):
@@ -666,7 +666,7 @@ class FederationConfig:
         return Path(raw)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "FederationConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "FederationConfig":
         data = _coerce_dict(data)
         peers = data.get("peers", [])
         if not isinstance(peers, list):

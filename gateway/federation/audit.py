@@ -109,7 +109,7 @@ class AuditEvent:
     event_type: str = ""  # EventType value
     actor_node_id: str = ""
     target: Optional[str] = None  # task_id, peer_id, etc.
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     prev_hash: str = ""  # chain hash for tamper detection
     signature: str = ""  # HMAC over event
 
@@ -117,7 +117,7 @@ class AuditEvent:
     SEVERITY_ALERT: ClassVar[str] = "alert"
     severity: str = "normal"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "event_id": self.event_id,
             "ts": self.ts,
@@ -352,7 +352,7 @@ class AuditLog:
         self._retention_days = retention_days
         self._lock = Lock()
         self._last_hash = ""  # chain tip
-        self._buffer: List[AuditEvent] = []
+        self._buffer: list[AuditEvent] = []
         if self._path:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._load_tip()
@@ -405,8 +405,7 @@ class AuditLog:
         if not self._path:
             return
         with open(self._path, "a", encoding="utf-8") as f:
-            for ev in self._buffer:
-                f.write(ev.to_json() + "\n")
+            f.writelines(ev.to_json() + "\n" for ev in self._buffer)
         self._buffer.clear()
 
     def verify_chain(self) -> bool:
@@ -453,11 +452,11 @@ class AuditLog:
         target: Optional[str] = None,
         since_ts: Optional[float] = None,
         limit: int = 100,
-    ) -> List[AuditEvent]:
+    ) -> list[AuditEvent]:
         """Query on-disk events. For audit dashboards."""
         if not self._path or not self._path.exists():
             return []
-        results: List[AuditEvent] = []
+        results: list[AuditEvent] = []
         with open(self._path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -493,13 +492,13 @@ class AuditLog:
 
 
 __all__ = [
-    "AuditLog",
     "AuditEvent",
+    "AuditLog",
     "EventType",
     "NodeEvent",
-    "TaskEvent",
     "SecurityEvent",
-    "UserEvent",
+    "TaskEvent",
     "TokenStr",
+    "UserEvent",
     "redact",
 ]

@@ -43,7 +43,7 @@ class ElectionState:
 
     election_id: str = ""
     initiator: str = ""
-    candidates: Dict[str, float] = field(default_factory=dict)  # device_id -> score
+    candidates: dict[str, float] = field(default_factory=dict)  # device_id -> score
     leader: str = ""
     started_at: float = 0.0
     finished_at: float = 0.0
@@ -61,7 +61,7 @@ class ElectionState:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ElectionState":
+    def from_dict(cls, d: dict) -> ElectionState:
         return cls(**d)
 
 

@@ -44,7 +44,7 @@ class TrustLevel(str, enum.Enum):
         }[self]
 
 
-def _compare_trust(a: "TrustLevel", b: "TrustLevel") -> int:
+def _compare_trust(a: TrustLevel, b: TrustLevel) -> int:
     """Return -1, 0, 1 for a < b, a == b, a > b."""
     if a.rank < b.rank:
         return -1
@@ -104,7 +104,7 @@ class TrustPolicy:
     trusted_after_alive_s: int = 86400  # 24 hours
 
     # Capability requirements per sensitivity
-    sensitivity_rules: Dict[str, str] = field(default_factory=lambda: {
+    sensitivity_rules: dict[str, str] = field(default_factory=lambda: {
         "low": "verified",
         "medium": "verified",
         "high": "trusted",
@@ -196,9 +196,9 @@ class NodeTrustRecord:
 
 
 __all__ = [
-    "TrustLevel",
-    "TaskSensitivity",
-    "TrustPolicy",
     "NodeTrustRecord",
+    "TaskSensitivity",
+    "TrustLevel",
+    "TrustPolicy",
     "infer_sensitivity",
 ]

@@ -66,7 +66,7 @@ class DeathDetector:
         if dead_threshold < 1:
             raise ValueError("dead_threshold must be >= 1")
         self._threshold = dead_threshold
-        self._peers: Dict[str, PeerDeathStatus] = {}
+        self._peers: dict[str, PeerDeathStatus] = {}
         self._lock = Lock()
 
     @property
@@ -107,4 +107,4 @@ class DeathDetector:
             self._peers.pop(node_id, None)
 
 
-__all__ = ["DeathDetector", "PeerDeathStatus", "DEFAULT_DEAD_THRESHOLD"]
+__all__ = ["DEFAULT_DEAD_THRESHOLD", "DeathDetector", "PeerDeathStatus"]

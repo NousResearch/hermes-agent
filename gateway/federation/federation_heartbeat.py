@@ -118,9 +118,9 @@ def _heartbeat(conn: sqlite3.Connection, device_id: str) -> None:
     conn.commit()
 
 
-def _gather_device_info() -> Dict[str, Any]:
+def _gather_device_info() -> dict[str, Any]:
     """Gather lightweight device metrics."""
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         "hostname": socket.gethostname(),
         "cpu_cores": os.cpu_count() or 0,
         "memory_gb": 0.0,
@@ -136,6 +136,7 @@ def _gather_device_info() -> Dict[str, Any]:
         import subprocess
         mem = subprocess.run(
             ["sysctl", "-n", "hw.memsize"],
+            check=False,
             capture_output=True, text=True, timeout=3,
         ).stdout.strip()
         info["memory_gb"] = round(int(mem) / (1024 ** 3), 1)
@@ -550,6 +551,7 @@ def _resolve_device_id(configured: Optional[str]) -> str:
         import subprocess
         name = subprocess.run(
             ["scutil", "--get", "LocalHostName"],
+            check=False,
             capture_output=True, text=True, timeout=3,
         ).stdout.strip()
         if name:

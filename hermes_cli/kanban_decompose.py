@@ -403,10 +403,25 @@ def decompose_task(
       - ``False``: force tighten — produces a single tightened card, never
         children. If the model reply disagrees (returned fanout=true), this is
         a typed failure, not a silent override.
+
+    Repair: a triage card that already has a ``decomposed`` event is a stuck
+    root (the size gate re-triaged it). Instead of calling the LLM and failing,
+    repair it: move to ``ready`` if all children are done, else ``todo``.
     """
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+
+    # Repair path: a stuck decomposed root in triage.
+    from hermes_cli.kanban_db_graph import repair_stuck_decomposed_root
+    with kbc.connect_closing() as conn:
+        new_status = repair_stuck_decomposed_root(conn, task_id)
+    if new_status is not None:
+        return DecomposeOutcome(
+            task_id, True,
+            f"repaired stuck decomposed root: moved to {new_status}",
+            fanout=False, mode="repair",
+        )
 
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(

@@ -252,6 +252,17 @@ def _has_event(conn, task_id: str, kind: str) -> bool:
     ).fetchone() is not None
 
 
+def _already_decomposed(conn, task_id: str) -> bool:
+    """True when ``task_id`` has a ``decomposed`` event (the root already fanned out).
+
+    A decomposed root is intentionally oversized (its body is the original epic)
+    and MUST NOT be re-triaged: a second decomposition is refused, so re-triaging
+    would strand it forever. Used by both :func:`divert_promotion_to_triage` and
+    :func:`promote_gate_verdict` for an early-exit check.
+    """
+    return _has_event(conn, task_id, "decomposed")
+
+
 def latest_size_estimate(conn, task_id: str) -> Optional[dict]:
     """Newest ``size_estimate`` event payload for a card, or None when it has none."""
     row = conn.execute(
@@ -369,8 +380,7 @@ def gate_ready_entry(
             # Unknown decision value: never loop a card through triage forever.
             return "ready"
         estimate = estimate_card_size(title, body)
-        decomposed = _has_event(conn, task_id, "decomposed")
-        if estimate.is_oversized(policy.threshold) and not decomposed:
+        if estimate.is_oversized(policy.threshold) and not _already_decomposed(conn, task_id):
             if record:
                 record_size_estimate(
                     conn, task_id, estimate, decision="triage", path=path,
@@ -380,7 +390,7 @@ def gate_ready_entry(
         if record:
             record_size_estimate(
                 conn, task_id, estimate, decision="allowed", path=path,
-                reason="epic_root" if decomposed else "fits", threshold=policy.threshold,
+                reason="epic_root" if _already_decomposed(conn, task_id) else "fits", threshold=policy.threshold,
             )
         return "ready"
     except Exception:
@@ -452,13 +462,16 @@ def divert_promotion_to_triage(
     Callers must skip their own status write when this returns True: the gate
     already recorded ``decision=triage`` and this flipped the row. Measures the
     card's CURRENT title/body, which is also what the creation gate measured.
+    A decomposed root is never diverted (early exit via :func:`_already_decomposed`),
+    but the size estimate is still recorded for audit.
     """
     if policy is None:
         policy = load_size_gate_policy()
     title, body = _task_title_body(conn, task_id)
-    if gate_ready_entry(
+    verdict = gate_ready_entry(
         conn, task_id, title=title, body=body, policy=policy, path=path,
-    ) != "triage":
+    )
+    if verdict != "triage":
         return False
     conn.execute(
         "UPDATE tasks SET status = 'triage' WHERE id = ? AND status IN ('todo', 'blocked')",
@@ -474,6 +487,8 @@ def promote_gate_verdict(
 
     When it diverts it moves the card to ``triage`` and says so; when it refuses
     it names the score and the threshold so the operator can act on the number.
+    A decomposed root is never refused (handled by :func:`gate_ready_entry` via
+    :func:`_already_decomposed`).
     """
     if policy is None:
         policy = load_size_gate_policy()

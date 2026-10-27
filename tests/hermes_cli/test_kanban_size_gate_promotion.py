@@ -292,3 +292,117 @@ def test_binary_body_is_measured_not_skipped():
     assert estimate.acceptance_criteria_count == 3
     assert estimate.deliverable_count == 1
     assert estimate.score == 10
+
+
+def test_divert_promotion_to_triage_returns_false_for_decomposed_root(kanban_home):
+    """A decomposed root is never diverted to triage, even if oversized."""
+    from hermes_cli.kanban_db_graph import decompose_triage_task
+    from hermes_cli.kanban_size_gate import divert_promotion_to_triage
+
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn, title="Epic root", body=_oversized_body(), assignee="orchestrator",
+            created_by="test", triage=True,
+        )
+        # Decompose it into one child.
+        child_ids = decompose_triage_task(
+            conn, root_id, root_assignee="orchestrator",
+            children=[{"title": "Slice", "body": "Small slice", "assignee": "junior-dev"}],
+            author="decomposer",
+        )
+        assert child_ids
+        # Root is now in 'todo' with a 'decomposed' event.
+        assert kb.get_task(conn, root_id).status == "todo"
+        # Force it back to triage to simulate the bug scenario.
+        conn.execute("UPDATE tasks SET status = 'triage' WHERE id = ?", (root_id,))
+        assert kb.get_task(conn, root_id).status == "triage"
+        # Now try to divert it — should return False (no diversion).
+        diverted = divert_promotion_to_triage(conn, root_id)
+        root_after = kb.get_task(conn, root_id)
+
+    assert diverted is False, "decomposed root must not be diverted to triage"
+    assert root_after.status == "triage", "status should not change when divert returns False"
+
+
+def test_promote_gate_verdict_returns_none_for_decomposed_root(kanban_home):
+    """A decomposed root can be manually promoted (verdict is None)."""
+    from hermes_cli.kanban_db_graph import decompose_triage_task
+    from hermes_cli.kanban_size_gate import promote_gate_verdict
+
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn, title="Epic root", body=_oversized_body(), assignee="orchestrator",
+            created_by="test", triage=True,
+        )
+        child_ids = decompose_triage_task(
+            conn, root_id, root_assignee="orchestrator",
+            children=[{"title": "Slice", "body": "Small slice", "assignee": "junior-dev"}],
+            author="decomposer",
+        )
+        assert child_ids
+        # Force it back to triage to simulate the bug scenario.
+        conn.execute("UPDATE tasks SET status = 'triage' WHERE id = ?", (root_id,))
+        # Try to promote it manually — verdict should be None (allowed).
+        verdict = promote_gate_verdict(conn, root_id)
+
+    assert verdict is None, "decomposed root must be promotable (verdict=None)"
+
+
+def test_decompose_repairs_stuck_triage_card_with_decomposed_event(kanban_home):
+    """`decompose` on a triage card with a decomposed event repairs it."""
+    from hermes_cli.kanban_db_graph import decompose_triage_task, repair_stuck_decomposed_root
+
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn, title="Epic root", body=_oversized_body(), assignee="orchestrator",
+            created_by="test", triage=True,
+        )
+        child_ids = decompose_triage_task(
+            conn, root_id, root_assignee="orchestrator",
+            children=[{"title": "Slice", "body": "Small slice", "assignee": "junior-dev"}],
+            author="decomposer",
+        )
+        assert child_ids
+        # Complete the child.
+        assert kb.complete_task(conn, child_ids[0], summary="done")
+        # Force root back to triage to simulate the bug.
+        conn.execute("UPDATE tasks SET status = 'triage' WHERE id = ?", (root_id,))
+        assert kb.get_task(conn, root_id).status == "triage"
+        # Now call the repair function.
+        new_status = repair_stuck_decomposed_root(conn, root_id)
+        root_after = kb.get_task(conn, root_id)
+        events = _event_kinds(conn, root_id)
+
+    assert new_status == "ready", "all children done -> root should be ready"
+    assert root_after.status == "ready"
+    assert "repaired" in events
+    # No duplicate decomposed event.
+    assert events.count("decomposed") == 1
+
+
+def test_decompose_repairs_stuck_root_with_open_children(kanban_home):
+    """Repair moves to `todo` when children are still open."""
+    from hermes_cli.kanban_db_graph import decompose_triage_task, repair_stuck_decomposed_root
+
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn, title="Epic root", body=_oversized_body(), assignee="orchestrator",
+            created_by="test", triage=True,
+        )
+        child_ids = decompose_triage_task(
+            conn, root_id, root_assignee="orchestrator",
+            children=[{"title": "Slice", "body": "Small slice", "assignee": "junior-dev"}],
+            author="decomposer",
+        )
+        assert child_ids
+        # Child is in ready (auto-promoted by decompose_triage_task).
+        child_status = kb.get_task(conn, child_ids[0]).status
+        assert child_status in ("todo", "ready"), f"child should be open, got {child_status}"
+        # Force root back to triage.
+        conn.execute("UPDATE tasks SET status = 'triage' WHERE id = ?", (root_id,))
+        # Repair should move to todo (waiting on children).
+        new_status = repair_stuck_decomposed_root(conn, root_id)
+        root_after = kb.get_task(conn, root_id)
+
+    assert new_status == "todo", "open children -> root should be todo"
+    assert root_after.status == "todo"

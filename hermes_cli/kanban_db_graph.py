@@ -253,3 +253,52 @@ def _insert_decomposed_child(
     )
     inherit_creator_origin(conn, new_id, root_id, created_at=now)
     return new_id
+
+
+def repair_stuck_decomposed_root(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Repair a triage card that already has a ``decomposed`` event.
+
+    A decomposed root can be forced back into ``triage`` by the size gate (it
+    measures the root's oversized epic body), and ``triage`` is then a terminal
+    dead-end — every kernel verb refuses it and the auto-decompose sweep retries
+    it forever. This function repairs such a card:
+
+    - If every child is ``done`` or ``archived``, move the root to ``ready``.
+    - Otherwise, move it to ``todo`` so it waits on its children.
+
+    Returns the new status (``"ready"`` or ``"todo"``), or ``None`` if the card
+    is not a stuck decomposed root (not in triage, or no decomposed event).
+    Does NOT create new children or duplicate the ``decomposed`` event.
+    """
+    from hermes_cli.kanban_db import write_txn, _append_event
+
+    row = conn.execute(
+        "SELECT id, status FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or row["status"] != "triage":
+        return None
+    if not conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
+        (task_id,),
+    ).fetchone():
+        return None
+    # The decomposed children are linked AS PARENTS of the root (see decompose_triage_task line 182-183).
+    # So we find all tasks that appear as parent_id where child_id = task_id.
+    children = conn.execute(
+        "SELECT t.id, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ?", (task_id,),
+    ).fetchall()
+    all_done = all(c["status"] in ("done", "archived") for c in children)
+    new_status = "ready" if all_done and children else "todo"
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = ? WHERE id = ?", (new_status, task_id),
+        )
+        _append_event(conn, task_id, "repaired", {
+            "reason": "stuck_decomposed_root",
+            "new_status": new_status,
+            "children_count": len(children),
+            "all_children_done": all_done,
+        })
+    return new_status

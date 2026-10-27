@@ -115,7 +115,11 @@ def test_termux_gate_checks_real_offline_wheels_and_application_uses_same_graph(
     # This adapter runs on the actual host; no platform faking is needed.
     if os.name == "nt":
         resolved.write_text('native-probe\t==1.0\t\t\n', encoding="utf-8")
-    build_wheels.wheelhouse_gates(resolved, wheels, ["native-probe"])
+    # The application build reads the lock from the staged app tree, as in the deb.
+    lock = tmp_path / "app" / "uv.lock"
+    lock.parent.mkdir()
+    lock.write_text('version = 1\n\n[[package]]\nname = "native-probe"\nversion = "1.0"\n', encoding="utf-8")
+    build_wheels.wheelhouse_gates(resolved, wheels, ["native-probe"], lock)
     requirements = tmp_path / "requirements.txt"
     build_wheels.write_reqs_file(resolved, requirements)
     requirements.write_bytes(b"\xef\xbb\xbf" + requirements.read_bytes())
@@ -125,4 +129,4 @@ def test_termux_gate_checks_real_offline_wheels_and_application_uses_same_graph(
     for wheel in wheels.iterdir():
         wheel.unlink()
     with pytest.raises(InstallError):
-        build_wheels.wheelhouse_gates(resolved, wheels, ["native-probe"])
+        build_wheels.wheelhouse_gates(resolved, wheels, ["native-probe"], lock)

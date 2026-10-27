@@ -30,6 +30,7 @@ from gateway.config import (
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
+from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
@@ -586,8 +587,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                             return
                         if self._first_send_overflows():
                             # A head send failed: keep the full text for the fallback final, and
-                            # skip the boundary reset below that would clear it.
+                            # skip the boundary reset below that would clear it. Still yield: the
+                            # buffer stays over the debounce threshold, so `continue` alone re-enters
+                            # the split on every pass and spins the loop without ever sleeping.
                             self._signal_flush(tick.flush_event)
+                            await asyncio.sleep(0.05)
                             continue
                     # The split tail goes out now, so a commentary or tool boundary drained in
                     # this tick still lands after it instead of being dropped.
@@ -746,8 +750,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                    and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
-        return should_edit and not _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated))
+        # Likewise defer while a MEDIA:/[[…]] directive is still being typed: the cleaner
+        # only strips complete deliverable tags, so a half-streamed one would be shown, and
+        # a media-only reply cleans to "" at finish, which never edits the bubble away.
+        cleaned = self._clean_for_display(self._accumulated)
+        return (should_edit and not _is_partial_silence_marker(cleaned)
+                and not has_pending_media_directive(cleaned))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
@@ -969,5 +977,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     # non-streaming paths share the same regex, so a tag is treated identically whichever path delivered the
     # text.
     def _clean_for_display(text: str) -> str:
-        """Hide MEDIA:<path> / [[audio_as_voice]] directives; media is delivered post-stream."""
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        """Hide MEDIA:<path> / [[audio_as_voice]] directives and markdown/HTML image tags; both are
+        delivered post-stream as native attachments.
+
+        Image tags are the ones the non-streaming path's ``extract_images`` split attaches: once a
+        tag becomes an attachment it must not also render as text — on Discord ``![alt](url)``
+        shows as ``!alt`` plus an unfurl (#141806). The tag is removed without trimming the text
+        around it, so interim frames stay prefix-stable.
+        """
+        return strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text))

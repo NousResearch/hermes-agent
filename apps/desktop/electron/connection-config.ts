@@ -36,9 +36,17 @@
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
 import { readStatusCode } from './api-transport'
 import { sharesHostBackend } from './host-backend-singleton'
+import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
+// A gateway's Webapp follows each name with its gateway (`hermes_session_at_<16 hex digits>`), since
+// cookies are not scoped to a port; the dashboard keeps the bare names.
+const GATEWAY_COOKIE_SUFFIX = /_[0-9a-f]{16}$/
+
+function isCookieVariant(name: unknown, variants: string[]): boolean {
+  return typeof name === 'string' && (variants.includes(name) || variants.includes(name.replace(GATEWAY_COOKIE_SUFFIX, '')))
+}
 
 // Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
 // is the built-in root alias; these names cannot be created as profiles.
@@ -705,7 +713,12 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'PUT /api/dashboard/theme',
   'GET /api/dashboard/font',
   'PUT /api/dashboard/font',
-  'GET /api/dashboard/plugins'
+  'GET /api/dashboard/plugins',
+  // Web Access: each handler takes `?profile=` and acts on the gateway serving it.
+  'GET /api/webapp-access/status',
+  'POST /api/webapp-access/start',
+  'POST /api/webapp-access/stop',
+  'POST /api/webapp-access/restart'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
@@ -1007,7 +1020,7 @@ function translateSelfProfileQuery(path, profile, backendProfile) {
  * gateway host serving every profile, scoped per request). An explicit
  * `?profile=` already on the path wins; an empty profile is a no-op.
  */
-function pathWithProfileScope(path, profile) {
+function pathWithProfileScope(path, profile, method?: string) {
   const scopedProfile = connectionScopeKey(profile)
 
   if (!scopedProfile) {
@@ -1028,7 +1041,10 @@ function pathWithProfileScope(path, profile) {
     return path
   }
 
-  if (parsed.searchParams.has('profile')) {
+  // A path that already names its profile never also carries the ambient one: the two disagree
+  // whenever the sidebar is on another profile or "All profiles", and the gateway refuses the pair.
+  if (parsed.searchParams.has('profile')
+      || (profileRouteSuffix(parsed.pathname) && !profileCollectionRoute(parsed.pathname, method))) {
     return path
   }
 
@@ -1051,9 +1067,9 @@ export interface RegistryBackendRequestScope {
  * isolated SSH backends already own one profile but may translate a Desktop
  * alias in an existing self-profile filter.
  */
-function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
+function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope, method?: string) {
   return backend.sharedRemote || backend.sharedPrimary || backend.mode === 'local'
-    ? pathWithProfileScope(path, profile)
+    ? pathWithProfileScope(path, profile, method)
     : translateSelfProfileQuery(path, profile, backend.remoteProfile)
 }
 
@@ -1154,7 +1170,7 @@ function cookiesHaveSession(cookies) {
     return false
   }
 
-  return cookies.some(c => c && AT_COOKIE_VARIANTS.includes(c.name) && c.value)
+  return cookies.some(c => c && isCookieVariant(c.name, AT_COOKIE_VARIANTS) && c.value)
 }
 
 /**
@@ -1175,7 +1191,9 @@ function cookiesHaveLiveSession(cookies) {
     return false
   }
 
-  return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
+  return cookies.some(
+    c => c && c.value && (isCookieVariant(c.name, AT_COOKIE_VARIANTS) || isCookieVariant(c.name, RT_COOKIE_VARIANTS))
+  )
 }
 
 export {

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's _PLATFORM_DEFAULTS row for this platform moved onto its register() call as display_tier; the growth is only that kwarg
 """Buzz platform adapter (Block's Nostr-based human+agent community relay).
 
 Outbound and polling go through the ``buzz`` CLI ("JSON in, JSON out", never a shell);
@@ -67,6 +68,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
+from plugins.platforms.buzz.buzz_cursors import _SEEN_CAP, BuzzCursorMixin
 
 
 _CHAT_KIND = 9  # ``messages get`` also returns housekeeping kinds, never dispatched
@@ -95,9 +97,6 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
 
 
 _FETCH_LIMIT = 50  # events per poll / seed call
-_SEEN_CAP = 500  # per-channel de-dupe set bound (events)
-_CURSOR_STATE_SUBDIR = "buzz"  # per-channel cursors survive a restart under HERMES_HOME
-_CURSOR_STATE_FILENAME = "channel-cursors.json"
 _DM_DISCOVERY_EVERY = 5  # re-run DM discovery every N poll sweeps
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
@@ -218,22 +217,26 @@ def _replace_media_refs(text: str, replacements: list[tuple[int, int, str]]) -> 
     return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+\n", "\n", text)).strip()
 
 
-def _load_nostr_auth():
-    """Import sibling nostr_auth loader-agnostically (the test loader imports this file as a bare module)."""
+def _load_sibling(name: str):
+    """Import a sibling module loader-agnostically (the test loader imports this file as a bare module)."""
+    import importlib
     try:
-        from . import nostr_auth  # type: ignore[no-redef]
-        return nostr_auth
+        return importlib.import_module(f".{name}", __package__) if __package__ else _load_sibling_file(name)
     except ImportError:
-        import importlib.util
-        path = Path(__file__).with_name("nostr_auth.py")
-        spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_nostr_auth", path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        return _load_sibling_file(name)
 
 
-_nostr_auth = _load_nostr_auth()
+def _load_sibling_file(name: str):
+    import importlib.util
+    path = Path(__file__).with_name(f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"plugin_adapter_buzz_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_nostr_auth = _load_sibling("nostr_auth")
 
 # bech32 (BIP-173) npub <-> hex so mention detection and allow-lists accept either form.
 from gateway.authz_mixin import (
@@ -505,9 +508,10 @@ _MEDIA_KIND_PRIORITY = (("image", MessageType.PHOTO), ("audio", MessageType.AUDI
 _ATTACHMENT_KIND_TYPES = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO, "document": MessageType.DOCUMENT}
 
 
-class BuzzAdapter(BasePlatformAdapter):
+class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
     """Buzz adapter (WebSocket push with poll fallback) for the BasePlatformAdapter interface."""
 
+    serial_receive_loop = True  # WS listener and poll sweep both await each event batch before reading the next
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("buzz"))
         extra = getattr(config, "extra", {}) or {}
@@ -563,6 +567,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._restored_cursors: dict[str, dict] = {}
         # Orders off-loop cursor writes: each snapshot is taken under it, so an older one never lands last.
         self._cursor_write_lock = asyncio.Lock()
+        self._cursor_snapshots = self._cursor_written = 0  # cursor write generations taken / landed
         self._channel_names: dict[str, str] = {}
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel classification.
         self._channel_meta: dict[str, dict] = {}
@@ -1227,67 +1232,6 @@ class BuzzAdapter(BasePlatformAdapter):
     def _new_channel_state(self, chat_type: str) -> dict:
         return {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict()}
 
-    # ── Durable channel cursors ───────────────────────────────────────────
-
-    @staticmethod
-    def _cursor_path() -> Path:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home() / _CURSOR_STATE_SUBDIR / _CURSOR_STATE_FILENAME
-
-    def _load_cursors(self) -> None:
-        """Read persisted cursors; another identity/relay's file is ignored (ids collide), failures seed from history."""
-        self._restored_cursors = {}
-        try:
-            if not (path := self._cursor_path()).exists():
-                return
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            logger.debug("Buzz: could not read channel cursors", exc_info=True)
-            return
-        if not isinstance(data, dict) or data.get("identity") != self._self_pubkey or data.get("relay") != self.relay_url:
-            return
-        if not isinstance(channels := data.get("channels"), dict):
-            return
-        for channel_id, entry in channels.items():
-            if not isinstance(entry, dict):
-                continue
-            try:
-                last_ts = int(entry.get("last_ts") or 0)
-            except (TypeError, ValueError):
-                continue
-            raw_seen = entry.get("seen")
-            seen = [str(event_id) for event_id in raw_seen][-_SEEN_CAP:] if isinstance(raw_seen, list) else []
-            self._restored_cursors[str(channel_id)] = {"chat_type": str(entry.get("chat_type") or ""), "last_ts": last_ts, "seen": seen}
-
-    def _cursor_payload(self) -> dict:
-        """Snapshot of every watched channel's cursor (taken on the loop: ``_channel_state`` is loop-owned)."""
-        channels = {
-            channel_id: {
-                "chat_type": state.get("chat_type") or "group", "last_ts": int(state.get("last_ts") or 0),
-                "seen": list(state.get("seen") or ()),
-            }
-            for channel_id, state in self._channel_state.items()
-        }
-        return {"identity": self._self_pubkey, "relay": self.relay_url, "channels": channels}
-
-    def _save_cursors(self) -> None:
-        """Persist every watched channel's cursor.  Never raises."""
-        self._write_cursors(self._cursor_path(), self._cursor_payload())
-
-    @staticmethod
-    def _write_cursors(path: Path, payload: dict) -> None:
-        try:
-            from utils import atomic_json_write
-            atomic_json_write(path, payload, indent=None)
-        except Exception:
-            logger.debug("Buzz: could not persist channel cursors", exc_info=True)
-
-    @staticmethod
-    def _cursor_mark(state: dict) -> tuple:
-        """Cheap change detector for one channel's cursor."""
-        seen = state.get("seen") or ()
-        return int(state.get("last_ts") or 0), len(seen), (next(reversed(seen), None) if seen else None)
-
     def _restore_channel_state(self, channel_id: str, chat_type: str) -> bool:
         """Install a persisted cursor (True when one existed): seeding would mark downtime arrivals as seen.
 
@@ -1392,10 +1336,9 @@ class BuzzAdapter(BasePlatformAdapter):
         for event in events:
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
-        if self._cursor_mark(state) != before:
-            # The write fsyncs + renames, and on the WebSocket transport this runs once per inbound event.
-            async with self._cursor_write_lock:
-                await asyncio.to_thread(self._write_cursors, self._cursor_path(), self._cursor_payload())
+        if self._cursor_mark(state) != before:  # never past a busy input held uncommitted (serial reader)
+            from gateway.session_ingress_burst import when_returned_inputs_durable
+            await when_returned_inputs_durable(self, self._cursor_writer())
 
     @staticmethod
     def _parse_imeta_attachments(event: dict) -> tuple[list[dict], int]:
@@ -1890,7 +1833,6 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
     return _apply_yaml_bridge(extra, _YAML_BRIDGE)
 
 
-
 def _env_enablement() -> Optional[dict]:
     """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the owning profile's env so env-only setups
     show in gateway status; None if unconfigured. Reads go through the profile scope: a served secondary sees
@@ -1905,7 +1847,6 @@ def _env_enablement() -> Optional[dict]:
     ))
     home = _seed_extra_from_env((), home_env="BUZZ_HOME_CHANNEL", home_default=(seed.get("channels") or [""])[0])
     return {"relay_url": relay, **seed, **home}
-
 
 
 async def _standalone_send(
@@ -2005,6 +1946,7 @@ def interactive_setup() -> None:
 def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(
+        **_load_sibling("send_targets").SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="buzz", label="Buzz", adapter_factory=lambda cfg: BuzzAdapter(cfg), check_fn=check_requirements,
         validate_config=validate_config, is_connected=is_connected, required_env=["BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"],
         install_hint="Requires the buzz CLI binary (https://github.com/block/buzz) on PATH or at BUZZ_CLI_PATH",
@@ -2019,4 +1961,6 @@ def register(ctx):
             "by @-mentioning your name or npub in channels; direct messages "
             "reach you without a mention. Keep responses conversational."
         ),
+        # Nostr: edits in place but channels are shared community spaces.
+        display_tier="medium",
     )

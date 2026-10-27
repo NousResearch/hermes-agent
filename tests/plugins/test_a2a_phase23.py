@@ -582,7 +582,10 @@ class TestTaskStore:
         adapter._resolve_task("t-live", protocol.STATE_COMPLETED, "late reply")
         for _ in range(100):
             stored = adapter.tasks.get("t-live")
-            if stored["state"] != protocol.STATE_WORKING:
+            # Wait for the FULL release, not just the state flip: _finalize_task records the outcome
+            # (which flips the tasks state) and only drops _pending/_active_tasks in its finally block,
+            # so asserting the moment the state changes races the ~10ms deferred cleanup. Poll both.
+            if stored["state"] != protocol.STATE_WORKING and "t-live" not in adapter._pending:
                 break
             time.sleep(0.05)
         assert stored["state"] == protocol.STATE_COMPLETED

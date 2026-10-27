@@ -630,6 +630,8 @@ def _apply_pins(changed: list, lockfile) -> int:
             # upstream (nodejs.org, Termux pool, mirror) is missing the file.
             url = e.url if isinstance(e, urllib.error.HTTPError) else None
             detail = f"{e} ({url})" if url else str(e)
+            if notes := getattr(e, "__notes__", None):
+                detail += "; " + "; ".join(notes)
             print(f"✗ {d.name} pin failed: {detail}")
             failed[d.name] = f"{type(e).__name__}: {detail}"
             continue
@@ -775,22 +777,26 @@ def _pin_artifacts(package, decision, current: dict) -> dict:
     for target, version in per_target.items():
         if package.missing_reason(target) is not None:
             continue
-        old = current.get(target, current.get("any", []))
-        old = old if isinstance(old, list) else [old]
-        known = {row["url"]: row["sha256"] for row in old}
-        urls = decision.artifact_updates.get(target)
-        if urls is None:
-            urls = package.fetch_urls(version, target)
-        if urls == [row["url"] for row in old]:
-            continue
-        pinned = []
-        for url in urls:
-            digest = known.get(url) or hashes.get(url)
-            if not digest:
-                digest = package.known_sha256(version, url) or hash_url(url)
-                hashes[url] = digest
-            pinned.append({"url": url, "sha256": digest})
-        artifacts[target] = pinned[0] if len(pinned) == 1 else pinned
+        try:
+            old = current.get(target, current.get("any", []))
+            old = old if isinstance(old, list) else [old]
+            known = {row["url"]: row["sha256"] for row in old}
+            urls = decision.artifact_updates.get(target)
+            if urls is None:
+                urls = package.fetch_urls(version, target)
+            if urls == [row["url"] for row in old]:
+                continue
+            pinned = []
+            for url in urls:
+                digest = known.get(url) or hashes.get(url)
+                if not digest:
+                    digest = package.known_sha256(version, url) or hash_url(url)
+                    hashes[url] = digest
+                pinned.append({"url": url, "sha256": digest})
+            artifacts[target] = pinned[0] if len(pinned) == 1 else pinned
+        except Exception as exc:
+            exc.add_note(f"target {target}, version {version}")
+            raise
     return artifacts
 
 

@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("nemo_relay")
 
 from agent import relay_runtime, relay_tools
+from tools.execution_observability import opaque_docker_resource_id, record_docker_result
 
 
 @pytest.fixture()
@@ -132,6 +133,32 @@ def test_tool_call_id_uses_canonical_relay_argument(relay_turn, monkeypatch):
     assert result is original_result
     assert observed_args == {"path": "/tmp/output"}
     assert captured["tool_call_id"] == "call-42"
+
+
+def test_docker_resource_annotation_is_late_bound_and_not_model_output(relay_turn, monkeypatch):
+    relay = relay_turn
+    native_id = "a" * 64
+    captured = {}
+
+    async def capture_execute(_name, args, callback, **_kwargs):
+        result = callback(args)
+        captured["annotation"] = result.annotation
+        return result
+
+    monkeypatch.setattr(relay.tools, "execute", capture_execute)
+
+    def execute_inside_docker(_args):
+        record_docker_result(native_id)
+        return {"output": "Command exited with code 42", "returncode": 42}
+
+    result, _ = relay_tools.execute(
+        "terminal", {"command": "echo ready"}, execute_inside_docker,
+        session_id="session-1", tool_call_id="call-1",
+    )
+    assert result == {"output": "Command exited with code 42", "returncode": 42}
+    annotation = captured["annotation"]["hermes.execution_environment"]
+    assert annotation["resource_id"] == opaque_docker_resource_id(native_id)
+    assert native_id not in json.dumps(captured)
 
 
 def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypatch):

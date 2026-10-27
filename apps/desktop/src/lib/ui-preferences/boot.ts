@@ -10,7 +10,7 @@
 // the first paint for long (then it boots on its local cache).
 import { browserApi, browserBootstrap } from '@/lib/browser-transport'
 
-import { hydrateFromSnapshot, type UiPreferencesSnapshot } from './sync'
+import { captureOwnPreferences, hydrateFromSnapshot, type UiPreferencesSnapshot } from './sync'
 
 const BROWSER_FIRST_READ_MS = 1500
 
@@ -34,6 +34,7 @@ async function browserSnapshot(): Promise<null | UiPreferencesSnapshot> {
 /** Hydrate this window's shared preferences, then load the app. */
 export async function bootRenderer<T>(loadApp: () => Promise<T>): Promise<T> {
   if (typeof window !== 'undefined') {
+    captureOwnPreferences()
     hydrateFromSnapshot(window.hermesDesktop?.uiPreferences?.snapshot ?? (await browserSnapshot()))
   }
 

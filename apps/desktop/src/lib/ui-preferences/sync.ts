@@ -32,6 +32,18 @@ const RETRY_DELAY_MS = 5000
 const MAX_RETRY_DELAY_MS = 60_000
 
 let outboxKey: null | string = null
+// The shared keys this window held before the app's module graph evaluated
+// (`captureOwnPreferences`, run by boot.ts): this client's own data. Stores
+// that persist their default the moment their module loads add keys after
+// that, and a first-contact import must not offer those defaults as data, or
+// a fresh browser's defaults would fill the store before the client that has
+// real values (native Desktop's keybinds, themes) imports them.
+let ownKeys: null | ReadonlySet<string> = null
+
+/** Record this window's own shared keys; boot.ts calls it before anything loads. */
+export function captureOwnPreferences(): void {
+  ownKeys = new Set(localSharedKeys())
+}
 
 /** This tab's outbox key, claimed once per page load. The previous load of this
  *  tab (same sessionStorage) hands its unsent changes over. */
@@ -225,6 +237,12 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     generation = generationOf(snapshot)
     const prune = hasJoined(snapshot)
 
+    if (prune) {
+      // Joined: this window's cache mirrors the store, so all of it is data
+      // worth re-importing should the store ever be replaced.
+      ownKeys = null
+    }
+
     for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values), ...known.keys()])) {
       if (!isSharedPreferenceKey(key)) {
         continue
@@ -329,7 +347,12 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return snapshot
     }
 
-    const values = Object.fromEntries(localSharedKeys().map(key => [key, readRaw(key)]))
+    const values = Object.fromEntries(
+      localSharedKeys()
+        .filter(key => !ownKeys || ownKeys.has(key))
+        .map(key => [key, readRaw(key)])
+    )
+
     // Nothing to import: an existing store is joined as it is, and no store is
     // created from nothing.
     const joinedSnapshot = Object.keys(values).length > 0 ? await bridge.write({ seed: true, values }) : snapshot

@@ -10,8 +10,9 @@ import {
   type UiPreferencesSnapshot,
   writeUiPreferences
 } from '../../../electron/ui-preferences'
+import { writeKey } from '../storage'
 
-import { hydrateFromSnapshot, startUiPreferencesSync, type UiPreferencesBridge } from './sync'
+import { captureOwnPreferences, hydrateFromSnapshot, startUiPreferencesSync, type UiPreferencesBridge } from './sync'
 
 // The renderer sync against the real native writer on a real file (#145536 review).
 const DENSITY = 'hermes.desktop.sessionListDensity'
@@ -56,8 +57,13 @@ afterEach(() => {
 
 it('a store a fresh client created never removes another client’s values: it imports them', async () => {
   const file = storeFile()
-  // A fresh browser (no shared keys yet) makes first contact.
+  // A fresh browser (no shared keys of its own) boots, and a store persists
+  // its default as its module loads, then makes first contact and changes one.
+  captureOwnPreferences()
+  window.localStorage.setItem(KEYBINDS, '{}')
   let stop = startUiPreferencesSync(realBridge(file).bridge)
+  await tick()
+  writeKey(DENSITY, 'detailed')
   await tick()
   stop()
 
@@ -65,13 +71,15 @@ it('a store a fresh client created never removes another client’s values: it i
   window.localStorage.clear()
   const mine = { [KEYBINDS]: '{"newChat":"mod+n"}', [THEME]: 'nous', [USER_THEMES]: '{"mine":{"name":"Mine"}}' }
   Object.entries(mine).forEach(([key, value]) => window.localStorage.setItem(key, value))
+  captureOwnPreferences()
   hydrateFromSnapshot(readUiPreferences(file))
   stop = startUiPreferencesSync(realBridge(file).bridge)
   await tick()
   stop()
 
   expect(Object.fromEntries(Object.keys(mine).map(key => [key, window.localStorage.getItem(key)]))).toEqual(mine)
-  expect(readUiPreferences(file).values).toEqual(mine)
+  expect(window.localStorage.getItem(DENSITY)).toBe('detailed')
+  expect(readUiPreferences(file).values).toEqual({ ...mine, [DENSITY]: 'detailed' })
 })
 
 it('a corrupt store is kept aside and open windows follow its replacement, re-importing what it lost', async () => {
@@ -104,6 +112,7 @@ it('a corrupt store is kept aside and open windows follow its replacement, re-im
 it('same-origin tabs keep each other’s unsent changes', async () => {
   const file = storeFile()
   await writeUiPreferences(file, { values: { [DENSITY]: 'compact', [MODE]: 'light' } })
+
   const offline: UiPreferencesBridge = {
     read: () => new Promise(() => undefined),
     write: () => new Promise(() => undefined)

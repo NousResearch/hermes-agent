@@ -15,7 +15,7 @@ const tick = (ms = 400) => new Promise(resolve => setTimeout(resolve, ms))
 
 afterEach(() => {
   window.localStorage.clear()
-  delete window.hermesDesktop
+  Reflect.deleteProperty(window, 'hermesDesktop')
 
   for (const dir of dirs.splice(0)) {
     fs.rmSync(dir, { force: true, recursive: true })

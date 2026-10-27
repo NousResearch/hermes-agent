@@ -1064,7 +1064,7 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[list[str]]:
             return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                                            timeout=3).decode(errors="replace").strip()
 
-        win_tmp_wsl = _out(["wslpath", "-u", _out(["cmd.exe", "/c", "echo %TEMP%"])])
+        win_tmp_wsl = _out(["wslpath", "-u", _out(["cmd.exe", "/c", "echo %TEMP%"])])  # windows-footgun: ok — WSL interop; Linux exec never searches the cwd
         if not win_tmp_wsl:
             return None
         wsl_wav = os.path.join(win_tmp_wsl, f"hermes-tts-{uuid.uuid4().hex[:8]}.wav")
@@ -1075,7 +1075,7 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[list[str]]:
         ps_script = f"(New-Object Media.SoundPlayer '{win_wav_safe}').PlaySync()"
         ps_cmd = " && ".join([
             shlex.join(["ffmpeg", "-i", file_path, "-f", "wav", wsl_wav, "-loglevel", "quiet", "-y"]),
-            shlex.join(["powershell.exe", "-NoProfile", "-Command", ps_script])])
+            shlex.join(["powershell.exe", "-NoProfile", "-Command", ps_script])])  # windows-footgun: ok — WSL interop; Linux exec never searches the cwd
         # /bin/sh full path so the which(cmd[0]) check in the player loop passes.
         return ["/bin/sh", "-c", f"( {ps_cmd} ); rc=$?; {shlex.join(['rm', '-f', wsl_wav])}; exit $rc"]
     except Exception:

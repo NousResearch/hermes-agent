@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.resolver import system_tool
 
 if TYPE_CHECKING:
     from cron.scheduler import _CancelEventLike
@@ -221,7 +222,7 @@ def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
     else:
         try:
             subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=10,
+                [system_tool("taskkill"), "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=10,
                 creationflags=windows_hide_flags(), check=False)
         except (OSError, subprocess.TimeoutExpired):
             proc.kill()

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli as cli_mod
+from hermes_platform.resolver import system_tool
 
 
 # ── A3.1 Test-First: verify _clear_terminal_on_exit gating ──────────────────
@@ -131,7 +132,7 @@ def test_clear_fallback_windows_runs_cls_with_hidden_console(monkeypatch):
     mixin_mod.CLISessionMixin._clear_terminal_on_exit(SimpleNamespace())
 
     assert windows_hide_flags() == sp.CREATE_NO_WINDOW
-    assert calls == [(["cmd", "/c", "cls"], {"stdin": sp.DEVNULL, "creationflags": sp.CREATE_NO_WINDOW, "check": False})]
+    assert calls == [([system_tool("cmd"), "/c", "cls"], {"stdin": sp.DEVNULL, "creationflags": sp.CREATE_NO_WINDOW, "check": False})]
 
 
 @pytest.mark.platforms("posix")  # POSIX `clear` lookup

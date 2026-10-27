@@ -23,6 +23,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
+from hermes_platform.resolver import system_tool
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +350,7 @@ class TestKillPortProcess:
         def run_side_effect(cmd, **kwargs):
             if cmd[0] == "netstat":
                 return mock_netstat
-            if cmd[0] == "taskkill":
+            if cmd[0] == system_tool("taskkill"):
                 return mock_taskkill
             return MagicMock()
 
@@ -364,7 +365,7 @@ class TestKillPortProcess:
         )
         # taskkill called with correct PID
         assert any(
-            call.args[0] == ["taskkill", "/PID", "12345", "/F"]
+            call.args[0] == [system_tool("taskkill"), "/PID", "12345", "/F"]
             for call in mock_run.call_args_list
         )
 
@@ -390,7 +391,7 @@ class TestKillPortProcess:
             _kill_port_process(3000)
 
         assert not any(
-            call.args[0][0] == "taskkill" for call in mock_run.call_args_list
+            call.args[0][0] == system_tool("taskkill") for call in mock_run.call_args_list
         )
 
 
@@ -467,7 +468,7 @@ class TestHttpSessionLifecycle:
             await adapter.disconnect()
 
         mock_run.assert_called_once()
-        assert mock_run.call_args.args[0] == ["taskkill", "/PID", "12345", "/T"]
+        assert mock_run.call_args.args[0] == [system_tool("taskkill"), "/PID", "12345", "/T"]
         mock_proc.terminate.assert_not_called()
         mock_proc.kill.assert_not_called()
 

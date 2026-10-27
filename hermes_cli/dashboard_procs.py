@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+from hermes_platform.resolver import system_tool
 
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -44,7 +45,7 @@ def _iter_process_table() -> list[tuple[int, str]]:
         # window.
         from hermes_cli._subprocess_compat import bounded_probe_run
         result = bounded_probe_run(
-            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+            [system_tool("wmic"), "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
             timeout=10, errors="ignore")
         if result is None or result.returncode != 0 or result.stdout is None:
             return rows
@@ -457,7 +458,7 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
                 failed.append((pid, "not hermes-owned or process identity changed"))
             else:
                 result = subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"], capture_output=True,
+                    [system_tool("taskkill"), "/PID", str(pid), "/F"], capture_output=True,
                     stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
                     errors="replace", timeout=10, creationflags=windows_hide_flags(), check=False)
                 if result.returncode == 0:

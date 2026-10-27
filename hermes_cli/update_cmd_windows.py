@@ -16,6 +16,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_platform.resolver import system_tool
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
@@ -616,7 +617,7 @@ def _stop_process_trees(pids: list[int] | list[tuple[int, int]]) -> None:
                 logger.debug("Skipping taskkill of non-Hermes or changed PID %s", pid)
                 continue
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], check=False,
+                [system_tool("taskkill"), "/PID", str(pid), "/T", "/F"], check=False,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),
             )
@@ -673,7 +674,7 @@ def _win_service(name: str):
 def _sc_exe(verb: str, name: str, service, settled_status: str) -> None:
     """``sc.exe <verb> <name>``; a non-zero exit is only an error when SCM doesn't already report *settled_status*."""
     result = subprocess.run(
-        ["sc.exe", verb, name], capture_output=True, text=True, encoding="utf-8", errors="replace",
+        [system_tool("sc"), verb, name], capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=10, check=False,
     )
     if result.returncode != 0 and service.status() != settled_status:

@@ -35,6 +35,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from hermes_platform.resolver import system_tool
 
 log = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ def _grant_with_pywin32(path: Path, is_dir: bool, expected: str | None = None) -
 
 @functools.lru_cache(maxsize=1)
 def _whoami_sid() -> str:
-    whoami = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True,
+    whoami = subprocess.run([system_tool("whoami"), "/user", "/fo", "csv", "/nh"], capture_output=True, text=True,
                             check=True, encoding="utf-8", errors="replace", timeout=30)
     sid = whoami.stdout.strip().rsplit(",", 1)[-1].strip().strip('"')
     if not sid.upper().startswith("S-1-"):
@@ -208,7 +209,7 @@ def _grant_with_icacls(path: Path, is_dir: bool, expected: str | None = None,
     # /L: act on a symbolic link or junction itself, not its target (the lstat check already refused
     # one; this covers a swap between that check and icacls opening the path). Without pywin32 there
     # is no handle to pin, so *expected* cannot be re-checked here.
-    subprocess.run(["icacls", str(path), "/grant", ace, "/Q", "/L"], capture_output=True,
+    subprocess.run([system_tool("icacls"), str(path), "/grant", ace, "/Q", "/L"], capture_output=True,
                    check=True, timeout=60)
 
 

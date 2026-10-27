@@ -20,6 +20,7 @@ from gateway.platforms._shared import (
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
+from hermes_platform.resolver import system_tool
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -107,7 +108,7 @@ def _kill_port_process(port: int) -> None:
                 from hermes_cli._subprocess_compat import windows_hide_flags
                 # Only SubprocessError is swallowed per-PID; an OSError (e.g. taskkill missing) aborts the scan.
                 with suppress(subprocess.SubprocessError):
-                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, stdin=subprocess.DEVNULL, timeout=5, creationflags=windows_hide_flags(), check=False)
+                    subprocess.run([system_tool("taskkill"), "/PID", str(pid), "/F"], capture_output=True, stdin=subprocess.DEVNULL, timeout=5, creationflags=windows_hide_flags(), check=False)
             else:
                 with suppress(OSError):  # ProcessLookupError/PermissionError are OSError subclasses
                     os.kill(pid, signal.SIGTERM)
@@ -189,7 +190,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     if _IS_WINDOWS:
         try:
             result = subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T"] + (["/F"] if force else []),
+                [system_tool("taskkill"), "/PID", str(proc.pid), "/T"] + (["/F"] if force else []),
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                 check=False,
             )

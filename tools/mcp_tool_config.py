@@ -153,7 +153,9 @@ _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
     "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "OS", "PATHEXT", "PROCESSOR_ARCHITECTURE",
     "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PUBLIC",
     "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERDOMAIN", "USERNAME",
-    "USERPROFILE", "WINDIR"})
+    "USERPROFILE", "WINDIR",
+    # hermes_bootstrap's switch: without it a server's own bare-name spawns search its cwd first.
+    "NODEFAULTCURRENTDIRECTORYINEXEPATH"})
 
 # ${VAR_NAME} interpolation; any non-} chars allowed so MY-VAR / my.var work.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -243,8 +245,11 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     if not candidates or any(command.lower().endswith(ext.lower()) for ext in exts):
         candidates = [command]
     directories = str(path_arg or "").split(os.pathsep)
-    if sys.platform == "win32" and os.curdir not in directories:
-        directories.insert(0, os.curdir)  # Windows resolves from the cwd first
+    # Mirror CreateProcess: cwd first, unless the child's env carries the opt-out
+    # (``NoDefaultCurrentDirectoryInExePath``; the OS checks only that the name exists).
+    no_cwd = any(key.upper() == "NODEFAULTCURRENTDIRECTORYINEXEPATH" for key in env)
+    if sys.platform == "win32" and not no_cwd and os.curdir not in directories:
+        directories.insert(0, os.curdir)
     for raw in directories:
         directory = raw or os.curdir  # POSIX: an empty PATH component means the cwd
         if not os.path.isdir(directory):

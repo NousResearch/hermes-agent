@@ -14,6 +14,7 @@ from hermes_cli.cli_output import (
     print_info as _print_info, print_success as _print_success, print_warning as _print_warning)
 
 
+from hermes_platform.resolver import system_tool
 def _run_text(cmd: list, *, timeout, capture_output: bool = True,
               **kwargs) -> subprocess.CompletedProcess:
     """Run a text subprocess with consistent decoding."""
@@ -179,7 +180,7 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
         return False
     try:
         result = subprocess.run(
-            ["schtasks.exe", "/Query", "/TN", "cua-driver-serve", "/XML"],
+            [system_tool("schtasks"), "/Query", "/TN", "cua-driver-serve", "/XML"],
             capture_output=True, timeout=10, creationflags=_post_setup_no_window_flags(), check=False)
         if result.returncode:
             return False

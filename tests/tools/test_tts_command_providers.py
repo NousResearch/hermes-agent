@@ -43,6 +43,7 @@ from tools.tts_tool import (
     check_tts_requirements,
     text_to_speech_tool,
 )
+from hermes_platform.resolver import system_tool
 
 
 # ---------------------------------------------------------------------------
@@ -633,9 +634,9 @@ class TestIdleKillConsoleHidden:
         real_run = subprocess.run
 
         def fake_run(cmd, **kwargs):
-            if "taskkill" in cmd:
+            if system_tool("taskkill") in cmd:
                 runs.append(kwargs)
-            return real_run(["cmd", "/c", "exit", "0"], **{k: v for k, v in kwargs.items() if k != "capture_output"})
+            return real_run(["cmd", "/c", "exit", "0"], **{k: v for k, v in kwargs.items() if k != "capture_output"})  # windows-footgun: ok — test stand-in for the taskkill call it intercepts
 
         class Proc:
             pid = 4242

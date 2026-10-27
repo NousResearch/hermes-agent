@@ -9,6 +9,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.resolver import system_tool
 
 if TYPE_CHECKING:
     from tools.process_registry import ProcessSession
@@ -54,7 +55,7 @@ class ProcessTerminationMixin:
         if _IS_WINDOWS:
             try:
                 subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
+                    [system_tool("taskkill"), "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
                     encoding='utf-8', errors='replace', timeout=10, creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL, check=False)
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):

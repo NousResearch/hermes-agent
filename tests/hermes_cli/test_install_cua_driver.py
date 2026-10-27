@@ -6,6 +6,7 @@ from unittest.mock import patch
 from xml.sax.saxutils import escape
 
 import pytest
+from hermes_platform.resolver import system_tool
 
 
 def _runtime_manifest(version="0.20.0", *, omit=()):
@@ -84,7 +85,7 @@ def test_autostart_uses_selected_binary_and_verifies_registration(tmp_path, monk
     def run(cmd, **kwargs):
         nonlocal selected
         calls.append(cmd)
-        if cmd[0] == "schtasks.exe":
+        if cmd[0] == system_tool("schtasks"):
             xml = ('<?xml version="1.0" encoding="UTF-16"?>'
                    '<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
                    f'<Actions><Exec><Command>{escape(selected)}</Command></Exec></Actions></Task>')
@@ -99,8 +100,8 @@ def test_autostart_uses_selected_binary_and_verifies_registration(tmp_path, monk
     monkeypatch.setattr(cua.subprocess, "run", run)
     monkeypatch.setattr(cua.shutil, "which", lambda command: command)
     assert cua._repair_cua_driver_autostart_windows(binary, verbose=False)
-    assert len([cmd for cmd in calls if cmd[0] != "schtasks.exe"]) == int(old_target)
-    assert all("/XML" in cmd for cmd in calls if cmd[0] == "schtasks.exe")
+    assert len([cmd for cmd in calls if cmd[0] != system_tool("schtasks")]) == int(old_target)
+    assert all("/XML" in cmd for cmd in calls if cmd[0] == system_tool("schtasks"))
 
 
 @pytest.mark.platforms("windows")

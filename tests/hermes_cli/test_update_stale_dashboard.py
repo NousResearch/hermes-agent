@@ -26,6 +26,7 @@ from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
 from hermes_cli import main_dashboard
 from hermes_cli import update_cmd_maint
+from hermes_platform.resolver import system_tool
 
 
 @pytest.fixture(autouse=True)
@@ -284,11 +285,11 @@ class TestKillStaleDashboardWindows:
         # Each PID triggered a taskkill /PID <n> /F invocation.
         taskkill_calls = [
             c for c in mock_run.call_args_list
-            if c.args and isinstance(c.args[0], list) and c.args[0][:1] == ["taskkill"]
+            if c.args and isinstance(c.args[0], list) and c.args[0][:1] == [system_tool("taskkill")]
         ]
         assert len(taskkill_calls) == 2
-        assert ["taskkill", "/PID", "12345", "/F"] in [c.args[0] for c in taskkill_calls]
-        assert ["taskkill", "/PID", "12346", "/F"] in [c.args[0] for c in taskkill_calls]
+        assert [system_tool("taskkill"), "/PID", "12345", "/F"] in [c.args[0] for c in taskkill_calls]
+        assert [system_tool("taskkill"), "/PID", "12346", "/F"] in [c.args[0] for c in taskkill_calls]
 
 
 

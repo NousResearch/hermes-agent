@@ -19,6 +19,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
 from typing import Any, Dict, List, Optional
+from hermes_platform.resolver import system_tool
 
 
 def _user_turn_indices(history: list) -> list[int]:
@@ -1056,7 +1057,7 @@ class CLISessionMixin:
                 from hermes_cli._subprocess_compat import windows_hide_flags
 
                 if os.name == "nt":
-                    argv = ["cmd", "/c", "cls"]  # `cls` is a cmd builtin, not an exe
+                    argv = [system_tool("cmd"), "/c", "cls"]  # `cls` is a cmd builtin, not an exe
                 else:
                     clear_bin = shutil.which("clear")
                     argv = [clear_bin] if clear_bin else []

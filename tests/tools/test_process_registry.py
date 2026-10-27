@@ -13,12 +13,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_FORCE_PREFIX
-from tools.process_registry import (
-    ProcessRegistry,
-    ProcessSession,
-    FINISHED_TTL_SECONDS,
-    MAX_PROCESSES,
-)
+from tools.process_registry import ProcessRegistry, ProcessSession, FINISHED_TTL_SECONDS, MAX_PROCESSES
+from hermes_platform.resolver import system_tool
 
 
 @pytest.fixture()
@@ -1606,7 +1602,7 @@ class TestTerminateHostPidWindows:
 
         pr.ProcessRegistry._terminate_host_pid(12345)
 
-        assert captured["args"][0] == "taskkill"
+        assert captured["args"][0] == system_tool("taskkill")
         assert "/PID" in captured["args"]
         assert "12345" in captured["args"]
         assert "/T" in captured["args"], "Tree flag required to reach descendants"

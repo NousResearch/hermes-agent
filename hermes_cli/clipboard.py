@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
+from hermes_platform.resolver import system_tool
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -87,8 +88,8 @@ def _write_clipboard_commands(data: bytes) -> list:
     linux = sys.platform not in ("darwin", "win32")
     return [(argv, kw) for enabled, argv, kw in (
         (sys.platform == "darwin", ["pbcopy"], pipe),
-        (sys.platform == "win32", ["powershell", *ps_argv], ps_kw),
-        (linux and _is_wsl(), ["powershell.exe", *ps_argv], ps_kw),
+        (sys.platform == "win32", [system_tool("powershell"), *ps_argv], ps_kw),
+        (linux and _is_wsl(), ["powershell.exe", *ps_argv], ps_kw),  # windows-footgun: ok — WSL interop; Linux exec never searches the cwd
         (linux and os.environ.get("WAYLAND_DISPLAY"), ["wl-copy", "--type", "text/plain"], pipe),
         (linux, ["xclip", "-selection", "clipboard", "-in"], pipe),
         (linux, ["xsel", "--clipboard", "--input"], pipe),
@@ -282,7 +283,7 @@ def _get_ps_exe() -> str | None:
     optional) — cached per process; None when neither runs."""
     global _ps_exe
     if _ps_exe is False:
-        _ps_exe = next((name for name in ("powershell", "pwsh") if _probe(
+        _ps_exe = next((name for name in (system_tool("powershell"), "pwsh") if _probe(
             [name, *_PS_FLAGS, "-Command", "echo ok"], 5,
             lambda r: r.returncode == 0 and "ok" in r.stdout)), None)
     return _ps_exe

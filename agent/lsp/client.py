@@ -25,6 +25,7 @@ from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED, ERROR_METHOD_NOT_FOUND, LSPProtocolError, LSPRequestError, classify_message,
     encode_message, make_error_response, make_notification, make_request, make_response, read_message,
 )
+from hermes_platform.resolver import system_tool
 
 logger = logging.getLogger("agent.lsp.client")
 
@@ -262,7 +263,7 @@ class LSPClient:
         from tools.environments.local import hermes_subprocess_env
         cmd = self._command
         if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
-            cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
+            cmd = [system_tool("cmd"), "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
         try:
             # start_new_session=True gives the server its own process group; otherwise it inherits
             # the gateway's pgid and mcp_tool's orphan sweeper can killpg() the TUI parent with it.

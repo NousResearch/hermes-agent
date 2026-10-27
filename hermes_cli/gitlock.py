@@ -20,6 +20,7 @@ from hermes_cli._subprocess_compat import (
     windows_hide_flags,
 )
 from hermes_cli.update_custody import run_git
+from hermes_platform.resolver import system_tool
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def _git_proc_running() -> bool:
         # One shared spawn for both probes: the argv is the platform fork, the
         # hide-flags wiring is common, so a console-less parent (pythonw backend)
         # never flashes a console for either (#117781).
-        argv = ["tasklist", "/FO", "CSV", "/NH"] if os.name == "nt" else ["pgrep", _PGREP_GIT]
+        argv = [system_tool("tasklist"), "/FO", "CSV", "/NH"] if os.name == "nt" else ["pgrep", _PGREP_GIT]
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                timeout=10, creationflags=windows_hide_flags(), check=False)
     except Exception:  # health: allow BLE001 -- whatever stops the probe, the locks stay

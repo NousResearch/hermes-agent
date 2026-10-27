@@ -443,7 +443,7 @@ def _kill_tree(proc: subprocess.Popen, pgid: int | None = None) -> None:
         try:
             
             subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],  # windows-footgun: ok — dev test runner, launched from the repo root
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,

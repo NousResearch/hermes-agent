@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
 from utils import is_truthy_value
+from hermes_platform.resolver import system_tool
 
 
 def shell_quote_context(command_template: str, position: int) -> Optional[str]:
@@ -104,7 +105,7 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
             # CREATE_NO_WINDOW: taskkill is a console-subprocess — the kill itself must not
             # flash a window on windowless hosts, same class of defect as the spawn above.
             from hermes_cli._subprocess_compat import windows_hide_flags
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
+            subprocess.run([system_tool("taskkill"), "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL,
                            creationflags=windows_hide_flags(), check=False)
         except Exception:

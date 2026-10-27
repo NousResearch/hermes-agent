@@ -17,6 +17,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
+from hermes_platform.resolver import system_tool
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ class TestTerminatePidRoutingOnWindows:
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
         status.terminate_pid(12345, force=True, expected_start_time=123456)
 
-        assert captured["args"][0] == "taskkill"
+        assert captured["args"][0] == system_tool("taskkill")
         assert "/PID" in captured["args"]
         assert "12345" in captured["args"]
         assert "/T" in captured["args"]

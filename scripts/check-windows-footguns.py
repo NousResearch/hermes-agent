@@ -322,8 +322,25 @@ FOOTGUNS: list[Footgun] = [
             "if shutil.which('wmic'):\n"
             "    ... wmic path ...\n"
             "else:\n"
-            "    subprocess.run(['powershell', '-NoProfile', '-Command',\n"
+            "    subprocess.run([system_tool('powershell'), '-NoProfile', '-Command',\n"
             "                    'Get-CimInstance Win32_Process | ...'])"
+        ),
+    ),
+    Footgun(
+        name="bare Windows system tool as argv[0]",
+        # A list literal whose first element is a System32 tool by bare name.
+        pattern=re.compile(
+            r"""(?<![\w\])])\[\s*['"](?:powershell|taskkill|tasklist|schtasks|whoami|icacls|wmic|cmd|sc|where|reg)(?:\.exe)?['"]\s*[,\]]""",
+            re.IGNORECASE,
+        ),
+        message=(
+            "CreateProcess looks for a bare program name in the current directory before "
+            "System32, and Hermes's cwd is often a repository someone else controls: a "
+            "taskkill.exe / powershell.exe committed there runs instead of the real one."
+        ),
+        fix=(
+            "from hermes_platform.resolver import system_tool\n"
+            "subprocess.run([system_tool('taskkill'), '/PID', str(pid), '/T', '/F'])"
         ),
     ),
     Footgun(

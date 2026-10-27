@@ -17,6 +17,7 @@ import pytest
 
 from hermes_cli import _subprocess_compat
 from hermes_cli import dashboard_procs
+from hermes_platform.resolver import system_tool
 
 
 def _probe_stdout(value: str) -> mock.Mock:
@@ -163,7 +164,7 @@ class TestKillStaleDashboardProcesses:
             )
         ) as run:
             result = dashboard_procs._kill_stale_dashboard_processes()
-        taskkill_calls = [c for c in run.call_args_list if c.args[0][0] == "taskkill"]
+        taskkill_calls = [c for c in run.call_args_list if c.args[0][0] == system_tool("taskkill")]
         assert len(taskkill_calls) == 1
         assert result["killed"] == [12345]
         assert result["failed"] == []

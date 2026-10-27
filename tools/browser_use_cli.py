@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
 from utils import is_truthy_value
+from hermes_platform.resolver import system_tool
 
 logger = logging.getLogger(__name__)
 
@@ -566,7 +567,7 @@ def _kill_cli_process_group(proc) -> None:
     if os.name == "nt":
         from hermes_cli._subprocess_compat import windows_hide_flags
         with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+            subprocess.run([system_tool("taskkill"), "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                            check=False, creationflags=windows_hide_flags())
         return

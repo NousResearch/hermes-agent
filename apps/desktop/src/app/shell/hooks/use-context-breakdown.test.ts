@@ -92,6 +92,7 @@ describe('useContextBreakdown (#94001)', () => {
     const requestGatewaySlow = vi.fn(
       (_method: string) => deferred<ContextBreakdown>().promise
     ) as unknown as GatewayRequester
+
     rerender({ busy: false, enabled: true, requestGateway: requestGatewaySlow, sessionId: 's3' })
 
     expect(result.current.breakdown).toBeNull()
@@ -177,6 +178,7 @@ describe('useContextBreakdown (#94001)', () => {
 
   it('does not cache a zeroed breakdown (agentless window) and retries until a live agent answers', async () => {
     let zeroed = true
+
     const requestGateway = vi.fn(async () =>
       zeroed ? ZEROED_BREAKDOWN : LIVE_BREAKDOWN
     ) as unknown as GatewayRequester
@@ -200,6 +202,32 @@ describe('useContextBreakdown (#94001)', () => {
 
     expect(result.current.breakdown).toEqual(LIVE_BREAKDOWN)
     expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+
+  it('serves an agentless breakdown that has categories but no known window', async () => {
+    // `session.context_breakdown` after a restart or reap: measured from the
+    // session's freeze, beside stored usage that carries no window.
+    const agentless: ContextBreakdown = {
+      categories: [{ color: '#888', id: 'system', label: 'System prompt', tokens: 3_200 }],
+      context_estimated: false,
+      context_max: 0,
+      context_percent: 0,
+      context_source: 'provider_usage',
+      context_used: 0,
+      estimated_total: 3_200,
+      model: ''
+    }
+
+    const requestGateway = vi.fn(async () => agentless) as unknown as GatewayRequester
+
+    const { result } = renderHook(props => useContextBreakdown(props), {
+      initialProps: { busy: false, enabled: true, requestGateway, sessionId: 's1' as null | string }
+    })
+
+    await flushAsync()
+
+    expect(result.current.breakdown).toEqual(agentless)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
   })
 
   it('never serves a previous session’s cached numbers after its own refetch exhausts retries', async () => {

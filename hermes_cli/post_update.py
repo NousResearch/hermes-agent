@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterable
 
@@ -37,7 +37,7 @@ def _backup_path(path: Path, stamp: str) -> Path:
 
 
 def _backup_existing(paths: Iterable[Path]) -> dict:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backups: dict = {}
     for path in paths:
         if not path.is_file():
@@ -75,19 +75,26 @@ def step_migrate_config() -> dict:
         SUPPORT_FLOOR_VERSION,
         support_floor_message,
     )
+    from hermes_cli.config_migrations_browser import agent_browser_env_pending
+    from hermes_cli.config_version_stamp import read_config_version_stamp, stamp_missing_config
 
-    current_ver, latest_ver = check_config_version()
+    stamp_missing_config()  # a missing config.yaml reads as current below
+    stamp, latest_ver = read_config_version_stamp()
+    current_ver = 0 if stamp is None else stamp
     if current_ver >= latest_ver:
         return {"ok": True, "skipped": "up-to-date"}
-    if current_ver < SUPPORT_FLOOR_VERSION:
+    if current_ver < SUPPORT_FLOOR_VERSION and not (stamp is None and agent_browser_env_pending()):
         # migrate_config() refuses sub-floor configs and leaves the file
-        # untouched; warn instead of failing the boot.
+        # untouched; warn instead of failing the boot. An unstamped config is
+        # left alone too, unless its .env still holds AGENT_BROWSER_* settings
+        # nothing reads any more: migrate_config() gives it the legacy-key
+        # steps (v52's move among them) and a stamp.
         logger.warning("config migration skipped: %s", support_floor_message())
         return {"ok": True, "skipped": "below-support-floor"}
 
     backups = _backup_existing((get_config_path(), get_env_path()))
     try:
-        migrate_config(interactive=False, quiet=True)
+        results = migrate_config(interactive=False, quiet=True)
     except Exception:
         _restore_backups(backups)
         raise
@@ -99,6 +106,10 @@ def step_migrate_config() -> dict:
             f"(still {post_ver}); restored: "
             + (", ".join(str(p) for p in restored) if restored else "none")
         )
+    # `hermes update` prints what a quiet migration changed; boot has no terminal to print it to.
+    from hermes_cli.left_core_migration import defer_startup_notice
+    for notice in results.get("notices") or ():
+        defer_startup_notice(notice)
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
 
 
@@ -226,7 +237,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     try:
         # Full checkout identity when git can answer; the birth-certificate
         # minimum below only when it cannot (or the tree is read-only).
-        identified = write_source_stamp(root)
+        identified = write_source_stamp(root, adopted=True)
     except OSError as exc:
         # A read-only tree (nix-like layouts without their own stamp)
         # must not crash the boot — it just stays unadopted.
@@ -238,7 +249,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
             "schemaVersion": 2,
             "updateMechanism": "self",
             "source": "adoption",
-            "adoptedAt": datetime.now(timezone.utc).isoformat(),
+            "adoptedAt": datetime.now(UTC).isoformat(),
         }
         try:
             fd, tmp_name = tempfile.mkstemp(
@@ -282,7 +293,7 @@ def step_provision_runtimes() -> dict:
             else:
                 pm.ensure(name, explicit=True)
             refreshed.append(name)
-        except Exception as exc:  # noqa: BLE001 — one tool must not stop the rest
+        except Exception as exc:
             logger.warning("provision_runtimes: %s failed: %s", name, exc)
             errors.append(f"{name}: {exc}")
     if errors:

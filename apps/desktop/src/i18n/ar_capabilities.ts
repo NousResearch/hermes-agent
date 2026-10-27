@@ -1,24 +1,8 @@
+import { arPluginPreviewAccess } from './ar_plugin_preview_access'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCapabilities = {
-  catalog: {
-    add: 'إضافة',
-    added: 'تمت الإضافة',
-    discover: 'اكتشف',
-    featured: 'مميزة',
-    explorePlugins: 'استكشف الإضافات',
-    exploreSkills: 'استكشف المهارات',
-    mostStarred: 'الأكثر حصولًا على نجوم',
-    newest: 'الأحدث',
-    recentlyUpdated: 'المحدثة مؤخرًا',
-    alphabetical: 'الاسم',
-    sortBy: 'ترتيب حسب',
-    seeAll: 'عرض الكل',
-    related: 'عناصر مشابهة',
-    tags: 'الوسوم',
-    screenshots: 'لقطات الشاشة',
-    listView: 'عرض القائمة',
-    cardView: 'عرض البطاقات',
+  skillDeepLink: {
     installTitle: (name: string) => `تثبيت «${name}»؟`,
     installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
     installTo: 'التثبيت في',
@@ -27,42 +11,25 @@ export const arCapabilities = {
     installComplete: (name: string) => `تم تثبيت «${name}»`,
     destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
     installed: 'المثبتة',
-    searchSkills: 'البحث في المهارات',
-    searchPlugins: 'البحث في الإضافات',
-    allSources: 'كل المصادر',
-    allCategories: 'كل الفئات',
-    about: 'نبذة',
-    author: 'المؤلف',
-    source: 'المصدر',
-    category: 'الفئة',
-    version: 'الإصدار',
-    platforms: 'المنصات',
-    requires: 'المتطلبات',
-    tools: 'الأدوات',
-    hooks: 'الخطافات',
-    middleware: 'البرمجيات الوسيطة',
-    commands: 'الأوامر',
-    license: 'الترخيص',
-    addedDate: 'تاريخ الإضافة',
-    updatedDate: 'تاريخ التحديث',
-    repository: 'المستودع',
-    documentation: 'التوثيق',
-    noResults: 'لا توجد نتائج مطابقة',
-    tryAnother: 'جرّب بحثًا آخر أو امسح عوامل التصفية.',
-    clearFilters: 'مسح عوامل التصفية',
-    filters: 'عوامل التصفية',
-    loadFailed: 'تعذر تحميل الكتالوج',
-    retry: 'حاول مرة أخرى',
-    more: 'عرض المزيد',
-    pinned: 'التزام تمت مراجعته',
-    snapshotHint: 'من كتالوج Hermes. لا يتصل التصفح بمستودعات المصدر مطلقًا.',
-    installHint: 'راجع المصدر قبل التثبيت. تسري التغييرات على الجلسات الجديدة.',
-    results: (count: number) => `النتائج: ${count.toLocaleString('ar')}`,
-    back: 'العودة إلى النتائج'
+    source: 'المصدر'
   },
   skills: {
     plugins: {
-      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
+      ...arPluginPreviewAccess,
+      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.',
+      folderAccess: {
+        title: 'الوصول إلى المجلدات',
+        hint: (name: string) => `يمكن لـ ${name} قراءة الملفات وتعديلها في هذه المجلدات. يسري الإلغاء فورًا.`,
+        revoke: 'إلغاء',
+        revokeLabel: (path: string) => `إلغاء الوصول إلى ${path}`,
+        revoked: (name: string, path: string) => `لم يعد بإمكان ${name} استخدام ${path}.`,
+        revokeFailed: (name: string) => `تعذر إلغاء وصول ${name} إلى المجلدات`,
+        pickerTitle: (name: string) => `اختر مجلدًا لـ ${name}`,
+        pickerButton: 'السماح بالوصول',
+        refusedProtected: (name: string) =>
+          `لا يمكن لـ ${name} استخدام هذا المجلد: فهو يحتوي على إعدادات Hermes أو مفاتيحه أو بيانات الإضافات. اختر مجلدًا لا يحتويها.`,
+        loadFailed: (name: string) => `تعذّر تحميل المجلدات المشتركة مع ${name}.`
+      }
     },
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
@@ -132,4 +99,4 @@ export const arCapabilities = {
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
     tokens: value => `${value} رمز`
   }
-} satisfies Pick<TranslationOverrides, 'catalog' | 'skills' | 'agents'>
+} satisfies Pick<TranslationOverrides, 'skillDeepLink' | 'skills' | 'agents'>

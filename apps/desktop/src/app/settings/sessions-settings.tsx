@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
@@ -7,7 +8,6 @@ import { Tip } from '@/components/ui/tooltip'
 import {
   deleteSession,
   getHermesConfigRecord,
-  listAllProfileSessions,
   peekConfigReadOrigin,
   retainConfigReadOrigin,
   saveHermesConfig,
@@ -15,15 +15,18 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
+import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -32,8 +35,6 @@ import { useDeepLinkHighlight } from './use-deep-link-highlight'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
-
-const ARCHIVED_FETCH_LIMIT = 200
 
 interface SessionsSettingsProps {
   subpage?: string
@@ -64,8 +65,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     setLoading(true)
 
     try {
-      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
-      setLocalSessions(result.sessions)
+      setLocalSessions(await listEveryArchivedSession())
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {
@@ -330,6 +330,7 @@ function AutoArchiveSetting() {
 function DefaultProjectDirSetting() {
   const { t } = useI18n()
   const s = t.settings.sessions
+  const profile = useStore($connection)?.profile ?? ''
   const [dir, setDir] = useState<null | string>(null)
   const [fallback, setFallback] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -348,6 +349,13 @@ function DefaultProjectDirSetting() {
 
     let alive = true
 
+    // The folder on screen belongs to the profile this effect loaded. Drop it
+    // on a switch so the next paint and the next save both use the profile
+    // that is open now.
+    if (isBrowserHostedDesktop()) {
+      setDir(null)
+    }
+
     void settings.getDefaultProjectDir().then(result => {
       if (!alive) {
         return
@@ -361,7 +369,7 @@ function DefaultProjectDirSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [profile])
 
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
@@ -373,9 +381,13 @@ function DefaultProjectDirSetting() {
     setBusy(true)
 
     try {
-      const picked = await settings.pickDefaultProjectDir()
+      // A browser tab has no native dialog for the server's disk: pick through the server
+      // folder browser Projects already use.
+      const picked = isBrowserHostedDesktop()
+        ? { dir: (await selectDesktopPaths({ defaultPath: dir ?? undefined, directories: true }))[0] ?? null }
+        : await settings.pickDefaultProjectDir()
 
-      if (picked.canceled || !picked.dir) {
+      if (!picked.dir) {
         return
       }
 
@@ -388,7 +400,7 @@ function DefaultProjectDirSetting() {
     } finally {
       setBusy(false)
     }
-  }, [s])
+  }, [dir, s])
 
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings

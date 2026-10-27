@@ -25,8 +25,7 @@
  *
  * Kept in a standalone ts module (no Electron imports, dependencies passed
  * as parameters) so it can be unit-tested with `node --test` without
- * mocking Electron or the filesystem, same pattern as backend-probes.ts and
- * backend-command.ts.
+ * mocking Electron or the filesystem, same pattern as backend-probes.ts.
  */
 
 /**
@@ -101,7 +100,7 @@ export interface ResolveVenvHermesCommandDeps {
  * install" re-resolves the same broken venv forever instead of falling
  * through to the bootstrap installer.
  *
- * Mirrors isActiveRuntimeUsable(): probes with the checkout on PYTHONPATH so
+ * Mirrors isSourceRuntimeUsable() in main.ts: probes with the checkout on PYTHONPATH so
  * a healthy source-tree venv passes.
  *
  * Returns null when `command` is not a venv hermes shim, the underlying

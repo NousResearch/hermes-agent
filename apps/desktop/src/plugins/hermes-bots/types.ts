@@ -111,12 +111,18 @@ export interface RosterRow {
   installId?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
+  /** Kept from an earlier paint because its source did not answer this
+   *  fetch: shown, but never evidence of what the backend holds now. */
+  retained?: boolean
   route?: ProfileRoute
   sourceError?: null | string
   sourceMissing?: boolean
   sourceReachable?: boolean | null
   sourceScoped?: boolean
   targetProfile?: string
+  /** Its source lists this profile but does not serve it (the Webapp's gateway
+   *  lists every installed profile and reaches only those it serves). */
+  unserved?: boolean
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string

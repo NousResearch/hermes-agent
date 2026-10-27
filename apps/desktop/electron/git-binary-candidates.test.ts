@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import { describe, test } from 'vitest'
 
-import { type GitCandidateFs, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
+import { type GitCandidateFs, managedGitBinaries, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
 
 const LAD = path.join('C:', 'Users', 'suceru', 'AppData', 'Local')
 
@@ -55,6 +55,18 @@ describe('ugitGitBinaries (#61494)', () => {
   })
 })
 
+describe('managedGitBinaries', () => {
+  test('finds the newest PM-managed Git under Hermes tools', () => {
+    const managed = path.join(LAD, 'hermes', 'tools', 'git-2.53.0+3-win32-x64', 'cmd', 'git.exe')
+    const fs = fakeFs(
+      { [path.join(LAD, 'hermes', 'tools')]: ['git-2.52.0+2-win32-x64', 'git-2.53.0+3-win32-x64'] },
+      [managed]
+    )
+
+    assert.deepEqual(managedGitBinaries(LAD, fs), [managed])
+  })
+})
+
 describe('windowsGitCandidates (#61494)', () => {
   const env = {
     localAppData: LAD,
@@ -83,6 +95,19 @@ describe('windowsGitCandidates (#61494)', () => {
 
     // resolveGitBinary's selection rule: the first existing candidate wins.
     assert.equal(candidates.find(fs.existsSync), ugitGit)
+  })
+
+  test('selects PM-managed Git before the hermes-bundled portable git', () => {
+    const managed = path.join(LAD, 'hermes', 'tools', 'git-2.53.0+3-win32-x64', 'cmd', 'git.exe')
+    const portable = path.join(env.localAppData, 'hermes', 'git', 'cmd', 'git.exe')
+    const fs = fakeFs(
+      { [path.join(LAD, 'hermes', 'tools')]: ['git-2.53.0+3-win32-x64'] },
+      [managed, portable]
+    )
+
+    const candidates = windowsGitCandidates(env, fs)
+
+    assert.equal(candidates.find(fs.existsSync), managed)
   })
 
   test('still prefers the hermes-bundled portable git over UGit', () => {

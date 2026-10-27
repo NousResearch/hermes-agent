@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
@@ -77,10 +78,14 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      const result = await createProfile({ name: trimmed, clone_from: cloneFrom, ...(soul.trim() ? { soul } : {}) })
+      // A create never lands on a live profile's name, so a folder or startup profile stored under
+      // it was left by a profile deleted before delete dropped them.
+      dropBrowserProfilePrefs(trimmed)
 
-      if (soul.trim()) {
-        await updateProfileSoul(trimmed, soul)
+      // Older remote backends do not accept an initial persona in the create request.
+      if (soul.trim() && !result.soul_set) {
+        await updateProfileSoul(trimmed, soul, trimmed)
       }
 
       await onCreated?.(trimmed)

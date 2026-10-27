@@ -14,6 +14,7 @@ import {
   TIER_CONFIG,
   authorPagePath,
   capToolChips,
+  cardSummary,
   categoryOf,
   desktopInstallLink,
   formatDate,
@@ -25,7 +26,9 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import CatalogFeatured from "../../components/CatalogFeatured";
 import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
+import { pickFeatured } from "../../../../apps/shared/src/catalog-featured";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
@@ -34,7 +37,7 @@ const META_URL = "/docs/api/plugins-meta.json";
 /** Mirrors the `max-width: 600px` blocks in styles.module.css. */
 const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
-const TIER_ORDER = ["all", "official", "community"];
+const TIER_ORDER = ["all", "official", "verified", "community"];
 
 // Sort orders. "stars" is the extractor's own order (stars desc, name), so it
 // needs no client-side work; the two date sorts read the git-derived
@@ -84,7 +87,8 @@ function PluginCard({
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
   const toolChips = capToolChips(caps.providesTools);
-  const description = plugin.description || "No description available.";
+  // Cards show what the plugin does; its disclosure sits at the bottom of the plugin's own page.
+  const description = cardSummary(plugin.description || "") || "No description available.";
   // A broken banner URL swaps to the placeholder instead of collapsing, so the card keeps its
   // height (every card in a grid row shares one height; see .grid in styles.module.css).
   const [imageBroken, setImageBroken] = useState(false);
@@ -489,6 +493,20 @@ export default function PluginCatalogPage() {
     return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
 
+  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // catalog-curation.json, rotated weekly, shown only while browsing everything.
+  const featured = useMemo(
+    () =>
+      pickFeatured(allPlugins, (p) => ({
+        featured: p.featured,
+        official: p.tier === "official",
+        pictured: Boolean(p.image),
+        addedAt: p.addedAt,
+        stars: p.stars,
+      })),
+    [allPlugins],
+  );
+
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const p of allPlugins) {
@@ -774,7 +792,23 @@ export default function PluginCatalogPage() {
               </div>
             </div>
           ) : filtered.length > 0 && grouped ? (
-            grouped.map(([cat, plugins]) => {
+            <>
+            {featured && tierFilter === "all" && !pickerMode && (
+              <CatalogFeatured
+                author={featured.maintainer}
+                cta="View plugin"
+                description={cardSummary(featured.description || "")}
+                href={pluginPagePath(featured.name)}
+                label="Featured plugin"
+                tags={[
+                  tierOf(featured).label,
+                  categoryOf(featured).label,
+                  featured.version && `v${featured.version}`,
+                ]}
+                title={featured.name}
+              />
+            )}
+            {grouped.map(([cat, plugins]) => {
               const conf = CATEGORY_CONFIG[cat];
               return (
                 <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
@@ -793,7 +827,8 @@ export default function PluginCatalogPage() {
                   </div>
                 </section>
               );
-            })
+            })}
+            </>
           ) : filtered.length > 0 ? (
             <>
               <div className={styles.resultsBar} role="status">

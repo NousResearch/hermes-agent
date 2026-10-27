@@ -74,6 +74,17 @@ export class JsonRpcGatewayError extends Error {
   }
 }
 
+/** Refusals `session.steer` / `session.redirect` answer before the text reaches any agent
+ *  (gateway/session_busy_controls.py::correct): the turn the client believed busy is gone or cannot
+ *  take a correction, so the words are safe to admit as the next prompt — never retried as a control. */
+const UNDELIVERED_CORRECTION_REASONS = new Set(['execution_not_ready', 'stale_generation', 'unsupported_control'])
+
+export function isUndeliveredCorrectionRefusal(error: unknown): boolean {
+  const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : null
+
+  return typeof reason === 'string' && UNDELIVERED_CORRECTION_REASONS.has(reason)
+}
+
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
 
@@ -135,6 +146,11 @@ export interface JsonRpcRequestChannelOptions {
   heartbeatLiveness?: HeartbeatLiveness
   /** `setTimeout`/`setInterval` handles are `unref`'d when the runtime supports it (Node) so a pending call cannot pin the process. */
   unrefTimers?: boolean
+  /**
+   * Read at each attach: this client is the Desktop app connected to a backend on its own machine.
+   * The backend offers the welcome trial and first-run onboarding only to that client.
+   */
+  desktopLocal?: () => boolean
 }
 
 export type HeartbeatLiveness = 'any-inbound' | 'response'
@@ -204,6 +220,7 @@ export class JsonRpcRequestChannel {
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
+      desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       heartbeatLiveness: options.heartbeatLiveness ?? 'response',
@@ -231,6 +248,13 @@ export class JsonRpcRequestChannel {
     this.transport = transport
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
+
+    // First on the socket, before the owner's own requests: the backend reads frames in order, and its
+    // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
+    // backend older than the field refuses just this one (4000) and keeps server_requests.
+    if (this.options.desktopLocal()) {
+      this.request('client.capabilities', { desktop_local: true }).catch(() => undefined)
+    }
   }
 
   /** Drop the transport and fail every in-flight call with `error`. */
@@ -533,12 +557,20 @@ export class JsonRpcRequestChannel {
       return
     }
 
+    // Silence is judged against the last ping we actually sent. A hidden
+    // Chromium window spaces these ticks 60 s apart (intensive wake-up
+    // throttling), so the previous ping's pong is ~60 s old at every tick;
+    // a deadline on its age alone dropped every idle hidden socket.
+    let lastPingAt = 0
+
     this.heartbeatTimer = setInterval(() => {
       if (this.transport !== transport) {
         return
       }
 
-      if (Date.now() - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+      const now = Date.now()
+
+      if (lastPingAt > this.lastLivenessAt && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
         this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
         return
@@ -553,6 +585,8 @@ export class JsonRpcRequestChannel {
       if (this.outstandingPings.size > MAX_OUTSTANDING_PINGS) {
         this.outstandingPings.delete(this.outstandingPings.values().next().value as string)
       }
+
+      lastPingAt = now
 
       try {
         transport.send(JSON.stringify({ jsonrpc: '2.0', id, method: 'gateway.ping', params: {} }))

@@ -309,6 +309,7 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
     """Resolve every routed ``auxiliary.<task>`` block through the real entry point the tasks use and report
     the ones that fail — an unresolvable block otherwise silently runs the task on the main model (#116055)."""
     from hermes_cli.config import read_user_config_raw
+    from hermes_cli.left_core_migration import provider_install_hint
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from utils import base_url_hostname
     aux = read_user_config_raw(config_path).get("auxiliary")
@@ -319,10 +320,12 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
         provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))
         try:
             runtime = resolve_runtime_provider(requested=provider, target_model=model, explicit_api_key=api_key, explicit_base_url=base_url)
-        except Exception as exc:  # noqa: BLE001 — every resolver error is a finding here
-            _fail_and_issue(f"auxiliary.{task}.provider '{provider}' does not resolve", f"({str(exc).splitlines()[0]})",
-                            f"auxiliary.{task}.provider '{provider}' cannot be resolved ({str(exc).splitlines()[0]}); the task "
-                            f"silently runs on the main model. Fix the provider name/credentials in auxiliary.{task}.", issues)
+        except Exception as exc:
+            reason, moved = str(exc).splitlines()[0], provider_install_hint(provider or "")
+            _fail_and_issue(f"auxiliary.{task}.provider '{provider}' does not resolve", f"({reason})",
+                            f"auxiliary.{task}.provider '{provider}' cannot be resolved ({reason}); the task silently runs "
+                            f"on the main model. " + (moved or f"Fix the provider name/credentials in auxiliary.{task}."),
+                            issues)
             continue
         if not runtime.get("api_key") and not runtime.get("command"):
             check_warn(f"auxiliary.{task}.provider '{provider}' resolved without credentials", f"({runtime.get('provider')} @ {runtime.get('base_url')})")
@@ -335,9 +338,10 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     config_path = HERMES_HOME / 'config.yaml'
-    if config_path.exists():
+    if config_exists(config_path):
         check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)
@@ -529,9 +533,10 @@ def _check_config_drift(should_fix: bool, f: Finding) -> None:
 
     Each step is independent and best-effort: a failure in one never hides the next.
     """
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.doctor import HERMES_HOME
     config_path = HERMES_HOME / 'config.yaml'
-    if not config_path.exists():
+    if not config_exists(config_path):
         config_path = None
     for step in _CONFIG_DRIFT_STEPS if config_path else (_drift_deprecations,):
         with warn_on_error(""):

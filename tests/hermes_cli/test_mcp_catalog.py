@@ -525,7 +525,8 @@ class TestInstall:
         install_entry(_entry("demo"), enable=True)
         install_entry(_entry("demo"), enable=True)
 
-        assert calls == [{"kind": "mcp_server", "source": "catalog", "name": "demo", "outcome": "success"}]
+        assert calls == [{"kind": "mcp_server", "source": "catalog", "name": "demo", "outcome": "success",
+                          "failure_class": None, "error": None}]
 
     def test_install_with_api_key_prompts_and_saves(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

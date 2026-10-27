@@ -23,9 +23,11 @@ const LINUX = {
 
 describe('parseLinuxGpuMarker', () => {
   it('accepts a well-formed fallback marker', () => {
-    expect(
-      parseLinuxGpuMarker({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })
-    ).toEqual({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })
+    expect(parseLinuxGpuMarker({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })).toEqual({
+      state: 'fallback',
+      reason: 'gpu-launch-failure',
+      version: '0.21.5'
+    })
   })
 
   it('rejects garbage', () => {
@@ -120,9 +122,7 @@ describe('decideLinuxGpuLaunch', () => {
   it('stays off when software rendering is already forced', () => {
     expect(decideLinuxGpuLaunch({ ...LINUX, remoteDisplayReason: 'ssh-session' }).enable).toBe(false)
     expect(decideLinuxGpuLaunch({ ...LINUX, nvidiaFallbackActive: true }).enable).toBe(false)
-    expect(
-      decideLinuxGpuLaunch({ ...LINUX, argv: ['--disable-gpu'] }).reason
-    ).toBe('already-enabled')
+    expect(decideLinuxGpuLaunch({ ...LINUX, argv: ['--disable-gpu'] }).reason).toBe('already-enabled')
   })
 })
 
@@ -163,12 +163,8 @@ describe('shouldRelaunchForLinuxGpuCrash', () => {
   it('ignores non-GPU deaths and clean exits', () => {
     const base = { platform: 'linux' as const, alreadySoftware: false, relaunchAttempted: false }
 
-    expect(
-      shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'renderer', reason: 'crashed' } })
-    ).toBe(false)
-    expect(
-      shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'GPU', reason: 'clean-exit' } })
-    ).toBe(false)
+    expect(shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'renderer', reason: 'crashed' } })).toBe(false)
+    expect(shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'GPU', reason: 'clean-exit' } })).toBe(false)
     expect(shouldRelaunchForLinuxGpuCrash({ ...base, details: null })).toBe(false)
   })
 
@@ -198,9 +194,11 @@ describe('linuxGpuMarkerAfterSuccessfulBoot', () => {
   })
 
   it('keeps the sticky fallback after a software-rendered boot', () => {
-    expect(
-      linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: true, appVersion: '0.21.5' })
-    ).toEqual({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })
+    expect(linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: true, appVersion: '0.21.5' })).toEqual({
+      state: 'fallback',
+      reason: 'gpu-launch-failure',
+      version: '0.21.5'
+    })
   })
 
   it('round-trips the fallback marker helper', () => {
@@ -267,9 +265,7 @@ describe('linuxGpuChildDeathPath', () => {
   })
 
   it('ignores non-GPU deaths and other platforms', () => {
-    expect(
-      linuxGpuChildDeathPath({ platform: 'linux', details: { type: 'Renderer', reason: 'crashed' } })
-    ).toBeNull()
+    expect(linuxGpuChildDeathPath({ platform: 'linux', details: { type: 'Renderer', reason: 'crashed' } })).toBeNull()
     expect(linuxGpuChildDeathPath({ platform: 'darwin', details: SIGTERM_DEATH })).toBeNull()
     expect(linuxGpuChildDeathPath({ platform: 'linux' })).toBeNull()
   })
@@ -305,15 +301,15 @@ describe('disableGpuSwitchNeededForReason', () => {
 
 describe('shouldEngageSilentGpuRetryFallback', () => {
   it('engages only on Linux, after the grace window, with no GPU child, not already software', () => {
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: true })
-    ).toBe(true)
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: true, graceElapsed: true })
-    ).toBe(false)
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: false })
-    ).toBe(false)
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: true })).toBe(
+      true
+    )
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: true, graceElapsed: true })).toBe(
+      false
+    )
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: false })).toBe(
+      false
+    )
     expect(
       shouldEngageSilentGpuRetryFallback({
         platform: 'linux',
@@ -322,8 +318,8 @@ describe('shouldEngageSilentGpuRetryFallback', () => {
         alreadySoftware: true
       })
     ).toBe(false)
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'darwin', gpuChildPresent: false, graceElapsed: true })
-    ).toBe(false)
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'darwin', gpuChildPresent: false, graceElapsed: true })).toBe(
+      false
+    )
   })
 })

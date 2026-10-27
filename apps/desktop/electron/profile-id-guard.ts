@@ -17,10 +17,13 @@ export function backendProfileArg(profile: unknown): string | null {
   if (typeof profile !== 'string') {
     return null
   }
+
   const name = profile.trim().toLowerCase()
+
   if (!name) {
     return null
   }
+
   // `default` is the RE-legal alias for ~/.hermes itself; every other id is a slug.
   return name === 'default' || PROFILE_ID_ARG_RE.test(name) ? name : null
 }

@@ -1,6 +1,7 @@
 import { fireEvent, screen } from '@testing-library/react'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -24,7 +25,7 @@ function render(ui: ReactNode) {
   }
 
   act(() => {
-    root!.render(ui)
+    root!.render(<MemoryRouter>{ui}</MemoryRouter>)
   })
 }
 
@@ -57,6 +58,8 @@ afterEach(() => {
   container = null
   disposePane = null
   globalThis.document.querySelectorAll('[data-titlebar-cluster]').forEach(element => element.remove())
+  delete globalThis.document.documentElement.dataset.hermesDesktopHost
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -356,6 +359,51 @@ describe('TreeGroup', () => {
     // The zone's own Close (plus the terminal pane's domain menu may carry its
     // own close-flavored row) — what matters is that the BODY opens A menu
     // offering a Close verb.
+    expect(screen.getAllByRole('menuitem', { name: /close/i }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('menuitem', { name: /new (chat|session)/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /settings/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /update/i })).toBeTruthy()
+  })
+
+  // iOS Safari sends no contextmenu for a touch hold on text; Radix opens the
+  // body menu from its own pointer timer, over the native selection callout.
+  it('leaves a browser touch hold on message text to the browser, but not on pane chrome', () => {
+    vi.useFakeTimers()
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => (
+        <div>
+          <span>Pane chrome</span>
+          <div data-slot="aui_assistant-message-content">
+            <p>Reply text</p>
+          </div>
+        </div>
+      ),
+      title: 'Terminal'
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ addEventListener: vi.fn(), matches: true, removeEventListener: vi.fn() })
+    )
+    stubMenuDomApis()
+    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
+
+    const hold = (target: Element) =>
+      act(() => {
+        fireEvent.pointerDown(target, { button: 0, pointerType: 'touch' })
+        vi.advanceTimersByTime(800)
+        fireEvent.pointerUp(target, { button: 0, pointerType: 'touch' })
+      })
+
+    hold(screen.getByText('Reply text'))
+    expect(screen.queryByRole('menu')).toBeNull()
+
+    hold(screen.getByText('Pane chrome'))
     expect(screen.getAllByRole('menuitem', { name: /close/i }).length).toBeGreaterThan(0)
   })
 })

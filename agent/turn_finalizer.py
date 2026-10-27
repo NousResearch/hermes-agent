@@ -111,7 +111,7 @@ def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
         return []
 
 
-def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logger) -> None:
+def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logger) -> None:
     """Post-loop cleanup must never lose the response: each step is guarded
     independently and errors surface via ``cleanup_errors`` (#8049)."""
     try:
@@ -124,7 +124,7 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logge
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
     _pending_verification_response, _pending_verification_response_previewed, logger,
-) -> Tuple[Any, Any, bool, Any]:
+) -> tuple[Any, Any, bool, Any]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback, interrupted)``."""
     budget_exhausted = (
@@ -144,6 +144,8 @@ def _resolve_budget_fallback(
             final_response = _pending_verification_response
             if _pending_verification_response_previewed:
                 agent._response_was_previewed = True
+                # Reuses the candidate the user already saw sealed as an interim (#130396).
+                agent._reused_response_text = final_response
             preserved_verification_fallback = True
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
@@ -220,7 +222,7 @@ def _drop_transcript_scaffolding(agent, messages) -> None:
     _drop_verification_continuation_scaffolding(messages)
 
 
-def _recover_final_from_stream(agent, final_response, interrupted, failed) -> Tuple[Any, bool]:
+def _recover_final_from_stream(agent, final_response, interrupted, failed) -> tuple[Any, bool]:
     """An empty terminal completion is not authoritative when the stream already
     delivered text; recover before persist so a blank tail isn't frozen (#95514).
     Returns ``(final_response, recovered_from_stream)``. Called by the finalizer BEFORE
@@ -282,6 +284,22 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
         _apply_override(messages)
 
 
+def _store_rewrite_on_tail(agent, messages, raw, final) -> None:
+    """A recovery exit whose text is already the unflushed tail row (the iteration-budget summary, a
+    stop gate's answer kept as the budget fallback) stores the rewrite the user gets, not the model
+    text (#44239). A held turn's hidden answer becomes the published reply; the model already saw
+    it, so ``api_content`` keeps its bytes on the wire."""
+    tail = messages[-1] if messages else None
+    if not (isinstance(tail, dict) and tail.get("role") == "assistant" and tail.get("content") == raw
+            and not tail.get(_DB_PERSISTED_MARKER)):
+        return
+    if tail.get("display_kind") == "hidden" and getattr(agent, "_hold_stream", False) is True:
+        del tail["display_kind"]
+        if final != raw:
+            tail.setdefault("api_content", raw)
+    tail["content"] = final
+
+
 def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
@@ -301,7 +319,10 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
             and not getattr(agent, "_persist_disabled", False)
         ):
             _before = len(messages)
-            _compacted = _compressor._micro_compact(messages)
+            # A rotating compaction earlier in this turn may have moved the agent to a child session.
+            _compacted = _compressor._micro_compact(
+                messages, turn_session_id=getattr(agent, "_inflight_turn_session_id", None),
+            )
             # Defrag rewrites the newest MICRO marker in place and pops _db_persisted;
             # the compressor flags us to invalidate the flush-scan cursor, else the
             # rewritten row is identity-skipped (stale).
@@ -326,6 +347,17 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
 def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger) -> None:
     """Always INFO so agent.log captures WHY every turn ended; WARNING when the last
     message is a tool result (the "just stops" scenario)."""
+    _touch = getattr(agent, "_touch_activity", None)
+    if callable(_touch):
+        # Stamp the activity clock at the loop's end (#131740): the watchdog's stall
+        # surface then names the finalizer ("turn end logged") instead of the last
+        # API call, and a turn that wedges in the post-loop tail is measured — and
+        # aborted — from when the loop actually finished, not from the last provider
+        # response. Never raises into the finalizer.
+        try:
+            _touch("turn end logged")
+        except Exception:
+            logger.debug("turn-end activity stamp failed", exc_info=True)
     _last_msg_role = messages[-1].get("role") if messages else None
     _last_tool_name = None
     if _last_msg_role == "tool":
@@ -437,7 +469,7 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
     messages,
-) -> Tuple[Any, bool, Optional[Any]]:
+) -> tuple[Any, bool, Optional[Any]]:
     """Resolve the turn's ``transform_llm_output`` outcome, then fire ``post_llm_call`` once per
     turn after the tool loop. Returns ``(final_response, transformed, pre_transform_response)``.
 
@@ -450,6 +482,14 @@ def _apply_output_hooks(
     )
     # Detached forks are internal work and must not publish turns under the parent's session ID.
     if not getattr(agent, "_persist_disabled", False):
+        # Leased on the turn thread so the capture holds this turn's context; None unless a
+        # loaded plugin holds llm.side_question. The response must survive a failed capture.
+        try:
+            from agent.side_question_lease import issue_side_question_token
+            side_question_token = issue_side_question_token(agent, messages, turn_id)
+        except Exception:
+            side_question_token = None
+            logger.warning("side question lease failed", exc_info=True)
         _invoke_hook_safely(
             "post_llm_call", logger,
             session_id=agent.session_id,
@@ -460,13 +500,14 @@ def _apply_output_hooks(
             conversation_history=list(messages),
             model=agent.model,
             platform=platform,
+            side_question_token=side_question_token,
         )
     return final_response, transformed, pre_transform
 
 
 def apply_llm_output_transform(
     agent, final_response, *, turn_id, platform=None, logger=None,
-) -> Tuple[Any, bool, Optional[Any]]:
+) -> tuple[Any, bool, Optional[Any]]:
     """Fire ``transform_llm_output`` once per turn and return
     ``(final_response, transformed, pre_transform_response)``.
 
@@ -490,20 +531,60 @@ def apply_llm_output_transform(
     if platform is None:
         platform = getattr(agent, "platform", None) or ""
     transformed, pre_transform = False, None
-    # First hook to return a string wins; None/empty leaves the text unchanged.
-    for _hook_result in _invoke_hook_safely(
-        "transform_llm_output", logger,
-        response_text=final_response,
-        session_id=agent.session_id or "",
-        model=agent.model,
-        platform=platform,
-        turn_id=turn_id,  # per-turn identity for the hook callback gate
-    ):
-        if isinstance(_hook_result, str) and _hook_result:
-            pre_transform, final_response, transformed = final_response, _hook_result, True
-            break
+    payload = dict(response_text=final_response, session_id=agent.session_id or "", model=agent.model,
+                   platform=platform, turn_id=turn_id)  # turn_id: per-turn identity for the hook callback gate
+    held = getattr(agent, "_held_transforms", None) if getattr(agent, "_hold_stream", False) else None
+    if held:
+        rewrite = _run_held_transforms(held, payload, logger)
+    else:
+        # First hook to return a string wins; None/empty leaves the text unchanged.
+        rewrite = next((r for r in _invoke_hook_safely("transform_llm_output", logger, **payload)
+                        if isinstance(r, str) and r), None)
+    if rewrite:
+        pre_transform, final_response, transformed = final_response, rewrite, True
     agent._llm_output_transform = (turn_id, transformed, pre_transform)
     return final_response, transformed, pre_transform
+
+
+HELD_TRANSFORM_FAILED_REPLY = "This reply was withheld: the plugin that rewrites replies in this session failed."
+
+
+def _run_held_transforms(callbacks, payload: dict, logger) -> Optional[str]:
+    """A held turn runs the transforms captured at its start (``held_stream_transforms``), not the live
+    registry a mid-turn reload empties. When none rewrote and one raised or timed out, the user gets a
+    fixed notice, never the text the plugin had to see first."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    try:
+        rewrite, failed = get_plugin_manager().run_held_transforms(callbacks, **payload)
+    except Exception:  # fail closed: whatever broke dispatch, the original stays withheld
+        logger.warning("held transform_llm_output dispatch failed", exc_info=True)
+        rewrite, failed = None, True
+    return HELD_TRANSFORM_FAILED_REPLY if failed else rewrite
+
+
+def settle_held_final(agent, result: Any) -> None:
+    """A held turn's reply leaves only through its transform snapshot. ``finish_text_response``,
+    ``finalize_turn``, the Codex runtime and the truncation ceiling run it before persisting; every
+    other exit (provider errors, retry exhaustion, interrupts, compression failures, ...) returns its
+    text through ``run_conversation``, which calls this, so no path hands the user text the plugin
+    did not see first, and a failed transform yields the withheld notice."""
+    if getattr(agent, "_hold_stream", False) is not True or not isinstance(result, dict):
+        return
+    text, turn_id = result.get("final_response"), getattr(agent, "_current_turn_id", "") or ""
+    recorded = getattr(agent, "_llm_output_transform", None)
+    if not isinstance(text, str) or not text or (isinstance(recorded, tuple) and recorded[:1] == (turn_id,)):
+        return
+    final, transformed, _ = apply_llm_output_transform(agent, text, turn_id=turn_id)
+    if result.get("error") == text:  # keep the mirror an error card reads
+        result["error"] = final
+    result.update(final_response=final, response_transformed=transformed, pre_transform_response=None)
+
+
+def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
+    """``pre_transform_response`` for a turn result: a held turn's original never leaves the agent
+    (receipts, replay-gap recovery, post-stream suffix painting all see only the rewrite)."""
+    return None if getattr(agent, "_hold_stream", False) else pre_transform
 
 
 def finalize_turn(
@@ -581,7 +662,7 @@ def finalize_turn(
     from hermes_cli.observability.shared_metrics_harness import finish_turn
     finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
 
-    _cleanup_errors: List[str] = []
+    _cleanup_errors: list[str] = []
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
@@ -612,7 +693,9 @@ def finalize_turn(
         # gets the recorded outcome back. Either way the tail close below writes the text the
         # user will see, never the raw model text (#44239).
         if final_response and not interrupted:
+            _raw = final_response
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
+            _store_rewrite_on_tail(agent, messages, _raw, final_response)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
@@ -679,8 +762,11 @@ def finalize_turn(
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
-        "pre_transform_response": _pre_transform_response,
+        "pre_transform_response": public_pre_transform(agent, _pre_transform_response),
         "response_previewed": getattr(agent, "_response_was_previewed", False),
+        # The final is byte-for-byte a response this turn already delivered (no footer or
+        # explanation appended since): it carries no new text for the client to paint.
+        "response_reused": bool(final_response) and final_response == getattr(agent, "_reused_response_text", None),
         "model": agent.model,
         # requested_model / served_model: proxy-reported deployment or Hermes' own fallback route.
         **result_model_fields(agent),
@@ -724,15 +810,22 @@ def finalize_turn(
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
     # A /steer landing after the final assistant turn has no tool batch to drain into;
-    # hand it back so it becomes the next user turn instead of being lost.
-    _leftover_steer = agent._drain_pending_steer()
+    # hand it back so it becomes the next user turn instead of being lost. A gateway transfer
+    # (ticketed) stays buffered: the claim's settlement returns it to its own queue place.
+    _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False
+    agent._reused_response_text = None
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()
     agent._stream_callback = None  # don't leak into future calls
+
+    # A voice turn's model route ends with the turn: memory sync and the background review
+    # below (and the next turn) run on the session's main model.
+    from agent.voice_turn_route import end_voice_turn_route
+    end_voice_turn_route(agent)
 
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = (
@@ -764,6 +857,11 @@ def finalize_turn(
                 messages_snapshot=list(messages), review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )
+
+    # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
+    # between turns. No-op otherwise; never raises.
+    from agent.prepared_compaction import maybe_prepare
+    maybe_prepare(agent, messages, origin="turn-end")
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.

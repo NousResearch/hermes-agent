@@ -47,6 +47,7 @@ call), `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
 
 Messages use OpenAI format `{"role": "system|user|assistant|tool", ...}`; reasoning content is stored
 in `assistant_msg["reasoning"]`.
+A persisted row's `display_kind` means what the `DISPLAY_KINDS` table in `agent/message_metadata.py` says: code that decides by a group of kinds reads it (`display_kind_row`, `display_kinds_where`), never a list of its own.
 
 **Agent-level tools** (`todo`, `memory`, ...) are intercepted by `agent/tool_executor.py` through the
 `INLINE_TOOL_EXECUTORS` table in `agent/inline_tool_executors.py` before `handle_function_call()`.

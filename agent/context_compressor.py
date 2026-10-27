@@ -43,6 +43,7 @@ from agent.context_compressor_tail import (
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
+from agent.message_metadata import display_kind_row
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
@@ -4316,11 +4317,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Return whether *message* contains user input worth anchoring."""
         if not isinstance(message, dict) or message.get("role") != "user":
             return False
-        # display_kind rows (internal notifications, hidden scaffolding) are not human input
-        # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
-        # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
+        # Only the display kinds the table marks user_originated are human input (a /steer row is); the rest
+        # (internal notifications, hidden scaffolding) must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
         display_kind = message.get("display_kind")
-        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
+        if not display_kind_row(display_kind).user_originated or cls._is_context_summary_message(message):
             return False
         return not cls._is_blank_user_turn(message)
 
@@ -5653,7 +5653,7 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[dict[str, Any]], 
         candidate = None if display_kind and display_kind != "hidden" else ContextCompressor._strip_context_summary_handoff_message(message)
         if candidate is None:
             return handoff, None
-    elif message.get("display_kind") and message.get("display_kind") != STEER_DISPLAY_KIND:
+    elif not display_kind_row(message.get("display_kind")).user_originated:
         return None, None
     else:
         candidate = message.copy()  # includes a typed /steer row: full user authority

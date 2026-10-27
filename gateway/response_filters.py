@@ -9,6 +9,8 @@ from __future__ import annotations
 import unicodedata
 from typing import Any, Optional
 
+from agent.message_metadata import display_kinds_where
+
 # Exact whole-response markers meaning "the agent intentionally chose not to
 # reply". Keep small and explicit; arbitrary empty output remains an
 # error/empty-response path, not silence. A lane that does not think in English
@@ -33,12 +35,12 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
 # Async-result cards the in-process TUI persisted: a producer's internal event naming one (with a
 # display_text) persists as that row kind instead of internal_notification.
-PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
-MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+PRODUCER_NOTICE_DISPLAY_KINDS = display_kinds_where("producer_notice")
+MACHINERY_DISPLAY_KINDS = display_kinds_where("machinery")
 # What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
 # receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
 # nameable; never a client-chosen presentation such as ``hidden``.
-PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+PRODUCER_CARD_KINDS = display_kinds_where("producer_card")
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64

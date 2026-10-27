@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from time import time as wall_time
 from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
@@ -48,6 +49,46 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
      # The alternation repair's row counts: an in-place compaction reads them off the live dict.
      MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS}
 ) | REPAIR_BOOKKEEPING_FIELDS
+
+
+# What a persisted row's ``display_kind`` means: one row per kind, one column per group of kinds the code
+# treats alike. A plain grid (one value per cell, no tab, line feed or form feed), so it reads as TSV as is.
+@dataclass(frozen=True)
+class DisplayKind:
+    display_kind: str
+    machinery: bool
+    producer_card: bool
+    producer_notice: bool
+    resume_event: str
+    user_originated: bool
+
+
+DISPLAY_KINDS = (
+    DisplayKind("", False, False, False, "", True),
+    DisplayKind("async_delegation_complete", True, True, True, "cli.resume.event_delegation_completed", False),
+    DisplayKind("auto_continue", False, False, False, "cli.resume.event_resumed_interrupted", False),
+    DisplayKind("failed_turn", False, False, False, "", False),
+    DisplayKind("hidden", False, False, False, "", False),
+    DisplayKind("internal_notification", True, True, False, "", False),
+    DisplayKind("model_switch", False, False, False, "cli.resume.event_model_changed", False),
+    DisplayKind("personality_switch", False, False, False, "", False),
+    DisplayKind("process_complete", True, True, True, "cli.resume.event_process_finished", False),
+    DisplayKind("skill_invocation", False, False, False, "", False),
+    DisplayKind("steer", False, False, False, "", True),
+)
+DISPLAY_KINDS_BY_KIND = {row.display_kind: row for row in DISPLAY_KINDS}
+# A kind no row names behaves as it always has: not user-originated, in no group.
+_UNLISTED_DISPLAY_KIND = DisplayKind("", False, False, False, "", False)
+
+
+def display_kind_row(display_kind: Any) -> DisplayKind:
+    """The table row for a ``display_kind``; missing and empty both mean the no-kind row."""
+    return DISPLAY_KINDS_BY_KIND.get(display_kind or "", _UNLISTED_DISPLAY_KIND)
+
+
+def display_kinds_where(column: str) -> frozenset[str]:
+    """The kinds whose ``column`` is set, as a set (the no-kind row left out)."""
+    return frozenset(row.display_kind for row in DISPLAY_KINDS if row.display_kind and getattr(row, column))
 
 
 # Connector data-use requirement on a tool message; persisted inside ``display_metadata``, never sent to a model.

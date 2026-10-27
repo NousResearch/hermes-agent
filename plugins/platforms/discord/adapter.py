@@ -5215,30 +5215,35 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         except (ValueError, TypeError):
             return 50
 
-    def _discord_history_full_thread(self) -> bool:
-        """Return whether the bot should fetch the full thread instead of
-        stopping at the most recent self-message partition point.
+    def _discord_history_full_thread(self, channel: Any = None) -> bool:
+        """Whether *channel* walks the whole thread instead of stopping at the bot's last message.
 
-        Default: ``False`` (preserves existing behaviour — only the messages
-        since the bot's last reply are surfaced, matching the conversation
-        transcript window).
-
-        When enabled, the scan walks the entire thread (up to
-        ``history_backfill_limit``) without stopping at the partition point.
-        Useful when the user wants the bot to see the full thread context —
-        e.g. when resuming a long-running investigation in a thread where
-        the bot has replied multiple times.
-
-        Trade-off: the bot sees more context, but messages that are already
-        in the session transcript are duplicated in the prompt.  Token cost
-        scales linearly with the active window.
+        ``discord.history_full_thread`` (env ``DISCORD_HISTORY_FULL_THREAD``, env wins):
+        ``true`` / ``"*"`` = everywhere; ``false`` (default) = nowhere; a list or CSV of
+        channel IDs/names = only there. A thread matches by its own ID or its parent's, so
+        one channel entry covers every thread under it. Off by default: the window
+        duplicates messages already in the session transcript.
         """
-        configured = self.config.extra.get("history_full_thread")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() in {"true", "1", "yes", "on"}
-            return bool(configured)
-        return os.getenv("DISCORD_HISTORY_FULL_THREAD", "false").lower() in {"true", "1", "yes", "on"}
+        raw = self._gate_raw("history_full_thread", "DISCORD_HISTORY_FULL_THREAD")
+        if raw is None or isinstance(raw, bool):
+            return bool(raw)
+        if isinstance(raw, (int, float)):
+            # Bare int from YAML: 0/1 read as a flag, anything else as one channel ID.
+            if raw in (0, 1):
+                return bool(raw)
+            raw = [raw]
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if text in {"true", "1", "yes", "on", "*"}:
+                return True
+            if text in {"", "false", "0", "no", "off", "none"}:
+                return False
+        scope = self._gate_csv_set(raw)
+        if "*" in scope:
+            return True
+        if not scope or channel is None:
+            return False
+        return bool(scope & self._discord_channel_keys_from_channel(channel))
 
     async def _fetch_channel_context(
         self, channel: Any, before: DiscordMessage, reply_target: Optional[Any] = None,
@@ -5246,11 +5251,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Fetch recent channel messages; returns a ``[Recent channel messages]`` block or "".
         Scans back from *before* to the bot's own message or ``history_backfill_limit``; with
         ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID.
-        When ``history_full_thread`` is enabled, the self-message stop is skipped."""
+        When ``history_full_thread`` covers *channel*, the self-message stop is skipped."""
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
-        full_thread = self._discord_history_full_thread()
+        full_thread = self._discord_history_full_thread(channel)
         allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
         # Narrow via cached last-self-message id (`after`) only if it predates the trigger; miss => full scan.
@@ -7374,10 +7379,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if hbl is not None:
         seeded_extra["history_backfill_limit"] = hbl
         _env_default("DISCORD_HISTORY_BACKFILL_LIMIT", str(hbl))
-    # history_full_thread: opt-in; walk the whole thread past prior bot replies.
+    # history_full_thread: opt-in; true/"*" everywhere or a list of channel/parent IDs.
     if "history_full_thread" in discord_cfg:
-        seeded_extra["history_full_thread"] = discord_cfg["history_full_thread"]
-        _env_default("DISCORD_HISTORY_FULL_THREAD", str(discord_cfg["history_full_thread"]).lower())
+        hft = discord_cfg["history_full_thread"]
+        seeded_extra["history_full_thread"] = hft
+        _env_default("DISCORD_HISTORY_FULL_THREAD", _csv(hft) if isinstance(hft, list) else str(hft).lower())
     # allow_mentions: safe defaults live in the adapter; these keys only override when set.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):

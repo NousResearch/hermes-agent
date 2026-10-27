@@ -1325,3 +1325,89 @@ async def test_fetch_channel_context_partition_mode_still_uses_cache(adapter, mo
     )
 
 
+
+
+# ── history_full_thread per-channel scoping ──────────────────────────────────
+
+
+def _report_thread(adapter, *, thread_id=4321, parent_id=777):
+    """A thread under *parent_id* that the bot opened with a report outside any turn
+    (e.g. a cron job), then a human reply. Newest first, as channel.history() yields."""
+    bot_user = adapter._client.user
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="why did revenue drop?", msg_id=3),
+            make_history_message(author=bot_user, content="Daily report: revenue -12%", msg_id=2),
+        ],
+        channel_id=thread_id,
+    )
+    channel.parent_id = parent_id
+    return channel
+
+
+@pytest.mark.asyncio
+async def test_full_thread_scoped_list_matches_thread_by_parent_id(adapter, monkeypatch):
+    """A parent channel ID in the list covers every thread under it, and the
+    last-self cache is still bypassed there (the report must stay visible after
+    the bot has replied once and populated the cache)."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra["history_full_thread"] = ["777"]
+    channel = _report_thread(adapter)
+    adapter._last_self_message_id["4321"] = "2"
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert result == (
+        "[Recent channel messages]\n"
+        "[Hermes] Daily report: revenue -12%\n"
+        "[Alice] why did revenue drop?"
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_thread_scoped_list_matches_thread_own_id(adapter, monkeypatch):
+    adapter.config.extra["history_full_thread"] = [4321]  # YAML ints are accepted
+    channel = _report_thread(adapter)
+    assert adapter._discord_history_full_thread(channel) is True
+
+
+@pytest.mark.asyncio
+async def test_full_thread_scoped_list_leaves_other_channels_partitioned(adapter, monkeypatch):
+    """Channels outside the list keep the default partition stop."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra["history_full_thread"] = ["555"]
+    channel = _report_thread(adapter)
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert result == "[Recent channel messages]\n[Alice] why did revenue drop?"
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (True, True), (False, False), ("*", True), (["*"], True), ("true", True),
+        ("false", False), ("", False), ([], False), (1, True), (0, False),
+        ("555,777", True), ("555", False), (["555"], False),
+    ],
+)
+def test_full_thread_value_forms(adapter, value, expected):
+    adapter.config.extra["history_full_thread"] = value
+    channel = _report_thread(adapter)
+    assert adapter._discord_history_full_thread(channel) is expected
+
+
+def test_full_thread_env_csv_scopes_and_wins_over_extra(adapter, monkeypatch):
+    """Env var (CSV) takes precedence over config extra, same as the other gates."""
+    adapter.config.extra["history_full_thread"] = True
+    monkeypatch.setenv("DISCORD_HISTORY_FULL_THREAD", "555, 777")
+    assert adapter._discord_history_full_thread(_report_thread(adapter)) is True
+    assert adapter._discord_history_full_thread(_report_thread(adapter, parent_id=999)) is False
+
+
+def test_full_thread_scoped_list_without_channel_is_off(adapter):
+    adapter.config.extra["history_full_thread"] = ["777"]
+    assert adapter._discord_history_full_thread() is False

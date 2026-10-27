@@ -386,7 +386,7 @@ discord:
     limit: 100                    # Global scan cap per reconnect
     max_dispatches: 10            # Recovery dispatch cap per reconnect
     max_attempts: 3               # Lifetime re-dispatch cap per message
-  history_full_thread: false      # Walk the full thread past prior bot replies (default: false)
+  history_full_thread: false      # Walk the full thread past prior bot replies: true, "*", or [channel IDs] (default: false)
   channel_prompts: {}             # Per-channel ephemeral system prompts
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
@@ -601,7 +601,7 @@ If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to 
 
 #### `discord.history_full_thread`
 
-**Type:** boolean — **Default:** `false`
+**Type:** boolean or list of channel IDs — **Default:** `false`
 
 Opt-in override that walks the **entire thread** instead of stopping at the bot's most recent self-message. The default partition behaviour is what you want most of the time: only the messages since the bot's last reply are surfaced, which keeps the context window tight and matches the conversation transcript. Enable `history_full_thread` when you want the bot to see the full thread context — for example, when resuming a long investigation in a thread where the bot has already replied multiple times.
 
@@ -610,13 +610,25 @@ discord:
   history_full_thread: true
 ```
 
+It also covers messages the bot posted **outside a conversation turn**, for example a cron job that posts a daily report as a thread. Those never enter a session transcript, so when a user replies in that thread the default partition stops at the report itself and the agent never sees it.
+
+To pay the extra tokens only where it matters, scope the option to specific channels instead of turning it on everywhere:
+
+```yaml
+discord:
+  history_full_thread:
+    - "1234567890"   # #daily-reports: every report thread under it
+```
+
+`true` or `"*"` means every channel. A list (or comma-separated string) enables it only for the listed channels. A thread matches by its own ID **or** its parent channel ID, so one channel entry covers all threads under it. Channel names (`general`, `#general`) are accepted too, like the other Discord channel gates.
+
 Trade-offs:
 
 - **Token cost scales linearly with the active window.** Messages that are already in the session transcript are duplicated in the prompt, so a long-running thread with `history_full_thread: true` will pay more per turn. Pair this flag with `history_backfill_limit` to cap the walk — e.g. `history_backfill_limit: 100` keeps the cold-start scan bounded even when full-thread mode is on.
 - **Hot-path cache bypass.** When `history_full_thread` is on, the in-memory `_last_self_message_id` cache is intentionally skipped so the scan reaches back past prior bot replies. The cache is what normally narrows the Discord API window on the hot path; full-thread mode trades that optimisation for visibility.
 - **Default is safe.** Without this flag the existing partition behaviour is preserved exactly. Set it explicitly when you want the wider window.
 
-Env-var override for ops toggles without a config edit: `DISCORD_HISTORY_FULL_THREAD=true`. The env var takes precedence over the YAML key, matching the convention used by the other `discord.*` settings.
+Env-var override for ops toggles without a config edit: `DISCORD_HISTORY_FULL_THREAD=true` (or a comma-separated list of channel IDs). The env var takes precedence over the YAML key, matching the convention used by the other `discord.*` settings.
 
 #### `group_sessions_per_user`
 

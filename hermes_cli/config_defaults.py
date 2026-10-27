@@ -1554,6 +1554,7 @@ DEFAULT_CONFIG = {
         "history_backfill": True,
         "history_backfill_limit": 50,
         # Walk the whole thread past prior bot replies (opt-in; duplicates transcript).
+        # true / "*" = everywhere, or a list of channel IDs (threads match by parent too).
         "history_full_thread": False,
         # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {

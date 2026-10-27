@@ -875,6 +875,25 @@ export async function ensureGatewayAgent(
     return
   }
 
+  const descriptor = $connection.get()
+  const routeProfile = normalizeProfileKey(activeGatewayProfileKey())
+
+  const sameReadyRoute =
+    activeGatewayConnectionId() === connection &&
+    normalizeProfileKey($activeGatewayProfile.get()) === target &&
+    $gateway.get()?.connectionState === 'open' &&
+    // A fail-open activation can land the socket while retaining an outgoing
+    // descriptor. Even an exact route must retry until REST/fs scope agrees.
+    descriptor?.connectionId === connection &&
+    normalizeProfileKey(descriptor.profile) === target &&
+    (routeProfile === target || descriptor.sharedPrimary === true)
+
+  if (sameReadyRoute) {
+    beforeActivate?.()
+
+    return
+  }
+
   $gatewaySwapTarget.set(target)
 
   const activationWork = (async () => {

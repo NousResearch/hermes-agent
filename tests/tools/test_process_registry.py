@@ -1391,7 +1391,8 @@ class TestKillProcess:
             assert result["termination_source"] == "process.kill"
             # First save: the reader won the race and persisted a plain exit.
             assert saved[0] == ("exited", "", 0)
-            # Second save: the receipt rewritten with the kill outcome.
+            # The control outcome changes; the original reader's actual
+            # status remains 0 rather than becoming a synthetic SIGTERM.
             assert saved[-1] == ("killed", "process.kill", 0)
         finally:
             registry._running.pop(s.id, None)
@@ -2459,8 +2460,10 @@ class TestSystemdCgroupIsolation:
         assert events[1][1] == f"hermes-worker-{session.id}.scope"
         assert session.systemd_unit == events[1][1] and session._scope_stop_pending
         assert session.exit_code is None and not session._result_complete
-        from tools.process_registry_job import unit_quiescent
-        assert unit_quiescent(session), 'physical scope cleanup cannot invent the missing original status'
+        from tools.process_registry_job import read_job_receipt
+        receipt = read_job_receipt(session)
+        assert receipt['quiescent'] and receipt['unit'] == session.systemd_unit
+        assert receipt['exit_code'] is None  # Unit emptiness cannot invent original status.
 
     @pytest.mark.platforms("linux")
     def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(

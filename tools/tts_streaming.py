@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
+from tools.tts_text_normalize import _strip_tag_blocks
 from tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
 from tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
 
@@ -67,8 +68,11 @@ def take_speech_interrupted() -> bool:
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
 # Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
 # so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
+# _THINK_TAG_RE matches a single opening or closing tag (group 1 is the leading ``/`` of a close);
+# _strip_tag_blocks walks it depth-aware so a nested same-kind block does not end its parent early
+# (a non-greedy ``.*?</\1>`` leaked the outer block's tail into speech). See #34213.
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
-_THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
+_THINK_TAG_RE = re.compile(rf"<(/?)(?:{_THINK_NAMES})\b[^>]*>", flags=re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(rf"<(?:{_THINK_NAMES})(?=[\s>]|$)", flags=re.IGNORECASE)
 
 
@@ -93,7 +97,9 @@ class SentenceChunker:
 
     def feed(self, delta: str) -> list[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
-        self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
+        # Strip complete reasoning blocks depth-aware; a still-open block is handed back inline so
+        # the open-tag check below holds the buffer until its closing tag arrives in a later delta.
+        self.buf = _strip_tag_blocks(self.buf + delta, _THINK_TAG_RE, separator="", drop_unterminated=False)
         if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: list[str] = []
@@ -110,9 +116,10 @@ class SentenceChunker:
 
     def flush(self) -> list[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
-        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
-        if m := _THINK_OPEN_RE.search(tail):
-            tail = tail[: m.start()]  # unterminated reasoning block: never speak it
+        # End of stream: silence any unterminated block too (leaking partial reasoning is worse
+        # than a truncated answer), so drop_unterminated here where feed() held it back.
+        tail = _strip_tag_blocks(self.buf, _THINK_TAG_RE, separator="", drop_unterminated=True)
+        self.buf = ""
         tail = tail.strip()
         return [tail] if tail else []
 

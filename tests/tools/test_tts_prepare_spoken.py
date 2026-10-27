@@ -41,6 +41,26 @@ class TestThinkBlockStrip:
         assert "a" not in spoken.replace("one", "").replace("two", "")
         assert "one" in spoken and "two" in spoken
 
+    def test_nested_think_block_removed(self):
+        # A non-greedy ``<think>.*?</think>`` stops at the FIRST close, so a nested same-kind block
+        # leaks the outer block's tail ("leaked tail") plus a stray ``</think>`` into speech. The
+        # depth-aware strip removes the whole outer block, nested blocks included.
+        raw = "Hi. <think>outer <think>inner</think> leaked tail</think> Bye."
+        spoken = prepare_spoken_text(raw)
+        assert "leaked tail" not in spoken
+        assert "inner" not in spoken and "outer" not in spoken
+        assert "think" not in spoken.lower()  # no stray close tag survives
+        assert "Hi." in spoken and "Bye." in spoken
+
+    def test_deeply_nested_think_block_removed(self):
+        # Three levels deep, with real speech before and after the block.
+        raw = "Before. <think>1 <think>2 <think>3</think> 2b</think> 1b</think> After."
+        spoken = strip_nonspoken_blocks(raw)
+        inner = spoken.replace("Before", "").replace("After", "").lower()
+        for noise in ("1", "2", "3", "1b", "2b", "think"):
+            assert noise not in inner
+        assert "Before" in spoken and "After" in spoken
+
 
 class TestVerifierFooterStrip:
     FOOTER = (

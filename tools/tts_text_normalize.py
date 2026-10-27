@@ -241,12 +241,51 @@ def smooth_whitespace_for_tts(text: str) -> str:
     return text.strip()
 
 
-# ``/reasoning show`` emits ``<think>...</think>`` in the final message: users want to
-# SEE reasoning, not hear it. An unterminated block (streaming cut-off) is also silenced.
-# Reasoning blocks: models with ``/reasoning show`` enabled emit ``<think>...</think>`` blocks in the final
-# assistant message. See #34213.
-_THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL | re.IGNORECASE)
-_THINK_BLOCK_OPEN_RE = re.compile(r"<think[\s>].*\Z", flags=re.DOTALL | re.IGNORECASE)
+# ``/reasoning show`` emits ``<think>...</think>`` in the final message: users want to SEE
+# reasoning, not hear it. A reasoning block can legitimately contain a NESTED block of the same
+# kind (a model that re-opens ``<think>`` inside its own reasoning, or reasoning that quotes the
+# tag), and a non-greedy ``<think>.*?</think>`` stops at the FIRST ``</think>`` — so the outer
+# block's tail, plus a stray ``</think>``, leak into speech. The depth-aware scanner below removes
+# each OUTERMOST block whole, nested blocks included. An unterminated block (streaming cut-off) is
+# still silenced. See #34213. ``<think>`` only here, by design — ``<thinking>``/``<reasoning>`` are
+# not stripped on this whole-message path (the streaming chunker covers the full tag list).
+_THINK_TAG_RE = re.compile(r"<(/?)think\b[^>]*>", flags=re.IGNORECASE)
+
+
+def _strip_tag_blocks(text: str, tag_re: re.Pattern[str], *, separator: str,
+                      drop_unterminated: bool) -> str:
+    """Remove outermost ``<tag>...</tag>`` blocks depth-aware, replacing each with *separator*.
+
+    *tag_re* matches one opening or closing tag; its group 1 is the optional leading ``/`` that
+    marks a close. Nesting is counted by depth, so a block opened inside another is removed with its
+    parent instead of ending it early. A close tag with no open is dropped as stray markup. An
+    unterminated trailing block (an open with no close — e.g. a stream cut off) is dropped when
+    *drop_unterminated* (the whole-message cleaner silences partial reasoning) and otherwise handed
+    back verbatim so a streaming caller can hold it until the closing tag arrives.
+    """
+    out: list[str] = []
+    pos = depth = block_start = 0
+    for match in tag_re.finditer(text):
+        if not match.group(1):  # opening tag
+            if depth == 0:
+                out.append(text[pos:match.start()])  # visible text before the block
+                block_start = pos = match.start()
+            depth += 1
+        elif depth > 0:  # close matching an open block
+            depth -= 1
+            if depth == 0:
+                out.append(separator)  # whole outermost block removed
+                pos = match.end()
+        else:  # stray close tag, no matching open -- drop the tag, keep the text
+            out.append(text[pos:match.start()])
+            out.append(separator)
+            pos = match.end()
+    if depth == 0:
+        out.append(text[pos:])
+    elif not drop_unterminated:
+        out.append(text[block_start:])  # hand the unterminated block back for the caller to hold
+    return "".join(out)
+
 
 # run_agent.py's turn-end file-mutation verifier footer (a ``⚠️ File-mutation verifier:``
 # header line plus indented ``•`` bullets) is a UI affordance, not speech.
@@ -254,12 +293,11 @@ _VERIFIER_FOOTER_RE = re.compile(r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[
 
 
 def strip_nonspoken_blocks(text: str) -> str:
-    """Remove ``<think>`` reasoning blocks and the file-mutation verifier footer."""
+    """Remove ``<think>`` reasoning blocks (nesting-aware) and the file-mutation verifier footer."""
     if not text:
         return ""
-    for pattern in (_THINK_BLOCK_RE, _THINK_BLOCK_OPEN_RE, _VERIFIER_FOOTER_RE):
-        text = pattern.sub(" ", text)
-    return text
+    text = _strip_tag_blocks(text, _THINK_TAG_RE, separator=" ", drop_unterminated=True)
+    return _VERIFIER_FOOTER_RE.sub(" ", text)
 
 
 def flatten_newlines_for_payload(text: str) -> str:

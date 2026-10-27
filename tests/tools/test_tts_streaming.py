@@ -40,6 +40,30 @@ class TestSentenceChunker:
         assert c.feed("<think>secret reason") == []
         assert c.feed("ing</think>The actual spoken answer. ") == ["The actual spoken answer. "]
 
+    def test_nested_think_block_not_leaked(self):
+        # A non-greedy ``.*?</\1>`` stops at the FIRST close, leaking the outer block's tail into
+        # speech. Depth-aware stripping removes the whole outer block, nested blocks included.
+        c = ts.SentenceChunker()
+        joined = "".join(c.feed(
+            "Before. <think>outer <think>inner</think> leaked tail</think> "
+            "this is the spoken answer. "
+        ))
+        assert "leaked tail" not in joined
+        assert "inner" not in joined and "outer" not in joined
+        assert "think" not in joined.lower()  # no stray close tag survives
+        assert "spoken answer" in joined
+
+    def test_nested_think_block_split_across_deltas_is_held(self):
+        # The inner block closes, but the outer is still open, so nothing is spoken until the
+        # outer close arrives; the held reasoning never leaks.
+        c = ts.SentenceChunker()
+        assert c.feed("<think>outer <think>inner") == []
+        assert c.feed("</think> still reasoning") == []
+        joined = "".join(c.feed("</think>Now the real answer is here. "))
+        for noise in ("outer", "inner", "still reasoning", "think"):
+            assert noise not in joined.lower()
+        assert "real answer" in joined
+
 
     def test_paragraph_break_is_a_boundary(self):
         c = ts.SentenceChunker()

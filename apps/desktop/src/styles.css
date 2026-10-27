@@ -1498,7 +1498,8 @@ button,
   user-select: text;
 }
 
-[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-edit'] {
+[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-edit'],
+[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-expand'] {
   -webkit-user-select: none;
   user-select: none;
   min-width: 44px;
@@ -1903,6 +1904,14 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_user-message-root'] {
   --sticky-human-offset: calc(var(--sticky-human-top) + 1px);
   top: var(--sticky-human-offset);
+}
+
+/* useStickyPromptClip writes this value on each frame during a scroll. It is
+   not inherited. A write recalculates the style of only this element. */
+@property --sticky-prompt-clip {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
 }
 
 /* The sticky prompt owns no field paint. Clip only the scrolling siblings

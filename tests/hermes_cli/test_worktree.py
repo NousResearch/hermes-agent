@@ -4,6 +4,7 @@ Verifies worktree creation, cleanup, .worktreeinclude handling,
 .gitignore management, and integration with the CLI.  (#652)
 """
 
+import json
 import os
 import subprocess
 import pytest
@@ -748,11 +749,12 @@ class TestPrMergedEscapeHatch:
     def _head(wt):
         return subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=wt, capture_output=True, text=True,
+            check=True,
         ).stdout.strip()
 
     @staticmethod
     def _merged_for(sha):
-        return '[{"number": 1, "headRefOid": "%s"}]' % sha
+        return json.dumps([{"number": 1, "headRefOid": sha}])
 
     @staticmethod
     def _stub_gh(tmp_path, monkeypatch, stdout='[{"number": 1}]', exit_code=0):
@@ -820,8 +822,8 @@ class TestPrMergedEscapeHatch:
         wt = self._mk_diverged(git_repo, "hermes-reused")
         merged_head = self._head(wt)
         (wt / "follow_up.txt").write_text("work the merged PR never saw\n")
-        subprocess.run(["git", "add", "follow_up.txt"], cwd=wt, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "follow-up"], cwd=wt, capture_output=True)
+        subprocess.run(["git", "add", "follow_up.txt"], cwd=wt, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "follow-up"], cwd=wt, capture_output=True, check=True)
         self._age(wt, 100)
         self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for(merged_head))
         assert worktree_ops._worktree_branch_pr_merged(str(wt)) is False
@@ -835,10 +837,10 @@ class TestPrMergedEscapeHatch:
         wt = self._mk_diverged(git_repo, "hermes-review-commit")
         tip = self._head(wt)
         (wt / "review.txt").write_text("review commit added on the PR\n")
-        subprocess.run(["git", "add", "review.txt"], cwd=wt, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "review"], cwd=wt, capture_output=True)
+        subprocess.run(["git", "add", "review.txt"], cwd=wt, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "review"], cwd=wt, capture_output=True, check=True)
         merged_head = self._head(wt)
-        subprocess.run(["git", "reset", "--hard", tip], cwd=wt, capture_output=True)
+        subprocess.run(["git", "reset", "--hard", tip], cwd=wt, capture_output=True, check=True)
         self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for(merged_head))
         assert worktree_ops._worktree_branch_pr_merged(str(wt)) is True, (
             "every local commit is an ancestor of the merged head, so the PR "

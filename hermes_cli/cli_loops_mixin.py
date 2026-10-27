@@ -658,6 +658,7 @@ class CLILoopsMixin:
         if getattr(self, "_heartbeat_watchdog_started", False):
             return
         self._heartbeat_watchdog_started = True
+        from hermes_cli.gateway_automation import GatewayHeartbeatManager
         from hermes_cli.heartbeat import POLL_SECONDS
 
         def _loop():
@@ -666,6 +667,10 @@ class CLILoopsMixin:
                     time.sleep(POLL_SECONDS)
                     try:
                         mgr = self._get_heartbeat_manager()
+                        if isinstance(mgr, GatewayHeartbeatManager):
+                            # The gateway poller stands down while this watchdog runs, so a resume,
+                            # set or re-anchor from another viewer must reach this copy.
+                            mgr.refresh()
                         if mgr is None or not mgr.is_active():
                             continue
                         busy = (

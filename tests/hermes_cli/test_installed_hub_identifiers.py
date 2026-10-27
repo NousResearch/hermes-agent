@@ -58,6 +58,17 @@ def test_an_exact_lock_id_beats_a_clawhub_alias():
     assert _installed_hub_identifiers()["clawhub/foo"]["name"] == "foo"
 
 
+def test_a_malformed_clawhub_row_does_not_hide_the_other_installs():
+    # A hand-edited lock can hold a non-string identifier. It used to reach the
+    # ClawHub parser, raise, and leave the whole map empty.
+    HubLockFile().save({"version": 1, "installed": {
+        "broken": {"source": "clawhub", "identifier": 123, "install_path": "broken"},
+        "arxiv": {"source": "official", "identifier": "official/research/arxiv",
+                  "install_path": "arxiv"}}})
+
+    assert _installed_hub_identifiers()["official/research/arxiv"]["name"] == "arxiv"
+
+
 def test_hub_search_returns_the_card_id_a_clawhub_hit_is_found_under(monkeypatch):
     # Index-backed results carry ClawHub's bare slug. The map answers to clawhub/<slug>,
     # which the dashboard derives from the hit's source (web/src/lib/skill-hub-installed.ts).

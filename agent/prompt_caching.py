@@ -1,4 +1,4 @@
-"""Anthropic prompt caching strategy — pure functions, no AIAgent dependency.
+"""Anthropic prompt caching strategy and session TTL resolution.
 
 Default layout: 4 cache_control breakpoints — the static system prefix, the end of the
 system prompt, and the last 2 non-system messages (without a static prefix: one system
@@ -6,6 +6,7 @@ breakpoint plus the last 3 messages). All markers share one TTL (5m or 1h).
 """
 
 import copy
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -155,7 +156,8 @@ def is_qwen_model(model: str) -> bool:
 # ``curator`` the background skill curator (tens of back-to-back calls); both are machine-paced.
 AUTO_CACHE_TTL = "auto"
 MACHINE_PACED_SOURCES = frozenset({
-    "subagent", "cron", "oneshot", "webhook", "kanban", "api", "api_server", "tool", "batch", "curator"})
+    "subagent", "cron", "oneshot", "webhook", "kanban", "api", "api_server", "tool", "batch", "curator",
+    "a2a", "msgraph_webhook", "gateway_hygiene"})
 
 
 def auto_cache_ttl_for_source(source: str | None) -> str:
@@ -164,11 +166,30 @@ def auto_cache_ttl_for_source(source: str | None) -> str:
     return "5m" if (source or "").strip().lower() in MACHINE_PACED_SOURCES else "1h"
 
 
-def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "", base_url: str = "") -> str:
+def auto_cache_ttl_for_agent(agent: Any) -> str:
+    """Resolve auto once, including finite gateway admissions whose launch env was scrubbed."""
+    from agent.session_source import session_source_for
+    from gateway.session_finite import finite_turn_required
+    from gateway.session_policy import active_policy
+
+    finite = finite_turn_required()
+    policy = active_policy()
+    if finite is None and policy is not None:
+        # Managed workers bind turn context after construction; the frozen admission is already here.
+        finite = json.loads(policy.request_json).get("turn_v1", {}).get("finite", policy.source == "oneshot")
+    ttl = "5m" if finite is True else auto_cache_ttl_for_source(
+        session_source_for(getattr(agent, "platform", None)))
+    return effective_cache_ttl(ttl, model=getattr(agent, "model", "") or "", provider=getattr(agent, "provider", "") or "",
+                               base_url=getattr(agent, "base_url", "") or "", auto=True)
+
+
+def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "", base_url: str = "",
+                        auto: bool = False) -> str:
     """Clamp a requested cache TTL to what the destination route supports (``None`` → ``5m``).
 
     Qwen/Alibaba routes drop ``1h`` (→ ``5m``) except on ``MEASURED_1H_PROVIDERS`` minus
     ``NO_1H_TIER_MODELS``; that check runs BEFORE the generic Qwen clamp, which would swallow it.
+    Bedrock keeps auto on 5m for legacy models; an explicit 1h pin is preserved.
     Then the route's declared ceiling (:func:`route_ttl_ceiling`) applies to that result on every
     path: the prompt-cache clock reads the same helper, so what Hermes asks for and what it
     believes never disagree.
@@ -176,6 +197,8 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "",
     if ttl != "1h":
         return ttl or "5m"
     provider_lower = (provider or "").lower()
+    if auto and provider_lower == "bedrock":
+        return "5m"
     if provider_lower in MEASURED_1H_PROVIDERS:
         clamped = "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
     else:

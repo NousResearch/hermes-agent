@@ -160,3 +160,30 @@ class TestResolveModelAndRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_comment_agent_has_its_real_platform_at_construction(monkeypatch):
+    import hermes_cli.config
+    from agent.agent_init import _init_prompt_cache_config
+    from plugins.platforms.feishu import feishu_comment
+    from tools import feishu_doc_tool, feishu_drive_tool
+
+    monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    monkeypatch.setattr(feishu_doc_tool, "set_client", Mock())
+    monkeypatch.setattr(feishu_drive_tool, "set_client", Mock())
+    monkeypatch.setattr(feishu_comment, "_resolve_model_and_runtime", lambda: ("fixture-model", {}))
+    built = []
+
+    def build(**kwargs):
+        agent = SimpleNamespace(_anthropic_prompt_cache_policy=lambda: (True, True),
+                                run_conversation=Mock(return_value={"final_response": "done"}), close=Mock(), **kwargs)
+        _init_prompt_cache_config(agent)
+        built.append(agent)
+        return agent
+
+    with patch("run_agent.AIAgent", side_effect=build):
+        assert feishu_comment._run_comment_agent("fixture comment", object()) == "done"
+    assert built[0].platform == "feishu"
+    assert built[0]._cache_ttl == "1h"

@@ -15,8 +15,8 @@ transport:
 auth:
   type: oauth
 
-# Generation and processing tools spend Tripo credits: every tool call without
-# readOnlyHint: true asks the user first. `trust` needs manifest_version 2.
+# With normal approvals enabled, calls without readOnlyHint: true ask first.
+# YOLO / approvals-off can bypass this. `trust` needs manifest_version 2.
 trust: untrusted
 
 suggest:
@@ -25,22 +25,27 @@ suggest:
     - tripo3d
   hosts:
     - tripo3d.ai
-    - tripo3d.com
 
 post_install: |
-  On first connection Hermes opens a browser to sign in to Tripo
-  (or run `hermes mcp login tripo`). Approve access, then restart the
-  session so the tools load.
+  Requires Hermes with manifest_version 2 and trust: untrusted support.
+  If Hermes reports an unsupported version, update Hermes; do not downgrade
+  the manifest and do not remove the trust setting to bypass the check.
+
+  Sign in through Hermes' OAuth prompt (or run `hermes mcp login tripo`).
+  Approve access in the browser. If tools are not discovered immediately,
+  reconnect or start a new session.
 
   Generation and processing tools spend credits from your Tripo account.
-  Hermes asks you before each call that can spend credits or change data
-  (trust: untrusted); plan, balance, usage and task status run without
-  asking. The server also asks the agent to show a plan of every billed
-  step and wait for your confirmation.
-
-  China mainland accounts (tripo3d.com): change mcp_servers.tripo.url to
-  https://developers.tripo3d.com/mcp in config.yaml, then run
-  `hermes mcp login tripo` again.
+  With normal approvals enabled, trust: untrusted asks before calls without
+  readOnlyHint: true; read-only plan, balance, usage and task status do not
+  need this approval. YOLO / approvals-off modes can bypass that prompt.
+  This is per-call approval, not a hard Tripo credit budget. Static host
+  cost declarations are not the Tripo billing ledger.
+  Show each billed step, the final model and a sourced estimate or
+  "cost not estimated"; wait for confirmation.
+  Changed model, parameters or quantity require fresh confirmation.
+  tripo_plan is guidance, not a server-enforced authorization ticket.
+  Finish with tripo_usage for all task IDs to report actual credits.
 
   You can review or turn off tools any time with:
     hermes mcp configure tripo

@@ -358,7 +358,10 @@ class MemoryManager:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
         call keeps running on its daemon thread; _PREFETCH_GATE decides whether later turns call again."""
         if provider.name == "builtin":
-            return provider.prefetch(query, session_id=session_id)
+            result = provider.prefetch(query, session_id=session_id)
+            from agent.context_governance import memory_context_allowed
+            return result if not result or memory_context_allowed(
+                provider=provider.name, query=query, context=result, session_id=session_id) else ""
 
         result_box: dict[str, Any] = {}
 
@@ -397,6 +400,11 @@ class MemoryManager:
         if "error" in result_box:
             raise result_box["error"]
         result = result_box.get("value", "")
+        if result and result.strip():
+            from agent.context_governance import memory_context_allowed
+            if not memory_context_allowed(provider=provider.name, query=query,
+                                          context=result, session_id=session_id):
+                return ""
         if result and result.strip():
             # Opt-in spill limits recall replayed with the user turn's api_content;
             # the registration snapshot leaves provider-ranked results intact by default.

@@ -1002,6 +1002,13 @@ dashboard:
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
 
+Because the sign-in cookie is host-only, the callback can only complete on the
+`public_url` origin. A browser that opens `/login`, `/auth/login` or
+`/auth/native/authorize` on `localhost`, `127.0.0.1` or `[::1]` is therefore
+redirected once to the same path on `public_url` before any cookie is set. The
+redirect carries a `canonical=1` marker so a proxy that forwards a loopback
+`Host` settles after one hop instead of looping.
+
 The hostname in `public_url` is also accepted as an **exact** HTTP `Host` and
 WebSocket `Origin` value. This supports a reverse proxy that preserves the
 browser-facing hostname while forwarding to a dashboard bound to

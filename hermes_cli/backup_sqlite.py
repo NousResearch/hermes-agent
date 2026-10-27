@@ -9,6 +9,7 @@ import os
 import signal
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import suppress
 from datetime import datetime, timezone, UTC
@@ -100,7 +101,8 @@ def _stepped_rollback_journal_copy(conn: sqlite3.Connection, backup_conn: sqlite
         if _stepped_attempt(conn, backup_conn, pages, check_busy, rate):
             return
         pages = max(_ROLLBACK_FIRST_STEP_PAGES, int(rate.pages_per_second() * _ROLLBACK_STEP_SECONDS))
-    expected_hold = rate.total / rate.pages_per_second()
+    # Floored: a run where no step completed has no measured rate, and the estimate must not divide by 0.
+    expected_hold = rate.total / max(rate.pages_per_second(), 1.0)
     if expected_hold > _ROLLBACK_LOCK_HOLD_SECONDS:
         raise RuntimeError(
             "state.db uses a rollback journal and is written continuously; a consistent snapshot "
@@ -109,12 +111,41 @@ def _stepped_rollback_journal_copy(conn: sqlite3.Connection, backup_conn: sqlite
     conn.backup(backup_conn, pages=-1, progress=check_busy, sleep=_ROLLBACK_BUSY_SLEEP_SECONDS)
 
 
+class _OffThreadCopy:
+    """One long sqlite3 call run off the main thread. Python runs signal handlers only on the main
+    thread and only between bytecodes, so a one-step backup (a single C ``sqlite3_backup_step``,
+    GIL released) would hold a SIGTERM until the whole copy finished; the main thread waits here in
+    short joins instead, so the Desktop's pre-flight deadline interrupts the snapshot promptly."""
+
+    def __init__(self, copy) -> None:
+        self._copy, self._error = copy, None
+        # health: allow HX012 -- stdlib-only file (the Desktop runs it when app imports cannot load); the copy reads no profile state
+        self.thread = threading.Thread(target=self._run, name="sqlite-snapshot", daemon=True)
+
+    def _run(self) -> None:
+        try:
+            self._copy()
+        except BaseException as exc:  # health: allow BLE001 -- handed to the waiting main thread, which re-raises it
+            self._error = exc
+
+    def run(self) -> None:
+        self.thread.start()
+        while self.thread.is_alive():
+            self.thread.join(0.05)
+        if self._error is not None:
+            raise self._error
+
+    def running(self) -> bool:
+        return self.thread.is_alive()
+
+
 def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
     Fails closed when no consistent snapshot can be made: copying only the main file loses WAL data.
     """
     conn = backup_conn = None
+    copier: Optional[_OffThreadCopy] = None
     try:
         # sqlite3.connect() creates a missing destination with the process
         # umask, which is commonly 0022 (0644).  Snapshot databases contain
@@ -133,8 +164,9 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
                 os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
-        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0)
-        backup_conn = sqlite3.connect(str(dst))
+        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0,
+                               check_same_thread=False)
+        backup_conn = sqlite3.connect(str(dst), check_same_thread=False)
         busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
 
         def _check_backup_progress(status: int, _remaining: int, _total: int) -> None:
@@ -149,7 +181,10 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         if _uses_wal(src):
             # One step: SQLite restarts a multi-step backup whenever another connection writes the
             # source, and a WAL reader never blocks a writer however long the copy takes.
-            conn.backup(backup_conn, pages=-1, progress=_check_backup_progress, sleep=0.1)
+            # Run off the main thread so a SIGTERM is serviced during the copy (_OffThreadCopy).
+            copier = _OffThreadCopy(lambda: conn.backup(
+                backup_conn, pages=-1, progress=_check_backup_progress, sleep=0.1))
+            copier.run()
         else:
             _stepped_rollback_journal_copy(conn, backup_conn, _check_backup_progress)
         return True
@@ -162,8 +197,12 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             dst.unlink(missing_ok=True)
         return False
     finally:
-        _close_quietly(backup_conn)
-        _close_quietly(conn)
+        # Interrupted mid-copy (SIGTERM -> SystemExit): the worker is still inside the C copy with
+        # both connections, and close() would wait on their mutex until the copy ends. The process
+        # is exiting; leave them to it, and the caller unlinks the staging file.
+        if copier is None or not copier.running():
+            _close_quietly(backup_conn)
+            _close_quietly(conn)
 
 
 # Longer than the Desktop's 30-minute pre-flight cap: a staging file this old
@@ -206,6 +245,8 @@ def preflight_state_db(home: Path) -> dict:
         os.replace(staged, destination)
     finally:
         staged.unlink(missing_ok=True)
+        # A copy stopped mid-write leaves the staging copy's rollback journal behind too.
+        Path(f"{staged}-journal").unlink(missing_ok=True)
     for old in sorted(home.glob(f"{prefix}*.bak"), reverse=True)[2:]:
         try:
             old.unlink()

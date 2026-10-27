@@ -87,12 +87,21 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(
+        self,
+        *args: Any,
+        token_user_agent: str | None = None,
+        oauth_flow: str = "browser",
+        trust_prm_resource: bool = False,
+        **kwargs: Any,
+    ):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        # oauth.trust_prm_resource — see _validate_resource_match
+        self._hermes_trust_prm_resource = trust_prm_resource
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -189,6 +198,31 @@ class HermesProviderMixin:
             "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
+
+    async def _validate_resource_match(self, prm) -> None:
+        """Skip the SDK's protected-resource-vs-server-URL rejection for a server that opted in with
+        ``oauth.trust_prm_resource`` (#135227).
+
+        A multi-tenant MCP serves each tenant from ``https://<tenant>.example/mcp`` but publishes
+        protected-resource metadata naming a canonical application resource
+        (``https://app.example/mcp``). The SDK rejects that PRM before authorization even starts,
+        while the tenant's authorization server rejects the canonical URL as the RFC 8707
+        ``resource`` parameter (``invalid_target``) — no configured URL satisfies both sides.
+        Opting in accepts the discovered metadata (the authorization-server list) despite the
+        mismatch; the ``resource`` parameter itself still derives from the configured server URL
+        (the SDK only swaps in the advertised resource when it is a true parent of it), so the
+        token audience never silently follows the advertised canonical value. Default off: every
+        server that did not ask for the override keeps the strict check."""
+        if not getattr(self, "_hermes_trust_prm_resource", False):
+            await super()._validate_resource_match(prm)
+            return
+        from mcp.client.auth.exceptions import OAuthFlowError
+        try:
+            await super()._validate_resource_match(prm)
+        except OAuthFlowError as exc:
+            self._hermes_logger.warning(
+                "MCP OAuth: accepting protected-resource metadata despite: %s (oauth.trust_prm_resource)",
+                exc)
 
     def _prepare_token_request(self, request):
         """Stamp a token/refresh request's User-Agent: the configured ``oauth.user_agent`` when set,
@@ -632,4 +666,5 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        "trust_prm_resource": bool(cfg.get("trust_prm_resource", False)),
         **mo.cimd_provider_kwargs(cfg)}

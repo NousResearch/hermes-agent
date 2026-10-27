@@ -3172,6 +3172,8 @@ onboarding:
 
 ## Webapp
 
+When the Webapp is off, the gateway API binds to `127.0.0.1` on an ephemeral port by default. Set `gateway.api_bind_host: "::1"` to use IPv6 loopback instead, including on WSL2 hosts where IPv4 loopback is unavailable. This setting also controls the private fallback listener if the Webapp cannot start. Only `127.0.0.1` and `::1` are accepted; restart the gateway after changing it.
+
 The gateway can serve the [Desktop workspace in a browser](./desktop.md#use-the-desktop-workspace-from-a-browser) on its own listener. It is off until you turn it on.
 
 ```yaml

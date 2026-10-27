@@ -510,9 +510,7 @@ async def start_gateway_runtime_api(runner):
                             else {"state": "off", "url": None, "reason": None} if webapp is None
                             else dict(STARTING))
     try:
-        # Without the Webapp the listener is main's: the same call, a private ephemeral port.
-        runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
-                                    if webapp is not None else run_api.start_gateway_api(runner))
+        runner.session_api = await run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
     except (Exception, SystemExit) as exc:
         if webapp is None:
             raise
@@ -538,7 +536,8 @@ async def start_gateway_runtime_api(runner):
             browser_session_token(home, rotate=True)
         except OSError as write_error:
             logger.warning("Could not replace the Webapp's browser credential: %s", write_error)
-        runner.session_api = await run_api.start_gateway_api(runner)
+        from gateway.webapp_listener import private_listener_host
+        runner.session_api = await run_api.start_gateway_api(runner, host=private_listener_host(home))
     else:
         if webapp is not None:
             runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}

@@ -42,7 +42,8 @@ export const slashCmdSessionEn = {
       confirmStale: 'Model not switched: the session changed before the confirmation landed; run /model again.',
       confirmTitle: (model: string) => `Confirm model switch to ${model}`,
       // {0}=model picked during a turn, {1}=the owner's refusal reason
-      deferredRefused: (model: string, reason: string) => `model switch to ${model} failed (${reason}); keeping the current model`,
+      deferredRefused: (model: string, reason: string) =>
+        `model switch to ${model} failed (${reason}); keeping the current model`,
       expensiveDetail: 'This model has unusually high known pricing.',
       expensiveTitle: 'Expensive model selection',
       invalidResponse: 'error: invalid response: model switch',
@@ -66,7 +67,35 @@ export const slashCmdSessionEn = {
       currentWithDisplay: (value: string, display: string) => `reasoning: ${value} · display ${display}`
     },
     sessions: {
-      busyGuardAction: 'switch sessions'
+      busyGuardAction: 'switch sessions',
+      inventory: 'Available sessions; up to 200 per feed; hidden/archived/internal sessions omitted.',
+      feedError: (scope: string, error: string) => `${scope} feed unavailable: ${error} (partial inventory)`,
+      empty: 'No available sessions in the successful feeds.',
+      row: (
+        ids: string,
+        title: string,
+        source: string,
+        model: string,
+        count: string,
+        started: string,
+        live: string,
+        running: string
+      ) =>
+        `${ids} | ${title} | ${source} | ${model} | ${count} messages | ${started}${live ? ' | live' : ''}${running ? ' | running' : ''}`,
+      usage: (verb: string) => `usage: /sessions ${verb}`,
+      canonicalRequired: 'Session management requires the canonical gateway; no legacy mutation was attempted.',
+      held: 'Cannot delete a current or live conversation. Close/switch first.',
+      confirmTitle: (id: string) => `Delete conversation ${id}?`,
+      confirmDetail: (id: string) =>
+        `Delete exact ID ${id} and its whole conversation/lineage, including pinned data. This cannot be undone.`,
+      cancel: 'Cancel',
+      delete: 'Delete',
+      deleted: (id: string) => `Deleted conversation ${id}.`,
+      renamed: (id: string, title: string) => `Renamed ${id} → ${title}`,
+      mutationError: (error: string) =>
+        `Session action: ${error}. If the reply was lost, completion is unknown; repeating the same command retries its retained request.`,
+      pruneRefusal: (options: string) =>
+        `Bulk prune needs a native operator and a store-wide preview; it is not available in this TUI. On the gateway host, run hermes sessions prune${options} --dry-run with the same filters, then hermes sessions prune${options} to confirm.`
     },
     skin: {
       current: (skin: string) => `skin: ${skin}`,

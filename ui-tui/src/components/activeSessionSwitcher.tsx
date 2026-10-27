@@ -1,8 +1,9 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
+import { getUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import { useSessionDelete } from '../hooks/useSessionDelete.js'
@@ -12,6 +13,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { ModelPicker } from './modelPicker.js'
+import { switcherSessionActions } from './activeSessionSwitcherActions.js'
 import { windowOffset } from './overlayControls.js'
 import { clampOverlayWidth, listRowStyle } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
@@ -20,6 +22,12 @@ const VISIBLE = 12
 const MIN_WIDTH = 64
 const MAX_WIDTH = 128
 const TITLE_MAX = 64
+
+// Deliberately a filter of the bounded feeds, not full-store search.
+const matchesSession = (row: { id: string; title?: string; preview?: string; model?: string }, query: string) =>
+  [row.id, row.title, row.preview, row.model].some(value =>
+    value?.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+  )
 
 const STATUS_GLYPH: Record<string, string> = {
   idle: '✓',
@@ -310,11 +318,58 @@ export function ActiveSessionSwitcher({
   onSelect,
   t
 }: ActiveSessionSwitcherProps) {
-  const [items, setItems] = useState<SessionActiveItem[]>([])
-  const [history, setHistory] = useState<SessionListRow[]>([])
+  const [loadedItems, setItems] = useState<SessionActiveItem[]>([])
+  const [loadedHistory, setHistory] = useState<SessionListRow[]>([])
+  const [query, setQuery] = useState('')
+  const queryRef = useRef('')
+  const [filtering, setFiltering] = useState(false)
+  const [renaming, setRenaming] = useState<null | { id: string; title: string }>(null)
+  const [actionPending, setActionPending] = useState(false)
+  const [actionNotice, setActionNotice] = useState('')
+  const actionPendingRef = useRef(false)
+  // Reads started before an accepted local mutation must not replace its projection.
+  // This is a request-start fence, not a sticky title override: later polls stay authoritative.
+  const listGenerationRef = useRef(0)
+  const aliveRef = useRef(true)
+  const currentIdRef = useRef(currentSessionId)
+  currentIdRef.current = currentSessionId
+  const gatewayRef = useRef(gw)
+  gatewayRef.current = gw
+  const actions = useMemo(
+    () =>
+      switcherSessionActions(
+        gw,
+        id => gw === gatewayRef.current && id === (getUiState().sid ?? currentIdRef.current),
+        () => !aliveRef.current || gw !== gatewayRef.current
+      ),
+    [gw]
+  )
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
+  const items = loadedItems.filter(row => matchesSession(row, query))
+  const history = loadedHistory.filter(row => matchesSession(row, query))
   const [err, setErr] = useState('')
   // A close/delete failure: kept apart from `err`, which every quiet poll rewrites.
   const [actionErr, setActionErr] = useState('')
+  useEffect(() => {
+    setRenaming(null)
+    setFiltering(false)
+    setQuery('')
+    queryRef.current = ''
+    setActionErr('')
+    setActionNotice('')
+    rawHistoryRef.current = []
+    itemsRef.current = []
+    historyDisplayRef.current = []
+    initialSelectionAppliedRef.current = false
+    setItems([])
+    setHistory([])
+    setSel(0)
+  }, [gw])
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState('')
@@ -353,6 +408,10 @@ export function ActiveSessionSwitcher({
   const histCount = history.length
   const listLen = liveCount + histCount
   const total = listLen + 1
+  // A successful rename can remove the selected row from the active filter.
+  useEffect(() => {
+    setSel(index => Math.min(index, total - 1))
+  }, [total])
   const rowKind = useCallback((index: number) => sessionRowKindAt(index, liveCount), [liveCount])
 
   const load = useCallback(
@@ -360,6 +419,7 @@ export function ActiveSessionSwitcher({
     // `includeHistory` re-queries the resumable DB list (skipped on the 1.5s
     // poll, which only needs fresh live-session status).
     async (quiet = false, includeHistory = true) => {
+      const generation = listGenerationRef.current
       if (!quiet) {
         setLoading(true)
       }
@@ -391,6 +451,15 @@ export function ActiveSessionSwitcher({
               })
             : Promise.resolve(null)
         ])
+
+        if (!aliveRef.current || gw !== gatewayRef.current) {
+          return []
+        }
+
+        if (generation !== listGenerationRef.current) {
+          setLoading(false)
+          return itemsRef.current
+        }
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
 
@@ -425,7 +494,9 @@ export function ActiveSessionSwitcher({
         const hist = resumableHistory(rawHistoryRef.current, next)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
-        const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
+        const visibleLive = next.filter(row => matchesSession(row, queryRef.current))
+        const visibleHistory = hist.filter(row => matchesSession(row, queryRef.current))
+        const maxSel = visibleLive.length + visibleHistory.length
 
         setItems(next)
         setHistory(hist)
@@ -435,7 +506,9 @@ export function ActiveSessionSwitcher({
           if (initializeSelection) {
             // Land on the current live session (shifted +1 past the pinned new
             // row); with no live sessions, start on the new row itself.
-            return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
+            return visibleLive.length
+              ? Math.min(currentSessionSelectionIndex(visibleLive, currentSessionId) + 1, maxSel)
+              : 0
           }
 
           if (s <= 0) {
@@ -446,17 +519,10 @@ export function ActiveSessionSwitcher({
           const prevHist = historyDisplayRef.current
           const clamp = () => Math.max(0, Math.min(s, maxSel))
 
-          if (s - 1 < prevItems.length) {
-            const id = prevItems[s - 1]?.id
-            const i = id ? next.findIndex(x => x.id === id) : -1
+          const id = s - 1 < prevItems.length ? prevItems[s - 1]?.id : prevHist[s - 1 - prevItems.length]?.id
+          const i = [...visibleLive, ...visibleHistory].findIndex(x => x.id === id)
 
-            return i >= 0 ? i + 1 : clamp()
-          }
-
-          const id = prevHist[s - 1 - prevItems.length]?.id
-          const i = id ? hist.findIndex(x => x.id === id) : -1
-
-          return i >= 0 ? 1 + next.length + i : clamp()
+          return i >= 0 ? i + 1 : clamp()
         })
         setErr(histError)
         setLoading(false)
@@ -558,7 +624,7 @@ export function ActiveSessionSwitcher({
       event.stopImmediatePropagation?.()
 
       // Keys are held while a delete is pending; a click must not open the row mid-delete either.
-      if (deletePending()) {
+      if (deletePending() || actionPendingRef.current || renaming || filtering) {
         return
       }
 
@@ -581,16 +647,99 @@ export function ActiveSessionSwitcher({
 
       setSel(0)
     },
-    [deletePending, history, items, onResume, onSelect, rowKind, total]
+    [deletePending, filtering, history, items, onResume, onSelect, renaming, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
   const newSelected = selectedKind === 'new'
   const draftHasText = Boolean(draft.trim())
 
-  useInput((ch, key) => {
-    if (pickingModel || deletePending()) {
+  const changeFilter = (value: string) => {
+    const target = [...items, ...history][sel - 1]?.id
+    queryRef.current = value
+    setQuery(value)
+    const rows = [...loadedItems, ...loadedHistory].filter(row => matchesSession(row, value))
+    const index = rows.findIndex(row => row.id === target)
+    setSel(index >= 0 ? index + 1 : rows.length ? 1 : 0)
+  }
+
+  const submitRename = async (value: string) => {
+    const target = renaming
+    const title = value.trim()
+    if (!target || !title || actionPendingRef.current) {
       return
+    }
+    actionPendingRef.current = true
+    setActionPending(true)
+    setActionErr('')
+    try {
+      const saved = await actions.rename(target.id, title)
+      if (aliveRef.current && gw === gatewayRef.current && saved !== undefined) {
+        listGenerationRef.current += 1
+        rawHistoryRef.current = rawHistoryRef.current.map(row =>
+          row.id === target.id ? { ...row, title: saved } : row
+        )
+        setItems(rows => rows.map(row => (row.id === target.id ? { ...row, title: saved } : row)))
+        setHistory(rows => rows.map(row => (row.id === target.id ? { ...row, title: saved } : row)))
+        setRenaming(null)
+      }
+    } catch (error) {
+      if (aliveRef.current && gw === gatewayRef.current) {
+        setActionErr(rpcErrorMessage(error))
+      }
+    } finally {
+      actionPendingRef.current = false
+      if (aliveRef.current) {
+        setActionPending(false)
+      }
+    }
+  }
+
+  const exportSelected = async () => {
+    const target = [...items, ...history][sel - 1]
+    if (!target || actionPendingRef.current) {
+      return
+    }
+    actionPendingRef.current = true
+    setActionPending(true)
+    setActionErr('')
+    setActionNotice('')
+    try {
+      const path = await actions.export(target.id)
+      if (aliveRef.current && gw === gatewayRef.current && path) {
+        setActionNotice(`Exported to ${path}`)
+      }
+    } catch (error) {
+      if (aliveRef.current && gw === gatewayRef.current) {
+        setActionErr(rpcErrorMessage(error))
+      }
+    } finally {
+      actionPendingRef.current = false
+      if (aliveRef.current) {
+        setActionPending(false)
+      }
+    }
+  }
+
+  useInput((ch, key) => {
+    if (pickingModel || deletePending() || actionPendingRef.current) {
+      return
+    }
+
+    if (renaming) {
+      if (key.escape) {
+        setRenaming(null)
+      }
+      return
+    }
+
+    if (filtering) {
+      if (key.escape) {
+        changeFilter('')
+        setFiltering(false)
+      }
+
+      return // the filter TextInput owns text/Enter, not management shortcuts
     }
 
     // Two-press history delete: once armed, only a second `d` deletes; any
@@ -608,6 +757,12 @@ export function ActiveSessionSwitcher({
 
     const lower = ch?.toLowerCase() ?? ''
     const isCtrl = (letter: string) => key.ctrl && (lower === letter || ch === ctrlChar(letter))
+
+    if (isCtrl('f') || (ch === '/' && !newSelected)) {
+      setFiltering(true)
+
+      return
+    }
 
     if (key.escape) {
       return onCancel()
@@ -644,6 +799,31 @@ export function ActiveSessionSwitcher({
     if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
       setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
 
+      return
+    }
+
+    // `d` is reserved even on live rows: it must never turn a close/delete key into a filter.
+    if (lower === 'd' && !key.ctrl && !newSelected) {
+      return
+    }
+
+    if (lower === 'r' && !key.ctrl && !newSelected) {
+      const target = [...items, ...history][sel - 1]
+      if (target) {
+        setActionErr('')
+        setRenaming({ id: target.id, title: target.title || '' })
+      }
+      return
+    }
+
+    if (lower === 'e' && !key.ctrl && !newSelected) {
+      void exportSelected()
+      return
+    }
+
+    if (!newSelected && !key.ctrl && !key.meta && ch && /^[^\x00-\x1f\x7f]+$/u.test(ch)) {
+      changeFilter(query + ch)
+      setFiltering(true)
       return
     }
 
@@ -716,9 +896,49 @@ export function ActiveSessionSwitcher({
       <Text bold color={t.color.accent}>
         {S.title}
       </Text>
-      <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+      <Text color={t.color.muted}>
+        {sessionsCountLabel(items.length, history.length)} — loaded subset (history limit 200)
+      </Text>
+      {(filtering || query) && (
+        <Box>
+          <Box flexShrink={0}>
+            <Text color={t.color.label}>Filter loaded sessions: </Text>
+          </Box>
+          {filtering ? (
+            <TextInput
+              color={t.color.text}
+              columns={promptColumns}
+              value={query}
+              onChange={changeFilter}
+              onSubmit={() => setFiltering(false)}
+            />
+          ) : (
+            <Text>{query}</Text>
+          )}
+        </Box>
+      )}
 
       {(actionErr || err) && <Text color={t.color.label}>{C.error(actionErr || err)}</Text>}
+      {actionNotice && <Text color={t.color.muted}>{actionNotice}</Text>}
+      {actionPending && !renaming && <Text color={t.color.muted}>Exporting…</Text>}
+      {renaming && (
+        <Box>
+          <Box flexShrink={0}>
+            <Text color={t.color.label}>Rename {renaming.id}: </Text>
+          </Box>
+          {actionPending ? (
+            <Text>Saving…</Text>
+          ) : (
+            <TextInput
+              color={t.color.text}
+              columns={promptColumns}
+              value={renaming.title}
+              onChange={title => setRenaming(target => (target ? { ...target, title } : null))}
+              onSubmit={value => void submitRename(value)}
+            />
+          )}
+        </Box>
+      )}
 
       <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
         <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>
@@ -886,7 +1106,7 @@ export function ActiveSessionSwitcher({
 
       {offset + VISIBLE < listLen && <Text color={t.color.muted}>{C.moreBelow(listLen - offset - VISIBLE)}</Text>}
 
-      {newSelected ? (
+      {newSelected && !filtering && !renaming ? (
         <>
           <Box marginTop={1}>
             <Text color={t.color.label}>{S.promptLabel}</Text>
@@ -920,6 +1140,8 @@ export function ActiveSessionSwitcher({
       )}
 
       <OrchestratorHintText segments={orchestratorGlobalHotkeyHintSegments()} t={t} />
+      <Text color={t.color.muted}>Ctrl+F filter loaded sessions · Enter finish filter · Esc clear filter</Text>
+      {!newSelected && <Text color={t.color.muted}>r rename · e export Markdown · Esc cancel rename</Text>}
     </Box>
   )
 }

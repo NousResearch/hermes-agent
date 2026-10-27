@@ -196,6 +196,53 @@ describe('markSessionUnread', () => {
     expect(await resultB).toEqual(expect.objectContaining({ message: 'owner B offline' }))
     expect($sessions.get()[0]).toMatchObject({ connection_id: 'gateway-b', unread: false })
   })
+
+  it('uses the clicked row owner when same-id rows coexist', async () => {
+    const ownerA = row('same', { connection_id: 'gateway-a', profile: 'work', unread: false })
+    const ownerB = row('same', { connection_id: 'gateway-b', profile: 'work', unread: false })
+
+    $sessions.set([ownerA, ownerB])
+    await markSessionUnread(ownerB, true)
+
+    expect(patch).toHaveBeenCalledWith('same', true, { connectionId: 'gateway-b', profile: 'work' })
+    expect($sessions.get()).toEqual([ownerA, { ...ownerB, unread: true }])
+  })
+
+  it('does not resolve a legacy string caller across duplicate owners', async () => {
+    $sessions.set([
+      row('same', { connection_id: 'gateway-a', unread: false }),
+      row('same', { connection_id: 'gateway-b', unread: false })
+    ])
+
+    await markSessionUnread('same', true)
+
+    expect(patch).not.toHaveBeenCalled()
+    expect($sessions.get().every(session => session.unread === false)).toBe(true)
+  })
+
+  it('does not let a rejected write repaint a newer confirming list page', async () => {
+    let rejectPatch!: (error: Error) => void
+
+    patch.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectPatch = reject
+        })
+    )
+    watchUnreadWriteGuard()
+    const original = row('a', { connection_id: 'gateway-a', unread: false })
+
+    $sessions.set([original])
+    const pending = markSessionUnread(original, true)
+    const result = pending.catch(error => error)
+
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    $sessions.set([{ ...original, unread: true }])
+    rejectPatch(new Error('late failure'))
+
+    expect(await result).toEqual(expect.objectContaining({ message: 'late failure' }))
+    expect($sessions.get()[0]?.unread).toBe(true)
+  })
 })
 
 describe('clearUnreadOnOpen', () => {
@@ -214,6 +261,17 @@ describe('clearUnreadOnOpen', () => {
 
     expect(patch).toHaveBeenCalledWith('a', false, 'p2')
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
+  })
+
+  it('clears only the clicked owner when duplicate ids coexist', async () => {
+    const ownerA = row('same', { connection_id: 'gateway-a', profile: 'work', unread: true })
+    const ownerB = row('same', { connection_id: 'gateway-b', profile: 'work', unread: true })
+
+    $sessions.set([ownerA, ownerB])
+    await clearUnreadOnOpen(ownerB)
+
+    expect(patch).toHaveBeenCalledWith('same', false, { connectionId: 'gateway-b', profile: 'work' })
+    expect($sessions.get()).toEqual([ownerA, { ...ownerB, unread: false }])
   })
 
   it('swallows a failed PATCH (the next honest refresh heals the dot)', async () => {

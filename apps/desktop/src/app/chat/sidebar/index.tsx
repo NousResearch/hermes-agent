@@ -127,7 +127,7 @@ import {
   markAllSessionsRead,
   sessionPinId
 } from '@/store/session'
-import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
+import { $sessionDotStateById, sessionDotStateForRow, sessionStatusBucket } from '@/store/session-dot-state'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -379,8 +379,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onRetrySessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onDeleteSession: (session: SessionInfo) => void
+  onArchiveSession: (session: SessionInfo) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
@@ -501,14 +501,8 @@ export function ChatSidebar({
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
   // become the truth (optimistic update + rollback in markSessionUnread).
-  const toggleUnread = (storedId: string) => {
-    const row = $sessions.get().find(r => r.id === storedId)
-
-    if (!row) {
-      return
-    }
-
-    markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
+  const toggleUnread = (row: SessionInfo) => {
+    markSessionUnread(row, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
   }
 
   // Only surface the profile switcher when more than one profile exists, so
@@ -615,7 +609,7 @@ export function ChatSidebar({
   // (same rule as the overview overlay), so filtering to Home keeps Home's rows.
   const sessionMatchesFilters = useCallback(
     (session: SessionInfo) => {
-      if (statusFilter.length && !statusFilter.includes(sessionStatusBucket(dotStates[session.id]))) {
+      if (statusFilter.length && !statusFilter.includes(sessionStatusBucket(sessionDotStateForRow(dotStates, session)))) {
         return false
       }
 

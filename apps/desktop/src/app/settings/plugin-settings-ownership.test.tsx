@@ -379,6 +379,7 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
     fireEvent.click(await screen.findByTestId('plugin-settings-row-agent:review-notes'))
     await waitFor(() => expect((screen.getByLabelText(/Destination/) as HTMLInputElement).value).toBe('CUSTOM-ready'))
     fireEvent.change(screen.getByLabelText(/Destination/), { target: { value: 'CUSTOM-EDIT' } })
+    fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'CUSTOM-SECRET' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
 
     await waitFor(() =>
@@ -386,6 +387,11 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
         'plugins.manage',
         expect.objectContaining({ action: 'settings', values: { destination: 'CUSTOM-EDIT' } })
       )
+    )
+    expect(setEnvVar).toHaveBeenCalledWith(
+      'REVIEW_TOKEN',
+      'CUSTOM-SECRET',
+      expect.objectContaining({ connectionId: 'gateway-a', profile: 'custom' })
     )
     expect(requestGatewayForAgent.mock.calls.every(([, targetProfile]) => targetProfile === 'custom')).toBe(true)
     expect(ambientGateway).not.toHaveBeenCalled()

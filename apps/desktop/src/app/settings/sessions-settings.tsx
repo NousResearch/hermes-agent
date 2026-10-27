@@ -27,7 +27,7 @@ import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
-import { sessionMutationScopeFromRow } from '@/store/session-request-router'
+import { sessionMutationScopeFromRow, sessionOwnerRowKey } from '@/store/session-request-router'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
@@ -95,11 +95,18 @@ function ArchivedSessionsSettings({
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
-  const [busyId, setBusyId] = useState<string | null>(null)
+  const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(() => new Set())
   const [lifetime] = useState(() => new AbortController())
   const ownerKey = profileScopeKey(settingsOwner)
   const ownerKeyRef = useRef(ownerKey)
   ownerKeyRef.current = ownerKey
+
+  const rowKey = useCallback((session: SessionInfo) => {
+    const scope = archivedSessionScope(settingsOwner, session)
+    const routeBinding = scope && typeof scope === 'object' ? scope.sessionRouteBinding ?? null : null
+
+    return JSON.stringify([profileScopeKey(scope), routeBinding, session.id])
+  }, [settingsOwner])
 
   useEffect(() => () => lifetime.abort(), [lifetime])
 
@@ -144,7 +151,8 @@ function ArchivedSessionsSettings({
     async (session: SessionInfo) => {
       const actionOwnerKey = ownerKey
       const actionScope = archivedSessionScope(settingsOwner, session)
-      setBusyId(session.id)
+      const actionRowKey = rowKey(session)
+      setBusyKeys(keys => new Set(keys).add(actionRowKey))
 
       try {
         await setSessionArchived(session.id, false, actionScope)
@@ -153,7 +161,7 @@ function ArchivedSessionsSettings({
           return
         }
 
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        setLocalSessions(prev => prev.filter(s => rowKey(s) !== actionRowKey))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
         untombstoneSessions([session.id, session._lineage_root_id])
@@ -166,17 +174,29 @@ function ArchivedSessionsSettings({
         }
       } finally {
         if (ownerIsCurrent(actionOwnerKey)) {
-          setBusyId(null)
+          setBusyKeys(keys => {
+            const next = new Set(keys)
+
+            next.delete(actionRowKey)
+
+            return next
+          })
         }
       }
     },
-    [ownerIsCurrent, ownerKey, s, settingsOwner]
+    [ownerIsCurrent, ownerKey, rowKey, s, settingsOwner]
   )
 
   const remove = useCallback(
     async (session: SessionInfo) => {
       const actionOwnerKey = ownerKey
       const actionScope = archivedSessionScope(settingsOwner, session)
+      const actionRowKey = rowKey(session)
+
+      const unreadCleanupIds =
+        sessions.filter(row => row.id === session.id).length > 1
+          ? [sessionOwnerRowKey(session)]
+          : [session.id, session._lineage_root_id]
 
       const ok = await confirm({
         confirmLabel: s.deletePermanently,
@@ -188,7 +208,7 @@ function ArchivedSessionsSettings({
         return
       }
 
-      setBusyId(session.id)
+      setBusyKeys(keys => new Set(keys).add(actionRowKey))
 
       try {
         await deleteSession(session.id, actionScope)
@@ -199,14 +219,14 @@ function ArchivedSessionsSettings({
 
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
-        forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
+        forgetSessionUnread(unreadCleanupIds, session.profile)
         // Same for the journaled in-flight tail: it holds this session's
         // prompt and tool calls in localStorage, and a deleted session must
         // not leave that copy behind to age out on its own. Both ids — the
         // stored tip and the durable lineage root — the journal keys on the
         // stored id and the row may carry either.
         purgeInFlightTurnJournals([session.id, session._lineage_root_id])
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        setLocalSessions(prev => prev.filter(s => rowKey(s) !== actionRowKey))
         triggerHaptic('warning')
       } catch (err) {
         if (ownerIsCurrent(actionOwnerKey)) {
@@ -214,11 +234,17 @@ function ArchivedSessionsSettings({
         }
       } finally {
         if (ownerIsCurrent(actionOwnerKey)) {
-          setBusyId(null)
+          setBusyKeys(keys => {
+            const next = new Set(keys)
+
+            next.delete(actionRowKey)
+
+            return next
+          })
         }
       }
     },
-    [ownerIsCurrent, ownerKey, s, settingsOwner]
+    [ownerIsCurrent, ownerKey, rowKey, s, sessions, settingsOwner]
   )
 
   useDeepLinkHighlight({
@@ -252,10 +278,11 @@ function ArchivedSessionsSettings({
         <div className="grid gap-1">
           {sessions.map(session => {
             const label = pathLeaf(session.cwd)
-            const busy = busyId === session.id
+            const key = rowKey(session)
+            const busy = busyKeys.has(key)
 
             return (
-              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={key}>
                 <ListRow
                   action={
                     <div className="flex items-center gap-1.5">

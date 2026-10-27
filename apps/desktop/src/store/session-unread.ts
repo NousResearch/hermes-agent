@@ -17,6 +17,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from './session'
+import { sessionOwnerRowKey } from './session-request-router'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 /**
@@ -378,12 +379,27 @@ export function isMessagingCompletion(storedSessionId: string, profile?: string)
  *  no loaded row it lands in `profileHint`'s, falling back to the active
  *  gateway's — the only place a live edge can come from. */
 export function markSessionUnreadFinished(storedSessionId: string, profileHint?: null | string): void {
-  const row = resolveLoadedRow(storedSessionId)
+  const rows = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
+
+  const matches = rows.filter(
+    candidate =>
+      sessionMatchesStoredId(candidate, storedSessionId) &&
+      (!profileHint || profileKeyForRow(candidate) === normalizeProfileKey(profileHint))
+  )
+
+  if (matches.length > 1) {
+    return
+  }
+
+  const row = matches[0]
+  const duplicate = Boolean(row && rows.filter(candidate => sessionMatchesStoredId(candidate, storedSessionId)).length > 1)
+  const transientId = row && duplicate ? sessionOwnerRowKey(row) : storedSessionId
+  const durableId = row && duplicate ? sessionOwnerRowKey(row) : row ? sessionPinId(row) : storedSessionId
 
   writeUnread(
-    storedSessionId,
+    transientId,
     row ? profileKeyForRow(row) : unlistedProfile(profileHint),
-    row ? sessionPinId(row) : storedSessionId
+    durableId
   )
 }
 
@@ -392,6 +408,7 @@ export function markSessionUnreadFinished(storedSessionId: string, profileHint?:
 function ackSessionRow(row: SessionInfo): void {
   const profile = profileKeyForRow(row)
   const durableId = sessionPinId(row)
+  const ownerKey = sessionOwnerRowKey(row)
 
   if (Number.isFinite(row.message_count)) {
     const seen = $sessionSeenCounts.get()
@@ -408,7 +425,7 @@ function ackSessionRow(row: SessionInfo): void {
     return
   }
 
-  const next = markers.filter(id => id !== durableId && !sessionMatchesStoredId(row, id))
+  const next = markers.filter(id => id !== durableId && id !== ownerKey && !sessionMatchesStoredId(row, id))
 
   if (next.length !== markers.length) {
     setMarkerBucket(profile, next)
@@ -614,11 +631,17 @@ function recomputeUnread(): void {
   const markers = $unreadFinishedMarkers.get()
   const seen = $sessionSeenCounts.get()
   const unread: string[] = []
+  const loadedRows = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
+
+  const unreadKey = (row: SessionInfo) =>
+    loadedRows.filter(candidate => sessionMatchesStoredId(candidate, row.id)).length > 1
+      ? sessionOwnerRowKey(row)
+      : row.id
 
   const isMarked = (row: SessionInfo, durableId: string): boolean => {
     const bucket = markers[profileKeyForRow(row)]
 
-    return Boolean(bucket?.includes(durableId) || bucket?.includes(row.id))
+    return Boolean(bucket?.includes(durableId) || bucket?.includes(row.id) || bucket?.includes(sessionOwnerRowKey(row)))
   }
 
   // Watermark + marker unread for chat and cron rows. The selected skip stays
@@ -637,22 +660,24 @@ function recomputeUnread(): void {
       typeof watermark === 'number' && Number.isFinite(row.message_count) && row.message_count > watermark
 
     if (exceedsWatermark || isMarked(row, durableId)) {
-      unread.push(row.id)
+      unread.push(unreadKey(row))
     }
   }
 
   // Messaging rows: explicit (live-edge) markers only — see header comment.
   for (const row of $messagingSessions.get()) {
     if (!isSelected(row, selected) && isMarked(row, sessionPinId(row))) {
-      unread.push(row.id)
+      unread.push(unreadKey(row))
     }
   }
 
   // Preserve live-edge ids whose row isn't loaded yet.
-  const loadedRows = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
-
   for (const id of $unreadFinishedSessionIds.get()) {
-    if (id !== selected && !unread.includes(id) && !loadedRows.some(row => sessionMatchesStoredId(row, id))) {
+    if (
+      id !== selected &&
+      !unread.includes(id) &&
+      !loadedRows.some(row => sessionMatchesStoredId(row, id) || sessionOwnerRowKey(row) === id)
+    ) {
       unread.push(id)
     }
   }

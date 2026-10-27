@@ -19,7 +19,7 @@ import { persistBoolean, persistString, readJson, storedBoolean, storedString, w
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
-import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
+import { type SessionOwnerRoute, sessionOwnerRowKey, type SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
@@ -1586,29 +1586,56 @@ export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
  *  baseline so a later completion that settles BEFORE this view is not
  *  re-lit. Must be callable before any focus short-circuit (openSession top)
  *  so re-clicking an already-visible session still clears its dot. */
-export const markSessionRead = (storedSessionId: string | null | undefined) => {
-  if (!storedSessionId) {
+export const markSessionRead = (target: SessionInfo | null | string | undefined) => {
+  if (!target) {
     return
   }
+
+  const storedSessionId = typeof target === 'string' ? target : target.id
 
   // The family is the opened session's own profile's rows: another profile's same-id session is a
   // different conversation. Its owner is the first matching row, recents first as selection reads them.
   // (Local normalize: importing @/store/profile here would be circular.)
   const profileOf = (row: SessionInfo) => (row.profile ?? '').trim() || 'default'
   const rows = [...$sessions.get(), ...$messagingSessions.get(), ...$cronSessions.get()]
-  const opened = rows.find(row => sessionMatchesStoredId(row, storedSessionId))
+  const matches = rows.filter(row => sessionMatchesStoredId(row, storedSessionId))
+
+  const opened =
+    typeof target === 'string'
+      ? matches.length === 1
+        ? matches[0]
+        : undefined
+      : rows.find(row => sessionOwnerRowKey(row) === sessionOwnerRowKey(target))
+
+  if (typeof target === 'string' && matches.length > 1) {
+    return
+  }
+
   const own = opened ? rows.filter(row => profileOf(row) === profileOf(opened)) : rows
   const familyIds = new Set<string>(lineageAliases(storedSessionId, own))
+  const markerIds = new Set<string>()
+
+  for (const id of familyIds) {
+    const familyRows = own.filter(row => sessionMatchesStoredId(row, id))
+
+    if (familyRows.length === 1) {
+      const duplicateCount = rows.filter(row => sessionMatchesStoredId(row, id)).length
+
+      markerIds.add(duplicateCount === 1 ? id : sessionOwnerRowKey(familyRows[0]!))
+    } else if (familyRows.length === 0) {
+      markerIds.add(id)
+    }
+  }
 
   const lastReadAt = Date.now()
   const nextReadMap = { ...$lastReadAtBySessionId.get() }
 
-  for (const id of familyIds) {
+  for (const id of markerIds) {
     nextReadMap[id] = lastReadAt
   }
 
   $lastReadAtBySessionId.set(nextReadMap)
-  $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !familyIds.has(id)))
+  $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !markerIds.has(id)))
 }
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)

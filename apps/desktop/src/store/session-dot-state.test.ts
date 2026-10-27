@@ -18,9 +18,11 @@ import {
   $sessionDotStateById,
   $unreadSessionCount,
   hasLiveTurn,
+  sessionDotStateForRow,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
+import { sessionOwnerRowKey } from './session-request-router'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard, unreadWriteKey } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
@@ -124,6 +126,34 @@ describe('persisted unread (backend watermark)', () => {
     setSessions([storedRow('s1', { unread: true })])
 
     expect($sessionDotStateById.get()['s1']).toBe('unread')
+  })
+
+  it('keeps persisted unread state on its immutable owner when ids collide', () => {
+    const ownerA = storedRow('same', { connection_id: 'gateway-a', profile: 'work', unread: false })
+    const ownerB = storedRow('same', { connection_id: 'gateway-b', profile: 'work', unread: true })
+
+    setSessions([ownerA, ownerB])
+    const states = $sessionDotStateById.get()
+
+    expect(sessionDotStateForRow(states, ownerA)).toBe('idle')
+    expect(sessionDotStateForRow(states, ownerB)).toBe('unread')
+  })
+
+  it('does not fan a bare unread marker across duplicate owners', () => {
+    const ownerA = storedRow('same', { connection_id: 'gateway-a', profile: 'work' })
+    const ownerB = storedRow('same', { connection_id: 'gateway-b', profile: 'work' })
+
+    setSessions([ownerA, ownerB])
+    $unreadFinishedSessionIds.set(['same'])
+    let states = $sessionDotStateById.get()
+
+    expect(sessionDotStateForRow(states, ownerA)).toBe('idle')
+    expect(sessionDotStateForRow(states, ownerB)).toBe('idle')
+
+    $unreadFinishedSessionIds.set([sessionOwnerRowKey(ownerB)])
+    states = $sessionDotStateById.get()
+    expect(sessionDotStateForRow(states, ownerA)).toBe('idle')
+    expect(sessionDotStateForRow(states, ownerB)).toBe('unread')
   })
 
   it('keeps draft weaker than persisted unread', () => {

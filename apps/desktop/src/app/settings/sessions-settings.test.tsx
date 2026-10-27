@@ -105,6 +105,85 @@ describe('SessionsSettings unarchive', () => {
     )
   })
 
+  it('unarchives only the clicked owner when same-id rows coexist', async () => {
+    const visibleOwnerB = {
+      ...archivedMatrixSession,
+      archived: false,
+      connection_id: 'gateway-b',
+      profile: 'default'
+    }
+
+    setMessagingSessions([visibleOwnerB])
+    listEveryArchivedSession.mockResolvedValue([
+      { ...archivedMatrixSession, connection_id: 'gateway-a', profile: 'default' },
+      { ...archivedMatrixSession, connection_id: 'gateway-b', profile: 'default' }
+    ])
+
+    render(<SessionsSettings />)
+    const buttons = await screen.findAllByRole('button', { name: en.settings.sessions.unarchive })
+
+    await act(async () => fireEvent.click(buttons[0]!))
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: en.settings.sessions.unarchive })).toHaveLength(1))
+    expect(setSessionArchived).toHaveBeenCalledWith('matrix-1', false, {
+      connectionId: 'gateway-a',
+      profile: 'default'
+    })
+    expect($messagingSessions.get()).toEqual([
+      expect.objectContaining({ connection_id: 'gateway-a', id: 'matrix-1' }),
+      visibleOwnerB
+    ])
+  })
+
+  it('keeps each concurrent owner row busy until its own mutation settles', async () => {
+    const resolvers = new Map<string, () => void>()
+    vi.mocked(setSessionArchived).mockImplementation(
+      (_id, _archived, scope) =>
+        new Promise<{ ok: boolean }>(resolve => {
+          const connectionId = scope && typeof scope === 'object' ? scope.connectionId : null
+          resolvers.set(connectionId ?? 'legacy', () => resolve({ ok: true }))
+        })
+    )
+    listEveryArchivedSession.mockResolvedValue([
+      { ...archivedMatrixSession, connection_id: 'gateway-a', profile: 'default' },
+      { ...archivedMatrixSession, connection_id: 'gateway-b', profile: 'default' }
+    ])
+
+    render(<SessionsSettings />)
+    const buttons = await screen.findAllByRole('button', { name: en.settings.sessions.unarchive })
+    fireEvent.click(buttons[0]!)
+    fireEvent.click(buttons[1]!)
+
+    await waitFor(() => expect(buttons.every(button => button.hasAttribute('disabled'))).toBe(true))
+    await act(async () => resolvers.get('gateway-a')?.())
+
+    const remaining = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
+    expect(remaining.hasAttribute('disabled')).toBe(true)
+
+    await act(async () => resolvers.get('gateway-b')?.())
+    await waitFor(() => expect(screen.queryByRole('button', { name: en.settings.sessions.unarchive })).toBeNull())
+  })
+
+  it('deletes only the clicked owner when same-id rows coexist', async () => {
+    listEveryArchivedSession.mockResolvedValue([
+      { ...archivedMatrixSession, connection_id: 'gateway-a', profile: 'default' },
+      { ...archivedMatrixSession, connection_id: 'gateway-b', profile: 'default' }
+    ])
+
+    render(<SessionsSettings />)
+    const buttons = await screen.findAllByRole('button', { name: en.settings.sessions.deletePermanently })
+
+    await act(async () => fireEvent.click(buttons[0]!))
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: en.settings.sessions.deletePermanently })).toHaveLength(1)
+    )
+    expect(deleteSession).toHaveBeenCalledWith('matrix-1', {
+      connectionId: 'gateway-a',
+      profile: 'default'
+    })
+  })
+
   it('pins the archived list and unarchive mutation to the immutable settings owner', async () => {
     const owner = {
       connectionId: 'gateway-b',

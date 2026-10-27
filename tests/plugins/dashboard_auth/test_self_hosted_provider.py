@@ -32,6 +32,7 @@ import plugins.dashboard_auth.self_hosted as oidc_plugin
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
     ProviderError,
+    RefreshExpiredError,
     Session,
     assert_protocol_compliance,
 )
@@ -717,6 +718,61 @@ class TestVerifySession:
 # refresh_session + revoke_session
 # ---------------------------------------------------------------------------
 
+
+class TestRefreshAndRevoke:
+    @pytest.fixture
+    def provider(self, rsa_keypair):
+        return _make_provider(rsa_keypair)
+
+    def test_refresh_happy_path_sends_scope_and_calls_once(self, provider, rsa_keypair):
+        """Regression for #74988: an accepting IDP is called exactly once and still
+        receives ``scope`` — the retry must not silently drop the parameter."""
+        id_token = _mint_id_token(rsa_keypair)
+        mock_resp = _mock_post(
+            200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
+        )
+        with patch(
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
+        ) as mock_post:
+            session = provider.refresh_session(refresh_token="rt_old")
+        assert mock_post.call_count == 1
+        _, kwargs = mock_post.call_args
+        assert kwargs["data"]["grant_type"] == "refresh_token"
+        assert kwargs["data"]["scope"] == "openid profile email"
+        assert session.refresh_token == "rt2"
+
+    def test_refresh_retries_without_scope_when_idp_rejects_it(self, provider, rsa_keypair):
+        """Regression for #74988: an IDP that rejects a repeated scope (WSO2 IS)
+        gets one retry whose payload differs from the first only by ``scope``."""
+        id_token = _mint_id_token(rsa_keypair)
+        rejected = _mock_post(400, {"error": "invalid_scope"})
+        accepted = _mock_post(
+            200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
+        )
+        with patch(
+            "plugins.dashboard_auth._shared._request_limited_response",
+            side_effect=[rejected, accepted],
+        ) as mock_post:
+            session = provider.refresh_session(refresh_token="rt_old")
+        assert mock_post.call_count == 2
+        first = mock_post.call_args_list[0].kwargs["data"]
+        second = mock_post.call_args_list[1].kwargs["data"]
+        assert first["scope"] == "openid profile email"
+        assert "scope" not in second
+        # identical except for the omitted scope
+        assert {k: v for k, v in first.items() if k != "scope"} == second
+        assert session.refresh_token == "rt2"
+
+    def test_refresh_raises_when_both_attempts_rejected(self, provider, rsa_keypair):
+        """Regression for #74988: a genuinely dead refresh token still surfaces as
+        RefreshExpiredError — the retry must not mask real expiry."""
+        rejected = _mock_post(400, {"error": "invalid_grant"})
+        with patch(
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=rejected
+        ) as mock_post:
+            with pytest.raises(RefreshExpiredError, match="invalid_grant"):
+                provider.refresh_session(refresh_token="rt_dead")
+        assert mock_post.call_count == 2
 
 
 

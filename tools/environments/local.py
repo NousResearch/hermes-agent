@@ -1097,6 +1097,9 @@ class LocalEnvironment(BaseEnvironment):
                 self.cwd, safe_cwd)
         self.cwd = safe_cwd
 
+    def _before_execute(self):
+        self._recover_cwd()  # The wrapper and native launch must use the same recovered directory.
+
     def _spawn_command(self, command, *, yield_handler=None, **kwargs):
         if sys.platform != 'linux':
             return self._run_bash(command, **kwargs)

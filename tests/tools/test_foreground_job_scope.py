@@ -324,3 +324,23 @@ def test_foreground_registration_failure_never_replays_original_command(tmp_path
         assert all(item is session for item in captured)
     finally:
         env.cleanup()
+
+
+def test_native_execute_recovers_deleted_working_directory(tmp_path, registry):
+    import shutil
+    working = tmp_path / 'working'
+    working.mkdir()
+    env = LocalEnvironment(cwd=str(working))
+    try:
+        first = 'printf "initial command\\n"'
+        assert env.execute(first, yield_handler=handler(first, working))['returncode'] == 0
+        shutil.rmtree(working)
+        command = 'printf "recovered command\\n"'
+        result = env.execute(command, yield_handler=handler(command, working))
+        assert result['returncode'] == 0 and 'recovered command' in result['output']
+        assert env.cwd == str(tmp_path)
+        session = next(p for p in [*registry._running.values(), *registry._finished.values()] if p.command == command)
+        assert session.cwd == str(tmp_path) and session.native_job_scope
+        assert session._completion_event.wait(5) and job_quiescent(session)
+    finally:
+        env.cleanup()

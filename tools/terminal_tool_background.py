@@ -140,8 +140,12 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
     }
     runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
     runner = runner_ref() if callable(runner_ref) else None
-    if runner is not None and runner.arm_process_watcher(watcher):
-        return
+    if runner is not None:
+        try:
+            if runner.arm_process_watcher(watcher):
+                return
+        except Exception:
+            logger.exception('Process watcher arming failed; retaining pending descriptor')
     process_registry.pending_watchers.append(watcher)
 
 

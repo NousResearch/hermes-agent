@@ -130,6 +130,10 @@ class _ForegroundJob:
     _hermes_native_foreground = True
 
     def __init__(self, registry, session, ownership):
+        from contextvars import copy_context
+        from hermes_constants import get_hermes_home, set_hermes_home_override
+        self._context = copy_context()
+        self._context.run(set_hermes_home_override, get_hermes_home().absolute())
         self.registry = registry
         self._hermes_job_session = session
         self._ownership = ownership
@@ -143,6 +147,9 @@ class _ForegroundJob:
         return self.poll()
 
     def poll(self):
+        return self._context.copy().run(self._poll)
+
+    def _poll(self):
         from tools.process_registry_job import read_job_receipt
         session = self._hermes_job_session
         receipt = read_job_receipt(session)
@@ -165,8 +172,8 @@ class _ForegroundJob:
         return code
 
     def kill(self):
-        return self.registry.kill_process(self._hermes_job_session.id, source='session.interrupt',
-                                          expected_ownership=self._ownership)
+        return self._context.copy().run(self.registry.kill_process, self._hermes_job_session.id,
+                                        source='session.interrupt', expected_ownership=self._ownership)
 
 
 def spawn_foreground(session, argv, env, cwd, stdin_data):

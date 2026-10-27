@@ -388,9 +388,42 @@ def test_missing_original_receipt_does_not_substitute_helper_wait_status(tmp_pat
         assert session._completion_event.wait(5)
         retained = load_completed_results(owns_entry=lambda row: row['id'] == session.id, strict=True)[session.id]
         assert retained.exit_code == -signal.SIGKILL and retained.output_buffer == 'original signal payload\n'
+        receipt.unlink()
+        assert handle.poll() == -signal.SIGKILL  # Already captured genuine primary status survives receipt loss.
+        assert registry.kill_process(session.id)['error'] == 'process_stop_unknown'
+        receipt.write_bytes(original)
         assert registry.kill_process(session.id)['status'] == 'already_exited'
     finally:
         if original is not None and not receipt.exists():
             receipt.write_bytes(original)
         release.set()
         registry.kill_process(session.id)
+
+
+@pytest.mark.parametrize('ambient', [False, True], ids=['explicit-home', 'ambient-home'])
+def test_native_foreground_handle_keeps_producer_home_off_turn(tmp_path, monkeypatch, registry, ambient):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    producer, unrelated = tmp_path / 'producer', tmp_path / 'unrelated'
+    producer.mkdir()
+    unrelated.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(producer))
+    token = set_hermes_home_override(None if ambient else producer)
+    session, handle = native_handle(registry, producer)
+    reset_hermes_home_override(token)
+    try:
+        monkeypatch.setenv('HERMES_HOME', str(unrelated))
+        token = set_hermes_home_override(None if ambient else unrelated)
+        try:
+            result = handle.kill()
+            assert result['status'] == 'killed', result
+        finally:
+            reset_hermes_home_override(token)
+        assert (producer / 'logs' / 'process-results' / (session.id + '.json')).exists()
+        assert not (unrelated / 'logs' / 'process-results' / (session.id + '.json')).exists()
+    finally:
+        token = set_hermes_home_override(producer)
+        try:
+            registry.kill_process(session.id)
+            assert job_quiescent(session)
+        finally:
+            reset_hermes_home_override(token)

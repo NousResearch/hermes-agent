@@ -247,7 +247,7 @@ def _main():
         return code
     receipt(False)
     try:
-        child = subprocess.Popen(argv)
+        child = subprocess.Popen(argv, stdin=None)
     except OSError:
         code = 126
         receipt(True)

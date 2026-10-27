@@ -81,6 +81,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Absolute or ~ path to a Python in your own venv (e.g. ~/venvs/report/bin/python) "
             "for a .py --script / --monitor-script, so it can import packages Hermes does not "
             "ship. .sh/.bash still run under bash. Omit to use Hermes' Python.")
+    cron_create.add_argument("--max-tokens", dest="max_tokens",
+        help="Cap the output tokens any single turn of this job may request. Clamped to the "
+            "provider route's own default, so it can only tighten the request. Omit to follow "
+            "cron.max_tokens_default, then the transport's default.")
     cron_create.add_argument(
         "--continuity", dest="continuity", action="store_const", const=True, default=None,
         help="Each run wakes up with the job's own previous output injected "
@@ -151,6 +155,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--interpreter",
         help="Absolute or ~ path to a Python for a .py script / monitor script. "
             "Pass empty string to clear (back to Hermes' Python).")
+    cron_edit.add_argument("--max-tokens", dest="max_tokens",
+        help="Cap the output tokens any single turn of this job may request. Clamped to the "
+            "provider route's own default, so it can only tighten the request. Pass empty "
+            "string to clear the cap and follow cron.max_tokens_default.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

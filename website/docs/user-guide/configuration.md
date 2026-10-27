@@ -1606,6 +1606,7 @@ auxiliary:
     base_url: ""               # Custom OpenAI-compatible endpoint (overrides provider)
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
     timeout: 120               # seconds — LLM API call timeout; vision payloads need generous timeout
+    max_tokens: 3000           # optional output cap; set only when the route accepts it
     download_timeout: 30       # seconds — image HTTP download; increase for slow connections
     max_concurrency: 8         # max concurrent image encode/resize bursts across the process
                                # (default: host CPU core count, no ceiling) — bounds only the
@@ -1693,6 +1694,8 @@ auxiliary:
     api_key: ""
     timeout: 120
 ```
+
+`auxiliary.<task>.max_tokens` is a positive output cap for any auxiliary task. An explicit cap from the caller wins; Hermes forwards the configured cap only on routes known to accept it. A cap can be spent entirely on reasoning before answer text appears, so pair it with a lower `reasoning_effort` when needed.
 
 :::tip
 Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, approval 30s, compression 120s, title generation 30s, every other task 30s. Increase these if you use slow local models for auxiliary tasks — a reasoning model that emits a thinking block before its answer routinely needs more than 30s for a title, and a request that hits the deadline is logged as `Auxiliary <task>: request to <base_url> timed out after <N>s (raise auxiliary.<task>.timeout …)` before Hermes tries the fallback chain. Title generation, compression and vision give up on the primary route after one full timeout window (no same-provider retry) so a slow model cannot multiply the wait. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.

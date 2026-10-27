@@ -6238,7 +6238,7 @@ _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 # Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
 # re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
-from agent.auxiliary_task_config import _get_auxiliary_task_config
+from agent.auxiliary_task_config import _get_auxiliary_task_config, resolve_task_max_tokens
 
 
 class CompressionFastLane(NamedTuple):
@@ -8067,11 +8067,9 @@ def _plan_aux_call(
     extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
     route_info: Optional[dict[str, str]],
 ) -> tuple[_PreparedAuxRequest, dict[str, Any], dict[str, Any]]:
-    """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
-    drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
-    runtime snapshot for keying/resolution/retries/fallbacks, so a concurrent /model switch
-    can't mix key and client from different runtimes."""
+    """Prepare one runtime snapshot and kwargs shared by primary, retry, and fallback calls."""
     main_runtime = _normalize_main_runtime(main_runtime)
+    max_tokens = resolve_task_max_tokens(task, max_tokens)
     req = _prepare_aux_request(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
         main_runtime=main_runtime, messages=messages, temperature=temperature,

@@ -918,6 +918,7 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""              # e.g. "google/gemini-2.5-flash", "openai/gpt-4o"
 #     timeout: 30            # LLM API call timeout (seconds)
+#     max_tokens: 3000        # Optional output cap on supported providers; caller cap wins
 #     download_timeout: 30   # Image HTTP download timeout (seconds)
 #                            # Increase for slow connections or self-hosted image servers
 #     reasoning_effort: ""   # Per-task thinking level: none, minimal, low, medium,

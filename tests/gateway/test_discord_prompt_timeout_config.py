@@ -1,15 +1,16 @@
 """Tests for the configurable Discord interactive-view timeout.
 
-SlashConfirmView, UpdatePromptView, and ClarifyChoiceView read
+ExecApprovalView, SlashConfirmView, UpdatePromptView, and ClarifyChoiceView read
 ``approvals.discord_prompt_timeout`` with the same 300s default, clamped to
 ``[_DISCORD_PROMPT_TIMEOUT_MIN, _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo
-can't make prompts disappear (too short) or outlive Discord's 15-min
-interaction-token expiry (too long).
+can't make prompts disappear or exceed the shared platform-safe timeout cap.
 """
 
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 def _ensure_discord_mock():
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
@@ -75,3 +76,41 @@ def test_value_clamped_to_minimum(monkeypatch):
     """A typo of e.g. 5 seconds must not make prompts disappear."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 5}})
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
+
+
+def test_hour_long_timeout_and_safe_upper_bound(monkeypatch):
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 3600}})
+    assert _read_discord_prompt_timeout() == 3600
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": int(MAX_SAFE_TIMEOUT_S) + 1}})
+    assert _read_discord_prompt_timeout() == int(MAX_SAFE_TIMEOUT_S)
+
+
+@pytest.mark.asyncio
+async def test_all_prompt_types_use_owning_profile_discord_timeout(tmp_path):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from plugins.platforms.discord.adapter import (
+        ExecApprovalView, SlashConfirmView, UpdatePromptView, ClarifyChoiceView,
+    )
+
+    for name, expected in (("default", 300), ("other", 3600)):
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "approvals:\n  timeout: 7200\n" + (
+                "  discord_prompt_timeout: 3600\n" if name == "other" else ""), encoding="utf-8",
+        )
+        token = set_hermes_home_override(str(home))
+        try:
+            views = [
+                ExecApprovalView("session", set(), request_id="request"),
+                SlashConfirmView("session", "confirm", set()),
+                UpdatePromptView("session", set()),
+                ClarifyChoiceView(["yes"], "clarify", set()),
+            ]
+            assert [view.timeout for view in views] == [expected] * 4
+            for view in views:
+                view.stop()
+        finally:
+            reset_hermes_home_override(token)

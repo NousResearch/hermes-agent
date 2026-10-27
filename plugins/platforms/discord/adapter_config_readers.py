@@ -4,6 +4,8 @@ Re-exported from ``plugins.platforms.discord.adapter`` (callers and tests import
 """
 from typing import Any, Optional
 
+from agent.deadline import MAX_SAFE_TIMEOUT_S
+
 
 def _read_dm_role_auth_guild() -> Optional[int]:
     """Return the guild ID opted-in for DM role-based auth, or None (secure default). Read from
@@ -24,16 +26,15 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
-# Default timeout for non-exec Discord button views when ``approvals.discord_prompt_timeout`` is unset;
-# Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
+# All Discord prompt views share this setting; command approval waits have their own timeout.
 _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
 _DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 900
+_DISCORD_PROMPT_TIMEOUT_MAX = int(MAX_SAFE_TIMEOUT_S)
 
 
 def _read_discord_prompt_timeout() -> int:
-    """Timeout (seconds) for non-exec Discord button views from ``approvals.discord_prompt_timeout``
-    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or outlive tokens."""
+    """Timeout (seconds) for Discord button views from ``approvals.discord_prompt_timeout``
+    (default 300), clamped to [MIN, MAX] to keep their UI lifetime bounded."""
     raw: Any = None
     try:
         from hermes_cli.config import read_raw_config

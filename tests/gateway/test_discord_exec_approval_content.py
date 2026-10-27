@@ -67,7 +67,11 @@ async def test_exec_approval_content_stays_within_discord_cap_for_long_reason():
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_view_uses_the_waiting_request_timeout():
+async def test_exec_approval_view_honors_discord_timeout_with_request_id(monkeypatch):
+    import hermes_cli.config
+    monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: {
+        "approvals": {"timeout": 7200, "discord_prompt_timeout": 3600},
+    })
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     sent = _capture_channel(adapter)
 
@@ -77,7 +81,7 @@ async def test_exec_approval_view_uses_the_waiting_request_timeout():
     )
 
     assert result.success
-    assert sent["view"].timeout is None
+    assert sent["view"].timeout == 3600
     assert sent["view"].request_id == "request-1"
 
 
@@ -131,7 +135,7 @@ async def test_card_retires_when_backend_request_ends(monkeypatch, expire_during
     session = "agent:other:discord:555"
     entry = _ApprovalEntry({"request_id": "request-1", "command": "ls"})
     monkeypatch.setitem(approval._gateway_queues, session, [entry])
-    message = SimpleNamespace(id=1234, edit=AsyncMock())
+    message = SimpleNamespace(id=1234, edit=AsyncMock(), embeds=[])
     sent = {}
 
     async def send(**kwargs):

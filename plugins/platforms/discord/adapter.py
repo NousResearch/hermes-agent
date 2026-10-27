@@ -5744,8 +5744,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             view = view_holder[0]
             loop = asyncio.get_running_loop()
 
-            def retire(_reason):
-                loop.call_soon_threadsafe(lambda: loop.create_task(view.retire()))
+            def retire(reason):
+                def schedule():
+                    task = loop.create_task(view.retire(reason))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                    task.add_done_callback(_consume_background_task_result)
+                loop.call_soon_threadsafe(schedule)
 
             if not observe_gateway_settle(prompt.session_key, view.request_id, retire):
                 await view.retire()
@@ -6467,12 +6472,11 @@ def _define_discord_view_classes() -> None:
             allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
             request_id: Optional[str] = None,
         ):
-            # The backend starts waiting only after delivery. Its settlement retires
-            # this exact card; a separate view timer could expire it prematurely.
-            timeout = None if request_id else _read_discord_prompt_timeout()
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=timeout)
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.request_id = request_id
+            self._backend_settled = False
+            self._retire_lock = asyncio.Lock()
             self.require_admin = require_admin
             self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
             self._localize_buttons(
@@ -6508,18 +6512,34 @@ def _define_discord_view_classes() -> None:
                 )
             return False
 
-        async def retire(self):
+        async def on_timeout(self):
+            await self.retire("timeout", backend_settled=False)
+
+        async def retire(self, reason="resolved", *, backend_settled=True):
             """Disable a card when its particular backend request is no longer pending."""
-            if self.resolved:
-                return
-            self.resolved = True
-            self._disable_all()
-            if self._message:
-                try:
-                    await self._message.edit(view=self)
-                except Exception:
-                    logger.debug("[Discord] Could not retire approval card", exc_info=True)
             self.stop()
+            # A UI timeout can precede a text answer. Serialize their edits, and
+            # never let a queued UI timeout overwrite a backend settlement.
+            async with self._retire_lock:
+                if self._backend_settled:
+                    return
+                self._backend_settled = backend_settled
+                self.resolved = True
+                self._disable_all()
+                footer = t({
+                    "resolved": "platform.discord.approval.already_resolved",
+                    "timeout": "platform.discord.prompt.expired_footer",
+                }.get(reason, "platform.discord.slash_confirm.resolved_cancel"))
+                if self._message:
+                    try:
+                        embed = self._first_embed(self._message)
+                        if embed:
+                            embed.color = discord.Color.greyple()
+                            embed.set_footer(text=footer)
+                        # Notices edit content independently; neither restores controls.
+                        await self._message.edit(embed=embed, view=None)
+                    except Exception:
+                        logger.debug("[Discord] Could not retire approval card", exc_info=True)
 
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
             """Resolve the approval via the gateway approval queue and update the embed."""
@@ -6530,6 +6550,7 @@ def _define_discord_view_classes() -> None:
                 return
             label = t(label_key)
             self.resolved = True
+            self._backend_settled = True
             # Unblock the waiting agent thread FIRST. A click after the approval
             # wait timed out (count == 0) must not claim "Approved".
             try:
@@ -6545,9 +6566,12 @@ def _define_discord_view_classes() -> None:
             if not count:
                 color = discord.Color.dark_grey()
                 label = t("platform.discord.approval.expired")
-            await self._finalize_embed(
-                interaction, color,
-                t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
+            try:
+                await self._finalize_embed(
+                    interaction, color,
+                    t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
+            finally:
+                self.stop()
 
         # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)

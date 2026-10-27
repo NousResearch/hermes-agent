@@ -13,12 +13,16 @@ Real ``call_llm`` path; only Google's HTTP and the token broker are faked.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import time
 
 import httpx
 import pytest
 
 import agent.auxiliary_client as aux
+from tests.waiting import wait_until
 from agent.auxiliary_unavailable import pool_cooldown_message
 from hermes_cli import auth_oauth_pkce_plugin as pkce
 
@@ -245,3 +249,61 @@ def test_only_the_row_the_retry_used_is_benched(env, monkeypatch):
     assert rows["rowA"].get("last_status") != "exhausted"
     assert seen[1:] == ["Bearer ya29.b-bad"]  # the retry leased B
     assert rows["rowB"].get("last_status") == "exhausted"
+
+
+_PEER = """
+import json, sys, time
+from pathlib import Path
+from hermes_cli.auth import _auth_store_lock
+path, marker = sys.argv[1], Path(sys.argv[2])
+
+def refresh():
+    data = json.load(open(path, encoding="utf-8-sig"))
+    row = data["credential_pool"]["solstice"][0]
+    row.update(access_token="ya29.peer", expires_at_ms=int(time.time() * 1000) + 3_000_000)
+    for k in ("last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message"):
+        row.pop(k, None)
+    open(path, "w", encoding="utf-8").write(json.dumps(data))
+
+try:
+    with _auth_store_lock(timeout_seconds=1):
+        refresh()
+    marker.write_text("done")
+except TimeoutError:
+    marker.write_text("blocked")
+    with _auth_store_lock():
+        refresh()
+"""
+
+
+def test_a_peer_refresh_racing_the_bench_never_inherits_its_cooldown(env, monkeypatch):
+    """Another process persists a newer token for the same row after the bench has read the pool. The
+    check and the write share the auth-store lock with that refresh, so the newer token ends up on disk
+    without the stale bearer's cooldown, whichever way the race goes."""
+    home, _grants, _seen = env
+    monkeypatch.setattr(httpx.Client, "post", lambda self, url, **kw: httpx.Response(
+        401, request=httpx.Request("POST", str(url)),
+        json={"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "invalid credentials"}}))
+    _write(home, _row("ya29.revoked", _now_ms() + 3_000_000))
+    load = aux._load_pool_with_credentials
+    peers, marker = [], home.parent / "peer-state"
+
+    def load_then_race(provider, *args, **kwargs):
+        pool = load(provider, *args, **kwargs)
+        if "bench" in str(args):
+            env_ = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+            peers.append(subprocess.Popen([sys.executable, "-c", _PEER, str(home / "auth.json"), str(marker)], env=env_))
+            # The peer either lands its refresh first (nothing serialises it) or reports it is blocked.
+            wait_until(lambda: marker.exists() and marker.read_text() in ("done", "blocked"), timeout=30)
+        return pool
+
+    monkeypatch.setattr(aux, "_load_pool_with_credentials", load_then_race)
+    runtime = {"provider": "solstice", "model": "gemini-3.1-pro", "base_url": BASE_URL, "api_mode": "chat_completions"}
+
+    with pytest.raises(Exception):
+        _title(runtime)
+    assert peers, "the bench never ran"
+    assert peers[0].wait(timeout=30) == 0
+    row = _disk_row(home)
+    assert row["access_token"] == "ya29.peer"
+    assert row.get("last_status") != "exhausted"

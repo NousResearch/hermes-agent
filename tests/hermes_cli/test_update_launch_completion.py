@@ -503,3 +503,137 @@ def test_supervised_launch_with_stale_dependencies_still_syncs(
     assert syncs, "a supervised child booted on a stale dependency graph without syncing"
     assert completion_tail, "the tail armed by that sync was never finished"
     assert not venv_sync.completion_pending_path(root).is_file()
+
+
+class _LaunchKilled(BaseException):
+    """The launching process dies while its tail runs (the Desktop stopping its backend, a
+    kill-on-close job, a power loss): no code after the spawn ever runs in it."""
+
+
+def _tails_killed_with_their_launch(monkeypatch, root):
+    """Every tail dies with its launch; returns the attempt record each one saw as it started."""
+    from hermes_cli import update_custody
+
+    record = venv_sync._completion_attempts_path(root)
+    started = []
+
+    def killed(command, **kwargs):
+        started.append(record.read_text(encoding="utf-8-sig").strip() if record.is_file() else None)
+        raise _LaunchKilled
+
+    monkeypatch.setattr(update_custody, "run", killed)
+    return started
+
+
+def _relaunch(root, times):
+    """Launch *times* times, each after every backoff window has elapsed."""
+    record = venv_sync._completion_attempts_path(root)
+    for _ in range(times):
+        if record.is_file():
+            os.utime(record, (1.0, 1.0))
+        try:
+            venv_sync.prepare_launch(root, [])
+        except _LaunchKilled:
+            pass
+
+
+def test_a_tail_killed_with_its_launch_still_spends_the_retry_budget(tmp_path, monkeypatch, capsys):
+    """#127284: an owed tail that dies with the launch that ran it never returned to be counted,
+    so the #122206 backoff and cap never engaged and every later launch re-entered it. The
+    attempt is on record while the tail runs, and the cap stops the re-entry."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    started = _tails_killed_with_their_launch(monkeypatch, root)
+    pending = venv_sync.arm_completion(root)
+
+    _relaunch(root, venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS + 4)
+
+    assert started[0] == "1", "the tail ran before its attempt was on record"
+    assert len(started) == venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS, "killed tails re-entered past the cap"
+    assert pending.is_file(), "the owed tail is left for `hermes update`, never dropped"
+    assert "could not be finished automatically" in capsys.readouterr().err
+
+
+def test_rearming_on_stale_dependencies_never_resets_the_retry_budget(tmp_path, monkeypatch):
+    """The flaw #127315's review found: a launch with stale dependencies re-arms the marker
+    (``_sync_source_dependencies(arm=True)`` -> ``arm_completion``) before the tail runs, so a
+    budget kept in, or reset by, the marker rewinds on every such launch and never bounds it.
+    Each launch here re-arms and its tail dies; the charges still add up to the cap."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)  # never current: re-arms each time
+    monkeypatch.setattr(pm, "sync_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda *args, **kwargs: None)
+    arm = venv_sync.arm_completion
+    armed = []
+    monkeypatch.setattr(venv_sync, "arm_completion", lambda root: armed.append(root) or arm(root))
+    started = _tails_killed_with_their_launch(monkeypatch, root)
+    record = venv_sync._completion_attempts_path(root)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("3\n", encoding="utf-8")
+
+    _relaunch(root, 1)
+    assert armed, "the launch did not take the re-arm path under test"
+    assert started == ["4"], "the re-arm path did not carry the attempt budget into this tail"
+
+    _relaunch(root, venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS + 4)
+    assert len(started) == venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS - 3
+    assert len(armed) == len(started), "a capped launch still re-armed and re-synced"
+    assert record.read_text(encoding="utf-8-sig").strip() == str(venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS)
+
+
+def test_failed_tail_is_charged_once_and_backs_off_from_its_failure(tmp_path, monkeypatch, completion_tail):
+    """Charged before the child starts, a tail that exits non-zero is not charged twice, and
+    its backoff window runs from the failure, not from the start of a long build."""
+    import time
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    venv_sync.arm_completion(root)
+    record = venv_sync._completion_attempts_path(root)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("1\n", encoding="utf-8")
+    os.utime(record, (1.0, 1.0))
+    completion_tail.exit_code = 1
+
+    with pytest.raises(RuntimeError, match="run `hermes update`"):
+        venv_sync.prepare_launch(root, [])
+    assert record.read_text(encoding="utf-8-sig").strip() == "2"
+    assert time.time() - record.stat().st_mtime < 60
+    assert venv_sync.completion_retry_state(root)[0] is False, "a fresh failure skipped its backoff"
+
+
+def test_interrupting_the_tail_does_not_spend_the_retry_budget(tmp_path, monkeypatch):
+    """Ctrl+C on the tail is the user's choice, not a failed attempt (#124471): the charge is
+    given back, the earlier failures keep their age, and the tail stays owed."""
+    import pm
+    from hermes_cli import _launchers, update_custody
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    monkeypatch.setattr(update_custody, "run", lambda *a, **kw: (_ for _ in ()).throw(KeyboardInterrupt))
+    pending = venv_sync.arm_completion(root)
+    record = venv_sync._completion_attempts_path(root)
+
+    with pytest.raises(KeyboardInterrupt):
+        venv_sync.prepare_launch(root, [])
+    assert not record.exists() and pending.is_file()
+
+    record.write_text("1\n", encoding="utf-8")
+    os.utime(record, (5.0, 5.0))
+    with pytest.raises(KeyboardInterrupt):
+        venv_sync.prepare_launch(root, [])
+    assert record.read_text(encoding="utf-8-sig").strip() == "1"
+    assert record.stat().st_mtime == 5.0
+    assert pending.is_file()

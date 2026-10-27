@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 
 from hermes_cli.steward import UPDATE_MECHANISMS
@@ -217,6 +218,41 @@ def _record_completion_attempt(root: Path, *, failed: bool) -> None:
         record.write_text(f"{attempts}\n", encoding="utf-8")
     except OSError:
         pass  # a read-only install state degrades to unbounded retries, never blocks boot
+
+
+def _charge_completion_attempt(root: Path) -> tuple[str, int, int] | None:
+    """Charge the tail attempt BEFORE its child starts (#127284); returns the record it replaced.
+
+    A tail that dies with the launch that started it -- the Desktop stopping its backend at a
+    deadline, the kill-on-close job taking the child down with it, a power loss -- never returns
+    to be counted, so a charge taken only on a non-zero exit left every later launch at attempt
+    0 and the backoff and cap above never engaged. Only success (``clear_completion``) or the
+    user's own interrupt (``_refund_completion_attempt``) takes the charge back; re-arming the
+    pending marker on the stale-dependency path writes the marker alone and never touches it.
+    """
+    record = _completion_attempts_path(root)
+    try:
+        before = record.stat()
+        previous = (record.read_text(encoding="utf-8-sig"), before.st_atime_ns, before.st_mtime_ns)
+    except OSError:
+        previous = None
+    _record_completion_attempt(root, failed=True)
+    return previous
+
+
+def _refund_completion_attempt(root: Path, previous: tuple[str, int, int] | None) -> None:
+    """A tail the user interrupted (Ctrl+C) did not fail: restore the record its charge replaced,
+    age included, so the failures before it keep their backoff window."""
+    record = _completion_attempts_path(root)
+    try:
+        if previous is None:
+            record.unlink(missing_ok=True)
+            return
+        text, atime_ns, mtime_ns = previous
+        record.write_text(text, encoding="utf-8")
+        os.utime(record, ns=(atime_ns, mtime_ns))
+    except OSError:
+        pass  # bookkeeping never blocks a launch; the charge stands
 
 
 def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, int]:
@@ -540,6 +576,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # fd; Windows: created suspended and bound to the lock owner's kill-on-close job), so a
     # contender never sees the checkout free while it builds. A child the job refuses never runs:
     # the tail stays owed.
+    charged_over = _charge_completion_attempt(root)
     try:
         code = run(
             [sys.executable, "-I", "-B", "-u",
@@ -551,8 +588,13 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     except CustodyRefused as exc:
         print(f"hermes: {exc.reason}", file=sys.stderr, flush=True)
         code = 1
+    except KeyboardInterrupt:
+        _refund_completion_attempt(root, charged_over)
+        raise
     if code != 0:
-        _record_completion_attempt(root, failed=True)
+        # Already charged; the backoff window runs from this failure, not from the start.
+        with suppress(OSError):
+            os.utime(_completion_attempts_path(root))
         raise RuntimeError(
             "source update completion failed; run `hermes update` to finish it"
         )

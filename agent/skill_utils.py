@@ -2,6 +2,7 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import datetime
 import hashlib
 import logging
 import os
@@ -64,6 +65,24 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
+def _stringify_temporal(obj: Any) -> Any:
+    """Coerce YAML-parsed date/time values to ISO strings, recursively.
+
+    PyYAML's SafeLoader turns unquoted ``date:``/``updated:`` frontmatter values
+    into ``datetime.date``/``datetime.datetime`` objects, which are not JSON
+    serializable. Every ``json.dumps`` of skill metadata downstream then raises
+    ``TypeError: Object of type date is not JSON serializable``. Coerce them so
+    frontmatter stays JSON-safe. (``datetime`` subclasses ``date``.)
+    """
+    if isinstance(obj, dict):
+        return {k: _stringify_temporal(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_stringify_temporal(v) for v in obj]
+    if isinstance(obj, (datetime.date, datetime.time)):
+        return obj.isoformat()
+    return obj
+
+
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from markdown; returns (frontmatter_dict, body).
     Malformed YAML falls back to key:value line splitting. A leading UTF-8 BOM
@@ -78,7 +97,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     try:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
-            frontmatter = parsed
+            frontmatter = _stringify_temporal(parsed)
     except Exception:
         for line in yaml_content.strip().split("\n"):
             if ":" in line:

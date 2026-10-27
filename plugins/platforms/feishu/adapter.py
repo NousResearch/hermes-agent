@@ -1344,501 +1344,601 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
-        # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
-        self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
-        self._load_seen_message_ids()
+    _PROVIDER_PAGE_SIZE = 10
+    _MODEL_PAGE_SIZE = 8
 
-    @staticmethod
-    def _load_settings(extra: dict[str, Any]) -> FeishuAdapterSettings:
-        def _id_set(values: Any) -> set[str]:
-            return {str(u).strip() for u in values if str(u).strip()}
-
-        def _secret(name: str, default: str = "") -> str:
-            return _get_scoped_secret(name, default).strip()
-
-        def _extra_or_secret(key: str, env: str, default: str = "") -> str:
-            return str(_shared_extra_or_secret(extra, key, env, default)).strip()
-
-        _extra_or_env = _extra_or_secret
-
-        raw_group_rules = extra.get("group_rules", {})
-        group_rules: dict[str, FeishuGroupRule] = {}
-        if isinstance(raw_group_rules, dict):
-            for chat_id, rule_cfg in raw_group_rules.items():
-                if not isinstance(rule_cfg, dict):
-                    continue
-                group_rules[str(chat_id)] = FeishuGroupRule(
-                    policy=str(rule_cfg.get("policy", "open")).strip().lower(),
-                    allowlist=_id_set(rule_cfg.get("allowlist", [])),
-                    blacklist=_id_set(rule_cfg.get("blacklist", [])),
-                    # Only override when explicitly set — missing vs false must not collapse.
-                    require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
-                )
-
-        # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
-        # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
-        # See #86905.
-        allow_bots = str(_extra_or_secret("allow_bots", "FEISHU_ALLOW_BOTS", "none") or "none").strip().lower()
-        if allow_bots not in {"none", "mentions", "all"}:
-            logger.warning(
-                "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
-                allow_bots,
-            )
-            allow_bots = "none"
-
-        allow_all_dm = any(
-            _secret(var).lower() in {"true", "1", "yes"} for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
-        )
-        return FeishuAdapterSettings(
-            app_id=_extra_or_secret("app_id", "FEISHU_APP_ID"),
-            app_secret=_extra_or_secret("app_secret", "FEISHU_APP_SECRET"),
-            domain_name=_extra_or_env("domain", "FEISHU_DOMAIN", "feishu").lower(),
-            connection_mode=_extra_or_env("connection_mode", "FEISHU_CONNECTION_MODE", "websocket").lower(),
-            encrypt_key=_extra_or_secret("encrypt_key", "FEISHU_ENCRYPT_KEY"),
-            verification_token=_extra_or_secret("verification_token", "FEISHU_VERIFICATION_TOKEN"),
-            group_policy=_secret("FEISHU_GROUP_POLICY", "allowlist").lower(),
-            allowed_group_users=frozenset(_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
-            bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
-            bot_user_id=_secret("FEISHU_BOT_USER_ID"),
-            bot_name=_secret("FEISHU_BOT_NAME"),
-            dedup_cache_size=max(32, env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE)),
-            text_batch_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS),
-            text_batch_split_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0),
-            text_batch_max_messages=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES)),
-            text_batch_max_chars=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
-            media_batch_delay_seconds=env_float("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
-            webhook_host=_extra_or_env("webhook_host", "FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST),
-            webhook_port=int(extra.get("webhook_port") or _get_scoped_secret("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
-            webhook_path=_extra_or_env("webhook_path", "FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH) or _DEFAULT_WEBHOOK_PATH,
-            ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
-            ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
-            ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
-            ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
-            admins=frozenset(_id_set(extra.get("admins", []))),
-            default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
-            group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
-            require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
-        )
-
-    def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
-        # Every settings field is mirrored as ``self._<field>``; the three below need coercion.
-        for name in FeishuAdapterSettings.__dataclass_fields__:
-            setattr(self, f"_{name}", getattr(settings, name))
-        self._allowed_group_users = set(settings.allowed_group_users)
-        self._admins = set(settings.admins)
-        self._default_group_policy = settings.default_group_policy or settings.group_policy
-
-    def _build_event_handler(self) -> Any:
-        if EventDispatcherHandler is None:
-            return None
-        return (
-            EventDispatcherHandler.builder(self._encrypt_key, self._verification_token)
-            .register_p2_im_message_message_read_v1(self._on_message_read_event)
-            .register_p2_im_message_receive_v1(self._on_message_event)
-            .register_p2_im_message_reaction_created_v1(lambda d: self._on_reaction_event("im.message.reaction.created_v1", d))
-            .register_p2_im_message_reaction_deleted_v1(lambda d: self._on_reaction_event("im.message.reaction.deleted_v1", d))
-            .register_p2_card_action_trigger(self._on_card_action_trigger)
-            .register_p2_im_chat_member_bot_added_v1(self._on_bot_added_to_chat)
-            .register_p2_im_chat_member_bot_deleted_v1(self._on_bot_removed_from_chat)
-            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._on_p2p_chat_entered)
-            .register_p2_im_message_recalled_v1(self._on_message_recalled)
-            .register_p2_customized_event("drive.notice.comment_add_v1", self._on_drive_comment_event)
-            .register_p2_customized_event("vc.bot.meeting_invited_v1", self._on_meeting_invited_event)
-            .build()
-        )
-
-    def _get_sdk_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Adapter-owned executor; recreated after an *external* shutdown, never after our own close.
-
-        Recreates the pool if it was never built or was shut down by an *external* teardown of the loop's
-        default executor, so that can no longer permanently wedge sends (#10849). Refuses to resurrect once
-        the adapter itself is closing — a real disconnect/shutdown stays shut.
-        """
-        lock = getattr(self, "_sdk_executor_lock", None)  # bare adapters (tests) may lack __init__ state
-        if lock is None:
-            lock = self._sdk_executor_lock = threading.Lock()
-        with lock:
-            if getattr(self, "_sdk_executor_closing", False):
-                raise RuntimeError("Feishu adapter is shutting down; SDK executor unavailable")
-            executor = getattr(self, "_sdk_executor", None)
-            if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="hermes-feishu-sdk")
-                self._sdk_executor = executor
-            return executor
-
-    async def _run_blocking(self, func, *args):
-        """Run a blocking Feishu SDK call on the adapter-owned thread pool.
-
-        ``copy_context().run`` mirrors ``asyncio.to_thread``: the worker sees the caller's
-        profile HERMES_HOME override / secret scope (multiplexed dedup flush, thread lookup).
-        """
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._get_sdk_executor(), contextvars.copy_context().run, func, *args)
-
-    def _shutdown_sdk_executor(self) -> None:
-        """Stop the adapter-owned SDK executor without touching the loop default."""
-        lock = getattr(self, "_sdk_executor_lock", None)
-        if lock is None:
-            return
-        with lock:
-            self._sdk_executor_closing = True
-            executor = getattr(self, "_sdk_executor", None)
-            self._sdk_executor = None
-        if executor is None:
-            return
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
-
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect to Feishu/Lark."""
-        self._sdk_executor_closing = False  # re-arm the SDK executor after a prior disconnect
-        if not self._app_id or not self._app_secret:
-            logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
-            return False
-        if self._connection_mode not in {"websocket", "webhook"}:
-            logger.error(
-                "[Feishu] Unsupported FEISHU_CONNECTION_MODE=%s. Supported modes: websocket, webhook.",
-                self._connection_mode,
-            )
-            return False
-        if self._connection_mode == "webhook" and not (self._verification_token or self._encrypt_key):
-            logger.error("[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY.")
-            return False
-        if not await asyncio.to_thread(_load_lark_oapi):
-            logger.error("[Feishu] lark-oapi not installed")
-            return False
-
-        try:
-            self._app_lock_identity = self._app_id
-            acquired, existing = acquire_scoped_lock(
-                _FEISHU_APP_LOCK_SCOPE, self._app_lock_identity, metadata={"platform": self.platform.value},
-            )
-            if not acquired:
-                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
-                message = (
-                    "Another local Hermes gateway is already using this Feishu app_id"
-                    + (f" (PID {owner_pid})." if owner_pid else ".")
-                    + " Stop the other gateway before starting a second Feishu websocket client."
-                )
-                logger.error("[Feishu] %s", message)
-                self._set_fatal_error("feishu_app_lock", message, retryable=False)
-                return False
-
-            self._loop = asyncio.get_running_loop()
-            await self._connect_with_retry()
-            if self._connection_mode == "websocket":
-                # The WS thread can die without any external signal; keep a watcher alive.
-                self._ws_supervisor = asyncio.ensure_future(self._supervise_websocket_thread())
-            self._mark_connected()
-            logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
-            # Plugin-registered native handlers (lark_oapi client).
-            self._wire_plugin_handlers(self._client)
-            return True
-        except Exception as exc:
-            await self._release_app_lock()
-            message = f"Feishu startup failed: {exc}"
-            self._set_fatal_error("feishu_connect_error", message, retryable=True)
-            logger.error("[Feishu] Failed to connect: %s", exc, exc_info=True)
-            return False
-
-    async def disconnect(self) -> None:
-        """Disconnect from Feishu/Lark."""
-        self._running = False
-        if self._ws_supervisor is not None:
-            self._ws_supervisor.cancel()
-            self._ws_supervisor = None
-        await self._cancel_pending_tasks(self._pending_text_batch_tasks)
-        await self._cancel_pending_tasks(self._pending_media_batch_tasks)
-        self._reset_batch_buffers()
-        # ``_disable_websocket_auto_reconnect()`` nils ``_ws_client`` — capture first.
-        # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the thread loop. Without this, Feishu's
-        # server never learns the connection is dead and continues routing messages to the stale endpoint —
-        # the channel goes silent until the server-side CLOSE-WAIT expires (minutes to hours). See issue
-        # #10202.
-        ws_client = self._ws_client
-        ws_thread_loop = self._ws_thread_loop
-        self._disable_websocket_auto_reconnect()
-        await self._stop_webhook_server()
-        await self._teardown_ws_thread(ws_client, ws_thread_loop)
-        self._ws_future = None
-        self._ws_thread_loop = None
-        self._loop = None
-        self._event_handler = None
-        self._shutdown_sdk_executor()
-        self._persist_seen_message_ids()
-        await self._release_app_lock()
-        self._mark_disconnected()
-        logger.info("[Feishu] Disconnected")
-
-    async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
-        """CLOSE frame → cancel the WS thread's tasks → wait for the thread future."""
-        # Send the CLOSE frame BEFORE tearing down the thread loop; otherwise Feishu keeps
-        # routing to the stale endpoint until server-side CLOSE-WAIT expires (minutes to hours).
-        loop_alive = ws_thread_loop is not None and not ws_thread_loop.is_closed()
-        if ws_client is not None and loop_alive and hasattr(ws_client, "_disconnect"):
-            try:
-                future = asyncio.run_coroutine_threadsafe(ws_client._disconnect(), ws_thread_loop)
-                # A CLOSE frame is one control frame; if 5s isn't enough the link is already wedged.
-                await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
-                logger.debug("[Feishu] Sent WebSocket CLOSE frame to Feishu")
-            except TimeoutError:
-                logger.warning(
-                    "[Feishu] CLOSE frame not acknowledged within 5s — "
-                    "Feishu may briefly route messages to the stale "
-                    "connection until server-side timeout"
-                )
-            except Exception as exc:
-                logger.debug("[Feishu] Could not send WebSocket CLOSE frame: %s", exc, exc_info=True)
-
-        if loop_alive:
-            logger.debug("[Feishu] Cancelling websocket thread tasks and stopping loop")
-
-            def cancel_all_tasks() -> None:
-                tasks = [t for t in asyncio.all_tasks(ws_thread_loop) if not t.done()]
-                logger.debug("[Feishu] Found %d pending tasks in websocket thread", len(tasks))
-                for task in tasks:
-                    task.cancel()
-                ws_thread_loop.call_later(0.1, ws_thread_loop.stop)
-
-            ws_thread_loop.call_soon_threadsafe(cancel_all_tasks)
-
-        ws_future = self._ws_future
-        if ws_future is not None:
-            try:
-                logger.debug("[Feishu] Waiting for websocket thread to exit (timeout=10s)")
-                await asyncio.wait_for(asyncio.shield(ws_future), timeout=10.0)
-                logger.debug("[Feishu] Websocket thread exited cleanly")
-            except TimeoutError:
-                logger.warning("[Feishu] Websocket thread did not exit within 10s - may be stuck")
-            except asyncio.CancelledError:
-                logger.debug("[Feishu] Websocket thread cancelled during disconnect")
-            except Exception as exc:
-                logger.debug("[Feishu] Websocket thread exited with error: %s", exc, exc_info=True)
-
-    async def _cancel_pending_tasks(self, tasks: dict[str, asyncio.Task]) -> None:
-        pending = [task for task in tasks.values() if task and not task.done()]
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        tasks.clear()
-
-    def _reset_batch_buffers(self) -> None:
-        self._pending_text_batches.clear()
-        self._pending_text_batch_counts.clear()
-        self._pending_media_batches.clear()
-
-    def _disable_websocket_auto_reconnect(self) -> None:
-        if self._ws_client is None:
-            return
-        try:
-            self._ws_client._auto_reconnect = False
-        except Exception:
-            pass
-        finally:
-            self._ws_client = None
-
-    async def _stop_webhook_server(self) -> None:
-        if self._webhook_runner is None:
-            return
-        try:
-            await self._webhook_runner.cleanup()
-        finally:
-            self._webhook_runner = None
-            self._webhook_site = None
-
-    # --- Outbound — send / edit / send_image / send_voice / … ---
-    async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send an interactive card with model picker (two-level: provider → model).
+
+        Two-step drill-down: provider selection → model selection.
+        Updates the same card in-place as the user navigates.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        # Decide markdown-vs-text once for the whole message: a chunk of a long
-        # markdown reply may be plain prose that fails the per-chunk regex and would
-        # otherwise render as literal ``**bold`` / fences while other chunks render.
-        # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
-        # See #26841.
-        prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
-        last_response = None
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
 
-        async def _send_plain(chunk: str) -> Any:
-            return await self._feishu_send_with_retry(
+        try:
+            card = self._build_provider_card(providers, 0, current_model, current_provider)
+            payload = json.dumps(card, ensure_ascii=False)
+
+            response = await self._feishu_send_with_retry(
                 chat_id=chat_id,
-                msg_type="text",
-                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                reply_to=reply_to,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
                 metadata=metadata,
             )
 
-        try:
-            for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
-                try:
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await _send_plain(chunk)
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await _send_plain(chunk)
-                last_response = response
-
-            return self._finalize_send_result(last_response, "send failed")
-        except Exception as exc:
-            logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
-
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-
-        content = self.format_message(content)
-
-        async def _update(msg_type: str, payload: str) -> SendResult:
-            body = self._build_update_message_body(msg_type=msg_type, content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            response = await self._run_blocking(self._client.im.v1.message.update, request)
-            return self._finalize_send_result(response, "update failed")
-
-        try:
-            msg_type, payload = self._build_outbound_payload(content)
-            result = await _update(msg_type, payload)
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
-                result = await _update(
-                    "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
-                )
+            result = self._finalize_send_result(response, "send_model_picker failed")
             if result.success:
-                result.message_id = message_id
+                self._model_picker_state[str(chat_id)] = {
+                    "message_id": result.message_id or "",
+                    "providers": providers,
+                    "session_key": session_key,
+                    "on_model_selected": on_model_selected,
+                    "current_model": current_model,
+                    "current_provider": current_provider,
+                    "provider_page": 0,
+                }
             return result
         except Exception as exc:
-            logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
+            logger.warning("[Feishu] send_model_picker failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    async def delete_message(self, chat_id: str, message_id: str) -> bool:
-        """Delete a bot-posted message (used by stream-consumer preview cleanup)."""
-        if not self._client or not message_id:
-            return False
+    async def send_reasoning_picker(
+        self,
+        chat_id: str,
+        current_effort: str,
+        session_key: str,
+        on_reasoning_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card with reasoning effort level picker.
+        
+        Single-level picker: user directly selects effort level.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
         try:
-            request = self._build_delete_message_request(message_id)
-            response = await self._run_blocking(self._client.im.v1.message.delete, request)
-            if self._response_succeeded(response):
-                return True
-            logger.debug(
-                "[Feishu] Delete of message %s rejected: code=%s msg=%s",
-                message_id, getattr(response, "code", None), getattr(response, "msg", None),
+            card = self._build_reasoning_card(current_effort)
+            payload = json.dumps(card, ensure_ascii=False)
+
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
             )
-            return False
+
+            result = self._finalize_send_result(response, "send_reasoning_picker failed")
+            if result.success:
+                self._reasoning_picker_state[str(chat_id)] = {
+                    "message_id": result.message_id or "",
+                    "session_key": session_key,
+                    "on_reasoning_selected": on_reasoning_selected,
+                    "current_effort": current_effort,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_reasoning_picker failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    def _build_provider_card(
+        self, providers: list, page: int, current_model: str, current_provider: str
+    ) -> Dict[str, Any]:
+        """Build the provider selection card (first level)."""
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        try:
+            from hermes_cli.models_catalog_static import group_providers
         except Exception:
-            logger.debug("[Feishu] Failed to delete message %s", message_id, exc_info=True)
-            return False
+            group_providers = None
 
-    # Template attrs for the shared _format_exec_approval core. The card
-    # header carries the title, so the text core starts at the code fence.
-    _EA_HEADER = ""
-    _EA_CMD_BUDGET = 3000
+        by_slug = {p.get("slug"): p for p in providers}
 
-    # Resolved per call (not at class-body time) so the active language applies.
-    @property
-    def _EA_REASON_LABEL(self) -> str:
-        return f"**{t('gateway.exec_approval.reason_label')}:** "
+        # Build provider buttons with grouping support
+        provider_entries = []
+        if group_providers is not None:
+            for row in group_providers([p.get("slug") for p in providers]):
+                if row["kind"] == "group":
+                    members = [by_slug[m] for m in row["members"] if m in by_slug]
+                    count = sum(
+                        m.get("total_models", len(m.get("models", []))) for m in members
+                    )
+                    label = f"{row['label']} ▸ ({count})"
+                    if any(m.get("is_current") for m in members):
+                        label = f"✓ {label}"
+                    provider_entries.append({
+                        "type": "group",
+                        "label": label,
+                        "value": {"action": f"mpg:{row['group_id']}"},
+                    })
+                else:
+                    p = by_slug.get(row["slug"])
+                    if p is not None:
+                        count = p.get("total_models", len(p.get("models", [])))
+                        label = f"{p['name']} ({count})"
+                        if p.get("is_current"):
+                            label = f"✓ {label}"
+                        provider_entries.append({
+                            "type": "provider",
+                            "label": label,
+                            "value": {"action": f"mp:{p['slug']}"},
+                        })
+        else:
+            for p in providers:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                provider_entries.append({
+                    "type": "provider",
+                    "label": label,
+                    "value": {"action": f"mp:{p['slug']}"},
+                })
 
-    @property
-    def _EA_SMART_DENY_LINE(self) -> str:
-        line = t("gateway.exec_approval.smart_deny_line")
-        label, sep, rest = line.partition(":")
-        return "\n\n" + (f"**{label}{sep}**{rest}" if sep else line)
-
-    @property
-    def _EA_ACTION_LABELS(self) -> dict[str, str]:
-        return {"once": "✅ " + t("gateway.exec_approval.action_once"),
-                "session": "✅ " + t("platform.feishu.approval.action_session"),
-                "always": "✅ " + t("platform.feishu.approval.action_always"),
-                "deny": "❌ " + t("gateway.exec_approval.action_deny")}
-    _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
-
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Approval-button card; ``hermes_action`` in each button value lets the click callback
-        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        try:
-            approval_id = next(self._approval_counter)
-            actions = [
-                _card_button(label, style or "default",
-                             {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
-                for label, choice, style in prompt.actions]
-            card = _card(f"⚠️ {t('gateway.exec_approval.header')}", "orange", prompt.text, actions=actions)
-            return await self._send_interactive_card(
-                prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
-                state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
-            )
-        except Exception as exc:
-            logger.warning("[Feishu] send_exec_approval failed: %s", exc)
-            return SendResult(success=False, error=str(exc))
-
-    async def _send_interactive_card(
-        self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]], failure_message: str, *,
-        state_map: dict[int, dict[str, str]], state_id: int, session_key: str,
-    ) -> SendResult:
-        """Send a button card and, on success, remember where it went so a click can be validated."""
-        response = await self._feishu_send_with_retry(
-            chat_id=chat_id, msg_type="interactive", payload=json.dumps(card, ensure_ascii=False),
-            reply_to=None, metadata=metadata,
+        # Paginate
+        page_entries, page_meta = self._format_choice_page(
+            provider_entries, page, self._PROVIDER_PAGE_SIZE
         )
-        result = self._finalize_send_result(response, failure_message)
-        if result.success:
-            state_map[state_id] = {
-                "session_key": session_key,
-                "message_id": result.message_id or "",
-                "chat_id": chat_id,
-            }
-        return result
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
+        page_info = page_meta["page_info"]
 
-    @staticmethod
-    def _build_update_prompt_card(*, prompt: str, default: str, prompt_id: int) -> dict[str, Any]:
-        default_hint = t("platform.feishu.update_prompt.default_hint", default=default) if default else ""
+        # Build buttons (Feishu: max 5 buttons per action row, 2 buttons per row for readability)
+        actions = []
+        current_row = []
+        for entry in page_entries:
+            current_row.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": entry["label"]},
+                "value": entry["value"],
+                "type": "default",
+            })
+            if len(current_row) >= 2:
+                actions.append({"tag": "action", "actions": current_row})
+                current_row = []
+        if current_row:
+            actions.append({"tag": "action", "actions": current_row})
 
-        def _btn(label: str, answer: str, btn_type: str) -> dict:
-            return _card_button(label, btn_type, {"hermes_update_prompt_action": answer, "update_prompt_id": prompt_id})
+        # Pagination buttons
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "◀ Prev"},
+                    "value": {"action": f"mpv:{page - 1}"},
+                    "type": "default",
+                })
+            nav_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"{page + 1}/{total_pages}"},
+                "value": {"action": "mx:noop"},
+                "type": "default",
+            })
+            if page < total_pages - 1:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Next ▶"},
+                    "value": {"action": f"mpv:{page + 1}"},
+                    "type": "default",
+                })
+            actions.append({"tag": "action", "actions": nav_buttons})
 
-        actions = [_btn(t("platform.feishu.update_prompt.answer_yes"), "y", "primary"),
-                   _btn(t("platform.feishu.update_prompt.answer_no"), "n", "danger")]
-        return _card(t("platform.feishu.update_prompt.title"), "orange", f"{prompt}{default_hint}", actions=actions)
+        # Cancel button
+        actions.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "✗ Cancel"},
+                "value": {"action": "mx"},
+                "type": "danger",
+            }],
+        })
 
-    async def send_update_prompt(
-        self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
-        metadata: Optional[dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send an interactive update prompt with Yes/No buttons."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
+        provider_label = get_label(current_provider)
+        content = f"**当前模型**: `{current_model or 'unknown'}`\n**Provider**: {provider_label}\n\n选择 Provider:{page_info}"
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "⚙ 模型配置"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                *actions,
+            ],
+        }
+
+    def _build_model_card(
+        self, models: list, page: int, provider_name: str, provider_slug: str, total_models: int
+    ) -> Dict[str, Any]:
+        """Build the model selection card (second level)."""
+        page_models, page_meta = self._format_choice_page(
+            models, page, self._MODEL_PAGE_SIZE
+        )
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
+        start = page_meta["start"]
+        page_info = page_meta["page_info"]
+
+        # Build model buttons
+        actions = []
+        current_row = []
+        for i, model_id in enumerate(page_models):
+            abs_idx = start + i
+            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            if len(short) > 38:
+                short = short[:35] + "..."
+            current_row.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": short},
+                "value": {"action": f"mm:{abs_idx}"},
+                "type": "default",
+            })
+            if len(current_row) >= 2:
+                actions.append({"tag": "action", "actions": current_row})
+                current_row = []
+        if current_row:
+            actions.append({"tag": "action", "actions": current_row})
+
+        # Pagination buttons
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "◀ Prev"},
+                    "value": {"action": f"mg:{page - 1}"},
+                    "type": "default",
+                })
+            nav_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"{page + 1}/{total_pages}"},
+                "value": {"action": "mx:noop"},
+                "type": "default",
+            })
+            if page < total_pages - 1:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Next ▶"},
+                    "value": {"action": f"mg:{page + 1}"},
+                    "type": "default",
+                })
+            actions.append({"tag": "action", "actions": nav_buttons})
+
+        # Back and Cancel buttons
+        actions.append({
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "◀ Back"},
+                    "value": {"action": "mb"},
+                    "type": "default",
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "✗ Cancel"},
+                    "value": {"action": "mx"},
+                    "type": "danger",
+                },
+            ],
+        })
+
+        shown = len(models)
+        extra = f"\n_{total_models - shown} more available — type `/model <name>` directly_" if total_models > shown else ""
+        content = f"**Provider**: {provider_name}{page_info}\n\n选择模型:{extra}"
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "⚙ 模型配置"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                *actions,
+            ],
+        }
+
+    def _build_reasoning_card(
+        self, current_effort: str
+    ) -> Dict[str, Any]:
+        """Build the reasoning effort level selection card."""
+        from agent.reasoning_effort import EFFORT_LADDER
+        
+        # Reasoning levels: none, minimal, low, medium, high, xhigh, max, ultra
+        # Filter out 'none' and 'ultra' for user selection
+        effort_levels = [e for e in EFFORT_LADDER if e not in ("none", "ultra")]
+        
+        # Build level buttons with Chinese labels
+        effort_labels = {
+            "minimal": "极低 (minimal)",
+            "low": "低 (low)",
+            "medium": "中 (medium)",
+            "high": "高 (high)",
+            "xhigh": "极高 (xhigh)",
+            "max": "最大 (max)",
+        }
+        
+        actions = []
+        current_row = []
+        for effort in effort_levels:
+            label = effort_labels.get(effort, effort)
+            if effort == current_effort:
+                label = f"✓ {label}"
+            
+            current_row.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "value": {"action": f"rp:{effort}"},
+                "type": "primary" if effort == current_effort else "default",
+            })
+            if len(current_row) >= 2:
+                actions.append({"tag": "action", "actions": current_row})
+                current_row = []
+        if current_row:
+            actions.append({"tag": "action", "actions": current_row})
+
+        # Cancel button
+        actions.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "✗ 取消"},
+                "value": {"action": "rx"},
+                "type": "danger",
+            }],
+        })
+
+        content = f"**当前 Reasoning 级别**: `{current_effort or 'medium'}`\n\n选择 Reasoning 思考深度："
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "⚙ Reasoning 配置"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                *actions,
+            ],
+        }
+
+    async def _handle_model_picker_callback(
+        self, chat_id: str, action_value: dict, message_id: str, open_id: str, user_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Handle model picker button callbacks. Returns updated card JSON or None."""
+        state = self._model_picker_state.get(chat_id)
+        if not state:
+            logger.debug("[Feishu] Model picker state expired for chat %s", chat_id)
+            return None
+
+        # Authorization check
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized model picker click by %s", open_id)
+            return None
+
         try:
-            prompt_id = next(self._update_prompt_counter)
-            card = self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id)
-            return await self._send_interactive_card(
-                chat_id, card, metadata, "send_update_prompt failed",
-                state_map=self._update_prompt_state, state_id=prompt_id, session_key=session_key,
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        # Extract callback data
+        if isinstance(action_value, dict):
+            callback_data = action_value.get("action", action_value.get("value", ""))
+        else:
+            callback_data = str(action_value)
+        
+        if callback_data.startswith("mp:"):
+            # Provider selected: show model list
+            provider_slug = callback_data[3:]
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
             )
-        except Exception as exc:
-            logger.warning("[Feishu] send_update_prompt failed: %s", exc)
-            return SendResult(success=False, error=str(exc))
+            if not provider:
+                logger.warning("[Feishu] Provider %s not found", provider_slug)
+                return None
+
+            models = provider.get("models", [])
+            state["selected_provider"] = provider_slug
+            state["selected_provider_name"] = provider.get("name", provider_slug)
+            state["model_list"] = models
+            state["model_page"] = 0
+
+            total = provider.get("total_models", len(models))
+            return self._build_model_card(models, 0, provider.get("name", provider_slug), provider_slug, total)
+
+        elif callback_data.startswith("mg:"):
+            # Model page navigation
+            try:
+                page = int(callback_data[3:])
+            except ValueError:
+                return None
+
+            models = state.get("model_list", [])
+            state["model_page"] = page
+
+            provider_slug = state.get("selected_provider", "")
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            total = provider.get("total_models", len(models)) if provider else len(models)
+            pname = state.get("selected_provider_name", "")
+            return self._build_model_card(models, page, pname, provider_slug, total)
+
+        elif callback_data.startswith("mpv:"):
+            # Provider page navigation
+            try:
+                page = int(callback_data[4:])
+            except ValueError:
+                return None
+
+            state["provider_page"] = page
+            return self._build_provider_card(
+                state["providers"], page, state["current_model"], state["current_provider"]
+            )
+
+        elif callback_data.startswith("mpg:"):
+            # Provider group selected: show group members
+            group_id = callback_data[4:]
+            try:
+                from hermes_cli.models import PROVIDER_GROUPS
+                _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
+            except Exception:
+                _label, member_slugs = "", []
+
+            by_slug = {p["slug"]: p for p in state["providers"]}
+            members = [by_slug[m] for m in member_slugs if m in by_slug]
+            if not members:
+                logger.warning("[Feishu] Provider group %s not found or empty", group_id)
+                return None
+
+            # Build group member buttons
+            actions = []
+            current_row = []
+            for p in members:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                current_row.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "value": {"action": f"mp:{p['slug']}"},
+                    "type": "default",
+                })
+                if len(current_row) >= 2:
+                    actions.append({"tag": "action", "actions": current_row})
+                    current_row = []
+            if current_row:
+                actions.append({"tag": "action", "actions": current_row})
+
+            # Back and Cancel buttons
+            actions.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "◀ Back"},
+                        "value": {"action": "mb"},
+                        "type": "default",
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "✗ Cancel"},
+                        "value": {"action": "mx"},
+                        "type": "danger",
+                    },
+                ],
+            })
+
+            return {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text", "content": "⚙ 模型配置"},
+                    "template": "blue",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": f"**Provider Family**: {_label or group_id}\n\n选择 Provider:"},
+                    *actions,
+                ],
+            }
+
+        elif callback_data.startswith("mm:"):
+            # Model selected: perform the switch
+            try:
+                idx = int(callback_data[3:])
+            except ValueError:
+                return None
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                logger.warning("[Feishu] Model index %d out of range", idx)
+                return None
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                logger.warning("[Feishu] Model picker callback not found")
+                return None
+
+            switch_failed = False
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+                switch_failed = True
+
+            # Clean up state
+            self._model_picker_state.pop(chat_id, None)
+
+            # Return success card
+            icon = "❌" if switch_failed else "✅"
+            return {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text", "content": f"{icon} 模型切换"},
+                    "template": "red" if switch_failed else "green",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": result_text},
+                ],
+            }
+
+        elif callback_data == "mb":
+            # Back to provider list
+            page = int(state.get("provider_page", 0) or 0)
+            return self._build_provider_card(
+                state["providers"], page, state["current_model"], state["current_provider"]
+            )
+
+        elif callback_data == "mx" or callback_data == "mx:noop":
+            # Cancel or noop
+            if callback_data == "mx":
+                self._model_picker_state.pop(chat_id, None)
+                return {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "title": {"tag": "plain_text", "content": "✗ 已取消"},
+                        "template": "grey",
+                    },
+                    "elements": [
+                        {"tag": "markdown", "content": "模型选择已取消。"},
+                    ],
+                }
+            return None  # noop
+
+        return None
 
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> dict[str, Any]:
@@ -2207,10 +2307,33 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
         if isinstance(action_value, dict):
-            if action_value.get("hermes_action"):
-                return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-            if action_value.get("hermes_update_prompt_action"):
-                return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+            # Check both "action" (new format) and "value" (old format) for backward compatibility
+            callback_value = action_value.get("action", action_value.get("value", ""))
+            if isinstance(callback_value, str) and (
+                callback_value.startswith("mp:")
+                or callback_value.startswith("mm:")
+                or callback_value.startswith("mg:")
+                or callback_value.startswith("mpv:")
+                or callback_value.startswith("mpg:")
+                or callback_value.startswith("mb")
+                or callback_value.startswith("mx")
+            ):
+                return self._handle_model_picker_card_action(
+                    event=event,
+                    action_value=action_value,
+                    loop=loop,
+                )
+            # Check reasoning picker actions
+            if isinstance(callback_value, str) and (
+                callback_value.startswith("rp:")
+                or callback_value.startswith("rx")
+            ):
+                return self._handle_reasoning_picker_card_action(
+                    event=event,
+                    action_value=action_value,
+                    loop=loop,
+                )
+
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 
@@ -2342,6 +2465,186 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] %s %s already resolved while validating callback", label, ident)
         return state
 
+<<<<<<< Updated upstream
+=======
+    def _handle_model_picker_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Handle model picker card button clicks and return updated card inline."""
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        
+        if not chat_id:
+            logger.debug("[Feishu] Model picker card action missing chat_id")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        # Get message_id from context
+        message_id = str(getattr(context, "open_message_id", "") or "")
+
+        # Schedule async handler and get updated card
+        from concurrent.futures import Future
+        
+        result_future: Future = Future()
+        
+        async def _async_handler():
+            try:
+                updated_card = await self._handle_model_picker_callback(
+                    chat_id=chat_id,
+                    action_value=action_value,
+                    message_id=message_id,
+                    open_id=open_id,
+                    user_name=user_name,
+                )
+                result_future.set_result(updated_card)
+            except Exception as exc:
+                logger.error("[Feishu] Model picker callback handler failed: %s", exc)
+                result_future.set_exception(exc)
+
+        self._submit_on_loop(loop, _async_handler())
+
+        # Wait for the result (with timeout)
+        try:
+            updated_card = result_future.result(timeout=5.0)
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to get model picker card update: %s", exc)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+
+        response = P2CardActionTriggerResponse()
+        if updated_card and CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = updated_card
+            response.card = card
+        return response
+
+    async def _handle_reasoning_picker_callback(
+        self, chat_id: str, action_value: dict, message_id: str, open_id: str, user_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Handle reasoning picker button callbacks. Returns updated card JSON or None."""
+        state = self._reasoning_picker_state.get(chat_id)
+        if not state:
+            logger.debug("[Feishu] Reasoning picker state expired for chat %s", chat_id)
+            return None
+
+        # Authorization check
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized reasoning picker click by %s", open_id)
+            return None
+
+        # Extract callback data
+        if isinstance(action_value, dict):
+            callback_data = action_value.get("action", action_value.get("value", ""))
+        else:
+            callback_data = str(action_value)
+        
+        if callback_data.startswith("rp:"):
+            # Effort level selected: perform the switch
+            selected_effort = callback_data[3:]
+            callback = state.get("on_reasoning_selected")
+
+            if not callback:
+                logger.warning("[Feishu] Reasoning picker callback not found")
+                return None
+
+            switch_failed = False
+            try:
+                result_text = await callback(chat_id, selected_effort)
+            except Exception as exc:
+                logger.error("Reasoning picker switch failed: %s", exc)
+                result_text = f"切换失败: {exc}"
+                switch_failed = True
+
+            # Clean up state
+            self._reasoning_picker_state.pop(chat_id, None)
+
+            # Return success card
+            icon = "❌" if switch_failed else "✅"
+            return {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text", "content": f"{icon} Reasoning 配置"},
+                    "template": "red" if switch_failed else "green",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": result_text},
+                ],
+            }
+
+        elif callback_data == "rx":
+            # Cancel
+            self._reasoning_picker_state.pop(chat_id, None)
+            return {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text", "content": "⚙ Reasoning 配置"},
+                    "template": "grey",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": "已取消"},
+                ],
+            }
+
+        return None
+
+    def _handle_reasoning_picker_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Handle reasoning picker card button clicks and return updated card inline."""
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        
+        if not chat_id:
+            logger.debug("[Feishu] Reasoning picker card action missing chat_id")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        # Get message_id from context
+        message_id = str(getattr(context, "open_message_id", "") or "")
+
+        # Schedule async handler and get updated card
+        from concurrent.futures import Future
+        
+        result_future: Future = Future()
+        
+        async def _async_handler():
+            try:
+                updated_card = await self._handle_reasoning_picker_callback(
+                    chat_id=chat_id,
+                    action_value=action_value,
+                    message_id=message_id,
+                    open_id=open_id,
+                    user_name=user_name,
+                )
+                result_future.set_result(updated_card)
+            except Exception as exc:
+                logger.error("[Feishu] Reasoning picker callback handler failed: %s", exc)
+                result_future.set_exception(exc)
+
+        self._submit_on_loop(loop, _async_handler())
+
+        # Wait for the result (with timeout)
+        try:
+            updated_card = result_future.result(timeout=5.0)
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to get reasoning picker card update: %s", exc)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+
+        response = P2CardActionTriggerResponse()
+        if updated_card and CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = updated_card
+            response.card = card
+        return response
+
+>>>>>>> Stashed changes
     async def _resolve_approval(
         self, approval_id: Any, choice: str, user_name: str, *, open_id: str = "", chat_id: str = "",
     ) -> None:

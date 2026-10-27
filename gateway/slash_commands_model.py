@@ -935,6 +935,23 @@ class GatewayModelCommandsMixin:
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
             return self._apply_reasoning_selection(session_key, platform_key, value)
 
+        # Try Feishu-specific reasoning picker first
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter and getattr(type(adapter), "send_reasoning_picker", None) is not None:
+            try:
+                result = await adapter.send_reasoning_picker(
+                    chat_id=event.source.chat_id,
+                    session_key=session_key,
+                    current_effort=current_effort,
+                    on_reasoning_selected=_on_reasoning_choice,
+                    metadata=self._reply_metadata(event),
+                )
+                if result and getattr(result, "success", False):
+                    return None  # Feishu card sent
+            except Exception as e:
+                logger.warning("send_reasoning_picker failed, falling back to text: %s", e)
+
+        # Fallback: try generic choice picker
         picker_sent = await self._try_send_choice_picker(
             event,
             session_key,

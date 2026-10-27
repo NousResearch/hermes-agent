@@ -23,6 +23,7 @@ def db(tmp_path, monkeypatch):
 def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     """The dispatcher tags the worker's env so its session is a `kanban` row."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
     captured = {}
 
@@ -34,7 +35,7 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
         return _Proc()
 
     monkeypatch.setattr("subprocess.Popen", _fake_popen)
-    monkeypatch.setattr(kb, "_retag_legacy_worker_sessions", lambda _root: None)
+    monkeypatch.setattr(kbd, "_retag_legacy_worker_sessions", lambda _root: None)
     monkeypatch.setattr(kb, "worker_logs_dir", lambda board=None: tmp_path / "logs")
 
     task = kb.Task(
@@ -57,7 +58,7 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     workspace = str(tmp_path / "ws")
     os.makedirs(workspace, exist_ok=True)
 
-    kb._default_spawn(task, workspace)
+    kbd._default_spawn(task, workspace)
 
     assert captured["env"]["HERMES_SESSION_SOURCE"] == "kanban"
 

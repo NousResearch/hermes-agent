@@ -10,6 +10,8 @@ import { Favicon } from './favicon'
 export interface ConnectorLogoSubject {
   docs?: string
   homepage?: string
+  /** The vendor's own mark, served as a public SVG; connector rows always carry one. */
+  iconUrl?: string
   name: string
   title?: string
   url?: null | string
@@ -58,20 +60,34 @@ export function connectorLogoSource(subject: ConnectorLogoSubject): string {
 /**
  * A connector's mark, resolved as far as it goes.
  *
- * Curated brand glyph → the product's own favicon → the monogram every other
- * unknown name in the app falls back to. The middle rung is what keeps the
- * long tail from all looking alike: a curated icon set is a couple dozen names
- * and a public registry is thousands, so something we ship no icon for still
- * arrives wearing its own logo.
+ * Curated brand glyph → the vendor's icon → the product's own favicon → the
+ * monogram every other unknown name in the app falls back to. The middle rungs
+ * are what keep the long tail from all looking alike: a curated icon set is a
+ * couple dozen names and a public registry is thousands, so something we ship
+ * no icon for still arrives wearing its own logo.
+ *
+ * The vendor icon is a plain image: its host sends no CORS header, so nothing
+ * here may read it, and an unknown slug answers a grey placeholder with a 200,
+ * so a load event never tells us whether a logo exists.
  */
 export function ConnectorLogo({ className, connector }: { className?: string; connector: ConnectorLogoSubject }) {
   const label = connector.title || connector.name
   const brand = brandFor(connector.name)
-  const site = brand ? '' : connectorLogoSource(connector)
+  const icon = brand ? '' : (connector.iconUrl ?? '')
+  const site = brand || icon ? '' : connectorLogoSource(connector)
 
   return (
-    <AvatarChip brand={brand} className={cn(site && 'overflow-hidden', className)} name={label} title={connector.title}>
-      {site ? <Favicon fallback={monogramFor(label)} url={site} /> : undefined}
+    <AvatarChip
+      brand={brand}
+      className={cn((icon || site) && 'overflow-hidden', className)}
+      name={label}
+      title={connector.title}
+    >
+      {icon ? (
+        <img alt="" aria-hidden className="size-full object-contain" src={icon} />
+      ) : site ? (
+        <Favicon fallback={monogramFor(label)} url={site} />
+      ) : undefined}
     </AvatarChip>
   )
 }

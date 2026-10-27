@@ -144,6 +144,8 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节�
 python -m plugins.platforms.google_chat.oauth --install-deps
 ```
 
+`--install-deps` 通过 PM 将 `google-chat` extra 加入受管理的 Python 环境；完成后重启 gateway。Docker / hosted 镜像中的 venv 只读，且禁用了按需安装，无法在容器内执行此步骤。发布镜像已预装 `[google-chat]` extra。
+
 启动 gateway（网关）：
 
 ```bash

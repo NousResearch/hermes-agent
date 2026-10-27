@@ -55,9 +55,9 @@ def profile_scope():
 @pytest.mark.parametrize(
     "module_path,helper_name,var",
     [
-        ("gateway.platforms.weixin", "_wx_secret", "WEIXIN_ALLOWED_USERS"),
-        ("gateway.platforms.yuanbao", "_yb_secret", "YUANBAO_DM_POLICY"),
-        ("gateway.platforms.signal", "_sig_secret", "SIGNAL_ALLOWED_USERS"),
+        ("plugins.platforms.weixin.adapter", "_wx_secret", "WEIXIN_ALLOWED_USERS"),
+        ("plugins.platforms.yuanbao.adapter", "_yb_secret", "YUANBAO_DM_POLICY"),
+        ("plugins.platforms.signal.adapter", "_sig_secret", "SIGNAL_ALLOWED_USERS"),
         ("plugins.platforms.wecom.adapter", "_get_scoped_secret", "WECOM_ALLOWED_USERS"),
     ],
 )
@@ -86,9 +86,9 @@ def multiplex_on(monkeypatch):
 @pytest.mark.parametrize(
     "module_path,helper_name",
     [
-        ("gateway.platforms.weixin", "_wx_secret"),
-        ("gateway.platforms.yuanbao", "_yb_secret"),
-        ("gateway.platforms.signal", "_sig_secret"),
+        ("plugins.platforms.weixin.adapter", "_wx_secret"),
+        ("plugins.platforms.yuanbao.adapter", "_yb_secret"),
+        ("plugins.platforms.signal.adapter", "_sig_secret"),
         ("plugins.platforms.wecom.adapter", "_get_scoped_secret"),
     ],
 )
@@ -121,9 +121,9 @@ def test_helper_does_not_leak_default_env_into_scoped_miss(
 @pytest.mark.parametrize(
     "module_path,helper_name,var",
     [
-        ("gateway.platforms.weixin", "_wx_secret", "WEIXIN_ALLOWED_USERS"),
-        ("gateway.platforms.yuanbao", "_yb_secret", "YUANBAO_DM_POLICY"),
-        ("gateway.platforms.signal", "_sig_secret", "SIGNAL_ALLOWED_USERS"),
+        ("plugins.platforms.weixin.adapter", "_wx_secret", "WEIXIN_ALLOWED_USERS"),
+        ("plugins.platforms.yuanbao.adapter", "_yb_secret", "YUANBAO_DM_POLICY"),
+        ("plugins.platforms.signal.adapter", "_sig_secret", "SIGNAL_ALLOWED_USERS"),
         ("plugins.platforms.wecom.adapter", "_get_scoped_secret", "WECOM_ALLOWED_USERS"),
     ],
 )
@@ -145,14 +145,14 @@ def test_weixin_open_gate_ignores_default_env_under_scope(profile_scope, multipl
     NOT carry it — the gate must stay closed."""
     monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
 
-    from gateway.platforms.weixin import WeixinAdapter
+    from plugins.platforms.weixin.adapter import WeixinAdapter
 
     adapter = WeixinAdapter.__new__(WeixinAdapter)
     assert adapter._open_dm_opted_in() is False
 
 
 def test_weixin_open_gate_honors_scope_opt_in():
-    from gateway.platforms.weixin import WeixinAdapter
+    from plugins.platforms.weixin.adapter import WeixinAdapter
 
     with _scope({"WEIXIN_ALLOW_ALL_USERS": "yes"}):
         adapter = WeixinAdapter.__new__(WeixinAdapter)
@@ -162,7 +162,7 @@ def test_weixin_open_gate_honors_scope_opt_in():
 def test_yuanbao_access_policy_gate_ignores_default_env(profile_scope, multiplex_on, monkeypatch):
     monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
 
-    from gateway.platforms.yuanbao import AccessPolicy
+    from plugins.platforms.yuanbao.adapter import AccessPolicy
 
     policy = AccessPolicy(
         dm_policy="open", dm_allow_from=[], group_policy="pairing", group_allow_from=[]

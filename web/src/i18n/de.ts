@@ -95,6 +95,7 @@ export const de: Translations = {
   status: {
     actionFailed: "Aktion fehlgeschlagen",
     actionFinished: "Abgeschlossen",
+    actionFinishedOwed: "Aktualisiert, aber noch offen (`hermes update` erneut ausführen, um abzuschließen)",
     actions: "Aktionen",
     agent: "Agent",
     activeSessions: "Aktive Sitzungen",
@@ -162,9 +163,14 @@ export const de: Translations = {
     deleteSelectedConfirmMessage:
       "Dies entfernt {count} ausgewählte Sitzungen und alle zugehörigen Nachrichten dauerhaft. Dies kann nicht rückgängig gemacht werden.",
     selectedSessionsDeleted: "{count} Sitzungen gelöscht",
+    selectedSessionsSkippedActive: "{deleted} gelöscht; {count} behalten, weil noch ein Turn läuft",
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",
+    workspace: "Arbeitsbereich",
+    workspaceDefault: "Standard",
+    workspaceRescan: "Repositories neu scannen",
+    workspaceCustom: "Anderer Pfad…",
     previousPage: "Vorherige Seite",
     nextPage: "Nächste Seite",
     roles: {
@@ -324,6 +330,8 @@ export const de: Translations = {
     disableRuntime: "Deaktivieren",
     enableAfterInstall: "Nach Installation aktivieren",
     enableRuntime: "Aktivieren",
+    toggleTakesEffectAfterRestart:
+      "Gespeichert — Gateway neu starten, um die Änderung anzuwenden.",
     forceReinstall: "Neuinstallation erzwingen (bestehenden Ordner zuerst löschen)",
     headline:
       "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
@@ -469,6 +477,8 @@ export const de: Translations = {
     copyCliCommand: "CLI-Befehl kopieren (für extern / Fallback)",
     connect: "Verbinden",
     sessionExpires: "Sitzung läuft in {time} ab",
+    sessionExpiredNoError:
+      "Die Anmeldung ist abgelaufen, ohne den Anbieter zu erreichen. Das bedeutet meist, dass die Anmeldeseite im geöffneten Tab hängen geblieben ist (serverseitiges Problem) — schließen Sie die Anmeldung dort ab und klicken Sie dann auf Erneut versuchen. Wenn es weiterhin fehlschlägt, verwenden Sie stattdessen einen API-Schlüssel oder die CLI.",
     initiatingLogin: "Login-Ablauf wird gestartet…",
     exchangingCode: "Code wird gegen Tokens getauscht…",
     connectedClosing: "Verbunden! Wird geschlossen…",

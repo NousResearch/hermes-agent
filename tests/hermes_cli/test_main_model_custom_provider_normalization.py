@@ -2,11 +2,11 @@
 
 from unittest.mock import patch
 
-from hermes_cli.web_server import _normalize_main_model_assignment
+from hermes_cli.web_server_config import _normalize_main_model_assignment
 
 
 def _normalize(config, provider, model="vendor/model-a"):
-    with patch("hermes_cli.web_server.load_config", return_value=config):
+    with patch("hermes_cli.config.load_config", return_value=config):
         return _normalize_main_model_assignment(provider, model)
 
 
@@ -34,7 +34,15 @@ def test_custom_provider_name_canonicalizes_to_durable_slug():
 
 
 def test_unknown_vendor_still_uses_aggregator_fallback():
-    assert _normalize({}, "unconfigured-vendor") == (
-        "openrouter",
-        "vendor/model-a",
-    )
+    with patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
+        assert _normalize({}, "unconfigured-vendor") == (
+            "openrouter",
+            "vendor/model-a",
+        )
+
+
+def test_unknown_vendor_without_openrouter_key_is_not_reassigned():
+    """No key for the guessed aggregator → keep the pair as sent instead of persisting a provider
+    the user never selected."""
+    with patch("hermes_cli.models_detect.provider_has_credentials", lambda p: False):
+        assert _normalize({}, "unconfigured-vendor") == ("unconfigured-vendor", "vendor/model-a")

@@ -27,24 +27,40 @@ import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { ArchiveOff } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, openProjectCreate, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import {
+  $projectTree,
+  applyRenamedSessionTitle,
+  moveSessionToProject,
+  openProjectCreate,
+  projectIdForCwd,
+  projectRootCwd,
+  refreshProjectTree
+} from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  applySessionTitle,
   markSessionRead,
   sessionMatchesStoredId,
-  sessionPinId,
-  setSessions
+  sessionPinId
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import {
+  $sessionStates,
+  $sessionTiles,
+  closeAllOpenSessionTiles,
+  requestForOwnedSession
+} from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -66,21 +82,64 @@ import type { SessionTitleResponse } from '../../types'
 // background profile) keeps the REST path, which handles profile scoping and a
 // non-empty title is required by the RPC (it rejects clears), so clears stay on
 // REST too.
+/** Resolve a live runtime id for a stored session id, from any surface that
+ *  currently holds one — not just the selected-primary row.
+ *
+ *  A branched session opens as its own TAB and deliberately does NOT become the
+ *  selected primary row, so `$selectedStoredSessionId`/`$activeSessionId` do not
+ *  see it. Until its first turn it also has no persisted DB row, so a REST
+ *  rename 404s "session not found". But the branch flow binds a runtime and
+ *  stores it on the tile (`patchSessionTile(..., { runtimeId })`), and
+ *  `$sessionStates` is keyed by runtime id with `storedSessionId` on each state.
+ *  Consulting those lets the working `session.title` RPC path fire for a
+ *  just-branched draft instead of falling through to a 404. (#70317) */
+function resolveRuntimeIdForStored(storedSessionId: string): null | string {
+  if (storedSessionId === $selectedStoredSessionId.get()) {
+    const active = $activeSessionId.get()
+
+    if (active) {
+      return active
+    }
+  }
+
+  const tileRuntimeId = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
+  if (tileRuntimeId) {
+    return tileRuntimeId
+  }
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (state.storedSessionId === storedSessionId) {
+      return runtimeId
+    }
+  }
+
+  return null
+}
+
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
   title: string,
   profile?: string
 ): Promise<{ title?: string }> {
-  const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
-  const runtimeId = isActiveRow ? $activeSessionId.get() : null
+  const resolvedProfile =
+    (profile ?? '').trim() ||
+    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
+    undefined
+
+  const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
 
   if (title && runtimeId && gateway) {
     try {
-      const result = await gateway.request<SessionTitleResponse>('session.title', {
-        session_id: runtimeId,
-        title
-      })
+      // The runtime lives on its owner's backend; the ambient socket would
+      // refuse a secondary profile's session and drop us to REST.
+      const result = await requestForOwnedSession<SessionTitleResponse>(
+        runtimeId,
+        ambientRequestFor(gateway),
+        'session.title',
+        { session_id: runtimeId, title }
+      )
 
       return { title: result?.title ?? title }
     } catch (err) {
@@ -92,7 +151,7 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, profile)
+  return renameSession(storedSessionId, title, resolvedProfile)
 }
 
 interface SessionActions {
@@ -101,6 +160,9 @@ interface SessionActions {
   pinned?: boolean
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
+  /** The row is already archived (the sidebar's Archived view): the shared
+   *  archive verb becomes Unarchive and restores the session (#98813). */
+  archived?: boolean
   profile?: string
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
@@ -114,6 +176,12 @@ interface SessionActions {
   /** TAB surfaces: the session is already a tab, so "Open in new tab" is
    *  nonsense there — sidebar rows/dropdowns keep it. */
   surface?: 'row' | 'tab'
+  /** May this session be renamed? False for a canonical Bot Chat tab: its
+   *  exact title is the bot's identity (the backend guard refuses a user
+   *  rename and the caption never reads the stored title anyway — #124857),
+   *  so the Rename item and dialog are omitted instead of toasting success
+   *  over a no-op. Mirrors how onPin/onBranch are gated. */
+  renameable?: boolean
   /** The tab's layout-tree pane id (`session-tile:<id>` or `workspace`) — enables
    *  the Close-others / to-the-right / all tab verbs. Tab surfaces only. */
   tabPaneId?: string
@@ -149,15 +217,6 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // project's root — the fix for a chat created in the wrong folder. The current
 // owner and folderless projects (the Home bucket) are excluded: there is
 // nothing to move into.
-//
-// The "New project…" affordance is the second half of the fix: when the
-// sidebar has no other project to move into (only the synthetic Home bucket),
-// the submenu used to dead-end on a disabled "No other projects" line and the
-// session was stuck where it was. The session's existing cwd is pre-filled
-// as the new project's primary folder, and the dialog chains back through
-// `onCreated` to move the session in once the user names + creates the
-// project — turning the move from "impossible with one project" into a
-// two-click operation (name + confirm).
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
@@ -166,6 +225,16 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  // The flat (non-grouped) sidebar view only warms $projectTree on a
+  // background timer (PROJECT_TREE_WARM_MS in sidebar/index.tsx), so opening
+  // this submenu before that timer fires — or before the grouped view has
+  // ever been visited this run — showed "No other projects" even when
+  // projects exist. Refresh on open so the list is authoritative regardless
+  // of sidebar grouping state or timing.
+  useEffect(() => {
+    void refreshProjectTree()
+  }, [])
 
   // Open the project-create dialog with the session's cwd preloaded and a
   // follow-up that moves the session into the new project. We do NOT call
@@ -194,22 +263,17 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   // out of Home is the whole point of the menu.
   const canCreateAndMove = !currentProjectId || targets.length > 0
 
-  if (targets.length === 0) {
-    // Single-project / Home-only world: surface the only available action.
-    if (!canCreateAndMove) {
-      return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
-    }
-
-    return (
-      <kit.Item onSelect={openCreateAndMove}>
-        <Codicon name="add" size="0.875rem" />
-        <span>{p.moveCreateNew}</span>
-      </kit.Item>
-    )
+  if (targets.length === 0 && !canCreateAndMove) {
+    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
   }
 
   return (
     <>
+      {canCreateAndMove && (
+        <kit.Item onSelect={openCreateAndMove}>
+          {p.moveCreateNew}
+        </kit.Item>
+      )}
       {targets.map(node => (
         <kit.Item
           key={node.id}
@@ -223,15 +287,6 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
           {node.label}
         </kit.Item>
       ))}
-      {canCreateAndMove && (
-        <>
-          <kit.Separator />
-          <kit.Item onSelect={openCreateAndMove}>
-            <Codicon name="add" size="0.875rem" />
-            <span>{p.moveCreateNew}</span>
-          </kit.Item>
-        </>
-      )}
     </>
   )
 }
@@ -241,6 +296,7 @@ function useSessionActions({
   title,
   pinned = false,
   unread = false,
+  archived = false,
   profile,
   onPin,
   onToggleUnread,
@@ -249,6 +305,7 @@ function useSessionActions({
   onDelete,
   onClose,
   onHideTabBar,
+  renameable = true,
   surface = 'row',
   tabPaneId
 }: SessionActions) {
@@ -336,19 +393,25 @@ function useSessionActions({
       : [])
   ]
 
-  // IDENTITY — name/mark/reference the session.
+  // IDENTITY — name/mark/reference the session. Rename is omitted (not
+  // disabled) for a session whose title is not its name — a canonical Bot
+  // Chat — so the menu never offers a verb whose result the user cannot see.
   const identityItems: ActionItemSpec[] = [
-    spec({
-      disabled: !sessionId,
-      icon: 'edit',
-      label: r.rename,
-      onSelect: () => {
-        triggerHaptic('selection')
-        // Keep focus off the row trigger so it lands in the dialog input.
-        suppressCloseFocusRef.current = true
-        setRenameOpen(true)
-      }
-    }),
+    ...(renameable
+      ? [
+          spec({
+            disabled: !sessionId,
+            icon: 'edit',
+            label: r.rename,
+            onSelect: () => {
+              triggerHaptic('selection')
+              // Keep focus off the row trigger so it lands in the dialog input.
+              suppressCloseFocusRef.current = true
+              setRenameOpen(true)
+            }
+          })
+        ]
+      : []),
     spec({
       disabled: !onPin,
       icon: 'pin',
@@ -486,8 +549,14 @@ function useSessionActions({
   const dangerItems: ActionItemSpec[] = [
     spec({
       disabled: !onArchive,
-      icon: 'archive',
-      label: r.archive,
+      // Already archived (the Archived view): the same verb restores the row
+      // instead of re-archiving it (#98813). The wiring dispatches the shared
+      // onArchive callback to the restore path based on the row's state. No
+      // unarchive codicon exists, so the restore item carries the ArchiveOff
+      // glyph the Settings → Archived Chats restore button already uses.
+      icon: archived ? undefined : 'archive',
+      iconNode: archived ? <ArchiveOff className="size-3.5" /> : undefined,
+      label: archived ? r.unarchive : r.archive,
       onSelect: () => {
         triggerHaptic('selection')
         onArchive?.()
@@ -574,7 +643,7 @@ function useSessionActions({
     </>
   )
 
-  const renameDialog = (
+  const renameDialog = renameable ? (
     <RenameSessionDialog
       currentTitle={title}
       onOpenChange={setRenameOpen}
@@ -582,7 +651,7 @@ function useSessionActions({
       profile={profile}
       sessionId={sessionId}
     />
-  )
+  ) : null
 
   // Consumed once per close: when rename was the action that closed the menu,
   // block Radix's focus-restore to the trigger so the dialog input keeps focus.
@@ -727,9 +796,17 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
-      const result = await renameSessionPreferringRpc(sessionId, next, profile)
+      const targetProfile =
+        (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+
+      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''
-      setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+      // One write, every list: patch the main store AND the project surfaces.
+      // Bare-id patching only the recents slice left project-scoped rows
+      // (overview previews, entered-project lanes) on the stale title until a
+      // profile switch forced a refetch (#123337).
+      applySessionTitle(sessionId, finalTitle || null)
+      applyRenamedSessionTitle(sessionId, finalTitle || null)
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })
       onOpenChange(false)
     } catch (err) {
@@ -750,7 +827,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           disabled={submitting}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            if (isSubmitEnter(event)) {
               event.preventDefault()
               void submit()
             } else if (event.key === 'Escape') {

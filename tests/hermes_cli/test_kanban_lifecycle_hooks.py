@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 
@@ -49,7 +50,7 @@ def captured_hooks(monkeypatch):
 
 
 def test_claim_fires_hook(kanban_home, captured_hooks):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
         claimed = kb.claim_task(conn, tid)
@@ -77,7 +78,7 @@ def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):
 
     mgr._hooks.setdefault("kanban_task_completed", []).append(_boom)
     try:
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="t", assignee="worker")
             kb.claim_task(conn, tid)

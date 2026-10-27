@@ -14,8 +14,6 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 | openai-codex | OAuth | `hermes auth add openai-codex` |
 | qwen-oauth | OAuth | `hermes auth add qwen-oauth` |
 | minimax-oauth | OAuth | `hermes auth add minimax-oauth` |
-| copilot | Token | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` (Copilot device flow — `gh auth login` tokens do NOT work) |
-| copilot-acp | External CLI | Copilot CLI on PATH or `COPILOT_CLI_PATH` |
 | gemini | API key | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 | xai | API key | `XAI_API_KEY` (SuperGrok OAuth also supported) |
 | deepseek | API key | `DEEPSEEK_API_KEY` |
@@ -28,6 +26,8 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 | fireworks / novita / nvidia / deepinfra / gmi / arcee / stepfun / upstage / kilocode / ai-gateway / opencode-zen / opencode-go / ollama-cloud | API key | `<NAME>_API_KEY` |
 | bedrock / vertex / azure-foundry | Cloud SDK / key | AWS SDK creds / Vertex ADC / `AZURE_FOUNDRY_API_KEY` |
 | custom | Config | `model.base_url` + `model.api_key` in config.yaml |
+
+GitHub Copilot (`copilot`, `copilot-acp`) is a labs plugin, not core: `hermes plugins install github-copilot`, then `hermes auth add copilot` (https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot).
 
 Multiple credentials per provider pool and rotate automatically (`hermes auth`).
 Fallback chain when the primary fails: `hermes fallback add|remove|list`.
@@ -48,6 +48,11 @@ model_aliases:
     model: qwen3.5:397b
     provider: custom
     base_url: "https://ollama.com/v1"
+  theta:
+    model: theta-1
+    provider: custom
+    base_url: "https://theta.example.com/v1"
+    key_env: THETA_API_KEY        # or: api_key: "${THETA_API_KEY}"
 
 # Short form ("provider/model"), also via CLI:
 #   hermes config set model.aliases.fav openrouter/anthropic/claude-sonnet-4.6
@@ -57,6 +62,11 @@ model:
 ```
 
 `/model fav` — session-scoped; add `--global` to persist as default.
+
+An alias with its own `base_url` authenticates with its own credential
+(`api_key`, which also accepts a `"${VAR}"` reference, or `key_env`). With
+neither set the key is resolved from the alias HOST, never carried over from
+the provider that was active before the switch.
 
 Built-in aliases (catalog-resolved against the active provider): `sonnet`,
 `opus`, `haiku`, `claude`, `gpt5`, `gpt`, `codex`, `o3`, `o4`, `gemini`,

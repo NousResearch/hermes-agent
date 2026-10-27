@@ -76,12 +76,13 @@ def discover_owner(home: Path):
 
 
 @contextlib.asynccontextmanager
-async def connect_owner(home: Path, endpoint):
-    """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``."""
+async def connect_owner(home: Path, endpoint, *, scope=None):
+    """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``; ``scope``: the
+    ticket's profile scope (``"host"``: the one native Desktop holds)."""
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 
-    ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
+    ticket = await asyncio.to_thread(_session_ticket, home, endpoint, scope=scope)
     url, protocols = gateway_ws_target(endpoint, ticket)
     # Loopback owner dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
     async with connect(url, subprotocols=protocols, open_timeout=10, proxy=None) as ws:
@@ -217,9 +218,10 @@ class _Relay:
 
 
 def forward_rpc(home: Path, endpoint, method: str, params: dict) -> Any:
-    """One request/answer RPC on the owner serving ``home`` (Group Chat calls, WA-19)."""
+    """One request/answer RPC on the owner serving ``home`` (Group Chat calls, WA-19), on the
+    host-scoped grant native Desktop itself holds, so a room may seat the served sibling profiles."""
     async def call():
-        async with connect_owner(home, endpoint) as client:
+        async with connect_owner(home, endpoint, scope="host") as client:
             return await client.rpc(method, **params)
     return asyncio.run(call())
 

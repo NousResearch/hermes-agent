@@ -170,10 +170,13 @@ export function relaunchNow(
 ): void {
   host.releaseSingleInstanceLock()
 
-  // The executable of an unpacked or extracted app lives in a directory that
-  // outlives this process and that no AppRun re-enters: keep its environment.
-  const appDir = env.APPDIR && posix.resolve(env.APPDIR)
-  const childEnv = appDir && isInside(appDir, posix.resolve(target)) ? env : withoutMountEntries(env)
+  // Only a restart of our own image file (relaunchTarget returns it only when
+  // ownAppImage claims it) drops the dying mount. Any other target keeps the env
+  // whole: the executable inside an extracted APPDIR (a plain directory, maybe
+  // reached through a symlinked $TMPDIR) needs APPDIR/APPIMAGE, which no AppRun
+  // restores, and another app's AppImage env is the user's, as app.relaunch kept it.
+  const ownImage = env.APPIMAGE && posix.resolve(target) === posix.resolve(env.APPIMAGE)
+  const childEnv = ownImage ? withoutMountEntries(env) : env
 
   const child = spawn('/bin/sh', ['-c', EXEC_WITH_STDIO_ONLY, target, ...args], {
     detached: true,

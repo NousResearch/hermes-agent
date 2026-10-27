@@ -138,6 +138,45 @@ describe('Linux runtime --no-sandbox relaunch', () => {
     }
   })
 
+  // Hermes started from another app's AppImage (an IDE or terminal) inherits
+  // that app's APPDIR/APPIMAGE and its mount on PATH and LD_LIBRARY_PATH;
+  // app.relaunch kept them, so the restart must start Hermes with that env whole.
+  it.skipIf(process.platform !== 'linux')("restarts with another app's AppImage env intact", async () => {
+    const saved = { ...process.env }
+    const mount = '/tmp/.mount_IdeAbC123'
+
+    const foreign = {
+      APPDIR: mount,
+      APPIMAGE: '/home/u/Apps/Ide.AppImage',
+      LD_LIBRARY_PATH: `${mount}/usr/lib`,
+      PATH: `${mount}/usr/bin:/usr/local/bin:/usr/bin:/bin`,
+      SHELL: `${mount}/usr/bin/zsh`
+    }
+
+    try {
+      delete process.env.ELECTRON_DISABLE_SANDBOX
+      delete process.env.HERMES_DESKTOP_TMPDIR
+      Object.assign(process.env, foreign)
+      vi.resetModules()
+      const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
+      const relaunch = recordNextSpawn()
+
+      const relaunched = relaunchIfNoSandboxCameTooLate(
+        {
+          commandLine: { hasSwitch: name => name === 'no-sandbox' },
+          releaseSingleInstanceLock: () => undefined,
+          exit: () => undefined
+        },
+        () => undefined
+      )
+
+      expect(relaunched).toBe(true)
+      expect(relaunch.env).toMatchObject(foreign)
+    } finally {
+      restoreEnv(saved)
+    }
+  })
+
   // main.ts wires the NVIDIA recovery's cleanExit in: the restart happens after
   // createNvidiaEglRecovery wrote its `booting` witness, and the next launch
   // must not read that deliberate exit as a GPU abort mid-boot.

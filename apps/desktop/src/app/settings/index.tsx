@@ -13,6 +13,7 @@ import {
   BarChart3,
   Bell,
   Cpu,
+  Cpu,
   Download,
   Globe,
   Info,
@@ -39,6 +40,7 @@ import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 
+import { FederationDevicesOverlay } from '../federation/federation-devices-overlay'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -86,6 +88,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'billing',
   'sessions',
   'plugins',
+  'federation',
   'about'
 ]
 
@@ -431,6 +434,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             onSelect: () => plugins.open(null)
           },
           {
+            active: activeView === 'federation',
+            icon: Cpu,
+            id: 'federation',
+            label: 'Federation',
+            onSelect: () => setActiveView('federation')
+          },
+          {
             active: activeView === 'about',
             gapBefore: true,
             icon: Info,
@@ -595,6 +605,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       pending={plugins.pending}
       target={plugins.target}
     />
+  ) : activeView === 'federation' ? (
+    <FederationDevicesOverlay />
   ) : activeView === 'vault' ? (
     <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
   ) : (

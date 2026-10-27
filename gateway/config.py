@@ -589,6 +589,109 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 
 
 @dataclass
+class FederationConfig:
+    """P2P federation configuration (#76660).
+
+    Supports three modes:
+    - ``shared_db``: File-synced SQLite (v1, 2-3 devices, ~60s latency)
+    - ``lan``: WebSocket real-time with manual peer config (v2, N devices)
+    - ``auto``: mDNS zero-config discovery + WebSocket (v3, plug-and-play)
+    """
+
+    enabled: bool = False
+    mode: str = "shared_db"  # shared_db | lan | auto
+    # Device identifier (auto-detect if not set)
+    device_id: Optional[str] = None
+    # WebSocket port for lan/auto mode
+    ws_port: int = 18765
+    # Auth token for peer verification (required for production)
+    auth_token: Optional[str] = None
+    # Require authentication (default True — reject unauthenticated peers)
+    require_auth: bool = True
+    # TLS certificate paths for wss:// (optional, self-signed OK for LAN)
+    tls_cert: Optional[str] = None
+    tls_key: Optional[str] = None
+    # IP whitelist (optional — restrict which IPs can connect)
+    ip_whitelist: List[str] = field(default_factory=list)
+    # For 'lan' mode: manually configured peer WebSocket URLs
+    peers: List[str] = field(default_factory=list)
+    # CRITICAL-1: TLS mandatory by default. Override only for local testing.
+    # Allow insecure (plaintext) only if explicitly opted in.
+    require_tls: bool = True
+    allow_insecure: bool = False
+    # Insecure mode warning flag (one-shot log when enabled)
+    _insecure_warned: bool = field(default=False, repr=False)
+    # Shared SQLite database path (shared_db mode, iCloud Drive default on macOS).
+    db_path: Optional[str] = None
+    # Seconds without heartbeat before peer is considered offline.
+    offline_threshold_s: int = 30
+    # Seconds between heartbeat cycles.
+    heartbeat_interval_s: int = 60
+
+    def validate_security(self) -> List[str]:
+        """Audit security posture. Returns list of warnings.
+
+        Call on federation startup; raise FederationSecurityError if
+        critical issues are found.
+        """
+        issues: List[str] = []
+        if self.enabled and self.require_tls and not self.allow_insecure:
+            if not self.tls_cert and not self.tls_key:
+                if self.mode in ("lan", "auto"):
+                    issues.append(
+                        "CRITICAL: Federation in lan/auto mode requires TLS. "
+                        "Set tls_cert/tls_key or enable allow_insecure=True "
+                        "for local testing only."
+                    )
+        if self.allow_insecure and not self._insecure_warned:
+            import logging
+            logging.warning(
+                "CRITICAL SECURITY: Federation allow_insecure=True. "
+                "Network traffic is plaintext. Use ONLY for local testing."
+            )
+            self._insecure_warned = True
+        return issues
+
+    def resolve_db_path(self) -> Optional["Path"]:
+        """Resolve the database path, expanding ~ and env vars."""
+        if not self.db_path:
+            # Default to iCloud Drive on macOS.
+            icloud = Path.home() / "Library" / "Mobile Documents" / \
+                "com~apple~CloudDocs" / "hermes-federation"
+            default = icloud / "federation.db"
+            if default.parent.exists():
+                return default
+            return None
+        raw = os.path.expandvars(os.path.expanduser(self.db_path))
+        return Path(raw)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FederationConfig":
+        data = _coerce_dict(data)
+        peers = data.get("peers", [])
+        if not isinstance(peers, list):
+            peers = []
+        ip_whitelist = data.get("ip_whitelist", [])
+        if not isinstance(ip_whitelist, list):
+            ip_whitelist = []
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), False),
+            mode=data.get("mode", "shared_db"),
+            device_id=data.get("device_id"),
+            ws_port=int(data.get("ws_port", 18765)),
+            auth_token=data.get("auth_token"),
+            require_auth=_coerce_bool(data.get("require_auth"), True),
+            tls_cert=data.get("tls_cert"),
+            tls_key=data.get("tls_key"),
+            ip_whitelist=ip_whitelist,
+            peers=peers,
+            db_path=data.get("db_path"),
+            offline_threshold_s=int(data.get("offline_threshold_s", 30)),
+            heartbeat_interval_s=int(data.get("heartbeat_interval_s", 60)),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """Main gateway configuration: platform connections, session policies, delivery settings."""
     platforms: dict[Platform, PlatformConfig] = field(default_factory=dict)
@@ -648,6 +751,8 @@ class GatewayConfig:
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
     profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
+    # P2P federation (#76660): multi-device coordination platform.
+    federation: FederationConfig = field(default_factory=FederationConfig)
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
@@ -799,6 +904,7 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
+            federation=FederationConfig.from_dict(data.get("federation", {})),
         )
 
     def _extra_choice(self, platform: Optional[Platform], key: str, choices: set, default: str) -> Optional[str]:

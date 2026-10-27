@@ -103,7 +103,10 @@ def test_forced_fanout_against_single_task_reply(kanban_home):
     with kbc.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
     assert child.title == "Tightened title"
-    assert child.body == "Tightened body"
+    # The model's tightened content survives; the size gate prepends exactly one
+    # budget line to it (every decomposed child carries its measured budget).
+    assert child.body.startswith("Budget estimate (size gate): score ")
+    assert child.body.endswith("\n\nTightened body")
     assert child.assignee == "engineer"
 
 

@@ -1,4 +1,4 @@
-import type { PromptSubmitResult } from '@hermes/shared'
+import { type PromptSubmitResult, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -513,7 +513,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         : captured
 
       let requestGateway = destination.requestGateway
-      const submissionId = retained?.id ?? options?.submission_id ?? crypto.randomUUID()
+      const submissionId = retained?.id ?? options?.submission_id ?? randomUuid()
 
       let startingStoredSessionId = routedSessionNeedsResume
         ? routedStoredSessionId

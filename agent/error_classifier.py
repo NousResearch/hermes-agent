@@ -1023,7 +1023,7 @@ def classify_api_error(
     The credential is never included in the returned context."""
     from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
-    # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
+    # Some SDK RateLimitErrors (OpenAI-compatible relays) may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
         status_code = 429
     body = _extract_error_body(error)

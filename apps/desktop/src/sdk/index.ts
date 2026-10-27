@@ -111,6 +111,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
   type PluginProfileRoute,
@@ -652,27 +653,8 @@ export const host = {
     syncWorkspaceRoute(to)
   },
 
-  /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change. Delegates to
-   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
-   *  guard, hover dwell, and per-profile throttle as the built-in rail
-   *  (#91545): a pointer sweep across a plugin roster (bot-row's
-   *  onPointerEnter fires with no dwell of its own) previously spawned at
-   *  pointer speed, filled the local backend pool past maxBackends, and left
-   *  the next profile's spawn queued until the 30s slot timeout — observed
-   *  as a profile surface that hangs forever while every other profile
-   *  renders. It already no-ops for shared-remote routes and the primary.
-   *  Fire-and-forget: failures are swallowed — the click path re-runs its
-   *  own ensure and surfaces errors properly. */
-  warmProfile: (profile: string): void => {
-    const name = (profile ?? '').trim()
-
-    if (!name) {
-      return
-    }
-
-    prewarmProfileBackend(name)
-  },
+  warmProfile,
+  dropLeftoverProfilePrefs,
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the
    *  same door core surfaces use (DeleteProfileDialog). Electron intercepts
@@ -1622,14 +1604,7 @@ export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
  *  that prints a next run switches its label on this (`t.cron.next` →
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
-/** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
- *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
- *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
- *  `PanelEmpty` is the icon+action empty state (plain `EmptyState` is title +
- *  description only, and silently drops an `icon`). A row takes a custom `lead`
- *  (avatar/swatch), trailing `meta`, and `menuItems` for kebab + right-click
- *  parity, so a roster needs no hand-rolled row. The overlay-bound `Panel` root
- *  is deliberately NOT exported — these compose inside a pane just as well. */
+/** Master-detail components for pane content; the overlay-bound Panel root is deliberately private. */
 export {
   PanelAction,
   PanelAddButton,
@@ -1839,6 +1814,10 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** THE copy-to-clipboard path (CopyButton's): Electron's IPC first, the Clipboard API, and a
+ *  selection copy where an insecure origin has no Clipboard API. Never call
+ *  `navigator.clipboard.writeText` directly. */
+export { writeClipboardText } from '@/lib/clipboard'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface
@@ -1976,6 +1955,9 @@ export { compactNumber } from '@hermes/shared'
  *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
  *  its own RPC while the backend still applies the decision (#60654). */
 export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
+/** THE id minter: a v4 UUID on every origin. `crypto.randomUUID` exists only in secure contexts,
+ *  so a Webapp opened over plain HTTP from another machine has none. */
+export { randomUuid } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

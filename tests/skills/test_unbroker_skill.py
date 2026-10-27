@@ -893,7 +893,8 @@ def test_defunct_brokers_excluded_from_all_planning():
         for st in ("blocked", "indirect_exposure"):
             led["deadbroker"] = {"broker_id": "deadbroker", "state": st}
             q3 = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
-            assert [t for t in q3["human_digest"] if "deadbroker" in _json.dumps(t)], st
+            assert [t for t in q3["human_digest"]
+                    if "deadbroker" in _json.dumps(t) and "broker is defunct" in _json.dumps(t)], st
 
 
 def test_full_autonomy_note_honors_confirm_first():
@@ -923,7 +924,8 @@ def test_defunct_cases_never_recheck_or_wake_even_on_priority_runs():
         assert autopilot.next_actions(d, bl, _auto_cfg(), led, env={})["next_wake_at"] is None
         led["radaris"] = {"broker_id": "radaris", "state": "awaiting_processing"}
         q2 = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
-        assert [t for t in q2["human_digest"] if "radaris" in _json.dumps(t)]
+        assert [t for t in q2["human_digest"]
+                if "radaris" in _json.dumps(t) and "broker is defunct" in _json.dumps(t)]
 
 
 def test_ledger_not_found_close_out_only_for_defunct_brokers():

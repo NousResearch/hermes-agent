@@ -123,7 +123,8 @@ def _email_identity_ready(dossier: dict) -> bool:
 
 
 # Open defunct cases worth closing: every state the ledger lets a defunct broker leave for
-# not_found, minus the pre-verdict ones (new/searching) that never hold a listing.
+# not_found, minus the pre-verdict ones (new/searching) that never hold a listing and
+# not_found itself (the same-state move is always allowed).
 _DEFUNCT_OPEN_STATES = {s for s in ledger_mod.STATES
                         if s not in {"new", "searching", "not_found"}
                         and ledger_mod.can_transition(s, "not_found", broker_defunct=True)}
@@ -244,8 +245,8 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
         action["note"] = ("CAPTCHA-gated: attempt with the configured browser backend once; if it "
                           "does not clear, record human_task_queued with the reason. Do NOT retry-loop "
                           "or bypass -- and do NOT record blocked either: a blocked case re-scans, "
-                          "re-finds the listing and re-queues this opt-out forever, while the digest "
-                          "hands it to the operator exactly once")
+                          "re-finds the listing and re-queues this opt-out forever, while a parked "
+                          "task stays one standing digest entry until the operator acts")
     return action, None
 
 

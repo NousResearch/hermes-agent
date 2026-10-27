@@ -344,8 +344,8 @@ is where lead buyers get it. The same engine, entered from the number:
   actually gone; note paid-tier retention in the report.
 - **Soft CAPTCHAs clear by default; don't fight the hard ones.** The default cloud browser passes
   managed/soft challenges as normal operation (those brokers stay T1). For a hard interactive one it
-  genuinely can't pass, record `human_task_queued --reason "..."` so the operator gets it once in
-  the digest (a `blocked` case re-scans, re-finds the listing and re-queues the opt-out) - never a
+  genuinely can't pass, record `human_task_queued --reason "..."` so it parks as one standing
+  digest task (a `blocked` case re-scans, re-finds the listing and re-queues the opt-out) - never a
   third-party solver service or fingerprint spoofing.
 - **Broker pages change.** If a flow breaks, `$PDD record ... blocked` and flag the broker file in
   `references/brokers/` for re-verification instead of guessing.

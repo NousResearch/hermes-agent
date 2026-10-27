@@ -254,7 +254,7 @@ reCAPTCHA checkbox - as normal operation, so those brokers stay T1 and you just 
 
 Only a **hard** challenge the browser genuinely can't pass (interactive image grids, behavioral
 scoring that flags the session) becomes a fallback: `record ... human_task_queued --reason "..."`
-so it reaches the operator once in the digest (the operator's own residential browser is the
+so it parks as one standing digest task (the operator's own residential browser is the
 reliable unblock; a `blocked` case would re-scan, re-find the listing and re-queue the opt-out).
 Without a cloud browser configured, soft-CAPTCHA brokers drop to T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
 

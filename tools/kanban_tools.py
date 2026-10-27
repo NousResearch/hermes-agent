@@ -678,6 +678,10 @@ def _handle_show(args: dict, **kw) -> str:
         task = _existing_task(kb, conn, tid)
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
+            # Same bounded context build_worker_context hands the dispatcher at
+            # spawn time. Keep it before full history so it remains inline if
+            # the tool result spills over.
+            "worker_context": kb.build_worker_context(conn, tid),
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
             # gate is not holding it and kanban_complete will refuse.
@@ -688,8 +692,7 @@ def _handle_show(args: dict, **kw) -> str:
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
-            # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+        })
 
 
 @_kanban_handler("kanban_list")

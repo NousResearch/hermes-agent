@@ -356,8 +356,20 @@ def _entry_or_404(model_id: str):
 
 
 def _start_local_server(config: dict, fail_detail: str):
-    """Force-start the local server; raise ``fail_detail`` when neither we nor another process ended up serving."""
-    sup = bootstrap.ensure_local_runtime(config, force=True)
+    """Start the local server, honoring the user's ``local_runtime.enabled`` toggle.
+
+    ``force=True`` was the original implementation, but it bypassed the ``enabled=false`` gate —
+    the activate / quickstart routes below reused this helper, so flipping the toggle off in the
+    UI was undone the next time a model got re-activated (e.g. an auto-activate on remount). The
+    explicit user "Start" button goes through ``/api/local-models/server`` (``_start_server``),
+    which sets the flag itself; everything else should respect whatever the user has chosen.
+    """
+    section = (config or {}).get("local_runtime") or {}
+    if not section.get("enabled"):
+        raise RuntimeError(
+            f"{fail_detail} The local runtime is turned off — enable it in "
+            "Settings → Providers → Local Models first.")
+    sup = bootstrap.ensure_local_runtime(config)
     if sup is None and _state_endpoint() is None:
         raise RuntimeError(fail_detail)
     return sup
@@ -967,7 +979,6 @@ async def local_models_activate(body: ModelActivateBody, profile: Optional[str] 
             _ensure_server(job, config_mod.load_config(), body.model_id,
                            fail_detail=_SERVER_START_FAILED, skip_msg="activate rescan check skipped")
             _step(job, "setting-default", "Making it your default")
-            _set_runtime_enabled(True)
             _assign_default(job, body.model_id)
             _finish(job, f"{body.model_id} is the default for new chats")
 

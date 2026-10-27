@@ -116,8 +116,8 @@ async def test_hermes_handle_reaches_the_default_profile_only_when_no_hermes_pro
         tmp_path, monkeypatch, multiplex, gateway_home, legacy_hermes, answers):
     """'/p/hermes/' is Bot Mode's handle for the default profile (#118076): a gateway serving the
     default profile answers it, one running another profile refuses it with the unknown-profile
-    404 peers key their /p/default fallback on, and a host with a real pre-reservation 'hermes'
-    profile keeps the name for it (refusing distinctly when this gateway does not serve it)."""
+    404 (peer clients report it as ambiguous, never reroute), and a host with a real pre-reservation
+    'hermes' profile keeps the name for it (refusing distinctly when this gateway does not serve it)."""
     root = tmp_path / "root"
     homes = [root, root / "profiles" / "worker"] + ([root / "profiles" / "hermes"] if legacy_hermes else [])
     for home in homes:
@@ -155,8 +155,8 @@ async def test_hermes_handle_reaches_the_default_profile_only_when_no_hermes_pro
 async def test_profile_prefix_names_the_same_profile_in_any_case(tmp_path, monkeypatch, multiplex, legacy_hermes, answers):
     """Profile ids are lowercase (``normalize_profile_name``), so ``/p/Hermes/`` is ``/p/hermes/``:
     a real 'hermes' profile keeps it, and only without one does it alias the default. An
-    exact-case comparison answered it with the unknown-profile 404 that peers reroute to the
-    default profile, misdelivering box/Hermes."""
+    exact-case comparison answered it with the unknown-profile 404, so box/Hermes reached no
+    agent (and older peer clients, which rerouted on that 404, sent it to the default profile)."""
     root = tmp_path / "root"
     for home in [root, root / "profiles" / "worker"] + ([root / "profiles" / "hermes"] if legacy_hermes else []):
         home.mkdir(parents=True, exist_ok=True)

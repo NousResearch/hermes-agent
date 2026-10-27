@@ -132,10 +132,10 @@ def _resolve_base(peer: dict, profile: str | None, key: str, peer_name: str = ""
         if _peer_lacks_profile(exc):
             name = peer_name or "<peer>"
             raise LookupError(
-                f"Peer '{name}' serves no '{DEFAULT_PROFILE_HANDLE}' profile, and its gateway is too "
-                f"old to say whether '{DEFAULT_PROFILE_HANDLE}' means its default profile or a "
-                f"'{DEFAULT_PROFILE_HANDLE}' profile it does not serve. Address its default bot as "
-                f"{name}/default, or update the peer's hermes-agent.") from exc
+                f"Peer '{name}' answered that it serves no '{DEFAULT_PROFILE_HANDLE}' profile. That answer "
+                f"is ambiguous: an up-to-date gateway gives it when it does not serve its default profile, "
+                f"and an older one also when it has a '{DEFAULT_PROFILE_HANDLE}' profile it does not serve. "
+                f"If the peer serves its default profile, address that bot as {name}/default.") from exc
     return base
 
 

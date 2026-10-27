@@ -113,7 +113,8 @@ def test_hermes_handle_reaches_the_profile_the_peer_serves(
     out, err = [json.loads(line) for line in captured.out.splitlines()], captured.err
     if expected is None:
         assert (replies, out) == ([1, 1, 1], [])
-        assert "box/default" in err or "Profile 'hermes' exists" in err
+        # A generic 404 is ambiguous (names box/default); a distinct refusal is relayed as the peer said it.
+        assert ("Profile 'hermes' exists" if refusal else "box/default") in err
         assert {hit.split("/")[2] for hit in _ProfilePeer.hits} == {"hermes"}
         return
     assert replies == [0, 0, 0]

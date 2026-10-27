@@ -62,4 +62,3 @@ def test_an_unfetchable_release_tag_is_reported_never_fatal(tmp_path, capsys, gi
     update_cmd_check.fetch_release_tag(git_cmd, tmp_path, {"release_tag": "v9.9.9"})
 
     assert "Could not fetch the v9.9.9 tag" in capsys.readouterr().out
-

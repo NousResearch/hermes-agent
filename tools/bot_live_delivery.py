@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
@@ -36,11 +37,13 @@ def _bot_chat_tip(home: Path) -> str | None:
     follow (#114271), so the discovery pin would keep naming the pre-reset creation id
     while the gateway's routing entry targets the reset child — every delivery then dies
     on ``admission_conflict``. The owner's receipt lineage is the authoritative tip, so
-    read it first and fall back to the compression walk for profiles without a receipt.
+    resolve the title row to its lineage owner first (a re-title can leave the title on a
+    superseded segment) and fall back to the compression walk without a receipt.
     """
     from hermes_state import SessionDB
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local import local_lineage_owner
     from hermes_state_local_lineage import local_physical_target
+    from hermes_state_runtime import RuntimeStoreError
 
     if not (home / 'state.db').is_file():
         return None
@@ -51,18 +54,16 @@ def _bot_chat_tip(home: Path) -> str | None:
             return None
         sid = row['id']
         try:
+            # The title is a placement, not the owner: a reset moves the transcript to a
+            # child while the receipt stays on the creation id, and a re-title can leave
+            # the title on a superseded segment. Resolve the row to its lineage owner
+            # first, then pin that owner's physical target.
             with db._read_ctx() as conn:
-                saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                                     (POLICY_PREFIX + sid,)).fetchone()
-                if saved is not None:
-                    receipt = json.loads(saved[0])
-                    if receipt.get('session_id') == sid:
-                        return local_physical_target(conn, sid)
-        except Exception:
+                target = local_physical_target(conn, local_lineage_owner(conn, sid))
+            return db.get_compression_tip(target)
+        except (RuntimeStoreError, sqlite3.OperationalError, KeyError, TypeError, ValueError):
             # A damaged or foreign receipt must not break discovery: the compression
             # walk below is the pre-patch behavior and stays the safe fallback.
-            # health: allow blind-except -- discovery must answer for any receipt state;
-            # the fallback below is the documented pre-patch behavior, not a swallow.
             log.debug("bot chat receipt read failed; falling back to compression walk",
                       exc_info=True)
         return db.get_compression_tip(sid)

@@ -46,7 +46,7 @@ def owner(monkeypatch):
 
     def forward_rpc(home, seen_endpoint, method, params):
         assert seen_endpoint is endpoint
-        calls.append((method, dict(params)))
+        calls.append((method, dict(params), home))
         if method == "groups.capabilities":
             return {"driver": True, "methods": ["groups.list", "groups.create", "groups.attachment.upload"]}
         if method == "groups.list":
@@ -62,7 +62,7 @@ def test_room_calls_go_to_the_owning_gateway_and_nothing_lands_locally(home, own
 
     assert created["result"]["room"]["room_id"] == "room-desk"
     assert listed["result"]["rooms"] == [{"room_id": "room-webapp"}]
-    assert [method for method, _ in owner] == ["groups.create", "groups.list"]
+    assert [call[0] for call in owner] == ["groups.create", "groups.list"]
     from gateway.hosted_rooms import default_db_path, list_rooms
     assert list_rooms(default_db_path()) == []  # no second store, no local driver for it
 
@@ -115,7 +115,7 @@ def test_a_starting_gateway_is_waited_for_and_nothing_lands_locally(home, owner,
     created = srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
 
     assert created["result"]["room"]["room_id"] == "room-desk"
-    assert [method for method, _ in owner] == ["groups.create"]
+    assert [call[0] for call in owner] == ["groups.create"]
     from gateway.hosted_rooms import default_db_path, list_rooms
     assert list_rooms(default_db_path()) == []  # never a room the gateway's list would not show
 
@@ -130,4 +130,23 @@ def test_a_named_profile_gateway_never_hides_the_standalone_rooms(home, owner, m
 
     assert [room["room_id"] for room in listed] == ["room-webapp", "room-desk"]
     assert state["result"]["room"]["name"] == "Desk"  # served by the store that holds it
-    assert [method for method, _ in owner] == ["groups.list"]
+    assert [call[0] for call in owner] == ["groups.list"]
+
+
+def test_a_named_profile_reaches_the_rooms_handed_to_the_root_gateway(home, owner, monkeypatch):
+    import sqlite3
+    from gateway.hosted_rooms import default_db_path
+    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    _discovery(monkeypatch, "absent")
+    srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
+    target = default_db_path().with_name("state.db")
+    with sqlite3.connect(target) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT)")
+    assert import_standalone_rooms(target) == 1  # the default profile's gateway took it over
+    _discovery(monkeypatch, "ready")
+
+    srv._methods["groups.state"](2, {"profile": "ops", "room_id": "room-desk"})
+
+    method, params, reached = owner[-1]
+    assert (method, reached) == ("groups.state", default_db_path().parent)
+    assert "profile" not in params  # the root gateway answers for its own profile

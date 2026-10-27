@@ -152,7 +152,10 @@ def forward(server, rid, method: str, params: dict) -> dict | None:
         if holder == "local":
             return None  # only this backend holds it: never ask a gateway that cannot have it
         if holder == "gateway":
-            home = _root_home()  # the room was handed to the root gateway's store, whichever view asks
+            # The room was handed to the root gateway's store, whichever view asks; that gateway
+            # answers for its own profile, so the view's profile does not travel with the call.
+            home = _root_home()
+            params = {key: value for key, value in params.items() if key != "profile"}
         if method == "groups.list":
             return _list(server, rid, home, params)
         endpoint = owner_endpoint(home)

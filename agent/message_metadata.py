@@ -78,8 +78,17 @@ def lift_data_use(message: MutableMapping[str, Any]) -> None:
 
 # Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
 # duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
-UNPRICED_REPLAY_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
-                                    "reasoning_opaque", "reasoning_text", "bedrock_content_blocks", DATA_USE})
+_UNPRICED_CORE_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
+                                   "bedrock_content_blocks", DATA_USE})
+
+
+def unpriced_replay_fields() -> frozenset[str]:
+    """The core unpriced carriers plus every message carrier key a registered profile declares
+    (``ProviderProfile.message_carrier_*``). Resolve once per message, never per key."""
+    from agent.reasoning_carriers import declared_carrier_keys
+
+    opaque, text = declared_carrier_keys()
+    return _UNPRICED_CORE_FIELDS.union(opaque, text)
 
 
 def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:

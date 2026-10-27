@@ -103,6 +103,11 @@ def prepare_webapp_renderer(
             )
         print(f"→ Reusing Hermes Webapp renderer at {dist} (--skip-build)")
         return dist
+    # A current, unmarked bundle needs no lock either, so a read-only install
+    # (the Docker image) reuses the one baked at build time.
+    if not force and not webapp_bundle_stale(dist) and source_product_current(project_root, "webapp", dist):
+        print(f"✓ Hermes Webapp renderer is up to date: {dist}")
+        return dist
     with _exclusive_build_lock(project_root / _LOCK_NAME):
         if not force and source_product_current(project_root, "webapp", dist):
             _clear_stale_mark(dist)

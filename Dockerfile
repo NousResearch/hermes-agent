@@ -322,6 +322,16 @@ COPY --from=icons /tmp/hermes-icons /tmp/hermes-icons
 RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
     node scripts/build/web.mjs --source /opt/hermes --icons /tmp/hermes-icons --out /opt/products/web
 
+# The Webapp (the browser-hosted Desktop) builds through its source recipe,
+# which installs Desktop's dependencies in a private workspace. A stage of its
+# own so Desktop changes leave the TUI and dashboard layers cached.
+FROM runtime_base AS webapp_build
+COPY package.json package-lock.json .npmrc ./
+COPY apps/ apps/
+COPY scripts/build/*.mjs scripts/build/
+ENV npm_config_install_links=false
+RUN node apps/desktop/scripts/build-webapp.mjs
+
 FROM python_deps AS runtime
 # Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
 COPY --from=frontend_build /opt/hermes/node_modules/typescript /opt/hermes/node_modules/typescript
@@ -347,6 +357,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
 COPY --from=frontend_build /opt/products/web /opt/hermes/hermes_cli/web_dist
+COPY --from=webapp_build /opt/hermes/apps/desktop/dist-webapp /opt/hermes/apps/desktop/dist-webapp
 # ---------- Bot Screen X socket directory ----------
 # Xvnc would create this itself (/tmp is 1777); pre-creating it keeps ownership
 # deterministic when HERMES_UID is remapped between boots.

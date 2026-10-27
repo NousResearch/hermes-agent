@@ -60,6 +60,22 @@ def test_skip_build_writes_nothing_into_the_install_tree(tmp_path: Path):
     assert sorted(tmp_path.rglob("*")) == install_tree
 
 
+def test_a_current_bundle_is_reused_without_writing_the_install_tree(tmp_path: Path, monkeypatch):
+    """The Docker image bakes a current bundle under a root-owned install, so reusing it must not
+    open the build lock there."""
+    from hermes_cli import source_build
+
+    _workspace_tree(tmp_path)
+    dist = webapp.webapp_dist_dir(tmp_path)
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    monkeypatch.setattr(source_build, "source_product_current", lambda *_a: True)
+
+    install_tree = sorted(tmp_path.rglob("*"))
+    assert webapp.prepare_webapp_renderer(tmp_path) == dist
+    assert sorted(tmp_path.rglob("*")) == install_tree
+
+
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
     from pm.filesystem import lock_fd, unlock_fd
 

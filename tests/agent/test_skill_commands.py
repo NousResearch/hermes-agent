@@ -859,3 +859,84 @@ class TestStackedSkillCommands:
         assert loaded == ["skill-a"]
         assert missing == ["gone"]
         assert "gone" in msg
+
+
+class TestPreloadResolutionHardening:
+    """Fail-soft preload: transient misses are retried, refusals keep their reason,
+    and the operator warning names the skill plus why it did not load."""
+
+    @pytest.fixture
+    def clean_reasons(self, monkeypatch):
+        import agent.skill_commands as sc
+
+        monkeypatch.setattr(sc, "_PRELOAD_RESOLVE_RETRY_DELAY", 0)
+        sc._skill_resolution_reasons.clear()
+        yield sc
+        sc._skill_resolution_reasons.clear()
+
+    def _success_payload(self, name="demo"):
+        import json
+
+        return json.dumps({
+            "success": True, "path": f"x/{name}/SKILL.md",
+            "skill_dir": f"/skills/{name}", "name": name,
+        })
+
+    def _fail_payload(self, error):
+        import json
+
+        return json.dumps({"success": False, "error": error})
+
+    def test_transient_miss_retried_then_resolves(self, monkeypatch, clean_reasons):
+        from tools import skills_tool
+
+        sc = clean_reasons
+        calls = []
+
+        def flaky(normalized, **kw):
+            calls.append(normalized)
+            if len(calls) == 1:
+                raise OSError("cold tree")
+            return self._success_payload()
+
+        monkeypatch.setattr(skills_tool, "skill_view", flaky)
+        loaded, _dir, display = sc._load_skill_payload("demo")
+        assert loaded is not None and display == "demo"
+        assert len(calls) == 2
+        assert "demo" not in sc._skill_resolution_reasons
+
+    def test_deterministic_refusal_fails_fast_with_reason(self, monkeypatch, clean_reasons):
+        from tools import skills_tool
+
+        sc = clean_reasons
+        calls = []
+        monkeypatch.setattr(
+            skills_tool, "skill_view",
+            lambda normalized, **kw: (calls.append(normalized), self._fail_payload(
+                "Skill 'gone' is disabled. Enable it with `hermes skills`."))[1],
+        )
+        assert sc._load_skill_payload("gone") is None
+        assert len(calls) == 1
+        assert "disabled" in sc._skill_resolution_reasons["gone"]
+
+    def test_persistent_unknown_gives_up_with_reason(self, monkeypatch, clean_reasons):
+        from tools import skills_tool
+
+        sc = clean_reasons
+        calls = []
+        monkeypatch.setattr(
+            skills_tool, "skill_view",
+            lambda normalized, **kw: (calls.append(normalized), self._fail_payload(
+                "Skill 'gone' not found."))[1],
+        )
+        assert sc._load_skill_payload("gone") is None
+        assert len(calls) == sc._PRELOAD_RESOLVE_ATTEMPTS
+        assert "not found" in sc._skill_resolution_reasons["gone"]
+
+    def test_missing_message_names_skills_and_reasons(self, clean_reasons):
+        sc = clean_reasons
+        assert sc.missing_preload_skills_message(["a"], []) is None
+        sc._skill_resolution_reasons["gone"] = "Skill 'gone' not found."
+        message = sc.missing_preload_skills_message([], ["gone"])
+        assert "gone" in message and "hermes skills list" in message
+        assert "not found" in message

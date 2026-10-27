@@ -2148,6 +2148,18 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+    # Pre-flight the forced skills against the assignee's profile: a skill that does not resolve
+    # must be installed from the fleet source or parked needs_input HERE, never discovered as a
+    # hard exit seconds after spawn (worker-deaths.log: reason=unknown_skill, crash loop).
+    from hermes_cli.kanban_worker_readiness import (
+        _profile_home_for,
+        block_for_skill_preflight,
+        preflight_worker_skills,
+    )
+    preflight_problem = preflight_worker_skills(claimed, _profile_home_for(claimed.assignee))
+    if preflight_problem is not None:
+        block_for_skill_preflight(conn, claimed, preflight_problem, result)
+        return False
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2638,34 +2650,6 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
             reset_secret_scope(secret_token)
         if home_token is not None:
             reset_hermes_home_override(home_token)
-
-
-def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
-    """Return the assigned profile's effective CLI toolsets for a worker.
-
-    Resolved at dispatch time and passed as an explicit ``--toolsets`` pin so
-    worker startup cannot fall back to a stale root/active-profile config or a
-    profile whose top-level ``toolsets`` is only the kanban orchestrator
-    surface. ``model_tools`` still appends the task-scoped kanban lifecycle
-    tools when ``HERMES_KANBAN_TASK`` is set.
-    """
-    if not hermes_home:
-        return None
-    try:
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
-
-        with _worker_profile_scope(hermes_home):
-            cfg = load_config()
-            toolsets = sorted(_get_platform_tools(cfg, "cli"))
-        return toolsets or None
-    except Exception as exc:
-        _kb._log.debug(
-            "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
-            hermes_home,
-            exc,
-        )
-        return None
 
 
 _retagged_workspace_roots: set[str] = set()

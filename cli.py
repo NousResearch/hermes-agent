@@ -977,7 +977,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
 
-        Raises ``ValueError`` only when EVERY requested skill was unknown.
+        Missing skills only warn: a missing/unknown skill degrades the session (run without
+        it, loudly) instead of killing it. Hard-exiting here turned one config gap into a
+        kanban crash loop — every worker died at init and burned the spawn slot.
         """
         if getattr(self, "_preload_skills_finalized", False):
             return
@@ -1000,12 +1002,11 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
-            from agent.skill_commands import format_missing_skills
-            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
-            if not loaded_skills:
-                raise ValueError(format_missing_skills(missing_skills))
-            logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
-                           format_missing_skills(missing_skills), ", ".join(loaded_skills))
+            # Fail-soft, never exit 1 (see agent.skill_commands): the warning carries
+            # the per-skill refusal reason.
+            from agent.skill_commands import missing_preload_skills_message
+
+            logger.warning(missing_preload_skills_message(loaded_skills, missing_skills))
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]

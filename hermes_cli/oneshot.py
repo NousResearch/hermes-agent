@@ -127,17 +127,12 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     if not parsed_skills:
         return None
 
-    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
+    from agent.skill_commands import build_preloaded_skills_prompt, missing_preload_skills_message
 
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
     if missing_skills:
-        if not loaded_skills:
-            raise ValueError(format_missing_skills(missing_skills))
-        logging.warning(
-            "Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
-            format_missing_skills(missing_skills),
-            ", ".join(loaded_skills),
-        )
+        # Fail-soft, never exit 1 — parity with cli chat (see agent.skill_commands).
+        logging.warning(missing_preload_skills_message(loaded_skills, missing_skills))
     return skills_prompt or None
 
 

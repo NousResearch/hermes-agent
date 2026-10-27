@@ -59,3 +59,40 @@ describe('statusbar hidden items', () => {
     expect(reloaded.$statusbarHiddenIds.get()).toContain('approval-mode')
   })
 })
+
+describe('statusbar item order', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('keeps a custom order while leaving newly added items in their default position', async () => {
+    const { $statusbarItemOrder, orderStatusbarItems, setStatusbarItemOrder } = await loadStore()
+
+    expect(
+      orderStatusbarItems([{ id: 'workspace' }, { id: 'gateway' }, { id: 'timer' }], ['timer', 'gateway'])
+    ).toEqual([{ id: 'workspace' }, { id: 'timer' }, { id: 'gateway' }])
+
+    setStatusbarItemOrder('right', ['timer', 'gateway'])
+    expect($statusbarItemOrder.get()).toEqual({ left: [], right: ['timer', 'gateway'] })
+
+    vi.resetModules()
+    expect((await loadStore()).$statusbarItemOrder.get()).toEqual({ left: [], right: ['timer', 'gateway'] })
+  })
+})
+
+describe('statusbar order fallback', () => {
+  it('keeps non-menu controls and new items in their shipped slots', async () => {
+    const { orderStatusbarItems } = await loadStore()
+    const ids = ['command-center', 'gateway-switcher', 'profile-switcher', 'plugin-new', 'workspace', 'session']
+    const items = ids.map(id => ({ id }))
+    expect(orderStatusbarItems(items, ['session', 'command-center', 'workspace']).map(item => item.id)).toEqual([
+      'session',
+      'gateway-switcher',
+      'profile-switcher',
+      'plugin-new',
+      'command-center',
+      'workspace'
+    ])
+  })
+})

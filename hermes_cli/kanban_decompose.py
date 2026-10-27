@@ -121,7 +121,8 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
-    mode: str = "auto"  # "auto", "forced_fanout", "forced_tighten"
+    mode: str = "auto"  # "auto", "forced_fanout", "forced_tighten", "repair"
+    new_status: Optional[str] = None  # set by the repair path only
 
 
 def _profile_author() -> str:
@@ -420,7 +421,7 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, True,
             f"repaired stuck decomposed root: moved to {new_status}",
-            fanout=False, mode="repair",
+            fanout=False, mode="repair", new_status=new_status,
         )
 
     routing = _load_routing(root_assignee=task.assignee)

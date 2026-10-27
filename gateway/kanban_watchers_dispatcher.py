@@ -348,6 +348,10 @@ class _KanbanDispatcher:
                 tid,
                 len(outcome.child_ids),
             )
+        elif getattr(outcome, "mode", None) == "repair" and getattr(outcome, "new_status", None):
+            logger.info(
+                "kanban auto-decompose [%s]: %s → repair → %s", slug, tid, outcome.new_status
+            )
         else:
             logger.info(
                 "kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid

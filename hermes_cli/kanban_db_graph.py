@@ -269,6 +269,10 @@ def repair_stuck_decomposed_root(conn: sqlite3.Connection, task_id: str) -> Opti
     Returns the new status (``"ready"`` or ``"todo"``), or ``None`` if the card
     is not a stuck decomposed root (not in triage, or no decomposed event).
     Does NOT create new children or duplicate the ``decomposed`` event.
+
+    Edge case: a root that also carries a non-decomposition parent would be
+    released early by the ``ready`` write; the divert path only ever sees cards
+    whose parents were all done, so this is not a practical concern.
     """
     from hermes_cli.kanban_db import write_txn, _append_event
 

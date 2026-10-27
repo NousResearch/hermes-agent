@@ -380,7 +380,8 @@ def gate_ready_entry(
             # Unknown decision value: never loop a card through triage forever.
             return "ready"
         estimate = estimate_card_size(title, body)
-        if estimate.is_oversized(policy.threshold) and not _already_decomposed(conn, task_id):
+        decomposed = _already_decomposed(conn, task_id)
+        if estimate.is_oversized(policy.threshold) and not decomposed:
             if record:
                 record_size_estimate(
                     conn, task_id, estimate, decision="triage", path=path,
@@ -390,7 +391,7 @@ def gate_ready_entry(
         if record:
             record_size_estimate(
                 conn, task_id, estimate, decision="allowed", path=path,
-                reason="epic_root" if _already_decomposed(conn, task_id) else "fits", threshold=policy.threshold,
+                reason="epic_root" if decomposed else "fits", threshold=policy.threshold,
             )
         return "ready"
     except Exception:

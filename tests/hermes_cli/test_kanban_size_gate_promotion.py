@@ -1,7 +1,7 @@
 """Promotion-path and decomposition coverage for the kanban size gate.
 
 The creation-time gate is covered by ``test_kanban_size_gate.py``. This file
-pins the three contract gaps that pass closed:
+pins the contract gaps that pass closed:
 
 1. ``decompose_triage_task`` cannot emit a child without recording the child's
    budget estimate, and the child's body leads with the budget line.
@@ -10,6 +10,9 @@ pins the three contract gaps that pass closed:
    behind an open parent cannot be promoted into the dispatch lane ungated.
 3. ``triage=True`` creation is measured too, and a legacy (pre-gate) card is
    measured but grandfathered - forward-only, never retro-diverted.
+4. A decomposed root stuck back in ``triage`` by the size gate is repaired by
+   ``decompose_task`` (the verb) without calling the LLM, and the repair
+   helper is a no-op on a non-triage root.
 """
 
 from __future__ import annotations
@@ -348,8 +351,8 @@ def test_promote_gate_verdict_returns_none_for_decomposed_root(kanban_home):
     assert verdict is None, "decomposed root must be promotable (verdict=None)"
 
 
-def test_decompose_repairs_stuck_triage_card_with_decomposed_event(kanban_home):
-    """`decompose` on a triage card with a decomposed event repairs it."""
+def test_repair_stuck_root_moves_to_ready_when_children_done(kanban_home):
+    """`repair_stuck_decomposed_root` on a triage card with a decomposed event repairs it."""
     from hermes_cli.kanban_db_graph import decompose_triage_task, repair_stuck_decomposed_root
 
     with kbc.connect() as conn:
@@ -380,7 +383,7 @@ def test_decompose_repairs_stuck_triage_card_with_decomposed_event(kanban_home):
     assert events.count("decomposed") == 1
 
 
-def test_decompose_repairs_stuck_root_with_open_children(kanban_home):
+def test_repair_stuck_root_moves_to_todo_with_open_children(kanban_home):
     """Repair moves to `todo` when children are still open."""
     from hermes_cli.kanban_db_graph import decompose_triage_task, repair_stuck_decomposed_root
 
@@ -406,3 +409,80 @@ def test_decompose_repairs_stuck_root_with_open_children(kanban_home):
 
     assert new_status == "todo", "open children -> root should be todo"
     assert root_after.status == "todo"
+
+
+def _parent_ids(conn, task_id: str) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ?", (task_id,),
+    )]
+
+
+def test_decompose_task_repairs_stuck_root_before_the_llm(kanban_home, monkeypatch):
+    """`decompose_task` on a stuck decomposed root repairs it without calling the LLM."""
+    from hermes_cli import kanban_decompose as decomp
+    from hermes_cli.kanban_db_graph import decompose_triage_task
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("repair path must not call the aux LLM")
+
+    monkeypatch.setattr(decomp, "_call_aux", _boom)
+
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn, title="Epic root", body=_oversized_body(),
+            assignee="orchestrator", created_by="test", triage=True,
+        )
+        child_ids = decompose_triage_task(
+            conn, root_id, root_assignee="orchestrator",
+            children=[{"title": "Slice", "body": "Small slice", "assignee": "junior-dev"}],
+            author="decomposer",
+        )
+        assert child_ids
+        assert kb.complete_task(conn, child_ids[0], summary="done")
+        conn.execute("UPDATE tasks SET status = 'triage' WHERE id = ?", (root_id,))
+        parents_before = _parent_ids(conn, root_id)
+
+    outcome = decomp.decompose_task(root_id, author="test")
+
+    with kbc.connect() as conn:
+        root_after = kb.get_task(conn, root_id)
+        kinds = [r["kind"] for r in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (root_id,))]
+        parents_after = _parent_ids(conn, root_id)
+
+    assert outcome.ok is True, outcome.reason
+    assert outcome.mode == "repair"
+    assert outcome.new_status == "ready"
+    assert root_after.status == "ready"
+    assert kinds.count("decomposed") == 1
+    assert kinds.count("repaired") == 1
+    assert parents_after == parents_before   # no new children
+
+
+def test_repair_stuck_root_is_noop_on_non_triage_card(kanban_home):
+    """`repair_stuck_decomposed_root` returns None and leaves status unchanged on a non-triage root."""
+    from hermes_cli.kanban_db_graph import decompose_triage_task, repair_stuck_decomposed_root
+
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn, title="Epic root", body=_oversized_body(), assignee="orchestrator",
+            created_by="test", triage=True,
+        )
+        child_ids = decompose_triage_task(
+            conn, root_id, root_assignee="orchestrator",
+            children=[{"title": "Slice", "body": "Small slice", "assignee": "junior-dev"}],
+            author="decomposer",
+        )
+        assert child_ids
+        # Root is now in todo (auto-promoted by decompose_triage_task).
+        root_before = kb.get_task(conn, root_id)
+        assert root_before.status == "todo"
+        events_before = _event_kinds(conn, root_id)
+        # Call repair on a non-triage card.
+        result = repair_stuck_decomposed_root(conn, root_id)
+        root_after = kb.get_task(conn, root_id)
+        events_after = _event_kinds(conn, root_id)
+
+    assert result is None, "repair should return None for non-triage card"
+    assert root_after.status == "todo", "status should be unchanged"
+    assert events_after == events_before, "no repaired event should be appended"

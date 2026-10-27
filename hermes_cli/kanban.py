@@ -1385,6 +1385,8 @@ def _decompose_ok_line(o) -> str:
     if o.fanout and o.child_ids:
         return (f"Decomposed {o.task_id} → {len(o.child_ids)} "
                 f"children ({', '.join(o.child_ids)}); root promoted to todo{mode_suffix}")
+    if getattr(o, "mode", None) == "repair" and getattr(o, "new_status", None):
+        return f"Repaired {o.task_id} → {o.new_status} (stuck decomposed root){mode_suffix}"
     return f"Specified {o.task_id} → todo (no fanout){_retitled_suffix(o)}{mode_suffix}"
 
 
@@ -1398,7 +1400,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
         return decomp.decompose_task(task_id, author=author, force_fanout=force_fanout)
 
     return _run_triage_sweep(args, "decompose", decomp, run_one, "decomposed",
-                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title", "mode"), _decompose_ok_line)
+                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title", "mode", "new_status"), _decompose_ok_line)
 
 
 _HANDLERS = {

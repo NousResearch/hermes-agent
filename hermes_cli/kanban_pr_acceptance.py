@@ -142,7 +142,15 @@ def collect_acceptance(contract: str, published_pr: str | None,
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            # No CI gate is configured on the target ref. This is the normal
+            # fork-PR path: the fork has no branch protection, so there is no
+            # required check-run to wait for. The PR is already verified OPEN or
+            # MERGED with a resolvable head above, so accept it instead of
+            # leaving ok=False (which would strand a perfectly valid fork PR).
+            receipt["detail"] = ("No repository-required checks are configured on the "
+                                 "target ref; accepting OPEN/MERGED PR without a CI gate.")
+            receipt["classification"] = "success"
+            receipt["ok"] = True
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)

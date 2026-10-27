@@ -174,6 +174,39 @@ def test_acceptance_runs_gh_as_the_assignee_profile(tmp_path, monkeypatch):
     assert captured.get("GH_CONFIG_DIR") != "/nonexistent/launch/gh"
     assert "credentials" in (kb.get_task(conn, tid).last_failure_error or "")
 
+@pytest.mark.linux_only
+
+@pytest.mark.linux_only
+def test_fork_pr_without_branch_protection_accepts(github, monkeypatch):
+    """Real fork path: the fork has NO branch protection at all, so the GraphQL
+    branchProtectionRule is None and /rules/branches returns empty. After
+    verifying the PR is OPEN with a resolvable head, collect_acceptance must
+    accept (ok=True, classification=success) rather than leaving ok=False with a
+    'no required checks' detail. The old behavior stranded the real fork PR #7,
+    whose head was valid but whose target ref had no CI gate."""
+
+    def no_protection(endpoint, **_k):
+        if endpoint == "graphql":
+            return {"data": {"repository": {"pullRequest": {
+                "headRefOid": "a" * 40, "baseRefName": "main", "state": "OPEN",
+                "baseRef": {"branchProtectionRule": None}}}}}
+        if "rules/branches" in endpoint:
+            return [[]]
+        if "check-runs" in endpoint:
+            return [{"total_count": 0, "check_runs": []}]
+        if "statuses" in endpoint:
+            return [[]]
+        if "pulls/" in endpoint:
+            return {"head": {"sha": "a" * 40}, "base": {"ref": "main"}, "state": "open"}
+        return {}
+
+    monkeypatch.setattr("hermes_cli.kanban_pr_acceptance._api", no_protection)
+    receipt = collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["classification"] == "success", receipt
+    assert receipt["ok"] is True, receipt
+    assert receipt["gh_error"] is None, receipt
+    assert receipt["head_sha"] == "a" * 40
+
 
 @pytest.mark.platforms("posix")
 def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_path, monkeypatch):

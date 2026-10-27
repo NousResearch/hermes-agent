@@ -181,6 +181,7 @@ from plugins.platforms.telegram.telegram_audio_meta import (
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
 from plugins.platforms.telegram.telegram_entities import (
     addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
+from plugins.platforms.telegram.telegram_context import build_triggered_event, gate_or_observe
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin
 from plugins.platforms.telegram.telegram_replacement import TelegramReplacementMixin
@@ -475,6 +476,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         extra = self.config.extra
         self._app: Optional[Application] = None
         self._seen_update_ids: dict = {}
+        self._latest_text_receipts: dict = {}
         self._inflight_update_ids: dict = {}
         self._update_admission = None
         # Completed update IDs survive adapter replacement and restarts (update_admission.py).
@@ -2679,6 +2681,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         claim = admission.get() if admission is not None else None
         if claim is not None:
             claim.accepted = True
+            if claim.text_receipt is not None:
+                from plugins.platforms.telegram.update_admission import accept_text
+                accept_text(self, claim)
 
     def _fail_update_preparation(self) -> None:
         """A caught preparation error is not a successful no-op or an auth refusal."""
@@ -5820,28 +5825,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
     _effective_update_message = staticmethod(effective_update_message)
+    _gate_or_observe = gate_or_observe
+    _build_triggered_event = build_triggered_event
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
         logger.log(
             level, "[Telegram] Blocked %s %s in chat %s", what, getattr(getattr(msg, "from_user", None), "id", None),
             getattr(getattr(msg, "chat", None), "id", None))
-
-    def _gate_or_observe(self, msg, update, msg_type: MessageType) -> bool:
-        """Group trigger gate; observes unmentioned chatter when configured. True = proceed."""
-        if self._should_process_message(msg):
-            return True
-        if self._should_observe_unmentioned_group_message(msg):
-            self._observe_unmentioned_group_message(msg, msg_type, update_id=update.update_id)
-        return False
-
-    async def _build_triggered_event(self, msg, update, msg_type: MessageType) -> MessageEvent:
-        """Event for an addressed text/command: trigger text cleaned (sole addressee only), replied-to
-        media cached, attribution applied."""
-        from plugins.platforms.telegram.telegram_context import group_trigger_text
-        event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        event.text = group_trigger_text(self, msg, event.text)
-        await self._cache_replied_media(msg, event)
-        return self._apply_telegram_group_observe_attribution(event)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text (or text-less ``rich_message`` blocks); buffers client-split chunks into one event."""
@@ -5856,6 +5846,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
+        from plugins.platforms.telegram.telegram_text_receipts import unchanged_text
+        if unchanged_text(self, update):
+            return
         await self._ensure_forum_commands(update.message)
         self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
 
@@ -5868,6 +5861,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        from plugins.platforms.telegram.telegram_text_receipts import unchanged_text
+        if unchanged_text(self, update):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
@@ -5887,7 +5883,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        venue = getattr(msg, "venue", None)
+        venue =getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
         if not location:
             return

@@ -476,6 +476,11 @@ class RemoteBackend:
                 _remember_read(st)
             return self._version_of(st)
 
+    def cache_version(self, home: Path, version: tuple[Any, ...]) -> tuple[Any, ...]:
+        # The version is exact (etag + local generation): a remote write the cache cannot see
+        # always changes it, so nothing is added (the file backend adds a racy content digest).
+        return version
+
     def exists(self, home: Path) -> bool:
         return True  # the plane always resolves a document (an absent level is empty, contract R4)
 

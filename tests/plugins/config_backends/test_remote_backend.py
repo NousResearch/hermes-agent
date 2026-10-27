@@ -307,6 +307,20 @@ def test_poll_picks_up_changes_and_invalidates_caches(plane):
     assert load_config()["display"]["personality"] == "pirate"
 
 
+def test_config_cache_version_is_the_remote_version(plane):
+    # main's parse caches key on config_cache_version: the remote backend must serve it, and a
+    # poll that installs a new layer must change it exactly as it changes config_version.
+    from hermes_cli.config_backend import config_cache_version, config_cache_version_or_none
+    cfg = plane.home / "config.yaml"
+    backend = remote_pkg.get_remote_backend()
+    plane.upper = {"display": {"personality": "concise"}}
+    v1 = config_cache_version(cfg)
+    assert v1 == backend.version(plane.home) == config_cache_version_or_none(cfg)
+    plane.upper = {"display": {"personality": "pirate"}}
+    backend.poll_all()
+    assert config_cache_version(cfg) != v1
+
+
 def test_outage_while_running_keeps_in_memory_doc(plane):
     from hermes_cli.config import load_config
     plane.upper = {"display": {"personality": "concise"}}

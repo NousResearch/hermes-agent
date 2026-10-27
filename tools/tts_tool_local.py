@@ -1,9 +1,10 @@
-"""Local on-device TTS engines for ``tools.tts_tool``: NeuTTS, Piper, KittenTTS.
+"""Local on-device TTS engines for ``tools.tts_tool``: NeuTTS, Piper, KittenTTS, Phonon.
 
-All three synthesize WAV natively; :func:`_finalize_wav_output` converts/renames to the requested
-container. Piper and KittenTTS keep loaded models in small LRU caches registered in
+All of them synthesize WAV natively; :func:`_finalize_wav_output` converts/renames to the requested
+container. Piper, KittenTTS and Phonon keep loaded models in small LRU caches registered in
 ``_LOCAL_TTS_MODEL_CACHES`` so warm/release can pre-load or drop them. ``_import_piper`` /
-``_import_kittentts`` are resolved through the origin module at call time (test monkeypatches).
+``_import_kittentts`` / ``_import_ptts`` are resolved through the origin module at call time (test
+monkeypatches).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
 
@@ -33,8 +34,10 @@ _TTS_MODEL_CACHE_MAX = 3
 # (+cuda flag); KittenTTS on model name.
 _piper_voice_cache: dict[str, Any] = {}
 _kittentts_model_cache: dict[str, Any] = {}
+_phonon_model_cache: dict[str, Any] = {}
 _LOCAL_TTS_MODEL_CACHES: dict[str, dict[str, Any]] = {
-    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache}
+    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache,
+    "phonon": _phonon_model_cache}
 
 
 def _tts_cache_get_or_load(cache: dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
@@ -192,4 +195,143 @@ def _generate_kittentts(text: str, output_path: str, tts_config: dict[str, Any])
     import soundfile as sf
     wav_path = _wav_sidecar_path(output_path)
     sf.write(wav_path, audio, 24000)
+    return _finalize_wav_output(wav_path, output_path)
+
+
+# --- Phonon (local, Gradium 31M/40M via the ptts Rust runtime, CPU) ---
+# ptts ships abi3 wheels for win32/linux/macOS with numpy as the only dependency, so unlike
+# NeuTTS/KittenTTS there is no torch, no ONNX runtime and no espeak-ng. Weights (64MB q8) download
+# from the Hugging Face Hub on first use and are cached by the runtime itself.
+DEFAULT_PHONON_MODEL = "hf://gradium/phonon-31m-en"
+DEFAULT_PHONON_VOICE = "default"  # the checkpoint's own voice, not a catalogue name
+DEFAULT_PHONON_QUANT = "q8"
+
+# Checkpoint -> the ``lang`` its text normalization needs. ``None`` means the checkpoint carries
+# every language (the multilingual one), so the selected voice's locale decides.
+#
+# The checkpoint wins over the voice on purpose: a French *voice* on an English *checkpoint* still
+# speaks with an English model, so normalizing its text as French would spell numbers in a language
+# the model cannot pronounce — ptts says as much with "text is normalized as fr, but the model was
+# trained for en". Only the multilingual checkpoint has no single answer, hence the locale fallback.
+PHONON_MODELS: dict[str, Optional[str]] = {
+    "hf://gradium/phonon-31m-en": "en",
+    "hf://gradium/phonon-40m-en": "en",
+    "hf://gradium/phonon-40m-multilingual": None,
+    "hf://gradium/phonon-40m-fr": "fr",
+    "hf://gradium/phonon-40m-de": "de",
+    "hf://gradium/phonon-40m-es": "es",
+    "hf://gradium/phonon-40m-pt": "pt",
+}
+
+
+# Short tags (mirroring the Ollama library) -> Hub repo id, so the settings dropdown can stay
+# readable. A full hf:// id, a bare owner/name or a local path passes through untouched.
+PHONON_MODEL_ALIASES: dict[str, str] = {
+    "31m-en": "hf://gradium/phonon-31m-en", "en": "hf://gradium/phonon-31m-en",
+    "40m-en": "hf://gradium/phonon-40m-en",
+    "40m-fr": "hf://gradium/phonon-40m-fr", "fr": "hf://gradium/phonon-40m-fr",
+    "40m-de": "hf://gradium/phonon-40m-de", "de": "hf://gradium/phonon-40m-de",
+    "40m-es": "hf://gradium/phonon-40m-es", "es": "hf://gradium/phonon-40m-es",
+    "40m-pt": "hf://gradium/phonon-40m-pt", "pt": "hf://gradium/phonon-40m-pt",
+    "40m-multilingual": "hf://gradium/phonon-40m-multilingual",
+    "multilingual": "hf://gradium/phonon-40m-multilingual",
+}
+
+
+def _phonon_model_id(raw: Any) -> str:
+    """Resolve ``tts.phonon.model`` to something ptts accepts.
+
+    Full ``hf://owner/name[@revision]`` ids, bare ``owner/name`` and local directories (``.``,
+    ``/`` or ``~``) pass through unchanged; a short tag resolves through
+    :data:`PHONON_MODEL_ALIASES`, falling back to ``hf://gradium/phonon-<tag>``.
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return DEFAULT_PHONON_MODEL
+    if value.startswith("hf://") or "/" in value or value.startswith((".", "/", "~")):
+        return value
+    alias = PHONON_MODEL_ALIASES.get(value.lower())
+    if alias:
+        return alias
+    return f"hf://{value}" if value.count("/") == 1 else f"hf://gradium/phonon-{value}"
+
+
+def _phonon_voice_arg(raw: Any) -> Any:
+    """ptts ``voice`` argument: None (checkpoint default) for empty/``default``, else the name as-is.
+
+    A name is left for ptts to resolve (case/accent-insensitive, or a catalogue ``voice_id``), so a
+    voice Gradium adds later works without a Hermes release.
+    """
+    value = str(raw or "").strip()
+    return None if value.lower() in ("", "default") else value
+
+
+def _phonon_load_error(exc: BaseException) -> str:
+    """Turn a load failure into something the user can act on.
+
+    Two cases dominate: the 40M checkpoints are **gated** on the Hub (CC BY-NC 4.0), so ptts raises
+    ``GatedRepo``/403 until the user accepts the terms and authenticates; and a machine with no
+    network gets a plain fetch error. Everything else keeps ptts's own text.
+    """
+    import re
+    text = str(exc)
+    lowered = text.lower()
+    if "gatedrepo" in lowered or "restricted" in lowered or "403" in text or "401" in text:
+        match = re.search(r"gradium/phonon-[\w.-]+", text)
+        repo = match.group(0) if match else "gradium/phonon-40m-en"
+        return (f"{text}\n\nThe 40M Phonon checkpoints are gated (CC BY-NC 4.0). Accept the terms at "
+                f"https://huggingface.co/{repo}, then authenticate with `hf auth login` or by setting "
+                "HF_TOKEN, and retry. The 31m-en checkpoint is ungated and needs no account.")
+    return text
+
+
+def _load_phonon_model_for_config(tts_config: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """Load (or fetch from cache) the Phonon model; returns ``(model, phonon_config)``."""
+    ptts = _origin()._import_ptts()
+    ph_config = _section(tts_config, "phonon")
+    model_id = _phonon_model_id(ph_config.get("model"))
+    voice = _phonon_voice_arg(ph_config.get("voice"))
+    # Normalization language: explicit config > the checkpoint's own language > (multilingual
+    # checkpoint only) the selected voice's locale > English.
+    from tools.phonon_voices import phonon_lang_for_voice
+    checkpoint_lang = PHONON_MODELS.get(model_id)
+    lang = (str(ph_config.get("lang") or "").strip()
+            or checkpoint_lang
+            or (phonon_lang_for_voice(voice) if voice else None)
+            or "en")
+    quant = str(ph_config.get("quant") or DEFAULT_PHONON_QUANT).strip()
+    device = str(ph_config.get("device") or "").strip() or None
+    catalog = str(ph_config.get("voice_catalog") or "").strip() or None
+    # 0 / absent = ptts's own thread default; set_num_threads only has an effect before the first
+    # load, so it is applied inside the loader (a cache hit already sized the pool).
+    raw_threads = ph_config.get("threads")
+    threads = raw_threads if type(raw_threads) is int and raw_threads > 0 else 0
+
+    def _load_phonon_model():
+        if threads:
+            ptts.set_num_threads(threads)
+        logger.info("[Phonon] Loading model: %s (lang=%s, quant=%s)", model_id, lang, quant)
+        try:
+            model = ptts.TTS(model_id, lang=lang, quant=quant, device=device, voice_catalog=catalog)
+        except OSError as exc:  # gated repo, offline box, bad revision
+            raise RuntimeError(_phonon_load_error(exc)) from exc
+        logger.info("[Phonon] Model loaded (%d Hz)", getattr(model, "sample_rate", 24000))
+        return model
+
+    cache_key = f"{model_id}::lang={lang}::quant={quant}::device={device}::catalog={catalog}"
+    return _tts_cache_get_or_load(_phonon_model_cache, cache_key, _load_phonon_model), ph_config
+
+
+def _generate_phonon(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
+    model, ph_config = _load_phonon_model_for_config(tts_config)
+    # Sampling knobs are passed only when configured: ptts's own defaults (temperature 0.3, a fixed
+    # seed) are the reproducible settings its release notes were tuned against.
+    knobs: dict[str, Any] = {}
+    for key in ("temperature", "seed", "cfg_coef"):
+        value = ph_config.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            knobs[key] = value
+    wav_path = _wav_sidecar_path(output_path)
+    seconds = model.save(wav_path, text, voice=_phonon_voice_arg(ph_config.get("voice")), **knobs)
+    logger.info("[Phonon] Synthesized %.2fs of audio", seconds or 0.0)
     return _finalize_wav_output(wav_path, output_path)

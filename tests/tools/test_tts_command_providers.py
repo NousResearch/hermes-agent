@@ -321,6 +321,35 @@ class TestRenderCommandTtsTemplate:
         )
         assert '"bob\'s voice"' in rendered
 
+    def test_backslash_adjacent_placeholder_stays_literal(self):
+        """A placeholder directly preceded by a backslash is never substituted (#138361).
+
+        Substituting would splice the template's backslash into the emitted escape
+        sequence and un-escape the value, so the renderer must treat it as literal."""
+        placeholders = {
+            "input_path": "$(echo PWNED)", "text_path": "/tmp/in.txt",
+            "output_path": "/tmp/out.mp3", "format": "mp3",
+            "voice": "", "model": "", "speed": "1.0",
+        }
+        for template in (r'echo "\{input_path}"', r"echo \{input_path}"):
+            rendered = _render_command_tts_template(template, placeholders)
+            assert "\\{input_path}" in rendered
+            assert "$(echo PWNED)" not in rendered
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX sh execution proof")
+    def test_backslash_adjacent_placeholder_cannot_resurrect_substitution(self):
+        """End-to-end on /bin/sh: the old renderer emitted "\\$(...)" — a double
+        backslash that un-escapes the value — so command substitution executed."""
+        rendered = _render_command_tts_template(
+            r'echo "\{input_path}"',
+            {"input_path": "$(echo PWNED)"},
+        )
+        proc = subprocess.run(
+            ["/bin/sh", "-c", rendered], capture_output=True, text=True, timeout=10,
+            check=False,
+        )
+        assert "PWNED" not in proc.stdout
+
 
 # ---------------------------------------------------------------------------
 # _run_command_tts idle/progress timeout behavior
@@ -516,6 +545,15 @@ class TestCommandTtsEnvPassthrough:
         ) == ["A_KEY", "B_KEY"]
         assert _command_provider_env_passthrough({}) == []
         assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []
+
+    def test_allowlist_refuses_hermes_provider_credentials(self):
+        """Provider config cannot smuggle Hermes-managed credentials back into the
+        scrubbed command child env (#138361, GHSA-rhgp-j443-p4rf policy)."""
+        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
+
+        assert _command_provider_env_passthrough(
+            {"env_passthrough": ["MY_TTS_API_KEY", "OPENAI_API_KEY", "anthropic_api_key"]}
+        ) == ["MY_TTS_API_KEY"]
 
 
 class TestCommandProviderSpawnGroupKwargs:

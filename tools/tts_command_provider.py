@@ -2,7 +2,8 @@
 
 ``tts.providers.<name>: {type: command, command: "piper -f {output_path} < {input_path}"}``
 (and the ``stt.`` twin): ``{placeholders}`` are shell-quoted for their surrounding quote
-context, ``{{``/``}}`` stay literal. Owns the quote-aware rendering, the idle-timeout
+context, ``{{``/``}}`` and backslash-escaped ``\\{placeholders}`` stay literal. Owns the quote-aware
+rendering, the idle-timeout
 process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
 ``tts_tool``/``transcription_tools`` under their historical private names. TTS placeholders:
 ``{input_path}``/``{text_path}``, ``{output_path}``, ``{format}``, ``{voice}``, ``{model}``,
@@ -61,9 +62,13 @@ def quote_command_placeholder(value: str, quote_context: Optional[str]) -> str:
 
 
 def render_command_template(command_template: str, placeholders: dict[str, str]) -> str:
-    """Replace ``{name}`` placeholders (quote-aware) while preserving ``{{``/``}}``."""
+    """Replace ``{name}`` placeholders (quote-aware) while preserving ``{{``/``}}``.
+
+    A placeholder directly preceded by a backslash (``\\{name}``) stays literal: substituting it
+    would splice the template's backslash into the emitted escape sequence (e.g. ``\\`` +
+    ``\\$(...)`` → ``\\\\$(...)``), un-escaping the value and resurrecting command substitution."""
     names = "|".join(re.escape(name) for name in placeholders)
-    pattern = re.compile(rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
+    pattern = re.compile(rf"(?<!\\)(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
     replacements: list[tuple[str, str]] = []
 
     def replace_match(match: re.Match[str]) -> str:
@@ -125,9 +130,17 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
 
 
 def command_env_passthrough(config: dict[str, Any]) -> list:
-    """``env_passthrough`` allowlist: parent env vars copied back into the secret-scrubbed child env."""
+    """``env_passthrough`` allowlist: parent env vars copied back into the secret-scrubbed child env.
+
+    Hermes-managed provider credentials are refused: operator provider config must not smuggle
+    hosted credentials into command children (#138361, same policy as ``tools.env_passthrough``)."""
+    from tools.env_passthrough import _accepted
     raw = config.get("env_passthrough")
-    return [str(x).strip() for x in raw if str(x).strip()] if isinstance(raw, (list, tuple)) else []
+    names = [str(x).strip() for x in raw if str(x).strip()] if isinstance(raw, (list, tuple)) else []
+    return list(_accepted(names, (
+        "tts/stt command provider: refusing env_passthrough of Hermes provider "
+        "credential %r into command children (GHSA-rhgp-j443-p4rf policy)."
+    )))
 
 
 def command_failure_detail(exc: subprocess.CalledProcessError) -> str:

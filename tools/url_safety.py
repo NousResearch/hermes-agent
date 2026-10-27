@@ -233,14 +233,20 @@ def _normalize_hostname(host: Optional[str]) -> str:
 # URLs are refused rather than guessed at. WHATWG strips every C0 control from the ends, but urlsplit
 # keeps a trailing one in the host, so only ordinary whitespace is stripped before looking for controls.
 _URL_EDGE_WHITESPACE = " \t\n\r\x0b\x0c"
+# Dots IDNA maps to "." (ideographic, fullwidth, halfwidth ideographic); used when IDNA encoding fails.
+_IDNA_DOTS = str.maketrans(dict.fromkeys("。．｡", "."))
 
 
 def _url_hostname(url: str, *, percent_decode: bool = False) -> str:
-    """The host of *url* as every check compares it: the same edge stripping as the ambiguity check,
-    lowercased, trailing dot dropped, optionally percent-decoded first."""
+    """The host of *url* in the form a WHATWG client dials it: IDNA-encoded (so ``169.254.169.254。``
+    is ``169.254.169.254``), lowercased, trailing dot dropped, optionally percent-decoded first."""
     host = urlsplit(url.strip(_URL_EDGE_WHITESPACE)).hostname or ""
     if percent_decode:
         host = unquote(host)
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        host = host.translate(_IDNA_DOTS)
     return _normalize_hostname(host)
 
 

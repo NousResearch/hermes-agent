@@ -54,6 +54,16 @@ TEMPLATED_CODE = [
 # Trailing C0 controls (and DEL) that urlsplit keeps in the host and WHATWG clients drop.
 TRAILING_CONTROLS = ["\x00", "\x01", "\x08", "\x1b", "\x1f", "\x7f"]
 
+# The metadata address with a trailing dot form that IDNA maps to ".".
+IDNA_DOT_METADATA = [
+    "http://169.254.169.254。/",                       # ideographic full stop
+    "http://169.254.169.254．/latest/meta-data/",       # fullwidth full stop
+    "http://169.254.169.254｡/",                       # halfwidth ideographic full stop
+    "http://169。254。169。254/",              # every dot
+    "http://１６９.254.169.254。/",        # fullwidth digits too
+]
+
+
 class TestFloorAcceptsTemplatedUrlLiterals:
     @pytest.mark.parametrize("code", TEMPLATED_CODE)
     def test_local_browser_runs_templated_dev_server_urls(self, local_browser, code):
@@ -106,3 +116,17 @@ class TestTrailingControlCannotHideMetadataHost:
     def test_surrounding_whitespace_still_accepted(self, proxy, url):
         assert is_always_blocked_url(url) is False
         assert is_safe_url(url) is True
+
+
+class TestIdnaDotFormsCannotHideMetadataHost:
+    @pytest.mark.parametrize("url", IDNA_DOT_METADATA)
+    def test_floor_blocks(self, url):
+        assert is_always_blocked_url(url) is True
+
+    @pytest.mark.parametrize("url", IDNA_DOT_METADATA)
+    def test_is_safe_url_refuses_with_proxy_configured(self, proxy, url):
+        assert is_safe_url(url) is False
+
+    def test_public_name_with_ideographic_dots_still_reaches_proxy(self, proxy):
+        assert is_always_blocked_url("https://example。com。/") is False
+        assert is_safe_url("https://example。com。/") is True

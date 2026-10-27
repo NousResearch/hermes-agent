@@ -43,10 +43,10 @@ import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
-export { useGatewayActivationEpoch } from '@/store/gateway-activation-epoch'
+export type { SpawnPriority } from './gateway-request-owner'
 
 import { type GatewayRequestOptions, gatewayRequestOwnerValidator, type SpawnPriority } from './gateway-request-owner'
-export type { SpawnPriority } from './gateway-request-owner'
+export { useGatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
 // event handler is already session-keyed, so the only thing stopping two

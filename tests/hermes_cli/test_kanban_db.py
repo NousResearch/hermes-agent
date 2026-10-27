@@ -1675,6 +1675,60 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
         assert captured["env"]["TERMINAL_CWD"] == str(tmp_path / "ws")
 
 
+def test_kanban_worker_module_starts_from_spawned_repo_cwd(tmp_path, monkeypatch):
+    """The real module child imports from its dispatcher cwd without touching a board."""
+    import os
+    import subprocess
+    import sys
+
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-m", "hermes_cli.main"])
+    monkeypatch.setattr(kbd, "_open_worker_log", lambda *_args: open(os.devnull, "w"))
+
+    launched = {}
+    real_popen = subprocess.Popen
+
+    def _safe_popen(cmd, **kwargs):
+        # An empty task identity makes the child exit before connecting to a gateway or board.
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HERMES_HOME": str(home),
+            "HERMES_RUNTIME_DIR": str(tmp_path / "runtime"),
+        }
+        # Ignore site-packages so the cwd, rather than an installed checkout, supplies the module.
+        isolated_cmd = [cmd[0], "-S", *cmd[1:]]
+        launched["process"] = real_popen(
+            isolated_cmd, **{**kwargs, "env": env, "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
+        )
+        return launched["process"]
+
+    monkeypatch.setattr(subprocess, "Popen", _safe_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = kb.Task(
+        id="t_import_root", title="x", body=None, assignee="coder", status="ready",
+        priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
+        workspace_kind="worktree", workspace_path=str(workspace), claim_lock=None,
+        claim_expires=None, tenant=None, branch_name=None,
+    )
+
+    kbd._default_spawn(task, str(workspace))
+    child = launched["process"]
+    output, _ = child.communicate(timeout=30)
+
+    # Import and entry succeeded; missing task identity safely prevents any board or gateway I/O.
+    assert child.returncode == 1
+    assert b"Kanban owner refused" in output
+    assert b"HERMES_KANBAN_BOARD" in output
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

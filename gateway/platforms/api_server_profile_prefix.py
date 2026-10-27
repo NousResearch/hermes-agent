@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 # The @handle Bot Mode advertises a host's default profile under (apps/desktop hermes-bots
 # ``botHandle``). New profiles cannot take the name, but a pre-reservation profiles/hermes can exist.
 DEFAULT_PROFILE_HANDLE = "hermes"
-# 404 body for a prefix naming no profile here; peers key their @hermes -> /p/default fallback on it.
+# 404 body for a prefix naming no profile here. Older gateways also send it for a 'hermes' profile
+# they do not serve, so peer clients treat it as ambiguous and never reroute @hermes on it.
 UNKNOWN_PROFILE_ERROR = "Unknown or unconfigured profile"
 
 

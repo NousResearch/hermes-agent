@@ -115,11 +115,14 @@ def _peer_lacks_profile(exc: Exception) -> bool:
     return isinstance(body, dict) and body.get("error") == _UNKNOWN_PROFILE_ERROR
 
 
-def _resolve_base(peer: dict, profile: str | None, key: str) -> str:
+def _resolve_base(peer: dict, profile: str | None, key: str, peer_name: str = "") -> str:
     """The mirror a target addresses. Bot Mode shows a peer's default profile as @hermes
-    (#118076), but a peer may also serve a real pre-reservation profile named ``hermes``, which
-    must keep winning — so ``/p/hermes`` is tried first and ``/p/default`` is used only when the
-    peer itself answers that it has no such profile (an older peer has no alias on its side)."""
+    (#118076); an upgraded peer aliases ``/p/hermes`` to its default itself, unless it has a real
+    pre-reservation profile named ``hermes``, which keeps the handle. The client never reroutes on
+    its own: an older peer answers the same generic 404 for "no such profile" and for a real
+    ``hermes`` profile it does not serve (parked, standalone), so guessing ``/p/default`` there
+    delivers into the wrong agent. That ambiguous answer becomes an error naming the explicit
+    ``<peer>/default`` address instead."""
     base = _base_url(peer, profile)
     if profile != DEFAULT_PROFILE_HANDLE:
         return base
@@ -127,7 +130,12 @@ def _resolve_base(peer: dict, profile: str | None, key: str) -> str:
         _request(f"{base}/health", key)
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         if _peer_lacks_profile(exc):
-            return _base_url(peer, "default")
+            name = peer_name or "<peer>"
+            raise LookupError(
+                f"Peer '{name}' serves no '{DEFAULT_PROFILE_HANDLE}' profile, and its gateway is too "
+                f"old to say whether '{DEFAULT_PROFILE_HANDLE}' means its default profile or a "
+                f"'{DEFAULT_PROFILE_HANDLE}' profile it does not serve. Address its default bot as "
+                f"{name}/default, or update the peer's hermes-agent.") from exc
     return base
 
 
@@ -190,7 +198,7 @@ def _parse_target(target: str) -> tuple[str, str | None]:
         raise ValueError(f"Invalid agent/profile name: {profile!r}")
     if profile:
         # Profile ids are lowercase (normalize_profile_name); 'box/Hermes' must address the
-        # peer's real 'hermes' profile, never reach the /p/default fallback by case alone.
+        # peer's real 'hermes' profile on every peer, including those that compare prefixes exactly.
         from hermes_cli.profiles import normalize_profile_name
         profile = normalize_profile_name(profile)
     return peer, profile
@@ -449,7 +457,11 @@ def cmd_peer(args) -> int:
     except (LookupError, PermissionError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    base = _resolve_base(peer, profile, key)
+    try:
+        base = _resolve_base(peer, profile, key, peer_name)
+    except LookupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     if action in {"status", "stop"}:
         return _peer_run_ctl(args, action, peer_name, profile, base, key)
     message = _message_from_args(args)

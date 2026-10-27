@@ -84,15 +84,17 @@ _NOT_SERVED = {"error": {"message": "Profile 'hermes' exists on this host but th
 
 @pytest.mark.parametrize("served,probe_status,refusal,expected", [
     ({"default", "hermes"}, 200, None, "hermes"),   # a real legacy 'hermes' profile keeps precedence
-    ({"default"}, 200, None, "default"),            # the peer says it has none: @hermes is its default
+    # An older peer's generic 404 also covers a real 'hermes' profile it parks or runs standalone:
+    # ambiguous, so it is an error naming box/default, never a guessed delivery into the default.
+    ({"default"}, 200, None, None),
     ({"default", "hermes"}, 503, None, "hermes"),   # a transient failure is no verdict, so never reroute
     ({"default"}, 200, _NOT_SERVED, None),          # it has one but does not serve it: an error, not default
 ])
 def test_hermes_handle_reaches_the_profile_the_peer_serves(
         monkeypatch, capsys, served, probe_status, refusal, expected):
-    """``box/hermes`` names the peer's real 'hermes' profile when it has one, and its default
-    profile (Bot Mode's @hermes handle, #118076) only when the peer answers it has no such profile;
-    dm, status and stop all address the same mirror."""
+    """``box/hermes`` names the peer's real 'hermes' profile when it has one; the client never
+    reroutes it to /p/default on its own (an upgraded peer aliases the handle server-side); dm,
+    status and stop all address the same mirror."""
     _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = served, probe_status, []
     _ProfilePeer.refusal = refusal or {"error": "Unknown or unconfigured profile"}
     server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
@@ -107,9 +109,11 @@ def test_hermes_handle_reaches_the_profile_the_peer_serves(
         ]
     finally:
         server.shutdown()
-    out = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    captured = capsys.readouterr()
+    out, err = [json.loads(line) for line in captured.out.splitlines()], captured.err
     if expected is None:
         assert (replies, out) == ([1, 1, 1], [])
+        assert "box/default" in err or "Profile 'hermes' exists" in err
         assert {hit.split("/")[2] for hit in _ProfilePeer.hits} == {"hermes"}
         return
     assert replies == [0, 0, 0]

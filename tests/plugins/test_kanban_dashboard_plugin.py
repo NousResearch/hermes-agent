@@ -113,6 +113,39 @@ def test_create_task_appears_on_board(client):
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
 
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        "local-only",
+        "NousResearch/hermes-agent",
+        "https://github.com/NousResearch/hermes-agent/pull/123",
+    ],
+)
+def test_create_task_persists_completion_contract(client, contract):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "contract work", "completion_contract": contract},
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()["task"]
+    assert created["completion_contract"] == contract
+
+    persisted = client.get(f"/api/plugins/kanban/tasks/{created['id']}")
+    assert persisted.status_code == 200, persisted.text
+    assert persisted.json()["task"]["completion_contract"] == contract
+
+
+def test_create_task_rejects_invalid_completion_contract(client):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "contract work", "completion_contract": "not a contract"},
+    )
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL",
+    }
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")
@@ -461,12 +494,18 @@ def test_add_comment(client):
         json={"body": "how's progress?", "author": "teknium"},
     )
     assert r.status_code == 200
+    response = r.json()
+    assert response["ok"] is True
+    comment = response["comment"]
+    assert comment["task_id"] == t["id"]
+    assert comment["body"] == "how's progress?"
+    assert comment["author"] == "teknium"
+    assert isinstance(comment["id"], int)
+    assert isinstance(comment["created_at"], int)
 
     r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
     comments = r.json()["comments"]
-    assert len(comments) == 1
-    assert comments[0]["body"] == "how's progress?"
-    assert comments[0]["author"] == "teknium"
+    assert comments == [comment]
 
 # ---------------------------------------------------------------------------
 # Dispatch nudge

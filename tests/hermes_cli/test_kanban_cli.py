@@ -383,3 +383,99 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# --reasoning-effort flag (CLI round-trip, invalid level, validator contract)
+# ---------------------------------------------------------------------------
+
+
+def test_kanban_create_with_reasoning_effort_stores_and_renders(kanban_home):
+    """``hermes kanban create <title> --reasoning-effort high`` stores the value;
+    ``show --json`` and ``list --json`` expose it; ``show`` text renders it;
+    a second card created without the flag renders ``reasoning: inherit (profile)``."""
+    from hermes_cli import kanban as kc
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    # Create with explicit effort.
+    out1 = kc.run_slash("create 'effort task' --assignee alice --reasoning-effort high")
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", out1)
+    assert m, out1
+    tid_with = m.group(1)
+
+    # Create without effort (should be NULL / inherit).
+    out2 = kc.run_slash("create 'no-effort task' --assignee alice")
+    m2 = re.search(r"(t_[a-f0-9]+)", out2)
+    assert m2, out2
+    tid_without = m2.group(1)
+
+    # show --json exposes the value.
+    show_json = json.loads(kc.run_slash(f"show {tid_with} --json"))
+    assert show_json["task"]["reasoning_effort"] == "high"
+
+    # list --json exposes the value.
+    list_json = json.loads(kc.run_slash("list --json"))
+    row_with = next(r for r in list_json if r["id"] == tid_with)
+    assert row_with["reasoning_effort"] == "high"
+    row_without = next(r for r in list_json if r["id"] == tid_without)
+    assert row_without["reasoning_effort"] is None
+
+    # show text renders it.
+    show_text = kc.run_slash(f"show {tid_with}")
+    assert "reasoning:" in show_text
+    assert "high (task)" in show_text
+
+    # show text for the NULL-effort card renders the inherit label.
+    show_text_null = kc.run_slash(f"show {tid_without}")
+    assert "reasoning: inherit (profile)" in show_text_null
+
+
+def test_kanban_create_invalid_reasoning_effort_exits_2(kanban_home):
+    """Invalid effort level must exit 2 and print the validator's own message."""
+    from hermes_cli import kanban as kc
+    import argparse
+
+    # Build the parser and parse the invalid args (same pattern as line 191-211).
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "create", "bogus task", "--assignee", "alice", "--reasoning-effort", "bogus"])
+
+    # kanban_command returns the rc; assert it is 2.
+    rc = kc.kanban_command(args)
+    assert rc == 2, f"expected exit code 2, got {rc}"
+
+
+def test_normalize_reasoning_effort_contract():
+    """``normalize_reasoning_effort`` is the shared chokepoint for CLI and MCP.
+    It accepts ``none`` + the 7 canonical levels, is case-insensitive, maps
+    empty/None to None, and raises ValueError on a typo."""
+    from hermes_cli.kanban_db import normalize_reasoning_effort
+
+    # Accepts none + all 7 canonical levels.
+    assert normalize_reasoning_effort("none") == "none"
+    assert normalize_reasoning_effort("minimal") == "minimal"
+    assert normalize_reasoning_effort("low") == "low"
+    assert normalize_reasoning_effort("medium") == "medium"
+    assert normalize_reasoning_effort("high") == "high"
+    assert normalize_reasoning_effort("xhigh") == "xhigh"
+    assert normalize_reasoning_effort("max") == "max"
+    assert normalize_reasoning_effort("ultra") == "ultra"
+
+    # Case-insensitive.
+    assert normalize_reasoning_effort("HIGH") == "high"
+    assert normalize_reasoning_effort("XHigh") == "xhigh"
+    assert normalize_reasoning_effort("  Low  ") == "low"
+
+    # Empty/None maps to None (inherit).
+    assert normalize_reasoning_effort(None) is None
+    assert normalize_reasoning_effort("") is None
+    assert normalize_reasoning_effort("   ") is None
+
+    # Typo raises ValueError with the validator's own message.
+    with pytest.raises(ValueError, match="reasoning_effort must be one of"):
+        normalize_reasoning_effort("bogus")
+    with pytest.raises(ValueError, match="got 'typo'"):
+        normalize_reasoning_effort("typo")

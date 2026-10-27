@@ -1483,3 +1483,58 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+# ---------------------------------------------------------------------------
+# --reasoning-effort via MCP handler (real dispatch, temp HERMES_HOME)
+# ---------------------------------------------------------------------------
+
+
+def test_kanban_create_handler_stores_reasoning_effort(worker_env):
+    """``kanban_create`` with ``reasoning_effort`` stores the value in the DB.
+    Real registry dispatch (tools/AGENTS.md:180 — test the handler through the
+    registry, not the bare function), temp HERMES_HOME, never ~/.hermes."""
+    from tools import kanban_tools  # import triggers registration
+    from tools.registry import registry
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    # Dispatch through the registry (real handle_function_call-style path).
+    entry = registry.get_entry("kanban_create")
+    assert entry is not None, "kanban_create must be registered"
+    out = entry.handler({
+        "title": "mcp effort task",
+        "assignee": "test-worker",
+        "reasoning_effort": "xhigh",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    new_tid = d["task_id"]
+
+    # Verify the DB row stores the value.
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, new_tid)
+        assert task.reasoning_effort == "xhigh"
+    finally:
+        conn.close()
+
+
+def test_kanban_create_handler_invalid_reasoning_effort_raises(worker_env):
+    """``kanban_create`` with an invalid ``reasoning_effort`` returns an error
+    JSON (the handler catches ValueError and returns it as a structured error).
+    Registry dispatch, matching the sibling happy-path test."""
+    from tools import kanban_tools  # import triggers registration
+    from tools.registry import registry
+
+    entry = registry.get_entry("kanban_create")
+    assert entry is not None, "kanban_create must be registered"
+    out = entry.handler({
+        "title": "bogus mcp task",
+        "assignee": "test-worker",
+        "reasoning_effort": "bogus",
+    })
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "reasoning_effort must be one of" in d["error"]
+    assert "bogus" in d["error"]

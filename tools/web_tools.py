@@ -289,6 +289,38 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
+# A bundled provider plugin can lose its registration when plugin discovery races at startup
+# (a "dictionary changed size during iteration" warning leaves that provider missing from the
+# registry). Dispatch is the last line of defence: when the configured backend is a bundled
+# provider whose module is importable, register it here instead of failing the call.
+_BUNDLED_SEARCH_PROVIDERS = {
+    "ddgs": ("plugins.web.ddgs.provider", "DDGSWebSearchProvider"),
+}
+
+
+def _register_bundled_search_provider(backend: str):
+    """Register a bundled search provider on demand when plugin discovery missed it."""
+    spec = _BUNDLED_SEARCH_PROVIDERS.get((backend or "").lower().strip())
+    if spec is None:
+        return None
+    module_name, class_name = spec
+    try:
+        import importlib
+
+        from agent.web_search_registry import get_provider, register_provider
+
+        provider = getattr(importlib.import_module(module_name), class_name)()
+        register_provider(provider)
+        logger.warning(
+            "Registered bundled web provider '%s' on demand (plugin registration was missing)",
+            backend,
+        )
+        return provider if get_provider(backend) is not None else None
+    except Exception as exc:
+        logger.debug("On-demand registration of bundled web provider '%s' failed: %s", backend, exc)
+        return None
+
+
 def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str] = None) -> Optional[str]:
     """Log the call into the debug session; with *error_msg*, record it and return its ``tool_error`` envelope."""
     if error_msg is not None:
@@ -323,6 +355,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
+        if provider is None and backend:
+            provider = _register_bundled_search_provider(backend)
         if provider is None or not provider.supports_search():
             if provider is None and backend and selection_exists("web"):
                 error_text = debug_call_data["error"] = _strict_selection_error("search", backend)

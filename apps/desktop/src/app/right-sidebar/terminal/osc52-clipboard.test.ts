@@ -105,6 +105,41 @@ describe('installOsc52ClipboardHandler', () => {
     decode.mockRestore()
   })
 
+  it.each(['padded', 'padded with whitespace', 'unpadded', 'unpadded with whitespace'])(
+    'accepts exactly the byte limit (%s)',
+    form => {
+      const { handler, writeClipboardText } = captureHandler()
+      const text = 'a'.repeat(OSC52_MAX_TEXT_BYTES)
+      const padded = btoa(text)
+      const base64 = form.startsWith('padded') ? padded : padded.replace(/=+$/, '')
+      const payload = base64 + (form.includes('with whitespace') ? ' \t\n\f\r' : '')
+
+      expect(handler(`c;${payload}`)).toBe(true)
+      expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith(text)
+    }
+  )
+
+  it.each([
+    { extraBytes: 1, omitPadding: false },
+    { extraBytes: 1, omitPadding: true },
+    { extraBytes: 2, omitPadding: false }
+  ])('rejects $extraBytes extra bytes before atob (omit padding: $omitPadding)', ({ extraBytes, omitPadding }) => {
+    const { handler, writeClipboardText } = captureHandler()
+    const padded = btoa('a'.repeat(OSC52_MAX_TEXT_BYTES + extraBytes))
+    const payload = omitPadding ? padded.replace(/=+$/, '') : padded
+    const decode = vi.spyOn(globalThis, 'atob')
+
+    try {
+      const accepted = handler(`c;${payload}`)
+
+      expect(decode.mock.calls.length).toBe(0)
+      expect(accepted).toBe(false)
+      expect(writeClipboardText).not.toHaveBeenCalled()
+    } finally {
+      decode.mockRestore()
+    }
+  })
+
   it('accepts one write per interval from a burst of sequences', async () => {
     let now = 10_000
     const terminal = new Terminal({ allowProposedApi: true })

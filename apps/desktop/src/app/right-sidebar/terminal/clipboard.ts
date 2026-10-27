@@ -48,13 +48,21 @@ export function installOsc52ClipboardHandler(
       return false
     }
 
-    const payload = data.slice(separator + 1)
+    // atob ignores ASCII whitespace.
+    const payload = data.slice(separator + 1).replace(/[\t\n\f\r ]/g, '')
 
     if (!payload || payload === '?' || payload.length > OSC52_MAX_PAYLOAD_CHARS) {
       return false
     }
 
     if (!isFocused() || now() - lastWriteAt < OSC52_MIN_INTERVAL_MS) {
+      return false
+    }
+
+    // atob accepts omitted padding.
+    const unpadded = payload.replace(/=+$/, '')
+
+    if (Math.floor((unpadded.length * 3) / 4) > OSC52_MAX_TEXT_BYTES) {
       return false
     }
 

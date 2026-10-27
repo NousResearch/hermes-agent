@@ -53,6 +53,30 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
+def _route_deferred_call(agent, tc) -> bool:
+    """Rewrite a call to a deferred tool by its real name into the ``tool_call`` bridge call, so
+    the executor's scope check, schema probe and hooks run on it as on a model-written one."""
+    from agent.tool_executor import _tool_search_scoped_names
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    name = tc.function.name
+    if TOOL_CALL_NAME not in agent.valid_tool_names or name not in _tool_search_scoped_names(agent):
+        return False
+    args = tc.function.arguments or "{}"
+    if isinstance(args, str):
+        try:
+            args = json.loads(args.strip() or "{}")
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(args, dict):
+        return False
+    tc.function.name = TOOL_CALL_NAME
+    tc.function.arguments = json.dumps({"calls": [{"name": name, "arguments": args}]})
+    agent._vprint(f"{agent.log_prefix}🔧 Routed deferred tool '{name}' through '{TOOL_CALL_NAME}'",
+                  force=True, diagnostic=True)
+    return True
+
+
 def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
@@ -102,6 +126,9 @@ def validate_tool_calls(
     repaired_ids = set()
     for tc in tool_calls:
         if tc.function.name not in valid_names:
+            if _route_deferred_call(agent, tc):
+                repaired_ids.add(id(tc))
+                continue
             repaired = agent._repair_tool_call(tc.function.name)
             if repaired:
                 agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'",

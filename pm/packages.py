@@ -474,8 +474,16 @@ class Venv(StatePackage):
                         or not recorded.is_file()):
                     raise InstallError(self.name, "recorded dependency lock is missing; refusing to drop plugins")
                 replay = recorded.parent
-            seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
-                    else project / "uv.lock")
+            seed = project / "uv.lock"
+            if members and prior.get("resolved_lock"):
+                recorded_seed = Path(prior["resolved_lock"])
+                # A vanished generation lock (partial restore/copy) must not crash the update:
+                # re-seed from the checkout's lock, as the repair rebuild does (#136694).
+                if recorded_seed.is_file():
+                    seed = recorded_seed
+                else:
+                    LOG.warning(
+                        "recorded dependency lock %s is missing; seeding from %s", recorded_seed, seed)
             lock_and_sync(members, extras, root=generation / "workspace",
                           seed_lock=seed, frozen=repair or not members, replay=replay,
                           source=project, environment=environment)

@@ -3,7 +3,7 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { initialGatewayProfile, isBrowserHostedDesktop } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -288,13 +288,15 @@ export async function switchProfile(name: string): Promise<void> {
 // gateway to that profile's backend (spawned on demand by the Electron pool).
 // A single-profile user never triggers a swap, so their path is unchanged.
 
-// The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot. The gateway registry
+// The profile the live gateway WebSocket is currently connected to. Starts on
+// the registry's own initial route (initialGatewayProfile: a browser host's
+// serving profile, else default) and follows the primary (window) backend's
+// profile once boot adopts it. The gateway registry
 // mirrors its own route into this atom via the onActiveRouteChanged callback
 // (wired in use-gateway-boot's configureGatewayRegistry), so registry-internal
 // eviction fallbacks (connection removal, profile delete) can never
 // leave this naming a profile the active socket no longer serves (#89206).
-export const $activeGatewayProfile = atom<string>('default')
+export const $activeGatewayProfile = atom<string>(initialGatewayProfile())
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
@@ -677,6 +679,12 @@ export async function ensureGatewayProfile(
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
+    // A Webapp tab routes on its cached served set, which predates a profile
+    // created a moment ago: bring it up to date before either lookup below, so
+    // the descriptor and the shared-primary route both see the new profile on
+    // the tab's socket. No-op elsewhere, and for a profile the set already has.
+    await window.hermesDesktop?.refreshServedProfile?.(target).catch(() => undefined)
+
     // ensureGatewayForProfile opens (or reuses) the target's socket and points
     // the active gateway at it — without closing the profile you came from.
     // The descriptor resolves concurrently so nothing awaits between the

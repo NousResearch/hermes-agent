@@ -25,7 +25,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     with closing(connect(board='owned')) as conn:
         task_id = kb.create_task(conn, title='Owned acceptance', body='Goal criteria', assignee='default',
             workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'], goal_mode=True,
-            goal_max_turns=3, model_override='loop-model', provider_override='custom')
+            goal_max_turns=3, model_override='loop-model', provider_override='custom', tenant='routine:cap')
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
     actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
@@ -33,11 +33,12 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     from gateway.session_kanban import build_kanban_policy
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal', 'file']},
-              'agent': {'coding_context': 'focus'}}  # the worktree must not collapse a worker into the coding posture
+              'agent': {'coding_context': 'focus'}, 'kanban': {'worker_max_turns_by_tenant': {'routine:cap': 12}}}  # the worktree must not collapse a worker into the coding posture
     policy, _secrets = build_kanban_policy(connection, params, config)
     context = json.loads(policy.kanban_json)
     assert policy.source == 'kanban' and policy.cwd == str(workspace)
     assert policy.model == task.model_override and policy.provider == task.provider_override
+    assert policy.max_turns == 12  # the assigned profile's exact-tenant cap, frozen into the owner session
     assert {'kanban', 'terminal', 'file'} <= set(policy.toolsets)
     assert context['task_id'] == task.id and context['run_id'] == task.current_run_id
     assert context['board'] == 'owned' and context['claim_lock'] == task.claim_lock
@@ -54,7 +55,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
-@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
+@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash', 'review_disabled', 'operator_complete'])
 def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os
     import subprocess
@@ -68,6 +69,10 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))
+    if mode in {'review_disabled', 'operator_complete'}:
+        assert receipt['task_status'] == 'done' and receipt['failures'] == 0
+        assert receipt['client_exit'] == ['clean_exit', 0]
+        return
     if mode != 'complete':
         assert receipt['task_status'] == 'ready'
         return

@@ -9,6 +9,7 @@ so a quota wall (exit 75) requeues as rate-limited instead of booking a crash.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,7 @@ def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _dead_pid() -> int:
-    proc = subprocess.Popen(["true"])
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     return proc.pid
 

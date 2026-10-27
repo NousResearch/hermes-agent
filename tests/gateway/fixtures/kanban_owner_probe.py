@@ -41,7 +41,7 @@ class Model(BaseHTTPRequestHandler):
         if messages and not body.get('tools'):
             message['content'] = json.dumps({'verdict': 'done', 'reason': 'Owned acceptance satisfied'})
         elif messages and (not has_result or messages[-1]['role'] == 'user'):
-            continuation = has_result
+            continuation = has_result or self.server.mode == 'review_disabled'
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{'index': 0, 'id': 'owned-complete',
                 'type': 'function', 'function': {'name': 'kanban_complete' if continuation else 'kanban_comment', 'arguments': json.dumps({'summary': 'Owned probe complete'} if continuation else {'body': 'Owned first turn'})}}]}
             finish = 'tool_calls'
@@ -82,6 +82,8 @@ def main():
         'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': ['terminal', 'file']},
         'terminal': {'backend': 'local'}, 'agent': {'api_max_retries': 1}, 'kanban': {'dispatch_in_gateway': False},
         'hooks': {'post_tool_call': [{'command': f'{sys.executable} {hook}'}]}}
+    if peer.mode == 'review_disabled':
+        cfg['skills'] = {'disabled': ['sdlc-review']}
     (home / 'config.yaml').write_text(json.dumps(cfg), encoding='utf-8')
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
@@ -92,9 +94,12 @@ def main():
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
         tid = kb.create_task(conn, title='KANBAN_TASK_SENTINEL', body='Acceptance: finish owned card', assignee='default',
-            workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'],
+            workspace_kind='dir', workspace_path=str(workspace), skills=[] if peer.mode == 'review_disabled' else ['owned-skill'],
             goal_mode=peer.mode == 'complete', goal_max_turns=2,
             max_runtime_seconds=3600 if peer.mode == 'timeout' else None)
+        if peer.mode == 'review_disabled':
+            impl = kb.claim_task(conn, tid)
+            assert kb.request_review(conn, tid, summary='Review ready', expected_run_id=impl.current_run_id)
     env = dict(os.environ)
     receipt, clients = {}, []
     original_popen = subprocess.Popen
@@ -143,6 +148,8 @@ def main():
                         import signal
                         # Windows has no SIGKILL; os.kill there is TerminateProcess for any signal.
                         os.kill(active.worker_pid, getattr(signal, 'SIGKILL', signal.SIGTERM))
+                    elif peer.mode == 'operator_complete':
+                        assert kb.complete_task(conn, tid, summary='Operator verified', force=True)
                     peer.release.set()
                     if peer.mode != 'timeout':
                         wait_for(lambda: not kb._pid_alive(active.worker_pid))
@@ -167,6 +174,10 @@ def main():
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'crashed', receipt
                     elif peer.mode == 'timeout':
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'timed_out', receipt
+                    if peer.mode in {'review_disabled', 'operator_complete'}:
+                        assert task.status == 'done' and task.consecutive_failures == 0, receipt
+                        assert receipt['client_exit'] == ('clean_exit', 0), receipt
+                        assert not any(e.kind in {'crashed', 'gave_up'} for e in kb.list_events(conn, tid)), receipt
             finally:
                 subprocess.Popen = original_popen
             if peer.mode != 'complete':

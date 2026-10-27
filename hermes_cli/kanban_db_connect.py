@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
+import os
 import random
 import re
 import secrets
@@ -140,13 +142,33 @@ def _cross_process_init_lock(path: Path):
             if acquired or time.monotonic() >= deadline:
                 break
             time.sleep(_INIT_LOCK_POLL_SECONDS)
+        if acquired:
+            from hermes_constants import get_hermes_home
+
+            home = get_hermes_home()
+            profile = home.name if home.parent.name == 'profiles' else 'default'
+            owner = json.dumps({'pid': os.getpid(), 'profile': profile,
+                                'at': time.time()}).encode('utf-8')
+            # Byte zero is the Windows lock range. Metadata is read from byte one.
+            with contextlib.suppress(OSError):
+                handle.truncate(1)
+                handle.seek(1)
+                handle.write(owner)
+                handle.flush()
         if not acquired:
+            try:
+                handle.seek(1)
+                owner = json.loads(handle.read(1024))
+                holder = 'pid=%d profile=%s' % (
+                    int(owner['pid']), re.sub(r'[^A-Za-z0-9_-]', '?', str(owner['profile']))[:64])
+            except (OSError, ValueError, KeyError, TypeError):
+                holder = 'unknown (legacy or unreadable lock metadata)'
             _kb._log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "
                 "without the cross-process lock (in-process lock + idempotent "
                 "init are the correctness backstop). A stuck holder is no longer "
-                "able to block this connect indefinitely (#36644).",
-                lock_path, _INIT_LOCK_TIMEOUT_SECONDS,
+                "able to block this connect indefinitely (#36644). Last recorded holder: %s.",
+                lock_path, _INIT_LOCK_TIMEOUT_SECONDS, holder,
             )
         yield
     finally:

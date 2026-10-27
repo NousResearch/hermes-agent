@@ -224,17 +224,22 @@ class _KanbanDispatcher:
         ``claim_task`` and never spawnable — a queue full of those is
         "correctly idle", not "stuck". The review column is probed only when
         review dispatch is on (same gate as the dispatcher): a task waiting
-        for a human reviewer is idle, not stuck.
+        for a human reviewer is idle, not stuck. Cards held back only by
+        ``max_in_progress_per_profile`` are idle too (the lane loop defers them
+        by design); counting them logged a stream of false "stuck" errors.
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
+        cap = self.settings.max_in_progress_per_profile
         from hermes_cli import kanban_db as _kb
         with _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 conn = None
                 try:
                     conn = _kbc().connect(board=slug)
-                    if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
+                    if kbd.has_spawnable_ready(conn, per_profile_cap=cap) or (
+                        _review_probe and kbd.has_spawnable_review(conn, per_profile_cap=cap)
+                    ):
                         return True
                 except Exception:
                     continue

@@ -53,6 +53,9 @@ from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
     _yaml_error_location)
+from hermes_cli.config_cache import (
+    load_config_cache_key as _load_config_cache_key,
+    load_config_cache_sig as _load_config_cache_sig)
 
 logger = logging.getLogger(__name__)
 
@@ -181,23 +184,6 @@ _LAST_EXPANDED_CONFIG_BY_PATH: dict[str, Any] = {}
 _LOAD_CONFIG_CACHE: dict[tuple[str, bool, Optional[str]], tuple[int, ...]] = {}
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
 _RAW_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
-
-
-def _load_config_cache_key(path_key: str) -> tuple[str, bool, Optional[str]]:
-    """Cache key for ``_LOAD_CONFIG_CACHE``: ``(path, in_scope, scope_home)``.
-
-    Scoped and unscoped callers expand ``${VAR}`` against different sources (profile ``.env`` vs
-    ``os.environ``), so a single path-keyed entry makes them evict each other and re-parse on every
-    crossing (#141857). Keying by scope keeps each side's entry separate.
-    """
-    try:
-        from agent.secret_scope import current_secret_scope, current_secret_scope_home
-    except ImportError:
-        # No secret-scope support in this install: every caller is unscoped.
-        return path_key, False, None
-    if current_secret_scope() is None:
-        return path_key, False, None
-    return path_key, True, current_secret_scope_home()
 
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
@@ -2155,25 +2141,6 @@ def apply_terminal_config_to_env(
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)
     return target
-
-
-def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, int, int]], Optional[tuple[int, ...]]]:
-    """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
-    try:
-        user_sig: Optional[tuple[Any, ...]] = config_version(config_path)
-    except FileNotFoundError:
-        user_sig = None
-    managed_dir = managed_scope.get_managed_dir()
-    try:
-        mst = (managed_dir / "config.yaml").stat() if managed_dir else None  # config-reader: ok — managed overlay, not a user layer
-        managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
-    except OSError:
-        managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
-        return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[dict[str, Any]]:

@@ -27101,6 +27101,13 @@
             "title": "Top Tier Model Ids",
             "type": "array"
           },
+          "subscription_model_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Model Ids",
+            "type": "array"
+          },
           "featured_model_ids": {
             "items": {
               "type": "string"

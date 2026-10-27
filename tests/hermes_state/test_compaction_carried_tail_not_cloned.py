@@ -207,8 +207,15 @@ def test_a_rewritten_carry_claims_only_what_the_compressor_rewrote(db: SessionDB
 
 
 def _replayed(db: SessionDB) -> list:
-    """What the next provider request replays per live row: the ``api_content`` sidecar, else the content."""
-    return [m.get("api_content") or m["content"] for m in db.get_messages_as_conversation(SID)]
+    """The content the next provider request carries per live row, through the turn's own sidecar substitution."""
+    from agent.turn_context import substitute_api_content
+
+    replayed = []
+    for message in db.get_messages_as_conversation(SID):
+        api_message = dict(message)
+        substitute_api_content(api_message)
+        replayed.append(api_message["content"])
+    return replayed
 
 
 def test_matching_text_never_claims_an_independent_append(db: SessionDB) -> None:

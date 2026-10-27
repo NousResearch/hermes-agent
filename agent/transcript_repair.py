@@ -203,6 +203,9 @@ def resolve_and_repair_transcript_batch(
     same payload is that message re-handed to the flush — stamped durable and skipped, never re-INSERTed. Returns
     only rows that need fresh inserts.
     """
+    # Late import: agent.session_persistence imports this module at load time.
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
     inserted_rows: list[dict[str, Any]] = []
     durable_uids = _active_uid_dedupe(conn, session_id, messages)
     for msg in messages:
@@ -217,7 +220,6 @@ def resolve_and_repair_transcript_batch(
             # has neither proof, even when role/content/timestamp happen to equal an older message exactly.
             target_row = _active_logical_message_row(conn, session_id, role, message_uid_or_none(msg))
         if target_row is None:
-            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
             if (
                 isinstance(msg, dict)
                 and (stored := durable_uids.get(message_uid_or_none(msg) or ""))

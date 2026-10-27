@@ -873,7 +873,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         rewind_ids = list(carried_ids)
         if tail_below > 0:
             rewind_ids += self._tail_originals(covered_active, tail_below, merged_away)
-        # A row claimed by identity alone is archived as compacted history, never rewound out of display.
+        # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
         rewind_ids += [row_id for row_id in unseen if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
         if rewind_ids:
@@ -1008,7 +1008,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, *((int(watermark),) if bound else ()),
                  int(tail_below) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
-        # A row claimed by identity alone is archived as compacted history, never rewound out of display.
+        # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
         rewind_ids += [row_id for row_id in tail_ids if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
         if rewind_ids:

@@ -2037,6 +2037,28 @@ class TestRunPreUpdateBackup:
         assert snap_id is not None
         assert len(self._zips(hermes_home)) == 1
 
+    def test_fresh_install_seeded_template_keeps_quick(self, hermes_home):
+        """The shipped template is the literal initial config.yaml of every
+        fresh install (scripts/install.sh, docker/stage2-hook.sh, and
+        `hermes doctor --fix` copy it verbatim), so its
+        ``updates.pre_update_backup`` value becomes an EXPLICIT setting that
+        overrides the code default. After #65754 made "quick" the default,
+        the template still shipped the legacy boolean ``false`` — which the
+        resolver maps to "off" — silently dropping the #48200 pre-update
+        safety net from every new install (#94944)."""
+        import shutil
+
+        from hermes_cli.update_cmd import _run_pre_update_backup
+        from hermes_cli.update_cmd_maint import _resolve_pre_update_backup_mode
+
+        template = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+        shutil.copy2(template, hermes_home / "config.yaml")
+
+        assert _resolve_pre_update_backup_mode(Namespace()) == "quick"
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        assert snap_id is not None
+        assert self._snaps(hermes_home)
+
 
 
 

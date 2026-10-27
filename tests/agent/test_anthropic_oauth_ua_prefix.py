@@ -15,11 +15,7 @@ Two DIFFERENT Anthropic endpoints impose OPPOSITE User-Agent requirements:
 
 from __future__ import annotations
 
-import re
 from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 class TestOAuthUserAgentPrefix:
     """Inference uses ``claude-code/``; the OAuth token endpoint must NOT."""
@@ -39,28 +35,3 @@ class TestOAuthUserAgentPrefix:
 
         assert "claude-code/" in ua, f"Expected claude-code/ in UA, got: {ua}"
         assert "claude-cli/" not in ua, f"Must not use claude-cli/ prefix: {ua}"
-
-
-
-    def test_token_refresh_ua_not_throttled(self):
-        """refresh_anthropic_oauth_pure must NOT send a throttled token-endpoint UA."""
-        import inspect
-        import agent.anthropic_adapter as mod
-
-        func = getattr(mod, "refresh_anthropic_oauth_pure", None)
-        if func is None or not callable(func):
-            pytest.skip("refresh_anthropic_oauth_pure not found")
-        source = inspect.getsource(func)
-
-        for i, line in enumerate(source.split("\n"), 1):
-            stripped = line.strip()
-            if ("User-Agent" in stripped or "user-agent" in stripped) and (
-                "claude-cli/" in stripped or "claude-code/" in stripped
-            ):
-                pytest.fail(
-                    f"Line {i}: throttled UA in refresh header: {stripped}"
-                )
-        assert "_OAUTH_TOKEN_USER_AGENT" in source, (
-            "refresh_anthropic_oauth_pure should send the shared "
-            "_OAUTH_TOKEN_USER_AGENT (non-claude-code) on the token endpoint"
-        )

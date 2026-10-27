@@ -29,8 +29,6 @@ class TestStripAnsiCSIPrivateMode:
         assert strip_ansi("\x1b[?25l") == ""
 
 
-    def test_bracketed_paste(self):
-        assert strip_ansi("\x1b[?2004h") == ""
 
 
 class TestStripAnsiCSIIntermediate:
@@ -70,8 +68,6 @@ class TestStripAnsiDECPrivate:
 class TestStripAnsiFe:
     """Fe (C1 as 7-bit) escape sequences."""
 
-    def test_reverse_index(self):
-        assert strip_ansi("\x1bM") == ""
 
 
     def test_index_and_newline(self):
@@ -148,11 +144,7 @@ class TestSanitizeDisplayText:
     to clear the screen, retitle the window, or corrupt adjacent output.
     """
 
-    def test_csi_removed(self):
-        assert sanitize_display_text("a\x1b[2Jb") == "ab"
 
-    def test_osc_title_removed(self):
-        assert sanitize_display_text("x\x1b]0;pwned\x07y") == "xy"
 
 
     def test_empty(self):

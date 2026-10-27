@@ -8,6 +8,7 @@ import {
   resolveLocalReadPath,
   resolvePickerDefaultPath,
   setWslBridgeActive,
+  shellDriveToNativePath,
   wslPosixToWindowsAccessible
 } from './wsl-path-bridge'
 
@@ -39,13 +40,22 @@ test('parseDefaultDistro strips the default-marker and blank lines', () => {
 
 // ── wslPosixToWindowsAccessible ──────────────────────────────────────
 
-test('wslPosixToWindowsAccessible maps a drvfs mount to its Windows drive', () => {
-  assert.equal(wslPosixToWindowsAccessible('/mnt/c/Users/alex', 'Ubuntu'), 'C:\\Users\\alex')
-  assert.equal(wslPosixToWindowsAccessible('/mnt/d', 'Ubuntu'), 'D:\\')
-})
+test('wslPosixToWindowsAccessible resolves a distro only for paths that need a UNC share', () => {
+  let distroProbes = 0
 
-test('wslPosixToWindowsAccessible maps an in-distro POSIX path to a UNC share', () => {
-  assert.equal(wslPosixToWindowsAccessible('/home/alex/proj', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj')
+  const resolveDistro = () => {
+    distroProbes += 1
+
+    return 'Ubuntu'
+  }
+
+  assert.equal(wslPosixToWindowsAccessible('/mnt/c/Users/alex', undefined, resolveDistro), 'C:\\Users\\alex')
+  assert.equal(distroProbes, 0)
+  assert.equal(
+    wslPosixToWindowsAccessible('/home/alex/proj', undefined, resolveDistro),
+    '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj'
+  )
+  assert.equal(distroProbes, 1)
 })
 
 test('wslPosixToWindowsAccessible leaves non-absolute / already-Windows paths alone', () => {
@@ -100,26 +110,19 @@ test('setWslBridgeActive(true) restores picker bridging', () => {
   assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
 })
 
-test('toggling the bridge is idempotent and does not corrupt cached state', () => {
-  // Toggle twice each way.
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
+test('shellDriveToNativePath maps Git Bash/Cygwin/drvfs drive paths only when the native file exists', () => {
+  const existing = new Set(['C:/Users/alex/notes.txt', 'D:/x', 'C:/'])
+  const exists = (path: string) => existing.has(path)
 
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-
-  // Bridging still works after the toggles.
-  assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
-})
-
-// ── state isolation: every test sees a clean active bridge ────────────
-
-test('state isolation: bridge is active after a previous test toggled it off', () => {
-  // This test relies on afterEach resetting the bridge.
-  // If isolation is broken, isWslBridgeActive() would be false here.
-  assert.equal(isWslBridgeActive(), true)
+  assert.equal(shellDriveToNativePath('/c/Users/alex/notes.txt', exists), 'C:/Users/alex/notes.txt')
+  assert.equal(shellDriveToNativePath('/C/Users/alex/notes.txt', exists), 'C:/Users/alex/notes.txt')
+  assert.equal(shellDriveToNativePath('/cygdrive/d/x', exists), 'D:/x')
+  assert.equal(shellDriveToNativePath('/mnt/c/Users/alex/notes.txt', exists), 'C:/Users/alex/notes.txt')
+  assert.equal(shellDriveToNativePath('/c', exists), 'C:/')
+  // A real single-letter WSL directory with no native twin stays on the WSL bridge.
+  assert.equal(shellDriveToNativePath('/e/projects', exists), null)
+  // Not drive spellings at all.
+  assert.equal(shellDriveToNativePath('/home/alex/proj', exists), null)
+  assert.equal(shellDriveToNativePath('/mnt/data/x', exists), null)
+  assert.equal(shellDriveToNativePath('C:\\Users\\alex', exists), null)
 })

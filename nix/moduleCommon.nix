@@ -444,11 +444,14 @@ let
           Python packages to add to PYTHONPATH for entry-point plugin discovery.
           These are pip-packaged plugins that register via the
           hermes_agent.plugins entry-point group. Each package must be built
-          with the same Python interpreter as hermes (python312).
+          with the same Python interpreter as hermes. The interpreter
+          major.minor is derived from pm/lock.json by nix/pythonLock.nix —
+          take packages from config.services.hermes-agent.package.python.pkgs so the set always
+          matches the interpreter hermes was built with.
         '';
         example = literalExpression ''
           [
-            (pkgs.python312Packages.buildPythonPackage {
+            (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
               pname = "rtk-hermes";
               version = "1.0.0";
               src = pkgs.fetchFromGitHub {
@@ -470,11 +473,16 @@ let
           the sealed Python venv. These are resolved by uv alongside core
           dependencies — no PYTHONPATH patching or collision risk.
 
+          They add to the groups `package` already ships (the default
+          package ships "messaging", "voice", "exa", ...); they never
+          replace them. For a smaller venv pick a smaller `package`
+          (`minimal`, `messaging`) or override its defaultDependencyGroups.
+
           Use this for optional extras already declared in hermes-agent's
-          pyproject.toml (e.g. "hindsight", "honcho", "voice").
+          pyproject.toml (e.g. "google-meet").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
-        example = [ "hindsight" ];
+        example = [ "google-meet" ];
       };
 
       # ── Service behaviour ──────────────────────────────────────────────
@@ -673,18 +681,31 @@ let
     '';
 
   # ── Package resolution ──────────────────────────────────────────────────
+  # The module's lists extend the package's own extras, never replace them.
+  # The shipped variants keep their groups in defaultDependencyGroups, but a
+  # custom `package` built with `.override { extraDependencyGroups = ...; }`
+  # carries its choices in the extras, and a plain attrset override here
+  # would drop them.
   effectivePackage =
     cfg:
     if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] then
       cfg.package
     else
-      cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
+      cfg.package.override (prev: {
+        extraPythonPackages = (prev.extraPythonPackages or [ ]) ++ cfg.extraPythonPackages;
+        extraDependencyGroups = (prev.extraDependencyGroups or [ ]) ++ cfg.extraDependencyGroups;
+      });
 
   # ── The rendered config.yaml ────────────────────────────────────────────
   # YAML contains JSON, so the output of toJSON is a correct config.yaml.
   # terminal.cwd replaces the old MESSAGING_CWD environment variable. The
   # order of the recursiveUpdate lets an explicit settings.terminal.cwd
   # replace the default value.
+  #
+  # The file also carries the `_config_version` of the package. In managed
+  # mode Hermes refuses to write config.yaml, so it cannot stamp the version
+  # itself, and an unstamped file reads as version 0 at every boot. The build
+  # reads the version from DEFAULT_CONFIG so it always matches the package.
   mkConfigFiles =
     {
       pkgs,
@@ -692,9 +713,22 @@ let
       workingDirectory,
     }:
     let
-      generated = pkgs.writeText "hermes-config.yaml" (
-        builtins.toJSON (lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings)
-      );
+      generated =
+        pkgs.runCommand "hermes-config.yaml"
+          {
+            settings = builtins.toJSON (lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings);
+            passAsFile = [ "settings" ];
+          }
+          ''
+            HOME=$TMPDIR ${(effectivePackage cfg).hermesVenv}/bin/python3 - "$settingsPath" > $out <<'PY'
+            import json, sys
+            from hermes_cli.config_defaults import DEFAULT_CONFIG
+            with open(sys.argv[1]) as f:
+                settings = json.load(f)
+            settings.setdefault("_config_version", DEFAULT_CONFIG["_config_version"])
+            json.dump(settings, sys.stdout)
+            PY
+          '';
     in
     {
       inherit generated;

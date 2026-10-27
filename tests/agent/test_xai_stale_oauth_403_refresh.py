@@ -79,7 +79,9 @@ def test_singleton_refresh_gate_accepts_the_403():
     means standing up the whole streaming conversation loop; the gate is a
     four-line boolean whose regression mode is silent.
     """
-    src = Path(__file__).resolve().parents[2] / "agent" / "conversation_loop.py"
+    # The arm lives in ``agent/turn_recovery.py`` (``_refresh_credentials_after_401``)
+    # since upstream lifted it out of ``run_conversation``.
+    src = Path(__file__).resolve().parents[2] / "agent" / "turn_recovery.py"
     body = src.read_text(encoding="utf-8")
 
     gate = re.search(
@@ -102,7 +104,9 @@ def test_pool_path_reuses_the_shared_predicate():
     src = Path(__file__).resolve().parents[2] / "agent" / "agent_runtime_helpers.py"
     body = src.read_text(encoding="utf-8")
 
-    recover = body[body.index("def recover_with_credential_pool(") :]
+    # ``_is_entitlement_403`` / ``_recover_auth_failure`` are the extracted pool arm;
+    # they precede ``recover_with_credential_pool`` in the module.
+    recover = body[body.index("def _is_entitlement_403(") :]
     assert "is_xai_stale_oauth_error(error_context, status_code)" in recover
     assert "_is_xai_auth_failure" not in recover, (
         "inline duplicate of the predicate is back; the two arms will drift"

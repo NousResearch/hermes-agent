@@ -1,3 +1,5 @@
+import { REASONING_EFFORTS } from '@hermes/shared'
+
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -10,7 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/lib/reasoning-effort'
+import { isThinkingEnabled, reasoningEffortClamp, resolveReasoningEffort } from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
@@ -20,7 +22,9 @@ import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/
  *  - `variant`: a separate `…-fast` sibling model selected via the model field.
  */
 export type FastControl =
-  { kind: 'none' } | { kind: 'param'; on: boolean } | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
+  | { kind: 'none' }
+  | { kind: 'param'; on: boolean; canEnable?: boolean }
+  | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
 
 /** Resolve the fast mechanism for a model: prefer the speed=fast parameter
  *  when the backend supports it, else fall back to a `…-fast` sibling model. */
@@ -52,7 +56,7 @@ export function resolveFastControl(
   // param on (carried over from a previous model), expose the toggle so it can
   // be turned off rather than stranded.
   if (currentFastMode) {
-    return { kind: 'param', on: true }
+    return { kind: 'param', on: true, canEnable: false }
   }
 
   return { kind: 'none' }
@@ -69,8 +73,13 @@ interface ModelEditSubmenuProps {
   /** This row's effective reasoning effort (live for the active model, else its
    *  preset) — the submenu shows and edits from this, never the raw session. */
   effort: string
+  /** Gateway-reported level the route actually sends for `effort` (active row
+   *  only; '' = unknown). A clamped pick is spelled out on its radio row. */
+  effortWire?: string
   /** How fast mode is offered for this model (param toggle vs. variant swap). */
   fastControl: FastControl
+  serviceTier?: string
+  ultrafastSupported?: boolean
   /** Whether this row's model is the active one. */
   isActive: boolean
   /** This row's model id. */
@@ -81,7 +90,7 @@ interface ModelEditSubmenuProps {
    *  session, a preset store, or the gateway itself — the owning surface's
    *  controller decides what an edit means. That's what lets the same submenu
    *  drive a live chat session and a detached per-task override. */
-  onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  onSetOptions: (patch: { effort?: string; fast?: boolean; serviceTier?: string }) => void
   /** This row's provider slug. */
   provider: string
   /** Whether this model supports reasoning effort. */
@@ -96,16 +105,21 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // row made opening the menu itself lag on large catalogs.
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
-      <ModelEditSubmenuBody {...props} />
+      <ModelOptionsContent {...props} />
     </DropdownMenuSubContent>
   )
 }
 
-function ModelEditSubmenuBody({
+/** The options rows themselves, container-free: the catalog mounts them in a
+ *  per-row submenu, the composer's reasoning pill in its own top-level menu. */
+export function ModelOptionsContent({
   canDisableReasoning,
   defaultEffort,
   effort,
+  effortWire,
   fastControl,
+  serviceTier,
+  ultrafastSupported = false,
   isActive,
   onSelectModel,
   onSetOptions,
@@ -115,6 +129,7 @@ function ModelEditSubmenuBody({
   const copy = t.shell.modelOptions
 
   const effortValue = resolveReasoningEffort(effort, defaultEffort)
+  const clamp = reasoningEffortClamp(effortValue, effortWire)
   const thinkingOn = isThinkingEnabled(effort, defaultEffort)
   const showThinkingToggle = reasoning && canDisableReasoning !== false
 
@@ -138,9 +153,11 @@ function ModelEditSubmenuBody({
   }
 
   const hasFast = fastControl.kind !== 'none'
-  const fastOn = fastControl.kind === 'none' ? false : fastControl.on
+  const unsupportedSpeed = fastControl.kind === 'param' && fastControl.canEnable === false
+  const ultrafastOn = serviceTier === 'ultrafast'
+  const fastOn = fastControl.kind === 'none' ? false : fastControl.on && !ultrafastOn
 
-  return !hasFast && !reasoning ? (
+  return !hasFast && !ultrafastSupported && !reasoning ? (
     <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
   ) : (
     <>
@@ -156,10 +173,32 @@ function ModelEditSubmenuBody({
           />
         </DropdownMenuItem>
       ) : null}
-      {hasFast ? (
+      {unsupportedSpeed ? (
+        <DropdownMenuItem
+          className={dropdownMenuRow}
+          onSelect={event => {
+            event.preventDefault()
+            onSetOptions({ serviceTier: 'normal' })
+          }}
+        >
+          {copy.useStandardSpeed}
+        </DropdownMenuItem>
+      ) : hasFast ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
-          <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
+          <Switch aria-label={copy.fast} checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
+        </DropdownMenuItem>
+      ) : null}
+      {ultrafastSupported ? (
+        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+          {copy.ultrafast}
+          <Switch
+            aria-label={copy.ultrafast}
+            checked={ultrafastOn}
+            className="ml-auto"
+            onCheckedChange={checked => onSetOptions({ serviceTier: checked ? 'ultrafast' : 'normal' })}
+            size="xs"
+          />
         </DropdownMenuItem>
       ) : null}
       {reasoning ? (
@@ -174,7 +213,7 @@ function ModelEditSubmenuBody({
                 onSelect={event => event.preventDefault()}
                 value={value}
               >
-                {copy[value]}
+                {clamp?.effort === value ? `${copy[value]} (${copy.sendsOnRoute(copy[clamp.wire])})` : copy[value]}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>

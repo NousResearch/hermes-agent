@@ -12,6 +12,8 @@ import concurrent.futures
 import threading
 
 import pytest
+import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 
 def _occupy_default_executor(loop: asyncio.AbstractEventLoop):
@@ -71,7 +73,9 @@ async def _request_with_wedged_default_executor(path: str, *, warm: bool = False
 def test_profiles_route_survives_default_executor_starvation(monkeypatch):
     from hermes_cli import profiles
 
-    monkeypatch.setattr(profiles, "list_profiles", lambda: [])
+    # The route passes ``lazy_skill_count=True`` (#114041); a positional-only stub would TypeError
+    # into the directory-scan fallback and return the real profile list instead.
+    monkeypatch.setattr(profiles, "list_profiles", lambda **_: [])
 
     response = asyncio.run(_request_with_wedged_default_executor("/api/profiles"))
 
@@ -108,7 +112,7 @@ def test_status_route_survives_default_executor_starvation(monkeypatch):
     from hermes_cli import web_server
 
     monkeypatch.setattr(
-        web_server,
+        _web_server_gateway,
         "_collect_profile_gateway_topology_cached",
         lambda: {
             "profiles": ["default"],
@@ -117,7 +121,7 @@ def test_status_route_survives_default_executor_starvation(monkeypatch):
             "profile_platforms": {},
         },
     )
-    monkeypatch.setattr(web_server, "_resolve_restart_drain_timeout", lambda: 30.0)
+    monkeypatch.setattr(_web_server_lifecycle, "_resolve_restart_drain_timeout", lambda: 30.0)
     monkeypatch.setattr(web_server, "get_install_id", lambda: None)
 
     response = asyncio.run(

@@ -1,5 +1,4 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
-import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import {
   type ComponentProps,
@@ -95,7 +94,7 @@ const RENDER_BUDGET = 600
 // turn count regardless of weight).
 // Panes that already backfilled keep their mounted content when the count
 // changes — the share only caps where NEW backfills stop.
-const $mountedTranscriptPanes = atom(0)
+export const $mountedTranscriptPanes = atom(0)
 // Never offer "Show earlier" over fewer turns than this, however heavy they
 // are. A weight-only cut on a session of enormous turns put the button two
 // turns from the bottom, where it reads as broken rather than as paging — the
@@ -122,6 +121,32 @@ export const HIDDEN_TRANSCRIPT_RENDER_BUDGET = 40
 
 export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): number =>
   hidden ? HIDDEN_TRANSCRIPT_RENDER_BUDGET : Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes))
+
+/**
+ * This pane's share of the transcript render budget, WITHOUT subscribing the
+ * whole list: `$mountedTranscriptPanes` changes on every tile open/close, and
+ * a global subscription would re-run each list's memos each time. Refresh only
+ * this pane's number, and only when its own share actually changed (a hidden
+ * pane keeps its constant budget and never re-renders for mounts).
+ */
+export function usePaneBudgetShare(hidden: boolean): number {
+  const [paneBudget, setPaneBudget] = useState(() => transcriptPaneBudget($mountedTranscriptPanes.get(), hidden))
+
+  useEffect(() => {
+    const refreshPaneBudget = () =>
+      setPaneBudget(previous => {
+        const next = transcriptPaneBudget($mountedTranscriptPanes.get(), hidden)
+
+        return next === previous ? previous : next
+      })
+
+    refreshPaneBudget()
+
+    return $mountedTranscriptPanes.listen(refreshPaneBudget)
+  }, [hidden])
+
+  return paneBudget
+}
 
 // "Show earlier" raises renderBudget ABOVE paneBudget (one pane page per click).
 // The render-phase cap must only snap a hot-hidden pane down to its retention
@@ -528,15 +553,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => {
     $mountedTranscriptPanes.set($mountedTranscriptPanes.get() + 1)
 
-    return () => $mountedTranscriptPanes.set($mountedTranscriptPanes.get() - 1)
+    return () => {
+      $mountedTranscriptPanes.set($mountedTranscriptPanes.get() - 1)
+    }
   }, [])
 
-  const mountedPanes = useStore($mountedTranscriptPanes)
   const paneLifecycle = usePaneLifecycle()
   const paneVisible = usePaneVisible()
   // Hidden panes retain only a live-tail budget. Visible panes share the normal
   // screen budget; a reveal backfills older rows in bounded transition steps.
-  const paneBudget = transcriptPaneBudget(mountedPanes, paneLifecycle === 'hot-hidden')
+  const paneBudget = usePaneBudgetShare(paneLifecycle === 'hot-hidden')
 
   const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
 
@@ -1559,7 +1585,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     [visibleGroups, components, structuralSignature, tailStart]
   )
 
-  useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })
+  useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, sessionKey, sessionId: scrollSessionId })
   useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
 
   return (

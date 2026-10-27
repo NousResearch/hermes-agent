@@ -13,6 +13,7 @@ import json
 import logging
 import math
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -576,14 +577,37 @@ def scope_block_reason(name: str) -> str:
             or f"'{name}' is not available in this session. Use tool_search to find tools you can call.")
 
 
-def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[Iterable[str]] = None,
-                            ) -> tuple[Optional[str], dict[str, Any], Optional[str]]:
+def _scope_vouched_name(name: str, allowed_names: Optional[Collection[str]]) -> bool:
+    """True when ``name`` is a registry-invisible tool the caller already granted.
+
+    Memory-provider and context-engine tools have no registry entry, so
+    ``is_deferrable_tool_name`` is false for them. ``allowed_names`` is the
+    caller's session scope. Core, bridge, and registered names stay rejected
+    even if listed — those are invoked directly or through the registry gate.
+    """
+    if not allowed_names or name not in allowed_names:
+        return False
+    if name in BRIDGE_TOOL_NAMES or name in _core_tool_names():
+        return False
+    return _registry_entry(name) is None
+
+
+def resolve_underlying_call(
+    args: dict[str, Any],
+    session_tool_names: Optional[Iterable[str]] = None,
+    allowed_names: Optional[Collection[str]] = None,
+) -> tuple[Optional[str], dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
     * the dispatcher in ``model_tools.handle_function_call``,
     * the display layer (so the activity feed shows the underlying tool),
     * the trajectory recorder.
+
+    ``allowed_names`` admits registry-invisible provider tools (memory /
+    context-engine) that the caller has already scoped. Callers that omit it
+    keep the registry-only contract. The executor still re-checks scope after
+    resolution.
 
     A connector-only batch resolves
     to ``(CONNECTOR_BATCH_SENTINEL, {"calls": [...]}, None)``: the batch is
@@ -612,6 +636,8 @@ def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[I
     if unavailable:
         return None, {}, unavailable
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+        if _scope_vouched_name(name, allowed_names):
+            return name, raw_args, None
         return None, {}, not_deferrable_error(name, session_tool_names)
     return name, raw_args, None
 

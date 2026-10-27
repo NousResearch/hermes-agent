@@ -48,6 +48,27 @@ describe('markSessionUnread', () => {
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
   })
 
+  it('keeps the stale-page guard after its own optimistic paint', async () => {
+    let resolvePatch!: (value: { ok: boolean }) => void
+
+    patch.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolvePatch = resolve
+        })
+    )
+    const guarded = row('a', { profile: 'work', unread: false })
+
+    watchUnreadWriteGuard()
+    $sessions.set([guarded])
+    const pending = markSessionUnread('a', true)
+
+    expect($unreadWriteGuard.get().get(unreadWriteKey(guarded))?.value).toBe(true)
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    resolvePatch({ ok: true })
+    await pending
+  })
+
   it('keeps a registry row route binding on the unread PATCH', async () => {
     $sessions.set([
       row('a', {

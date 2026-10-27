@@ -181,10 +181,11 @@ class GatewaySessionWatchersMixin:
         from gateway.run import _async_profile_runtime_scope
         try:
             metadata = self._thread_metadata_for_source(source)
-            notice = format_session_stall_notification(idle_seconds)
             result = None
             async def send_notice():
                 nonlocal result
+                # Rendered inside the routed profile's scope so the notice follows ITS display.language.
+                notice = format_session_stall_notification(idle_seconds)
                 # Bound the send: a wedged adapter transport (network hang, dead websocket) must not
                 # block the watcher pass — siblings would go unevaluated and the watcher stop.
                 result = await asyncio.wait_for(

@@ -127,6 +127,7 @@ def _normalize_lang(value: Any, home: str | None = None) -> str:
     return resolve_language_id(value, home) or DEFAULT_LANGUAGE
 
 
+@lru_cache(maxsize=64)
 def _load_bundled(lang: str) -> dict[str, str]:
     """One bundled locale YAML flattened to dotted keys (empty dict on any failure — never crashes)."""
     path = _locales_dir() / f"{lang}.yaml"
@@ -153,7 +154,7 @@ def _load_catalog(lang: str, home: str | None = None) -> dict[str, str]:
         cached = _catalog_cache.get(key)
         if cached is not None:
             return cached
-    merged = _load_bundled(lang)
+    merged = dict(_load_bundled(lang))
     merged.update(i18n_layers.overlay_layer(home, lang))
     merged.update(i18n_layers.pack_layer(lang))
     with _catalog_lock:
@@ -198,6 +199,7 @@ def reset_language_cache() -> None:
     ``save_config`` changes ``display.language``, after a pack registers/unregisters, or after editing
     an overlay file)."""
     _config_language_cached.cache_clear()
+    _load_bundled.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
         _supported_cache.clear()
@@ -234,23 +236,69 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     if value is None:
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
+    return _format_catalog_text(value, key, target, format_kwargs)
+
+
+def _format_catalog_text(value: str, key: str, target: str, format_kwargs: dict[str, Any]) -> str:
     if not format_kwargs:
         return value
     try:
         return value.format(**format_kwargs)
-    except (KeyError, IndexError, ValueError) as exc:
+    # Overlay/pack text is user-authored: ``{x.attr}`` / ``{x[k]}`` on a str kwarg raise Attribute/TypeError.
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:
         logger.warning("i18n format failed for key=%r lang=%r kwargs=%r: %s", key, target, format_kwargs, exc)
         return value
+
+
+class LocalizedText(str):
+    """English text that also names its catalog key, for copy whose English other code relies on.
+
+    Agent status lines are regex-matched in English (gateway noise filter, provider-error rewriter,
+    TUI/Desktop compaction and fallback tagging) and land in logs and transcripts. The str value stays
+    English for all of those; only a presentation sink calls :func:`render_localized` to show the
+    active language. Wrappers that rebuild the string (``DiagnosticText``) copy ``i18n_key``/``i18n_kwargs``.
+    """
+
+    def __new__(cls, english: str, key: str, format_kwargs: dict[str, Any] | None = None) -> LocalizedText:
+        text = super().__new__(cls, english)
+        text.i18n_key, text.i18n_kwargs = key, format_kwargs or {}
+        return text
+
+
+def tl(key: str, **format_kwargs: Any) -> LocalizedText:
+    """Bundled English source carrying its key for presentation-time localization. English overlays
+    and packs customize display too; they must never rewrite what matchers or storage consume."""
+    source = _load_bundled(DEFAULT_LANGUAGE).get(key, key)
+    english = _format_catalog_text(source, key, DEFAULT_LANGUAGE, format_kwargs)
+    return LocalizedText(english, key, format_kwargs)
+
+
+def preload_catalogs() -> None:
+    """Parse the English and active-language catalogs now. ``tl()`` and the status sinks run on
+    latency-sensitive paths (stream kill, interrupt handling) that must not pay the first YAML load."""
+    home = _current_home()
+    _load_catalog(DEFAULT_LANGUAGE, home)
+    _load_catalog(_resolve_language(home), home)
+
+
+def render_localized(text: Any) -> Any:
+    """The active-language rendering of a :func:`tl` value; any other value is returned unchanged."""
+    key = getattr(text, "i18n_key", None)
+    return t(key, **text.i18n_kwargs) if key else text
 
 
 __all__ = [
     "DEFAULT_LANGUAGE",
     "SUPPORTED_LANGUAGES",
+    "LocalizedText",
     "get_language",
     "language_options",
+    "preload_catalogs",
+    "render_localized",
     "reset_language_cache",
     "resolve_language_id",
     "supported_languages",
     "surface_catalog",
     "t",
+    "tl",
 ]

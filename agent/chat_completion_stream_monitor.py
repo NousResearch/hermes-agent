@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from agent import chat_completion_wait_notice as wn
+from agent.i18n import tl
 from agent.model_metadata import is_local_endpoint
 from agent.proxy_bypass import is_loopback_host
 from agent.sleep_clock import SleepWatch
@@ -61,7 +62,7 @@ class StreamingWaitMonitor:
                     self._same_attempt_kills, attempt, self.api_kwargs.get("model", "unknown"))
             self._liveness_withheld_at = self.last_chunk_time["t"]
         if self._claims_liveness():  # the reconnect notice touches activity too (_emit_wait_notice)
-            self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
+            self.agent._emit_diagnostic_wait(tl("display.wait.stream_stale_reconnect", seconds=int(elapsed)))
             self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 
     def _forget_invisible_deltas(self, exc) -> bool:

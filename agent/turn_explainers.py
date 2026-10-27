@@ -233,11 +233,13 @@ class TurnExplainersMixin:
     @staticmethod
     def _format_turn_completion_explanation(
         turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None, model: str = "",
+        lang: Optional[str] = None,
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
         ``text_response(...)`` is the healthy terminal; unknown/diagnostic-only reasons (e.g.
-        ``guardrail_halt``, which surfaces its own message) are not second-guessed.
+        ``guardrail_halt``, which surfaces its own message) are not second-guessed. Active language
+        unless ``lang`` pins one (``"en"`` for a result's ``error`` or a persisted row).
         """
         if not turn_exit_reason:
             return ""
@@ -251,7 +253,7 @@ class TurnExplainersMixin:
                     key = prefix_key
                     break
         if key is not None:
-            body = t(key, model=model or t("explainer.shared.the_model"))
+            body = t(key, lang=lang, model=model or t("explainer.shared.the_model", lang=lang))
         elif reason == "session_persistence_failed":
             from hermes_constants import display_hermes_home, profile_cli_selector
             from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
@@ -269,7 +271,7 @@ class TurnExplainersMixin:
 
                 fill["db_path"] = str(db_path or _default_db_path())
                 fill["backups_dir"] = str(get_default_hermes_root() / "backups")
-            body = t(_persistence_explanation_key(persistence_cause), **fill)
+            body = t(_persistence_explanation_key(persistence_cause), lang=lang, **fill)
         else:
             body = None
-        return t("explainer.no_reply_prefix") + body if body else ""
+        return t("explainer.no_reply_prefix", lang=lang) + body if body else ""

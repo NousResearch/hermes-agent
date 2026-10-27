@@ -19,6 +19,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
+from agent.i18n import tl
+from agent.turn_recovery_status import (
+    _NONRETRYABLE_STATUS_KEYS, _ZAI_POLICY_NOTES, _adaptive_wait_status, _nonretryable_failed_status,
+)
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -999,16 +1003,6 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
     return ""
 
 
-# Terminal status label per non-retryable reason (default names the HTTP status).
-_NONRETRYABLE_LABELS = {
-    FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
-    FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
-    FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
-    # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
-    FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
-}
-
-
 def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model: Any) -> Optional[str]:
     """Prefixed catalogue id when a bare 404 most likely means ``vendor/model`` lost its prefix."""
     if getattr(api_error, "status_code", None) != 404:
@@ -1043,8 +1037,7 @@ def nonretryable_client_error_result(
     # collapsed here or they leak verbatim via the ``error`` field.
     _nonretryable_summary = agent._summarize_api_error(api_error)
     _plabel = provider_label_for(provider)
-    _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
-    agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
+    agent._emit_diagnostic_status(_nonretryable_failed_status(classified.reason, _plabel, _nonretryable_summary))
     # The endpoint/status trace is developer detail: verbose only (the log has it always).
     if getattr(agent, "verbose_logging", False):
         _vlines(
@@ -1069,7 +1062,7 @@ def nonretryable_client_error_result(
         _vlines(agent, f"   💡 Model '{model}' isn't available on {_plabel}. Pick another with /model.")
         if _prefix_suggestion:
             _vlines(agent, f"      Did you mean '{_prefix_suggestion}'? It looks like the vendor prefix is missing.")
-    elif classified.reason not in _NONRETRYABLE_LABELS:
+    elif classified.reason not in _NONRETRYABLE_STATUS_KEYS:
         _vlines(agent, f"   💡 Fix: pick another model (/model), or check `{display_hermes_home()}/logs/agent.log`.")
     # A WAF/CDN block (#53099, #70566): the key never reached the provider; the usual cause
     # is the SDK User-Agent, which the per-provider extra_headers override.
@@ -1185,12 +1178,9 @@ def max_retries_exhausted_result(
     if _is_billing:
         if classified.billing_unverified:
             # Ambiguous body — hedge the terminal line.
-            agent._emit_diagnostic_status(
-                "❌ Provider reported usage/credit exhaustion "
-                f"(unverified — may be a content-filter rejection) — {_final_summary}"
-            )
+            agent._emit_diagnostic_status(tl("display.status.turn.billing_unverified_failed", summary=_final_summary))
         else:
-            agent._emit_diagnostic_status(f"❌ Billing or credits exhausted — {_final_summary}")
+            agent._emit_diagnostic_status(tl("display.status.turn.billing_failed", summary=_final_summary))
         _billing_kw = dict(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=classified.billing_unverified,
@@ -1202,11 +1192,13 @@ def max_retries_exhausted_result(
     elif is_rate_limited:
         _reset = reset_hint(api_error)
         agent._emit_diagnostic_status(
-            f"❌ Rate limited after {attempts} {'attempt' if attempts == 1 else 'retries'} — {_final_summary}"
-            f"{f' (resets in {_reset})' if _reset else ''}"
+            tl("display.status.turn.rate_limited_failed_reset_one" if attempts == 1
+               else "display.status.turn.rate_limited_failed_reset", max=attempts, summary=_final_summary, reset=_reset)
+            if _reset else tl("display.status.turn.rate_limited_failed_one" if attempts == 1
+                              else "display.status.turn.rate_limited_failed", max=attempts, summary=_final_summary)
         )
     else:
-        agent._emit_diagnostic_status(f"❌ API failed after {attempts} retries — {_final_summary}")
+        agent._emit_diagnostic_status(tl("display.status.turn.api_failed", max=attempts, summary=_final_summary))
     _vlines(agent, f"   💀 Final error: {_final_summary}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:
@@ -1422,12 +1414,6 @@ def interruptible_backoff_sleep(
     return None
 
 
-_ZAI_POLICY_NOTES = {
-    "zai_coding_overload_long": " (Z.AI Coding overload adaptive long backoff)",
-    "zai_coding_overload_short": " (Z.AI Coding overload short retry)",
-}
-
-
 def reset_hint(api_error: Exception) -> str:
     """``"~13m"`` until the ``reset_at`` parsed from *api_error* (epoch s/ms or ISO-8601), else ``""``.
 
@@ -1479,12 +1465,15 @@ def compute_error_backoff(
     _wait_reason = ("The free model is busy" if _free_busy
                     else "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited")
     if _adaptive:
-        _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
-        _status = (f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
-                   f"(attempt {retry_count + 1}/{max_retries}){_policy_note}...")
+        _status = _adaptive_wait_status(
+            overloaded=is_zai_coding_overload and not is_rate_limited, free_busy=_free_busy, reset=_reset,
+            policy=_backoff_policy if _backoff_policy in _ZAI_POLICY_NOTES else None,
+            wait_time=wait_time, attempt=retry_count + 1, max_retries=max_retries,
+        )
         _announce_now = _backoff_policy == "zai_coding_overload_long"
     else:
-        _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        _status = tl("display.status.turn.retry_wait", wait=f"{wait_time:.1f}",
+                     attempt=retry_count, max=max_retries)
         # A 5xx Retry-After can reach the cap; buffering it would leave the user silent for minutes.
         _announce_now = _retry_after is not None and _retry_after > LIVE_RETRY_WAIT_CAP_S
     if _announce_now:
@@ -1738,20 +1727,18 @@ def _cap_long_context_tier(agent: Any) -> int:
 def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_failure: bool) -> str:
     """Status line announcing an eager fallback switch."""
     if is_upstream:
-        _upstream_name = (classified.error_context or {}).get("upstream_provider", "aggregator")
-        return f"⚠️ Upstream {_upstream_name} rate-limited — switching to fallback model..."
+        _ctx = classified.error_context or {}
+        if "upstream_provider" not in _ctx:
+            return tl("display.status.turn.fallback_upstream_aggregator_rate_limited")
+        return tl("display.status.turn.fallback_upstream_rate_limited", upstream=_ctx["upstream_provider"])
     if classified.reason == FailoverReason.billing:
         if classified.billing_unverified:
             # Ambiguous body — don't assert billing.
-            return (
-                "⚠️ Provider reported usage/credit exhaustion "
-                "(unverified — may be a content-filter rejection) "
-                "— switching to fallback provider..."
-            )
-        return "⚠️ Billing or credits exhausted — switching to fallback provider..."
+            return tl("display.status.turn.fallback_billing_unverified")
+        return tl("display.status.turn.fallback_billing")
     if is_transport_failure:
-        return "⚠️ Provider unreachable — switching to fallback provider..."
-    return "⚠️ Rate limited — switching to fallback provider..."
+        return tl("display.status.turn.fallback_unreachable")
+    return tl("display.status.turn.fallback_rate_limited")
 
 
 def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bool:
@@ -1959,10 +1946,7 @@ def route_classified_error(
         and agent._fallback_index < len(agent._fallback_chain)
     ):
         _retry.auth_failover_attempted = True
-        agent._buffer_diagnostic_status(
-            "🔐 Authentication failed and could not be refreshed — "
-            "switching to fallback provider..."
-        )
+        agent._buffer_diagnostic_status(tl("display.status.turn.fallback_auth_failed"))
         if agent._try_activate_fallback(reason=classified.reason):
             return _fallback_break()
 

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
+from agent.i18n import tl
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
@@ -638,11 +639,7 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent.api_mode != "anthropic_messages":
         with suppress(Exception):
             if agent._cleanup_dead_connections():
-                agent._emit_diagnostic_status(
-                    "🔌 Detected stale connections from a previous provider "
-                    "issue — cleaned up automatically. Proceeding with fresh "
-                    "connection."
-                )
+                agent._emit_diagnostic_status(tl("display.status.turn.stale_connections_cleaned"))
     # A stale streak against a local server that has since recovered must not fail this turn on arrival.
     with suppress(Exception):
         from agent.chat_completion_local import retry_recovered_local_server

@@ -28,7 +28,7 @@ def test_runtime_deadline_preserves_scope_and_retry_budget():
     assert read('due')['attempts'] == 0
     claimed = dl.sweep_failed_for_runtime('telegram', now=stamp + 186)
     assert [r['obligation_id'] for r in claimed] == ['due']
-    assert claimed[0]['needs_marker'] and 'rate limit' in claimed[0]['marker']
+    assert claimed[0]['needs_marker'] and 'rate limit' in dl.recovered_marker(claimed[0]['marker_cause'])
     assert read('due')['last_error'] is None
     assert dl.sweep_failed_for_runtime('telegram', now=stamp + 187) == []
     assert dl.release_runtime_claim('due', claimed[0]['last_error'])

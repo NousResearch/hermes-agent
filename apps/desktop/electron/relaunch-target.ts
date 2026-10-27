@@ -42,7 +42,12 @@ export function ownAppImage(execPath: string, env: NodeJS.ProcessEnv): string | 
   const exe = posix.resolve(execPath)
 
   if (!appDir) {
-    return posix.dirname(exe).split('/').some(segment => segment.startsWith('.mount_')) ? appImage : undefined
+    return posix
+      .dirname(exe)
+      .split('/')
+      .some(segment => segment.startsWith('.mount_'))
+      ? appImage
+      : undefined
   }
 
   if (isInside(posix.resolve(appDir), exe)) {

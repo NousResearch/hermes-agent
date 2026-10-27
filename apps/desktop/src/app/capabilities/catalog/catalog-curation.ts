@@ -11,7 +11,7 @@ const images = import.meta.glob<string>('../../../../../../website/static/img/ca
 })
 
 const artworkUrl = (filename: string | undefined) =>
-  filename ? images[`../../../../../../website/static/img/catalog/${filename}`] ?? null : null
+  filename ? (images[`../../../../../../website/static/img/catalog/${filename}`] ?? null) : null
 
 interface CurationRow {
   name?: string
@@ -29,7 +29,9 @@ export function curationOwnsArtwork(kind: 'skills' | 'plugins', row: CurationRow
 
 /** Only first-party catalog identities receive editorial artwork. */
 export function officialCatalogArtwork(kind: 'skills' | 'plugins', row: CurationRow): string | null {
-  if (!curationOwnsArtwork(kind, row)) {return null}
+  if (!curationOwnsArtwork(kind, row)) {
+    return null
+  }
 
   return kind === 'skills'
     ? artworkUrl((artwork.skills as Record<string, string>)[`${row.category}/${row.name}`])
@@ -40,9 +42,14 @@ export function officialCatalogArtwork(kind: 'skills' | 'plugins', row: Curation
  *  the extractors stamped `featured`. Same keys the extractors use, so the app
  *  and the site agree once the feed catches up. */
 export function curatedFeaturedRank(kind: 'skills' | 'plugins', row: CurationRow): number | undefined {
-  const key = kind === 'skills'
-    ? (isOfficialSkillSource(row.source) ? `${row.category}/${row.name}` : '')
-    : (row.tier === 'official' ? row.name ?? '' : '')
+  const key =
+    kind === 'skills'
+      ? isOfficialSkillSource(row.source)
+        ? `${row.category}/${row.name}`
+        : ''
+      : row.tier === 'official'
+        ? (row.name ?? '')
+        : ''
 
   const rank = (featured[kind] as string[]).indexOf(key) + 1
 

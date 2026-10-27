@@ -96,12 +96,11 @@ describe('relaunchNow', () => {
         fs.writeFileSync(held, '')
         // This mount's AppRun prepended it to PATH; the mount is gone soon after the child starts.
         const mount = path.join(dir, '.mount_HermesQ7x2Lp')
-        relaunchNow(
-          { releaseSingleInstanceLock: () => events.push('release') },
-          [],
-          image,
-          { ...process.env, APPDIR: mount, PATH: `${mount}:${mount}/usr/sbin:/usr/bin:/bin` }
-        )
+        relaunchNow({ releaseSingleInstanceLock: () => events.push('release') }, [], image, {
+          ...process.env,
+          APPDIR: mount,
+          PATH: `${mount}:${mount}/usr/sbin:/usr/bin:/bin`
+        })
 
         await vi.waitFor(() => expect(fs.existsSync(report)).toBe(true), { timeout: 5000 })
         expect(events).toEqual(['release'])

@@ -327,7 +327,12 @@ describe('Linux runtime --no-sandbox relaunch', () => {
 
         expect(events).toEqual(['release', 'exit'])
         expect(args).toBe('hermes://session/abc --no-sandbox')
-        expect(noNewPrivs).toBe(fs.readFileSync('/proc/self/status', 'utf8').match(/NoNewPrivs:\s*(\d)/)?.[0].replace(/\s/g, ''))
+        expect(noNewPrivs).toBe(
+          fs
+            .readFileSync('/proc/self/status', 'utf8')
+            .match(/NoNewPrivs:\s*(\d)/)?.[0]
+            .replace(/\s/g, '')
+        )
       } finally {
         process.argv = savedArgv
         process.execPath = savedExecPath

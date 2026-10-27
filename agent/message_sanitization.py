@@ -299,9 +299,10 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None, 
     (truncation notices, partial-delivery text) stays visible: it is the turn's only
     user-facing explanation.
 
-    ``stopped`` (a user stop, not a truncation or overflow exit) puts the stopped mark on the
-    closing row, as ``turn_api_call.py`` does on a partial reply: it is the turn's last stored
-    row, so a reopened transcript still says the turn was stopped."""
+    ``stopped`` (an interrupted turn: a user stop or any other interrupt, not a truncation or
+    overflow exit) puts the stopped mark on the closing row, as ``turn_api_call.py`` does on every
+    interrupted partial reply: it is the turn's last stored row, so a reopened transcript still says
+    the turn was stopped."""
     last = messages[-1] if messages else None
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False

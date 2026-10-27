@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { LOCAL_CONNECTION_ID } from './connection-registry'
 import { profileNameFromDeleteRequest } from './profile-delete-routing'
 import { profileRenameFromRequest, type ProfileRenameRequest } from './profile-rename-routing'
 import type { WindowConnectionRoute } from './window-connection-route'
@@ -8,6 +9,19 @@ import type { WindowConnectionRoute } from './window-connection-route'
 export interface DesktopProfileRoute {
   connectionId: null | string
   profile: string
+}
+
+/** What decides whether a remembered route names a profile on this machine. */
+export interface MissingLocalProfileCheck {
+  /** App-wide remote mode: one remote gateway serves every legacy (null-connection) route. */
+  globalRemote: boolean
+  /** The profile has its own remote, SSH or cloud route. */
+  hasRemoteOverride: (profile: string) => boolean
+  /** The profile this launch named with --profile; like `hermes -p`, it still fails loudly. */
+  launchProfile: null | string
+  log: (line: string) => void
+  /** The profile's directory exists under this machine's profiles root. */
+  profileExists: (profile: string) => boolean
 }
 
 export const DESKTOP_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -202,5 +216,54 @@ export function createDesktopProfilePreferences(
     }
   }
 
-  return { afterProfileRequest, connectionRemoved, getDefault, profileChanged, readActive, remember, setDefault }
+  // userData outlives HERMES_HOME: a reinstall that wiped the Hermes home, or a
+  // `hermes profile delete` while the app was closed, never reaches
+  // afterProfileRequest. A remembered local profile that is gone would launch
+  // `--profile <gone>` on every boot, which the backend refuses, so apply the
+  // in-app delete's outcome: last-used falls back to default and a matching
+  // explicit default is cleared. Remote routes are never judged by the local
+  // disk. Runs on the startup path, so a failed write is logged, not thrown.
+  function forgetMissingLocalProfiles(check: MissingLocalProfileCheck): string[] {
+    const isGone = ({ connectionId, profile }: DesktopProfileRoute) =>
+      profile !== 'default' &&
+      profile !== check.launchProfile &&
+      (connectionId === null ? !check.globalRemote : connectionId === LOCAL_CONNECTION_ID) &&
+      !check.hasRemoteOverride(profile) &&
+      !check.profileExists(profile)
+
+    const forgotten: string[] = []
+
+    try {
+      const active = readActive()
+
+      if (active && isGone({ connectionId: null, profile: active })) {
+        remember('default')
+        forgotten.push(active)
+        check.log(`[profile] last-used profile "${active}" no longer exists on this machine; starting as default`)
+      }
+
+      const route = getDefault()
+
+      if (route && isGone(route)) {
+        clearDefault()
+        forgotten.push(route.profile)
+        check.log(`[profile] cleared default profile "${route.profile}": it no longer exists on this machine`)
+      }
+    } catch (error) {
+      check.log(`[profile] could not forget missing local profiles: ${(error as Error).message}`)
+    }
+
+    return forgotten
+  }
+
+  return {
+    afterProfileRequest,
+    connectionRemoved,
+    forgetMissingLocalProfiles,
+    getDefault,
+    profileChanged,
+    readActive,
+    remember,
+    setDefault
+  }
 }

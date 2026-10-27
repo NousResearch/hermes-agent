@@ -45,6 +45,7 @@ from hermes_constants import (
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
+from hermes_cli import config_omissions, config_readable_cache
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
     config_exists, config_version, probe_config_readable, read_config_doc,
@@ -1903,7 +1904,14 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     Guards two collapse-to-empty failure modes that would let a read-then-write caller silently
     wipe user overrides: an unreadable file (permissions / broken mount) and an unparseable or
     non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
-    replace the recoverable file with only the caller's partial dict. Fails closed."""
+    replace the recoverable file with only the caller's partial dict. Fails closed.
+
+    Results are memoized on (path, config_version) while the config is unchanged. Plugins that
+    resolve their state directory through this function call it from tool hooks (pre/post/transform),
+    so a gateway serving many sessions would otherwise re-parse the whole config several times per
+    tool call while holding the GIL (~18ms per call, ~9% of GIL-held samples with ~11 sessions).
+    Failures are never cached: a malformed or unreadable file is re-validated on every call.
+    """
     if config_path is None:
         snapshot = _worker_config_snapshot()
         if snapshot is not None:
@@ -1911,12 +1919,14 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
             return copy.deepcopy(snapshot)
         config_path = get_config_path()
     try:
-        config_version(config_path)
+        version = config_version(config_path)
     except FileNotFoundError:
         return {}
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
-
+    cached = config_readable_cache.get_readable_config(str(config_path), version)
+    if cached is not None:
+        return cached
     try:
         loaded = read_config_doc(config_path)
     except OSError as exc:
@@ -1933,32 +1943,13 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         raise _refuse_overwrite(
             config_path, f"must start with settings names, but its top level is a {type(loaded).__name__}",
             exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
+    # Only cache when the version is not racily fresh (a write in the same tick as the version
+    # read would leave the signature unchanged — don't trust it as "nothing changed since").
+    if not config_readable_cache.version_is_racily_fresh(version):
+        path_key = str(config_path)
+        config_readable_cache.store_readable_config(path_key, version, loaded)
+        return config_readable_cache.get_readable_config(path_key, version)
     return loaded
-
-
-def _omitted_config_paths(
-    existing: dict[str, Any], proposed: dict[str, Any], prefix: tuple[str, ...] = (),
-) -> list[str]:
-    """Mapping paths that *proposed* would delete by omission from *existing*.
-
-    The round-trip writer recurses through mappings, so the completeness check must recurse too:
-    checking top-level key counts still lets a partial ``plugins: {...}`` payload erase sibling
-    settings inside that section. Replacing a non-empty mapping with a scalar/list is likewise a
-    deletion of that mapping's children and is reported at the mapping path.
-    """
-    omitted: list[str] = []
-    for key, old_value in existing.items():
-        path = (*prefix, str(key))
-        if key not in proposed:
-            omitted.append(".".join(path))
-            continue
-        new_value = proposed[key]
-        if isinstance(old_value, dict):
-            if isinstance(new_value, dict):
-                omitted.extend(_omitted_config_paths(old_value, new_value, path))
-            elif old_value:
-                omitted.append(".".join(path))
-    return omitted
 
 
 def _write_config_state(
@@ -1969,7 +1960,7 @@ def _write_config_state(
     _refuse_failed_read(config_path, data)
     if not allow_omissions:
         existing = require_readable_config_before_write(config_path)
-        omitted = _omitted_config_paths(existing, data)
+        omitted = config_omissions.omitted_config_paths(existing, data)
         if omitted:
             shown = ", ".join(omitted[:12])
             if len(omitted) > 12:

@@ -1069,6 +1069,17 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     requested_provider, explicit_base_url = expand_direct_api_alias(requested_provider, explicit_base_url)
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    if requested_provider == "custom" and not runtime.get("api_key"):
+        # A bare ``custom`` request that fell through the whole ladder credentialless: the named
+        # entry serving the session's model is the credential this refusal's own advice names
+        # ("use its real name"). Heal the request to that entry and resolve once through it;
+        # nothing changes when no entry serves the model or the healed run is still keyless (#145614).
+        named = _serving_named_custom_entry(explicit_base_url, target_model)
+        if named and named != requested_provider:
+            healed = resolve_runtime_provider(requested=named, explicit_api_key=explicit_api_key,
+                                              explicit_base_url=explicit_base_url, target_model=target_model)
+            if healed.get("api_key"):
+                return healed
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
     # model.openai_runtime is applied ONCE, after the ladder: every rung (pool, OAuth store,
     # explicit --api-key/--base-url, env key) hardcodes the wire api_mode for openai/openai-codex,
@@ -1081,6 +1092,19 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
     runtime["api_mode"] = api_mode
     return runtime
+
+
+def _serving_named_custom_entry(explicit_base_url: Optional[str], target_model: Optional[str]) -> Optional[str]:
+    """The configured named entry a credentialless bare ``custom`` request should ride: the one
+    serving the session's model, at the request's endpoint when it carries one. The route-key and
+    runtime-metadata seams already heal the bare ``custom`` billing class to its durable
+    ``custom:<name>`` identity; this is the same healing at the resolution seam, which was the one
+    place a bare pick with no endpoint/key of its own still died at agent construction. None when
+    no entry serves the model — the bare-custom refusal then stands unchanged."""
+    from hermes_cli.runtime_provider_custom import routed_custom_identity
+    model_cfg = _get_model_config()
+    base_url = explicit_base_url or (model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else None)
+    return routed_custom_identity(base_url, target_model or model_cfg.get("default"), load_config())
 
 
 def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: dict[str, Any]) -> None:

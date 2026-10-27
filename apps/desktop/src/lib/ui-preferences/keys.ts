@@ -12,8 +12,9 @@
  * - per-window or per-device runtime state: layout tree, open tiles and tabs,
  *   last route/session, scroll, zoom, pet and popout geometry, keep-awake;
  * - drafts, queues, journals and caches: composer queue, in-flight turns,
- *   pending/prepared submissions, previews, pricing, backend skin cache;
- * - seen/dismissed markers and onboarding progress.
+ *   pending/prepared submissions, previews, pricing, backend skin cache, the
+ *   "provider configured" onboarding cache (each backend answers that itself);
+ * - one-off notices: butterbar, update and real-profile prompts.
  */
 
 const SHARED_KEYS: ReadonlySet<string> = new Set([
@@ -64,8 +65,15 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   'hermes.desktop.layoutPresets.v2',
   'hermes.desktop.panesFlipped',
   'hermes.desktop.tabStripDefault',
-  'hermes.desktop.tips.rotation.v1',
   'hermes.desktop.titlebarAppActions',
+  // Guidance: what the user already skipped, saw or dismissed does not come
+  // back in every new browser or origin (#145600).
+  'hermes-onboarding-skipped-v1',
+  'hermes.desktop.tips.last.v1',
+  'hermes.desktop.tips.next.v1',
+  'hermes.desktop.tips.retired.v1',
+  'hermes.desktop.tips.rotation.v1',
+  'hermes.desktop.tips.shownAt.v1',
   'hermes.desktop.tours.v1',
   // Sound and media.
   'hermes.desktop.autoSpeakReplies',

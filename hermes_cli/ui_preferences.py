@@ -39,7 +39,7 @@ from typing import Callable, Iterator, Mapping, Optional
 from utils import atomic_json_write
 
 STORE_NAME = "ui-preferences.json"
-KEY_PREFIXES = ("hermes.desktop.", "hermes-desktop-")
+KEY_PREFIXES = ("hermes.desktop.", "hermes-desktop-", "hermes-onboarding-")
 MAX_KEY_CHARS = 256
 MAX_VALUE_CHARS = 256 * 1024
 MAX_KEYS = 512

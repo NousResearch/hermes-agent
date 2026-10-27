@@ -26,7 +26,6 @@ cannot select the backend, because the backend is what serves config.
 | `HERMES_CONFIG_BACKEND=remote` | Use the config plane instead of `config.yaml` (default `file`). |
 | `HERMES_CONFIG_INSTANCE_ID` | This agent's id in the plane. Hermes Cloud sets it; on-prem the operator sets it when registering the agent. Required. |
 | `HERMES_CONFIG_REMOTE_URL` | The plane's base URL (default `https://config-config.nousresearch.com`). |
-| `HERMES_CONFIG_REMOTE_POLL_SECONDS` | How often each process checks for changes (default `300`, minimum `30`). |
 
 The agent authenticates as itself:
 
@@ -64,9 +63,9 @@ exits with an error rather than read a local file.
   there is no local cache. A running process keeps the config it last fetched
   in memory. If the plane becomes unreachable while Hermes runs, the process
   keeps its in-memory config and retries on the next poll.
-- **Changes arrive by polling.** Each process checks for changes every
-  `HERMES_CONFIG_REMOTE_POLL_SECONDS`. A change made in the plane reaches a
-  running agent within one interval.
+- **Changes arrive by polling.** Each process checks for changes every 5
+  minutes. A change made in the plane reaches a running agent within one
+  interval.
 - **Writes go to the profile's own level.** `hermes config set`, `/model`,
   the dashboard, and every other config writer send only the keys that changed,
   guarded against concurrent edits. If another process changed the profile

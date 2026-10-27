@@ -364,11 +364,15 @@ def test_forked_child_rearms_its_poller(plane):
     assert backend._poller is not None and backend._poller.is_alive()
 
 
-def test_poll_interval_floor(monkeypatch):
-    monkeypatch.setenv("HERMES_CONFIG_REMOTE_POLL_SECONDS", "1")
-    assert backend_mod.poll_interval() == backend_mod.MIN_POLL_SECONDS
-    monkeypatch.setenv("HERMES_CONFIG_REMOTE_POLL_SECONDS", "600")
-    assert backend_mod.poll_interval() == 600
+def test_poll_interval_is_a_constant_no_env_tunes(monkeypatch):
+    # teknium1 P2-2: no non-secret HERMES_* env var for the interval; 300 s, clamped at 30 s.
+    for value in ("1", "600"):
+        monkeypatch.setenv("HERMES_CONFIG_REMOTE_POLL_SECONDS", value)
+        assert backend_mod.poll_interval() == 300.0
+    assert backend_mod.MIN_POLL_SECONDS == 30.0
+    backend = backend_mod.RemoteBackend()
+    names = backend.bootstrap_env_names() | backend.deployment_env_names() | backend.protected_env_names()
+    assert not any("POLL" in n for n in names)
 
 
 def test_named_profile_fetches_its_own_layer(plane):

@@ -34,19 +34,14 @@ from .values import secret_literal_path, to_wire
 
 logger = logging.getLogger(__name__)
 
-POLL_ENV = "HERMES_CONFIG_REMOTE_POLL_SECONDS"
-DEFAULT_POLL_SECONDS = 300.0
+POLL_SECONDS = 300.0               # contract §11.3; a plane-served interval is a later change
 MIN_POLL_SECONDS = 30.0            # contract §11.3: lower values are clamped
 BOOT_RETRY_DELAYS = (10.0, 20.0)   # contract §11.4: attempts at t = 0, ~10 s, ~30 s
 MAX_RETRY_WAIT = 20.0
 
 
 def poll_interval() -> float:
-    try:
-        value = float(os.environ.get(POLL_ENV, "") or DEFAULT_POLL_SECONDS)
-    except ValueError:
-        value = DEFAULT_POLL_SECONDS
-    return max(value, MIN_POLL_SECONDS)
+    return max(POLL_SECONDS, MIN_POLL_SECONDS)
 
 
 def _latest_config_version() -> int:
@@ -736,10 +731,10 @@ class RemoteBackend:
 
     def deployment_env_names(self) -> frozenset:
         from hermes_cli.config_backend import BACKEND_ENV
-        return frozenset({BACKEND_ENV, client.URL_ENV, client.INSTANCE_ENV, POLL_ENV})
+        return frozenset({BACKEND_ENV, client.URL_ENV, client.INSTANCE_ENV})
 
     def bootstrap_env_names(self) -> frozenset:
-        return PLANE_CREDENTIAL_ENV_NAMES | {POLL_ENV}  # the deployment (selector, plane, instance) and the credential
+        return PLANE_CREDENTIAL_ENV_NAMES  # the deployment (selector, plane, instance) and the credential
 
     @contextlib.contextmanager
     def preserve_read_base(self):

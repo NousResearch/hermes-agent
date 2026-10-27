@@ -22,7 +22,8 @@ _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
+    "groups.attachment.download")
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
@@ -400,6 +401,27 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {
         "event": event, "client_event_id": client_event_id, "accepted": True,
         "driver_started": True})
+
+
+@_room_method(
+    "groups.attachment.upload", code=5121, room_code=4125, service_code=4123,
+    service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Retain one composer file for a later ``groups.send`` manifest (same store as the gateway route)."""
+    from gateway.session_hosted_attachments import store_upload
+    room_id = params.get("room_id")
+    service._owned_authority(room_id)
+    service._room(room_id)
+    return _ok(rid, store_upload(service, room_id, params))
+
+
+@_room_method("groups.attachment.download", code=5123, room_code=4126, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """Read one committed room file for a viewer of this gateway's room."""
+    from gateway.session_hosted_attachments import read_download
+    room_id = params.get("room_id")
+    service._room(room_id)
+    return _ok(rid, read_download(service, room_id, params))
 
 
 @_room_method(

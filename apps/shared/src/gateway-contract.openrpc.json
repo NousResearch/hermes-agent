@@ -1087,6 +1087,42 @@
       }
     },
     {
+      "name": "groups.attachment.download",
+      "summary": "Read one committed attachment for a live room viewer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentDownloadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RoomAttachmentBytes"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.upload",
+      "summary": "Store one attachment for a later groups.send manifest (idempotent per upload_id).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentUploadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RoomAttachment"
+        }
+      }
+    },
+    {
       "name": "groups.capabilities",
       "summary": "Describe the hosted-room protocol implemented by this gateway.",
       "params": [

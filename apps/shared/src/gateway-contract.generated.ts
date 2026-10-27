@@ -4556,6 +4556,48 @@ export interface PluginCatalogLookupEntry {
   subdir: string
   tier?: string
 }
+export interface GroupsAttachmentUploadParams {
+  profile?: string | null
+  room_id: string
+  upload_id: string
+  kind: string
+  name: string
+  mime: string
+  data_base64: string
+}
+export interface RoomAttachment {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+  [key: string]: unknown
+}
+export interface GroupsAttachmentDownloadParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  attachment_id: string
+}
+export interface RoomAttachmentBytes {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+  data_base64: string
+  [key: string]: unknown
+}
 export interface CanonicalShellExecParams {
   session_id: string
   command: string
@@ -4897,48 +4939,6 @@ export interface WorkerPersistParams {
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>
-export interface GroupsAttachmentUploadParams {
-  profile?: string | null
-  room_id: string
-  upload_id: string
-  kind: string
-  name: string
-  mime: string
-  data_base64: string
-}
-export interface RoomAttachment {
-  attachment_id: string
-  kind: string
-  name: string
-  size: number
-  mime: string
-  sha256: string
-  state: string
-  created_at: number
-  idempotent: boolean
-  event_id?: string | null
-  [key: string]: unknown
-}
-export interface GroupsAttachmentDownloadParams {
-  profile?: string | null
-  room_id: string
-  event_id: string
-  attachment_id: string
-}
-export interface RoomAttachmentBytes {
-  attachment_id: string
-  kind: string
-  name: string
-  size: number
-  mime: string
-  sha256: string
-  state: string
-  created_at: number
-  idempotent: boolean
-  event_id?: string | null
-  data_base64: string
-  [key: string]: unknown
-}
 export interface GroupsDiscardParams {
   profile?: string | null
   room_id: string
@@ -6152,6 +6152,10 @@ export interface RpcMethods {
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
+  /** Read one committed attachment for a live room viewer. */
+  'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
+  /** Store one attachment for a later groups.send manifest (idempotent per upload_id). */
+  'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
   /** Describe the hosted-room protocol implemented by this gateway. */
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
@@ -6603,6 +6607,8 @@ export const RPC_METHODS = [
   'free_tier.status',
   'gateway.capabilities',
   'groups.approve',
+  'groups.attachment.download',
+  'groups.attachment.upload',
   'groups.capabilities',
   'groups.create',
   'groups.demote',

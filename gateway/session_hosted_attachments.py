@@ -23,7 +23,15 @@ def _authorize(service, actor, params, capability):
 
 
 def upload(service, actor, params):
-    room_id = _authorize(service, actor, params, 'session:submit')
+    return store_upload(service, _authorize(service, actor, params, 'session:submit'), params)
+
+
+def download(service, actor, params):
+    return read_download(service, _authorize(service, actor, params, 'session:read'), params)
+
+
+def store_upload(service, room_id, params):
+    """Retain one composer file for a later ``groups.send`` manifest (both routes)."""
     encoded = params.get('data_base64')
     if not isinstance(encoded, str) or len(encoded) > ((MAX_ATTACHMENT_BYTES + 2) // 3) * 4:
         raise RuntimeStoreError('invalid_params')
@@ -36,8 +44,8 @@ def upload(service, actor, params):
         name=params.get('name'), mime=params.get('mime'), data=data)
 
 
-def download(service, actor, params):
-    room_id = _authorize(service, actor, params, 'session:read')
+def read_download(service, room_id, params):
+    """One committed file for a live room viewer (both routes)."""
     if not params.get('event_id'):
         raise RuntimeStoreError('invalid_params')
     gateway_id, epoch = service._owned_authority(room_id)
@@ -70,6 +78,14 @@ def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch)
 
 def submission_payload(rpc, prompt, attachments=None):
     """Resolve only event-bound, member-authorized bytes, never a caller path."""
+    return bound_submission_payload(
+        rpc.authority.db.db_path, room_id=rpc.room_id, member_id=rpc.member_id, prompt=prompt,
+        attachments=attachments, transferred=getattr(rpc, 'hosted_attachment_data', None))
+
+
+def bound_submission_payload(db_path, *, room_id, member_id, prompt, attachments=None, transferred=None):
+    """``{'text', 'attachments'?}`` for one member turn: documents as prompt path lines, images as
+    owner-local staging paths. Shared by both routes, so a file reaches a member identically."""
     if not attachments:
         return {'text': prompt}
     from gateway.hosted_room_driver import validate_bound_task_manifest
@@ -78,15 +94,14 @@ def submission_payload(rpc, prompt, attachments=None):
     # Each bound file is captured on its own, so the admission-wide cap is enforced here,
     # before any member is materialized.
     validate_media_batch_size(item['size'] for item in manifest)
-    store = HostedRoomAttachmentStore(rpc.authority.db.db_path)
+    store = HostedRoomAttachmentStore(db_path)
     references = []
-    transferred = getattr(rpc, 'hosted_attachment_data', None)
     if transferred is not None and [item for item, data in transferred] != manifest:
         raise RuntimeStoreError('permission_denied')
     for index, item in enumerate(manifest):
         if transferred is None:
-            saved = store.read(room_id=rpc.room_id, attachment_id=item['attachment_id'],
-                               event_id=item['event_id'], recipient_member_id=rpc.member_id)
+            saved = store.read(room_id=room_id, attachment_id=item['attachment_id'],
+                               event_id=item['event_id'], recipient_member_id=member_id)
             if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
                 raise RuntimeStoreError('permission_denied')
             data = saved.data

@@ -21,6 +21,7 @@ import pytest
 from hermes_cli.desktop_release_holders import ReleaseHolder, take_consent
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.windows_handoff_support import MARKER, POWERSHELL, _creation_time
+from tests.waiting import wait_until
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -118,15 +119,17 @@ public static class RelaunchedDesktop {
 
 def _env_when_relaunching(proc: subprocess.Popen, launches: Path) -> dict[str, str] | None:
     """The hand-off's own environment once it has started the Desktop: what an inheriting rung hands on."""
-    deadline = time.monotonic() + 240
-    while proc.poll() is None and time.monotonic() < deadline:
-        if launches.is_file() and launches.read_text(encoding='utf-8').strip():
-            try:
-                return psutil.Process(proc.pid).environ()
-            except psutil.NoSuchProcess:
-                return None
-        time.sleep(0.05)
-    return None
+    def relaunched() -> bool:
+        return launches.is_file() and bool(launches.read_text(encoding='utf-8').strip())
+
+    wait_until(lambda: relaunched() or proc.poll() is not None, timeout=240, interval=0.05,
+               what='the hand-off to relaunch the Desktop or exit')
+    if proc.poll() is not None or not relaunched():
+        return None
+    try:
+        return psutil.Process(proc.pid).environ()
+    except psutil.NoSuchProcess:
+        return None
 
 
 @pytest.mark.platforms('windows')

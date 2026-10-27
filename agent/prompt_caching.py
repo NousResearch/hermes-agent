@@ -167,20 +167,27 @@ def auto_cache_ttl_for_source(source: str | None) -> str:
 
 
 def auto_cache_ttl_for_agent(agent: Any) -> str:
-    """Resolve auto once, including finite gateway admissions whose launch env was scrubbed."""
+    """Resolve auto, including finite gateway admissions whose launch env was scrubbed."""
     from agent.session_source import session_source_for
     from gateway.session_finite import finite_turn_required
     from gateway.session_policy import active_policy
 
+    agent._cache_ttl_auto = True
     finite = finite_turn_required()
     policy = active_policy()
     if finite is None and policy is not None:
-        # Managed workers bind turn context after construction; the frozen admission is already here.
+        # Read the frozen admission when turn context is not yet bound at construction.
         finite = json.loads(policy.request_json).get("turn_v1", {}).get("finite", policy.source == "oneshot")
     ttl = "5m" if finite is True else auto_cache_ttl_for_source(
         session_source_for(getattr(agent, "platform", None)))
     return effective_cache_ttl(ttl, model=getattr(agent, "model", "") or "", provider=getattr(agent, "provider", "") or "",
                                base_url=getattr(agent, "base_url", "") or "", auto=True)
+
+
+def refresh_auto_cache_ttl(agent: Any) -> None:
+    """Re-resolve an auto tier after a platform stamp, preserving side agents and explicit pins."""
+    if getattr(agent, "_cache_ttl_auto", False) and not getattr(agent, "side_agent", False):
+        agent._cache_ttl = auto_cache_ttl_for_agent(agent)
 
 
 def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "", base_url: str = "",

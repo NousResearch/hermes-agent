@@ -586,30 +586,31 @@ def test_a_supervisor_that_cannot_start_is_not_fatal(monkeypatch, all_groups_ali
 def _stdio_connection(child_pid, fake_supervisor):
     """Drive the real MCPServerTask._run_stdio with a known spawned child.
 
-    Only the MCP transport itself is mocked. Everything the supervisor wiring
-    depends on -- child discovery, _filter_mcp_children, the real os.getpgid
-    lookup -- runs for real against ``child_pid``, so the pgid asserted on is
-    the pgid of an actual process rather than a fixture value.
+    Only the SDK spawn and transport are mocked. The process-created callback
+    and real os.getpgid lookup run against ``child_pid``, so the asserted group
+    belongs to an actual process rather than a fixture value.
     """
     session = MagicMock()
     session.initialize = AsyncMock()
     session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
 
-    stdio_cm = MagicMock()
-    stdio_cm.__aenter__ = AsyncMock(return_value=(object(), object()))
-    stdio_cm.__aexit__ = AsyncMock(return_value=False)
+    from mcp.client import stdio as sdk
+
+    @contextlib.asynccontextmanager
+    async def stdio_client(params, **kwargs):
+        await sdk._create_platform_compatible_process(command=params.command, args=params.args)
+        yield object(), object()
+
     session_cm = MagicMock()
     session_cm.__aenter__ = AsyncMock(return_value=session)
     session_cm.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("tools.mcp_tool.stdio_client", return_value=stdio_cm),
+        patch("tools.mcp_tool.stdio_client", new=stdio_client),
         patch("tools.mcp_tool.ClientSession", return_value=session_cm),
-        # First call is the pids_before baseline; the second reports our child
-        # as the newly spawned server.
         patch(
-            "tools.mcp_tool_lifecycle._snapshot_child_pids",
-            side_effect=[set(), {child_pid}],
+            "mcp.client.stdio._create_platform_compatible_process",
+            new=AsyncMock(return_value=SimpleNamespace(pid=child_pid)),
         ),
         patch("tools.mcp_tool_config._write_stderr_log_header"),
         patch("tools.mcp_tool._get_mcp_stderr_log", return_value=None),

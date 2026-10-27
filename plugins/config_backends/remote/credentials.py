@@ -8,6 +8,7 @@ that decides which token is sent where, and boot refuses a secret source that su
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -41,7 +42,7 @@ class PlaneCredentialError(RuntimeError):
         self.retryable = retryable
 
 
-_IDP_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
+_IDP_CACHE: dict[tuple[str, str, str, str], tuple[float, str]] = {}
 _IDP_LOCK = threading.Lock()
 
 
@@ -87,7 +88,8 @@ def _idp_token() -> str:
             retryable=False)
     from .destination import CredentialDestinationError, checked_url, display_url, open_credentialed
     checked_url(token_url, env_name=f"{IDP_ENV_PREFIX}TOKEN_URL")  # before the secret leaves the process
-    key = (token_url, client_id, scope)
+    # The secret is part of the identity: a rotated secret fetches a new token on the next request.
+    key = (token_url, client_id, scope, hashlib.sha256(client_secret.encode()).hexdigest())
     now = time.monotonic()
     with _IDP_LOCK:
         cached = _IDP_CACHE.get(key)

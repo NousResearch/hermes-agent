@@ -254,9 +254,11 @@ def _recover_interrupted_swap(live: Path, aside: Path) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _move_live_app_aside(live_root: Path, previous: Path, release_dir: Path, held_by: Optional[list], consent) -> None:
+def _move_live_app_aside(live_root: Path, previous: Path, held_by: Optional[list], consent) -> None:
     """First swap rename. On Windows a refusal names the programs whose working folder is inside
-    ``release/`` (#101789) and retries once only after the user consented to closing them."""
+    ``live_root``, the folder being renamed (#101789), and retries once only after the user
+    consented to closing them. A program in a sibling folder (``win-arm64-unpacked``) does not
+    block this rename, so it is neither named nor offered for closing."""
     try:
         _rename_riding_out_file_lock(live_root, previous)
         return
@@ -264,7 +266,7 @@ def _move_live_app_aside(live_root: Path, previous: Path, release_dir: Path, hel
         if sys.platform != "win32":
             raise
         from hermes_cli.desktop_release_holders import find_release_cwd_holders, release_after_refused_rename
-        holders, closed = release_after_refused_rename(release_dir, consent=consent)
+        holders, closed = release_after_refused_rename(live_root, consent=consent)
         if not closed:
             if held_by is not None:
                 held_by.extend(holders)
@@ -273,7 +275,7 @@ def _move_live_app_aside(live_root: Path, previous: Path, release_dir: Path, hel
         _rename_riding_out_file_lock(live_root, previous)
     except PermissionError:
         if held_by is not None:
-            held_by.extend(find_release_cwd_holders(release_dir))
+            held_by.extend(find_release_cwd_holders(live_root))
         raise
 
 
@@ -308,7 +310,7 @@ def _swap_staged_desktop_app(
             stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            _move_live_app_aside(live_root, previous, release_dir, held_by, consent)
+            _move_live_app_aside(live_root, previous, held_by, consent)
         try:
             _rename_riding_out_file_lock(staged_root, live_root)
         except OSError:

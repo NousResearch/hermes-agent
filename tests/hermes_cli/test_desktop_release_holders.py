@@ -118,3 +118,14 @@ def test_a_holder_whose_program_path_is_unreadable_is_left_for_the_user(holder, 
     line = next(ln for ln in desktop_release_holders.describe_block(holders, release).splitlines()
                 if f"(pid {proc.pid}, started " in ln)
     assert line.endswith("path unreadable)")
+
+
+def test_a_consent_file_that_is_not_utf8_is_consumed_without_raising(tmp_path):
+    """Review fold 2: the swap that reads it is documented never to raise, and a consent file
+    left behind would fail every later swap."""
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / CONSENT_FILE_NAME).write_bytes(b'{"run_id": "\xff\xfe"}')
+
+    assert take_consent(release, "desktop-retry-1") is desktop_release_holders.NO_CONSENT
+    assert not (release / CONSENT_FILE_NAME).exists()

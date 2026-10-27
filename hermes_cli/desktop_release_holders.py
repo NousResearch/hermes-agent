@@ -93,13 +93,14 @@ def _exe_or_empty(proc) -> str:
         return ""
 
 
-def find_release_cwd_holders(release_dir: Path) -> list[ReleaseHolder]:
-    """Every other process whose working directory is ``release_dir`` or below it.
+def find_release_cwd_holders(folder: Path) -> list[ReleaseHolder]:
+    """Every other process whose working directory is ``folder`` (the app folder being renamed,
+    e.g. ``release/win-unpacked``) or below it.
 
     A process whose cwd cannot be read (another user's, access denied) is skipped: it cannot
     be shown to hold the tree. Never raises.
     """
-    root = _release_root(release_dir)
+    root = _release_root(folder)
     try:
         import psutil
         procs = psutil.process_iter(["pid", "name"])
@@ -130,13 +131,13 @@ def take_consent(release_dir: Path, run_id: Optional[str]) -> HolderConsent:
     or not it applies, and it applies only to the hand-off run that the Desktop started for it."""
     path = release_dir / CONSENT_FILE_NAME
     try:
-        raw = path.read_text(encoding="utf-8-sig")
+        raw = path.read_bytes()
     except OSError:
         return NO_CONSENT
     with contextlib.suppress(OSError):
         path.unlink()
     try:
-        data = json.loads(raw)
+        data = json.loads(raw.decode("utf-8-sig"))
         if not run_id or data.get("run_id") != run_id:
             return NO_CONSENT
         holders = frozenset(
@@ -160,10 +161,10 @@ def _ask_at_terminal(holders: list[ReleaseHolder], input_fn: Callable[[str], str
     return answer.strip().lower() in ("y", "yes")
 
 
-def close_holders(holders: list[ReleaseHolder], release_dir: Path) -> list[int]:
+def close_holders(holders: list[ReleaseHolder], folder: Path) -> list[int]:
     """Terminate exactly these holders, each re-checked right before: same pid AND creation
-    time (no recycled pid), cwd still inside ``release_dir``, and not one of our ancestors."""
-    root = _release_root(release_dir)
+    time (no recycled pid), cwd still inside ``folder``, and not one of our ancestors."""
+    root = _release_root(folder)
     try:
         import psutil
         ancestors = {p.pid for p in psutil.Process(os.getpid()).parents()}
@@ -173,7 +174,7 @@ def close_holders(holders: list[ReleaseHolder], release_dir: Path) -> list[int]:
     for holder in holders:
         try:
             proc = psutil.Process(holder.pid)
-            if proc.pid in ancestors or abs(proc.create_time() - holder.create_time) > 0.5:
+            if proc.pid in ancestors or abs(proc.create_time() - holder.create_time) > _START_TIME_TOLERANCE_S:
                 continue
             if root is None or not _inside(_norm(proc.cwd()), root):
                 continue
@@ -193,12 +194,12 @@ def close_holders(holders: list[ReleaseHolder], release_dir: Path) -> list[int]:
 
 
 def release_after_refused_rename(
-    release_dir: Path, *, consent: HolderConsent = NO_CONSENT, input_fn: Callable[[str], str] = input,
+    folder: Path, *, consent: HolderConsent = NO_CONSENT, input_fn: Callable[[str], str] = input,
 ) -> tuple[list[ReleaseHolder], list[int]]:
-    """After Windows refused a rename under ``release_dir``: name every cwd holder, then close
+    """After Windows refused to rename ``folder``: name every cwd holder inside it, then close
     the ones covered by ``consent`` (taken at the start of this swap attempt) or agreed to at the
     terminal. Returns (holders found, pids closed)."""
-    holders = find_release_cwd_holders(release_dir)
+    holders = find_release_cwd_holders(folder)
     if not holders:
         return [], []
     # Human lines only: the machine lines go out once, for the holders still in the way when the
@@ -216,7 +217,7 @@ def release_after_refused_rename(
         chosen = closable
     if not chosen:
         return holders, []
-    closed = close_holders(chosen, release_dir)
+    closed = close_holders(chosen, folder)
     if closed:
         print(f"  ✓ Closed with your consent: {', '.join(h.describe() for h in chosen if h.pid in closed)}")
     return holders, closed

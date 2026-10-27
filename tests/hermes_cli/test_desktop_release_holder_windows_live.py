@@ -9,6 +9,7 @@ and finish the swap.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -144,3 +145,38 @@ def test_a_partial_close_reports_only_the_holder_still_in_the_way(swap_fixture, 
         for proc in [*psutil.Process(protected.pid).children(recursive=True), psutil.Process(protected.pid)]:
             proc.kill()
         protected.wait(10)
+
+
+def test_a_program_in_a_sibling_unpacked_folder_is_neither_named_nor_closed(swap_fixture, tmp_path, capsys, monkeypatch):
+    """Review fold 1: only release/win-unpacked is renamed. A program whose working folder is a
+    sibling (a stale win-arm64-unpacked) does not block it, so even a consent naming it must not
+    close it, and the failure lines must not offer it."""
+    desktop_dir, staging, live_root, helper = swap_fixture
+    sibling_dir = live_root.parent / "win-arm64-unpacked"
+    sibling_dir.mkdir()
+    sibling_tree: list = []
+    sibling = subprocess.Popen(
+        [sys.executable, str(tmp_path / "foreign_helper.py")], cwd=sibling_dir, stdout=subprocess.PIPE,
+        text=True, encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        assert sibling.stdout.readline().strip() == "ready"
+        sibling_tree.extend([psutil.Process(sibling.pid), *psutil.Process(sibling.pid).children(recursive=True)])
+        consent, tree = _consent_for_run(desktop_dir, helper, "desktop-retry-1")
+        seen = json.loads(consent.read_text(encoding="utf-8"))
+        seen["holders"] += [{"pid": p.pid, "start_time": p.create_time(), "exe": p.exe()} for p in sibling_tree]
+        consent.write_text(json.dumps(seen), encoding="utf-8")
+        monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", "desktop-retry-1")
+
+        promoted, error = _promote(desktop_dir, staging)
+
+        assert error == "" and promoted == live_root / "Hermes.exe"
+        assert helper.wait(10) is not None
+        assert not [p.pid for p in tree if p.is_running()]
+        assert all(p.is_running() for p in sibling_tree), "closed a program that never held the renamed folder"
+        assert f"pid {sibling.pid}" not in capsys.readouterr().out
+    finally:
+        for proc in sibling_tree:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                proc.kill()
+        sibling.wait(10)

@@ -5,6 +5,7 @@ gateway's loop that stalled every other request (the Desktop WebSocket included)
 the write took. Moving it to a worker must not loosen ordering: the id a request returns is
 readable by the very next request.
 """
+import asyncio
 import json
 import threading
 
@@ -125,3 +126,30 @@ async def test_keyed_admission_and_retry_never_take_the_store_lock_on_the_loop(a
             assert posted.status == 200, await posted.text()
     assert lock_threads, 'the store was never used'
     assert threading.get_ident() not in lock_threads, 'the event loop waited on the ResponseStore lock'
+
+
+@pytest.mark.asyncio
+async def test_disconnect_never_waits_on_a_worker_held_store_lock_on_the_loop(api):
+    """A persistence worker keeps running after its handler is cancelled; adapter teardown that
+    took the store lock on the loop froze every profile's loop (and its own cleanup timeout)."""
+    store = api._current_response_store()
+    held, release, released = threading.Event(), threading.Event(), threading.Event()
+
+    def _hold_store():
+        held.set()
+        release.wait(3)  # safety deadline: on the bug the loop is stuck until this expires
+        released.set()
+
+    worker = asyncio.create_task(store.off_loop(_hold_store))
+    assert await asyncio.to_thread(held.wait, 5)
+    teardown = asyncio.create_task(api.disconnect())
+    loop_ran_while_held = asyncio.get_running_loop().create_future()
+    asyncio.get_running_loop().call_soon(lambda: loop_ran_while_held.set_result(not released.is_set()))
+    try:
+        assert await loop_ran_while_held, 'disconnect waited on the worker-held ResponseStore lock on the event loop'
+    finally:
+        release.set()
+        await worker
+        await teardown
+    with pytest.raises(Exception):
+        store._conn.execute('SELECT 1')  # the connection was still closed

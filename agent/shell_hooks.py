@@ -485,7 +485,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
         return result
 
     try:
-        argv = split_command_line(os.path.expanduser(spec.command))
+        argv = split_command_line(os.path.expandvars(os.path.expanduser(spec.command)))
     except ValueError as exc:
         return failed(f"command {spec.command!r} cannot be parsed: {exc}")
     if not argv:

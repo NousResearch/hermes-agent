@@ -745,3 +745,17 @@ def test_unroutable_script_hook_names_the_remediation(tmp_path):
 
     assert result["returncode"] is None
     assert "interpreter" in result["error"] and "bash" in result["error"]
+
+
+def test_spawn_expands_environment_variables_in_executable_path(tmp_path, monkeypatch):
+    script = tmp_path / "hook.sh"
+    script.write_text("#!/bin/sh\nprintf '{\"continue\":true}'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("HOOK_HOME", str(tmp_path))
+    spec = shell_hooks.ShellHookSpec(event="on_session_start", command="$HOOK_HOME/hook.sh")
+
+    result = shell_hooks._spawn(spec, "{}")
+
+    assert result["error"] is None
+    assert result["returncode"] == 0
+    assert json.loads(result["stdout"])["continue"] is True

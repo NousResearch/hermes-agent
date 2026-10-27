@@ -4,7 +4,8 @@ import type { MemoryLayersTranslations } from './types_memory_layers'
 export const enMemoryLayers: MemoryLayersTranslations = {
   activeProvider: 'Active memory provider',
   noProvider: 'None — built-in memory only',
-  noProviderDesc: 'Hermes uses only the built-in layer below. Pick an external provider in Memory Provider to add one.',
+  noProviderDesc:
+    'Hermes uses only the built-in layer below. Choose an external provider under Settings › Memory & Context to add one.',
   providerDesc: name => `${name} adds its own recall to every session, on top of the built-in layer.`,
   status: {
     ready: 'ready',

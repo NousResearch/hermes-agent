@@ -4,7 +4,7 @@ export const esMemoryLayers: MemoryLayersTranslations = {
   activeProvider: 'Proveedor de memoria activo',
   noProvider: 'Ninguno — solo memoria integrada',
   noProviderDesc:
-    'Hermes usa solo la capa integrada de abajo. Elige un proveedor externo en Proveedor de memoria para añadir uno.',
+    'Hermes usa solo la capa integrada de abajo. Elige un proveedor externo en Ajustes › Memoria y contexto para añadir uno.',
   providerDesc: name => `${name} añade su propio recuerdo a cada sesión, además de la capa integrada.`,
   status: {
     ready: 'listo',

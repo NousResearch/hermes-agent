@@ -3,7 +3,7 @@ import type { MemoryLayersTranslations } from './types_memory_layers'
 export const zhMemoryLayers: MemoryLayersTranslations = {
   activeProvider: '当前记忆提供方',
   noProvider: '无 — 仅使用内置记忆',
-  noProviderDesc: 'Hermes 仅使用下方的内置层。在“记忆提供方”中选择外部提供方即可添加。',
+  noProviderDesc: 'Hermes 仅使用下方的内置层。在“设置 › 记忆与上下文”中选择外部提供方即可添加。',
   providerDesc: name => `${name} 会在内置层之外，为每个会话补充自己的记忆召回。`,
   status: {
     ready: '就绪',

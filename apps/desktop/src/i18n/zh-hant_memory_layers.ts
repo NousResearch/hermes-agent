@@ -3,7 +3,7 @@ import type { MemoryLayersTranslations } from './types_memory_layers'
 export const zhHantMemoryLayers: MemoryLayersTranslations = {
   activeProvider: '目前記憶提供者',
   noProvider: '無 — 僅使用內建記憶',
-  noProviderDesc: 'Hermes 僅使用下方的內建層。在「記憶提供者」中選擇外部提供者即可新增。',
+  noProviderDesc: 'Hermes 僅使用下方的內建層。在「設定 › 記憶與上下文」中選擇外部提供者即可新增。',
   providerDesc: name => `${name} 會在內建層之外，為每個工作階段補充自己的記憶召回。`,
   status: {
     ready: '就緒',

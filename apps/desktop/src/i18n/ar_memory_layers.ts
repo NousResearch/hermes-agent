@@ -3,7 +3,8 @@ import type { MemoryLayersTranslations } from './types_memory_layers'
 export const arMemoryLayers: MemoryLayersTranslations = {
   activeProvider: 'مزوّد الذاكرة النشط',
   noProvider: 'لا يوجد — الذاكرة المدمجة فقط',
-  noProviderDesc: 'يستخدم Hermes الطبقة المدمجة أدناه فقط. اختر مزوّدًا خارجيًا في «مزوّد الذاكرة» لإضافته.',
+  noProviderDesc:
+    'يستخدم Hermes الطبقة المدمجة أدناه فقط. اختر مزوّدًا خارجيًا من الإعدادات › الذاكرة والسياق لإضافته.',
   providerDesc: name => `يضيف ${name} استرجاعه الخاص إلى كل جلسة، فوق الطبقة المدمجة.`,
   status: {
     ready: 'جاهز',

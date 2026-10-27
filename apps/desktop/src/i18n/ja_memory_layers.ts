@@ -4,7 +4,7 @@ export const jaMemoryLayers: MemoryLayersTranslations = {
   activeProvider: '有効なメモリプロバイダー',
   noProvider: 'なし — 組み込みメモリのみ',
   noProviderDesc:
-    'Hermes は下の組み込みレイヤーのみを使用します。追加するには「メモリプロバイダー」で外部プロバイダーを選択してください。',
+    'Hermes は下の組み込みレイヤーのみを使用します。追加するには「設定 › メモリとコンテキスト」で外部プロバイダーを選択してください。',
   providerDesc: name => `${name} は組み込みレイヤーに加えて、各セッションに独自の想起を追加します。`,
   status: {
     ready: '準備完了',

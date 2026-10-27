@@ -4,7 +4,7 @@ export const deMemoryLayers: MemoryLayersTranslations = {
   activeProvider: 'Aktiver Speicheranbieter',
   noProvider: 'Keiner — nur integrierter Speicher',
   noProviderDesc:
-    'Hermes nutzt nur die integrierte Ebene unten. Wähle unter Speicheranbieter einen externen Anbieter, um einen hinzuzufügen.',
+    'Hermes nutzt nur die integrierte Ebene unten. Wähle unter Einstellungen › Speicher & Kontext einen externen Anbieter, um einen hinzuzufügen.',
   providerDesc: name => `${name} ergänzt jede Sitzung um eigene Erinnerungen, zusätzlich zur integrierten Ebene.`,
   status: {
     ready: 'bereit',

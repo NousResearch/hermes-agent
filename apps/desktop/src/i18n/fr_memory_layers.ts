@@ -4,7 +4,7 @@ export const frMemoryLayers: MemoryLayersTranslations = {
   activeProvider: 'Fournisseur de mémoire actif',
   noProvider: 'Aucun — mémoire intégrée uniquement',
   noProviderDesc:
-    'Hermes utilise uniquement la couche intégrée ci-dessous. Choisissez un fournisseur externe dans Fournisseur de mémoire pour en ajouter un.',
+    'Hermes utilise uniquement la couche intégrée ci-dessous. Choisissez un fournisseur externe dans Paramètres › Mémoire et contexte pour en ajouter un.',
   providerDesc: name => `${name} ajoute son propre rappel à chaque session, en plus de la couche intégrée.`,
   status: {
     ready: 'prêt',

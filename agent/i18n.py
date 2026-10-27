@@ -23,7 +23,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from agent import i18n_layers
+from agent import i18n_cache, i18n_layers
 from agent.i18n_languages import language_options
 
 logger = logging.getLogger(__name__)
@@ -128,13 +128,13 @@ def _normalize_lang(value: Any, home: str | None = None) -> str:
 
 
 def _load_bundled(lang: str) -> dict[str, str]:
-    """One bundled locale YAML flattened to dotted keys (empty dict on any failure — never crashes)."""
+    """One bundled locale YAML flattened to dotted keys, via the disk cache (empty dict on any failure — never crashes)."""
     path = _locales_dir() / f"{lang}.yaml"
     if not path.is_file():
         logger.debug("i18n catalog missing for %s at %s", lang, path)
         return {}
     try:
-        return i18n_layers.parse_locale_file(path)
+        return i18n_cache.load_cached(path, i18n_layers.parse_locale_file)
     except Exception as exc:
         logger.warning("Failed to load i18n catalog %s: %s", path, exc)
         return {}

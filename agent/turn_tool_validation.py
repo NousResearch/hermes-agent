@@ -72,7 +72,7 @@ def _route_deferred_call(agent, tc, provider_data) -> bool:
     if not isinstance(args, dict):
         return False
     tc.function.name = TOOL_CALL_NAME
-    tc.function.arguments = json.dumps({"calls": [{"name": name, "arguments": args}]})
+    tc.function.arguments = json.dumps({"calls": [{"name": name, "arguments": args}]}, ensure_ascii=False)
     if provider_data:
         replace_native_tool_blocks(provider_data, {coalesce_tool_call_id(tc): [tc]})
     agent._vprint(f"{agent.log_prefix}🔧 Routed deferred tool '{name}' through '{TOOL_CALL_NAME}'",

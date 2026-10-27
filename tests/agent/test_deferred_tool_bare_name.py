@@ -12,13 +12,6 @@ from run_agent import AIAgent
 _ARGS = {"action": "poll", "session_id": "proc_x"}
 
 
-@pytest.fixture(autouse=True)
-def _no_metrics(monkeypatch):
-    import hermes_cli.observability.shared_metrics_model as metrics
-
-    monkeypatch.setattr(metrics, "record_tool_call_quality", lambda *a, **k: None)
-
-
 def _validate(arguments, *, valid_tool_names=("terminal", "tool_search", "tool_describe", "tool_call"),
               enabled_toolsets=None, provider_data=None):
     """Real validation on an agent whose tool search deferred process_manage behind the bridge."""

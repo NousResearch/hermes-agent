@@ -35,6 +35,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from tools.tool_output_truncate import head_tail_split, truncation_notice
+
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -285,21 +287,52 @@ class CellAuthority:
 
 
 class _BoundedBuffer:
-    """Byte chunks capped at a total size; ``drain`` returns text and resets."""
+    """Raw pipe bytes kept as the first 40% of a cap plus a rolling 60% tail, so the end of a long
+    run (the last error line of ``make`` or ``pytest``) survives; ``drain`` returns and resets."""
 
     def __init__(self):
-        self.chunks: list[bytes] = []
-        self.total = 0
+        self.lock = threading.Lock()
+        self.head, self.tail, self.omitted = bytearray(), bytearray(), 0
 
     def append(self, data: bytes, cap: int) -> None:
-        keep = data[: max(0, cap - self.total)]
-        if keep:
-            self.chunks.append(keep)
-            self.total += len(keep)
+        head_cap, tail_cap = head_tail_split(cap)
+        with self.lock:
+            room = head_cap - len(self.head)
+            if room > 0:
+                self.head += data[:room]
+                data = data[room:]
+            self.tail += data
+            if (excess := len(self.tail) - tail_cap) > 0:
+                del self.tail[:excess]
+                self.omitted += excess
 
-    def drain(self) -> str:
-        chunks, self.chunks, self.total = self.chunks, [], 0
-        return b"".join(chunks).decode("utf-8", errors="replace")
+    def _take(self) -> tuple[bytes, int, bytes]:
+        """Reset and return ``(head, omitted_bytes, tail)``. Each cut snaps to a line boundary when
+        the kept part has one, so redaction downstream never sees half a line (or half a token)."""
+        with self.lock:
+            head, tail, omitted = bytes(self.head), bytes(self.tail), self.omitted
+            self.head, self.tail, self.omitted = bytearray(), bytearray(), 0
+        if not omitted:
+            return head + tail, 0, b""
+        keep_head = head.rfind(b"\n") + 1 or len(head)
+        skip_tail = tail.find(b"\n") + 1
+        if skip_tail >= len(tail):
+            skip_tail = 0
+        return head[:keep_head], omitted + len(head) - keep_head + skip_tail, tail[skip_tail:]
+
+    def drain(self) -> tuple[str, int, str]:
+        """``(head, omitted_bytes, tail)``; with nothing omitted the whole stream is ``head``."""
+        head, omitted, tail = self._take()
+        return head.decode("utf-8", errors="replace"), omitted, tail.decode("utf-8", errors="replace")
+
+    def drain_text(self, label: str) -> str:
+        """The drained stream as one string, the omitted middle replaced by the truncation notice."""
+        head, omitted, tail = self._take()
+        text = head.decode("utf-8", errors="replace")
+        if omitted:
+            text += (truncation_notice(omitted, len(head) + omitted + len(tail), label=label, unit="bytes")
+                     + tail.decode("utf-8", errors="replace"))
+        return text
 
 
 class SessionKernel:
@@ -792,9 +825,11 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
         _REGISTRY.discard(key, kernel)
     duration = round(time.monotonic() - exec_start, 2)
     kernel.execution_count = int(payload.get("execution_count", kernel.execution_count + 1))
-    stderr_raw = kernel.stderr.drain()
-    stdout_text, stdout_metadata = _truncate_stdout_text(clean(str(payload.get("stdout", "")) + kernel.raw.drain()))
-    cell_stderr = clean(str(payload.get("stderr", "")) + stderr_raw)
+    stderr_raw = clean(kernel.stderr.drain_text("STDERR"))  # also feeds the kernel-died error
+    raw_head, raw_omitted, raw_tail = kernel.raw.drain()
+    stdout_text, stdout_metadata = _truncate_stdout_text(clean(str(payload.get("stdout", "")) + raw_head),
+                                                         omitted=raw_omitted, after_gap=clean(raw_tail))
+    cell_stderr = clean(str(payload.get("stderr", ""))) + stderr_raw
     cell_status = payload.get("status", "")
     result: dict[str, Any] = {
         "status": status, "output": stdout_text, "exit_code": 0,

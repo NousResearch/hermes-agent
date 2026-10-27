@@ -2157,7 +2157,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     from providers import get_provider_profile
     profile = get_provider_profile(effective_provider) if effective_provider else None
     with contextlib.suppress(Exception):  # fall through to models.dev
-        if profile is not None and (ctx := profile.live_context_length(model, api_key=api_key or "", base_url=base_url or "")):
+        if profile is not None and not profile.use_live_model_metadata and (ctx := profile.live_context_length(model, api_key=api_key or "", base_url=base_url or "")):
             return ctx
     # 5b/5c. Nous portal and Codex OAuth (lower limits than the direct API for the same slug; its
     # own /models is authoritative). Persist ONLY the authoritative source ("portal" / "live"): an
@@ -2254,10 +2254,9 @@ def get_model_context_length(
         return endpoint_context
     # A profile that qualifies its own bound (external processes have no /models probe) wins
     # over the generic caches below; explicit user/endpoint overrides above still take precedence.
-    from providers import get_provider_profile
-    profile = get_provider_profile(provider)
-    context = profile.get_model_context_length(model) if profile else None
-    if type(context) is int and context > 0:
+    from agent.model_metadata_profiles import resolve_authoritative_context_length
+    context = resolve_authoritative_context_length(model, base_url, api_key, provider)
+    if context is not None:
         return context
     is_bedrock_context = _is_bedrock_context(base_url, provider)
     # A Codex Responses route is keyed on its transport, not its host: behind a proxy

@@ -631,6 +631,8 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
         reserved_live = None
         if sys.platform == "win32" and capacity.gpu_name:
             device = _accelerator_device()
+            if device is None and _nvidia_vram() is None:
+                return None
             ram = _ram_bytes()
             reserved = _windows_reserved_igpu_budget(device, *ram, planning=True)
             if reserved is not None and reserved.gpu_name == capacity.gpu_name:

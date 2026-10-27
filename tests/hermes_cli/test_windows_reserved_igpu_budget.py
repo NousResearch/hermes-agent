@@ -27,6 +27,7 @@ def machine(monkeypatch, tmp_path):
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
+    monkeypatch.setattr(hw, "_windows_commit_room", lambda own_bytes=0: None)
     monkeypatch.setattr(hw, "_accelerator_cache", {})
     monkeypatch.setattr(hw, "_configured_engine",
                         lambda: SimpleNamespace(backend="vulkan", binary=tmp_path / "llama-server.exe"))
@@ -87,6 +88,7 @@ def test_uncertain_or_ordinary_igpus_do_not_gain_reserved_memory(machine, monkey
 
 
 def test_reserved_launch_requires_valid_fresh_free_memory(machine, monkeypatch):
+    monkeypatch.setattr(hw, "_windows_commit_room", lambda own_bytes=0: 200 * GIB)
     capacity = hw.probe_budget(planning=True)
     monkeypatch.setattr(hw, "_accelerator_device", lambda **_: None)
     assert hw.launch_budget(capacity) is None
@@ -94,6 +96,28 @@ def test_reserved_launch_requires_valid_fresh_free_memory(machine, monkeypatch):
     monkeypatch.setattr(hw, "_accelerator_device", lambda **_: machine)
     del machine["free"]
     assert hw.launch_budget(capacity) is None
+
+
+@pytest.mark.parametrize("commit_gib", [40, 200])
+def test_reserved_launch_obeys_both_commit_and_device_limits(machine, monkeypatch, commit_gib):
+    capacity = hw.probe_budget(planning=True)
+    machine["free"] = 70 * GIB
+    own_bytes = 4 * GIB
+    charges = []
+
+    def commit_room(own_bytes=0):
+        charges.append(own_bytes)
+        return commit_gib * GIB
+
+    monkeypatch.setattr(hw, "_windows_commit_room", commit_room)
+    live = hw.launch_budget(capacity, own_bytes=own_bytes)
+
+    assert live.usable_vram_bytes == min(
+        (112 - (114 - 70 - 4) - 1) * GIB,
+        int(commit_gib * GIB * (1 - hw._UMA_HEADROOM_FRACTION)),
+    )
+    assert live.commit_room_bytes == commit_gib * GIB
+    assert charges == [hw.model_commit_bytes(own_bytes)]
 
 
 @pytest.mark.parametrize("reading", ["launch", "live"])

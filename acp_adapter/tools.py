@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
@@ -62,6 +63,33 @@ _Formatter = Callable[[str, Optional[str], Optional[Args]], Optional[str]]
 def get_tool_kind(tool_name: str) -> ToolKind:
     """Return the ACP ToolKind for a hermes tool, defaulting to 'other'."""
     return TOOL_KIND_MAP.get(tool_name, "other")
+
+
+# T3 Code's own MCP server (`t3-code`) is borrowed per session as
+# ``mcp__editor_t3_code_<tag>__<tool>``. T3 only renders its inline results (html_render frames,
+# thread/task links) when the ACP title names the tool as ``t3-code.<tool>`` and ``rawOutput`` is the
+# tool's JSON object, so both are restored here instead of the generic markdown summary.
+_T3_EDITOR_TOOL_RE = re.compile(r"^mcp__editor_t3[-_]?code_[0-9a-f]{8}__(?P<tool>[A-Za-z0-9_.-]+)$")
+
+
+def _t3_editor_tool(tool_name: Any) -> Optional[str]:
+    """The bare T3 tool name for a borrowed T3 Code editor MCP tool, else None."""
+    match = _T3_EDITOR_TOOL_RE.match(tool_name) if isinstance(tool_name, str) else None
+    return match.group("tool") if match else None
+
+
+def _t3_raw_output(result: Optional[str]) -> Any:
+    """Unwrap Hermes' ``{"result": "<json text>"}`` MCP envelope into the tool's own JSON object."""
+    data = _json_loads_maybe(result)
+    if not isinstance(data, dict):
+        return None
+    if isinstance(structured := data.get("structuredContent"), dict):
+        return structured
+    inner = data.get("result")
+    if isinstance(inner, dict):
+        return inner
+    inner = _json_loads_maybe(inner) if isinstance(inner, str) else None
+    return inner if isinstance(inner, dict) else None
 
 
 def make_tool_call_id() -> str:
@@ -808,6 +836,9 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
     else:  # unknown tool with arguments: echo them as content and raw_input
         content = [_text(_args_json(arguments))]
         raw_input = arguments
+    if (t3_tool := _t3_editor_tool(tool_name)) is not None:  # see _T3_EDITOR_TOOL_RE
+        return acp.start_tool_call(tool_call_id, f"t3-code.{t3_tool}", kind="other", content=None,
+                                   locations=[], raw_input=arguments)
     return acp.start_tool_call(
         tool_call_id, build_tool_title(tool_name, arguments), kind=get_tool_kind(tool_name),
         content=content, locations=extract_locations(arguments), raw_input=raw_input,
@@ -821,6 +852,14 @@ def build_tool_complete(
     """Create a ToolCallUpdate (progress) event for a completed tool call.
 
     ``is_error`` is the executor's own verdict; the result-text heuristic stays as fallback."""
+    if (t3_tool := _t3_editor_tool(tool_name)) is not None:  # see _T3_EDITOR_TOOL_RE
+        raw = _t3_raw_output(result)
+        failed = is_error or _tool_result_failed(result, tool_name)
+        summary = _truncate_text(json.dumps(raw, ensure_ascii=False) if raw is not None else (result or ""), limit=2000)
+        return acp.update_tool_call(
+            tool_call_id, title=f"t3-code.{t3_tool}", kind="other", status="failed" if failed else "completed",
+            content=[_text(summary)] if summary else None, raw_output=raw if raw is not None else result,
+        )
     if tool_name == "web_extract":  # errors only; success stays compact via the title
         error_text = _format_web_extract_result(tool_name, result, function_args)
         content = [_text(error_text)] if error_text else None

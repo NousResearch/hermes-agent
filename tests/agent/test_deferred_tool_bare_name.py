@@ -20,7 +20,7 @@ def _no_metrics(monkeypatch):
 
 
 def _validate(arguments, *, valid_tool_names=("terminal", "tool_search", "tool_describe", "tool_call"),
-              enabled_toolsets=None):
+              enabled_toolsets=None, provider_data=None):
     """Real validation on an agent whose tool search deferred process_manage behind the bridge."""
     from agent.turn_tool_validation import validate_tool_calls
 
@@ -34,7 +34,8 @@ def _validate(arguments, *, valid_tool_names=("terminal", "tool_search", "tool_d
     tc = SimpleNamespace(id="call_1", type="function",
                          function=SimpleNamespace(name="process_manage", arguments=arguments))
     messages = []
-    verdict = validate_tool_calls(agent, SimpleNamespace(content="", tool_calls=[tc]), "tool_calls",
+    message = SimpleNamespace(content="", tool_calls=[tc], provider_data=provider_data)
+    verdict = validate_tool_calls(agent, message, "tool_calls",
                                   messages=messages, conversation_history=[], api_call_count=1,
                                   effective_task_id="t1")
     return verdict, tc, [m["content"] for m in messages if m.get("role") == "tool"], agent
@@ -56,6 +57,28 @@ def test_real_name_is_rewritten_into_the_bridge_call(arguments, expected, execut
     parsed = _parse_tool_call(agent, tc)
     assert parsed.name == executor_name
     assert (parsed.scope_block is None) == (executor_name == "process_manage")
+
+
+def test_native_replay_names_the_bridge_call():
+    """Signed-thinking turns replay from the ordered sidecars; the routed call must replay as tool_call."""
+    from agent.anthropic_message_convert import _convert_assistant_message
+    from agent.bedrock_adapter import _assistant_blocks
+
+    provider_data = {
+        "anthropic_content_blocks": [{"type": "thinking", "thinking": "poll it", "signature": "sig"},
+                                     {"type": "tool_use", "id": "call_1", "name": "process_manage", "input": _ARGS}],
+        "bedrock_content_blocks": [{"reasoningContent": {"text": "poll it", "signature": "sig"}},
+                                   {"toolUse": {"toolUseId": "call_1", "name": "process_manage", "input": _ARGS}}],
+    }
+    _, tc, _, _ = _validate(json.dumps(_ARGS), provider_data=provider_data)
+    stored = {"role": "assistant", "content": "", **provider_data, "tool_calls": [
+        {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}]}
+    routed = {"calls": [{"name": "process_manage", "arguments": _ARGS}]}
+
+    assert [b for b in _convert_assistant_message(stored)["content"] if b["type"] == "tool_use"] == [
+        {"type": "tool_use", "id": "call_1", "name": "tool_call", "input": routed}]
+    assert [b["toolUse"] for b in _assistant_blocks(stored, "") if "toolUse" in b] == [
+        {"toolUseId": "call_1", "name": "tool_call", "input": routed}]
 
 
 @pytest.mark.parametrize("arguments, kwargs", [

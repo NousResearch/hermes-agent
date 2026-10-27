@@ -53,9 +53,10 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
-def _route_deferred_call(agent, tc) -> bool:
+def _route_deferred_call(agent, tc, provider_data) -> bool:
     """Rewrite a call to a deferred tool by its real name into the ``tool_call`` bridge call, so
     the executor's scope check, schema probe and hooks run on it as on a model-written one."""
+    from agent.tool_call_batches import replace_native_tool_blocks
     from agent.tool_executor import _tool_search_scoped_names
     from tools.tool_search_catalog import TOOL_CALL_NAME
 
@@ -72,6 +73,8 @@ def _route_deferred_call(agent, tc) -> bool:
         return False
     tc.function.name = TOOL_CALL_NAME
     tc.function.arguments = json.dumps({"calls": [{"name": name, "arguments": args}]})
+    if provider_data:
+        replace_native_tool_blocks(provider_data, {coalesce_tool_call_id(tc): [tc]})
     agent._vprint(f"{agent.log_prefix}🔧 Routed deferred tool '{name}' through '{TOOL_CALL_NAME}'",
                   force=True, diagnostic=True)
     return True
@@ -126,7 +129,7 @@ def validate_tool_calls(
     repaired_ids = set()
     for tc in tool_calls:
         if tc.function.name not in valid_names:
-            if _route_deferred_call(agent, tc):
+            if _route_deferred_call(agent, tc, getattr(assistant_message, "provider_data", None)):
                 repaired_ids.add(id(tc))
                 continue
             repaired = agent._repair_tool_call(tc.function.name)

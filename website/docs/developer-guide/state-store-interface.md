@@ -45,7 +45,9 @@ Members (extracted from what real plugins consume, not invented):
 | --- | --- |
 | Titles | `get_session_title`, `get_session_title_source`, `set_session_title`, `set_auto_title`, `sanitize_title`, `TITLE_SOURCE_LLM` |
 | Reads | `get_session`, `get_messages_as_conversation`, `search_messages` |
+| Availability probes | `is_search_available`, `fts_health` |
 | Invalidation | `clear_stored_system_prompts` |
+| Unit of work | `apply_atomic` |
 
 How to use it as a compatibility check:
 
@@ -81,6 +83,72 @@ exists so plugin authors can *verify* compatibility (in tests and dev
 validation) and so backend authors know exactly which surface must not drift.
 Treat a failed `isinstance` as a bug report, not an error to raise.
 
+### Error channels are part of the contract
+
+Which failures raise and which are returned is contracted, not accidental:
+
+- **Boolean writes** (`set_session_title`, `set_auto_title`) return `False`
+  for every outcome a caller can sensibly retry or skip — missing row, a
+  title of equal or higher authority already holding the row, a protected
+  canonical Bot Chat — and raise `ValueError` only for outcomes the caller
+  must handle before retrying: an invalid `source` (a programming error),
+  a sanitized title over the store's length cap, or a title owned by
+  another live session. The reference titler relies on exactly this split:
+  it catches the collision `ValueError` to retry with a `#N` lineage name.
+- **`sanitize_title`** returns `None` only for empty input; a normalized
+  title over the cap raises by default. `sanitize_title(title,
+  truncate=True)` is the guaranteed-value path for protocol-facing callers:
+  the title is cut to the cap instead of raising, so `Optional[str]`
+  means "empty or truncated-to-fit", never an exception.
+- **Reads** never raise for missing data (`None` / `[]`) and raise only for
+  genuine storage failures.
+
+## `search_messages` availability: probe, don't infer
+
+`search_messages` is fail-open by design: an index that is disabled,
+detached after corruption, or latched stale does not error — the call
+serves a canonical-row LIKE fallback (documented subset of the query
+semantics, different ranking) or `[]`. That means `[]` alone cannot tell
+"no match" from "no index". A caller that needs to know probes first:
+
+```python
+if store.is_search_available():
+    rows = store.search_messages(q)   # indexed route
+else:
+    ...                                # degrade: narrower query, warn, skip
+```
+
+`is_search_available()` is advisory and point-in-time (another process can
+latch fail-open between the check and the call); `fts_health()` returns the
+diagnostic detail — `available`, `stale`, per-index `routes`, deferred
+`rebuild` progress, and a machine-readable `reason` (`fts_unavailable`,
+`fts_stale`, `probe_error`) — and never raises.
+
+## `apply_atomic`: one transaction, expressed
+
+Every protocol write is atomic per call; composing several is not — each
+call is its own transaction, and a failure halfway leaves the earlier
+writes committed. `apply_atomic(fn)` is the public unit-of-work:
+
+```python
+store.apply_atomic(lambda conn: (
+    store._set_session_title_in_transaction(  # backend-specific; prefer the
+        conn, sid, name, source="llm"),       # store's own public methods
+    conn.execute("UPDATE sessions SET model = ? WHERE id = ?", (m, sid)),
+))
+```
+
+Contract on backends: every write `fn` issues must land in one transaction —
+all committed together or not at all, including mid-`fn` failure rollback.
+Contract on callers: `fn` must be idempotent under replay (the backend may
+re-run the whole callback after a lock-contention rollback; relative
+mutations like `+=` are unsafe unless expressed as absolute writes), and
+`fn` must not commit or roll back the connection itself — the backend owns
+the transaction boundary. The handle passed to `fn` is backend-specific;
+portable code calls only the store's own methods inside the unit and treats
+the handle as an opaque last resort, because SQL written against it binds
+the caller to one backend.
+
 ## `clear_stored_system_prompts`
 
 The first capability born in the protocol rather than in a plugin's SQL. It
@@ -103,24 +171,32 @@ an equivalent `clear_stored_system_prompts` operation, not this SQLite layout):
   `"out-of-line"` (prompt text in a `system_prompts` table referenced by
   `sessions.system_prompt_hash` — references are NULLed before the
   unreferenced snapshot rows are deleted, so no foreign key ever dangles),
-  `"inline"` (legacy text column on `sessions`, blanked), or `"unknown"`
+  `"inline"` (legacy text column on `sessions`, unset), or `"unknown"`
   (neither column exists; nothing to do).
+- **The canonical unset is `None` on every layout.** The out-of-line branch
+  NULLs both columns; a true legacy inline row is normalized to `NULL` too
+  (the inline branch's UPDATE sets `system_prompt = NULL`, not `''`), so a
+  cleared prompt reads back identically regardless of which layout a
+  database happens to carry. An inline row that was already `''` before the
+  clear is untouched history, not a cleared value.
 - **Idempotent.** Nothing stored (or already cleared) → `cleared == 0`.
 - **SQLite atomicity is scoped to this call.** SQLite's `_execute_write`
   wraps the reference implementation's UPDATE and snapshot sweep in one
   `BEGIN IMMEDIATE` transaction. Failure before commit rolls both back;
-  after commit, both changes are durable. This is not a transaction or
-  consistent snapshot spanning `get_session`, title methods, search, and
-  `clear_stored_system_prompts`; the protocol provides no public unit-of-work.
-  Another backend must provide equivalent per-operation invalidation semantics
-  itself. The private write helper may retry a callback after a lock/busy
-  failure, so its callback must tolerate replay; an IOERR after the callback
-  starts is not blindly replayed because commit status may be unknown.
+  after commit, both changes are durable. Composing this call with other
+  store methods in one transaction is what `apply_atomic` is for — the
+  per-method call remains its own unit. The private write helper may retry
+  a callback after a lock/busy failure, so its callback must tolerate
+  replay; an IOERR after the callback starts is not blindly replayed
+  because commit status may be unknown.
 
-For reads, treat a cleared prompt as **unset**, not as a portable Python value:
-SQLite's out-of-line `get_session(...)["system_prompt"]` resolves to `None`,
-while a direct read of a true legacy inline row cleared by the inline branch
-returns `''`. Do not rely on `is None` across layouts or backends.
+For reads, the canonical unset is `None` on every layout and backend:
+the reference out-of-line `get_session(...)["system_prompt"]` resolves to
+`None`, and a true legacy inline row cleared by the inline branch is
+normalized to `NULL` as well, so `is None` means unset regardless of the
+storage layout. (An inline row that already held `''` before the clear is
+untouched history — distinguish it from a cleared value by provenance, not
+by sentinel.)
 
 ## Extension rules
 

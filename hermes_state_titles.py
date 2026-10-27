@@ -46,9 +46,13 @@ class SessionTitlesMixin:
         return rank[cls.TITLE_SOURCE_USER] if source is None else rank.get(str(source), 0)
 
     @staticmethod
-    def sanitize_title(title: Optional[str]) -> Optional[str]:
+    def sanitize_title(title: Optional[str], *, truncate: bool = False) -> Optional[str]:
         """Strip control/zero-width/bidi chars (and lone surrogates sqlite3 cannot bind),
-        collapse whitespace, normalize empty to None. ValueError past MAX_TITLE_LENGTH."""
+        collapse whitespace, normalize empty to None. ValueError past MAX_TITLE_LENGTH unless
+        ``truncate`` — then cut to the cap so the result is always a storable title (None only
+        for empty input; the store-facing Optional contract never raises). The cut is made
+        BEFORE the length check and the shortened value re-sanitized, so ``truncate`` cannot
+        itself trip the cap (a stripped tail char would otherwise re-raise)."""
         from hermes_state import SessionDB
         if not title:
             return None
@@ -57,7 +61,11 @@ class SessionTitlesMixin:
         if not cleaned:
             return None
         if len(cleaned) > SessionDB.MAX_TITLE_LENGTH:
-            raise ValueError(f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})")
+            if not truncate:
+                raise ValueError(f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})")
+            cleaned = cleaned[:SessionDB.MAX_TITLE_LENGTH].strip()
+            if not cleaned:
+                return None
         return cleaned
 
     def _is_compression_ancestor(self, conn, *, ancestor_id: str, descendant_id: str) -> bool:

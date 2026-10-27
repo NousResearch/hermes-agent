@@ -46,7 +46,9 @@ def test_real_session_db_satisfies_the_protocol(db):
 
 
 def test_protocol_face_members_exist_on_session_db():
-    # Existence check for the contracted face (8 core members + the constant).
+    # Existence check for the contracted face (11 core members + the constant):
+    # the original nine, plus the search-availability probes and the explicit
+    # unit-of-work added with the error/availability/atomicity contracts.
     for member in (
         "get_session_title",
         "get_session_title_source",
@@ -56,7 +58,10 @@ def test_protocol_face_members_exist_on_session_db():
         "get_session",
         "get_messages_as_conversation",
         "search_messages",
+        "is_search_available",
+        "fts_health",
         "clear_stored_system_prompts",
+        "apply_atomic",
         "TITLE_SOURCE_LLM",
     ):
         assert hasattr(SessionDB, member), member
@@ -115,6 +120,60 @@ def test_search_without_fts_reads_canonical_messages(db):
     assert db.search_messages("unfindable") == []
 
 
+# ── search_messages availability probes (fail-open distinguishability) ──────
+
+
+def test_search_availability_probe_reports_the_live_route(db):
+    # The probe contract: available=True must mean the indexed route serves
+    # the next call. On a healthy store FTS is enabled and reported live,
+    # with the sub-indexes the router can pick listed as routes.
+    assert db.is_search_available() is True
+    health = db.fts_health()
+    assert health["available"] is True
+    assert health["stale"] is False
+    assert health["reason"] is None
+    assert health["routes"]["messages_fts"] is True
+
+
+def test_search_availability_probe_flags_fts_unavailable(db):
+    # Index down: search_messages still answers (fail-open [] or fallback),
+    # but the probe reports False — the two states a bare [] cannot tell apart.
+    db._fts_enabled = False
+    assert db.is_search_available() is False
+    health = db.fts_health()
+    assert health["available"] is False
+    assert health["reason"] == "fts_unavailable"
+    assert health["routes"] == {}
+    # The search call itself stays legal on the fallback route.
+    assert db.search_messages("anything") == []
+
+
+def test_search_availability_probe_flags_fts_stale(db):
+    # Fail-open latched (corruption-detached or observed in shared state):
+    # reported distinctly from plain unavailability.
+    db._fts_stale = True
+    assert db.is_search_available() is False
+    health = db.fts_health()
+    assert health["available"] is False
+    assert health["stale"] is True
+    assert health["reason"] == "fts_stale"
+    db._fts_stale = False
+
+
+def test_search_availability_probe_never_raises(db, monkeypatch):
+    # The probe is the pre-call gate; it must never become a new failure
+    # point. An internal probe error degrades to available=False instead of
+    # propagating.
+    def broken_status():
+        raise sqlite3.DatabaseError("injected probe fault")
+
+    monkeypatch.setattr(db, "fts_rebuild_status", broken_status)
+    health = db.fts_health()
+    assert health["available"] is False
+    assert health["reason"] == "probe_error"
+    assert db.is_search_available() is False
+
+
 @pytest.mark.parametrize("route", ["fts", "disabled", "operational_error"])
 def test_standalone_near_search_survives_fts_fallback(db, monkeypatch, route):
     db.create_session("s1", source="cli")
@@ -169,7 +228,26 @@ def test_sanitize_title_is_the_contracted_normalizer(db):
     assert SessionDB.sanitize_title("   ") is None
 
 
+def test_sanitize_title_truncate_is_the_non_raising_length_path(db):
+    # The Optional[str] contract needs a path that cannot raise: truncate cuts
+    # the normalized title to the cap (still storable), None stays
+    # empty-input-only. The raise is kept for callers who must know their
+    # title was over the cap instead of silently storing a different one.
+    overlong = "x" * (SessionDB.MAX_TITLE_LENGTH + 50)
+    assert SessionDB.sanitize_title(overlong, truncate=True) == "x" * SessionDB.MAX_TITLE_LENGTH
+    assert SessionDB.sanitize_title("   ", truncate=True) is None
+    assert SessionDB.sanitize_title("short", truncate=True) == "short"
+    # A truncated value must itself satisfy the store: storing it succeeds.
+    db.create_session("s1", source="cli")
+    assert db.set_session_title("s1", SessionDB.sanitize_title(overlong, truncate=True))
+    assert db.get_session_title("s1") == "x" * SessionDB.MAX_TITLE_LENGTH
+
+
 def test_auto_title_rejects_invalid_source(db):
+    # Contract: an invalid source is a programming error and stays a declared
+    # ValueError (set_auto_title is in the contract's raising class); the
+    # legitimate sources are the TITLE_SOURCE_* constants the same contract
+    # names, so an out-of-set value cannot arrive by accident.
     db.create_session("s1", source="cli")
     with pytest.raises(ValueError, match="invalid automatic title source"):
         db.set_auto_title("s1", "Rejected", source=SessionDB.TITLE_SOURCE_USER)
@@ -343,9 +421,13 @@ def test_clear_inline_layout(tmp_path):
     rows = sqlite3.connect(path).execute(
         "SELECT id, system_prompt FROM sessions ORDER BY id"
     ).fetchall()
-    # The populated prompt is blanked; the already-empty row is untouched
-    # (rowcount counts only real changes); both session rows survive.
-    assert rows == [("legacy1", ""), ("legacy2", "")]
+    # The populated prompt is unset; the already-empty row is untouched
+    # (rowcount counts only real changes); both session rows survive. The
+    # canonical unset is NULL on EVERY layout — the inline branch normalizes
+    # to NULL too, so a cleared prompt reads back identically regardless of
+    # which storage layout holds it ('' would make unset layout-dependent,
+    # the exact split the interface contract forbids).
+    assert rows == [("legacy1", None), ("legacy2", "")]
     # Idempotent on the inline layout too.
     assert store.clear_stored_system_prompts() == {"cleared": 0, "storage_mode": "inline"}
 
@@ -396,6 +478,34 @@ def test_clear_upgrades_legacy_inline_text_through_a_real_open(tmp_path):
         assert row is not None and row["system_prompt"] is None
     finally:
         handle.close()
+
+
+# ── apply_atomic — explicit unit of work ────────────────────────────────────
+
+
+def test_apply_atomic_lands_two_writes_in_one_transaction(db):
+    # Two store writes composed into one all-or-nothing unit via the public
+    # member, no underscore reach: both land together.
+    db.create_session("s1", source="cli")
+    def unit(conn):
+        db._set_session_title_in_transaction(conn, "s1", "Batched title", source="llm")
+        conn.execute("UPDATE sessions SET model = ? WHERE id = ?", ("batched-model", "s1"))
+        return "done"
+    assert db.apply_atomic(unit) == "done"
+    assert db.get_session_title("s1") == "Batched title"
+    assert db.get_session("s1")["model"] == "batched-model"
+
+
+def test_apply_atomic_rolls_back_the_whole_unit_on_failure(db):
+    # A mid-unit failure leaves NO partial write visible: the write issued
+    # before the failure is rolled back with it.
+    db.create_session("s1", source="cli")
+    def unit(conn):
+        conn.execute("UPDATE sessions SET model = ? WHERE id = ?", ("doomed", "s1"))
+        raise RuntimeError("injected mid-unit failure")
+    with pytest.raises(RuntimeError, match="injected mid-unit failure"):
+        db.apply_atomic(unit)
+    assert db.get_session("s1")["model"] is None
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────

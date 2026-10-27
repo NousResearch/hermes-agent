@@ -1608,6 +1608,19 @@ class SessionDB(
 
     MAX_TITLE_LENGTH = 100
 
+    def apply_atomic(self, fn: Callable[[sqlite3.Connection], T]) -> T:
+        """Run *fn* as ONE transaction — the public unit-of-work behind the
+        ``StateStoreInterface.apply_atomic`` contract. This is the public face of the
+        private ``_execute_write`` (which each atomic method already routes through);
+        composing store writes in one all-or-nothing unit no longer requires reaching
+        for the underscore member. The callback receives this store's writer connection
+        (backend-specific — portable code calls the store's own methods inside *fn*);
+        it must NOT commit or rollback (the transaction boundary is owned here) and MUST
+        be idempotent under replay: ``_execute_write`` may re-run the whole callback
+        after a lock-contention rollback. An exception from *fn* propagates after
+        rollback; retrying the whole unit is then the caller's choice."""
+        return self._execute_write(fn)
+
     # Title provenance, lowest to highest authority: auto-titling may only replace a
     # strictly lower-authority title (``derived`` -> ``llm`` once; never a user-typed name).
     TITLE_SOURCE_DERIVED = _TITLE_SOURCE_DERIVED

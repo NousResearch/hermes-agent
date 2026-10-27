@@ -173,8 +173,18 @@ class SessionMaintenanceMixin:
                 self._delete_unreferenced_system_prompts(conn)
                 return cleared, "out-of-line"
             if "system_prompt" in columns:
+                # The protocol's canonical unset is NULL on every layout: the
+                # out-of-line branch NULLs both columns above, and a true
+                # legacy inline row is normalized here too. Storing '' would
+                # leave '' and NULL meaning "unset" depending on which layout
+                # a database happens to have — the exact split the interface
+                # contract forbids (reads must not need a storage_mode to
+                # interpret an unset prompt). '' only remains on rows that
+                # were ALREADY '' before clear (never cleared by us), and the
+                # WHERE below skips them, so they are untouched history, not a
+                # cleared value.
                 cleared = conn.execute(
-                    "UPDATE sessions SET system_prompt = '' "
+                    "UPDATE sessions SET system_prompt = NULL "
                     "WHERE system_prompt IS NOT NULL AND system_prompt != ''"
                 ).rowcount
                 return cleared, "inline"

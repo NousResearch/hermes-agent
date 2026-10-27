@@ -446,6 +446,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-finance',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/finance/finance-0xarchive-backtest',
                     'user-guide/skills/optional/finance/finance-3-statement-model',
                     'user-guide/skills/optional/finance/finance-comps-analysis',
                     'user-guide/skills/optional/finance/finance-dcf-model',

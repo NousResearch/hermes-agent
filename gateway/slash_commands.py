@@ -22,6 +22,7 @@ from typing import Optional, Union
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base_status_anchor import without_status_anchor
 from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
@@ -398,7 +399,7 @@ class GatewaySlashCommandsMixin(
         platform = getattr(source, "platform", None)
         platform_str = (platform.value if hasattr(platform, "value") else str(platform or "")).lower()
         chat_id, chat_type = _field("chat_id"), _field("chat_type")
-        delivery_metadata = self._reply_metadata(event) or None
+        delivery_metadata = without_status_anchor(self._reply_metadata(event)) or None
         if isinstance(delivery_metadata, dict) and chat_type:
             delivery_metadata.setdefault("chat_type", chat_type)
         if not (platform_str and chat_id):

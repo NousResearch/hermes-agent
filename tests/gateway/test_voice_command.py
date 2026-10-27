@@ -357,6 +357,8 @@ class TestSendVoiceReply:
             "telegram_dm_topic_reply_fallback": True,
             "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "462",
+            "status_anchor_message_id": "462",
+            "status_owner_key": "agent:main:telegram:dm:123:20197",
             # Final voice reply is notify-worthy (issue #27970 Bug 2):
             # mirrors the final-text path in gateway/platforms/base.py.
             "notify": True,

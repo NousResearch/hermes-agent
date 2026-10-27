@@ -2,6 +2,7 @@
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
 from tui_gateway.hosted_room_driver import HostedRoomBinding
+from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
 
 class HostedControls:
@@ -14,7 +15,7 @@ class HostedControls:
         task = next((t for t in tasks.list_tasks(self.db_path, room_id=room_id)
                      if t['identity'].task_id == task_id), None)
         if (task is None or task['execution_generation'] != execution_generation
-                or (task['payload'].get('target_member_id') or task['payload'].get('target_profile')) != member_id):
+                or task_member_id(task) != member_id):
             raise RuntimeStoreError('stale_generation')
         if not any(m.get('member_id') == member_id
                    and m.get('profile') == task['payload']['target_profile']
@@ -72,10 +73,8 @@ class HostedControls:
         for task in tasks.list_tasks(self.db_path, room_id=room_id):
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
-            member = task['payload'].get('target_member_id') or task['payload']['target_profile']
-            if self._member_is_peer(room_id, member):
+            if self._member_is_peer(room_id, task_member_id(task)):
                 continue
-            actions.append({'kind': 'discard' if task['status'] == 'indeterminate' else 'retry',
-                            'member_id': member, 'task_id': task['identity'].task_id,
-                            'execution_generation': task['execution_generation']})
+            actions.append(attempt_action(
+                'discard' if task['status'] == 'indeterminate' else 'retry', task))
         return {**result, 'pending_actions': actions}

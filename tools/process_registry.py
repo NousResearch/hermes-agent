@@ -2577,8 +2577,7 @@ PROCESS_SCHEMA = {
     # (write-vs-submit is the one real trap: a lone \n on a Windows PTY is not Enter).
     # See #95681.
     "description": (
-        "Poll, wait on, or kill background terminal processes (from "
-        "terminal(background=true)). "
+        "Poll, wait on, send input to, or kill terminal(background=true) processes. "
         "Completed results remain retrievable by session_id when resuming their owning conversation "
         "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "

@@ -154,6 +154,17 @@ meaningful:
    <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
    only from the upstream tool's official source, pinned by checksum, and
    disclosed (rule 13) — never bundled and never from an unofficial mirror.
+18. **Password managers come from their vendor.** A plugin that registers a
+   `browser_vault` login backend (`ctx.register_login_backend`) is listed only at
+   `tier: verified`, submitted from the password-manager vendor's own repository
+   by that vendor, or at `tier: official` when Nous maintains it. Community-tier,
+   fork and third-party listings of a login backend are declined. Hermes enforces
+   the same rule when the plugin loads: a login backend is accepted only from a
+   plugin bundled with Hermes or installed from this catalog at `verified` or
+   `official` tier and at the reviewed pin, as recorded in Hermes's own install
+   record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
+   `--allow-removed`, project and pip installs are refused, and no setting
+   relaxes it.
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,

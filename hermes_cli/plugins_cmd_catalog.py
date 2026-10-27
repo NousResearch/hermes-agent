@@ -203,6 +203,38 @@ def catalog_install_record(plugin_dir) -> Optional[dict]:
     return read_catalog_sidecar(plugin_dir)
 
 
+LOGIN_BACKEND_TIERS = frozenset({"official", "verified"})
+LOGIN_BACKEND_RULE = ("password-manager login backends are accepted only from plugins bundled with Hermes or "
+                      "installed from the Hermes plugin catalog at tier verified or official (published by the "
+                      "password-manager vendor itself or by Nous)")
+_NON_CATALOG_SOURCES = {"project": "a project .hermes/plugins directory", "entrypoint": "a pip entry point"}
+
+
+def login_backend_provenance_error(manifest) -> str:
+    """Why *manifest*'s plugin may not register a login backend, or "" when it may.
+
+    Read from the installer-owned ``.install-metadata.json`` record of the CURRENT home's plugins dir, never
+    from the tree (a repo can commit a ``.hermes-catalog.json``). No config key relaxes it. This decides
+    which plugins Hermes offers the seam to; code already running in-process is not sandboxed by it."""
+    if manifest.source == "bundled":
+        return ""
+    if manifest.source in _NON_CATALOG_SOURCES:
+        return f"{LOGIN_BACKEND_RULE}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
+    record = _install_record(Path(manifest.path)) if manifest.source == "user" and manifest.path else None
+    block = (record or {}).get("catalog")
+    if not isinstance(block, dict) or not block.get("name"):
+        return (f"{LOGIN_BACKEND_RULE}; this plugin was not installed from the Hermes plugin catalog "
+                "(a local directory or Git URL install)")
+    if record.get("allow_removed"):
+        return f"{LOGIN_BACKEND_RULE}; this plugin was installed with --allow-removed"
+    tier = str(block.get("tier") or "community")
+    if tier not in LOGIN_BACKEND_TIERS:
+        return f"{LOGIN_BACKEND_RULE}; catalog entry '{block['name']}' is tier {tier}"
+    if not block.get("pin"):
+        return f"{LOGIN_BACKEND_RULE}; this install is not at the catalog's reviewed pin (installed with --ref)"
+    return ""
+
+
 def catalog_annotation(dir_path) -> Optional[str]:
     """``catalog:<tier>@<sha8>`` for a catalog install (``list`` Source column), else ``None``."""
     sidecar = catalog_install_record(dir_path)
@@ -286,7 +318,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
-        allow_removed=allow_removed, before_swap=before_swap,
+        allow_removed=allow_removed, before_swap=before_swap, app_title=entry.title or None,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 

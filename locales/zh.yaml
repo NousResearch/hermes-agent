@@ -697,6 +697,7 @@ gateway:
     no_credentials: "⚠️ 我无法连接 AI 模型服务，因此这条消息未被处理。请使用 /login 重新登录，或用 /model 选择其他模型。如果持续失败，请在主机上运行 `hermes doctor`。"
     cron_session_read_only: "⚠️ 此聊天属于一个定时任务，只会运行该任务，因此你的消息未被执行。请新建聊天后再发送。"
     workspace_unavailable: "⚠️ 此聊天的工作文件夹已不存在（{path}），因此你的消息未被执行。请重新创建该文件夹，或将聊天移到其他文件夹（CLI 中使用 `/worktree new`，桌面应用中使用“移动到项目”），然后重新发送消息。"
+    launch_credentials_unavailable: "⚠️ 此聊天无法再使用它开始时的 API 密钥{detail}，因此无法在其中运行任何内容。打开的聊天不会自行切换到其他密钥，所以 /retry 也会以同样方式失败。请使用 /new 以当前密钥开始新聊天。"
   skills:
     disabled: "**{name}** 技能已安装但被禁用。\n启用方式：`hermes skills config`"
     not_installed: "**{name}** 技能可用但尚未安装。\n安装方式：`hermes skills install {install_name}`"
@@ -2017,7 +2018,6 @@ cli:
     cleared_picker_cache: "已清除模型选择器缓存，正在刷新..."
     moa_one_shot_queued: "已用预设 {preset} 排队一次 MoA 单次运行；本回合结束后将恢复之前的模型。"
     normalized_model: "已将模型 '{old}' 规范化为 '{new}'（提供方：{provider}）。"
-    normalized_copilot_model: "已将 Copilot 模型 '{old}' 规范化为 '{new}'。"
     stripped_provider_prefix: "已去掉 '{old}' 中的提供方前缀；将为 {provider} 使用 '{new}'。"
     restored_from_session: "已从会话恢复模型：{model}"
     could_not_load_config: "❌ 无法加载配置：{error}"

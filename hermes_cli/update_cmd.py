@@ -788,6 +788,8 @@ def _complete_source_update(request: dict | None) -> None:
     from copy import deepcopy
     _completion_receipt.record_stage(
         "apply", "skipped" if request.get("completion_message") else "success", mode=request.get("apply_mode", "git"))
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Updating dependencies")  # the completion below starts with the dependency sync
     current = _completion_receipt._current.get()
     if current is not None:
         request["receipt"] = deepcopy(current.data)
@@ -1840,6 +1842,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Downloading updates")  # a failed backup never stops the update
 
     _windows_gateway_resume = _pause_gateways_for_update(opts)
     if _windows_gateway_resume:

@@ -16,6 +16,11 @@ from hermes_cli.platforms import PLATFORMS
 from tools.connectors.gateway.names import CONNECTOR_NAME_PREFIX
 from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
 
+from .shared_metrics_prepared_compaction import (
+    PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
+    PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
+)
+
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
 # recovered from a file that is deleted only then. Events persist on the Relay thread.
@@ -902,7 +907,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "memory_provider": MEMORY_PROVIDERS, "messaging_platform_count_bucket": SIZE_BUCKETS,
         "plugin_count_bucket": SIZE_BUCKETS, "profile_count_bucket": SIZE_BUCKETS,
         "skill_count_bucket": SIZE_BUCKETS, "terminal_backend": TERMINAL_BACKENDS,
-        **_INSTALL_V4_SNAPSHOT_DIMENSIONS,
+        **_INSTALL_V4_SNAPSHOT_DIMENSIONS, **PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
     },
     SESSION_METRIC: {
         "active_duration_bucket": SESSION_DURATION_BUCKETS, "entrypoint": TASK_ENTRYPOINTS,
@@ -1057,6 +1062,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "described_first": YES_NO, "outcome": TOOL_OUTCOMES, "searches_before_bucket": COUNT_BUCKETS,
     },
     # ---- end v4 connectors ----
+    PREPARED_COMPACTION_METRIC: {**PREPARED_COMPACTION_DIMENSIONS, "failure_class": COMPRESSION_FAILURE_CLASSES},
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -1136,10 +1142,11 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
     SKILL_LOAD_METRIC: (_METRIC_FIELDS[SKILL_LOAD_METRIC] - {"skill_name"},),
     INSTALL_SNAPSHOT_METRIC: (_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - {
         "display_language", "install_age_bucket", "main_provider", "messaging_platform_count_bucket",
-        "terminal_backend", *_INSTALL_V4_SNAPSHOT_DIMENSIONS,
+        "terminal_backend", *_INSTALL_V4_SNAPSHOT_DIMENSIONS, *PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
     },
         # ---- v4 install ----
-        _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(_INSTALL_V4_SNAPSHOT_DIMENSIONS),
+        _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - {*_INSTALL_V4_SNAPSHOT_DIMENSIONS, *PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS},
+        _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS),
     ),
 }
 # ---- v5 engagement ----
@@ -1207,7 +1214,7 @@ _DECISION_MARK_METRICS = {
     INSTALL_RUN_MARK: INSTALL_RUN_METRIC,
     # ---- end iuf c2 ----
     TOOL_SEARCH_MARK: TOOL_SEARCH_METRIC, TOOL_BATCH_MARK: TOOL_BATCH_METRIC,
-    CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC,
+    CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC, PREPARED_COMPACTION_MARK: PREPARED_COMPACTION_METRIC,
 }
 
 

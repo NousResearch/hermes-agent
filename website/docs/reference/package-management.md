@@ -146,7 +146,10 @@ together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. The generated workspace and extended lock remain
-outside shipped source. Repair copies the recorded workspace and lock, including
+outside shipped source. The workspace is solved only for the platform and
+architecture of the interpreter it installs into, so a plugin dependency with no
+wheels for another platform (onnxruntime or torch on Android) does not block it;
+the shipped lock keeps its full platform coverage. Repair copies the recorded workspace and lock, including
 plugin build inputs, rather than resolving against edited live manifests.
 
 Plugin enablement and staged code updates are submitted as data to the isolated
@@ -513,9 +516,10 @@ references. `--offline` and `--cache` control dependency acquisition.
 For application environment builds, PM must already be able to start in the
 invoking Python. These builds are not an interpreter bootstrap. They do not modify a running application's
 imports or replace its selected environment. Nix's declarative uv2nix builds
-remain Nix-owned: `nix develop` still builds its dependencies with uv2nix, but
-runs them on the interpreter `pm/lock.json` pins (uv2nix cannot build a venv
-against a tarball interpreter, so only the interpreter comes from the lock).
+remain Nix-owned: `nix develop` still builds its dependencies with uv2nix, then
+re-homes that venv onto the interpreter `pm/lock.json` pins (uv2nix cannot build
+against a tarball interpreter). The shell's uv, node, npm, ripgrep and ffmpeg are
+the lock's builds too.
 Package-manager commands for unrelated projects or agent
 sandboxes do not manage Hermes itself.
 
@@ -568,14 +572,20 @@ launchers, and invokes native packaging. Maintainers can read
 ## Network retries
 
 PM retries transient HTTP failures during tool downloads, artifact hashing and
-version lookups. Each probe or transfer gets at most four attempts. Backoff
-waits are 1, 2 and 4 seconds. A `Retry-After` header can extend a wait, up to
-30 seconds. Each retry reports its cause, delay and next attempt in the log.
+version lookups. Probes and non-resumable transfers get at most four attempts.
+Their backoff waits are 1, 2 and 4 seconds. A `Retry-After` header can extend
+these waits up to 30 seconds. Resumable transfers renew their retry budget
+when they save new progress; four failures without new progress stop retries.
+With a pinned mirror available, waits above 30 seconds switch to that mirror.
+The last source honors `Retry-After` up to five minutes and stops for longer waits.
+Each retry logs its cause, delay and consecutive failures without progress.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.
-Ranged downloads retain completed bytes. Servers without range support require
-a fresh stream. Pause interrupts backoff and preserves the partial download.
+Ranged downloads checkpoint every five seconds and after each attempt. A failed
+periodic checkpoint logs a warning and retries later; the final checkpoint is required.
+Servers without range support require a fresh stream. Pause interrupts backoff
+and preserves the partial download.
 
 PM does not retry bad hashes, certificate failures, local filesystem errors or
 other permanent failures. A successful probe followed by a range GET 403 or 404

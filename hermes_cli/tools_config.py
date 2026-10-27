@@ -665,6 +665,47 @@ def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_na
     return {name for name, tools in resolved.items() if not tools or tools & surviving}
 
 
+def _disabled_entry_tools(name: str) -> set[str]:
+    """Tools one ``agent.disabled_toolsets`` entry removes at runtime: legacy names (``terminal_tools``)
+    and the bundle/posture non-core delta included, which ``resolve_toolset`` alone gets wrong."""
+    from model_tools import _LEGACY_TOOLSET_MAP, _apply_toolset_selection
+    from toolsets import resolve_toolset
+
+    universe = set(resolve_toolset(name)) | set(_LEGACY_TOOLSET_MAP.get(name, ()))
+    kept = set(universe)
+    _apply_toolset_selection(kept, [name], quiet_mode=True, disable=True)
+    return universe - kept
+
+
+def toolsets_partially_stripped(config: dict, enabled_toolsets: set[str]) -> dict[str, tuple[list[str], list[str], str]]:
+    """``{toolset: (stripped tools, disabled entries stripping them, repair hint)}`` for enabled toolsets
+    that ``agent.disabled_toolsets`` cuts down without removing (``web`` minus ``web_search`` via ``search``,
+    #134593). ``_prune_toolsets_stripped_by_disabled`` keeps such a toolset "enabled" because some of its
+    tools survive, so inspection surfaces need this to say which ones did not. The hint offers
+    ``hermes tools enable`` only when that save clears every entry (``_save_platform_tools`` coverage)."""
+    from agent.skill_utils import parse_config_string_list
+    from model_tools import _apply_toolset_selection
+    from toolsets import resolve_toolset, validate_toolset
+
+    disabled = [n.strip() for n in parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) if n.strip()]
+    report: dict[str, tuple[list[str], list[str]]] = {}
+    for name in sorted(enabled_toolsets):
+        tools = set(resolve_toolset(name)) if validate_toolset(name) else set()
+        by: dict[str, set[str]] = {}
+        for entry in disabled:
+            kept = set(tools)
+            _apply_toolset_selection(kept, [entry], quiet_mode=True, disable=True)
+            if tools - kept:
+                by[entry] = tools - kept
+        if by:
+            entries = sorted(by)
+            clears = all(_disabled_entry_tools(e) <= tools for e in entries)
+            hint = (f"run `hermes tools enable {name}` to restore" if clears
+                    else f"remove {', '.join(entries)} from agent.disabled_toolsets to restore")
+            report[name] = (sorted(set().union(*by.values())), entries, hint)
+    return report
+
+
 def _recover_platform_native_toolsets(enabled_toolsets: set[str], platform: str, *, skip: set[str]) -> None:
     """Add non-configurable platform toolsets (discord, feishu_*) in place: in the default composite but not in
     CONFIGURABLE_TOOLSETS, so never in a checklist or saved list. Runs for BOTH ``_get_platform_tools`` branches."""
@@ -762,7 +803,19 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: set[
     if isinstance(agent_cfg, dict) and agent_cfg.get("disabled_toolsets") and newly_enabled:
         from agent.skill_utils import parse_config_string_list
         parsed_disabled = parse_config_string_list(agent_cfg["disabled_toolsets"])
-        remaining = [ts for ts in parsed_disabled if ts not in newly_enabled]
+        # Also clear entries whose tools are entirely covered by a newly enabled toolset: Blank Slate writes
+        # subset toolsets like `search` (only web_search), which have no checklist row, so enabling `web`
+        # left web_search stripped with no supported way to undo it (#134593).
+        from toolsets import resolve_toolset
+        covered: set[str] = set()
+        for ts in newly_enabled:
+            covered.update(resolve_toolset(ts))  # [] for unknown names; never raises
+
+        def _covered(ts: str) -> bool:
+            tools = _disabled_entry_tools(ts)
+            return bool(tools) and tools <= covered
+
+        remaining = [ts for ts in parsed_disabled if ts not in newly_enabled and not _covered(ts)]
         if remaining != parsed_disabled:
             agent_cfg["disabled_toolsets"] = remaining
     save_config(config)

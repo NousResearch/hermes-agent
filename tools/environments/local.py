@@ -1013,6 +1013,8 @@ class LocalEnvironment(BaseEnvironment):
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
     is_local = True
+    # A subclass that confines its commands (a sandbox) sets this False: see BaseEnvironment.
+    uses_host_filesystem = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
         """First-party ``BUZZ_*`` names present in the env, excluded from the shared

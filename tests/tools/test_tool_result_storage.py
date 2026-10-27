@@ -422,6 +422,7 @@ class TestSpillover:
         from tools.environments.local import LocalEnvironment
 
         env = MagicMock(spec=LocalEnvironment)
+        env.uses_host_filesystem = LocalEnvironment.uses_host_filesystem
         content = "y" * 60_000
         result = maybe_persist_tool_result(
             content=content,

@@ -710,8 +710,24 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             raise
         return False
 
+    def _refuse_foreign_approval(self, approval_data: dict) -> None:
+        """The callback is this turn's chat. A prompt queued for another session must not render here."""
+        asked = approval_data.get("gateway_session_key")
+        bound = self._ctx.session_key or ""
+        if isinstance(asked, str) and asked and asked != bound:
+            raise RuntimeError(
+                f"refusing approval prompt queued for {asked}; this turn is bound to {bound or '<none>'}"
+            )
+
     def _approval_notify_sync(self, approval_data: dict) -> None:
+        self._refuse_foreign_approval(approval_data)
         past_turn = self._subagent_approval_outlived_turn(approval_data)
+        # Typing pause and the native-stream boundary belong to a turn that is still running.
+        # After it ends, pausing sticks on the shared adapter and suppresses the next turn's
+        # indicator, and the old stream is already closed.
+        if not past_turn:
+            self._ctx._status_adapter.pause_typing_for_chat(self._ctx._status_chat_id)
+            self._close_native_stream_boundary("Approval")
         # A native decline must finish before any observer can authorize work.
         self._render_approval_sync(approval_data)
         if past_turn or self._approval_owner is None:
@@ -728,11 +744,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
-        # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
-        # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
-        # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
-        self._close_native_stream_boundary("Approval")
+        # Typing pause and the stream boundary are the caller's: a prompt posted after the
+        # parent turn must not touch chrome that now belongs to a later turn.
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()
@@ -740,11 +753,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
+                send_kwargs = dict(
+                    chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
+                    description=desc, metadata=ctx._status_thread_metadata, **flags,
+                )
+                request_id = approval_data.get("request_id") or ""
+                if request_id and _accepts_keyword(adapter.send_exec_approval, "request_id"):
+                    send_kwargs["request_id"] = request_id
                 fut = self._schedule(
-                    adapter.send_exec_approval(
-                        chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
-                    ),
+                    adapter.send_exec_approval(**send_kwargs),
                     "send_exec_approval scheduling error",
                 )
                 if fut is None:

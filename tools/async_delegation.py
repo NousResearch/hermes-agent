@@ -793,17 +793,21 @@ def _batch_crash(error: str, duration: float) -> dict[str, Any]:
 
 
 def _hold_gateway_approval(session_key: str) -> tuple[str, bool]:
-    """Pin the parent turn's approval notifier for the lifetime of one async child.
+    """Pin the approval-context notify callback for the lifetime of one async child.
 
-    The parent turn unregisters that callback as soon as it returns. Without a pin the
-    child's dangerous command finds no route and comes back ``pending_approval`` with
-    nobody to ask. Returns the key that was pinned and whether the pin landed.
+    The parent turn unregisters that callback as soon as it returns. The child looks
+    the callback up by the approval context key (contextvar, then the session env),
+    which is also the key the turn registered. An empty context must not pin
+    ``get_current_session_key()``'s ``"default"`` fallback — that would hold a
+    different session's callback until this child finished.
     """
     from tools.approval import pin_gateway_notify
     from tools.approval_context import get_current_session_key
-    key = get_current_session_key() or session_key or ""
+    key = get_current_session_key(default="")
     if not key:
         return "", False
+    if session_key and session_key != key:
+        logger.debug("Pinning gateway approval callback for %s (dispatch route %s)", key, session_key)
     return key, pin_gateway_notify(key)
 
 

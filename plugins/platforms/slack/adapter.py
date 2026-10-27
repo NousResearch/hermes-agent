@@ -4977,8 +4977,10 @@ class SlackAdapter(BasePlatformAdapter):
         waiting agent thread — same mechanism as the text ``/approve`` flow."""
 
         def _build() -> tuple[str, list]:
+            from tools.approval import pack_button_approval
+            token = pack_button_approval(prompt.session_key, prompt.request_id)
             actions = [
-                self._button(label, self._EA_ACTION_IDS[choice], prompt.session_key, style=style)
+                self._button(label, self._EA_ACTION_IDS[choice], token, style=style)
                 for label, choice, style in prompt.actions]
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
@@ -5640,8 +5642,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            from tools.approval import resolve_button_approval
+            count = resolve_button_approval(session_key, choice)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
                 session_key, choice, user_name)

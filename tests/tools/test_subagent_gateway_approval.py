@@ -284,6 +284,73 @@ def test_unregister_while_pinned_cancels_only_the_parent_wait(gateway):
     assert A._gateway_notify_cb(PARENT) is None
 
 
+def test_unscoped_hold_does_not_pin_the_default_fallback(gateway):
+    """An empty approval context must not pin the literal key ``default``."""
+    from gateway.session_context import scoped_session_key
+    from tools import async_delegation as ad
+    from tools.approval_context import reset_current_session_key, set_current_session_key
+
+    token = set_current_session_key("")
+    try:
+        with scoped_session_key(""):
+            A.register_gateway_notify("default", lambda _data: None)
+            assert ad._hold_gateway_approval(PARENT) == ("", False)
+            assert A._gateway_notify_pins.get("default", 0) == 0
+            A.unpin_gateway_notify("default")
+            assert A._gateway_notify_cb("default") is not None
+    finally:
+        reset_current_session_key(token)
+
+
+def test_packed_button_token_resolves_only_that_prompt(gateway):
+    """A click on one card must not approve a different command still queued on the session."""
+    import threading
+
+    from tools.approval import pack_button_approval, resolve_button_approval
+
+    posted = [threading.Event(), threading.Event()]
+    seen: list[dict] = []
+
+    def notify(data):
+        seen.append(dict(data))
+        posted[len(seen) - 1].set()
+
+    holders: list[dict] = [{}, {}]
+    commands = ("rm -rf build", "sh -c 'echo hi'")
+
+    def wait(idx):
+        holders[idx]["result"] = A._await_gateway_decision(
+            PARENT, notify, {"command": commands[idx], "description": "d", "pattern_key": "k",
+                             "pattern_keys": ["k"]},
+        )
+
+    threads = [threading.Thread(target=wait, args=(i,)) for i in (0, 1)]
+    try:
+        threads[0].start()
+        assert posted[0].wait(timeout=10)
+        threads[1].start()
+        assert posted[1].wait(timeout=10)
+        assert {item["command"] for item in seen} == set(commands)
+        assert resolve_button_approval(pack_button_approval(PARENT, "not-a-live-id"), "once") == 0
+        assert A.has_blocking_approval(PARENT)
+        second = seen[1]["request_id"]
+        assert resolve_button_approval(pack_button_approval(PARENT, second), "deny") == 1
+        threads[1].join(timeout=10)
+        assert holders[1]["result"]["choice"] == "deny"
+        assert threads[0].is_alive()
+        assert resolve_button_approval(pack_button_approval(PARENT, seen[0]["request_id"]), "deny") == 1
+        threads[0].join(timeout=10)
+        assert holders[0]["result"]["choice"] == "deny"
+        assert not A.has_blocking_approval(PARENT)
+    finally:
+        for entry_id in (item.get("request_id") for item in seen):
+            if entry_id:
+                resolve_button_approval(pack_button_approval(PARENT, entry_id), "deny")
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=10)
+
+
 def test_async_dispatch_holds_the_notifier_until_the_child_finishes(gateway):
     from tests.waiting import wait_until
     from tools import async_delegation as ad

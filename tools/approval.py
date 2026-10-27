@@ -286,6 +286,39 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def pack_button_approval(session_key: str, request_id: str = "") -> str:
+    """Session key a button round-trips, with the prompt id when the card names one command.
+
+    Clicks otherwise resolve the oldest queued approval. A card left on screen after its
+    wait ended would then approve a different command. Session keys are colon-joined and
+    do not contain newlines, so the id rides after one.
+    """
+    if request_id:
+        return f"{session_key}\n{request_id}"
+    return session_key
+
+
+def unpack_button_approval(value: str) -> tuple[str, str]:
+    """Inverse of :func:`pack_button_approval`. ``request_id`` is empty when the token is a bare key."""
+    session_key, sep, request_id = str(value or "").partition("\n")
+    if not sep or not request_id:
+        return session_key, ""
+    return session_key, request_id
+
+
+def resolve_prompt_approval(session_key: str, choice: str, request_id: str = "") -> int:
+    """Resolve one button click. An id that is no longer queued resolves nothing else."""
+    if request_id:
+        return resolve_gateway_approval(session_key, choice, request_id=request_id)
+    return resolve_gateway_approval(session_key, choice)
+
+
+def resolve_button_approval(token: str, choice: str) -> int:
+    """Resolve a click whose token came from :func:`pack_button_approval`."""
+    session_key, request_id = unpack_button_approval(token)
+    return resolve_prompt_approval(session_key, choice, request_id)
+
+
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
     """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
     The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
@@ -1070,6 +1103,10 @@ def _route_gateway_approval(spec: _GateSpec, *, command: str, description: str, 
         display_command=display_command, display_description=display_description,
         pattern_key=pattern_key, pattern_keys=pattern_keys, smart_denied=smart_denied,
     )
+    # The turn that owns the callback posts to its own chat. A mismatch is a refused
+    # send (fail closed), not a prompt in some other session.
+    if session_key:
+        data["gateway_session_key"] = session_key
     return _gateway_decision_result(
         spec, session_key=session_key, notify_cb=notify_cb, data=data,
         pattern_key=pattern_key, description=description, deny=deny, grant=grant,

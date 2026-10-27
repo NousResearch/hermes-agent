@@ -24,9 +24,10 @@ class _ButtonAdapter:
 
     def __init__(self) -> None:
         self.approvals: list[dict] = []
+        self.paused: list[str] = []
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
-        return None
+        self.paused.append(chat_id)
 
     async def send_exec_approval(self, *args: Any, **kwargs: Any):
         from gateway.platforms.base import SendResult
@@ -89,6 +90,8 @@ def test_stale_parent_turn_still_posts_a_subagent_approval():
     assert len(adapter.approvals) == 1
     assert adapter.approvals[0]["session_key"] == SESSION
     assert adapter.approvals[0]["description"].startswith("sub-agent:")
+    # The parent turn is over: pausing typing here would suppress the next turn's indicator.
+    assert adapter.paused == []
 
 
 def test_stale_parent_turn_does_not_post_its_own_approval():
@@ -99,6 +102,7 @@ def test_stale_parent_turn_does_not_post_its_own_approval():
         })
     assert exc.value.reason == "stale_generation"
     assert adapter.approvals == []
+    assert adapter.paused == []
 
 
 def test_live_turn_still_registers_a_subagent_approval():
@@ -108,4 +112,31 @@ def test_live_turn_still_registers_a_subagent_approval():
         "command": "sh -c 'echo hi'", "description": "shell", "delegated_child": True,
     })
     assert len(adapter.approvals) == 1
+    assert adapter.paused == ["C1"]
     assert authority.registered
+
+
+def test_refuses_a_prompt_queued_for_another_session():
+    adapter = _ButtonAdapter()
+    with pytest.raises(RuntimeError, match="queued for"):
+        _runner(adapter, _Live())._approval_notify_sync({
+            "command": "rm -rf /",
+            "description": "sub-agent: other chat",
+            "delegated_child": True,
+            "gateway_session_key": "agent:main:discord:dm:other",
+        })
+    assert adapter.approvals == []
+    assert adapter.paused == []
+
+
+def test_button_send_carries_the_request_id():
+    adapter = _ButtonAdapter()
+    _runner(adapter, _Live())._approval_notify_sync({
+        "command": "echo hi",
+        "description": "shell",
+        "delegated_child": True,
+        "request_id": "req-1",
+        "gateway_session_key": SESSION,
+    })
+    assert adapter.approvals[0]["request_id"] == "req-1"
+    assert adapter.approvals[0]["session_key"] == SESSION

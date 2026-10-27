@@ -352,6 +352,7 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    request_id: str = ""
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -1697,7 +1698,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at, request_id=prompt.request_id)
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -2545,8 +2546,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if choice is None:
             return handled
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            from tools.approval import resolve_prompt_approval
+            count = resolve_prompt_approval(prompt.session_key, choice, prompt.request_id)
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)

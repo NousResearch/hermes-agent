@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: runa
+description: >-
+  Meetings, transcripts, and action items from Runa, plus the people and
+  companies you meet with.
+source: https://github.com/Runa-Labs-Inc/runa-hermes-plugin
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry), read-only. Native OAuth 2.1 (verified live: RFC 9728
+# protected-resource metadata -> AS metadata with
+# client_id_metadata_document_supported and a registration_endpoint), so
+# Hermes's Client ID Metadata Document signs in with no client to register.
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.joinruna.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - runa
+  hosts:
+    - joinruna.com
+
+post_install: |
+  Hermes opens a browser to sign in to Runa with Google or Microsoft; a
+  first sign-in creates your Runa account. If the sign-in times out before
+  you finish, run `hermes mcp login runa`, which waits five minutes. Then
+  start a new session so the tools load.

@@ -182,6 +182,60 @@ async def test_a_bare_refusal_does_not_warn(tmp_path, caplog):
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_the_canonical_gate_names_the_refused_fields_on_the_wire(tmp_path):
+    """``session.create`` with a key outside the closed contract set refuses in the dispatcher
+    before any handler: the frame carries the plural ``fields`` key paths (#145286)."""
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
+                                     db=db, epoch=epoch)
+
+        class Connection(AuthorityConnection):
+            def handlers(self):
+                async def probe(ref, params):
+                    raise AssertionError('the canonical gate must refuse before any handler')
+                return {'session.create': probe}
+
+        connection = Connection(authority, object(), {'user_id': 'human'})
+        reply = await connection.dispatch({'id': 9, 'method': 'session.create', 'params': {'bogus': 1}})
+        assert reply['error']['message'] == 'invalid_params'
+        assert reply['error']['data'] == {'reason': 'invalid_params', 'fields': ['bogus']}
+    finally:
+        db.close()
+
+
+def test_refusal_text_renders_the_refused_fields_list():
+    """The canonical gate names its refusals as the plural ``fields`` key-path list; the copy must
+    render it, not drop it for the bare code (#145286)."""
+    from hermes_cli.cli_chat_error_copy import refusal_text
+    from hermes_cli.gateway_client import GatewayRPCError
+
+    exc = GatewayRPCError('invalid_params', 4001, {
+        'reason': 'invalid_params', 'fields': ['bogus', 'toolsets.0']})
+    assert refusal_text(exc) == 'invalid_params (bogus, toolsets.0)'
+
+
+def test_the_copy_names_the_fields_the_canonical_gate_refused():
+    """The canonical gate's plural ``fields`` reaches ``GatewayRPCError.data``, but the panel read
+    only the singular ``field``: a session.create refusal rendered as the bare code wrapped in the
+    provider-connection copy (#145286)."""
+    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_cli.gateway_client import rpc_error
+
+    exc = rpc_error({'code': 4001, 'message': 'invalid_params',
+                     'data': {'reason': 'invalid_params', 'fields': ['bogus']}})
+    assert exc.data['fields'] == ['bogus']
+    message = agent_init_failure_message(exc)
+    assert 'invalid_params' in message and 'bogus' in message
+
+
 def test_the_cli_copy_names_the_field_a_user_reads():
     """The panel line said ``invalid_params`` alone; it now carries the check (#138748)."""
     from hermes_cli.cli_chat_error_copy import agent_init_failure_message

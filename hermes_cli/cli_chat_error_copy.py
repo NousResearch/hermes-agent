@@ -37,10 +37,11 @@ def refusal_text(error: BaseException | str) -> str:
     """The refusal as the client shows it: the reason code, plus the check that fired when the owner
     named one (``invalid_params (toolsets: unknown or invalid toolset name: 'mcp-codegraph')``).
 
-    The gateway sends ``field``/``detail`` in the JSON-RPC error's ``data``
-    (``gateway/session_controls.py``), and ``hermes_cli.gateway_client.rpc_error`` carries the
-    bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no ``data`` and
-    reads exactly as before."""
+    The gateway sends ``field``/``detail`` for handler-owned refusals, or the plural ``fields``
+    key-path list for the canonical contract gate's closed-key refusals (#145286), in the JSON-RPC
+    error's ``data`` (``gateway/session_controls.py``); ``hermes_cli.gateway_client.rpc_error``
+    carries the bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no
+    ``data`` and reads exactly as before."""
     if str(error) == "launch_credentials_unavailable":
         # The chat's launch key changed: every retry repeats the refusal, so name the way out.
         from agent.turn_failure_copy import launch_credentials_copy
@@ -50,6 +51,11 @@ def refusal_text(error: BaseException | str) -> str:
     data = data if isinstance(data, dict) else {}
     field, detail = str(data.get("field") or "").strip(), str(data.get("detail") or "").strip()
     if not field and not detail:
+        fields = data.get("fields")
+        names = [str(name).strip() for name in fields] if isinstance(fields, list) else []
+        names = [name for name in names if name]
+        if names:
+            return f"{error} ({', '.join(names)})"
         return str(error)
     return f"{error} ({field or 'unnamed field'}{': ' + detail if detail else ''})"
 

@@ -200,11 +200,10 @@ The fallback system also covers auxiliary tasks independently — vision, compre
 ### Local completion status
 
 The loopback AI Server route asks the model to end each finished reply with a private
-`[[HERMES_TURN_COMPLETE]]` line. Tool calls already signal that work continues. A local text reply
-without the marker gets at most two short follow-ups, including in resumed sessions whose saved
-system prompt predates this instruction. If the model still does not confirm the end, Hermes returns
-the last text as a partial result instead of reporting the turn as complete. The marker is removed
-from saved replies and filtered from streamed text.
+`[[HERMES_TURN_COMPLETE]]` line. The marker is advisory: the provider's normal end-of-response
+signal already ends a turn, so a missing marker does not make Hermes ask the model to continue.
+Existing continuation checks still re-prompt when the reply says more work is coming. If the marker
+is present, Hermes removes it from saved replies and filters it from streamed text.
 
 ## Compression and Persistence
 

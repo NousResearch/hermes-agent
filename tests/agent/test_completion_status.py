@@ -1,28 +1,27 @@
-"""Local turns need an explicit end signal; older cached prompts adopt it by a bounded nudge."""
+"""Local end markers stay private but remain optional for a finished turn."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agent.completion_status import (
     COMPLETION_STATUS_MARKER,
-    COMPLETION_STATUS_NUDGE,
     COMPLETION_STATUS_SIGNATURE,
     CompletionStatusStreamFilter,
-    completion_status_required,
+    completion_status_enabled,
     extract_completion_status,
     is_local_ai_server_gateway_url,
 )
 from agent.stream_delivery import StreamDeliveryMixin
 
 
-def test_completion_status_is_required_by_protocol_or_legacy_local_route():
+def test_completion_status_is_enabled_by_protocol_or_legacy_local_route():
     assert is_local_ai_server_gateway_url("http://127.0.0.1:8080/v1")
     assert is_local_ai_server_gateway_url("http://[::1]:8080/v1")
     assert not is_local_ai_server_gateway_url("http://127.0.0.1:8787/v1")
     assert not is_local_ai_server_gateway_url("https://api.example/v1")
-    assert completion_status_required(f"{COMPLETION_STATUS_SIGNATURE}\n")
-    assert completion_status_required("legacy prompt", base_url="http://localhost:8080/v1")
-    assert not completion_status_required("legacy prompt", base_url="https://api.example/v1")
+    assert completion_status_enabled(f"{COMPLETION_STATUS_SIGNATURE}\n")
+    assert completion_status_enabled("legacy prompt", base_url="http://localhost:8080/v1")
+    assert not completion_status_enabled("legacy prompt", base_url="https://api.example/v1")
 
 
 def test_new_local_system_prompt_carries_the_completion_protocol():
@@ -88,13 +87,20 @@ def _response(content):
 
 
 def _local_agent(base_url="http://127.0.0.1:8080/v1"):
-    from run_agent import AIAgent
+    # This checkout lives inside the active Hermes home. Skip its source-entrypoint bootstrap so
+    # importing AIAgent does not probe the real install manifest under ~/.hermes.
+    from hermes_cli import venv_sync
+    from pm import environments
 
     with (
+        patch.object(environments, "activate_dependencies"),
+        patch.object(venv_sync, "prepare_launch", return_value=None),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
+        from run_agent import AIAgent
+
         agent = AIAgent(
             api_key="test-key", base_url=base_url, provider="custom", model="local-model",
             quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=[],
@@ -119,8 +125,9 @@ def _run(agent, responses):
         return agent.run_conversation("Add the domain definition and verify it.")
 
 
-def test_legacy_local_prompt_retries_progress_narration_until_marked_final():
+def test_legacy_local_prompt_uses_existing_progress_guard_without_marker_retry():
     agent = _local_agent()
+    agent.valid_tool_names = ["terminal"]
     agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
     result = _run(agent, [
         _response("Now I need to add the domain definition itself."),
@@ -132,7 +139,7 @@ def test_legacy_local_prompt_retries_progress_narration_until_marked_final():
     assert agent.client.chat.completions.create.call_count == 2
     second_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
     assert second_messages[0]["content"] == agent._cached_system_prompt
-    assert second_messages[-1]["content"] == COMPLETION_STATUS_NUDGE
+    assert "Continue now" in second_messages[-1]["content"]
     assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
     assert all(
         COMPLETION_STATUS_MARKER not in str(m.get("content") or "")
@@ -140,21 +147,17 @@ def test_legacy_local_prompt_retries_progress_narration_until_marked_final():
     )
 
 
-def test_unconfirmed_local_response_exhausts_two_nudges_as_partial_not_complete():
+def test_markerless_local_final_response_does_not_reopen_a_finished_turn():
     agent = _local_agent()
     result = _run(agent, [
-        _response("Now I need to define the domain."),
+        _response("The domain definition has been added and verified."),
         _response("I should add the metadata next."),
         _response("The metadata still needs to be added."),
     ])
 
-    assert result["completed"] is False
-    assert result["partial"] is True
-    assert result["turn_exit_reason"] == "completion_status_unconfirmed"
-    assert result["failure_reason"] == "truncated"
-    assert result["final_response"] == "The metadata still needs to be added."
-    assert agent.client.chat.completions.create.call_count == 3
-    assert not any(m.get("_completion_status_retry") for m in result["messages"])
+    assert result["completed"] is True
+    assert result["final_response"] == "The domain definition has been added and verified."
+    assert agent.client.chat.completions.create.call_count == 1
 
 
 def test_marker_without_a_user_facing_answer_does_not_confirm_completion():
@@ -167,7 +170,6 @@ def test_marker_without_a_user_facing_answer_does_not_confirm_completion():
     assert result["completed"] is True
     assert result["final_response"] == "The requested work is complete."
     assert agent.client.chat.completions.create.call_count == 2
-    assert not any(m.get("_completion_status_retry") for m in result["messages"])
 
 
 def test_remote_legacy_prompt_does_not_require_local_completion_marker():

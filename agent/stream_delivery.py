@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 from agent.memory_context import sanitize_context
 from agent.message_content import flatten_message_text
 from agent.history_commentary import visible_commentary
-from agent.completion_status import CompletionStatusStreamFilter, completion_status_required
+from agent.completion_status import CompletionStatusStreamFilter, completion_status_enabled
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -83,7 +83,7 @@ class StreamDeliveryMixin:
             deliver(status_filter.finish(marker_present=False))
         self._completion_status_stream_filter = (
             CompletionStatusStreamFilter()
-            if completion_status_required(
+            if completion_status_enabled(
                 getattr(self, "_cached_system_prompt", None), base_url=getattr(self, "base_url", None)
             ) else None
         )

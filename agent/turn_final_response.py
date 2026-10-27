@@ -12,7 +12,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
-from agent.completion_status import resolve_completion_status
+from agent.completion_status import apply_completion_status, completion_status_enabled
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
@@ -30,7 +30,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge", "_completion_status_retry",
+    "_dropped_toolcall_nudge",
 )
 
 
@@ -177,6 +177,11 @@ def finish_text_response(
     # empty-response warnings on the final response path.
     agent._mute_post_response = False
 
+    final_response, completion_marker_present = apply_completion_status(
+        agent, assistant_message=assistant_message, final_response=final_response,
+        promoted=bool(_promoted),
+    )
+
     # Think-block-only / empty content: recovery path.
     if not agent._has_content_after_think_block(final_response):
         _ev = recover_empty_response(
@@ -196,16 +201,6 @@ def finish_text_response(
         if _ev.action == "break":
             return _verdict("break")
         return _verdict("continue")
-
-    _status, _status_verdict = resolve_completion_status(
-        agent, assistant_message=assistant_message, final_response=final_response,
-        system_prompt=active_system_prompt, messages=messages, conversation_history=conversation_history,
-        api_call_count=api_call_count, retry_count=codex_ack_continuations,
-        task_id=effective_task_id, promoted=bool(_promoted), verdict_factory=_verdict,
-    )
-    if _status_verdict is not None:
-        return _status_verdict
-    final_response = _status.final_response
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
@@ -238,12 +233,20 @@ def finish_text_response(
     # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
     _stall_text = agent._strip_think_blocks(final_response or "")
     _stall_continue_intent = (
-        bool(getattr(agent, "_stall_guards", True))
+        not completion_marker_present
+        and bool(getattr(agent, "_stall_guards", True))
         and agent.valid_tool_names
         and codex_ack_continuations < 2
         and (
             trailing_continue_intent(_stall_text)
             or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
+            or (
+                not completion_marker_present
+                and completion_status_enabled(
+                    active_system_prompt, base_url=getattr(agent, "base_url", None),
+                )
+                and promoted_reasoning_announces_action(_stall_text)
+            )
         )
     )
     # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
@@ -251,7 +254,8 @@ def finish_text_response(
     # row itself closes the tool-work window, so a second fragment ends the turn as the answer.
     _tool_rows = tool_results_this_turn(messages)
     _degenerate_final = (
-        bool(getattr(agent, "_stall_guards", True))
+        not completion_marker_present
+        and bool(getattr(agent, "_stall_guards", True))
         and _ack_mode != "off"
         and codex_ack_continuations < 2
         and _tool_rows > 0
@@ -263,7 +267,8 @@ def finish_text_response(
     elif _degenerate_final:
         _continuation_kind = "degenerate"
     elif (
-        _ack_mode != "off"
+        not completion_marker_present
+        and _ack_mode != "off"
         and agent.valid_tool_names
         and codex_ack_continuations < 2
         and agent._looks_like_codex_intermediate_ack(

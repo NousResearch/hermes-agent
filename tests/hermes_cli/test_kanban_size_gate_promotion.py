@@ -13,6 +13,15 @@ pins the contract gaps that pass closed:
 4. A decomposed root stuck back in ``triage`` by the size gate is repaired by
    ``decompose_task`` (the verb) without calling the LLM, and the repair
    helper is a no-op on a non-triage root.
+5. The repair is narrow, and every guard here is mutation-checked (delete it and
+   exactly one test below fails): a decomposed root parked by the block-loop
+   brake stays in ``triage`` and never reaches the LLM, the status write is a
+   compare-and-set that loses to a concurrent archive, and lineage comes from
+   the ``decomposed`` event payload's ``child_ids`` rather than ``task_links``
+   (which also matches an ordinary parent). The prevention tests drive the
+   ``decision=advisory`` -> triage -> decompose path on purpose: a
+   ``triage=True`` root short-circuits ``gate_ready_entry`` before the oversized
+   branch and would stay green with the ``_already_decomposed`` exemption gone.
 """
 
 from __future__ import annotations

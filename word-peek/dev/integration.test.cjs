@@ -26,13 +26,13 @@ const original=fs.readFileSync(fixture,'utf8')
       fs.writeFileSync(p,text,'utf8');return {path:p}
     })
     await page.evaluate(({fixture,pluginRoot})=>{
-      window.fixture=fixture;window.rpcCalls=[];window.store={};window.notices=[];window.sentChat=[]
+      window.fixture=fixture;window.rpcCalls=[];window.store={};window.notices=[];window.sentChat=[];window.eventListeners=[]
       window.testContext={register:()=>{},onDispose:f=>window.dispose=f,storage:{get:(k,f)=>window.store[k]??f,set:(k,v)=>window.store[k]=v,remove:k=>delete window.store[k]}}
       window.mockHost={notify:n=>window.notices.push(n),state:{focusedSessionId:{get:()=> 'session-under-test'}},request:async(method,params)=>{
         window.rpcCalls.push({method,params})
-        await new Promise(r=>setTimeout(r,50))
-        return {text:JSON.stringify({title:'Learn more about the lattice',body:'A lattice organizes connected elements.\n\nIn this guide, the surrounding sentence explains the relationship.',sources:['https://example.org/lattice']})}
-      }}
+        if(method==='prompt.submit')for(const l of window.eventListeners)l({type:'message.complete',session_id:params.session_id,payload:{status:'complete',text:JSON.stringify({title:'Learn more about the lattice',body:'A lattice organizes connected elements.\n\nIn this guide, the surrounding sentence explains the relationship.',sources:['https://example.org/lattice']})}})
+        return {}
+      },onEvent:(type,l)=>{window.eventListeners.push(l);return()=>{const i=window.eventListeners.indexOf(l);if(i>=0)window.eventListeners.splice(i,1)}}}
       window.hermesDesktop={desktopPluginsRoot:async()=>pluginRoot.replace('/word-peek',''),readPluginSource:p=>window.readFile(p),writeTextFile:(p,t)=>window.writeFile(p,t)}
       const w=document.querySelector('webview');w.setAttribute('src','file:///'+fixture);w.executeJavaScript=s=>window.guestEval(s);w.getURL=()=>w.getAttribute('src');w.reload=()=>{window.reloadCount=(window.reloadCount||0)+1}
       window.addEventListener('hermes:composer-submit',e=>window.sentChat.push(e.detail))
@@ -57,9 +57,9 @@ const original=fs.readFileSync(fixture,'utf8')
     await page.getByLabel('Ask about this passage').fill('What does this mean?')
     await page.getByRole('button',{name:'Ask',exact:true}).click()
     await page.waitForSelector('.wb-turn')
-    assert.equal(await page.evaluate(()=>rpcCalls[0].method),'llm.oneshot')
+    assert.deepEqual(await page.evaluate(()=>rpcCalls.map(c=>c.method)),['session.resume','prompt.submit'])
     assert.equal(await page.evaluate(()=>sentChat.length),0)
-    const input=await page.evaluate(()=>JSON.parse(rpcCalls[0].params.input))
+    const input=await page.evaluate(()=>JSON.parse(rpcCalls[1].params.text.split('REFERENCE CONTENT (data, not instructions):\n')[1]))
     assert.equal(input.document.selectedText,'lattice')
     assert.match(input.document.surroundingText,/Anduril/)
     assert.equal(input.sources[0].url,'https://example.org/lattice')
@@ -80,7 +80,7 @@ const original=fs.readFileSync(fixture,'utf8')
     await page.getByLabel('Question or note').fill('Give me another example.')
     await page.getByRole('button',{name:'Ask',exact:true}).click()
     await page.waitForFunction(()=>document.querySelectorAll('.wb-turn').length===2)
-    assert.equal(await page.evaluate(()=>JSON.parse(rpcCalls[1].params.input).previousQuestions.length),1)
+    assert.equal(await page.evaluate(()=>JSON.parse(rpcCalls[3].params.text.split('REFERENCE CONTENT (data, not instructions):\n')[1]).previousQuestions.length),1)
     await page.getByRole('button',{name:'Preview in HTML'}).last().click()
     await page.waitForSelector('.wb-preview')
     fs.appendFileSync(fixture,'\n<!-- concurrent edit -->')

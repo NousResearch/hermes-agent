@@ -1,5 +1,5 @@
 import { planHtmlEdit } from './html-edit.js'
-import { generateAnswer } from './inline-ai.js'
+import { generateAnswer } from './agent-answer.js'
 
 let host, ctx, panel, active
 const sessions = new Map()

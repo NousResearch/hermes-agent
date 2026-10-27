@@ -20,8 +20,8 @@ The panel keeps question history per captured passage and chat/profile during th
 
 ## Scope and integrity
 
-- Inline answers use the configured Hermes model through `llm.oneshot`; they do not append turns to the main chat.
-- This endpoint has no web research tools. Answers can carry reference links already present in the selected document; those links are not automatically fetched or verified. The answer and saved note retain that attribution.
+- Inline answers go through the main Hermes agent loop: the question is submitted as a normal chat turn to the passage's session, so the answer appears in the chat with full context and tools, and the panel shows it inline as well.
+- Answers can carry reference links already present in the selected document; those links are not automatically fetched or verified, and answers citing any other link are rejected. The answer and saved note retain that attribution.
 - Saving supports local `file:` HTML documents up to 900,000 characters, declared as UTF-8 when an encoding is present. Remote sites and opaque sandbox frames are not writable through this workflow.
 - Source anchors include block text, a unique ID or structural path, and exact selection offsets. Edits preserve the rest of the source; replacement may normalize markup inside the edited block.
 - Saves and undo reread and compare before overwriting. The desktop bridge does not provide an atomic compare-and-swap operation, so another program writing in the final read/write interval cannot be locked out.

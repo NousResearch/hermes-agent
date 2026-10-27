@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.cjs",
-    "test": "node build.cjs && node html-edit.test.cjs && node --test inline-ai.test.mjs && node integration.test.cjs && node regression.test.cjs && node loader.test.cjs"
+    "test": "node build.cjs && node html-edit.test.cjs && node --test agent-answer.test.mjs && node integration.test.cjs && node regression.test.cjs && node loader.test.cjs"
   },
   "devDependencies": {
     "esbuild": "0.28.1",

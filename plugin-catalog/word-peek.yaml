@@ -1,11 +1,12 @@
 name: word-peek
 repo: https://github.com/lEWFkRAD/word-peek
-sha: dfcea032e47e7da1e2d271eca5053a80b5272dec
+sha: 534035a7921eb54dce3bae626c216a211078f8fa
 title: Word Peek
 description: >-
   Explore and build on local HTML documents from inside Hermes Desktop: select a passage in an
-  HTML preview, right-click to Explore or Ask, and Word Peek answers inline through Hermes'
-  stateless llm.oneshot RPC without appending turns to the main chat. Follow-ups stay per-passage;
+  HTML preview, right-click to Explore or Ask, and Word Peek routes inline questions
+  through the main Hermes agent loop as a normal chat turn — the answer appears in chat with full
+  context and tools, and in the panel beside the passage. Follow-ups stay per-passage;
   answers keep reference links already present in the document (never auto-fetched). Notes can be
   inserted into the HTML as expandable blocks, below the selection, or as replacements; applying
   backs up the file, re-reads and compares before writing, reloads the preview, and offers
@@ -14,11 +15,11 @@ description: >-
   env vars. Disclosure — writes only to the local file: HTML document being edited (a
   .word-peek-<timestamp>.bak copy is kept beside it) and plugin storage; model calls go through
   the configured Hermes model; offline WordNet dictionary data is optional and not redistributed.
-image: https://raw.githubusercontent.com/lEWFkRAD/word-peek/dfcea032e47e7da1e2d271eca5053a80b5272dec/docs/screenshots/hero.png
+image: https://raw.githubusercontent.com/lEWFkRAD/word-peek/534035a7921eb54dce3bae626c216a211078f8fa/docs/screenshots/hero.png
 screenshots:
-  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/dfcea032e47e7da1e2d271eca5053a80b5272dec/docs/screenshots/card.png
-  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/dfcea032e47e7da1e2d271eca5053a80b5272dec/docs/screenshots/panel.png
-  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/dfcea032e47e7da1e2d271eca5053a80b5272dec/docs/screenshots/apply.png
+  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/534035a7921eb54dce3bae626c216a211078f8fa/docs/screenshots/card.png
+  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/534035a7921eb54dce3bae626c216a211078f8fa/docs/screenshots/panel.png
+  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/534035a7921eb54dce3bae626c216a211078f8fa/docs/screenshots/apply.png
 maintainer: lEWFkRAD
 tier: community
 category: desktop

@@ -30,6 +30,20 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     add_adopt_parser(sessions_subparsers)
 
 
+def _add_list_parser(sessions_subparsers) -> None:
+    """``sessions list``: this workspace's sessions by default, the whole store with ``--all``."""
+    sessions_list = sessions_subparsers.add_parser(
+        "list", help="List recent sessions (this workspace's, unless --all)")
+    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
+    sessions_list.add_argument("--all", action="store_true",
+        help="List every session in the store instead of only this workspace's")
+    sessions_list.add_argument("--workspace", metavar="NEEDLE",
+        help="Only sessions in one workspace: a git repo root or project dir "
+        "(matched by path substring or basename). Searches across every "
+        "workspace, like --all.")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -37,12 +51,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
-    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
-    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
-    sessions_list.add_argument("--workspace", metavar="NEEDLE",
-        help="Only sessions in one workspace: a git repo root or project dir "
-        "(matched by path substring or basename).")
+    _add_list_parser(sessions_subparsers)
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

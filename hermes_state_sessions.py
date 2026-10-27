@@ -24,15 +24,10 @@ from hermes_state_common import (
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
+from hermes_state_workspace import _cwd_prefix_clause, _workspace_key_clause
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
-
-
-def workspace_key(row: dict[str, Any]) -> Optional[str]:
-    """Workspace grouping key: git repo root, else cwd, else None (branch excluded: a checkout must not
-    fragment history)."""
-    return (row.get("git_repo_root") or "").strip() or (row.get("cwd") or "").strip() or None
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
@@ -84,28 +79,6 @@ def _parse_model_config(raw: Any) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def _cwd_prefix_clause(cwd_prefix: str) -> tuple[str, list[str]]:
-    prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
-    # prefix also matches sibling directories. The ``=`` arm keeps the raw prefix.
-    esc = _escape_like(prefix)
-    return (
-        "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
-    )
-
-
-def _workspace_key_clause(key: str) -> tuple[str, list[str]]:
-    """WHERE for ``workspace_key(row) == key``: git_repo_root equals ``key``, or (rows predating
-    per-session git metadata) cwd is at/under ``key``."""
-    prefix = key.rstrip("/\\") or key
-    cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
-    return (
-        f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
-        [prefix, *cwd_params],
-    )
-
-
 def _where_sql(clauses: list[str], lead: str = "") -> str:
     """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -114,6 +87,7 @@ def _where_sql(clauses: list[str], lead: str = "") -> str:
 def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
+    workspace_key: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
 ) -> tuple[list[str], list[Any]]:
@@ -142,6 +116,7 @@ def _session_filter_where(
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
+        (_workspace_key_clause(workspace_key) if workspace_key else ("", [])),
         ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
     ):
         if values:
@@ -1352,17 +1327,21 @@ class SessionSessionsMixin:
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
         include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+        workspace_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other
         filters except archived: a pin is an explicit keep, so a pinned row stamped
         archived must still return. ``local_created_sources`` restricts ``source='local'``
-        rows to those surfaces before LIMIT/OFFSET."""
+        rows to those surfaces before LIMIT/OFFSET. ``workspace_key`` keeps one workspace's
+        sessions (``workspace_key(row) == key``, the ``hermes -c`` identity) in SQL, so the
+        cap counts matches instead of a global page."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
-            exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
+            exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, workspace_key=workspace_key,
+            min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
             local_created_sources=local_created_sources,
         )

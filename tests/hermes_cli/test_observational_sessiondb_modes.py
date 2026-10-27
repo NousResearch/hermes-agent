@@ -15,7 +15,8 @@ def test_sessions_observational_commands_on_missing_store_stay_empty(monkeypatch
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
 
-    list_args = Namespace(sessions_action="list", source=None, limit=20, workspace=None)
+    # --all: this fixture is about the read-only open, not which workspace a listing scopes to.
+    list_args = Namespace(sessions_action="list", source=None, limit=20, workspace=None, all=True)
     assert sessions_cmd.cmd_sessions(list_args) is None
     assert "No sessions found." in capsys.readouterr().out
 

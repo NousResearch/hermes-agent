@@ -200,6 +200,19 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 `latest` is a reserved keyword for `--resume`. A session literally titled "latest" is still reachable by its ID or via `-c latest` (title match).
 :::
 
+### Pick a Session Interactively
+
+Pass `--resume` with no value and Hermes opens its session browser to choose from — no need to list sessions and copy an ID first:
+
+```bash
+hermes --resume
+hermes -r
+```
+
+The picker is scoped to the current workspace (git repo root, else the current directory), the same identity `-c` and `--resume latest` use, so it never mixes in another project's history. `--in <dir>` scopes it to `<dir>`'s workspace instead. Arrow keys navigate, typing filters, Enter resumes, and `q` cancels.
+
+A bare `--resume` needs a keyboard: in a non-interactive launch (`-z`, `-q`, redirected stdio) Hermes refuses with exit code 2 and tells you to pass `--resume latest`, `-c`, or an ID instead of waiting on a prompt that can never be answered. The same picker is available outside a resume as `hermes sessions browse`, which spans every workspace.
+
 ### Resume in a Specific Directory
 
 Pass `--in <dir>` to change into a directory before starting or resuming. Combined with `--resume latest` (or `-c`), the most recent session for that directory's workspace is picked — no need to `cd` first or remember session IDs:
@@ -228,12 +241,21 @@ Resuming an idle session picks up the profile's current config: toolsets, MCP se
 
 ### Filtering Sessions by Workspace
 
-`hermes sessions list` accepts `--workspace <needle>` to show only sessions whose workspace key (git repo root, else cwd) matches — by path substring or exact directory basename:
+`hermes sessions list` shows this workspace's sessions by default — the workspace key is the git repo root when you're inside a repo, else the current directory, the same identity `-c` and `--resume latest` use. A header line names the scope (`Sessions in my-project — use --all for every session`), so a short listing is never mistaken for your whole history.
 
 ```bash
+# This workspace's sessions (the default)
+hermes sessions list
+
+# Every session in the store, whichever folder it belongs to
+hermes sessions list --all
+
+# One workspace, by path substring or exact directory basename
 hermes sessions list --workspace my-project
 hermes sessions list --workspace ~/code/hermes-agent
 ```
+
+`--workspace` searches across every workspace, so it implies `--all`. Sessions with no recorded directory (messaging-platform chats, and rows written before Hermes stored per-session git metadata) only appear under `--all` / `--workspace`; the workspace column shows `—` for them.
 
 ### Conversation Recap on Resume
 
@@ -358,8 +380,11 @@ Hermes provides a full set of session management commands via `hermes sessions`:
 ### List Sessions
 
 ```bash
-# List recent sessions (default: last 20)
+# List this workspace's recent sessions (default limit: 20)
 hermes sessions list
+
+# Every workspace's sessions
+hermes sessions list --all
 
 # Filter by platform
 hermes sessions list --source telegram

@@ -23,7 +23,8 @@ def db(tmp_path):
 
 
 def _list(db, limit, capsys):
-    sessions_cmd._cmd_list(db, Namespace(limit=limit, source=None, workspace=None))
+    # --all: these rows carry no workspace, and this file is about the cap, not the scope.
+    sessions_cmd._cmd_list(db, Namespace(limit=limit, source=None, workspace=None, all=True))
     return capsys.readouterr().out
 
 

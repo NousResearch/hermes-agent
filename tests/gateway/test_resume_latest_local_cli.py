@@ -183,7 +183,9 @@ async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_pa
 def _listed(db, source, capsys):
     from argparse import Namespace
     from hermes_cli.sessions_cmd import _cmd_list
-    _cmd_list(db, Namespace(limit=20, source=source, workspace=None))
+    # --all: these rows belong to the test's temp cwd, not the checkout the test runs in; this
+    # helper is about the source label each surface lists under, not the workspace scope.
+    _cmd_list(db, Namespace(limit=20, source=source, workspace=None, all=True))
     return capsys.readouterr().out
 
 

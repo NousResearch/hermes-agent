@@ -21,9 +21,10 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-s", "--skills", "--usage-file", "--in",
 })
-_OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
+# ``-r/--resume`` takes an optional value: bare, it opens the workspace session picker.
+_OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue", "-r", "--resume"})
 
 
 def _cfg_path() -> str:
@@ -97,6 +98,7 @@ Examples:
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
     hermes --resume latest        Resume the most recent session (same as -c)
+    hermes --resume               Pick from this workspace's sessions interactively
     hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
@@ -172,9 +174,10 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(or per-model under agent.reasoning_overrides)."))
     add("-t", "--toolsets", default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
-    add("--resume", "-r", metavar="SESSION", default=None, help=(
+    add("--resume", "-r", metavar="SESSION", nargs="?", const=True, default=None, help=(
         "Resume a previous session by ID or title, or pass 'latest' for "
-        "the most recent session (workspace-scoped, like -c with no name)"))
+        "the most recent session (workspace-scoped, like -c with no name). "
+        "With no value, pick one from this workspace interactively"))
     add("--no-restore-cwd", action="store_true", default=False,
         help="Don't cd into a resumed session's recorded working directory.")
     add("--in", dest="in_dir", metavar="DIR", default=None, help=(
@@ -272,9 +275,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("--format", choices=["text", "stream-json"], default="text", dest="output_format", help=(
         "Output format for single-query mode (-q). 'text' prints the final response as plain text (default). "
         "'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui."))
-    add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
+    add("--resume", "-r", metavar="SESSION_ID", nargs="?", const=True, default=SUPPRESS, help=(
         "Resume a previous session by ID (shown on exit), or 'latest' "
-        "for the most recent session"))
+        "for the most recent session. With no value, pick one from this "
+        "workspace interactively"))
     add("--no-restore-cwd", action="store_true", default=SUPPRESS,
         help="Don't cd into a resumed session's recorded working directory.")
     add("--in", dest="in_dir", metavar="DIR", default=SUPPRESS, help=(

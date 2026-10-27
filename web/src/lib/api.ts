@@ -154,6 +154,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/local-models",
   "/api/dashboard/theme",
   "/api/dashboard/font",
+  "/api/dashboard/locale",
   "/api/dashboard/plugins",
   "/api/plugins/", // a plugin's backend: the selected profile's copy, as its bundle is (PLG-3)
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).

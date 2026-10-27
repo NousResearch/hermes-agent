@@ -39,12 +39,21 @@ const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 
 type MemoryFormValue = string | boolean | number;
 
-const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
-  ready: "ready",
-  needs_config: "needs setup",
-  unavailable: "unavailable",
-  missing: "missing",
-};
+function memoryStatusLabel(
+  status: MemoryProviderInfo["status"],
+  P: Translations["pluginsPage"],
+): string {
+  switch (status) {
+    case "ready":
+      return P.memoryStatusReady ?? "ready";
+    case "needs_config":
+      return P.memoryStatusNeedsConfig ?? "needs setup";
+    case "unavailable":
+      return P.memoryStatusUnavailable ?? "unavailable";
+    default:
+      return P.memoryStatusMissing ?? "missing";
+  }
+}
 
 const MEMORY_STATUS_TONE: Record<MemoryProviderInfo["status"], "success" | "warning" | "destructive" | "secondary"> = {
   ready: "success",
@@ -81,9 +90,11 @@ function SetupCommandBlock({ code, label }: { code: string; label: string }) {
   );
 }
 
-function setupResultLabel(status: string) {
-  if (status === "already_installed") return "already installed";
-  if (status === "no_declared_steps") return "no declared setup";
+function setupResultLabel(status: string, P: Translations["pluginsPage"]) {
+  if (status === "already_installed")
+    return P.setupResultAlreadyInstalled ?? "already installed";
+  if (status === "no_declared_steps")
+    return P.setupResultNoDeclared ?? "no declared setup";
   return status.replace(/_/g, " ");
 }
 
@@ -97,11 +108,12 @@ function setupResultClass(status: string) {
 }
 
 function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupResult[] }) {
+  const { t } = useI18n();
   if (!results.length) return null;
 
   return (
     <div className="grid gap-2 border border-border bg-background/20 p-3">
-      <p className="text-muted-foreground">Setup results</p>
+      <p className="text-muted-foreground">{t.pluginsPage.setupResults ?? "Setup results"}</p>
       {results.map((result, index) => {
         const detail = result.stderr || result.stdout;
         return (
@@ -113,7 +125,7 @@ function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupR
                   setupResultClass(result.status),
                 )}
               >
-                {setupResultLabel(result.status)}
+                {setupResultLabel(result.status, t.pluginsPage)}
               </span>
               <span className="text-muted-foreground">
                 {result.name}
@@ -148,6 +160,7 @@ function MemoryProviderSetupHint({
   provider: MemoryProviderInfo;
   results: MemoryProviderSetupResult[] | null;
 }) {
+  const { t } = useI18n();
   const setup = provider.setup;
   const hasDetails = setupHasDetails(setup);
   const hasInstallableSteps = setupHasInstallableSteps(setup);
@@ -165,7 +178,8 @@ function MemoryProviderSetupHint({
   if (!hasDetails || !setup) {
     return (
       <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-        This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.
+        {t.pluginsPage.setupUnavailable ??
+          "This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it."}
       </p>
     );
   }
@@ -179,8 +193,10 @@ function MemoryProviderSetupHint({
     >
       <p className={isBlocked ? "text-destructive" : "text-muted-foreground"}>
         {needsDependencySetup
-          ? "Finish these setup steps before Hermes can activate this provider."
-          : "Provider dependency setup completed."}
+          ? (t.pluginsPage.setupBlocked ??
+            "Finish these setup steps before Hermes can activate this provider.")
+          : (t.pluginsPage.setupCompleted ??
+            "Provider dependency setup completed.")}
       </p>
 
       {needsDependencySetup ? (
@@ -192,14 +208,16 @@ function MemoryProviderSetupHint({
         >
           <span className="inline-flex items-center gap-2">
             {installing ? <Spinner /> : null}
-            {installing ? "Installing provider dependencies" : "Install provider dependencies"}
+            {installing
+              ? (t.pluginsPage.setupInstallingDeps ?? "Installing provider dependencies")
+              : (t.pluginsPage.setupInstallDeps ?? "Install provider dependencies")}
           </span>
         </Button>
       ) : null}
 
       {installing ? (
         <div className="flex items-center gap-2 text-muted-foreground">
-          <Spinner /> Running provider setup. This may take a minute…
+          <Spinner /> {t.pluginsPage.setupRunning ?? "Running provider setup. This may take a minute…"}
         </div>
       ) : null}
 
@@ -210,17 +228,26 @@ function MemoryProviderSetupHint({
           {setup.external_dependencies.map((dep, index) => (
             <div key={`${dep.name || "dependency"}-${index}`} className="grid gap-2">
               <p className="text-muted-foreground">
-                External dependency{dep.name ? `: ${dep.name}` : ""}
+                {t.pluginsPage.setupExternalDep ?? "External dependency"}
+                {dep.name ? `: ${dep.name}` : ""}
               </p>
               {dep.install ? (
                 <SetupCommandBlock
-                  label={dep.name ? `Install ${dep.name}` : "Install dependency"}
+                  label={
+                    dep.name
+                      ? (t.pluginsPage.setupInstallDepNamed ?? "Install {name}").replace("{name}", dep.name)
+                      : (t.pluginsPage.setupInstallDep ?? "Install dependency")
+                  }
                   code={dep.install}
                 />
               ) : null}
               {dep.check ? (
                 <SetupCommandBlock
-                  label={dep.name ? `Verify ${dep.name}` : "Verify dependency"}
+                  label={
+                    dep.name
+                      ? (t.pluginsPage.setupVerifyDepNamed ?? "Verify {name}").replace("{name}", dep.name)
+                      : (t.pluginsPage.setupVerifyDep ?? "Verify dependency")
+                  }
                   code={dep.check}
                 />
               ) : null}
@@ -229,7 +256,7 @@ function MemoryProviderSetupHint({
 
           {setup.pip_dependencies.length ? (
             <div className="grid gap-2">
-              <p className="text-muted-foreground">Python dependencies</p>
+              <p className="text-muted-foreground">{t.pluginsPage.setupPythonDeps ?? "Python dependencies"}</p>
               <div className="flex flex-wrap gap-2">
                 {setup.pip_dependencies.map((dep) => (
                   <code
@@ -248,7 +275,8 @@ function MemoryProviderSetupHint({
       {setup.required_env.length && needsDependencySetup ? (
         <div className="grid gap-2">
           <p className="text-muted-foreground">
-            Required environment values. Fill the matching fields below, or set them in the Hermes environment.
+            {t.pluginsPage.setupRequiredEnv ??
+              "Required environment values. Fill the matching fields below, or set them in the Hermes environment."}
           </p>
           <div className="flex flex-wrap gap-2">
             {setup.required_env.map((envKey) => (
@@ -353,7 +381,7 @@ export default function PluginsPage() {
           if (!cancelled) {
             setMemoryConfig(null);
             setMemoryValues({});
-            showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
+            showToast(e instanceof Error ? e.message : (t.pluginsPage.toastLoadProviderConfig ?? "Failed to load provider config"), "error");
           }
         })
         .finally(() => {
@@ -386,7 +414,7 @@ export default function PluginsPage() {
       setInstallId("");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.toastInstallFailed ?? "Install failed"), "error");
     } finally {
       setInstallBusy(false);
     }
@@ -407,7 +435,7 @@ export default function PluginsPage() {
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       await Promise.all([loadHub(), loadCatalog()]);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.toastInstallFailed ?? "Install failed"), "error");
     } finally {
       setCatalogBusy(null);
     }
@@ -423,7 +451,7 @@ export default function PluginsPage() {
       );
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Rescan failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.toastRescanFailed ?? "Rescan failed"), "error");
     } finally {
       setRescanBusy(false);
     }
@@ -463,7 +491,7 @@ export default function PluginsPage() {
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.toastSaveFailed ?? "Save failed"), "error");
     } finally {
       setMemoryBusy(false);
     }
@@ -489,13 +517,20 @@ export default function PluginsPage() {
       const failed = result.results.filter((row) => row.status === "failed");
       if (failed.length) {
         const names = Array.from(new Set(failed.map((row) => row.name))).join(", ");
-        showToast(`Provider setup failed: ${names || provider}. See setup results below.`, "error");
+        showToast(
+          (t.pluginsPage.toastProviderSetupFailed ??
+            "Provider setup failed: {names}. See setup results below.").replace(
+            "{names}",
+            names || provider,
+          ),
+          "error",
+        );
       } else {
-        showToast("Provider setup finished", "success");
+        showToast(t.pluginsPage.toastProviderSetupFinished ?? "Provider setup finished", "success");
       }
       await loadHub(provider);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Provider setup failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.toastProviderSetupFailedShort ?? "Provider setup failed"), "error");
     } finally {
       setMemorySetupBusy(false);
     }
@@ -508,7 +543,7 @@ export default function PluginsPage() {
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.toastSaveFailed ?? "Save failed"), "error");
     } finally {
       setContextBusy(false);
     }
@@ -520,7 +555,7 @@ export default function PluginsPage() {
       await fn();
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.toastFailed ?? "Failed"), "error");
     } finally {
       setRowBusy(null);
     }
@@ -582,14 +617,14 @@ export default function PluginsPage() {
                       <Label htmlFor="mem-provider">{t.pluginsPage.memoryProviderLabel}</Label>
                       {selectedMemoryName && selectedMemoryInfo && (
                         <Badge tone={MEMORY_STATUS_TONE[selectedMemoryInfo.status]}>
-                          {MEMORY_STATUS_LABEL[selectedMemoryInfo.status]}
+                          {memoryStatusLabel(selectedMemoryInfo.status, t.pluginsPage)}
                         </Badge>
                       )}
                       {selectedMemoryName && selectedMemoryName === providers.memory_provider && (
-                        <Badge tone="outline">active</Badge>
+                        <Badge tone="outline">{t.pluginsPage.activeBadge ?? "active"}</Badge>
                       )}
                       {!selectedMemoryName && !providers.memory_provider && (
-                        <Badge tone="success">active</Badge>
+                        <Badge tone="success">{t.pluginsPage.activeBadge ?? "active"}</Badge>
                       )}
                     </div>
 
@@ -613,13 +648,18 @@ export default function PluginsPage() {
 
                   {!selectedMemoryName && (
                     <p className="text-xs text-muted-foreground">
-                      Hermes will use the built-in MEMORY.md and USER.md files.
+                      {t.pluginsPage.builtinMemoryNote ??
+                        "Hermes will use the built-in MEMORY.md and USER.md files."}
                     </p>
                   )}
 
                   {activeMemoryInfo?.status === "missing" && (
                     <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-                      Active provider {providers.memory_provider} is no longer installed. Select another provider and save.
+                      {(t.pluginsPage.activeProviderMissing ??
+                        "Active provider {provider} is no longer installed. Select another provider and save.").replace(
+                        "{provider}",
+                        providers.memory_provider,
+                      )}
                     </p>
                   )}
 
@@ -640,19 +680,21 @@ export default function PluginsPage() {
 
                   {selectedMemoryName && selectedMemoryInfo?.status === "needs_config" && (
                     <p className="border border-warning/50 px-3 py-2 text-xs text-warning">
-                      Provider dependencies are installed. Add the required credentials or self-hosted URL below, then save the provider.
+                      {t.pluginsPage.depsInstalledAddCreds ??
+                        "Provider dependencies are installed. Add the required credentials or self-hosted URL below, then save the provider."}
                     </p>
                   )}
 
                   {selectedMemoryName && memoryConfigBusy && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Spinner /> Loading provider settings…
+                      <Spinner /> {t.pluginsPage.loadingProviderSettings ?? "Loading provider settings…"}
                     </div>
                   )}
 
                   {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length === 0 && (
                     <p className="text-xs text-muted-foreground">
-                      This provider does not expose dashboard settings.
+                      {t.pluginsPage.noProviderSettings ??
+                        "This provider does not expose dashboard settings."}
                     </p>
                   )}
 
@@ -665,9 +707,9 @@ export default function PluginsPage() {
                           <div key={field.key} className="grid gap-2 min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <Label htmlFor={`memory-${field.key}`}>{field.label}</Label>
-                              {field.required && <Badge tone="outline">required</Badge>}
+                              {field.required && <Badge tone="outline">{t.pluginsPage.fieldRequired ?? "required"}</Badge>}
                               {field.kind === "secret" && field.is_set && !value && (
-                                <Badge tone="success">set</Badge>
+                                <Badge tone="success">{t.pluginsPage.fieldSet ?? "set"}</Badge>
                               )}
                               {field.url && (
                                 <a
@@ -676,7 +718,7 @@ export default function PluginsPage() {
                                   rel="noreferrer"
                                   className="inline-flex items-center gap-1 text-xs underline"
                                 >
-                                  Open <ExternalLink className="h-3 w-3" />
+                                  {t.pluginsPage.fieldOpen ?? "Open"} <ExternalLink className="h-3 w-3" />
                                 </a>
                               )}
                             </div>
@@ -722,7 +764,7 @@ export default function PluginsPage() {
                                   value={String(value ?? "")}
                                   placeholder={
                                     field.kind === "secret" && field.is_set
-                                      ? "Leave blank to keep existing value"
+                                      ? (t.pluginsPage.leaveBlankKeep ?? "Leave blank to keep existing value")
                                       : field.placeholder
                                   }
                                   onChange={(event) =>
@@ -770,7 +812,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveMemoryProvider()}
                     prefix={memoryBusy ? <Spinner /> : undefined}
                   >
-                    Save memory provider
+                    {t.pluginsPage.saveMemoryProvider ?? "Save memory provider"}
                   </Button>
                 </div>
 
@@ -801,7 +843,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveContextEngine()}
                     prefix={contextBusy ? <Spinner /> : undefined}
                   >
-                    Save context engine
+                    {t.pluginsPage.saveContextEngine ?? "Save context engine"}
                   </Button>
                 </div>
               </div>

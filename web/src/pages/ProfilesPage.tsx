@@ -307,6 +307,7 @@ export default function ProfilesPage() {
       modelSelect: p.modelSelect ?? "Select a model",
       actions: p.actions ?? "Actions",
       manageSkills: p.manageSkills ?? "Manage skills & tools",
+      build: p.build ?? "Build",
       activeSetHint:
         p.activeSetHint ??
         "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
@@ -756,7 +757,7 @@ export default function ProfilesPage() {
           outlined
           onClick={() => navigate("/profiles/new")}
         >
-          Build
+          {L.build}
         </Button>
         <Button
           className="uppercase"
@@ -770,7 +771,7 @@ export default function ProfilesPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading, navigate]);
+  }, [setEnd, t.common.create, loading, navigate, L.build]);
 
   const cloning = cloneFrom !== null;
 
@@ -824,7 +825,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1249,7 +1250,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={closeEditor}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>

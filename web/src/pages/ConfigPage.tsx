@@ -41,6 +41,11 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
+import {
+  configFieldSearchHaystack,
+  configFieldSectionLabel,
+  lookupConfigFieldLabel,
+} from "@/lib/config-labels";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -159,7 +164,13 @@ export default function ConfigPage() {
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
     if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    // Schema categories beyond the fixed `t.config.categories` rails (Attachments,
+    // Bedrock, Curator, Matrix, …) are authored in `config.fieldCopy` under the
+    // category key verbatim — same whole-key lookup the form's section headings
+    // use. Misses keep the original Title-cased fallback, byte-for-byte.
+    return (
+      lookupConfigFieldLabel(t, cat) ?? cat.charAt(0).toUpperCase() + cat.slice(1)
+    );
   }
 
   useEffect(() => {
@@ -252,21 +263,12 @@ export default function ConfigPage() {
 
   const searchMatchedFields = useMemo(() => {
     if (!isSearching || !schema) return [];
-    return Object.entries(schema).filter(([key, s]) => {
-      const label = key.split(".").pop() ?? key;
-      const humanLabel = label.replace(/_/g, " ");
-      return (
-        key.toLowerCase().includes(lowerSearch) ||
-        humanLabel.toLowerCase().includes(lowerSearch) ||
-        String(s.category ?? "")
-          .toLowerCase()
-          .includes(lowerSearch) ||
-        String(s.description ?? "")
-          .toLowerCase()
-          .includes(lowerSearch)
-      );
-    });
-  }, [isSearching, lowerSearch, schema]);
+    // Match the raw key, the synthesized AND authored (config.fieldCopy) labels,
+    // the category, and the authored AND backend descriptions.
+    return Object.entries(schema).filter(([key, s]) =>
+      configFieldSearchHaystack(t, key, s).includes(lowerSearch),
+    );
+  }, [isSearching, lowerSearch, schema, t]);
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
@@ -413,7 +415,7 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {configFieldSectionLabel(t, section)}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>

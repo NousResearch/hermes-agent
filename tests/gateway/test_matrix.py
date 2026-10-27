@@ -132,7 +132,7 @@ def _make_fake_mautrix():
         async def get_member(self, room_id, user_id):
             return None
 
-        async def get_members(self, room_id):
+        async def get_members(self, room_id, *, memberships=None):
             return []
 
         async def get_member_profiles(self, room_id):
@@ -371,11 +371,8 @@ class TestMatrixDmDetection:
 
     @pytest.mark.asyncio
     async def test_named_two_member_dm_is_dm(self):
-        """A named two-member room in m.direct is a DM (not a room).
-
-        Most Matrix clients auto-name DM rooms (e.g. "Alice & Bot"), so the
-        old `not has_explicit_name` override misclassified them as rooms.
-        """
+        """An explicit room name does not change a two-person chat's policy."""
+        self.adapter._user_id = "@bot:ex.org"
         self.adapter._joined_rooms = {"!named_dm:ex.org"}
         self.adapter._dm_rooms = {"!named_dm:ex.org": True}
         self.adapter._client = MagicMock()
@@ -385,6 +382,7 @@ class TestMatrixDmDetection:
             else (_ for _ in ()).throw(Exception("no alias"))
         )
         self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
         self.adapter._client.state_store.get_members = AsyncMock(
             return_value=["@bot:ex.org", "@alice:ex.org"]
         )
@@ -395,6 +393,155 @@ class TestMatrixDmDetection:
         assert identity.conflict is False
         assert identity.joined_member_count == 2
         assert await self.adapter._is_dm_room("!named_dm:ex.org") is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "members,is_direct,expected_type,expected_count",
+        [
+            (["@bot:ex.org", "@alice:ex.org"], False, "dm", 2),
+            (["@bot:ex.org", "@alice:ex.org"], True, "dm", 2),
+            (["@bot:ex.org"], True, "room", 1),
+            (["@alice:ex.org", "@bob:ex.org"], True, "room", 2),
+            (["@bot:ex.org", "@alice:ex.org", "@bob:ex.org"], True, "room", 3),
+            (None, True, "room", None),
+        ],
+    )
+    async def test_only_bot_and_one_joined_person_bypass_room_gate(
+        self, members, is_direct, expected_type, expected_count
+    ):
+        room_id = "!room:ex.org"
+        self.adapter._user_id = "@bot:ex.org"
+        self.adapter._dm_rooms = {room_id: is_direct}
+        self.adapter._allowed_room_ids = {"!allowed:ex.org"}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+        self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+        self.adapter._client.state_store.get_members = AsyncMock(return_value=members)
+
+        identity = await self.adapter._resolve_room_identity(room_id)
+        allowed = await self.adapter._is_allowed_matrix_room_event(room_id)
+
+        assert (identity.chat_type, identity.joined_member_count,
+                identity.is_direct_account_data, allowed) == (
+            expected_type, expected_count, is_direct, expected_type == "dm"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("members,accepted", [
+        (["@bot:ex.org", "@alice:ex.org"], True),
+        (["@bot:ex.org", "@alice:ex.org", "@bob:ex.org"], False),
+    ])
+    async def test_only_two_person_room_bypasses_mention_gate(self, members, accepted):
+        room_id = "!room:ex.org"
+        self.adapter._user_id = "@bot:ex.org"
+        self.adapter._dm_rooms = {room_id: True}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+        self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+        self.adapter._client.state_store.get_members = AsyncMock(return_value=members)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._require_mention = True
+
+        context = await self.adapter._resolve_message_context(
+            room_id, "@alice:ex.org", "$event", "hello", {"body": "hello"}, {}
+        )
+
+        assert (context is not None) is accepted
+
+    @pytest.mark.asyncio
+    async def test_joined_members_api_supplies_bot_membership_when_store_is_empty(self):
+        room_id = "!room:ex.org"
+        self.adapter._user_id = "@bot:ex.org"
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+        self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=False)
+        self.adapter._client.state_store.get_members = AsyncMock(return_value=None)
+        self.adapter._client.get_joined_members = AsyncMock(return_value={
+            "@bot:ex.org": {}, "@alice:ex.org": {},
+        })
+
+        identity = await self.adapter._resolve_room_identity(room_id)
+
+        assert (identity.chat_type, identity.joined_member_count) == ("dm", 2)
+        self.adapter._client.get_joined_members.assert_any_await(room_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("api_fails,expected_count", [(False, 3), (True, None)])
+    async def test_partial_member_cache_cannot_bypass_room_gate(self, api_fails, expected_count):
+        room_id = "!room:ex.org"
+        self.adapter._user_id = "@bot:ex.org"
+        self.adapter._allowed_room_ids = {"!allowed:ex.org"}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+        self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=False)
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+        self.adapter._client.get_joined_members = AsyncMock(
+            side_effect=Exception("unavailable") if api_fails else None,
+            return_value={"@bot:ex.org": {}, "@alice:ex.org": {}, "@bob:ex.org": {}},
+        )
+
+        identity = await self.adapter._resolve_room_identity(room_id)
+        allowed = await self.adapter._is_allowed_matrix_room_event(room_id)
+
+        assert (identity.chat_type, identity.joined_member_count, allowed) == (
+            "room", expected_count, False,
+        )
+        self.adapter._client.state_store.get_members.assert_not_awaited()
+        self.adapter._client.get_joined_members.assert_any_await(room_id)
+
+    @pytest.mark.asyncio
+    async def test_invited_user_does_not_change_joined_member_classification(self):
+        from plugins.platforms.matrix.adapter import Membership
+
+        room_id = "!room:ex.org"
+        self.adapter._user_id = "@bot:ex.org"
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+        self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+
+        async def get_members(room, *, memberships=(Membership.JOIN, Membership.INVITE)):
+            users = {"@bot:ex.org", "@alice:ex.org"}
+            if Membership.INVITE in memberships:
+                users.add("@invited:ex.org")
+            return users
+
+        self.adapter._client.state_store.get_members = AsyncMock(side_effect=get_members)
+
+        identity = await self.adapter._resolve_room_identity(room_id)
+
+        assert (identity.chat_type, identity.joined_member_count) == ("dm", 2)
+        self.adapter._client.state_store.get_members.assert_awaited_once_with(
+            room_id, memberships=(Membership.JOIN,)
+        )
+
+    @pytest.mark.asyncio
+    async def test_password_login_adopts_canonical_user_id_for_dm_membership(self):
+        """A configured MXID that differs in case from the server's still finds DMs."""
+        self.adapter._access_token = ""
+        self.adapter._password = "secret"
+        self.adapter._configured_user_id = "@Bot:ex.org"
+        client = MagicMock()
+
+        async def login(**kwargs):
+            client.mxid = "@bot:ex.org"
+            return MagicMock(user_id="@bot:ex.org", device_id="DEV")
+
+        client.login = login
+        assert await self.adapter._connect_authenticate(client, MagicMock()) is True
+
+        client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+        client.state_store.has_full_member_list = AsyncMock(return_value=True)
+        client.state_store.get_members = AsyncMock(return_value=["@bot:ex.org", "@alice:ex.org"])
+        self.adapter._client = client
+
+        identity = await self.adapter._resolve_room_identity("!dm:ex.org")
+
+        assert (self.adapter._user_id, identity.chat_type, identity.joined_member_count) == (
+            "@bot:ex.org", "dm", 2,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +1355,7 @@ class TestMatrixSyncLoop:
         fake_client.sync_store = mock_sync_store
         fake_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
         fake_client.state_store = MagicMock()
+        fake_client.state_store.has_full_member_list = AsyncMock(return_value=True)
         fake_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
         fake_client.state_store.get_member = AsyncMock(return_value=None)
 
@@ -1336,6 +1484,7 @@ class TestMatrixSyncLoop:
         )
         mock_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
         mock_client.state_store = MagicMock()
+        mock_client.state_store.has_full_member_list = AsyncMock(return_value=True)
         mock_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
         mock_client.state_store.get_member = AsyncMock(return_value=None)
         mock_client.add_event_handler = MagicMock()
@@ -3002,6 +3151,82 @@ class TestCryptoStoreResetOnDeviceChange:
         assert "MATRIX_DEVICE_ID=DEVICE_A" in caplog.text
 
         await adapter.disconnect()
+
+
+class TestCryptoStoreAccountId:
+    @pytest.mark.asyncio
+    async def test_password_login_keeps_configured_store_account_and_adopts_canonical_id(self):
+        """An E2EE store written before the upgrade is keyed by the configured MATRIX_USER_ID,
+        while self-identity checks use the homeserver's spelling of it."""
+        from types import SimpleNamespace
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(PlatformConfig(enabled=True, extra={
+            "homeserver": "https://matrix.example.org",
+            "user_id": "@Bot:example.org",
+            "password": "secret",
+            "device_id": "STABLE",
+            "encryption": True,
+        }))
+
+        fake = _make_fake_mautrix()
+        opened = []
+        login_identifiers = []
+
+        class RecordingStore:
+            upgrade_table = MagicMock()
+
+            def __init__(self, account_id="", **_kw):
+                opened.append(account_id)
+
+            async def open(self):
+                pass
+
+            async def get_device_id(self):
+                return "STABLE"
+
+            async def put_device_id(self, device_id):
+                pass
+
+            async def get_account(self):
+                return MagicMock()
+
+        fake["mautrix.crypto.store.asyncpg"].PgCryptoStore = RecordingStore
+
+        client = MagicMock()
+        client.mxid = "@Bot:example.org"
+        client.device_id = None
+        client.crypto = None
+
+        async def login(**kwargs):
+            login_identifiers.append(kwargs["identifier"])
+            client.mxid = "@bot:example.org"
+            return SimpleNamespace(device_id="STABLE", user_id="@bot:example.org")
+
+        client.login = login
+        client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        client.api.token = ""
+        client.api.session.close = AsyncMock()
+        olm = MagicMock()
+        olm.load = AsyncMock()
+        olm.share_keys = AsyncMock()
+        fake["mautrix.client"].Client = MagicMock(return_value=client)
+        fake["mautrix.crypto"].OlmMachine = MagicMock(return_value=olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+                patch.dict("sys.modules", fake), \
+                patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
+                patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
+                patch.object(adapter, "_verify_device_keys_on_server", AsyncMock(return_value=True)), \
+                patch.object(adapter, "_verify_or_bootstrap_cross_signing", AsyncMock()):
+            assert await adapter.connect() is True
+            assert await adapter.connect(is_reconnect=True) is True
+
+        await adapter.disconnect()
+        assert (login_identifiers, opened, adapter._user_id) == (
+            ["@Bot:example.org"] * 2, ["@Bot:example.org"] * 2, "@bot:example.org",
+        )
 
 
 # ---------------------------------------------------------------------------

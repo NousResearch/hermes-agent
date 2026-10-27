@@ -3659,14 +3659,14 @@ def _commit_compaction(
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                     covered_ids=covered_ids, unresolved_held=unresolved_held,
+                    topic_id=getattr(agent, "_active_topic_id", None)
+                    if getattr(agent, "_topic_segmentation_enabled", False) else None,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"
-                # compress() returned marker-swept copies; stamp them as persisted or the next
-                # flush re-INSERTs the whole compacted transcript, doubling the live set. Reset
-                # the flush identity set so next turn diffs against the COMPACTED transcript.
-                # The verbatim tail is stamped as well: a seam fold drops its first row from
-                # `compressed`, and the stamps tell the caller the tail is already in the list.
+                # Stamp marker-swept copies (and verbatim tail) to prevent duplicate INSERTs.
+                # Reset flush identity so the next turn compares the compacted transcript;
+                # a seam fold drops its first tail row from `compressed` but its stamp survives.
                 stamp_db_persisted_markers([*compressed, *(verbatim_tail or ())])
                 agent._flushed_db_message_ids = set()
                 # Rotation-independent signal; the gateway reads this (not an id diff) to

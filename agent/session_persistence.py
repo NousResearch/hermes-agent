@@ -243,6 +243,7 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
         # Load-bearing for restart drain-window recovery dedup.
         "platform_message_id": msg.get("platform_message_id") or msg.get("message_id"),
         "observed": bool(msg.get("observed")),
+        "topic_id": msg.get("_topic_id") if msg.get("_topic_id") is not None else getattr(agent, "_active_topic_id", None),
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
@@ -310,6 +311,14 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
+        # Before selection, only the accepted user input may be crash-persisted.
+        # Even an exact-id retraction can fail; never put a candidate assistant
+        # (or its tool/interim chain) in a store that a new process can reopen.
+        if (getattr(agent, "_topic_segmentation_enabled", False)
+                and not getattr(agent, "_topic_turn_publication_allowed", False)
+                and (not isinstance(ov_idx, int) or msg_idx != ov_idx or
+                     not isinstance(msg, dict) or msg.get("role") != "user")):
+            continue
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
         # drop cannot un-write. Skip regardless of position.
         if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):

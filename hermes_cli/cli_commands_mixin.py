@@ -903,15 +903,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return target_id, session_meta
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
-        an explicit target delegates to /resume so both spellings behave identically."""
-        arg = _command_arg(cmd_original)
-        if arg and arg.lower() not in {"list", "ls", "browse"}:
-            self._handle_resume_command(f"/resume {arg}")
-        elif not self._session_db:
-            _cp(_db_unavailable_line())
-        elif not self._show_recent_sessions(reason="sessions"):
-            _cp(f"  {_t('sessions.none_yet')}")
+        from hermes_cli.cli_session_listing import handle_sessions_command
+        return handle_sessions_command(self, cmd_original)
+
+    def _handle_session_topic_command(self, cmd_original: str) -> None:
+        from hermes_cli.cli_session_topics import handle_session_topic_command
+        return handle_session_topic_command(self, cmd_original)
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the

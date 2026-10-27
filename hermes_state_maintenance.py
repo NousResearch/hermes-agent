@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
-    escape_like as _escape_like, emit_session_deleted,
+    _rehome_or_delete_session_topics, escape_like as _escape_like, emit_session_deleted,
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -127,6 +127,7 @@ class SessionMaintenanceMixin:
             from hermes_state_mutation_retirement import retire_prunable
             ids = retire_prunable(conn, ids)
             for chunk in _id_chunks(ids):
+                _rehome_or_delete_session_topics(conn, chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
             if ids:
                 self._delete_unreferenced_system_prompts(conn)
@@ -394,6 +395,7 @@ class SessionMaintenanceMixin:
                 ph = _placeholders(chunk)
                 conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                _rehome_or_delete_session_topics(conn, chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)

@@ -587,6 +587,97 @@ def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     return None if getattr(agent, "_hold_stream", False) else pre_transform
 
 
+def _quarantine_failed_topic_turn(agent, messages, logger) -> str:
+    """Retire exact durable current-turn ids; return a safe failure reason."""
+    start = getattr(agent, "_persist_user_message_idx", None)
+    valid_start = isinstance(start, int) and 0 <= start < len(messages)
+    current = messages[start:] if valid_start else []
+    row_ids = list(dict.fromkeys(
+        row["_row_id"] for row in current if isinstance(row, dict)
+        and type(row.get("_row_id")) is int and row["_row_id"] > 0
+    ))
+    # Exact-id, lease-fenced cleanup: a missing contract or an incomplete
+    # return must never be mistaken for durable removal.
+    retract = getattr(getattr(agent, "_session_db", None), "retract_topic_turn_messages", None)
+    durable_unknown = not valid_start or any(
+        isinstance(row, dict) and row.get(_DB_PERSISTED_MARKER)
+        and row.get("_row_id") not in row_ids for row in current
+    )
+    if row_ids:
+        try:
+            durable_unknown |= not callable(retract) or retract(
+                agent.session_id, row_ids,
+                turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
+            ) != len(row_ids)
+        except Exception as exc:  # health: allow BLE001 -- backend faults need a scrubbed failure envelope
+            logger.warning("Selected-topic exact-id retraction failed: error_type=%s", type(exc).__name__)
+            durable_unknown = True
+    if durable_unknown:
+        agent._pending_topic_retraction = {
+            "session_id": agent.session_id, "message_ids": row_ids,
+            "turn_lease_holder": getattr(agent, "_active_session_turn_lease_holder", None),
+        }
+    if valid_start:
+        del messages[start:]
+    else:
+        messages.clear()
+    agent._db_flush_scan_prefix = None
+    agent._response_was_previewed = False
+    agent._reused_response_text = None
+    from agent.session_topics import TOPIC_SEGMENTATION_RUNTIME_FAILURE_CODE
+    return (
+        "topic_segmentation_retraction_indeterminate"
+        if durable_unknown else TOPIC_SEGMENTATION_RUNTIME_FAILURE_CODE
+    )
+
+
+def _topic_failure_fields(reason: str) -> dict:
+    from agent.session_topics import TOPIC_SEGMENTATION_RUNTIME_FAILURE_MESSAGE
+
+    if reason == "topic_segmentation_retraction_indeterminate":
+        return {
+            "error": "Topic segmentation failed and durable cleanup must be retried before continuing.",
+            "failure_reason": reason,
+            "durable_quarantine_indeterminate": True,
+        }
+    if reason == "topic_segmentation_runtime_failed":
+        return {"error": TOPIC_SEGMENTATION_RUNTIME_FAILURE_MESSAGE, "failure_reason": reason}
+    return {}
+
+
+def _publish_selected_topic_answer(
+    agent, messages, final_response, interrupted, failed, completed, turn_exit_reason,
+):
+    """Selected answers publish only after their assistant row has a durable id."""
+    if not getattr(agent, "_topic_segmentation_enabled", False):
+        return final_response, failed, completed, turn_exit_reason, True
+    if not final_response or interrupted or failed:
+        return final_response, failed, completed, turn_exit_reason, False
+    # _persist_session returns None and the SQLite flush swallows append errors
+    # into False. Selection alone is not proof of an accepted answer.
+    tail = messages[-1] if messages else None
+    if (
+        isinstance(tail, dict) and tail.get("role") == "assistant"
+        and tail.get(_DB_PERSISTED_MARKER) is True
+        and type(tail.get("_row_id")) is int and tail["_row_id"] > 0
+    ):
+        agent._deliver_to_stream_callbacks(final_response)
+        return final_response, failed, completed, turn_exit_reason, True
+    # The accepted user row was flushed before the provider call and retagged
+    # by selection. Keep it pending; discard the unpublished answer from the
+    # reused agent's live transcript as well as the returned result.
+    if getattr(agent, "_last_persistence_error_cause", None) is None:
+        agent._last_persistence_error_cause = "unknown"
+    start = getattr(agent, "_persist_user_message_idx", None)
+    if isinstance(start, int) and 0 <= start < len(messages):
+        del messages[start + 1:]
+    agent._db_flush_scan_prefix = None
+    agent._topic_turn_publication_allowed = False
+    agent._response_was_previewed = False
+    agent._reused_response_text = None
+    return None, True, False, "session_persistence_failed", False
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -659,20 +750,13 @@ def finalize_turn(
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 
-    from hermes_cli.observability.shared_metrics_harness import finish_turn
-    finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
-
     _cleanup_errors: list[str] = []
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
     _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
-    _guarded_cleanup(
-        "save_trajectory",
-        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
-        _cleanup_errors, logger,
-    )
+
     _guarded_cleanup(
         "cleanup_task_resources", lambda: agent._cleanup_task_resources(effective_task_id),
         _cleanup_errors, logger,
@@ -683,25 +767,62 @@ def finalize_turn(
     # the fallible tail-shaping / override / micro-compaction / persist calls — so a
     # raise in any of them can't drop text the user already saw (#95514, #8049).
     def _persist_step():
-        nonlocal final_response
+        nonlocal final_response, failed, completed, _turn_exit_reason
         _drop_transcript_scaffolding(agent, messages)
         final_response, _recovered_from_stream = _recover_final_from_stream(
             agent, final_response, interrupted, failed
         )
-        # Recovery paths (stream-recovered / prior-turn text) reach here with a response no
-        # earlier seam transformed; the normal text turn already did this before its flush and
-        # gets the recorded outcome back. Either way the tail close below writes the text the
-        # user will see, never the raw model text (#44239).
-        if final_response and not interrupted:
-            _raw = final_response
-            final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
-            _store_rewrite_on_tail(agent, messages, _raw, final_response)
+        selected_topic = getattr(agent, "_topic_segmentation_enabled", False)
+        # The selected-store transition is the publication boundary.  The text
+        # loop has appended its candidate but neither transformed nor flushed it.
+        if not selected_topic:
+            # Recovery paths (stream-recovered / prior-turn text) reach here with a response no
+            # earlier seam transformed; the normal text turn already did this before its flush and
+            # gets the recorded outcome back. Either way the tail close below writes the text the
+            # user will see, never the raw model text (#44239).
+            if final_response and not interrupted:
+                _raw = final_response
+                final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
+                _store_rewrite_on_tail(agent, messages, _raw, final_response)
+        if final_response and not interrupted and not failed:
+            from agent.session_topics import process_turn_topic, TopicSegmentationRuntimeError
+            try:
+                process_turn_topic(agent, messages, final_response)
+            except TopicSegmentationRuntimeError:
+                failed, completed = True, False
+                _turn_exit_reason = _quarantine_failed_topic_turn(agent, messages, logger)
+                final_response = None
+                return
+            raw_response = final_response
+            final_response, transformed, _ = apply_llm_output_transform(
+                agent, final_response, turn_id=turn_id, logger=logger,
+            )
+            if selected_topic and transformed and messages and messages[-1].get("role") == "assistant":
+                tail = messages[-1]
+                if tail.get("content") == raw_response:
+                    tail["content"] = final_response
+                elif tail.get("api_content") == raw_response:
+                    tail["api_content"] = final_response
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
+        if selected_topic and not interrupted and not failed:
+            agent._topic_turn_publication_allowed = True
+            agent._db_flush_scan_prefix = None  # rescan rows held by earlier flushes
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
+    final_response, failed, completed, _turn_exit_reason, post_hook_allowed = _publish_selected_topic_answer(
+        agent, messages, final_response, interrupted, failed, completed, _turn_exit_reason,
+    )
+
+    from hermes_cli.observability.shared_metrics_harness import finish_turn
+    finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
+    _guarded_cleanup(
+        "save_trajectory",
+        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
+        _cleanup_errors, logger,
+    )
 
     # Keep the gateway's separate in-memory history snapshot current even on
     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.
@@ -721,7 +842,7 @@ def finalize_turn(
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
     _pre_transform_response = None
-    if final_response and not interrupted:
+    if final_response and not interrupted and post_hook_allowed:
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
@@ -806,6 +927,7 @@ def finalize_turn(
         if failed:
             result["error"] = final_response or str(_turn_exit_reason)
         stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
+    result.update(_topic_failure_fields(str(_turn_exit_reason)))
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors

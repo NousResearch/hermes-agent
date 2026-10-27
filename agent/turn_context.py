@@ -578,6 +578,7 @@ def _bind_turn_identity(
     ids. Returns ``(effective_task_id, turn_id)``."""
     agent._stream_callback = stream_callback  # picked up by _interruptible_api_call
     agent._persist_user_message_idx = None
+    agent._topic_turn_publication_allowed = False
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
@@ -1171,6 +1172,14 @@ def build_turn_context(
     ):
         agent._flush_messages_to_session_db(conversation_history, conversation_history)
 
+    # Topic segmentation is a model-history projection, not a second session
+    # or prompt rebuild. Resolve/create the active topic only after the session
+    # row exists, then run compaction against that topic's durable history.
+    from agent.session_topics import prepare_topic_turn
+    messages, current_turn_user_idx, conversation_history = prepare_topic_turn(
+        agent, messages, current_turn_user_idx, original_user_message
+    )
+
     compaction = run_turn_start_compaction(
         agent, messages=messages, system_message=system_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -1193,6 +1202,8 @@ def build_turn_context(
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )
+    from agent.session_topics import merge_topic_prompt_context
+    plugin_user_context = merge_topic_prompt_context(plugin_user_context, agent)
 
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)

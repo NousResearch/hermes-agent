@@ -103,7 +103,8 @@ class ProactivePruneMixin:
                         model_config_patch=model_config_patch,
                         watermark=watermark,
                         covered_ids=covered_ids, unresolved_held=unresolved_held,
-                        held_for_cas=messages)
+                        held_for_cas=messages,
+                        topic_id=getattr(self, "_active_topic_id", None))
             except StaleHeldHistory:
                 # Another compaction already committed this session's history; a lease-less prune of the
                 # generation this process holds would publish beside the winner. Leave the input alone.

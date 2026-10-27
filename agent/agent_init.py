@@ -19,7 +19,7 @@ from collections import deque
 from contextlib import suppress
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, cast
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -40,9 +40,7 @@ from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.agent_init_memory_provider import resolve_memory_provider
 from agent.think_scrubber import StreamingThinkScrubber
-from agent.tool_guardrails import (
-    ToolCallGuardrailConfig, ToolCallGuardrailController
-)
+from agent.tool_guardrails import ToolCallGuardrailController
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
@@ -1131,83 +1129,32 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     agent._todo_store = TodoStore()
 
 
-def _apply_display_config(agent, _agent_cfg, platform):
-    # show_commentary: Codex phase=commentary → interim path (true) or reasoning channel.
-    agent.show_commentary = bool(_cfg_dict(_agent_cfg, "display").get("show_commentary", True))
+from agent.agent_init_display import apply_display_config as _apply_display_config
+from agent.agent_init_memory import (
+    _MCP_MEMORY_READ_TOOLS,
+    _memory_provider_init_kwargs,
+    _prune_explicit_memory_tools,
+    _resolve_memory_mode,
+    memory_tool_call_allowed,
+)
 
-    # Window (seconds) for the bounded /fast auto|cold modes (agent.fast_mode).
-    agent.fast_auto_seconds = (_agent_cfg.get("agent") or {}).get("fast_auto_seconds", 60)
+def _init_memory(
+    agent, _agent_cfg, skip_memory, platform, memory_manager=None,
+    memory_mode: Optional[str] = None, memory_tool_allowlist: Optional[List[str]] = None,
+):
+    mode, mode_explicit = _resolve_memory_mode(memory_mode, bool(skip_memory))
+    agent._memory_mode = mode
+    agent._memory_mode_explicit = mode_explicit
+    agent._memory_provider_tool_allowlist = (
+        {str(name) for name in memory_tool_allowlist if str(name)}
+        if memory_tool_allowlist is not None else None
+    )
+    # Delegated/query-only managers may answer explicitly requested read tools,
+    # but never autonomously recall, synchronize, or extract a child transcript.
+    agent._memory_provider_lifecycle_enabled = (
+        mode == "full" and platform != "subagent"
+    ) if mode_explicit else not bool(skip_memory)
 
-    # lmstudio_load_mode: "explicit" (preload via management API) or "jit" (Auto-Evict path).
-    _model_section = _cfg_dict(_agent_cfg, "model")
-    _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()
-    agent.lmstudio_load_mode = _load_mode if _load_mode in {"explicit", "jit"} else "explicit"
-    if agent.lmstudio_load_mode != _load_mode:
-        logger.warning(
-            "Invalid model.lmstudio_load_mode=%r; expected 'explicit' or 'jit'. Using explicit.",
-            _model_section.get("lmstudio_load_mode"),
-        )
-
-    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for
-    # backends with broken streaming tool calls. Session-scoped; orthogonal to display.streaming.
-    _streaming = str(_model_section.get("streaming", "true")).strip().lower()
-    agent._disable_streaming = _streaming in {"false", "0", "no", "off"}
-    if not agent._disable_streaming and _streaming not in {"true", "1", "yes", "on"}:
-        logger.warning(
-            "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
-            _model_section.get("streaming"),
-        )
-    agent._stream_5xx_probe_ts = None  # monotonic time of the last streaming-5xx unmask probe
-
-    try:
-        agent._tool_guardrails = ToolCallGuardrailController(
-            ToolCallGuardrailConfig.from_mapping(
-                _agent_cfg.get("tool_loop_guardrails", {}), platform=platform,
-            )
-        )
-    except Exception as _tlg_err:
-        _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
-
-
-def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
-    """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
-    gateway status travels a different path and the indicator no-ops without it)."""
-    kwargs = {
-        "session_id": agent.session_id,
-        "platform": platform or "cli",
-        "hermes_home": str(get_hermes_home()),
-        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
-        "agent_context": platform if platform in ("cron", "subagent") else "primary",
-    }
-    if kwargs["platform"] == "cli":
-        kwargs["warning_callback"] = agent._emit_warning
-        kwargs["status_callback"] = agent._emit_status
-    # Session title (e.g. honcho derives chat-scoped session keys from it).
-    if agent._session_db:
-        with suppress(Exception):
-            _st = agent._session_db.get_session_title(agent.session_id)
-            if _st:
-                kwargs["session_title"] = _st
-                _source = agent._session_db.get_session_title_source(agent.session_id)
-                if _source:
-                    kwargs["session_title_source"] = _source
-    # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
-    for _ident in _GATEWAY_IDENTITY_PARAMS:
-        _val = getattr(agent, f"_{_ident}")
-        if _val:
-            kwargs[_ident] = _val
-    if agent.session_cwd:
-        kwargs["cwd"] = agent.session_cwd
-    # Profile identity for per-profile provider scoping
-    with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
-        kwargs["agent_identity"] = get_active_profile_name()
-        kwargs["agent_workspace"] = "hermes"
-    return kwargs
-
-
-def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
     agent._memory_enabled = False
@@ -1231,13 +1178,20 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
         "memory" in (agent.enabled_toolsets or [])
         and "memory" not in (agent.disabled_toolsets or [])
     )
-    if not skip_memory or _memory_toolset_requested:
-        # Memory is optional — don't break agent init
-        with suppress(Exception):
-            from tools.memory_tool import (
-                MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
-            )
-            mem_config = get_builtin_memory_config(_agent_cfg)
+    strict_off = mode_explicit and mode == "off"
+    mem_config: Dict[str, Any] = {}
+    # Memory is optional — don't break agent init. Explicit modes override the
+    # legacy skip_memory boolean; omitted modes preserve its old behavior.
+    with suppress(Exception):
+        from tools.memory_tool import (
+            MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
+        )
+        mem_config = get_builtin_memory_config(_agent_cfg)
+        should_load_store = not strict_off and (
+            (mode_explicit and mode == "full")
+            or (not mode_explicit and (not skip_memory or _memory_toolset_requested))
+        )
+        if should_load_store:
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )
@@ -1253,32 +1207,72 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
-    if memory_manager is not None and not skip_memory:
-        # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's
-        # already-initialized manager: providers keep their prefetch/retain state across turns instead
-        # of being re-initialized (#120116). No initialize_all — the providers are already bound.
-        agent._memory_manager = memory_manager
-    elif not skip_memory:
+    provider_requested = (
+        (not mode_explicit and not skip_memory)
+        or (mode_explicit and mode != "off")
+    )
+    if memory_manager is not None and provider_requested:
+        # Reused managers are already profile/identity-bound. Query-only agents get
+        # a borrowed facade, never ownership or lifecycle access to the parent.
+        if mode_explicit and (mode == "on_demand" or platform == "subagent"):
+            read_view = getattr(memory_manager, "read_only_view", None)
+            if callable(read_view):
+                agent._memory_manager = read_view(
+                    allowed_names=agent._memory_provider_tool_allowlist,
+                    include_system_prompt=mode == "full",
+                    owns_parent=False,
+                )
+        else:
+            # A caller that rebuilds the agent per turn (gateway api_server) hands
+            # back the session's already-initialized manager. No initialize_all.
+            agent._memory_manager = memory_manager
+    elif provider_requested and platform != "subagent":
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
-                agent._memory_manager = _MemoryManager()
+                _manager = _MemoryManager()
                 _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
                 if _mp is not None:
-                    agent._memory_manager.add_provider(_mp)
-                if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(
-                        say=agent._emit_startup_warning, **_memory_provider_init_kwargs(agent, platform)):
+                    _manager.add_provider(_mp)
+                if _manager.providers:
+                    _manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
+                    if mode_explicit and mode == "on_demand":
+                        agent._memory_manager = _manager.read_only_view(
+                            allowed_names=agent._memory_provider_tool_allowlist,
+                            include_system_prompt=False,
+                            owns_parent=True,
+                        )
+                    else:
+                        agent._memory_manager = _manager
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
-                    agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
+    if mode_explicit and agent._memory_manager is not None:
+        get_provider_names = getattr(agent._memory_manager, "get_all_tool_names", None)
+        provider_names = (
+            set(cast(Iterable[str], get_provider_names()))
+            if callable(get_provider_names) else set()
+        )
+        requested = agent._memory_provider_tool_allowlist
+        agent._memory_provider_tool_allowlist = (
+            provider_names if requested is None else provider_names & set(requested)
+        )
+
     from agent.memory_manager_tools import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
+    if mode_explicit:
+        allowed = set(agent._memory_provider_tool_allowlist or ())
+        if mode == "on_demand" and memory_tool_allowlist is None:
+            allowed.update(_MCP_MEMORY_READ_TOOLS)
+        agent._memory_tool_policy_allowlist = frozenset(allowed)
+        _prune_explicit_memory_tools(agent, mode, allowed)
+    else:
+        agent._memory_tool_policy_allowlist = frozenset()
 
 
 def _apply_agent_section(agent, _agent_cfg):
@@ -2143,6 +2137,7 @@ def init_agent(
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    memory_mode: Optional[str] = None, memory_tool_allowlist: Optional[List[str]] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -2242,7 +2237,10 @@ def init_agent(
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)
-    _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
+    _init_memory(
+        agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager,
+        memory_mode=memory_mode, memory_tool_allowlist=memory_tool_allowlist,
+    )
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(

@@ -56,11 +56,17 @@ _PROMPT_PREAMBLE = (
     "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
     "If no tool is needed, answer normally.",
 )
-_INITIALIZE_PARAMS = {
-    "protocolVersion": 1,
-    "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
-    "clientInfo": {"name": "hermes-agent", "title": "Hermes Agent", "version": "0.0.0"},
-}
+def _initialize_params(*, allow_file_requests: bool) -> dict[str, Any]:
+    """Advertise exactly the client request surface enabled for this session."""
+    capabilities = (
+        {"fs": {"readTextFile": True, "writeTextFile": True}}
+        if allow_file_requests else {}
+    )
+    return {
+        "protocolVersion": 1,
+        "clientCapabilities": capabilities,
+        "clientInfo": {"name": "hermes-agent", "title": "Hermes Agent", "version": "0.0.0"},
+    }
 def _acp_supported(command: str, args: list[str]) -> bool | None:
     """Tri-state ``--acp`` probe (a CLI without the flag exits 1 and the parent would wait the
     full child timeout for stdout that never arrives). True = help advertises --acp; False =
@@ -487,7 +493,10 @@ class ACPClient:
             raise TimeoutError(f"Timed out waiting for {self.label} response to {method}.")
 
         try:
-            _request("initialize", _INITIALIZE_PARAMS)
+            _request(
+                "initialize",
+                _initialize_params(allow_file_requests=allow_file_requests),
+            )
             session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
             if not str(session.get("sessionId") or "").strip():
                 raise RuntimeError(f"{self.label} did not return a sessionId.")

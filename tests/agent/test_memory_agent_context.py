@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.agent_init import _GATEWAY_IDENTITY_PARAMS, _memory_provider_init_kwargs
+from agent.agent_init_memory import _GATEWAY_IDENTITY_PARAMS, _memory_provider_init_kwargs
 
 
 def _fake_agent():

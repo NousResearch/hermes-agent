@@ -4,7 +4,7 @@ tools are exposed on an agent's tool surface, and the injection of their schemas
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,14 @@ def memory_provider_tools_exposed(agent: Any) -> bool:
     """
     tools = getattr(agent, "tools", None)
     present = isinstance(tools, (list, tuple)) and any(_tool_name(t) == "memory" for t in tools)
+    policy = getattr(agent, "_memory_provider_tool_allowlist", None)
+    manager = getattr(agent, "_memory_manager", None)
+    if isinstance(policy, (set, frozenset)) and manager is not None:
+        get_names = getattr(manager, "get_all_tool_names", None)
+        return bool(
+            callable(get_names)
+            and set(cast(Iterable[Any], get_names())) & set(policy)
+        )
     enabled, disabled = getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
     return memory_provider_tools_enabled(enabled, disabled, memory_tool_present=present)
 

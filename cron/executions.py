@@ -264,28 +264,61 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]
     return record
 
 
+# A claim row is fenced (status='claimed' AND handoff_pending=1), so retrying the
+# adoption UPDATE after transient writer contention cannot double-adopt: only the
+# row's current owner predicate matches, and a lost race returns rowcount 0.
+_ADOPT_LOCK_RETRY_ATTEMPTS = 4
+_ADOPT_LOCK_RETRY_SLEEP_MAX = 2.0
+
+
+def _is_lock_contention(exc: BaseException) -> bool:
+    """True for SQLite's transient writer-contention errors (retryable), False for
+    everything else (schema errors, corruption — must surface immediately)."""
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "locked" in str(exc).lower() or "busy" in str(exc).lower()
+    )
+
+
 def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
     The dispatching gateway creates the row before spawning a restart-safe
     worker.  Adoption is the single ``claimed`` → ``running`` gate: only the
     winner may acknowledge ownership or run side effects.
+
+    Transient ``database is locked`` (synchronous=FULL commits queueing behind
+    a batch-fire tick, #135487) is retried with backoff instead of killing
+    the dispatch: the fenced UPDATE is idempotent for the owner, and losing the
+    race to another process still returns None.  The retry budget stays well
+    under HANDOFF_ADOPTION_GRACE_SECONDS so the ready acknowledgement cannot be
+    starved by the backoff itself.
     """
     pid = os.getpid()
     process_started_at = _process_start_time(pid)
     now = _hermes_now().isoformat()
-    with _transaction() as conn:
-        cur = conn.execute(
-            """UPDATE executions
-               SET process_id=?, pid=?, process_started_at=?,
-                   status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
-               WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (_PROCESS_ID, pid, process_started_at, now, execution_id),
-        )
-        if cur.rowcount != 1:
-            return None
-        record = _fetch(conn, execution_id)
+    record = None
+    for attempt in range(_ADOPT_LOCK_RETRY_ATTEMPTS):
+        try:
+            with _transaction() as conn:
+                cur = conn.execute(
+                    """UPDATE executions
+                       SET process_id=?, pid=?, process_started_at=?,
+                           status='running', started_at=?, handoff_pending=0,
+                           handoff_started_at=NULL
+                       WHERE id=? AND status='claimed' AND handoff_pending=1""",
+                    (_PROCESS_ID, pid, process_started_at, now, execution_id),
+                )
+                if cur.rowcount != 1:
+                    return None
+                record = _fetch(conn, execution_id)
+            break
+        except sqlite3.OperationalError as exc:
+            if (
+                not _is_lock_contention(exc)
+                or attempt + 1 == _ADOPT_LOCK_RETRY_ATTEMPTS
+            ):
+                raise
+            time.sleep(min(0.5 * (2**attempt), _ADOPT_LOCK_RETRY_SLEEP_MAX))
     _emit_execution_state(record)
     return record
 

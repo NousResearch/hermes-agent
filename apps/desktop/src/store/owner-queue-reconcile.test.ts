@@ -144,3 +144,10 @@ it('a chat owned by a profile whose backend is not provably local is never read 
   expect(request).not.toHaveBeenCalled()
   expect(vi.mocked(requestGatewayForProfile)).not.toHaveBeenCalled()
 })
+
+it('a chat whose queue only holds a waiting send does not ask for the user', () => {
+  setSessions([row('gamma')])
+  reconcilePendingSubmissions('gamma', [{ admission_id: 'queued-send', status: 'queued', user: 'queued after hold' }])
+
+  expect($sessionDotStateById.get().gamma).not.toBe('needs-input')
+})

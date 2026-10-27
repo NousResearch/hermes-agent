@@ -4,6 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 
 import { buildDesktopBackendEnv } from '../backend-env'
+import { buildUpdateCheckEnv, hasProxyEnv, isGitNetworkError, withoutProxyEnv } from '../update-proxy'
 import { resolveInstallationLauncher } from '../updater-process'
 import { hiddenWindowsChildOptions } from '../windows-child-options'
 
@@ -67,6 +68,22 @@ export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string):
 
 /** Python owns config identity and publication checks; this bridge only transports them. */
 export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<SourceUpdate | null> {
+  const env = buildUpdateCheckEnv(sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome))
+  try {
+    const result = await readSourceUpdateWithEnv(probe, env)
+    if (!result?.error || !hasProxyEnv(env) || !isGitNetworkError(result.message || '')) {
+      return result
+    }
+  } catch (error) {
+    if (!hasProxyEnv(env) || !isGitNetworkError(String(error))) {
+      throw error
+    }
+  }
+  // Bypass the cached transport failure when retrying without the unavailable proxy.
+  return readSourceUpdateWithEnv({ ...probe, force: true }, withoutProxyEnv(env))
+}
+
+async function readSourceUpdateWithEnv(probe: SourceUpdateProbe, env: NodeJS.ProcessEnv): Promise<SourceUpdate | null> {
   // The install launcher boots PM's committed Python and dependency generation.
   // A PATH Python can import this checkout yet lack its selected dependencies.
   const managed = existsSync(path.join(probe.updateRoot, 'pm'))
@@ -117,7 +134,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
       : args,
     hiddenWindowsChildOptions({
       cwd: probe.updateRoot,
-      env: sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome),
+      env,
       encoding: 'utf8',
       timeout: 360000,
       maxBuffer: 1024 * 1024,

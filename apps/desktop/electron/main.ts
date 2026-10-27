@@ -1535,6 +1535,20 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
+  // `setOpacity` is documented as a no-op on Linux and glass needs a first-party
+  // desktop material, so Settings hides the control there — but the renderer still
+  // ships the resolved state (default intensity 29) to main, and the constructor
+  // `opacity` option lands as `_NET_WM_WINDOW_OPACITY` on X11. The window fades
+  // while no surface offers a way to clear it. Never fade an unsupported platform;
+  // restore the window instead, which is what a closed door looks like.
+  if (!TRANSLUCENCY_SUPPORTED) {
+    if (typeof win.setOpacity === 'function' && (win.getOpacity?.() ?? 1) < 1) {
+      win.setOpacity(1)
+    }
+
+    return
+  }
+
   const opacity = windowOpacityFor(translucencyState)
 
   if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
@@ -1635,7 +1649,10 @@ function chatWindowSurfaceOptions() {
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
     ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
+    // A window born faded cannot be un-faded reliably before its compositor settles
+    // (see applyWindowTranslucency), so the constructor option has to carry the same
+    // platform gate applyWindowOpacity enforces at runtime.
+    ...(TRANSLUCENCY_SUPPORTED ? windowOpacityOptions(translucencyState) : {}),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }

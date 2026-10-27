@@ -27,6 +27,16 @@ class RelayDiscordInteractionMixin:
 
     _DISCORD_LABELS_MAX = 2048
 
+    def _capture_ingress_scope(self, event) -> None:
+        """``_capture_scope`` for a connector-delivered event, on every Relay ingress path. A
+        single-profile gateway serves the connector's profile route from its one profile, so once the
+        stamp is kept for egress (persona attribution) it is cleared before admission, command
+        dispatch or a passthrough turn. A bare adapter with no runner keeps it."""
+        self._capture_scope(event)
+        config = getattr(getattr(self._message_handler, '__self__', None), 'config', None)
+        if config is not None and not getattr(config, 'multiplex_profiles', False):
+            event.source.profile = None
+
     async def _remember_discord_labels(self, source) -> None:
         """Keep the text lane's Discord chat labels for the interaction lane: the pinned
         session-context prompt renders them, so a slash turn without them re-rendered the cached
@@ -93,7 +103,7 @@ class RelayDiscordInteractionMixin:
             if platform == "discord":
                 event = self._discord_interaction_to_event(forward)
                 if event is not None:
-                    self._capture_scope(event)
+                    self._capture_ingress_scope(event)
                     # A prompt-token component press is consumed (same gate as _on_inbound).
                     if await self._consume_prompt_response(event):
                         return

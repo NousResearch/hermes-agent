@@ -92,8 +92,10 @@ def perform_api_call(
 
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
+            from agent.codex_responses_adapter import drops_replay_item_ids
+
             next_api_kwargs = agent._get_transport().preflight_kwargs(
-                next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
+                next_api_kwargs, allow_stream=False, drop_replay_item_ids=drops_replay_item_ids(agent.base_url),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
         if _use_streaming:

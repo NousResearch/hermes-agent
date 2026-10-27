@@ -236,11 +236,14 @@ def _remote_roster(root: Path) -> list[dict]:
     return _swallow(_read, [])
 
 
-def local_taken_forms(root: Path) -> set[str]:
-    """Bare forms this gateway's own profiles answer to (handles + friendly-name slugs); a remote
-    row must not be offered under any of them, since local resolution wins (``_resolve_local_name``)."""
+def local_taken_forms(home: Path) -> set[str]:
+    """Bare forms this install's own profiles answer to: folder ids, @handles and friendly-name
+    slugs. A remote row must not be offered under any of them, since local resolution wins
+    (``_resolve_local_name`` accepts the folder id ``default`` even while the default shows as
+    @hermes). Read from the install root, so a named profile's home sees its siblings too."""
+    root = _hermes_root(home)
     names = [name for name, _d in _roster(root)]
-    return {_handle(name, names) for name in names} | set(local_alias_map(root))
+    return set(names) | {_handle(name, names) for name in names} | set(local_alias_map(root))
 
 
 def _remote_paragraph(root: Path) -> str:

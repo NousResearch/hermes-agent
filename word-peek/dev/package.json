@@ -1,0 +1,16 @@
+{
+  "name": "word-peek-development",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.cjs",
+    "test": "node build.cjs && node html-edit.test.cjs && node --test inline-ai.test.mjs && node integration.test.cjs && node regression.test.cjs && node loader.test.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "parse5": "7.3.0",
+    "playwright": "1.62.1"
+  }
+}
+

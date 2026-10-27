@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.bak
+read-build-*.png
+

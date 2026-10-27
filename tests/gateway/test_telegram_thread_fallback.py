@@ -2,10 +2,9 @@
 
 Supergroup forum topics route with ``message_thread_id``. Hermes-created
 private DM topic lanes are different: live Telegram testing showed they only
-stay in the expected lane when sends include both the private topic
-``message_thread_id`` and a ``reply_to_message_id`` anchor to the triggering
-user message. If either anchor is unavailable or rejected, the adapter must
-avoid retrying with a partial topic route that can render outside the lane.
+stay in the expected lane when sends include the private topic
+``message_thread_id``. If a reply anchor is rejected, retries must retain that
+routing constraint instead of sending the message to a different lane.
 """
 
 import sys
@@ -398,7 +397,7 @@ async def test_created_private_topic_thread_not_found_fails_without_root_fallbac
         ("send_voice", "send_audio", "audio_path", "clip.mp3", b"mp3-data"),
     ],
 )
-async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
+async def test_native_media_dm_topic_reply_not_found_retry_preserves_thread_id(
     tmp_path,
     method_name,
     bot_method_name,
@@ -433,12 +432,12 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio
-async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
+async def test_animation_dm_topic_reply_not_found_retry_preserves_thread_id():
     adapter = _make_adapter()
     call_log = []
 
@@ -464,12 +463,12 @@ async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio
-async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_path):
+async def test_media_group_dm_topic_reply_not_found_retry_preserves_thread_id(tmp_path):
     adapter = _make_adapter()
     image_path = tmp_path / "photo.png"
     image_path.write_bytes(b"png-data")
@@ -496,12 +495,12 @@ async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_pa
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio
-async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(monkeypatch):
+async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread_id(monkeypatch):
     adapter = _make_adapter()
     call_log = []
 
@@ -558,8 +557,57 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[1]["reply_to_message_id"] == 462
     assert call_log[1]["message_thread_id"] == 20197
     assert call_log[2]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[2]
+    assert call_log[2]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_text", ["Message to be replied not found", "Reply message not found"])
+async def test_overflow_reply_anchor_retry_preserves_private_topic_route(error_text):
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest(error_text)
+        return SimpleNamespace(message_id=783)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    sent = await adapter._send_overflow_continuation(
+        "123", "continuation", 462, {"message_thread_id": 20197}, "20197",
+        {"telegram_dm_topic_reply_fallback": True, "thread_id": "20197"}, False)
+
+    assert sent.message_id == 783
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[1]["message_thread_id"] == 20197
+    assert "reply_to_message_id" not in call_log[1]
+
+
+@pytest.mark.asyncio
+async def test_control_private_topic_thread_rejection_does_not_fall_back_to_anchor_route():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    with pytest.raises(FakeBadRequest, match="Message thread not found"):
+        await adapter._send_control_message(
+            "123", "control", parse_mode=None, thread_id="20197",
+            metadata={
+                "thread_id": "20197",
+                "telegram_dm_topic_reply_fallback": True,
+                "telegram_reply_to_message_id": "462",
+            })
+
+    assert len(call_log) == 1
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[0]["message_thread_id"] == 20197
 
 
 @pytest.mark.asyncio

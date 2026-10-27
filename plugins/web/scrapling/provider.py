@@ -52,6 +52,17 @@ logger = logging.getLogger(__name__)
 SIDECAR_VENV_ENV = "HERMES_SCRAPLING_VENV"
 SIDECAR_TIMEOUT_S = int(os.environ.get("HERMES_SCRAPLING_TIMEOUT_S", "60"))
 
+# How to provision the sidecar. The rung is inert until the sidecar exists, so
+# the error a user sees must say how to fix it rather than just where it looked.
+# Verified on this host: `python3 -m venv` needs the `python3-venv` system
+# package (absent on Debian/Ubuntu without it), so use `uv` — which Hermes
+# already requires — and `--seed` so the venv has pip.
+SIDECAR_INSTALL_HINT = (
+    "uv venv --seed ~/.hermes/venvs/scrapling && "
+    "~/.hermes/venvs/scrapling/bin/pip install 'scrapling[fetchers]==0.4.11' && "
+    "~/.hermes/venvs/scrapling/bin/playwright install chromium"
+)
+
 
 def sidecar_venv() -> str:
     """Directory holding the Scrapling sidecar venv."""
@@ -92,7 +103,13 @@ def _run_sidecar(payload: dict[str, Any]) -> dict[str, Any]:
     """
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_worker.py")
     if not sidecar_available():
-        return {"ok": False, "error": f"Scrapling sidecar not installed at {sidecar_python()}"}
+        return {
+            "ok": False,
+            "error": (
+                f"Scrapling sidecar not installed at {sidecar_python()} — "
+                f"install it with: {SIDECAR_INSTALL_HINT}"
+            ),
+        }
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
@@ -220,5 +237,6 @@ class ScraplingWebSearchProvider(BaseWebSearchProvider):
     def get_setup_schema(self) -> dict[str, Any]:
         return setup_schema(
             "Scrapling (local)", "free · no key",
-            "Local web search + extraction via Scrapling — no API key and no rate limit.",
+            "Local web search + extraction via Scrapling — no API key and no rate limit. "
+            f"Needs the sidecar venv: {SIDECAR_INSTALL_HINT}",
         )

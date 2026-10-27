@@ -225,6 +225,25 @@ class TestSidecarAdapter:
         monkeypatch.setenv(scrapling_provider.SIDECAR_VENV_ENV, str(tmp_path / "custom"))
         assert scrapling_provider.sidecar_venv() == str(tmp_path / "custom")
 
+    def test_install_hint_uses_uv_not_stdlib_venv(self):
+        """``python3 -m venv`` needs the ``python3-venv`` system package, which
+        is absent on Debian/Ubuntu hosts without it — the documented command
+        must use ``uv`` (which Hermes already requires) with ``--seed`` so the
+        venv has pip."""
+        hint = scrapling_provider.SIDECAR_INSTALL_HINT
+        assert "uv venv --seed" in hint
+        assert "python3 -m venv" not in hint
+        assert "scrapling[fetchers]" in hint
+
+    def test_missing_sidecar_error_names_the_fix(self):
+        """The error a user sees must say how to install the sidecar, not just
+        where it looked."""
+        with patch.object(scrapling_provider, "sidecar_available", return_value=False):
+            envelope = scrapling_provider._run_sidecar({"op": "search", "query": "q"})
+        assert envelope["ok"] is False
+        assert "install it with" in envelope["error"]
+        assert "uv venv --seed" in envelope["error"]
+
 
 # --- failover semantics ---------------------------------------------------
 

@@ -14,6 +14,13 @@ export interface PersistenceEvent {
   value: null | string
 }
 
+// A write's or removal's value before it, beside the event rather than in it
+// so every observer keeps the event shape it matches on.
+const previousValues = new WeakMap<PersistenceEvent, null | string>()
+
+/** The stored value a write or removal replaced (undefined for a read). */
+export const previousValueOf = (event: PersistenceEvent) => previousValues.get(event)
+
 type PersistenceListener = (event: PersistenceEvent) => void
 
 const persistenceListeners = new Set<PersistenceListener>()
@@ -118,10 +125,9 @@ export function writeKey(
   { isDefault = false, provisional = false }: WriteOptions = {}
 ) {
   const shared = isSharedPreferenceKey(key)
+  const previous = rawRead(key)
 
   if (provisional) {
-    const previous = rawRead(key)
-
     if (previous === value) {
       if (shared && isDefault && value !== null) {
         markProvisionalPreference(key, true)
@@ -139,9 +145,16 @@ export function writeKey(
     markProvisionalPreference(key, provisional)
   }
 
-  emitPersistence({ key, op: value === null ? 'remove' : 'write', value, ...(provisional && { provisional }) })
-}
+  const event: PersistenceEvent = {
+    key,
+    op: value === null ? 'remove' : 'write',
+    value,
+    ...(provisional && { provisional })
+  }
 
+  previousValues.set(event, previous)
+  emitPersistence(event)
+}
 
 /** Parsed JSON read. Returns null on absence, unavailable storage, OR malformed
  *  JSON — callers layer their own shape validation on the parsed value. */

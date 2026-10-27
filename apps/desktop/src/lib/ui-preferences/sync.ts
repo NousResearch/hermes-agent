@@ -1,7 +1,8 @@
 import type { UiPreferencesSnapshot, UiPreferencesWrite } from '../../../electron/ui-preferences'
-import { markProvisionalPreference, onPersistenceEvent, provisionalPreferenceKeys } from '../storage'
+import { markProvisionalPreference, onPersistenceEvent, previousValueOf, provisionalPreferenceKeys } from '../storage'
 
 import { isSharedPreferenceKey } from './keys'
+import { rebaseWrite } from './merge'
 import { adoptOrphanedOutboxes, readOutbox, saveOutbox, siblingPendingKeys, watchOutbox } from './outbox'
 
 export type { UiPreferencesSnapshot, UiPreferencesWrite }
@@ -56,6 +57,18 @@ function adopt(key: string, value: null | string, prune: boolean, live: boolean)
   if (writeRaw(key, value) && live) {
     announce(key, previous, value)
   }
+}
+
+/** `mine`, a change made from `base`, rebased onto `current` (see merge.ts);
+ *  the cache takes the result, announced, when it differs from `mine`. */
+function rebaseLocal(key: string, base: null | string, current: null | string, mine: null | string): null | string {
+  const rebased = rebaseWrite(base, current, mine)
+
+  if (rebased !== mine && writeRaw(key, rebased)) {
+    announce(key, mine, rebased)
+  }
+
+  return rebased
 }
 
 const generationOf = (snapshot: UiPreferencesSnapshot) => snapshot.generation ?? ''
@@ -167,6 +180,13 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
 
   const known = new Map<string, null | string>()
   const pending = readOutbox()
+  // What this window's stores last saw per key (read at load, read again, or
+  // written), and the cached value each pending change was made on: a store
+  // that never re-reads must not undo the entries a newer value brought.
+  const loaded = new Map(localSharedKeys().map(key => [key, readRaw(key)]))
+  const seen = new Map<string, null | string>()
+  const pendingBase = new Map<string, null | string>()
+  const seenOf = (key: string) => (seen.has(key) ? (seen.get(key) ?? null) : (loaded.get(key) ?? null))
   // Values the store refused, kept in this window until changed again.
   const refused = new Map<string, null | string>()
   let revision = -1
@@ -205,9 +225,14 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       const value = snapshot.values[key] ?? null
       known.set(key, value)
 
-      // A change made here, or in a sibling tab, and not yet stored outranks
-      // an older store value.
-      if (!pending.has(key) && !siblings.has(key) && !(refused.has(key) && refused.get(key) === readRaw(key))) {
+      // A change made here and not yet stored outranks an older store value,
+      // rebased onto it so the store's other entries survive; so does one a
+      // sibling tab has not stored yet.
+      if (pending.has(key) && pendingBase.has(key) && pendingBase.get(key) !== value) {
+        pending.set(key, rebaseLocal(key, pendingBase.get(key) ?? null, value, pending.get(key) ?? null))
+        pendingBase.set(key, value)
+        saveOutbox(pending)
+      } else if (!pending.has(key) && !siblings.has(key) && !(refused.has(key) && refused.get(key) === readRaw(key))) {
         adopt(key, value, prune, live)
       }
     }
@@ -269,6 +294,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     for (const [key, value] of batch) {
       if (pending.get(key) === value) {
         pending.delete(key)
+        pendingBase.delete(key)
       }
     }
 
@@ -276,9 +302,18 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
   }
 
   const stopListening = onPersistenceEvent(event => {
-    if (event.op === 'read' || !isSharedPreferenceKey(event.key)) {
+    if (!isSharedPreferenceKey(event.key)) {
       return
     }
+
+    if (event.op === 'read') {
+      seen.set(event.key, event.value)
+
+      return
+    }
+
+    const base = seenOf(event.key)
+    seen.set(event.key, event.value)
 
     // A provisional value (storage.ts keeps the mark) never leaves this origin.
     if (event.provisional) {
@@ -289,8 +324,15 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return
     }
 
+    const current = previousValueOf(event) ?? null
+    const value = rebaseLocal(event.key, base, current, event.value)
+
+    if (!pendingBase.has(event.key)) {
+      pendingBase.set(event.key, current)
+    }
+
     refused.delete(event.key)
-    pending.set(event.key, event.value)
+    pending.set(event.key, value)
     store()
   })
 

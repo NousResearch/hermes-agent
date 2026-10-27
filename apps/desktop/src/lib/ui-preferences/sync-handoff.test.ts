@@ -177,3 +177,40 @@ it('a crashed tab’s outbox is adopted by the next load once its heartbeat is s
   expect(readUiPreferences(file).values[MODE]).toBe('dark')
   expect(outboxes()).toEqual([])
 })
+
+it('a first snapshot that lands after the app read its cache never drops the store’s favorites on the next star', async () => {
+  const file = storeFile()
+  await writeUiPreferences(file, { values: { [FAVORITES]: JSON.stringify(['host::kept']) } })
+  becomeClient({ [FAVORITES]: JSON.stringify(['mine::old']) })
+
+  await pageLoad(file, { late: true, stores: [() => import('@/store/favorite-models')] })
+  const { toggleFavoriteModel } = await import('@/store/favorite-models')
+  toggleFavoriteModel('mine', 'new')
+  toggleFavoriteModel('mine', 'old')
+  await tick()
+
+  expect(JSON.parse(readUiPreferences(file).values[FAVORITES] ?? '[]')).toEqual(['mine::new', 'host::kept'])
+})
+
+it('a star made before the late snapshot lands joins the store’s favorites instead of replacing them', async () => {
+  const file = storeFile()
+  await writeUiPreferences(file, { values: { [FAVORITES]: JSON.stringify(['host::kept']) } })
+  becomeClient({ [FAVORITES]: JSON.stringify(['host::kept']) })
+  await pageLoad(file)
+  closeTabs()
+
+  await writeUiPreferences(file, { values: { [FAVORITES]: JSON.stringify(['host::kept', 'host::added']) } })
+  vi.resetModules()
+  const sync = await import('./sync')
+  sync.captureOwnPreferences()
+  const { toggleFavoriteModel } = await import('@/store/favorite-models')
+  stops.push(sync.startUiPreferencesSync(bridgeFor(file, { slow: true })))
+  toggleFavoriteModel('mine', 'new')
+  await tick(800)
+
+  expect(JSON.parse(readUiPreferences(file).values[FAVORITES] ?? '[]')).toEqual([
+    'host::kept',
+    'mine::new',
+    'host::added'
+  ])
+})

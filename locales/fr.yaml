@@ -2270,7 +2270,6 @@ cli:
     cleared_picker_cache: "Cache du sélecteur de modèles vidé. Actualisation..."
     moa_one_shot_queued: "MoA en une passe mis en file avec le preset {preset} ; le modèle précédent sera rétabli après ce tour."
     normalized_model: "Modèle '{old}' normalisé en '{new}' pour {provider}."
-    normalized_copilot_model: "Modèle Copilot '{old}' normalisé en '{new}'."
     stripped_provider_prefix: "Préfixe de fournisseur retiré de '{old}' ; utilisation de '{new}' pour {provider}."
     restored_from_session: "Modèle rétabli depuis la session : {model}"
     could_not_load_config: "❌ impossible de charger la configuration : {error}"

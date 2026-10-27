@@ -74,7 +74,8 @@ export function createBrowserFilesBridge({
 
       return (await fileEndpointUrl(bootstrap, 'stream', {
         path: payload.path,
-        profile: payload.profile ?? currentProfile()
+        profile: payload.profile ?? currentProfile(),
+        session_id: payload.sessionId
       })).href
     },
     readDir: (path: string) =>

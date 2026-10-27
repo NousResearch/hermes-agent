@@ -10,9 +10,10 @@ import pytest
 from gateway.session_contract import Principal, SessionRef
 
 CHILD = """import json, os, sys, psutil
+from hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
-out.write((json.dumps({'type': 'hello', 'pid': me.pid, 'birth': me.create_time(),
+out.write((json.dumps({'type': 'hello', 'pid': me.pid, 'birth': worker_birth(me),
                        'ancestors': [p.pid for p in me.parents()[:3]]}) + '\\n').encode())
 for line in sys.stdin.buffer:
     out.write(b'{"type": "bogus"}\\n')

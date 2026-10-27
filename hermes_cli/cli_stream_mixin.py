@@ -773,7 +773,7 @@ class CLIStreamMixin:
                 except Exception:
                     pass
             # "verbose" must commit the same line as "all": non-streaming calls (MoA aggregator,
-            # copilot-acp) never emit the "preparing" line, so nothing else builds history.
+            # ACP subprocess providers) never emit the "preparing" line, so nothing else builds history.
             if function_name and self.tool_progress_mode in {"new", "all", "verbose"}:
                 duration = kwargs.get("duration", 0.0)
                 # Pop stored args from tool.started for this function

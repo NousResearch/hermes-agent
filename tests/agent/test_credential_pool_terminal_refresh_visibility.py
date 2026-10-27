@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,6 +106,18 @@ def test_anthropic_transient_refresh_failure_stays_exhausted(monkeypatch, caplog
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+def _codex_refresh_error(status: int, body):
+    """The real Codex refresh error for a token-endpoint reply (``body=None``: a non-JSON page)."""
+    from hermes_cli.auth_codex import _codex_refresh_failure_error
+
+    def _json():
+        if body is None:
+            raise ValueError("not JSON")
+        return body
+
+    return _codex_refresh_failure_error(SimpleNamespace(status_code=status, json=_json))
+
+
 def test_surviving_manual_entry_is_marked_dead_after_terminal_refresh(monkeypatch):
     """An independent ``manual:device_code`` login survives the singleton quarantine; it must leave
     rotation as DEAD rather than sit unmarked and re-fire the WARNING on the next refresh."""
@@ -114,12 +127,80 @@ def test_surviving_manual_entry_is_marked_dead_after_terminal_refresh(monkeypatc
     monkeypatch.setattr(pool, "_sync_entry_from_auth_store", lambda e: e)
     monkeypatch.setattr(pool, "_clear_terminal_tokens_state", lambda e, exc: None)
     monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
-    monkeypatch.setattr(cp.auth_mod, "_is_terminal_codex_oauth_refresh_error", lambda exc: True)
 
-    assert pool._recover_failed_refresh(entry, RuntimeError("invalid_grant")) is None
+    assert pool._recover_failed_refresh(entry, _codex_refresh_error(400, {"error": "invalid_grant"})) is None
 
     assert [e.id for e in pool._entries] == ["e1"]  # manual rows are never dropped by the quarantine
     assert pool._entries[0].last_status == STATUS_DEAD
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "dead"),
+    [
+        (401, {"error": {"code": "refresh_token_expired", "message": "Your refresh token has expired."}}, True),
+        (401, {"error": {"code": "refresh_token_invalidated", "message": "Your refresh token was revoked."}}, True),
+        (401, {"error": {"type": "invalid_request_error", "message": "Unauthorized."}}, True),
+        (400, {"code": "refresh_token_expired"}, True),
+        (403, {"error": {"type": "invalid_request_error", "message": "Forbidden."}}, False),
+        (403, None, False),  # an HTML challenge page from the edge, not a verdict on the token
+        (500, {"error": {"code": "server_error", "message": "Try again later."}}, False),
+    ],
+)
+def test_codex_refresh_rejection_is_terminal_exactly_when_the_login_is_dead(monkeypatch, caplog, status, body, dead):
+    """Dead by OpenAI's own Codex CLI rule (any 401, or an expired/reused/invalidated code at any
+    status) means DEAD with the re-auth WARNING, whatever ``code`` OpenAI spelled it with; anything
+    else is benched as transient, silently. The real error builder and the real terminal predicate
+    decide; neither is patched."""
+    exc = _codex_refresh_error(status, body)
+    pool = _pool("openai-codex")
+    entry = _entry("openai-codex", source="manual:device_code")
+    pool._entries = [entry]
+    monkeypatch.setattr(pool, "_sync_entry_from_auth_store", lambda e: e)
+    monkeypatch.setattr(pool, "_clear_terminal_tokens_state", lambda e, exc: None)
+    monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
+
+    with caplog.at_level(logging.INFO, logger=cp.logger.name):
+        assert pool._recover_failed_refresh(entry, exc) is None
+
+    assert exc.relogin_required is dead
+    assert pool._entries[0].last_status == (STATUS_DEAD if dead else cp.STATUS_EXHAUSTED)
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and "hermes auth add openai-codex" in r.getMessage()]
+    assert bool(warned) is dead
+
+
+def test_expired_codex_login_is_cleared_from_auth_json_with_its_reason(tmp_path, monkeypatch):
+    """End to end against a temp HERMES_HOME: only the HTTP reply is stubbed. An expired singleton
+    login leaves the pool, its token pair leaves auth.json, and the stored error says why."""
+    from agent.credential_pool import load_pool
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    tokens = {"access_token": "dead-access", "refresh_token": "dead-refresh"}
+    (home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {"openai-codex": {"tokens": dict(tokens), "auth_mode": "chatgpt"}},
+        "credential_pool": {"openai-codex": [
+            {"id": "seeded", "label": "device_code", "auth_type": "oauth", "priority": 0,
+             "source": "device_code", **tokens}]},
+    }), encoding="utf-8")
+    expired = {"error": {"code": "refresh_token_expired", "message": "Your refresh token has expired."}}
+
+    def _rejected(access_token, refresh_token):
+        raise _codex_refresh_error(401, expired)
+
+    monkeypatch.setattr(cp.auth_mod, "refresh_codex_oauth_pure", _rejected)
+    pool = load_pool("openai-codex")
+
+    assert pool.try_refresh_matching(credential_id="seeded") is None
+
+    state = json.loads((home / "auth.json").read_text(encoding="utf-8"))["providers"]["openai-codex"]
+    assert "refresh_token" not in state["tokens"] and "access_token" not in state["tokens"]
+    assert state["last_auth_error"]["code"] == "codex_refresh_failed"
+    assert "refresh_token_expired" in state["last_auth_error"]["message"]
+    assert all(e.id != "seeded" or e.last_status == STATUS_DEAD for e in load_pool("openai-codex").entries())
+
 
 def _expired_invoke_jwt() -> str:
     def _part(payload: dict) -> str:

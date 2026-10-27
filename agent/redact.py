@@ -634,12 +634,28 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
 
 
-# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
-# anchors the id at the start of its digit run: without it, a long run of digits
-# with no ":<token>" after it (a Unity/YAML ``_typelessdata`` blob in a 2 MB PR
-# diff, hex/decimal dumps) retried the greedy ``\d{8,}`` from every digit —
-# quadratic, one core at 100% for hours while holding the GIL.
-_TELEGRAM_RE = re.compile(r"(?<!\d)(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
+# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. Start at an
+# identifier boundary, never inside a digit run (quadratic retries on dumps).
+# Consume only bounded escape spellings so JSON/repr/URL separators survive
+# verbatim; their last letter/digit is not the token's logical left neighbor.
+_TELEGRAM_RE = re.compile(
+    r"(?P<boundary>\\[nrtbfv]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|"
+    r"\\U[0-9a-fA-F]{8}|%[0-9a-fA-F]{2}|(?<![A-Za-z_\d]))"
+    r"(?P<bot>bot)?(?P<id>\d{8,}):(?P<body>[-A-Za-z0-9_]{30,})"
+)
+
+
+def _redact_telegram_token(match: re.Match) -> str:
+    boundary = match.group("boundary")
+    # Encoded identifier characters are still identifiers, not separators.
+    if len(boundary) > 2:
+        value = int(boundary[1:] if boundary[0] == "%" else boundary[2:], 16)
+        if value > 0x10FFFF:
+            return match.group(0)
+        char = chr(value)
+        if char in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_" or char.isdecimal():
+            return match.group(0)
+    return f"{boundary}{match.group('bot') or ''}{match.group('id')}:***"
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
 # A base64-encoded PEM private key: kubeconfig's ``client-key-data`` and the ``*_b64``
@@ -1571,7 +1587,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if ":" in text:
         text = redact_header_credentials(text)
-        text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
+        text = _TELEGRAM_RE.sub(_redact_telegram_token, text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

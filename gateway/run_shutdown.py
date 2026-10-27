@@ -190,15 +190,22 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return time.monotonic() - self.started_at
 
     # Active-work accounting
+    def _active_messaging_work_count(self) -> int:
+        """Messaging work still owned by the runner or a platform adapter (#84285)."""
+        adapter_work, seen = 0, set()
+        for amap in (getattr(self, "adapters", None) or {}, *(getattr(self, "_profile_adapters", None) or {}).values()):
+            for adapter in list(amap.values()) if isinstance(amap, dict) else ():
+                if id(adapter) not in seen and callable(count_fn := getattr(adapter, "active_message_work_count", None)):
+                    seen.add(id(adapter))
+                    try:
+                        adapter_work += max(0, int(count_fn()))
+                    except Exception:
+                        logger.debug("Failed to count active message work for %s", getattr(adapter, "name", type(adapter).__name__), exc_info=True)
+        return max(self._running_agent_count(), adapter_work)
+
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""
-        return (
-            self._running_agent_count()
-            + managed_turn_count(self)
-            + self._active_cron_job_count()
-            + self._active_api_run_count()
-            + self._active_deferred_agent_worker_count()
-        )
+        return (getattr(self, "_active_messaging_work_count", None) or GatewayShutdownMixin._active_messaging_work_count.__get__(self))() + managed_turn_count(self) + self._active_cron_job_count() + self._active_api_run_count() + self._active_deferred_agent_worker_count()
 
     @staticmethod
     def _running_cron_job_count() -> int:
@@ -1554,16 +1561,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         subtracting from the bare-ID active count: two profiles can run the same job ID, and one
         excluded run must not hide the other.
         """
-        non_cron = (
-            self._running_agent_count()
-            + managed_turn_count(self)
-            + self._active_api_run_count()
-            + self._active_deferred_agent_worker_count()
-        )
-        return (
-            max(0, non_cron - self._wedged_chat_agent_count())
-            + self._restart_wait_cron_counts()["awaitable"]
-        )
+        non_cron = (getattr(self, "_active_messaging_work_count", None) or GatewayShutdownMixin._active_messaging_work_count.__get__(self))() + managed_turn_count(self) + self._active_api_run_count() + self._active_deferred_agent_worker_count()
+        return max(0, non_cron - self._wedged_chat_agent_count()) + self._restart_wait_cron_counts()["awaitable"]
 
     def _describe_active_work(self) -> list:
         """One dict per in-flight work unit the restart wait is holding for, so an observer

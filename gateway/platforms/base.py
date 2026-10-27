@@ -4622,15 +4622,11 @@ class BasePlatformAdapter(ABC):
         self._requeue_counts[session_key] = attempts + 1
         if attempts == 0:
             return 0.0
-        delay = jittered_backoff(attempts, base_delay=self._REQUEUE_BACKOFF_INITIAL_SECONDS,
-                                 max_delay=self._REQUEUE_BACKOFF_MAX_SECONDS, jitter_ratio=0.0)
-        (logger.info if attempts == 1 else logger.debug)(
-            "[%s] Handler re-queued a pending event for %s again (session busy elsewhere); "
-            "backing off %.2fs", self.name, session_key, delay)
+        delay = jittered_backoff(attempts, base_delay=self._REQUEUE_BACKOFF_INITIAL_SECONDS, max_delay=self._REQUEUE_BACKOFF_MAX_SECONDS, jitter_ratio=0.0)
+        (logger.info if attempts == 1 else logger.debug)("[%s] Handler re-queued a pending event for %s again (session busy elsewhere); backing off %.2fs", self.name, session_key, delay)
         return delay
 
-    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str,
-                          delay: float = 0.0) -> None:
+    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str, delay: float = 0.0) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
         live for concurrent inbound; ownership moves so stale-lock detection works. With ``delay``
@@ -4641,12 +4637,9 @@ class BasePlatformAdapter(ABC):
         # Capture the guard this drain owns now: a /stop//new guard swapped in during the
         # back-off must survive the slot-empty exit (#48300).
         guard = self._active_sessions.get(session_key)
-        self._track_session_task(
-            session_key,
-            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
+        self._track_session_task(session_key, asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
 
-    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
-                           guard: Optional[asyncio.Event]) -> None:
+    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float, guard: Optional[asyncio.Event]) -> None:
         if delay > 0:
             await asyncio.sleep(delay)
             await self._flush_text_debounce_now(session_key)  # as every other task exit does
@@ -4662,8 +4655,7 @@ class BasePlatformAdapter(ABC):
         if _active is not None:
             _active.clear()
 
-    def _cleanup_finished_session_task(
-        self, session_key: str, interrupt_event: Optional[asyncio.Event]) -> None:
+    def _cleanup_finished_session_task(self, session_key: str, interrupt_event: Optional[asyncio.Event]) -> None:
         """Release a finished owner task's guard, dropping its ``_session_tasks`` entry ONLY if the
         guard was released: after a concurrent guard swap the done-task entry lets
         ``_session_task_is_stale`` heal the orphan.
@@ -4681,6 +4673,17 @@ class BasePlatformAdapter(ABC):
             self._session_tasks.pop(session_key, None)
             self._requeue_counts.pop(session_key, None)
 
+    def active_message_work_count(self) -> int:
+        """Live per-session message-processing owner tasks in ``_session_tasks`` (including final delivery; done tasks excluded)."""
+        active = 0
+        for session_key, task in list(self._session_tasks.items()):
+            try:
+                active += int(not task.done())
+            except Exception:
+                logger.debug("[%s] Non-Task owner in _session_tasks[%s]; counting as active", self.name, session_key, exc_info=True)
+                active += 1
+        return active
+
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
@@ -4694,13 +4697,9 @@ class BasePlatformAdapter(ABC):
                 self._expected_cancelled_tasks.add(task)
                 task.cancel()
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*(asyncio.shield(t) for t in tasks), return_exceptions=True),
-                    timeout=5.0)
+                await asyncio.wait_for(asyncio.gather(*(asyncio.shield(t) for t in tasks), return_exceptions=True), timeout=5.0)
             except TimeoutError:
-                logger.warning("[%s] %d background task(s) did not exit within 5s; "
-                               "releasing tracking and letting them unwind in the background",
-                               self.name, sum(not t.done() for t in tasks))
+                logger.warning("[%s] %d background task(s) did not exit within 5s; releasing tracking and letting them unwind in the background", self.name, sum(not t.done() for t in tasks))
                 break
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file

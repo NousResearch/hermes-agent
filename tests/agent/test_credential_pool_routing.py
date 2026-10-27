@@ -151,6 +151,27 @@ class TestPoolRotationCycle:
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, api_key_hint="test-api-key", failure_reason="rate_limit")
         agent._swap_credential.assert_called_once_with(entries[1])
 
+    def test_account_limit_429_rotates_immediately(self):
+        """A provider-confirmed exhausted account should use the next credential without waiting."""
+        agent, pool, entries = self._make_agent_with_pool(3)
+        error_context = {
+            "message": "This request would exceed your account's rate limit. Please try again later."
+        }
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429, has_retried_429=False, error_context=error_context
+        )
+
+        assert recovered is True
+        assert has_retried is False
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=429,
+            error_context=error_context,
+            api_key_hint="test-api-key",
+            failure_reason="rate_limit",
+        )
+        agent._swap_credential.assert_called_once_with(entries[1])
+
     def test_pool_exhaustion_returns_false(self):
         """When all credentials exhausted, recovery should return False."""
         agent, _pool, _ = self._make_agent_with_pool(1)

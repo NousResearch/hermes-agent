@@ -25,7 +25,7 @@ def legacy_account_label(row):
 
 
 def login_owned_by(row, subject):
-    """Whether *subject* is the login a served remote backend stamped on this Desktop row.
+    """Whether *subject* is the login a served remote backend stamped on this local row.
 
     ``hermes serve`` stamps the WS-upgrade login as ``<provider>:<user id>``
     (tui_gateway/session_transports.py). Unlike the Nous label that stamp IS an owner: once a
@@ -35,7 +35,7 @@ def login_owned_by(row, subject):
     only); every other caller, the host's own native peer included, still meets a foreign owner.
     """
     user_id = row.get('user_id')
-    if row['source'] != 'desktop' or not isinstance(user_id, str) or not subject:
+    if row['source'] not in LEGACY_LOCAL_SOURCES or not isinstance(user_id, str) or not subject:
         return False
     from hermes_state_mutation_binding import _login_label
     return _login_label(subject) == user_id

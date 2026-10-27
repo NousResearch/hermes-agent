@@ -52,6 +52,15 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
 })
 
 
+def _secret_source_bootstrap_env() -> frozenset[str]:
+    """Env names holding a secret source's bootstrap credential (``BWS_ACCESS_TOKEN``,
+    ``OP_SERVICE_ACCOUNT_TOKEN``, ...): the one token that unlocks every other secret.
+    No spawned child needs it; each source hands it to its own CLI explicitly
+    (``_run_bws_list``, ``_op_child_env``), so it is Tier 1 on every spawn path."""
+    from agent.secret_sources.registry import list_sources
+    return frozenset(name for source in list_sources() if (name := source.token_env({})))
+
+
 def _left_core_env(*, secrets_only: bool) -> frozenset:
     """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
     stripped exactly as when core shipped them, plugin installed or not."""
@@ -62,7 +71,8 @@ def _left_core_env(*, secrets_only: bool) -> frozenset:
 
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
-    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
+    blocked: set[str] = (set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
+                         | _secret_source_bootstrap_env())
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
@@ -394,5 +404,6 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
+}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True) | _secret_source_bootstrap_env()
+# ^ every declared adapter secret and every secret source's bootstrap token is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)

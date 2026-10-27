@@ -2627,6 +2627,7 @@ streaming:
   buffer_threshold: 24    # Characters before forcing an edit flush (default: 24)
   cursor: " ▉"            # Cursor shown during streaming
   fresh_final_after_seconds: 0    # Opt in to fresh final (Telegram) when preview is this old
+  cleanup_interim_segments: false # Telegram: delete earlier tool/commentary bubbles once the final answer lands
 ```
 
 When enabled, the bot sends a message on the first token, then progressively edits it as more tokens arrive. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
@@ -2636,6 +2637,8 @@ For separate natural mid-turn assistant updates without progressive token editin
 **Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
 
 **Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. Set `fresh_final_after_seconds > 0` to opt in to delivering old previews as brand-new final messages with best-effort preview deletion. The default is `0`, which always finalizes streamed replies in place and avoids the brief duplicate-message/delete sequence on clients that show both operations.
+
+**Interim cleanup (Telegram):** Set `streaming.cleanup_interim_segments: true` to best-effort delete the earlier tool-call and commentary bubbles of a turn once the final answer has been confirmed delivered, so only the clean final answer remains. Unlike fresh final, nothing is re-sent. Other platforms ignore it. The default is `false` (interim bubbles stay visible).
 
 :::note Per-platform streaming defaults
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.

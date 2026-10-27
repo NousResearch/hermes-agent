@@ -1203,7 +1203,7 @@ export const jaOverrides = {
       defaultDirTitle: 'デフォルトのプロジェクトディレクトリ',
       defaultDirDesc:
         '別のフォルダーを選択しない限り、新しいセッションはこのフォルダーで開始します。未設定の場合はホームディレクトリが使用されます。',
-      defaultDirUpdated: 'デフォルトのプロジェクトディレクトリを更新しました',
+      defaultDirUpdated: () => 'デフォルトのプロジェクトディレクトリを更新しました',
       defaultsTo: label => `デフォルト: ${label}。`,
       change: '変更',
       choose: '選択',

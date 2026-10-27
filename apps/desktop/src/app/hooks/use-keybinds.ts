@@ -132,6 +132,8 @@ export interface KeybindRuntimeDeps {
  *  return value (void, a navigate() promise, …) means it ran. */
 type HandlerMap = Record<string, () => unknown>
 
+const SWITCHER_MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
+
 function hasWordEraseModifier(event: KeyboardEvent): boolean {
   return IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey
 }
@@ -628,11 +630,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         releaseApprovalKey()
       }
 
-      if (event.key === 'Tab') {
+      // The cycle chord is ⌃Tab natively but Alt+] / ⌃⌘] in a browser tab:
+      // releasing its step key ends the hold, and releasing the last
+      // non-Shift modifier commits.
+      if (!SWITCHER_MODIFIER_KEYS.has(event.key)) {
         onSwitcherTabUp()
-      }
-
-      if (event.key === 'Control') {
+      } else if (event.key !== 'Shift' && !event.ctrlKey && !event.altKey && !event.metaKey) {
         commitSwitcherRef.current()
       }
     }

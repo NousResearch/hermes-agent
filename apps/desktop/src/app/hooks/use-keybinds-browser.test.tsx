@@ -53,7 +53,9 @@ async function mountKeybinds(inTerminal = false) {
 
   const press = (init: KeyboardEventInit) => {
     const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ctrlKey: true, ...init })
-    act(() => { input.dispatchEvent(event) })
+    act(() => {
+      input.dispatchEvent(event)
+    })
 
     return event
   }
@@ -61,7 +63,8 @@ async function mountKeybinds(inTerminal = false) {
   return { deps, press }
 }
 
-it('dispatches browser defaults and remaps from text fields, leaving browser keys and AltGr alone', async () => {
+it('dispatches the Alt defaults and remaps from text fields, leaving browser keys and AltGr alone', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
   const { deps, press } = await mountKeybinds()
   const { setBinding } = await import('@/store/keybinds')
 
@@ -72,7 +75,12 @@ it('dispatches browser defaults and remaps from text fields, leaving browser key
   // Windows AltGr reports Ctrl+Alt; Linux can report AltGraph without Ctrl.
   // Polish ń, German @, French AZERTY dead tilde / ʒ are text, not commands.
   for (const ctrlKey of [true, false]) {
-    for (const [key, code] of [['ń', 'KeyN'], ['@', 'KeyQ'], ['Dead', 'KeyN'], ['ʒ', 'KeyW']]) {
+    for (const [key, code] of [
+      ['ń', 'KeyN'],
+      ['@', 'KeyQ'],
+      ['Dead', 'KeyN'],
+      ['ʒ', 'KeyW']
+    ]) {
       const event = press({ key, code, altKey: true, ctrlKey, modifierAltGraph: true })
       expect(event.getModifierState('AltGraph')).toBe(true)
       expect(event.defaultPrevented).toBe(false)
@@ -83,8 +91,8 @@ it('dispatches browser defaults and remaps from text fields, leaving browser key
   expect(deps.openNewSessionTab).not.toHaveBeenCalled()
   expect(closeTab).not.toHaveBeenCalled()
 
-  for (const key of ['F7', 'F8', 'F9']) {
-    expect(press({ key, code: key, shiftKey: true }).defaultPrevented).toBe(true)
+  for (const key of ['n', 't', 'w']) {
+    expect(press({ key, code: `Key${key.toUpperCase()}`, altKey: true, ctrlKey: false }).defaultPrevented).toBe(true)
   }
 
   expect(deps.startFreshSession).toHaveBeenCalledOnce()
@@ -92,7 +100,7 @@ it('dispatches browser defaults and remaps from text fields, leaving browser key
   expect(closeTab).toHaveBeenCalledOnce()
 
   act(() => setBinding('session.new', ['mod+shift+f6']))
-  expect(press({ key: 'F7', code: 'F7', shiftKey: true }).defaultPrevented).toBe(false)
+  expect(press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false }).defaultPrevented).toBe(false)
   expect(press({ key: 'F6', code: 'F6', shiftKey: true }).defaultPrevented).toBe(true)
   expect(deps.startFreshSession).toHaveBeenCalledTimes(2)
 })
@@ -112,4 +120,28 @@ it('dispatches the macOS ⌃⌘ browser defaults, including ⌃⌘W over an inte
   expect(deps.startFreshSession).toHaveBeenCalledOnce()
   expect(deps.openNewSessionTab).toHaveBeenCalledOnce()
   expect(closeTab).toHaveBeenCalledOnce()
+})
+
+it('steps the session switcher with Alt+] and commits when Alt is released', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { $selectedStoredSessionId, $sessions } = await import('@/store/session')
+  const { $switcherOpen, switcherActive } = await import('@/store/session-switcher')
+  $sessions.set(['a', 'b', 'c'].map(id => ({ id }) as never))
+  $selectedStoredSessionId.set('a')
+  const { press } = await mountKeybinds()
+
+  const release = (key: string, init: KeyboardEventInit = {}) =>
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key, ...init }))
+    })
+
+  expect(press({ key: ']', code: 'BracketRight', altKey: true, ctrlKey: false }).defaultPrevented).toBe(true)
+  expect(press({ key: ']', code: 'BracketRight', altKey: true, ctrlKey: false }).defaultPrevented).toBe(true)
+  expect($switcherOpen.get()).toBe(true)
+
+  release(']', { altKey: true })
+  expect($switcherOpen.get()).toBe(true)
+  release('Alt')
+  expect($switcherOpen.get()).toBe(false)
+  expect(switcherActive()).toBe(false)
 })

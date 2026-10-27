@@ -139,6 +139,13 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
     return null
   }
 
+  // AltGr typing a character. Windows reports it as Ctrl+Alt; Linux can
+  // report Alt with AltGraph but no Ctrl, which must not read as a plain
+  // Alt chord (the browser-tab defaults are Alt+letter off macOS).
+  if (event.altKey && !event.ctrlKey && !event.metaKey && event.getModifierState?.('AltGraph')) {
+    return null
+  }
+
   const base = baseKeyFromEventKey(event.key, event.shiftKey) ?? baseKeyFromCode(event.code)
 
   if (!base) {

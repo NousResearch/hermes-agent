@@ -11,16 +11,34 @@ import { isBrowserHostedDesktop, isMacPlatform } from '@/lib/platform'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
-// A browser tab owns mod+n/t/w (new window, new tab, close tab). On macOS,
-// Control+Cmd keeps the letter without Option's text input; elsewhere
-// Control+Alt is AltGr and Alt+Shift letters are browser commands, so
-// modified function keys stand in.
-function sessionChord(letter: string, functionKey: string): string {
+// A browser tab acts on some chords before the page sees the keydown: new
+// window / tab / private window, close tab / window, reopen tab, and tab
+// cycling (Chrome, Edge and Firefox: Ctrl/⌘+N, T, W, their Shift forms,
+// Ctrl+Tab, Ctrl+PageUp/PageDown). Actions bound there get a browser default
+// instead: Alt + the same key on Windows and Linux (plain left Alt types no
+// character there; AltGr arrives as Ctrl+Alt or AltGraph), ⌃⌘ + the same key
+// on macOS (Option types a character). Alt+Tab is the OS window switcher, so
+// tab cycling takes ] and [. Native Desktop keeps the native chords.
+interface BrowserChords {
+  /** Omitted: the native default already reaches the page on macOS. */
+  mac?: string
+  other: string
+}
+
+type HostDefaults = Pick<KeybindActionMeta, 'defaults' | 'editableTargetPolicy'>
+
+function hostDefaults(native: readonly string[], browser: BrowserChords): HostDefaults {
   if (!isBrowserHostedDesktop()) {
-    return `mod+${letter}`
+    return { defaults: native }
   }
 
-  return isMacPlatform() ? `mod+ctrl+${letter}` : `mod+shift+${functionKey}`
+  if (isMacPlatform()) {
+    return { defaults: browser.mac ? [browser.mac] : native }
+  }
+
+  // Alt+letter has no Cmd/Ctrl, so it needs the editable-target opt-in to
+  // fire from the composer the way the native ⌘/Ctrl chord does.
+  return { defaults: [browser.other], editableTargetPolicy: 'modified' }
 }
 
 // The self-referential opener — bound + dispatched like any action, but shown in
@@ -129,13 +147,25 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
   // hijacked normal typing — pressing uppercase N outside an input (or via an
   // IME) created a new session unexpectedly.
-  { id: 'session.new', category: 'session', defaults: [sessionChord('n', 'f7')] },
-  { id: 'session.newTab', category: 'session', defaults: [sessionChord('t', 'f8')] },
-  { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
+  { id: 'session.new', category: 'session', ...hostDefaults(['mod+n'], { mac: 'mod+ctrl+n', other: 'alt+n' }) },
+  { id: 'session.newTab', category: 'session', ...hostDefaults(['mod+t'], { mac: 'mod+ctrl+t', other: 'alt+t' }) },
+  {
+    id: 'session.newWindow',
+    category: 'session',
+    ...hostDefaults(['mod+shift+n'], { mac: 'mod+ctrl+shift+n', other: 'alt+shift+n' })
+  },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
-  { id: 'session.next', category: 'session', defaults: ['ctrl+tab', 'ctrl+pagedown'] },
-  { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab', 'ctrl+pageup'] },
+  {
+    id: 'session.next',
+    category: 'session',
+    ...hostDefaults(['ctrl+tab', 'ctrl+pagedown'], { mac: 'mod+ctrl+]', other: 'alt+]' })
+  },
+  {
+    id: 'session.prev',
+    category: 'session',
+    ...hostDefaults(['ctrl+shift+tab', 'ctrl+pageup'], { mac: 'mod+ctrl+[', other: 'alt+[' })
+  },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
@@ -209,14 +239,18 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // so these stay on `ctrl` — distinct on macOS, folding to Ctrl elsewhere.
   { id: 'view.nextTerminal', category: 'view', defaults: ['ctrl+shift+down'] },
   { id: 'view.prevTerminal', category: 'view', defaults: ['ctrl+shift+up'] },
-  { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
+  { id: 'view.closeTerminal', category: 'view', ...hostDefaults(['ctrl+shift+w'], { other: 'alt+shift+w' }) },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
   // ⌘W closes the focused zone's active tab — its own tab strip (preview) or
   // the tree tab (session tiles, files, terminal). The uncloseable workspace
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
-  { id: 'view.closeTab', category: 'view', defaults: [sessionChord('w', 'f9')] },
-  { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
+  { id: 'view.closeTab', category: 'view', ...hostDefaults(['mod+w'], { mac: 'mod+ctrl+w', other: 'alt+w' }) },
+  {
+    id: 'view.reopenTab',
+    category: 'view',
+    ...hostDefaults(['mod+shift+t'], { mac: 'mod+ctrl+shift+t', other: 'alt+shift+t' })
+  },
   // ⌘F — open the find-in-page bar. `actionAllowedInInput` lets this action
   // fire from inside a textarea / contenteditable (matches browser behavior
   // so typing in the composer and pressing ⌘F focuses find, not 'f').

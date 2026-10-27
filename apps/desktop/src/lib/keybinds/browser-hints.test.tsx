@@ -38,17 +38,23 @@ it('renders the resolved browser binding in the first-run tip, tooltips and sett
     </I18nProvider>
   )
 
-  expect(within(view.getByRole('status')).getByText('F7')).toBeTruthy()
+  const status = () => view.getByRole('status').textContent
+  expect(status()).toContain('Alt')
+  expect(within(view.getByRole('status')).getByText('N')).toBeTruthy()
   const labels = within(view.getByTestId('shortcut-labels'))
+  const labelText = view.getByTestId('shortcut-labels').textContent
 
-  for (const key of ['F7', 'F8', 'F9']) {
-    expect(labels.getByText(new RegExp(`${key}$`))).toBeTruthy()
+  for (const key of ['N', 'T', 'W']) {
+    expect(labelText).toContain(`Alt+${key}`)
   }
+
+  expect(labelText).not.toContain('Ctrl')
 
   const search = view.getByRole('textbox', { name: 'Search shortcuts…' })
   fireEvent.change(search, { target: { value: 'session.new' } })
   const row = within(view.getByTestId('settings')).getByText('New session').parentElement!
-  expect(within(row).getByText('F7')).toBeTruthy()
+  expect(within(row).getByText('Alt')).toBeTruthy()
+  expect(within(row).getByText('N')).toBeTruthy()
   expect(within(row).queryByRole('button', { name: 'Reset to default' })).toBeNull()
 
   act(() => setBinding('session.new', ['mod+shift+f6']))
@@ -56,9 +62,9 @@ it('renders the resolved browser binding in the first-run tip, tooltips and sett
   expect(labels.getByText(/F6$/)).toBeTruthy()
   expect(within(row).getByText('F6')).toBeTruthy()
   fireEvent.click(within(row).getByRole('button', { name: 'Reset to default' }))
-  expect(within(row).getByText('F7')).toBeTruthy()
+  expect(within(row).getByText('N')).toBeTruthy()
 
   act(() => setBinding('session.new', []))
   expect(view.getByRole('status').querySelector('kbd')).toBeNull()
-  expect(labels.queryByText(/F7$/)).toBeNull()
+  expect(view.getByTestId('shortcut-labels').textContent).not.toContain('Alt+N')
 })

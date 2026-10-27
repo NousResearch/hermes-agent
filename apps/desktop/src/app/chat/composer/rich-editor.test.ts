@@ -184,6 +184,89 @@ describe('normalizeComposerEditorDom', () => {
     }
   })
 
+  // #139578: placeCaretEnd (selectNodeContents + collapse) and paste's
+  // setStartAfter both leave the caret at the EDITOR's element position, not
+  // inside a text node. The unwrap used to skip restoring those selections —
+  // `wrapper.contains(editor)` is false — so the caret collapsed to offset 0
+  // and the next paste inserted at the very beginning of the draft.
+  it('restores an element-positioned caret after the wrapper instead of collapsing it to the editor start', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    const wrapper = document.createElement('div')
+    const first = document.createTextNode('still ')
+    const second = document.createTextNode('typing here')
+    wrapper.append(first, second)
+    editor.append(wrapper)
+    document.body.append(editor)
+    const selection = window.getSelection()!
+    // The editor's element end — offset 1 with the wrapper as its only child.
+    selection.setBaseAndExtent(editor, 1, editor, 1)
+
+    try {
+      normalizeComposerEditorDom(editor)
+
+      expect(composerPlainText(editor)).toBe('still typing here')
+      expect(selection.anchorNode).toBe(editor)
+      expect(selection.anchorOffset).toBe(editor.childNodes.length)
+      expect(selection.focusNode).toBe(editor)
+      expect(selection.focusOffset).toBe(editor.childNodes.length)
+    } finally {
+      editor.remove()
+    }
+  })
+
+  it('keeps an element-positioned caret before the wrapper at the editor start', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    const wrapper = document.createElement('div')
+    const text = document.createTextNode('still typing here')
+    wrapper.append(text)
+    editor.append(wrapper)
+    document.body.append(editor)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(editor, 0, editor, 0)
+
+    try {
+      normalizeComposerEditorDom(editor)
+
+      expect(composerPlainText(editor)).toBe('still typing here')
+      expect(selection.anchorNode).toBe(editor)
+      expect(selection.anchorOffset).toBe(0)
+      expect(selection.focusNode).toBe(editor)
+      expect(selection.focusOffset).toBe(0)
+    } finally {
+      editor.remove()
+    }
+  })
+
+  it('restores a mixed selection with one endpoint at the editor and one inside the wrapper', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    const wrapper = document.createElement('div')
+    const text = document.createTextNode('still typing here')
+    wrapper.append(text)
+    editor.append(wrapper)
+    document.body.append(editor)
+    const selection = window.getSelection()!
+    // anchor inside the text, focus at the editor's element end.
+    selection.setBaseAndExtent(text, 6, editor, 1)
+
+    try {
+      normalizeComposerEditorDom(editor)
+
+      expect(composerPlainText(editor)).toBe('still typing here')
+      expect(selection.anchorNode).toBe(text)
+      expect(selection.anchorOffset).toBe(6)
+      expect(selection.focusNode).toBe(editor)
+      expect(selection.focusOffset).toBe(editor.childNodes.length)
+    } finally {
+      editor.remove()
+    }
+  })
+
   it('unwraps a single insertHTML wrapper div so plain text stays one line', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT

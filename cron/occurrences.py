@@ -3,6 +3,8 @@ profile-local stale-schedule catch-up counter marker."""
 from datetime import datetime, timedelta, timezone, UTC
 import logging
 
+from hermes_cron_export_custody import CronCustodyRefused
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +118,10 @@ def get_catch_up_occurrence_count() -> int:
 
 def record_catch_up_occurrence() -> None:
     """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    from cron.jobs import _write_marker
+    from cron.jobs import _write_marker, _writer_custody_context
 
-    _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")
+    try:
+        with _writer_custody_context():
+            _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")
+    except (CronCustodyRefused, OSError, TypeError, ValueError) as exc:
+        logger.debug("Could not record catch-up occurrence: %s", exc, exc_info=True)

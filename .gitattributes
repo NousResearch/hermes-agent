@@ -35,3 +35,8 @@ docker/entrypoint.sh text eol=lf
 *.html  text eol=lf
 *.svg   text eol=lf
 *.ps1   text eol=crlf
+
+# Preservation fixtures have reviewed byte digests on every host.
+.gitattributes text eol=lf
+tests/hermes_state/fixtures/complete_export_schema*.sql text eol=lf
+tests/hermes_state/fixtures/complete_export_schema*.expected.jsonl text eol=lf

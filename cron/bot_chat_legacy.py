@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from hermes_dir_acl import make_user_dir
 
+from cron.export_writers import writer_custody_for as _writer_custody_for
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -21,16 +22,36 @@ logger = logging.getLogger(__name__)
 _warned: set[Path] = set()
 
 
+def _bot_owner_home():
+    return get_hermes_home()
+
+
+def _pending_root() -> Path:
+    return get_hermes_home().resolve() / "cron" / "bot_chat_pending"
+
+
+@_writer_custody_for(_bot_owner_home)
+def _persist_pending_record(record_name: str, record: dict, *, create_only: bool = False) -> None:
+    if Path(record_name).name != record_name or not record_name.endswith(".json"):
+        raise ValueError("invalid bot-chat pending record name")
+    root = _pending_root()
+    make_user_dir(root, parents=True, exist_ok=True, mode=0o700)
+    path = root / record_name
+    if create_only and path.exists():
+        return
+    atomic_json_write(path, record, fsync_dir=True, mode=0o600)
+
+
 def defer(key: str, job: dict, content: str, home: Path, *, for_failure: bool) -> None:
     """Park one never-admitted output under its delivery id; a later tick hands it to the owner."""
     import time
-    root = get_hermes_home().resolve() / "cron" / "bot_chat_pending"
-    make_user_dir(root, parents=True, exist_ok=True, mode=0o700)
-    path = root / f"{key}.json"
-    if not path.exists():  # an existing record (queued or already transferred) keeps its status
-        atomic_json_write(path, dict(
+    _persist_pending_record(
+        f"{key}.json",
+        dict(
             id=key, status="queued", job={k: job[k] for k in ("id", "name") if k in job}, content=content,
-            home=str(home), for_failure=for_failure, sequence=time.time_ns()), fsync_dir=True, mode=0o600)
+            home=str(home), for_failure=for_failure, sequence=time.time_ns()),
+        create_only=True,
+    )
 
 
 def _queued(root: Path) -> list[tuple[Path, dict]]:
@@ -107,14 +128,14 @@ def drain_legacy_pending() -> None:
     Each record is isolated: a malformed one is kept as ``ambiguous`` evidence and an
     unexpected failure leaves only that record queued, so one bad file never stops cron.
     """
-    root = get_hermes_home().resolve() / "cron" / "bot_chat_pending"
+    root = _pending_root()
     if not root.is_dir():
         return
     for path, record in _queued(root):
         try:
             if not _dispose(path, record):
                 continue
-            atomic_json_write(path, record, fsync_dir=True, mode=0o600)
+            _persist_pending_record(path.name, record)
         except Exception as exc:
             logger.log(logging.DEBUG if path in _warned else logging.WARNING,
                        "Legacy Bot Chat pending record %s left queued: %s", path, exc, exc_info=True)

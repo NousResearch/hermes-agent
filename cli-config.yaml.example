@@ -1189,6 +1189,13 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
+  # Organization in the built-in identity fallback and the Hermes help block.
+  # Default "Nous Research". Another name rebrands those clauses; "" omits
+  # them. The docs URL and hermes-agent skill pointer stay either way. A
+  # custom SOUL.md still overrides the identity slot. Licensing and safety
+  # notices are not affected.
+  # attribution: "Nous Research"
+
   # Maximum tool-calling iterations per conversation (default: 500)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration

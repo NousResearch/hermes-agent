@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent.chat_completion_helpers import _fallback_api_mode_hint
+from agent.chat_completion_helpers_fallback_wire import _fallback_api_mode_hint
 from providers import get_provider_profile
 
 

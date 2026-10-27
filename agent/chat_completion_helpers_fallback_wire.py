@@ -1,13 +1,3 @@
-"""Fallback wire-format resolution, moved verbatim from ``chat_completion_helpers`` so that
-file keeps going down toward its code-health line cap (moved code keeps its cap; see root
-AGENTS.md). Callers import these names from :mod:`agent.chat_completion_helpers`, which
-re-exports them, so existing import paths are unchanged.
-
-``_fallback_api_mode_hint`` decides the api_mode a ``fallback_providers`` entry uses;
-``_fallback_api_mode_resolved`` re-detects the wire when the hint pass landed on the
-``chat_completions`` default.
-"""
-
 from __future__ import annotations
 
 from typing import Optional
@@ -40,11 +30,6 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
         declared = (_get_named_custom_provider(fb_provider) or {}).get("api_mode")
         if declared:
             return True, declared
-        # A plugin provider declares its wire on its registered ProviderProfile
-        # (commandcode-anthropic: anthropic_messages behind a plain host the URL
-        # heuristic cannot classify — #143933). The profile default equals this
-        # function's own fallthrough, so only an explicit non-default wire pins
-        # the hint; generic profiles keep the re-detection path below.
         from providers import get_provider_profile
         profile_api_mode = getattr(get_provider_profile(fb_provider), "api_mode", None)
         if profile_api_mode and profile_api_mode != "chat_completions":
@@ -76,7 +61,6 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
         return "anthropic_messages"
     if agent._is_azure_openai_url(fb_base_url):
         return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
-    # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.
     if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
         return "codex_responses"
     host = base_url_hostname(fb_base_url)

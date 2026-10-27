@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
@@ -320,7 +321,7 @@ export function useComposerQueue({
           const retained = unconfirmedRef.current
 
           const submissionId =
-            retained?.admissionId === entryId && retained.edited === edited ? retained.submissionId : crypto.randomUUID()
+            retained?.admissionId === entryId && retained.edited === edited ? retained.submissionId : randomUuid()
 
           serverSaveRef.current = save
 

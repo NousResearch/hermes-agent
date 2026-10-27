@@ -146,7 +146,10 @@ together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. The generated workspace and extended lock remain
-outside shipped source. Repair copies the recorded workspace and lock, including
+outside shipped source. The workspace is solved only for the platform and
+architecture of the interpreter it installs into, so a plugin dependency with no
+wheels for another platform (onnxruntime or torch on Android) does not block it;
+the shipped lock keeps its full platform coverage. Repair copies the recorded workspace and lock, including
 plugin build inputs, rather than resolving against edited live manifests.
 
 Plugin enablement and staged code updates are submitted as data to the isolated
@@ -569,14 +572,20 @@ launchers, and invokes native packaging. Maintainers can read
 ## Network retries
 
 PM retries transient HTTP failures during tool downloads, artifact hashing and
-version lookups. Each probe or transfer gets at most four attempts. Backoff
-waits are 1, 2 and 4 seconds. A `Retry-After` header can extend a wait, up to
-30 seconds. Each retry reports its cause, delay and next attempt in the log.
+version lookups. Probes and non-resumable transfers get at most four attempts.
+Their backoff waits are 1, 2 and 4 seconds. A `Retry-After` header can extend
+these waits up to 30 seconds. Resumable transfers renew their retry budget
+when they save new progress; four failures without new progress stop retries.
+With a pinned mirror available, waits above 30 seconds switch to that mirror.
+The last source honors `Retry-After` up to five minutes and stops for longer waits.
+Each retry logs its cause, delay and consecutive failures without progress.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.
-Ranged downloads retain completed bytes. Servers without range support require
-a fresh stream. Pause interrupts backoff and preserves the partial download.
+Ranged downloads checkpoint every five seconds and after each attempt. A failed
+periodic checkpoint logs a warning and retries later; the final checkpoint is required.
+Servers without range support require a fresh stream. Pause interrupts backoff
+and preserves the partial download.
 
 PM does not retry bad hashes, certificate failures, local filesystem errors or
 other permanent failures. A successful probe followed by a range GET 403 or 404

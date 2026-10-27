@@ -108,9 +108,17 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     title: 'This chat belongs to a scheduled job',
     body: 'It only runs that job, so your message was not run. Start a new chat to send it.'
   },
+  session_read_only: {
+    title: 'This chat is read-only',
+    body: 'It is stored history Hermes can show but not continue, so your message was not run. Start a new chat to send it.'
+  },
   workspace_unavailable: {
     title: "This chat's folder is gone",
     body: 'The folder this chat works in was moved or deleted, so your message was not run. Recreate the folder, or use Move to project to give the chat another one, then retry.'
+  },
+  launch_credentials_unavailable: {
+    title: "This chat's API key changed",
+    body: 'This chat started with an API key that has since changed or been removed, so your message was not sent. An open chat never switches to a different key on its own. Start a new session to use your current key.'
   },
   SESSION_OWNER_UNCONFIRMED: {
     title: 'Your message may already be queued',

@@ -686,6 +686,7 @@ def cmd_install(
 
     # already_active is PM's selection (plugins.enabled): it settles dependency consent, not memory.provider.
     # An explicit --enable still selects the provider, repairing installs that listed it in plugins.enabled.
+    activate = bool(enable)  # also set by a "y" at the Enable-now prompt below
     if already_active and not (is_memory_provider and enable):
         console.print("[dim]Replacement installed; plugin selection was not changed.[/dim]")
     elif is_memory_provider:
@@ -701,6 +702,7 @@ def cmd_install(
                 "after resolving the conflict.[/dim]"
             )
         else:
+            activate = True
             console.print(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
@@ -716,8 +718,10 @@ def cmd_install(
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _pc()._run_capability_consent(console, installed_name, declared_caps, context="install")
-    if enable and not is_memory_provider:
+    if activate and not is_memory_provider:
         # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
+        # A "y" at the Enable-now prompt counts: without the nudge the gateway never loads the plugin
+        # (its MCP servers stay absent from every session) and nothing tells the user to restart.
         from hermes_cli.plugins_activation import report_activation
         report_activation(console, installed_name)
     console.print()

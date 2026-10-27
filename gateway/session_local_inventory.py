@@ -43,18 +43,16 @@ def _grouped(tools):
 
 def _policy_tools(policy, config):
     """The tool list the session's next agent build loads (``agent/agent_init.py`` tool snapshot):
-    the policy's toolsets minus the configured and platform-gated disabled ones, one-shot pruned."""
+    the policy's toolsets minus the configured, platform-gated and one-shot disabled ones."""
     import model_tools
-    from agent.oneshot_footprint import ONESHOT_HIDDEN_TOOLS
     from agent.skill_utils import parse_config_string_list
     from toolsets import session_disabled_toolsets, session_platform_tool_drops
     enabled = list(policy.current_toolsets(config))
     disabled = session_disabled_toolsets(
-        parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None, policy.platform)
+        parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None, policy.platform,
+        oneshot=policy.source == "oneshot")
     tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True)
     drops = set(session_platform_tool_drops(policy.platform))
-    if policy.source == "oneshot":
-        drops |= ONESHOT_HIDDEN_TOOLS
     return enabled, [tool for tool in tools or [] if tool["function"]["name"] not in drops]
 
 

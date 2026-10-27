@@ -1594,9 +1594,13 @@ export interface RoomEvent {
   created_at: number
   idempotent?: boolean
 }
+/** ``hosted_rooms._ACTOR_FIELDS``; member replies carry ``profile`` plus, when known, ``display_name`` and the peer ``connection_id`` (``hosted_room_discussion._member_actor``). */
 export interface RoomActor {
   kind: string
   id: string
+  profile?: string | null
+  display_name?: string | null
+  connection_id?: string | null
 }
 export interface GroupsCreateParams {
   profile?: string | null
@@ -1626,7 +1630,7 @@ export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
 }
-/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
+/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``) or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
 export interface RoomDriverStatus {
   running: boolean
   working: boolean
@@ -1728,6 +1732,8 @@ export interface GroupsRetryParams {
   profile?: string | null
   room_id: string
   task_id: string
+  member_id?: string | null
+  execution_generation?: number | null
 }
 export interface GroupsRetryResult {
   retried?: boolean
@@ -2826,6 +2832,13 @@ export interface FileAttachParams {
   path?: string | null
   data_url?: string | null
   name?: string | null
+  staged_upload?: StagedFileUpload | null
+}
+/** Source identity returned by the browser upload route, checked against the live profile. */
+export interface StagedFileUpload {
+  install_id: string
+  path: string
+  profile_home: string
 }
 export interface FileAttachResult {
   attached: boolean
@@ -4443,6 +4456,7 @@ export interface AgentPluginRow {
   update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
+  tools?: string[]
 }
 export interface PluginServerRow {
   name: string
@@ -6808,7 +6822,7 @@ export interface CanonicalRpcMethods {
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
   'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
   'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
-  /** Retire a still-queued admission; a started one is unaffected. */
+  /** Retire a queued admission; a started one is interrupted in the same call. */
   'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
   /** Current receipt of one admission the caller submitted (or controls). */
   'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }

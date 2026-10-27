@@ -1,6 +1,7 @@
 name: hermes-windows-ports
-repo: https://github.com/Yicheng-Mark/hermes-windows-ports
-sha: aa49f6a6b061c8ace8e8930b574e803b84ad8760
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: b26b92760b2bfc36a91c280af96b0171c4d00267
+subdir: windows-ports
 description: >-
   Answer "who holds this port" on Windows. win_port_owners reads the TCP and UDP owner
   tables through iphlpapi (the same rows netstat -ano prints, with the owning PID attached)
@@ -27,7 +28,7 @@ maintainer: Yicheng-Mark
 tier: community
 category: tools
 requires_hermes: ">=0.21.4"
-docs_url: https://github.com/Yicheng-Mark/hermes-windows-ports#readme
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-ports
 version: "0.1.0"
 platforms:
 - windows

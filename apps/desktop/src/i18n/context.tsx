@@ -67,6 +67,27 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
 
+/** Last locale an authoritative decision (saved config or an explicit user
+ *  pick) landed on. A first-paint hint only — config stays authoritative, so
+ *  a stale or hand-edited value self-corrects on the normal startup read. */
+export const LOCALE_HINT_STORAGE_KEY = 'desktop.i18n.localeHint'
+
+function readLocaleHint(): string | null {
+  try {
+    return window.localStorage.getItem(LOCALE_HINT_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function writeLocaleHint(locale: Locale): void {
+  try {
+    window.localStorage.setItem(LOCALE_HINT_STORAGE_KEY, locale)
+  } catch {
+    // Quota or private mode: the hint is best-effort, nothing else depends on it.
+  }
+}
+
 export interface I18nContextValue {
   configLoadError: Error | null
   isLoadingConfig: boolean
@@ -101,7 +122,15 @@ export function I18nProvider({
   initialLocale,
   scopeKey
 }: I18nProviderProps) {
-  const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
+  // First frame without the async config read: an explicit prop (tests,
+  // embedded windows), then the stored hint, then the browser language. All
+  // are guesses the config read below confirms or corrects moments later.
+  const [locale, setLocaleState] = useState<Locale>(() =>
+    initialLocale !== undefined
+      ? normalizeLocale(initialLocale)
+      : resolveInitialLocale(readLocaleHint(), navigator.language)
+  )
+
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
@@ -188,7 +217,9 @@ export function I18nProvider({
 
           // A saved choice needs no machine probe and always takes precedence.
           if (isSupportedLocaleValue(saved)) {
-            setLocaleState(normalizeLocale(saved))
+            const next = normalizeLocale(saved)
+            setLocaleState(next)
+            writeLocaleHint(next)
 
             return
           }
@@ -259,6 +290,10 @@ export function I18nProvider({
         if (!result.ok) {
           throw new Error('Failed to save language')
         }
+
+        // Only a pick that persisted counts as authoritative for the next
+        // first paint; a rolled-back one leaves the previous hint in place.
+        writeLocaleHint(next)
       } catch (error) {
         const nextError = toError(error)
 

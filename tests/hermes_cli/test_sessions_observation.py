@@ -30,7 +30,7 @@ for action in ('list', 'stats', 'pinned', 'export'):
     output = io.StringIO()
     with redirect_stdout(output):
         result = cmd_sessions(SimpleNamespace(sessions_action=action, source=None, limit=20, json=True,
-            session_id=None, redact=False, format='jsonl', output='-', dry_run=False))
+            session_id=None, redact=False, format='jsonl', output='-', dry_run=False, all=True))
     text = output.getvalue()
     assert result in (None, 0), text
     assert 'Error:' not in text, text

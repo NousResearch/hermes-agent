@@ -39,7 +39,8 @@ def corrupt_db(tmp_path):
 
 def test_list_export_and_insights_survive_corrupt_timestamp_rows(corrupt_db, capsys, caplog):
     with caplog.at_level(logging.WARNING, logger="hermes_cli.timefmt"):
-        _cmd_list(corrupt_db, argparse.Namespace(limit=20, source=None, all=False, workspace=None))
+        # --all: these rows carry no cwd, and this test is about corrupt timestamps, not scope.
+        _cmd_list(corrupt_db, argparse.Namespace(limit=20, source=None, all=True, workspace=None))
         listing = capsys.readouterr().out
         exported = corrupt_db.export_all()
         records = list(iter_user_prompt_records(exported))

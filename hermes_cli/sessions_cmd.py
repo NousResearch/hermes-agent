@@ -309,13 +309,30 @@ def _surface_reader(db):
     return SurfaceLabelReader(db)
 
 
+def _scope_label(key: str) -> str:
+    """Folder name for a workspace key (its basename); ``~``/``/`` keys keep their path."""
+    return os.path.basename(key.rstrip("/\\")) or key
+
+
 def _cmd_list(db, args):
-    from hermes_state_sessions import workspace_key as _ws_key
+    from hermes_state_workspace import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
+
+    # Default scope: this workspace, keyed exactly as `hermes -c` / `--resume latest` key it, so a
+    # listing never mixes every folder's history into one page. --all opts back into the whole
+    # store; an explicit --workspace search is cross-folder by nature and disables the scope.
+    _ws_filter = (getattr(args, "workspace", None) or "").strip()
+    _scope = None
+    if not getattr(args, "all", False) and not _ws_filter:
+        from hermes_cli.main import _resolve_workspace_key
+
+        _scope = _resolve_workspace_key()
+
     sessions = _surface_reader(db).list_sessions_rich(
-        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        source=args.source, exclude_sources=_default_exclude(args),
+        limit=limit + 1 if limit > 0 else limit, workspace_key=_scope,
     )
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions
@@ -329,7 +346,11 @@ def _cmd_list(db, args):
             s for s, key in keyed if key and (_needle in key or _needle == os.path.basename(key.rstrip("/\\")))
         ]
     if not sessions:
-        print("No sessions found.")
+        # ``--limit 0`` asks for no rows at all; that is not an empty workspace.
+        if _scope and limit > 0:
+            print(f"No sessions in {_scope_label(_scope)}. Use --all to list every session.")
+        else:
+            print("No sessions found.")
         return
 
     # Workspace column only when some session carries a key (or when filtering): unbound listings read as before.
@@ -357,6 +378,8 @@ def _cmd_list(db, args):
                          lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {_src(s):<16} {s['id']}"),
     }
     header, rule, fmt = layouts[(has_ws, has_titles)]
+    if _scope:  # say so, or a short page reads as "this is all my history"
+        print(f"Sessions in {_scope_label(_scope)} — use --all for every session")
     print(header + "\n" + "─" * rule)
     for s in sessions:
         print(fmt(s))

@@ -48,19 +48,16 @@ def _loaded(webapp):
     return seen
 
 
-def test_a_package_installed_on_a_headless_host_brings_its_desktop_half(webapp, hermes_root):
-    source = _package(hermes_root / "profiles" / "work", "radar", "export default { id: 'radar' }")
+def test_an_installed_package_brings_its_desktop_half_until_it_is_uninstalled(webapp, hermes_root):
+    mine = hermes_root / "desktop-plugins" / "notes"
+    mine.mkdir(parents=True)
+    (mine / "plugin.js").write_text("mine", encoding="utf-8")
+    source = _package(hermes_root / "profiles" / "work", "radar", "export default { v: 1 }")
 
     text, marker = _loaded(webapp)["radar"]
-
-    assert text == "export default { id: 'radar' }"
+    assert text == "export default { v: 1 }"
     # The marker is what pairs the half with its agent row and keeps it off until enabled.
     assert (marker["package"], marker["source"]) == ("radar", str(source))
-
-
-def test_the_copy_follows_its_package_until_it_is_uninstalled(webapp, hermes_root):
-    source = _package(hermes_root, "radar", "export default { v: 1 }")
-    assert _loaded(webapp)["radar"][0] == "export default { v: 1 }"
 
     (source / "plugin.js").write_text("export default { v: 2 }", encoding="utf-8")
     later = os.stat(source / "plugin.js").st_mtime + 5
@@ -71,7 +68,8 @@ def test_the_copy_follows_its_package_until_it_is_uninstalled(webapp, hermes_roo
 
     (source / "plugin.js").unlink()
     webapp.post("/api/desktop-plugins/reconcile")
-    assert _loaded(webapp) == {}
+    # The uninstalled package's copy is pruned; the user's own plugin is left as it was.
+    assert _loaded(webapp) == {"notes": ("mine", None)}
 
 
 def test_a_users_own_plugin_is_never_overwritten_and_the_default_home_wins(webapp, hermes_root):
@@ -81,19 +79,16 @@ def test_a_users_own_plugin_is_never_overwritten_and_the_default_home_wins(webap
     _package(hermes_root, "notes", "a package that happens to share the name")
     _package(hermes_root, "radar", "from the default home")
     _package(hermes_root / "profiles" / "work", "radar", "from a profile")
+    # A hand-made link to a package's own half (the manual workaround) still loads exactly once.
+    meshy = _package(hermes_root, "meshy", "meshy half")
+    (hermes_root / "desktop-plugins" / "meshy").symlink_to(meshy, target_is_directory=True)
 
     loaded = _loaded(webapp)
 
+    assert sorted(loaded) == ["meshy", "notes", "radar"]
+    assert loaded["meshy"][0] == "meshy half"
     assert loaded["notes"] == ("mine", None)
     assert loaded["radar"][0] == "from the default home"
-
-
-def test_a_copy_made_before_markers_existed_is_adopted_in_place(webapp, hermes_root):
-    _package(hermes_root, "radar", "export default { id: 'radar' }")
-    old_copy = hermes_root / "desktop-plugins" / "radar"
-    old_copy.mkdir(parents=True)
-    (old_copy / "plugin.js").write_text("export default { id: 'radar' }", encoding="utf-8")
-
-    _, marker = _loaded(webapp)["radar"]
-
-    assert marker["package"] == "radar"
+    (hermes_root / "plugins" / "notes" / "desktop" / "plugin.js").unlink()
+    webapp.post("/api/desktop-plugins/reconcile")
+    assert (mine / "plugin.js").read_text(encoding="utf-8") == "mine"

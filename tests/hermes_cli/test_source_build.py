@@ -306,6 +306,7 @@ def test_update_failure_raises_without_retries_or_replacing_live_app(source_prod
     app.parent.mkdir(parents=True)
     app.write_text("previous app")
     (root / f"fail-{step}").touch()
+    (Path(os.environ["HERMES_HOME"]) / "desktop-build-stamp.json").write_text('{"stale": true}', encoding="utf-8")
     with pytest.raises(ProductBuildError) as failure:
         build_update_products(root, desktop=True)
     # The failure is still raised, naming the one product that failed (no retries) ...

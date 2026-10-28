@@ -3244,7 +3244,11 @@ _PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
     "credits", "insufficient funds", "can only afford", "billing",
     "isn't available on the free tier", "key limit exceeded", "budget limit",
     "requires a subscription", "upgrade for access", "upgrade for higher limits",
-    "reached your session usage limit", "quota exceeded", "quota_exceeded",
+    "reached your session usage limit",
+    # z.ai 429 code 1311: the plan lacks the model. Permanent, so the payment
+    # fallback must switch backends instead of cooling down as a rate limit.
+    "subscription plan", "does not yet include", "plan does not include",
+    "quota exceeded", "quota_exceeded",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
     "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "weekly usage limit", "weekly limit",
@@ -3276,6 +3280,7 @@ _RATE_LIMIT_BILLING_KEYWORDS = (
     "credits", "insufficient funds", "billing", "payment required", "can only afford",
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
     "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
+    "subscription plan", "does not yet include", "plan does not include",
 )
 
 
@@ -3291,12 +3296,15 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     OpenAI's RateLimitError may omit .status_code — matched by class name. A generic 429 without
     billing keywords counts as a rate limit.
     """
+    err_lower = str(exc).lower()
+    # z.ai 429/1311 plan blocks share RateLimitError's class. Billing owns them.
+    if _contains_any(err_lower, ("subscription plan", "does not yet include", "plan does not include")):
+        return False
     # (PR #8023 pattern)
     if type(exc).__name__ == "RateLimitError":
         return True
     if getattr(exc, "status_code", None) != 429:
         return False
-    err_lower = str(exc).lower()
     return _contains_any(err_lower, _RATE_LIMIT_KEYWORDS) or not _contains_any(err_lower, _RATE_LIMIT_BILLING_KEYWORDS)
 
 

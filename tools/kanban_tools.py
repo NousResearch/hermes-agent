@@ -1127,8 +1127,22 @@ def _handle_create(args: dict, **kw) -> str:
                       or (self_task.session_id if self_task else None)
                       or _persisted_session_id(_current_origin_session_id())
                       or _persisted_session_id(get_session_env("HERMES_SESSION_ID", "")))
-        if project_id is None and workspace_kind is None and workspace_path is None:
-            if self_task is not None and self_task.project_id:
+        if project_id is None and self_task is not None and self_task.project_id:
+            # A worker's own projects.db is per-profile while the board is shared, so
+            # the parent card is handed over as the source the DB can re-check. The
+            # explicit workspace counts as the parent's only when both are the same
+            # ``dir``; a child pointed anywhere else must not acquire the project.
+            same_dir = (
+                workspace_kind == "dir"
+                and bool(workspace_path)
+                and self_task.workspace_kind == "dir"
+                and bool(self_task.workspace_path)
+                and os.path.isabs(str(workspace_path))
+                and os.path.isabs(str(self_task.workspace_path))
+                and os.path.normcase(os.path.realpath(str(workspace_path)))
+                == os.path.normcase(os.path.realpath(str(self_task.workspace_path)))
+            )
+            if (workspace_kind is None and workspace_path is None) or same_dir:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),

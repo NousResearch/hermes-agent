@@ -107,6 +107,8 @@ def _print_config(config: dict[str, Any]) -> None:
         )
         if agg_slot.get("max_tokens"):
             print(f"    max_tokens: {agg_slot['max_tokens']} (aggregator-only cap)")
+        if preset.get("reference_max_tokens"):
+            print(f"    reference_max_tokens: {preset['reference_max_tokens']} (references-only cap)")
         notice = _provider_mismatch_notice(config, agg_slot)
         if notice:
             print(f"    note: {notice}")

@@ -2273,12 +2273,21 @@ def _is_free_model(model: Optional[str]) -> bool:
     return normalized.endswith(":free") or normalized.startswith("stealth/")
 
 
-def _aux_openrouter_settings() -> tuple[bool, str]:
-    """Read (free_only, openrouter_model) from config; (False, _OPENROUTER_MODEL) on failure."""
+def _aux_openrouter_settings(task: Optional[str] = None) -> tuple[bool, str]:
+    """Read the OpenRouter policy and fallback model for an auxiliary task.
+
+    ``auxiliary.free_only`` remains the default policy for every task. MoA reference
+    calls may explicitly override it with ``auxiliary.moa_reference.free_only``;
+    no other task inherits that paid-lane exception.
+    """
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
         cfg = load_config_readonly()
         free_only = bool(cfg_get(cfg, "auxiliary", "free_only", default=False))
+        if task == "moa_reference":
+            task_override = cfg_get(cfg, "auxiliary", "moa_reference", "free_only", default=None)
+            if isinstance(task_override, bool):
+                free_only = task_override
         val = cfg_get(cfg, "auxiliary", "openrouter_model")
         model = val.strip() if isinstance(val, str) and val.strip() else _OPENROUTER_MODEL
         return free_only, model
@@ -2298,9 +2307,13 @@ def _warn_paid_lane_once(model: str) -> None:
     )
 
 
-def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, model: str | None = None,
-                    explicit_base_url: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
-    free_only, cfg_model = _aux_openrouter_settings()
+def _try_openrouter(
+    explicit_api_key: Optional[str | Callable[[], str]] = None,
+    model: str | None = None,
+    explicit_base_url: Optional[str] = None,
+    task: Optional[str] = None,
+) -> tuple[Any, Optional[str]]:
+    free_only, cfg_model = _aux_openrouter_settings(task=task)
     or_model = model or cfg_model
     if free_only and not _is_free_model(or_model):
         logger.warning(
@@ -2337,9 +2350,9 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
     ), or_model
 
 
-def _describe_openrouter_unavailable(model: str | None = None) -> str:
+def _describe_openrouter_unavailable(model: str | None = None, task: Optional[str] = None) -> str:
     """Return the policy or credential reason OpenRouter was unavailable."""
-    free_only, cfg_model = _aux_openrouter_settings()
+    free_only, cfg_model = _aux_openrouter_settings(task=task)
     or_model = model or cfg_model
     if free_only and not _is_free_model(or_model):
         return (
@@ -3350,12 +3363,19 @@ _DEFAULT_TRANSIENT_RETRIES = 2
 _TRANSIENT_RETRY_BACKOFF_BASE = 1.0  # Backoff base (seconds); overridable so tests can zero it out.
 
 
-def _transient_retry_count() -> int:
-    """Same-provider retries for a transient blip: ``auxiliary.transient_retries``
-    (default 2), clamped to [0, 6]; config-read failures fall back to default."""
+def _transient_retry_count(task: Optional[str] = None) -> int:
+    """Same-provider retries for a transient blip.
+
+    An optional ``auxiliary.<task>.transient_retries`` overrides the global
+    ``auxiliary.transient_retries`` for that task only. Both values are clamped
+    to [0, 6]; config-read failures fall back to the default.
+    """
     try:
         from hermes_cli.config import cfg_get, load_config
-        val = cfg_get(load_config(), "auxiliary", "transient_retries")
+        cfg = load_config()
+        val = cfg_get(cfg, "auxiliary", task, "transient_retries", default=None) if task else None
+        if val is None:
+            val = cfg_get(cfg, "auxiliary", "transient_retries")
         return _DEFAULT_TRANSIENT_RETRIES if val is None else max(0, min(int(val), 6))
     except Exception:
         return _DEFAULT_TRANSIENT_RETRIES
@@ -4996,10 +5016,10 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
 def _resolve_openrouter_branch(req: _ResolveRequest) -> _ResolveResult:
     """OpenRouter."""
     client, default = _try_openrouter(explicit_api_key=req.explicit_api_key, model=req.model,
-                                      explicit_base_url=req.explicit_base_url)
+                                      explicit_base_url=req.explicit_base_url, task=req.task)
     if client is None:
         logger.warning("resolve_provider_client: openrouter requested but %s",
-                       _describe_openrouter_unavailable(model=req.model))
+                       _describe_openrouter_unavailable(model=req.model, task=req.task))
         return None, None
     return _route_client(req, client, _normalize_resolved_model(req.model or default, req.provider))
 
@@ -8196,7 +8216,7 @@ def _call_llm_impl(
         except Exception as transient_err:
             if not _should_retry_same_provider(task, transient_err, ""):
                 raise
-            _max_transient_retries = _transient_retry_count()
+            _max_transient_retries = _transient_retry_count(task)
             _last_transient = transient_err
             for _attempt in range(1, _max_transient_retries + 1):
                 _backoff = min(_TRANSIENT_RETRY_BACKOFF_BASE * (2.0 ** (_attempt - 1)), 8.0)

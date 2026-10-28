@@ -1398,6 +1398,7 @@ class MoAChatCompletions:
         raw_reference_timeout = preset.get("reference_timeout")
         reference_outputs = _run_references_parallel(
             reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
+            max_tokens=preset.get("reference_max_tokens"),
 
             progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
             reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,

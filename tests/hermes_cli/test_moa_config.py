@@ -196,6 +196,22 @@ def test_aggregator_max_tokens_round_trips_and_validates():
         assert any("max_tokens" in issue for issue in validate_moa_payload(bad))
 
 
+def test_reference_max_tokens_round_trips_and_validates():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    payload = {"presets": {"p": _valid_preset_payload()}}
+    payload["presets"]["p"]["reference_max_tokens"] = 512
+    assert validate_moa_payload(payload) == []
+    normalized = normalize_moa_config(payload)
+    assert normalized["presets"]["p"]["reference_max_tokens"] == 512
+    assert normalized["reference_max_tokens"] == 512
+
+    for invalid in (0, -1, 1.5, True, "512"):
+        bad = {"presets": {"p": _valid_preset_payload()}}
+        bad["presets"]["p"]["reference_max_tokens"] = invalid
+        assert any("reference_max_tokens" in issue for issue in validate_moa_payload(bad))
+
+
 def test_daily_moa_budget_normalizes_and_validates():
     from hermes_cli.moa_config import validate_moa_payload
 

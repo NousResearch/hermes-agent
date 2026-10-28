@@ -798,8 +798,18 @@ DEFAULT_CONFIG = {
         "background_review": {"enabled": True, **_aux(120)},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
-        "moa_reference": _aux(900, reasoning_effort=False),
-        "moa_aggregator": _aux(900, reasoning_effort=False),
+        "moa_reference": {
+            **_aux(900, reasoning_effort=False),
+            # None inherits the global auxiliary.free_only policy; false is a scoped paid-lane
+            # exception for MoA reference slots only.
+            "free_only": None,
+            # None inherits auxiliary.transient_retries; 0 is useful for one-shot paid smokes.
+            "transient_retries": None,
+        },
+        "moa_aggregator": {
+            **_aux(900, reasoning_effort=False),
+            "transient_retries": None,
+        },
     },
 
     "display": {
@@ -1427,6 +1437,8 @@ DEFAULT_CONFIG = {
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "anthropic", "model": "claude-sonnet-5-5", "max_tokens": 2000},
+                # None leaves reference output at provider defaults; the cap applies only to advisors.
+                "reference_max_tokens": None,
 
                 "enabled": True,
             }

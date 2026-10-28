@@ -63,6 +63,13 @@ def _coerce_reference_timeout(value: Any) -> float | None:
     return _coerce_number(value, float, DEFAULT_MOA_REFERENCE_TIMEOUT, positive=True)
 
 
+def _coerce_reference_max_tokens(value: Any) -> int | None:
+    """Positive per-preset output cap for reference models; None leaves provider defaults."""
+    if isinstance(value, bool):
+        return None
+    return _coerce_number(value, int, None, positive=True)
+
+
 def _coerce_fanout(value: Any) -> str:
     """Normalize the fan-out cadence to ``per_iteration`` | ``user_turn`` | ``every_n:<N>`` (N >= 2);
     the mapping form ``{mode: every_n, n: N}`` becomes the string, ``every_n:1`` collapses to
@@ -223,6 +230,10 @@ def validate_moa_payload(raw: Any) -> list[str]:
             refs = [refs] if isinstance(refs, dict) else []
         issues = [(index, _slot_problem(slot)) for index, slot in enumerate(refs)]
         problems.extend(f"preset '{label}' reference {index + 1}: {issue}" for index, issue in issues if issue)
+        if "reference_max_tokens" in preset:
+            cap = preset.get("reference_max_tokens")
+            if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+                problems.append(f"preset '{label}' reference_max_tokens must be a positive integer")
         if all(issue for _, issue in issues):
             problems.append(f"preset '{label}': needs at least one complete reference model")
 
@@ -247,6 +258,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "reference_temperature": _coerce_number(raw.get("reference_temperature"), float),
         "aggregator_temperature": _coerce_number(raw.get("aggregator_temperature"), float),
         "reference_timeout": _coerce_reference_timeout(raw.get("reference_timeout")),
+        "reference_max_tokens": _coerce_reference_max_tokens(raw.get("reference_max_tokens")),
         # Failed-advisor disclosure policy; unknown values fail loud.
         "degraded_reference_policy": policy if policy in {"loud", "silent"} else "loud",
 
@@ -257,7 +269,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
 _FLAT_PRESET_KEYS = (
     "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
-    "reference_timeout", "degraded_reference_policy",
+    "reference_timeout", "reference_max_tokens", "degraded_reference_policy",
     "fanout", "enabled")
 
 

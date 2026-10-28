@@ -27,9 +27,11 @@ def test_album_preserves_legacy_and_explicit_inlining_flags(flags, tmp_path):
     pending = {}
     for index, inlined in enumerate(flags):
         event = MessageEvent(text=f"caption-{index}", media_urls=[str(tmp_path / f"file-{index}")],
-                             media_types=["text/plain"], media_text_inlined=inlined)
+                             media_types=["text/plain"], media_text_inlined=inlined,
+                             media_filenames=[f"file-{index}"])
         TelegramAdapter._merge_into_pending(adapter, pending, "album", event)
     album = pending["album"]
     assert _media_clause(album) is None
     assert album.media_text_inlined == [value for flag in flags for value in (flag or [None])]
+    assert album.media_filenames == ["file-0", "file-1"]
     assert album.text == "caption-0\n\ncaption-1"

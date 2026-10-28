@@ -130,6 +130,39 @@ def test_stock_pool_backend_without_a_global_ipv6_is_replaced(monkeypatch):
         asyncio.run(transport.aclose())
 
 
+def test_building_the_transport_does_not_mutate_the_global_httpcore_pool(monkeypatch):
+    """The IPv4-only backend must not be installed by patching a global.
+
+    An earlier implementation swapped ``httpcore.AsyncConnectionPool`` for the
+    duration of the transport construction.  httpx resolves that attribute at
+    call time, so the swap was visible to ANY other thread constructing a
+    transport concurrently — a gateway-wide race.  The pool is now built
+    explicitly and installed on the transport instance instead.
+    """
+    import httpcore
+
+    monkeypatch.setattr(tn, "_host_has_global_ipv6", lambda: False)
+    original_pool_cls = httpcore.AsyncConnectionPool
+
+    transport = tn._build_transport()
+    try:
+        assert httpcore.AsyncConnectionPool is original_pool_cls
+        assert isinstance(transport._pool, original_pool_cls)
+        assert isinstance(transport._pool._network_backend, tn._IPv4OnlyBackend)
+    finally:
+        asyncio.run(transport.aclose())
+
+
+def test_the_stock_transport_is_untouched_when_the_host_has_global_ipv6(monkeypatch):
+    """A host with global IPv6 keeps httpx's own pool object, unmodified."""
+    monkeypatch.setattr(tn, "_host_has_global_ipv6", lambda: True)
+    transport = tn._build_transport()
+    try:
+        assert not isinstance(transport._pool._network_backend, tn._IPv4OnlyBackend)
+    finally:
+        asyncio.run(transport.aclose())
+
+
 # --------------------------------------------------------------------------
 # The fallback transport uses it too
 # --------------------------------------------------------------------------

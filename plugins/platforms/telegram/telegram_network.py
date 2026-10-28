@@ -196,36 +196,49 @@ def _build_transport(**transport_kwargs) -> httpx.AsyncHTTPTransport:
     (the proxy resolves the name itself) — the proxy case keeps httpx's stock
     transport.
 
-    The IPv4-only pool is installed by swapping httpcore's ``AsyncConnectionPool``
-    for the duration of httpx's own transport construction, so ``httpx.AsyncHTTPTransport``
-    stays the single construction site (tests patch it).  Any failure to install
-    the swap falls back to the stock transport: this optimisation must never break
-    Telegram delivery.
+    The IPv4-only pool is installed by REPLACING the transport's ``_pool``
+    attribute with an ``httpcore.AsyncConnectionPool`` built with the
+    IPv4-only backend.  httpx's ``AsyncHTTPTransport.handle_async_request``
+    only ever touches ``self._pool``, so this is a supported injection point
+    and it avoids mutating the global ``httpcore.AsyncConnectionPool``
+    attribute (which would race any other thread constructing a transport).
+
+    Any failure to build the IPv4-only pool falls back to the stock transport:
+    this optimisation must never break Telegram delivery.
     """
+    transport = httpx.AsyncHTTPTransport(**transport_kwargs)
     if transport_kwargs.get("proxy"):
-        return httpx.AsyncHTTPTransport(**transport_kwargs)
+        return transport
     backend = _ipv4_only_network_backend()
     if backend is None:
-        return httpx.AsyncHTTPTransport(**transport_kwargs)
+        return transport
     try:
         import httpcore
 
-        original_pool = httpcore.AsyncConnectionPool
-
-        def _ipv4_pool(*args, **kwargs):
-            kwargs["network_backend"] = backend
-            return original_pool(*args, **kwargs)
-
-        httpcore.AsyncConnectionPool = _ipv4_pool
-        try:
-            transport = httpx.AsyncHTTPTransport(**transport_kwargs)
-        finally:
-            httpcore.AsyncConnectionPool = original_pool
-        return transport
+        original_pool = transport._pool
+        limits = transport_kwargs.get("limits") or httpx.Limits()
+        pool = httpcore.AsyncConnectionPool(
+            ssl_context=original_pool._ssl_context,
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=limits.keepalive_expiry,
+            http1=original_pool._http1,
+            http2=original_pool._http2,
+            uds=original_pool._uds,
+            local_address=original_pool._local_address,
+            retries=original_pool._retries,
+            network_backend=backend,
+            socket_options=transport_kwargs.get("socket_options"),
+        )
     except Exception:
         logger.debug("Falling back to the default httpx transport (IPv4-only backend unavailable)",
                      exc_info=True)
-        return httpx.AsyncHTTPTransport(**transport_kwargs)
+        return transport
+
+    # The replacement pool is a distinct object; the original one is unused
+    # from here on (it holds no connections yet) so it does not need closing.
+    transport._pool = pool
+    return transport
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):

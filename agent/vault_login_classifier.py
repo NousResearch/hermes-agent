@@ -249,14 +249,17 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   // Shadow-piercing collect: many logins (Home Assistant, custom-element SPAs) render their
   // form inside a shadow root, where document.querySelectorAll never sees it. Walk every
   // element (shadow hosts can be anything, not just inputs) and recurse into open shadow roots.
+  // Forms are collected in the same walk: document.forms misses a <form> inside a shadow root, which
+  // would leave its controls ungrouped (formIndex null) and merge split OTP boxes across forms.
   const elements = [];
+  const forms = [];
   (function walk(root) {
     for (const e of root.querySelectorAll("*")) {
       if (e.tagName === "INPUT" || e.tagName === "SELECT") elements.push(e);
+      else if (e.tagName === "FORM") forms.push(e);
       if (e.shadowRoot) walk(e.shadowRoot);
     }
   })(document);
-  const forms = Array.from(document.forms);
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
@@ -266,7 +269,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
     const labels = element.labels ? Array.from(element.labels, (l) => l.textContent || "") : [];
     const ariaText = (element.getAttribute("aria-labelledby") || "")
       .split(/\\s+/).filter(Boolean)
-      .map((id) => { const n = document.getElementById(id); return n ? (n.textContent || "") : ""; })
+      .map((id) => { const r = element.getRootNode(); const n = (r.getElementById ? r.getElementById(id) : null) || document.getElementById(id); return n ? (n.textContent || "") : ""; })
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{

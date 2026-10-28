@@ -836,8 +836,10 @@ _HEADER_LIGHTPANDA = (
 # ``browser-use skill`` fetch (uncontrolled third-party text in every schema: version
 # drift, supply-chain exposure, byte-unstable prompt). A/B benchmarked ~equal.
 _HELPERS_DIGEST = (
-    "\n\nHELPERS (pre-imported): new_tab(url) opens/navigates (use for the FIRST navigation), goto_url(url) "
-    "navigates the current tab, wait_for_load() after navigation, page_info() summarizes the current page "
+    "\n\nHELPERS (pre-imported): goto_url(url) navigates the current tab; use new_tab(url) only when you "
+    "actually need a second tab, and close_tab() when you are done with it (close_tab(target=None) closes "
+    "the current tab; pass an id from list_tabs() to close a specific one), wait_for_load() after "
+    "navigation, page_info() summarizes the current page "
     "state, js(expr) evaluates a JS expression and returns its value (js('document.title'); wrap function "
     "bodies as js('(() => {...})()') — a bare '() => {...}' returns the function itself, uncalled), "
     "fill_input(selector, text) types into inputs, click_at_xy(x, y) clicks viewport coordinates, "

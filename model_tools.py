@@ -92,6 +92,18 @@ def _get_worker_loop():
 
 def _run_async(coro):
     """Run a coroutine from sync code; safe under a running loop (gateway/RL env)."""
+    from tools.interrupt import acting_for_tid
+
+    # Both the bridge worker and asyncio.to_thread copy ContextVars. Keep the
+    # originating tool's interrupt owner through either hop, including nesting.
+    token = acting_for_tid.set(acting_for_tid.get() or threading.get_ident())
+    try:
+        return _run_async_with_owner(coro)
+    finally:
+        acting_for_tid.reset(token)
+
+
+def _run_async_with_owner(coro):
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

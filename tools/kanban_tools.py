@@ -672,6 +672,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    worker_session_id=os.environ.get("HERMES_SESSION_ID") or None,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -835,6 +836,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 tid,
                 note=note,
                 expected_run_id=_worker_run_id(tid),
+                session_id=os.environ.get("HERMES_SESSION_ID") or None,
             )
             if not ok:
                 return tool_error(

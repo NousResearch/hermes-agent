@@ -3887,18 +3887,57 @@ def _append_event(
     )
 
 
+def _worker_session_id_from_events(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Look up the worker's session_id from the most recent heartbeat event.
+
+    Workers stamp their HERMES_SESSION_ID into heartbeat event payloads
+    (``heartbeat_worker``).  The dispatcher can use this to write
+    end_reason to the correct per-worker session DB even when the worker
+    has already exited (crash / timeout paths).
+
+    Returns None when no heartbeat with a session_id has been recorded.
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT payload FROM task_events
+             WHERE task_id = ? AND kind = 'heartbeat'
+               AND json_extract(payload, '$.session_id') IS NOT NULL
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if not row or not row["payload"]:
+            return None
+        import json as _json
+        payload = _json.loads(row["payload"])
+        return payload.get("session_id") or None
+    except Exception:
+        return None
+
+
 def _record_kanban_end_reason(
     conn: sqlite3.Connection,
     task_id: str,
     *,
     outcome: str,
+    worker_session_id: Optional[str] = None,
 ) -> None:
-    """Write a kanban-specific end_reason to the task's originating session.
+    """Write a kanban-specific end_reason to the worker's own session.
 
-    Only fires when the task has a ``session_id`` (set when the task was
-    created from within an agent loop).  Uses ``SessionDB.end_session`` which
-    is a no-op when the session is already closed (first-writer-wins), so an
-    existing ``ws_orphan_reap`` or ``cli_close`` end_reason is preserved.
+    Preferentially records against ``worker_session_id`` (the session the
+    worker itself was running in).  When that is not provided, falls back
+    to the most-recent heartbeat event payload (dispatcher crash / timeout
+    paths) and finally to ``tasks.session_id`` (the originating creator
+    session — legacy fallback only).
+
+    Uses ``SessionDB.end_session`` which is a no-op when the session is
+    already closed (first-writer-wins), so an existing ``ws_orphan_reap``
+    or ``cli_close`` end_reason is preserved.
 
     ``outcome`` must be one of the four terminal kanban outcomes:
     completed / crashed / timed_out / gave_up.
@@ -3916,14 +3955,34 @@ def _record_kanban_end_reason(
     if not end_reason:
         return
     try:
-        row = conn.execute(
-            "SELECT session_id FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone()
-        if not row or not row["session_id"]:
+        # Resolution order for the target session:
+        # 1. Caller-supplied worker_session_id (complete path — most accurate).
+        # 2. Most-recent heartbeat event payload (dispatcher crash/timeout paths).
+        # 3. tasks.session_id (creator session — legacy fallback; semantically
+        #    wrong for kanban workers but better than nothing when no heartbeat
+        #    was ever recorded and no explicit id was passed).
+        target_session_id = worker_session_id
+        if not target_session_id:
+            target_session_id = _worker_session_id_from_events(conn, task_id)
+        if not target_session_id:
+            row = conn.execute(
+                "SELECT session_id FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row and row["session_id"]:
+                target_session_id = row["session_id"]
+        if not target_session_id:
             return
-        session_id = row["session_id"]
         from hermes_state import SessionDB
-        SessionDB().end_session(session_id, end_reason)
+        # Open the correct profile DB when the worker's HERMES_HOME is pinned
+        # in the env.  During a dispatcher-side call (crash / timeout) the
+        # HERMES_HOME may still point at the dispatcher profile; at that point
+        # the heartbeat lookup already found the session_id, but SessionDB()
+        # defaults to os.environ["HERMES_HOME"] which is the dispatcher's home.
+        # Since we only know the session_id (not the profile home at this point)
+        # we rely on SessionDB() defaulting to the correct home when called from
+        # the worker itself, and accept a silent no-op when called from the
+        # dispatcher with a cross-profile session_id (best-effort).
+        SessionDB().end_session(target_session_id, end_reason)
     except Exception:
         pass
 
@@ -4828,6 +4887,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    worker_session_id: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4963,8 +5023,9 @@ def complete_task(
             summary=summary if summary is not None else result,
             metadata=metadata,
         )
-        # Record kanban end_reason on the originating session (best-effort).
-        _record_kanban_end_reason(conn, task_id, outcome="completed")
+        # Record kanban end_reason on the worker's own session (best-effort).
+        _record_kanban_end_reason(conn, task_id, outcome="completed",
+                                  worker_session_id=worker_session_id)
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
@@ -7227,6 +7288,7 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    session_id: Optional[str] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -7266,7 +7328,10 @@ def heartbeat_worker(
             )
         _append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            {k: v for k, v in (
+                ("note", note),
+                ("session_id", session_id),
+            ) if v is not None} or None,
             run_id=run_id,
         )
     return True

@@ -3194,6 +3194,7 @@
     "settings.connections.updateAllFailed",
     "settings.connections.updateAllRunning",
     "settings.connections.updateSkippedCloud",
+    "settings.connections.updateSkippedExternal",
     "settings.connections.urlTitle",
     "settings.credentials.couldNotSave",
     "settings.credentials.enterValueFirst",

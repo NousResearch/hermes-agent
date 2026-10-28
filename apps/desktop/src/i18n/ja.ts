@@ -245,6 +245,12 @@ export const jaOverrides = {
 
   settings: {
     memoryLayers: jaMemoryLayers,
+    connections: {
+      updateSkippedExternal: (command: string) =>
+        command
+          ? `外部で管理されています。${command} で更新してください`
+          : '外部で管理されています。専用のツールで更新してください。'
+    },
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {

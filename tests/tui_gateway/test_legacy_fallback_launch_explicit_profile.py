@@ -28,6 +28,7 @@ def homes(tmp_path, monkeypatch):
         (home / "config.yaml").write_text("{}\n")
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", LAUNCH_PORTAL)  # the launch process loaded its own .env
+    monkeypatch.setenv("LAUNCH_ENV_ONLY_KEY", "from-process-env")  # systemd / Docker / ``op run`` only
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
@@ -78,17 +79,25 @@ def test_explicit_profile_that_does_not_resolve_is_refused_before_the_handler(ho
     assert seen == []
 
 
-def test_a_secondary_socket_naming_the_launch_profile_runs_in_the_launch_scope(homes):
+def test_a_secondary_socket_naming_the_launch_profile_runs_in_the_launch_scope(homes, monkeypatch):
     """Reverse direction: a profile-bound socket runs in that profile's scope, so a verb naming the
     launch profile must not keep the secondary's secrets and home."""
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     from tui_gateway.ws_legacy_fallback import dispatch_legacy
     server, launch, bee, seen = homes
+    env_only = []
+
+    def probe(rid, params):
+        from agent.secret_scope import get_secret
+        env_only.append(get_secret("LAUNCH_ENV_ONLY_KEY"))
+        return server._methods["probe.portal"](rid, params)
+    monkeypatch.setitem(server._methods, "probe.env", probe)
     actor = types.SimpleNamespace(profile_id=str(bee), capabilities=frozenset(_PURPOSE_CAPABILITIES["interactive"]))
     written, done = [], threading.Event()
     transport = types.SimpleNamespace(write=lambda frame: written.append(frame) or done.set() or True)
     with server._session_profile_runtime_scope({"profile_home": str(bee)}):
-        reply = dispatch_legacy(server, {"jsonrpc": "2.0", "id": 1, "method": "probe.portal",
+        reply = dispatch_legacy(server, {"jsonrpc": "2.0", "id": 1, "method": "probe.env",
                                          "params": {"profile": "default"}}, transport, actor)
     assert "result" in (reply if reply is not None else (done.wait(10) and written[0]))
     assert seen == [(launch.resolve(), LAUNCH_PORTAL)]
+    assert env_only == ["from-process-env"]

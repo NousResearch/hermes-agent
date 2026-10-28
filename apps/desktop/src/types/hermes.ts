@@ -1502,7 +1502,17 @@ export interface LocalModelsStatus {
   models_dir: string
 }
 
+export interface LocalGpu {
+  index: number
+  name: string
+  util_percent: number | null
+  vram_used_bytes: number | null
+  vram_total_bytes: number | null
+}
+
 export interface LocalHardware {
+  /** Physical telemetry only; legacy budget fields below remain first-device/UMA based. */
+  gpus?: LocalGpu[]
   uma: boolean
   vram_total_bytes: number
   vram_usable_bytes: number

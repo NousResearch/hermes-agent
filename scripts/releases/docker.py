@@ -131,6 +131,30 @@ def _version_digest(tag: str, suffix: str, run) -> str:
     return digest
 
 
+def _publish_aliases(digest: str, aliases: tuple[str, ...], *, run, sleep) -> None:
+    """Publish one already-validated image digest and verify every destination alias."""
+    command = ["docker", "buildx", "imagetools", "create"]
+    for alias in aliases:
+        command.extend(["-t", f"{IMAGE}:{alias}"])
+    command.append(f"{IMAGE}@{digest}")
+    for attempt in range(3):
+        try:
+            run(command)
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 2:
+                raise
+            sleep(20)
+    for alias in aliases:
+        for attempt in range(3):
+            if _inspect(f"{IMAGE}:{alias}", run) == digest:
+                break
+            if attempt < 2:
+                sleep(20)
+        else:
+            raise DockerReleaseError(f"Docker {alias} alias read-back mismatch")
+
+
 def promote_stable(tag: str, digest: str, release_tag: str, *, run=output, sleep=time.sleep) -> None:
     """Point the final ``vX.Y.Z``, stable and latest tags at the attempt's registry images.
 
@@ -147,27 +171,8 @@ def promote_stable(tag: str, digest: str, release_tag: str, *, run=output, sleep
     # Inspect both before moving either alias; desktop has its own registry digest.
     variants = (("", digest), ("-desktop", _version_digest(tag, "-desktop", run)))
     for suffix, version_digest in variants:
-        command = [
-            "docker", "buildx", "imagetools", "create", "-t", f"{IMAGE}:{release_tag}{suffix}",
-            "-t", f"{IMAGE}:stable{suffix}", "-t", f"{IMAGE}:latest{suffix}",
-            f"{IMAGE}@{version_digest}",
-        ]
-        for attempt in range(3):
-            try:
-                run(command)
-                break
-            except subprocess.CalledProcessError:
-                if attempt == 2:
-                    raise
-                sleep(20)
-        for alias in (release_tag, "stable", "latest"):
-            for attempt in range(3):
-                if _inspect(f"{IMAGE}:{alias}{suffix}", run) == version_digest:
-                    break
-                if attempt < 2:
-                    sleep(20)
-            else:
-                raise DockerReleaseError(f"Docker {alias}{suffix} alias read-back mismatch")
+        aliases = tuple(f"{alias}{suffix}" for alias in (release_tag, "stable", "latest"))
+        _publish_aliases(version_digest, aliases, run=run, sleep=sleep)
 
 
 def promote_canary(tag: str, *, run=output, sleep=time.sleep) -> None:
@@ -179,23 +184,7 @@ def promote_canary(tag: str, *, run=output, sleep=time.sleep) -> None:
     # Inspect both before moving either alias; desktop has its own registry digest.
     variants = [(suffix, _version_digest(tag, suffix, run)) for suffix in ("", "-desktop")]
     for suffix, version_digest in variants:
-        command = ["docker", "buildx", "imagetools", "create", "-t", f"{IMAGE}:canary{suffix}",
-                   f"{IMAGE}@{version_digest}"]
-        for attempt in range(3):
-            try:
-                run(command)
-                break
-            except subprocess.CalledProcessError:
-                if attempt == 2:
-                    raise
-                sleep(20)
-        for attempt in range(3):
-            if _inspect(f"{IMAGE}:canary{suffix}", run) == version_digest:
-                break
-            if attempt < 2:
-                sleep(20)
-        else:
-            raise DockerReleaseError(f"Docker canary{suffix} alias read-back mismatch")
+        _publish_aliases(version_digest, (f"canary{suffix}",), run=run, sleep=sleep)
 
 
 def stable_alias_digest(run=output) -> str | None:

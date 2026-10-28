@@ -88,3 +88,65 @@ def test_write_through_failure_does_not_break_profile_save(profile_and_root, mon
 
     profile = _read_store(profile_path)
     assert profile["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r"
+
+
+def _stale_error_marker():
+    return {
+        "provider": "xai-oauth",
+        "code": "xai_refresh_failed",
+        "message": "Refresh token has been revoked",
+        "relogin_required": True,
+        "at": "2026-01-01T00:00:00Z",
+    }
+
+
+def test_successful_save_clears_stale_last_auth_error(profile_and_root):
+    """A successful token save supersedes an earlier terminal failure.
+
+    The profile owns its xai-oauth block and still carries the marker from a
+    failed refresh; persisting fresh tokens must drop it so auth.json stops
+    claiming ``relogin_required`` alongside a working grant.
+    """
+    profile_path, _root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {
+            "version": 1,
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {"access_token": "dead-access", "refresh_token": "dead-refresh"},
+                    "last_auth_error": _stale_error_marker(),
+                }
+            },
+        },
+    )
+
+    auth._save_xai_oauth_tokens({"access_token": "new-access", "refresh_token": "new-refresh"})
+
+    state = _read_store(profile_path)["providers"]["xai-oauth"]
+    assert state["tokens"]["refresh_token"] == "new-refresh"
+    assert "last_auth_error" not in state
+
+
+def test_root_write_back_clears_stale_last_auth_error(profile_and_root):
+    """Same contract on the root-only write-back path (grant resolved from root)."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {"access_token": "dead-access", "refresh_token": "dead-refresh"},
+                    "last_auth_error": _stale_error_marker(),
+                }
+            },
+        },
+    )
+
+    auth._save_xai_oauth_tokens({"access_token": "new-access", "refresh_token": "new-refresh"})
+
+    root_state = _read_store(root_path)["providers"]["xai-oauth"]
+    assert root_state["tokens"]["refresh_token"] == "new-refresh"
+    assert "last_auth_error" not in root_state

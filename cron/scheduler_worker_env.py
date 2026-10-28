@@ -26,6 +26,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+SAFE_PATH_PIN_MARKER = "_HERMES_PINNED_SAFEPATH"
+
 
 def _installed_purelib() -> Path | None:
     try:
@@ -78,6 +80,17 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     root = str(repo_root)
     if _installed_purelib() == Path(root).resolve():
         return worker_env
+    # The child's cwd (task workspace) is first on sys.path for ``-m``; a checkout there
+    # would shadow the pinned tree with its own dependency-less copy.
+    # Process-scoped: the worker latches ``sys.flags.safe_path`` at interpreter start, then
+    # the worker's boot (``hermes_cli.main`` / ``cron.worker_bootstrap``) restores the user's own value so the agent's own children (terminal /
+    # execute_code) keep the normal script-dir/cwd sys.path entry. 
+    # The marker records the user's own value ("-" absent, "+<value>" set) so boot can
+    # restore it; setdefault keeps the first record if the helper runs twice on one env.
+    if SAFE_PATH_PIN_MARKER not in worker_env:
+        user = worker_env.get("PYTHONSAFEPATH")
+        worker_env[SAFE_PATH_PIN_MARKER] = "-" if user is None else "+" + user
+    worker_env["PYTHONSAFEPATH"] = "1"
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
     dependency = _committed_dependency_site_packages(Path(root))
     pinned = [root, *([str(dependency)] if dependency is not None else [])]

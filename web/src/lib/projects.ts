@@ -43,3 +43,32 @@ export function mapProjectSessionToSessionInfo(ps: ProjectSession): SessionInfo 
 export function projectQueryPath(id: string): string {
   return `/projects?id=${encodeURIComponent(id)}`;
 }
+
+/**
+ * localStorage key used by the Kanban plugin to remember the selected board.
+ * Must match `LS_BOARD_KEY` in the plugin's bundled dist/index.js.
+ */
+const KANBAN_BOARD_LS_KEY = "hermes.kanban.selectedBoard";
+
+/**
+ * Persist `boardSlug` to localStorage so the Kanban plugin selects it when
+ * the /kanban page mounts.  No-op when `boardSlug` is null/undefined.
+ * Swallows quota errors — the plugin handles a missing key gracefully.
+ */
+export function writeKanbanBoard(boardSlug: string | null | undefined): void {
+  if (!boardSlug) return;
+  try {
+    localStorage.setItem(KANBAN_BOARD_LS_KEY, boardSlug);
+  } catch {
+    // quota exceeded — ignore
+  }
+}
+
+/**
+ * Navigate path for the Kanban plugin page.  Always `/kanban`; the board is
+ * pre-selected via `writeKanbanBoard` rather than via URL params because the
+ * current plugin build does not read URL search params on mount.
+ */
+export function kanbanPath(): string {
+  return "/kanban";
+}

@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import type { ProjectSummary, ProjectSession, BoardCounts } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { KanbanBadge, type KanbanStatus } from "./KanbanBadge";
+import { writeKanbanBoard, kanbanPath } from "@/lib/projects";
 
 interface ProjectsOverviewProps {
   projects: ProjectSummary[];
@@ -190,7 +191,10 @@ export function ProjectsOverview({
             <div className="ml-auto flex gap-2">
               <Button
                 outlined
-                onClick={() => navigate("/kanban")}
+                onClick={() => {
+                  writeKanbanBoard(openProject_.board);
+                  navigate(kanbanPath());
+                }}
               >
                 Kanban ↗
               </Button>

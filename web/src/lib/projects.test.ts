@@ -294,6 +294,54 @@ describe("projectQueryPath", () => {
   });
 });
 
+// ── writeKanbanBoard ─────────────────────────────────────────────────────────
+
+import { writeKanbanBoard, kanbanPath } from "@/lib/projects";
+
+const LS_KANBAN_KEY = "hermes.kanban.selectedBoard";
+
+describe("writeKanbanBoard", () => {
+  beforeEach(() => localStorageStub.clear());
+
+  it("sets the kanban board key in localStorage", () => {
+    writeKanbanBoard("default");
+    expect(localStorageStub.getItem(LS_KANBAN_KEY)).toBe("default");
+  });
+
+  it("overwrites a previous value", () => {
+    writeKanbanBoard("old-board");
+    writeKanbanBoard("new-board");
+    expect(localStorageStub.getItem(LS_KANBAN_KEY)).toBe("new-board");
+  });
+
+  it("is a no-op for null", () => {
+    writeKanbanBoard("existing");
+    writeKanbanBoard(null);
+    expect(localStorageStub.getItem(LS_KANBAN_KEY)).toBe("existing");
+  });
+
+  it("is a no-op for undefined", () => {
+    writeKanbanBoard("existing");
+    writeKanbanBoard(undefined);
+    expect(localStorageStub.getItem(LS_KANBAN_KEY)).toBe("existing");
+  });
+
+  it("swallows quota errors without throwing", () => {
+    const orig = localStorageStub.setItem.bind(localStorageStub);
+    localStorageStub.setItem = () => {
+      throw new Error("quota exceeded");
+    };
+    expect(() => writeKanbanBoard("my-board")).not.toThrow();
+    localStorageStub.setItem = orig;
+  });
+});
+
+describe("kanbanPath", () => {
+  it("returns /kanban", () => {
+    expect(kanbanPath()).toBe("/kanban");
+  });
+});
+
 // ── API error surface ─────────────────────────────────────────────────────────
 
 describe("api.getProjects error surfacing", () => {

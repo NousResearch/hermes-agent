@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Folder, Plus } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 
 import { api } from "@/lib/api";
 import type {
@@ -16,6 +17,7 @@ import { timeAgo } from "@/lib/utils";
 import { KanbanBadge, type KanbanStatus } from "./KanbanBadge";
 import { SessionRow } from "./SessionRow";
 import { FolderTree } from "./FolderTree";
+import { writeKanbanBoard, kanbanPath } from "@/lib/projects";
 
 type SessionFilter = "all" | "running" | "done" | "failed" | "notask";
 type TabId = "sessions" | "board" | "folders" | "settings";
@@ -100,6 +102,7 @@ export function ProjectsWorkbench({
   const [missingFolders, setMissingFolders] = useState<string[]>([]);
   const [paneLoading, setPaneLoading] = useState(false);
   const [paneError, setPaneError] = useState<string | null>(null);
+  const [confirmTemplate, setConfirmTemplate] = useState(false);
 
   const selectedProject = projects.find((p) => p.id === selectedId) ?? null;
 
@@ -159,10 +162,14 @@ export function ProjectsWorkbench({
     if (selectedId && activeTab === "sessions") void loadSessions();
   }, [selectedId, activeTab, loadSessions]);
 
-  async function handleApplyTemplate() {
+  async function doApplyTemplate() {
     if (!selectedId) return;
     await api.applyProjectTemplate(selectedId);
     void loadFolders();
+  }
+
+  function handleApplyTemplate() {
+    setConfirmTemplate(true);
   }
 
   if (loading) {
@@ -390,7 +397,10 @@ export function ProjectsWorkbench({
                     </span>
                     <a
                       className="ml-auto font-mono text-[10.5px] uppercase tracking-wider text-midground/40 hover:text-midground cursor-pointer"
-                      onClick={() => navigate("/kanban")}
+                      onClick={() => {
+                        writeKanbanBoard(selectedProject.board);
+                        navigate(kanbanPath());
+                      }}
                     >
                       Open Kanban ↗
                     </a>
@@ -410,7 +420,19 @@ export function ProjectsWorkbench({
                     boardTasks.map((t) => (
                       <div
                         key={t.id}
-                        className="grid grid-cols-[auto_1fr_auto_auto] gap-3 items-center px-2.5 py-2.5 border-b border-midground/10"
+                        role="button"
+                        tabIndex={0}
+                        className="grid grid-cols-[auto_1fr_auto_auto] gap-3 items-center px-2.5 py-2.5 border-b border-midground/10 cursor-pointer hover:bg-midground/5 focus:outline-none"
+                        onClick={() => {
+                          writeKanbanBoard(selectedProject.board);
+                          navigate(kanbanPath());
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            writeKanbanBoard(selectedProject.board);
+                            navigate(kanbanPath());
+                          }
+                        }}
                       >
                         <KanbanBadge status={t.status as KanbanStatus} />
                         <div className="min-w-0">
@@ -550,6 +572,18 @@ export function ProjectsWorkbench({
           </>
         )}
       </aside>
+
+      <ConfirmDialog
+        open={confirmTemplate}
+        onCancel={() => setConfirmTemplate(false)}
+        onConfirm={() => {
+          setConfirmTemplate(false);
+          void doApplyTemplate();
+        }}
+        title="Apply template?"
+        description={`This will create the missing template files/folders for "${selectedProject?.name ?? "this project"}". This cannot be undone.`}
+        confirmLabel="Apply"
+      />
     </div>
   );
 }

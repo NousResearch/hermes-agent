@@ -1,7 +1,7 @@
 import { translateNow } from '@/i18n'
 import { lookupPluginCatalogEntry, type PluginCatalogEntry, type PluginCatalogLookupError } from '@/lib/plugin-catalog'
 
-import { $agentPlugins } from './agent-plugins'
+import { $agentPlugins, $agentPluginsOwner } from './agent-plugins'
 import { notify } from './notifications'
 import { openPluginInstallRequest, type PluginInstallRequest } from './plugin-install-request'
 
@@ -15,11 +15,12 @@ import { openPluginInstallRequest, type PluginInstallRequest } from './plugin-in
 export function openCatalogPluginInstall(
   entry: PluginCatalogEntry,
   profile: null | string,
-  options: Pick<PluginInstallRequest, 'stayAfterInstall' | 'tier' | 'title'> = {}
+  options: Pick<PluginInstallRequest, 'owner' | 'ownerIdentity' | 'stayAfterInstall' | 'tier' | 'title'> = {}
 ): void {
   const existing = $agentPlugins.get().find(row => row.catalog_name === entry.name || row.name === entry.name)
+  const ownsInventory = options.ownerIdentity === undefined || $agentPluginsOwner.get() === options.ownerIdentity
 
-  if (existing && !existing.update_available) {
+  if (ownsInventory && existing && !existing.update_available) {
     notify({ kind: 'success', message: translateNow('skills.plugins.alreadyInstalled', entry.name) })
 
     return

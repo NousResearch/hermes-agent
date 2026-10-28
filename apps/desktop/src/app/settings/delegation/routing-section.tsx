@@ -300,7 +300,11 @@ function AdvancedDelegationStatus({
 
   const action =
     state === 'missing' ? (
-      <Button onClick={() => void installAdvancedDelegation(owner, r.installUnavailable)} size="sm" variant="outline">
+      <Button
+        onClick={() => void installAdvancedDelegation(owner, ownerScope, ownerIdentity, r.installUnavailable)}
+        size="sm"
+        variant="outline"
+      >
         {r.installPlugin}
       </Button>
     ) : state === 'disabled' && row?.key ? (

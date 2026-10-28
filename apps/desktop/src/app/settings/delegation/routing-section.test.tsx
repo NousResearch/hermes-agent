@@ -11,11 +11,25 @@ import { $agentPlugins, $agentPluginsOwner, $agentPluginsProfile, $agentPluginsS
 import { DelegationRoutingSection } from './routing-section'
 import { SubagentModelGate } from './subagent-model-gate'
 
-const { requestGatewayForAgent } = vi.hoisted(() => ({ requestGatewayForAgent: vi.fn() }))
+const { lookupPluginCatalogEntry, openCatalogPluginInstall, requestGatewayForAgent } = vi.hoisted(() => ({
+  lookupPluginCatalogEntry: vi.fn(),
+  openCatalogPluginInstall: vi.fn(),
+  requestGatewayForAgent: vi.fn()
+}))
+
+vi.mock('@/lib/plugin-catalog', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  lookupPluginCatalogEntry: (...args: unknown[]) => lookupPluginCatalogEntry(...args)
+}))
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<object>()),
   requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
+}))
+
+vi.mock('@/store/plugin-catalog-install', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  openCatalogPluginInstall: (...args: unknown[]) => openCatalogPluginInstall(...args)
 }))
 
 // A stateful stand-in for the backend's /api/delegation routes (same shapes, same refusal).
@@ -37,6 +51,11 @@ beforeEach(() => {
   queryClient.clear()
   writes.length = 0
   requestGatewayForAgent.mockReset()
+  lookupPluginCatalogEntry.mockReset().mockResolvedValue({
+    entry: { name: 'advanced-delegation', repo: 'https://github.com/example/advanced-delegation' },
+    ok: true
+  })
+  openCatalogPluginInstall.mockReset()
   $agentPlugins.set([])
   $agentPluginsOwner.set(undefined)
   $agentPluginsProfile.set(undefined)
@@ -145,6 +164,15 @@ describe('Subagents routing', () => {
       expect.objectContaining({ expectedConnectionOwner: gatewayA.cacheOwner, expectedOwner: { profile: 'foreground', connectionOwner: sourceOwner } }),
       expect.objectContaining({ expectedConnectionOwner: gatewayB.cacheOwner, expectedOwner: { profile: 'foreground', connectionOwner: sourceOwner } })
     ])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install plugin' }))
+    await waitFor(() =>
+      expect(openCatalogPluginInstall).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'advanced-delegation' }),
+        'default',
+        expect.objectContaining({ owner: gatewayB, ownerIdentity: expect.stringContaining('gateway-b') })
+      )
+    )
   })
 
   it('shows plugin modes with an install hint, never as choosable, until their backend registers', async () => {

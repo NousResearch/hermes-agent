@@ -1982,6 +1982,22 @@ def load_config() -> dict[str, Any]:
     return _load_config_impl(want_deepcopy=True)
 
 
+def load_config_readonly_nowait() -> Optional[dict[str, Any]]:
+    """:func:`load_config_readonly` for code that must never wait (a log formatter, under the
+    handler's lock). None when ``_CONFIG_LOCK`` is held elsewhere or the read would start a remote
+    boot fetch: callers use a secure default and must not cache it."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable, without_boot
+    if not _CONFIG_LOCK.acquire(blocking=False):
+        return None
+    try:
+        with without_boot():
+            return load_config_readonly()
+    except ConfigBackendUnavailable:
+        return None
+    finally:
+        _CONFIG_LOCK.release()
+
+
 def load_config_readonly() -> dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for

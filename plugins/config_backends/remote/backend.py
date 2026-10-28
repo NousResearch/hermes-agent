@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.config_backend import boot_allowed as config_backend_boot_allowed
 from hermes_cli.config_backend import (
     Changes, ConfigBackendUnavailable, ConfigLockedError, ConfigValueError, ConfigWriteError, UserLayer,
     pinned_keys, refused_locked_omission_prefixes)
@@ -206,6 +207,9 @@ class RemoteBackend:
             if poller is None or self._poller_pid != os.getpid() or not poller.is_alive():
                 self._ensure_poller()
             return st
+        if not config_backend_boot_allowed():
+            raise ConfigBackendUnavailable(
+                f"Remote Config: the config for {home} is not loaded yet, and this read does not wait for it.")
         if key in self._booting():
             # This thread is loading this profile (resolving its credential or fetching): the read
             # can only be served by the load it is part of. Waiting would wait on itself forever.

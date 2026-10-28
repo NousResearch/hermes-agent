@@ -130,13 +130,20 @@ def _redact_enabled() -> bool:
             from hermes_cli.config import load_env
             raw = load_env().get("HERMES_REDACT_SECRETS")
         if raw is None:
-            from hermes_cli.config import load_config_readonly
-            cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
+            # Never wait for config here: this runs under the logging handler's lock, and the
+            # thread holding the config lock (or booting this profile's config) may be logging.
+            from hermes_cli.config import load_config_readonly_nowait
+            cfg = load_config_readonly_nowait()
+            if cfg is None:
+                return True  # not readable at once: the secure default, not cached
+            cfg_val = (cfg.get("security") or {}).get("redact_secrets")
             raw = None if cfg_val is None else str(cfg_val)
         if raw is not None:
             enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
     except Exception:
         enabled = True  # unreadable policy: keep the secure default
+    except SystemExit:  # ConfigBackendUnavailable: config not loadable now; never cache that
+        return True
     with _REDACT_ENABLED_LOCK:
         _REDACT_ENABLED_BY_HOME[home_key] = enabled
     return enabled

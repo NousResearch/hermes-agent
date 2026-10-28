@@ -758,20 +758,9 @@ DEFAULT_CONFIG = {
         "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
         "mcp": _aux(30),
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
-        "title_generation": {
-            "enabled": True,
-            "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
-            # session_search no longer uses an aux LLM (#27590); leftover auxiliary.session_search is ignored.
-            "provider": "auto",
-            "model": "",
-            "prefer_fast_model": False,
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",
-            "language": "",
-        },
+        # model_upgrade_enabled=False keeps the instant derived title, never calls a model.
+        "title_generation": {"enabled": True, "model_upgrade_enabled": True,
+                             **_aux(30, prefer_fast_model=False, language="")},
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
         "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
@@ -1138,12 +1127,10 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
-        "mittwald": {
+        "mittwald": {  # optional "base_url" key overrides MITTWALD_BASE_URL for TTS only
             "model": "Qwen3-TTS-12Hz-1.7B-CustomVoice",
             "voice": "ryan",  # aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu, vivian
-            # ISO-639-1 code (mapped) or word form (German, English, Auto, ...); "" = server default
-            "language": "",
-            # optional "base_url" key overrides MITTWALD_BASE_URL for TTS only
+            "language": "",  # ISO-639-1 code (mapped) or word form (German, Auto, ...); "" = server default
         },
     },
 
@@ -1203,10 +1190,9 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
         },
-        "mittwald": {
+        "mittwald": {  # optional "base_url" key overrides MITTWALD_BASE_URL for STT only
             "model": "whisper-large-v3-turbo",  # or cohere-transcribe-03-2026 (mittwald test phase)
             "language": "",  # auto-detect; set "en", "de", ... (ISO 639-1) to force
-            # optional "base_url" key overrides MITTWALD_BASE_URL for STT only
         },
     },
 

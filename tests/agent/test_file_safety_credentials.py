@@ -46,6 +46,19 @@ def _create(home: Path, rel: str | Path) -> Path:
 
 
 
+@pytest.mark.parametrize("at_root", [False, True])
+def test_fingerprint_key_is_a_read_denied_credential(tmp_path, monkeypatch, at_root):
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+    key = _create(root if at_root else profile, "secret_fingerprint.key")
+    assert "credential store" in (fs.get_read_block_error(str(key)) or "")
+
+
 def test_arbitrary_hermes_home_file_not_blocked(fake_home):
     """Non-credential files inside HERMES_HOME stay readable."""
     from agent.file_safety import get_read_block_error

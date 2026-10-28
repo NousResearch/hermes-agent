@@ -12,6 +12,7 @@ import re
 import secrets
 import shlex
 import threading
+import time
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -671,6 +672,15 @@ _FINGERPRINT_DOMAIN = b"hermes-secret-fingerprint-v1\0"
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 # {key path: key bytes}. Unlocked on purpose: a race only re-reads the same file bytes.
 _fingerprint_keys: dict[str, bytes] = {}
+# Concurrent first-use: the winner sits between its O_EXCL create and its payload write for
+# microseconds, but a loser reading in that window sees None and would degrade to the generic
+# ``***`` — the same secret then shows two shapes on one install. If the file was created just
+# now, re-read a bounded number of times before giving up; every re-read re-applies the same
+# symlink/mode/64-hex checks, and a stale malformed key skips the wait entirely (freshness gate)
+# so planted/corrupted keys fail closed with no added latency.
+_FINGERPRINT_KEY_REREAD_ATTEMPTS = 20
+_FINGERPRINT_KEY_REREAD_PAUSE = 0.005
+_FINGERPRINT_KEY_FRESH_SECS = 2.0
 
 
 def _fingerprint_key_path():
@@ -716,6 +726,21 @@ def _fingerprint_key() -> "bytes | None":
         except FileExistsError:
             pass  # created earlier or by a concurrent process (or a planted link: refused below)
         key = _read_fingerprint_key(path)
+        if key is None:
+            # A just-created key file may still be waiting for its winner's payload write:
+            # re-read briefly instead of degrading to the generic mask. Only a FRESH file is
+            # worth that wait — a stale malformed key (planted/corrupted earlier) fails closed
+            # immediately, and every re-read re-applies the symlink/mode/64-hex checks.
+            try:
+                fresh = (time.time() - os.stat(path).st_mtime) < _FINGERPRINT_KEY_FRESH_SECS
+            except OSError:
+                fresh = False
+            if fresh:
+                for _ in range(_FINGERPRINT_KEY_REREAD_ATTEMPTS):
+                    time.sleep(_FINGERPRINT_KEY_REREAD_PAUSE)
+                    key = _read_fingerprint_key(path)
+                    if key is not None:
+                        break
     except (OSError, UnicodeDecodeError):
         return None
     if key is None:

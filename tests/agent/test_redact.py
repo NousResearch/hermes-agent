@@ -1852,3 +1852,35 @@ class TestSecretHeaderKeepsClosingQuote:
         token = "hunter" + "2" * 14
         out = redact_sensitive_text('curl -H "x-goog-api-key: ' + token + '" https://x', force=True)
         assert re.fullmatch(r'curl -H "x-goog-api-key: \*\*\*#[0-9a-f]{6}" https://x', out), out
+
+
+class TestFingerprintKeyFreshnessGate:
+    """Concurrent first-use wait must be freshness-gated: a JUST-created key file (winner still
+    writing its payload) is worth a bounded re-read, while a stale malformed key (planted or
+    corrupted long ago) fails closed immediately — still ``***``, zero added latency."""
+
+    def test_stale_malformed_key_fails_closed_without_waiting(self, fp_home, monkeypatch):
+        import time
+
+        key = fp_home / "secret_fingerprint.key"
+        key.write_text("definitely-not-hex-payload\n")
+        if os.name == "posix":
+            key.chmod(0o600)
+        aged = time.time() - 60
+        os.utime(key, (aged, aged))
+        slept: list[float] = []
+        monkeypatch.setattr(time, "sleep", lambda seconds: slept.append(seconds))
+        assert _redact_mod.mask_secret("PasswordPassword") == "***"
+        assert slept == []
+
+    def test_fresh_empty_key_waits_bounded_then_fails_closed(self, fp_home, monkeypatch):
+        import time
+
+        key = fp_home / "secret_fingerprint.key"
+        key.write_text("")  # created, winner never writes its payload
+        if os.name == "posix":
+            key.chmod(0o600)
+        slept: list[float] = []
+        monkeypatch.setattr(time, "sleep", lambda seconds: slept.append(seconds))
+        assert _redact_mod.mask_secret("PasswordPassword") == "***"
+        assert 0 < len(slept) <= _redact_mod._FINGERPRINT_KEY_REREAD_ATTEMPTS

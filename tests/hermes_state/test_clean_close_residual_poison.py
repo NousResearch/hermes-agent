@@ -32,16 +32,22 @@ def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry
         return threading.current_thread().name == "synthetic-writer"
 
     class ObservedLock:
-        def __enter__(self):
+        def acquire(self, *args, **kwargs):
             if is_writer():
                 progress.set()
-            lock.acquire()
-            return self
+            return lock.acquire(*args, **kwargs)
 
-        def __exit__(self, *args):
+        def release(self):
             lock.release()
             if is_writer() and entry == "error_branch" and calls == 1:
                 second.set()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *args):
+            self.release()
 
     def observed_guard():
         nonlocal calls

@@ -753,7 +753,7 @@ With `gateway.multiplex_profiles: true` one process serves the default profile p
 
 | Activity | Binding |
 |---|---|
-| Routed turn | `gateway/run.py::_profile_runtime_scope(home)` via `run_turn.py::_profile_scope_for_source` |
+| Routed turn | `gateway/run.py::_profile_runtime_scope(home)` via `run_turn_profile_scope.py::_profile_scope_for_source` |
 | Agent release / eviction (TTL, LRU, memory pressure) | `gateway/run_agent_cache.py::_run_release_in_profile_scope` |
 | Shutdown | `gateway/run_shutdown.py::_finalize_session` |
 | Post-turn media delivery | `gateway/platforms/base.py::_media_delivery_scope` |

@@ -19,7 +19,7 @@ import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
-from contextlib import nullcontext, suppress
+from contextlib import suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
@@ -169,9 +169,12 @@ def hygiene_no_commit_reason(agent) -> str:
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+from gateway.run_turn_profile_scope import GatewayTurnProfileScopeMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(
+    GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin, GatewayTurnProfileScopeMixin,
+):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -340,70 +343,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
-
-    def _profile_scope_for_source(self, source: SessionSource):
-        """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.
-
-        Under multiplexing config/skills/memory resolve to the source profile's home AND credentials
-        come from its secret scope (never process-global ``os.environ``). A standalone gateway
-        (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide
-        credential guard — see ``_standalone_launch_scope``."""
-        from gateway.run import _profile_runtime_scope
-        from gateway.session_policy import local_desktop_turn
-        home = self._profile_scope_key_for_source(source)
-        return local_desktop_turn(self, source, _profile_runtime_scope(home) if home is not None
-                                  else self._standalone_launch_scope())
-
-    def _profile_scope_key_for_source(self, source: SessionSource) -> Optional[Path]:
-        """Profile home ``_profile_scope_for_source`` binds for ``source``, or ``None`` when it falls
-        back to the standalone launch scope. The single owner of that branch condition: callers that
-        group work per scope (heartbeat restore) key on this so they cannot drift from the scope
-        actually entered."""
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return self._resolve_profile_home_for_source(source)
-        return None
-
-    def _async_profile_scope_for_source(self, source: SessionSource):
-        """``async with`` twin of :meth:`_profile_scope_for_source` (secret hydration off-loop).
-
-        Slash dispatch runs under the RECEIVING bot's scope (auth needs its ``.env``), which is not
-        the routed runtime when a bot serves another profile's chat; every handler reading
-        home-relative state (pending writes, memory store, config) binds the runtime here (#119915)."""
-        from gateway.run import _async_profile_runtime_scope
-        home = self._profile_scope_key_for_source(source)
-        if home is not None:
-            return _async_profile_runtime_scope(home)
-        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
-        return async_launch_profile_scope_if_multiplexed()
-
-    @staticmethod
-    def _standalone_launch_scope():
-        """Scope for a standalone gateway's own (launch-profile) work: a no-op until the process hosts
-        another profile home, then the launch profile's OWN runtime scope.
-
-        A native hosted room running a second profile calls
-        ``tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` inside the gateway process,
-        so ``get_secret`` fails closed for every unscoped read afterwards — including the standalone
-        gateway's ordinary turns, which never bound a scope because ``multiplex_profiles`` is off
-        (#112878). The launch profile is a profile too: bind its ``.env`` over the env frozen at
-        activation (a key injected by systemd / ``op run`` has no file to rebuild it from), never a
-        secondary's scope and never live ``os.environ``."""
-        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
-        return launch_profile_scope_if_multiplexed()
-
-    def _media_delivery_scope_for_source(self, source: SessionSource):
-        """Home + terminal-policy scope for validating a turn's MEDIA / local-file paths on the
-        adapter's delivery side, which runs after the routed turn scope was reset.
-
-        Docker path translation (``platforms/base.py::_translate_docker_container_media_path``)
-        infers the producing container from the ACTIVE profile (``get_active_profile_name``) and the
-        scope-aware ``TERMINAL_DOCKER_VOLUMES``; without this a secondary's ``MEDIA:/output/x.png``
-        resolves against the default profile's sandbox and mounts (#109024). No secret hydration:
-        path validation reads no credentials and this runs on the event loop."""
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return nullcontext()
-        from gateway.run import _profile_runtime_scope
-        return _profile_runtime_scope(self._resolve_profile_home_for_source(source), {})
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, resolved inside the profile serving ``source``.
@@ -1624,7 +1563,31 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     ) -> Any:
         """Poll the executor future (inactivity timeout + backup interrupt checks); return its result,
         or a synthetic failed run dict on inactivity timeout. Polls even with an unlimited timeout
-        so the backup interrupt check runs if monitor_for_interrupt() silently died."""
+        so the backup interrupt check runs if monitor_for_interrupt() silently died.
+
+        Cancelling this await (adapter.cancel_session_processing) does not stop the executor
+        thread, and the turn's finally then releases the slot a later /stop finds the agent
+        through, so a still-running agent is hard-interrupted here. Skipped when the agent is
+        already interrupted (keeps a /stop, /new or shutdown reason) or the turn already
+        published its result (the finalizer cleared the flag; re-arming it would end a cached
+        agent's next turn at once). The short stretch between the finalizer and that publish is
+        not covered: every current canceller also evicts the cached agent, so a flag re-armed
+        there never reaches another turn."""
+        try:
+            return await self._run_agent_poll_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+        except asyncio.CancelledError:
+            from gateway.run import _INTERRUPT_REASON_STOP, request_hard_interrupt
+            agent = turn_ctx.agent_holder[0]
+            if (agent is not None and not worker.worker_done.is_set() and turn_ctx.result_holder[0] is None
+                    and not getattr(agent, "_interrupt_requested", False)):
+                with suppress(Exception):
+                    request_hard_interrupt(agent, _INTERRUPT_REASON_STOP)
+            raise
+
+    async def _run_agent_poll_turn_worker(
+        self, worker: GatewayRunner._RunAgentWorker, turn_ctx: TurnContext,
+        _interrupt_detected: asyncio.Event, interrupt_monitor: asyncio.Task,
+    ) -> Any:
         from gateway.run import _abandon_timed_out_gateway_turn
         agent_holder = turn_ctx.agent_holder
         _warning_fired = False

@@ -633,7 +633,7 @@ def _for_each_served_profile(runner, body) -> None:
     WARNINGs per hourly tick per chore). A single-profile gateway runs ``body`` once, unscoped:
     there the process env IS the profile's own value — unless a hosted room already flipped the
     process-wide guard (#112878), in which case the launch profile's OWN scope is bound, as
-    ``run_turn.py::_standalone_launch_scope`` does for turns."""
+    ``run_turn_profile_scope.py::_standalone_launch_scope`` does for turns."""
     from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
     config = getattr(runner, "config", None)
     if not getattr(config, "multiplex_profiles", False):

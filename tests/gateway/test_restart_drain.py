@@ -207,15 +207,15 @@ async def test_request_restart_waits_for_final_delivery_after_agent_finishes():
     adapter._active_sessions[session_key] = asyncio.Event()
 
     observed_delivery_gap = asyncio.Event()
-    orig_count = adapter.active_message_work_count
+    orig_keys = adapter.active_message_work_keys
 
-    def _counting_gap() -> int:
-        count = orig_count()
-        if session_key not in runner._running_agents and count > 0:
+    def _counting_gap() -> set[str]:
+        keys = orig_keys()
+        if session_key not in runner._running_agents and keys:
             observed_delivery_gap.set()
-        return count
+        return keys
 
-    adapter.active_message_work_count = _counting_gap
+    adapter.active_message_work_keys = _counting_gap
 
     try:
         assert runner.request_restart(detached=False, via_service=True) is True

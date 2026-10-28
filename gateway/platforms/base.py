@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_session_work import BaseSessionWorkMixin
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -1799,7 +1800,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(BaseSessionWorkMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3852,20 +3853,6 @@ class BasePlatformAdapter(ABC):
             return False
         return True
 
-    def _track_session_task(self, session_key: str, task: Any) -> bool:
-        """Record ``task`` as the session owner and track it for shutdown; False when
-        ``create_task`` was stubbed with an unhashable sentinel (tests) — the owner entry is left
-        for the caller."""
-        self._session_tasks[session_key] = task
-        try:
-            self._background_tasks.add(task)
-        except TypeError:
-            return False
-        if hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._background_tasks.discard)
-            task.add_done_callback(self._expected_cancelled_tasks.discard)
-        return True
-
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:
         """Cancel in-flight processing for one session. ``release_guard=False`` keeps the guard so
@@ -4672,17 +4659,6 @@ class BasePlatformAdapter(ABC):
         if session_key not in self._active_sessions:
             self._session_tasks.pop(session_key, None)
             self._requeue_counts.pop(session_key, None)
-
-    def active_message_work_count(self) -> int:
-        """Live per-session message-processing owner tasks in ``_session_tasks`` (including final delivery; done tasks excluded)."""
-        active = 0
-        for session_key, task in list(self._session_tasks.items()):
-            try:
-                active += int(not task.done())
-            except Exception:
-                logger.debug("[%s] Non-Task owner in _session_tasks[%s]; counting as active", self.name, session_key, exc_info=True)
-                active += 1
-        return active
 
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,

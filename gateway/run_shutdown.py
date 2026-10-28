@@ -192,16 +192,16 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     # Active-work accounting
     def _active_messaging_work_count(self) -> int:
         """Messaging work still owned by the runner or a platform adapter (#84285)."""
-        adapter_work, seen = 0, set()
+        adapter_work, seen = set(), set()
         for amap in (getattr(self, "adapters", None) or {}, *(getattr(self, "_profile_adapters", None) or {}).values()):
             for adapter in list(amap.values()) if isinstance(amap, dict) else ():
-                if id(adapter) not in seen and callable(count_fn := getattr(adapter, "active_message_work_count", None)):
+                if id(adapter) not in seen and callable(keys_fn := getattr(adapter, "active_message_work_keys", None)):
                     seen.add(id(adapter))
                     try:
-                        adapter_work += max(0, int(count_fn()))
+                        adapter_work.update(keys_fn())
                     except Exception:
                         logger.debug("Failed to count active message work for %s", getattr(adapter, "name", type(adapter).__name__), exc_info=True)
-        return max(self._running_agent_count(), adapter_work)
+        return self._running_agent_count() + len(adapter_work - set(getattr(self, "_running_agents", None) or ()))
 
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""

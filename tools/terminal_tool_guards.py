@@ -69,21 +69,31 @@ _SHELL_LEVEL_BACKGROUND_RE = re.compile(
 )
 _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
+# $((...)) arithmetic expansion, where `&` is bitwise-AND. One level of nested parens
+# ($((a + (b & c)))); deeper nesting is out of scope for a lexical check.
+_ARITHMETIC_EXPANSION_RE = re.compile(r"\$\(\((?:[^()]|\([^()]*\))*\)\)")
+# A genuine shell comment: `#` at the start of a word (start of line, after whitespace or ;&|()).
+_SHELL_COMMENT_RE = re.compile(r"(?:^|(?<=\s)|(?<=[;&|()]))#[^\n]*", re.MULTILINE)
 
 
 def _strip_quotes(command: str) -> str:
-    """Blank quoted / backtick content and provably-inert heredoc bodies so
-    regex checks can't match keywords (nohup, setsid, '&') inside strings.
+    """Blank quoted / backtick content, provably-inert heredoc bodies, arithmetic
+    expansions and shell comments so regex checks can't match keywords (nohup,
+    setsid, '&') inside strings or as bitwise-AND / comment text.
 
     Heredocs are masked FIRST: their delimiter may itself be quoted
     (``<<'EOF'``). ``strip_inert_heredoc_bodies`` is conservative — only a
     quoted, terminated delimiter on a simple opener fed to a known non-shell
     consumer is masked, so a real background operator can't hide in one.
+    Arithmetic and comment masking keep the string length, and a real `&`
+    before a comment (`cmd & # note`) stays in place.
     """
     result = strip_inert_heredoc_bodies(command)
     result = re.sub(r"'[^']*'", "''", result)
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
-    return re.sub(r"`[^`]*`", "``", result)
+    result = re.sub(r"`[^`]*`", "``", result)
+    result = _ARITHMETIC_EXPANSION_RE.sub(lambda m: "$((" + " " * (len(m.group(0)) - 4) + "))", result)
+    return _SHELL_COMMENT_RE.sub(lambda m: "#" + " " * (len(m.group(0)) - 1), result)
 
 
 _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (

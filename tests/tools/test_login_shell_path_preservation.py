@@ -152,8 +152,9 @@ def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_pat
     (tmp_path / ".profile").write_text(f'PATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n')
     monkeypatch.setenv("HOME", str(tmp_path))
     registry = ProcessRegistry()
-    session = _spawn(registry, env=SimpleNamespace(env={"PATH": f"{parent_bin}:/usr/bin:/bin"}),
-                     env_type="local", command='only-in-parent; printf "PATH=%s\\n" "$PATH"',
+    # HOME rides in the spawn env: without it the login shell reads the runner's own ~/.profile.
+    session = _spawn(registry, env=SimpleNamespace(env={"PATH": f"{parent_bin}:/usr/bin:/bin", "HOME": str(tmp_path)}),
+                     env_type="local", command='only-in-parent; printf "HOME=%s\\nPATH=%s\\n" "$HOME" "$PATH"',
                      cwd=str(tmp_path), effective_task_id="t", task_id="t", session_key="",
                      effective_pty=False)
     deadline = time.monotonic() + 30
@@ -161,6 +162,7 @@ def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_pat
         time.sleep(0.05)
     assert session.exited, session.output_buffer
     assert "parent-bin" in session.output_buffer.split(), session.output_buffer
+    assert f"HOME={tmp_path}" in session.output_buffer.splitlines(), session.output_buffer
     path_line = next(ln for ln in session.output_buffer.splitlines() if ln.startswith("PATH="))
     entries = path_line.removeprefix("PATH=").split(":")
     assert entries[0] == str(profile_bin)

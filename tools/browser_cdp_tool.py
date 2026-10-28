@@ -197,6 +197,9 @@ def _current_page_private_url(endpoint: str, target_id: Optional[str]) -> Option
     return next((u for u in page_urls if u and not u.startswith(_ORIGINLESS_PAGE_PREFIXES) and url_blocked(u)), None)
 
 
+_TEXT_INPUT_METHOD_PREFIX = "Input."
+
+
 def _param_url_literals(value: Any, key: str = "") -> list[str]:
     """Every URL a CDP call's params name: each ``url`` value whole, plus the ``http(s)://`` literals in
     every string at any depth (``Network.loadNetworkResource``, ``Runtime.callFunctionOn`` bodies,
@@ -229,7 +232,8 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
             return _blocked(template.format(literal), method)
     # The cloud-metadata floor is unconditional for every method, as in browser_exec's _url_policy_error
     # (#16234): with the private guard on or off, sidecar and local Chromium included.
-    literals = _param_url_literals(params or {})
+    # Input.* only types text or dispatches key/mouse events; a URL in its text is never fetched by the call.
+    literals = [] if method.startswith(_TEXT_INPUT_METHOD_PREFIX) else _param_url_literals(params or {})
     metadata = next((u for u in literals if is_always_blocked_url(u)), None)
     if metadata:
         return _blocked(f"Blocked: CDP {method} targets a cloud metadata endpoint ({metadata}).", method)

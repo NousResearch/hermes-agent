@@ -123,3 +123,6 @@ def test_raw_cdp_url_params_are_screened_even_when_the_open_page_is_public(monke
     assert (verdict is None) == local_backend
     public = {"frameId": "F", "url": "https://93.184.216.34/", "options": {}}
     assert guard(method="Network.loadNetworkResource", params=public, endpoint="ws://x", target_id="T") is None
+    # Typing a URL fetches nothing: text input stays allowed, metadata and LAN addresses alike.
+    for typed in (metadata, "http://192.168.1.10/"):
+        assert guard(method="Input.insertText", params={"text": typed}, endpoint="ws://x", target_id="T") is None

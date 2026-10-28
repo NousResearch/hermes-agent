@@ -378,6 +378,19 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
         "request_overrides": request_overrides, **extra,
     }
 
+def _route_credential_pointer(v: dict) -> str:
+    """Credential named by ``key_env``/``api_key_env`` on a delegation/auxiliary block, or "".
+
+    Same reader the rest of the credential surface uses (profile ``.env`` first, then the
+    environment), so a pointer that works on a ``providers:`` entry works here too. Imported
+    locally to keep this module's import graph unchanged.
+    """
+    pointer = str(v.get("key_env") or v.get("api_key_env") or "").strip()
+    if not pointer:
+        return ""
+    from hermes_cli.config import get_env_value_prefer_dotenv
+    return (get_env_value_prefer_dotenv(pointer) or "").strip()
+
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
     # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
@@ -468,12 +481,16 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
+    endpoint; ``key_env``/``api_key_env`` names the credential when ``api_key`` is absent; (``api_key`` None means
+    inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
-    values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
+    values = {k: str(cfg.get(k) or "").strip() or None
+              for k in ("model", "provider", "base_url", "api_key", "key_env", "api_key_env")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
+    if not values["api_key"]:
+        values["api_key"] = _route_credential_pointer(values) or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 

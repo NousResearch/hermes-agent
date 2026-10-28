@@ -50,7 +50,8 @@ def owner_reclaim_paused(conn, task_id):
     try:
         row = _admission_row(receipt)
         if row is not None and row[0] == 'terminal':
-            # Discard acknowledges uncertainty, not permission to repeat effects.
+            # Interrupted still pauses the generic reclaim paths; owner_attempt_provably_over decides
+            # when nothing can still be running it.
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
             return True
@@ -131,12 +132,11 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     """True when an unresolved owner receipt cannot still be executing this attempt.
 
     ``owner_reclaim_paused`` is about effects: an admission that may still be in flight is
-    never repeated. It must not also mean the run keeps its claim forever. The attempts it
-    pauses in practice are ones whose owner was killed (restart, OOM), and such a run may
-    never have written a ``worker_bound`` event at all, so ``bound_interpreter_gone`` cannot
-    speak for it — 76 ``owner_admitted`` against 74 ``worker_bound`` rows on one board means
-    runs in exactly that shape. This asks the question that matters — can anything still be
-    executing this attempt? — from evidence the board already keeps:
+    never repeated. It must not also mean the run keeps its claim forever. A paused run whose
+    owner died, or whose owner settled the admission after losing its worker, may never have
+    written a ``worker_bound`` event, so ``bound_interpreter_gone`` cannot speak for it. This
+    asks the question that matters — can anything still be executing this attempt? — from
+    evidence the board already keeps:
 
       * the run never bound an interpreter (a bound run is the crash sweep's to book);
       * every worker pid recorded for the run (``tasks.worker_pid``, its ``spawned`` and
@@ -180,7 +180,7 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     heartbeat = kb._to_epoch(row['last_heartbeat_at'])
     if heartbeat is not None and now - heartbeat <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:
         return False
-    # No pid was ever recorded: only a lapsed claim lets the owner's verdict (or its death) speak.
+    # A lapsed claim: a settled admission is proof; an unsettled one needs recorded pids and a dead owner.
     return settled or (bool(pids) and _owner_process_gone(receipt))
 
 
@@ -237,7 +237,8 @@ def apply_attempt_note(conn, task_id, pid, dead) -> None:
             dead.error_text = (f"pid {pid} exited cleanly after its managed worker was lost."
                                + dead.error_text.removeprefix(_PROTOCOL_VIOLATION_ERROR))
     # Before the worker's own output: the stored error is capped, and the output may be long.
-    head, sep, output = dead.error_text.partition(" Worker's last output: ")
+    from hermes_cli.kanban_db_dispatch import WORKER_OUTPUT_SEP
+    head, sep, output = dead.error_text.partition(WORKER_OUTPUT_SEP)
     dead.error_text = f"{head} [{note}]{sep}{output}"
 
 

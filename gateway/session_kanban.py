@@ -319,7 +319,7 @@ def record_worker_loss(policy, reason, *, pid=None, bound=False):
     Never raises: the caller's own loss handling must not depend on the board write.
     """
     try:
-        context = json.loads(getattr(policy, 'kanban_json', None) or 'null')
+        context = json.loads(policy.kanban_json or 'null')
         if not context:
             return
         from hermes_cli.kanban_db_connect import connect_closing

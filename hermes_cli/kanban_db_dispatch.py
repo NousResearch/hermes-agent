@@ -960,15 +960,16 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
         outcome = row["outcome"] or ""
         if outcome == "rate_limited":
             continue
-        metadata = _kb._json_dict(row["metadata"])  # a lost worker's run quotes its output: no text match
-        if outcome == "crashed" and not metadata.get("worker_lost") and (
-                metadata.get("protocol_violation") or "protocol violation" in (row["error"] or "")):
+        head = (row["error"] or "").partition(WORKER_OUTPUT_SEP)[0]  # never the worker's own words
+        if outcome == "crashed" and (
+                _kb._json_dict(row["metadata"]).get("protocol_violation") or "protocol violation" in head):
             streak += 1
             continue
         break
     return streak
 
 
+WORKER_OUTPUT_SEP = " Worker's last output: "  # dead-worker error text: our words, then the worker's
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
@@ -1070,7 +1071,7 @@ def _classify_dead_worker(
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
-            dead.error_text += f" Worker's last output: {worker_output!r}"
+            dead.error_text += f"{WORKER_OUTPUT_SEP}{worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
     return dead
 

@@ -193,6 +193,20 @@ def test_a_lost_worker_that_exited_cleanly_still_charges_the_breaker(board):
     assert kbd._protocol_violation_streak(board.conn, "t_clean") == 0
 
 
+def test_a_crash_whose_output_quotes_protocol_violation_is_not_one(board):
+    """The streak's text match reads our own error head, never the worker's quoted output."""
+    run_id = board.running("t_quote", claim_expires_in=900, heartbeat_age=30, owner=False)
+    log = kb.worker_log_path("t_quote")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+    log.write_text(f"Retrying after the earlier protocol violation.\n{KANBAN_WORKER_EXIT_TRAILER}1\n",
+                   encoding="utf-8")
+    board.tick(failure_limit=5)
+    run = board.run(run_id)
+    assert run["outcome"] == "crashed" and "protocol violation" in run["error"]
+    assert kbd._protocol_violation_streak(board.conn, "t_quote") == 0
+
+
 # --- A2: an elapsed claim lock is never "still running" after one tick ---------------------
 
 @pytest.mark.parametrize("shape, error", [

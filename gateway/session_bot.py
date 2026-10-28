@@ -276,23 +276,23 @@ def release_superseded_bot_chat_at_boot(db, store):
 
 def _kept_local_history(db, row):
     """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
-    or Desktop row a native open adopts (unstamped, or stamped with a subject a native ticket
-    carries: the host's own OS identity, or a structured login subject a same-user peer forwards),
+    or Desktop row a native open adopts (unstamped, or stamped with the host owner's OS identity,
+    an owner login label, or a structured login subject),
     or a Desktop row a served login stamped with its label (kept as on main, even with a route
     column or another profile's name). Any other local-source row no open can ever adopt (a route
-    column left by a crash or reconnect, another profile's stamp, or outside Desktop any other
-    stamp, such as a login label ``basic:alice``) is not: it held the title and refused every
-    delivery for good (#141243, #143715)."""
+    column left by a crash or reconnect, another profile's stamp, or outside Desktop a foreign
+    stamp) is not: it held the title and refused every delivery for good (#141243, #143715)."""
     from gateway.session_identity import parse_authenticated_subject
+    from gateway.owner_identity import same_owner
     from gateway.session_worker_reservation import owner_worker_subject
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
     user_id = row.get('user_id')
-    if (user_id and not legacy_account_label(row) and user_id != owner_worker_subject()
+    if (user_id and not legacy_account_label(row) and not same_owner(user_id, owner_worker_subject())
             and parse_authenticated_subject(user_id) is None):
-        # A Desktop row a login stamped stays where it is, as on main (#140183). On any other local
-        # source such a stamp names no subject a native ticket carries, so nobody adopts it (#143715).
+        # Keep the Desktop foreign-login exception (#140183). Owner login labels must instead
+        # reach validation: delivery and native open must agree before this door displaces history.
         return row.get('source') == 'desktop'
     try:
         validate_legacy_row(db, row, subject=user_id)

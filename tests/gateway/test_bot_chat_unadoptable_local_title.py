@@ -65,7 +65,7 @@ async def test_an_unadoptable_local_bot_chat_is_moved_aside_and_the_delivery_lan
 @pytest.mark.parametrize('source, stamp, route', [
     ('tui', 'github:alice', None),
     ('tui', 'nous:alice@example.com', None),
-    ('cli', 'basic:alice', None),
+    ('cli', 'basic:alice', 'agent:main:tui:dm:stale'),  # owner login, but a stale route prevents adoption
     ('tui', 'github:alice', 'agent:main:tui:dm:stale'),  # a crash's route column, never bound
     ('tui', 'uid:1001', None),                           # another OS user, not this host's identity
     ('desktop', 'auth:v1:["basic","","alice"]', 'agent:main:tui:dm:stale'),  # a subject, but routed
@@ -73,9 +73,9 @@ async def test_an_unadoptable_local_bot_chat_is_moved_aside_and_the_delivery_lan
 @pytest.mark.asyncio
 async def test_a_bot_chat_another_login_stamped_is_moved_aside_and_the_delivery_lands(
         headless, monkeypatch, source, stamp, route):
-    # Outside Desktop, a stamp that is neither this host's identity nor a login subject names no
-    # subject a native ticket carries; a crash's route column makes a subject-stamped row (Desktop
-    # too) unadoptable. No caller can adopt such a row, so it held the title and refused every
+    # Foreign stamps and stale routes remain unadoptable. An owner's login label alone no longer
+    # makes a row foreign, but a crash's route column still prevents adoption (Desktop too).
+    # No caller can adopt these rows, so they held the title and refused every
     # delivery for good (#143715). Moving it keeps its id, stamp and messages.
     from tests.waiting import async_wait_until
     import gateway.session_worker_reservation as reservation

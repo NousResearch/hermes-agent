@@ -72,9 +72,20 @@ def _wsl_windows_path_to_posix(path: str) -> str:
     drive = (win.drive or "").rstrip(":").lower()
     return "/".join(["/mnt", drive, *win.parts[1:]]) if wsl and drive else path
 
+def _configured_driver_override() -> str:
+    """Read the active profile's override; retain env-only reads for unscoped probes."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        configured = get_secret(_CUA_DRIVER_CMD_ENV)
+    except UnscopedSecretError:
+        configured = os.environ.get(_CUA_DRIVER_CMD_ENV)
+    return (configured or "").strip()
+
+
 def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
     """Read PM's selected binary without installing; never replace an explicit override."""
-    configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
+    configured = override.strip() if override is not None else _configured_driver_override()
     if configured:
         expanded = os.path.expanduser(configured)
         resolved = shutil.which(expanded)

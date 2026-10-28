@@ -869,7 +869,8 @@ def _refresh_cua_driver_after_update() -> None:
 
     if not _load_updates_cfg().get("refresh_cua_driver", True):
         return
-    if os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip():
+    from tools.computer_use.cua_backend_driver import _configured_driver_override
+    if _configured_driver_override():
         return
     if pm.installed_package("cua-driver", allow_outdated=True) is None:
         return

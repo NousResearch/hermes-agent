@@ -55,8 +55,27 @@ scripts are argparse CLIs that print JSON and use explicit UTF-8 I/O.
 
 ## Prerequisites
 
-- Python 3.10+ with `openpyxl` (`pip install openpyxl`). No other
-  third-party packages are needed; everything else is stdlib.
+- Python 3.10+ with `openpyxl`. No other third-party packages are
+  needed; everything else is stdlib.
+- Pick the interpreter with `terminal`. Use `python` when it already imports
+  the libraries (the Hermes Docker image ships them); otherwise use a
+  persistent side environment under the Hermes home, which survives container
+  restarts and never touches the Hermes install itself:
+
+  ```bash
+  export PY=python
+  if ! "$PY" -c "import openpyxl" 2>/dev/null; then
+    DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
+    PY="$DOCS_ENV/bin/python"
+    "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"  # new, or broken by a Python upgrade
+    "$PY" -c "import openpyxl" 2>/dev/null || "$PY" -m pip install -q openpyxl
+  fi
+  "$PY" scripts/xlsx_create.py --help
+  ```
+
+  Run every helper below with `"$PY"`. On Windows the side interpreter is
+  `%HERMES_HOME%\environments\documents\Scripts\python.exe`. Never
+  `pip install` into the interpreter that runs Hermes.
 - Optional: LibreOffice (`soffice`) for headless recalculation or
   format conversion.
 

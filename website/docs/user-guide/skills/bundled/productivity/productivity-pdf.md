@@ -48,9 +48,27 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 
 ## Prerequisites
 
-- Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`:
-  `python -m pip install pypdf reportlab pdfplumber`
-- Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `python -m pip install pypdfium2`, or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
+- Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`.
+- Pick the interpreter with `terminal`. Use `python` when it already imports
+  the libraries (the Hermes Docker image ships them); otherwise use a
+  persistent side environment under the Hermes home, which survives container
+  restarts and never touches the Hermes install itself:
+
+  ```bash
+  export PY=python
+  if ! "$PY" -c "import pypdf, reportlab, pdfplumber" 2>/dev/null; then
+    DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
+    PY="$DOCS_ENV/bin/python"
+    "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"  # new, or broken by a Python upgrade
+    "$PY" -c "import pypdf, reportlab, pdfplumber" 2>/dev/null || "$PY" -m pip install -q pypdf reportlab pdfplumber
+  fi
+  "$PY" scripts/pdf_create.py --help
+  ```
+
+  Run every helper below with `"$PY"`. On Windows the side interpreter is
+  `%HERMES_HOME%\environments\documents\Scripts\python.exe`. Never
+  `pip install` into the interpreter that runs Hermes.
+- Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `pypdfium2` installed into that side environment (`"$DOCS_ENV/bin/python" -m pip install pypdfium2`, then use it as `$PY`), or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
 - Each helper script checks imports lazily and prints an install hint if a dependency is missing.
 
 ## How to Run

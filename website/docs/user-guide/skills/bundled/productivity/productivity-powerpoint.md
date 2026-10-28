@@ -50,15 +50,33 @@ and slide rendering — all offline, no PowerPoint installation required.
 
 ## Prerequisites
 
-- Python 3.10+ with `python-pptx` installed
-  (`pip install python-pptx`).
+- Python 3.10+ with `python-pptx` (import name `pptx`).
+- Pick the interpreter with `terminal`. Use `python` when it already imports
+  the libraries (the Hermes Docker image ships them); otherwise use a
+  persistent side environment under the Hermes home, which survives container
+  restarts and never touches the Hermes install itself:
+
+  ```bash
+  export PY=python
+  if ! "$PY" -c "import pptx" 2>/dev/null; then
+    DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
+    PY="$DOCS_ENV/bin/python"
+    "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"  # new, or broken by a Python upgrade
+    "$PY" -c "import pptx" 2>/dev/null || "$PY" -m pip install -q python-pptx
+  fi
+  "$PY" scripts/pptx_create.py --help
+  ```
+
+  Run every helper below with `"$PY"`. On Windows the side interpreter is
+  `%HERMES_HOME%\environments\documents\Scripts\python.exe`. Never
+  `pip install` into the interpreter that runs Hermes.
 - Optional: LibreOffice (`soffice`) plus poppler (`pdftoppm` or
   `pdftocairo`) for rendering slides to PNGs and for PDF export.
   `pptx_render.py` detects both with `shutil.which` and degrades
   gracefully (reports `{"rendered": false, "missing": [...]}`, exit 0)
   when absent — all create/read/edit operations work without them.
 - Check availability via `terminal`:
-  `python -c "import pptx; print(pptx.__version__)"` and `which soffice pdftoppm`.
+  `"$PY" -c "import pptx; print(pptx.__version__)"` and `which soffice pdftoppm`.
 
 ## How to Run
 

@@ -44,9 +44,21 @@ For the broader, already-shipped PowerPoint authoring skill (slides, speaker not
 
 ## Setup
 
+Use `python` when it already imports `pptx` (the Hermes Docker image ships
+it). Otherwise install into a persistent side environment under the Hermes
+home, never into the interpreter that runs Hermes:
+
 ```bash
-pip install "python-pptx>=0.6"
+export PY=python
+if ! "$PY" -c "import pptx" 2>/dev/null; then
+  DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
+  PY="$DOCS_ENV/bin/python"
+  "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"
+  "$PY" -c "import pptx" 2>/dev/null || "$PY" -m pip install -q "python-pptx>=0.6"
+fi
 ```
+
+Run the deck-building Python with `"$PY"`.
 
 ## Core conventions
 

@@ -2405,7 +2405,21 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
 
 
 def _persist_switch_billing_route(agent) -> None:
-    """Persist the billing route so dashboard Model cards show the post-switch provider."""
+    """Persist the billing route so dashboard Model cards show the post-switch provider, and
+    the model_config route (top-level keys + nested ``gateway_runtime``) so a later cold-started
+    agent (idle evict, gateway restart, resume) recombines the model with the provider that
+    actually serves it — not a stale one left behind by an earlier switch.
+
+    This in-place path (auto-raise, rate-limit/entitlement fallback) previously only wrote the
+    billing_* columns (#48248). ``session_gateway_runtime()`` reads nested ``gateway_runtime``
+    with top priority over everything else (by design, #125942/#125956), but nothing wrote it
+    for an in-place switch — only the explicit ``/model`` commit did, via ``update_session_model()``
+    (#79536). Any auto-raise or fallback switch left ``gateway_runtime`` pointing at the PREVIOUS
+    provider; the next fresh agent build paired that stale provider with the current model and
+    sent an invalid pairing (e.g. a non-OpenAI model id to the Codex endpoint), 400/404ing before
+    the request even reached the right host. Call the same persistence helper the explicit path
+    uses so both routes stay in sync regardless of which switch path fired.
+    """
     # _session_db / session_id may be unset (tests, bare agents).
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
@@ -2418,6 +2432,14 @@ def _persist_switch_billing_route(agent) -> None:
         )
     except Exception:
         logger.warning("Failed to persist billing route after model switch", exc_info=True)
+    try:
+        session_db.update_session_model(
+            session_id, agent.model, provider=agent.provider,
+            base_url=agent.base_url, api_mode=getattr(agent, "api_mode", None),
+        )
+    except Exception:
+        logger.warning(
+            "Failed to persist model_config route after in-place model switch", exc_info=True)
 
 
 def switch_model(

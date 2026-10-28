@@ -199,17 +199,17 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         if (unmatched := _pin_matched_entries(store, payload)) is not None:
             return unmatched
         from tools import write_approval as wa
+        from agent.i18n import t
         FAILURE_CLASS.set("staged")
+        kind = t(f"display.review.staged_kind.{'batch' if operations is not None else action}")
+        label = t(f"display.review.label.{target}") if target in ("memory", "user") else target
         record = wa.stage_write(
             wa.MEMORY, payload,
-            summary=(f"background review consolidation ({'batch' if operations is not None else action} "
-                     f"on {target}): {detail}")[:200],
+            summary=t("display.review.staged_summary", kind=kind, label=label, detail=detail)[:200],
             origin=wa.current_origin())
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
+            "message": t("display.review.staged_message", kind=kind),
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)

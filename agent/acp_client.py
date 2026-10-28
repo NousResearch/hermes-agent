@@ -348,12 +348,69 @@ class ACPClient:
 
     @staticmethod
     def _terminate_process(proc: subprocess.Popen[str]) -> None:
+        # CLI launchers here are npm wrappers that spawn a platform-native executable as their
+        # child, so a launcher-only TERM leaves that descendant alive — in containers it is
+        # reparented to PID 1 and accumulates (16 leaked processes ≈ 2.6 GiB RSS in #124835's
+        # deployment). _spawn starts the tree in its own process group (launcher leads it,
+        # pgid == pid), so the graceful TERM and the KILL sweep both reach every descendant.
+        # The sweep is reuse-safe: a group's pgid stays claimed while any member lives, so a
+        # probe hit means the group is still ours; ProcessLookupError means nothing survived.
+        # A spawn that did NOT get its own group falls back to launcher-only termination —
+        # signalling the shared group could hit unrelated processes, which is worse than one
+        # leaked CLI.
+        import signal
+
+        def _launcher_only() -> None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:  # health: allow BLE001 -- teardown must never raise past the launcher-only fallback
+                with contextlib.suppress(Exception):
+                    proc.kill()
+
+        if os.name != "posix":
+            # No process groups on Windows, so a launcher TERM stops at the npm wrapper and
+            # the native descendant survives (#124835's Windows twin). Graceful window first,
+            # then the taskkill /T /F tree sweep — a fail-open no-op once the tree is gone.
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:  # health: allow BLE001, S110 -- the graceful window is best-effort; kill_process_tree below owns the outcome
+                pass
+            from hermes_cli._subprocess_compat import kill_process_tree
+
+            kill_process_tree(proc)
+            return
         try:
-            proc.terminate()
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            # The launcher is already reaped — poll() reaps in _session, so this is the
+            # crash path (CLI exited early). A group outlives its leader, and _spawn put
+            # this launcher at the head of its own group, so the pid it died with is
+            # STILL the group id: signalling it reaches the surviving descendants. An
+            # emptied group answers ProcessLookupError, and bailing here instead would
+            # signal nothing at all — the exact leak this teardown exists to close.
+            pgid = proc.pid
+        if pgid != proc.pid:
+            _launcher_only()
+            return
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok -- POSIX-only branch (guarded by os.name above)
+        try:
             proc.wait(timeout=2)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- teardown must never raise past the KILL sweep
+            # The group's pgid is claimed by any surviving member, ours included —
+            # hard-kill the group.
+            with contextlib.suppress(OSError):
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok -- POSIX-only branch (guarded by os.name above)
             with contextlib.suppress(Exception):
-                proc.kill()
+                proc.wait(timeout=5)
+        try:
+            os.killpg(pgid, 0)  # windows-footgun: ok -- POSIX-only branch (guarded by os.name above)
+        except OSError:
+            return  # the TERM window emptied the group
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok -- POSIX-only branch (guarded by os.name above)
 
     def _release_process(self, proc: subprocess.Popen[str]) -> None:
         """Reap one session's own child. ``is_closed`` flips only when the last live
@@ -401,14 +458,19 @@ class ACPClient:
                 + self.unsupported_transport_hint
             )
         try:
-            from hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
+            from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
 
             # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
-            # pipes stay intact for the ACP wire.
+            # pipes stay intact for the ACP wire. POSIX: own process group, so _terminate_process can
+            # signal the launcher's native descendants too — the npm wrappers spawn a platform-native
+            # executable that outlives a launcher-only TERM (#124835).
+            popen_kwargs: dict[str, Any] = (
+                {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+            )
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
-                creationflags=windows_hide_flags(),
+                **popen_kwargs,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

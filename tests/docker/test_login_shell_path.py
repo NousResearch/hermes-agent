@@ -13,12 +13,12 @@ import subprocess
 def test_login_shell_resolves_hermes_to_the_image_shim(built_image: str) -> None:
     r = subprocess.run(
         ["docker", "run", "--rm", "-u", "hermes", "--entrypoint", "bash", built_image,
-         "-lc", "command -v hermes; echo \"$PATH\""],
+         "-lc", 'echo "hermes=$(command -v hermes)"; echo "path=$PATH"'],
         capture_output=True, text=True, timeout=60, check=False,
     )
     assert r.returncode == 0, r.stderr
-    resolved, path = r.stdout.splitlines()[-2:]
-    assert resolved == "/opt/hermes/bin/hermes"
-    entries = path.split(":")
+    lines = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
+    assert lines["hermes"] == "/opt/hermes/bin/hermes"
+    entries = lines["path"].split(":")
     assert entries.index("/opt/hermes/bin") < entries.index("/opt/hermes/.venv/bin")
     assert entries.count("/opt/hermes/bin") == 1

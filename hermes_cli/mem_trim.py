@@ -21,7 +21,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DEFAULT_COOLDOWN_SECONDS = 60.0
-_DEFAULT_LOG_EVERY_N = 1
+_DEFAULT_LOG_EVERY_N = 60
 _DEFAULT_INFO_LOG_MIN_DELTA_MB = 0.0
 # Even forced trims honor a short floor: AIAgent.close() forces a trim, and delegate
 # batches close N child subagents back-to-back in the SAME process — without a floor
@@ -145,7 +145,8 @@ def trim_memory(
 
     Returns ``True`` only when ``malloc_trim(0)`` ran and reported success. Unsupported allocators,
     the config kill switch, cooldown suppression, and all runtime errors return ``False`` without
-    affecting the caller.
+    affecting the caller. A successful trim logs at INFO when forced or on every ``log_every_n``-th
+    eligible call (default 60: roughly hourly for an idle gateway), and at DEBUG otherwise.
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:
@@ -172,10 +173,13 @@ def trim_memory(
             after = collect_memory_snapshot()
             duration_ms = (time.perf_counter() - started) * 1000
             _trim_call_count += 1
-            if released and _should_log_trim(
-                force=force, log_every_n=log_every_n, call_count=_trim_call_count,
-                before=before, after=after, info_log_min_delta_mb=info_log_min_delta_mb):
-                logger.info(
+            if released:
+                level = logging.INFO if _should_log_trim(
+                    force=force, log_every_n=log_every_n, call_count=_trim_call_count,
+                    before=before, after=after, info_log_min_delta_mb=info_log_min_delta_mb,
+                ) else logging.DEBUG
+                logger.log(
+                    level,
                     "memory trim: reason=%s malloc_trim=%s rss_kib=%s->%s "
                     "rss_anon_kib=%s->%s threads=%s duration_ms=%.1f",
                     reason or "cleanup", trim_result,

@@ -230,6 +230,44 @@ def _store_path(base: Optional[Path] = None) -> Path:
     return (base or _resolve_checkpoint_base()) / _STORE_DIRNAME
 
 
+def _checkpoint_base_rel_path(working_dir: str) -> Optional[str]:
+    """Path of the active checkpoint base relative to ``working_dir``, or None.
+
+    A profile-home checkpoint (``~/.hermes/profiles/<name>``) contains the
+    checkpoint base, so staging the workdir unfiltered would store the store's
+    own object database inside the very snapshots it keeps — a loop no size
+    cap can converge.  The answer is derived from the live
+    ``_resolve_checkpoint_base()`` path, never from the literal directory name
+    ``checkpoints``: a user project that happens to own a ``checkpoints/``
+    directory is data and must stay in the snapshot.
+
+    ``"."`` means the working directory *is* the base; callers staging a tree
+    must treat that as "nothing to snapshot".
+    """
+    base = _normalize_path(str(_resolve_checkpoint_base()))
+    workdir = _normalize_path(working_dir)
+    try:
+        return base.relative_to(workdir).as_posix()
+    except ValueError:
+        return None
+
+
+def _staging_args(working_dir: str) -> list[str]:
+    """``git add`` arguments staging ``working_dir`` without re-capturing the store.
+
+    ``info/exclude`` is written once at store creation, so it cannot cover a
+    base discovered later (an existing store) or one that moves; the exclusion
+    is therefore a pathspec computed per take.  ``literal`` magic keeps a
+    directory whose name holds glob characters from widening the exclusion.
+    When the workdir *is* the base the exclusion covers the whole tree;
+    ``_take`` refuses that case rather than committing an empty snapshot.
+    """
+    base_rel = _checkpoint_base_rel_path(working_dir)
+    if base_rel is None:
+        return ["add", "-A"]
+    return ["add", "-A", "--", ".", f":(exclude,literal){base_rel}"]
+
+
 def _store_has_head(store: Path) -> bool:
     return (store / "HEAD").exists()
 
@@ -973,7 +1011,9 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage the current tree so the name-only diff sees new files too.
-        _run_git(["add", "-A"], store, abs_dir,
+        # Exclude the checkpoint base so we don't stage the store's own paths.
+        base_rel = _checkpoint_base_rel_path(working_dir)
+        _run_git(_staging_args(working_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
             ["diff", "--name-only", "-z", commit_hash, "--cached"],
@@ -997,6 +1037,11 @@ class CheckpointManager:
         restore: list[str] = []
         skipped: list[str] = []
         for rel in filter(None, names_out.split("\x00")):
+            # Filter out paths under the checkpoint base. Old checkpoints
+            # (taken before the exclusion fix) may contain store paths,
+            # which would otherwise be classified as restore/skipped.
+            if base_rel is not None and (rel.startswith(base_rel + "/") or rel == base_rel):
+                continue
             abs_path = Path(abs_dir) / rel
             entry = ledger.get(str(abs_path))
             recorded = entry.get("sha256") if isinstance(entry, dict) else None
@@ -1154,15 +1199,21 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
+        # Exclude the checkpoint base so we don't stage the store's own paths.
+        base_rel = _checkpoint_base_rel_path(working_dir)
+        _run_git(_staging_args(working_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
 
+        # Exclude the base from the diff output via pathspec so git never
+        # emits store paths (even from old checkpoints that contain them).
+        exclude = ["--", ".", f":(exclude,literal){base_rel}"] if base_rel is not None else []
+
         ok_stat, stat_out, _ = _run_git(
-            ["diff", "--stat", commit_hash, "--cached"],
+            ["diff", "--stat", commit_hash, "--cached", *exclude],
             store, abs_dir, index_file=index_file,
         )
         ok_diff, diff_out, _ = _run_git(
-            ["diff", commit_hash, "--cached", "--no-color"],
+            ["diff", commit_hash, "--cached", "--no-color", *exclude],
             store, abs_dir, index_file=index_file,
         )
 
@@ -1518,6 +1569,14 @@ class CheckpointManager:
         """Take a snapshot.  Returns True on success."""
         store = _store_path()
 
+        # A workdir that *is* the checkpoint base holds nothing but the store
+        # and its bookkeeping; every path would be excluded, so there is no
+        # tree to write.  Refuse rather than commit an empty snapshot.
+        base_rel = _checkpoint_base_rel_path(working_dir)
+        if base_rel == ".":
+            logger.debug("Checkpoint skipped: %s is the checkpoint base", working_dir)
+            return False
+
         err = _init_store(store, working_dir)
         if err:
             logger.debug("Checkpoint store init failed: %s", err)
@@ -1563,14 +1622,22 @@ class CheckpointManager:
         # Stage with per-project index.  Include a per-stage file-size filter
         # via ``core.bigFileThreshold`` is not what we want — instead, we
         # rely on the exclude file for broad patterns and post-stage prune
-        # any path whose size exceeds max_file_size_mb.
+        # any path whose size exceeds max_file_size_mb.  The checkpoint base
+        # itself is excluded by pathspec: staging it would store the store's
+        # own object database in the snapshot it is taking.
         ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
+            _staging_args(working_dir), store, working_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
+
+        # The index was seeded from the previous tip, so a store that already
+        # carries a recursive snapshot still has those paths on it.  Drop them
+        # before the tree is written; older commits stay untouched.
+        if base_rel is not None:
+            self._drop_index_prefix(store, working_dir, index_file, base_rel)
 
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(store, working_dir, index_file)
@@ -1675,6 +1742,45 @@ class CheckpointManager:
             return path.stat().st_size > cap
         except OSError:
             return False
+
+    def _drop_index_prefix(
+        self, store: Path, working_dir: str, index_file: Path, rel_prefix: str,
+    ) -> None:
+        """Unstage every index entry under ``rel_prefix``.
+
+        ``_take`` seeds the per-project index from the previous tip
+        (``read-tree``), so a store that already holds a recursive snapshot
+        keeps those paths staged even though the staging pathspec excludes
+        them.  Purging them here is what makes the exclusion apply to existing
+        stores instead of only to stores initialised after the fix.  The new
+        commit drops them; older commits are neither rewritten nor deleted.
+        """
+        ok, stdout, _ = _run_git(
+            ["ls-files", "--cached", "-z", "--", f":(literal){rel_prefix}"],
+            store, working_dir, index_file=index_file,
+        )
+        if not ok or not stdout:
+            return
+        # NUL separators preserve whitespace within each literal filename.
+        paths = [p for p in stdout.split("\x00") if p]
+        if not paths:
+            return
+        logger.debug(
+            "Checkpoint: dropping %d previously staged path(s) under %s from index",
+            len(paths), rel_prefix,
+        )
+        BATCH = 200
+        for i in range(0, len(paths), BATCH):
+            chunk = [f":(literal){p}" for p in paths[i:i + BATCH]]
+            # ``-f`` only overrides git's refusal to drop an entry whose
+            # staged content differs from both the worktree and the old tip
+            # (the store's own bookkeeping files churn between takes); with
+            # ``--cached`` no working-tree file is touched.
+            _run_git(
+                ["rm", "-f", "--cached", "--quiet", "--"] + chunk,
+                store, working_dir, index_file=index_file,
+                allowed_returncodes={128},
+            )
 
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,

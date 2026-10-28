@@ -46,4 +46,39 @@ class TestBackgroundTaskProfileScope:
         scope.assert_called_once_with(Path("/fake/profile"))
         inner.assert_awaited_once()
 
+    def test_marks_background_runtime_as_unable_to_receive_late_completions(self):
+        """The finite /background turn waits; the live chat stays routable."""
+        from gateway.session_context import (
+            async_delivery_supported,
+            reset_session_vars,
+        )
+
+        runner = _make_runner(multiplex=False)
+        observed = []
+
+        async def observe_delivery_capability(*args):
+            observed.append(async_delivery_supported())
+
+        runner._run_background_task_inner = mock.AsyncMock(
+            side_effect=observe_delivery_capability
+        )
+
+        async def run_scenario():
+            reset_session_vars()
+            assert async_delivery_supported() is True
+            task = asyncio.create_task(
+                runner._run_background_task(
+                    prompt="test", source=mock.MagicMock(), task_id="bg_test"
+                )
+            )
+            await task
+            # ContextVar writes in the spawned task must not disable async
+            # delivery in the live-chat task that created it.
+            assert async_delivery_supported() is True
+
+        asyncio.run(run_scenario())
+
+        assert observed == [False]
+        assert async_delivery_supported() is True
+
 

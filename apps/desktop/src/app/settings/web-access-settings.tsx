@@ -76,7 +76,7 @@ function appliesConfig(status: WebAccessStatus): boolean {
 /** Poll until the restarted gateway applies the saved config. Start, Stop and Restart all wait here:
  *  until the old gateway exits it still answers with what it served before. */
 async function waitForRestart(): Promise<WebAccessStatus> {
-  for (const deadline = Date.now() + RESTART_TIMEOUT_MS; Date.now() < deadline; ) {
+  for (const deadline = Date.now() + RESTART_TIMEOUT_MS; Date.now() < deadline;) {
     await new Promise(resolve => setTimeout(resolve, RESTART_POLL_MS))
     // The backend answering this may be the gateway being restarted.
     const status = await getWebAccessStatus().catch(() => null)
@@ -190,7 +190,11 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
     <SettingsContent>
       <SectionHeading icon={Network} page title={w.title} />
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{w.intro}</p>
-      <SettingsSection aside={<Pill tone={phase === 'serving' ? 'success' : 'muted'}>{pillLabel(phase, busy, w)}</Pill>} icon={Globe} title={w.title}>
+      <SettingsSection
+        aside={<Pill tone={phase === 'serving' ? 'success' : 'muted'}>{pillLabel(phase, busy, w)}</Pill>}
+        icon={Globe}
+        title={w.title}
+      >
         {/* A web app served on this computer only has no network address to choose until it stops. */}
         {status.mode !== 'local' && (
           <WhereRow
@@ -217,7 +221,15 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
             </Button>
           }
           description={describe(phase, status, w)}
-          title={phase === 'serving' ? <ExternalLink href={url} native showExternalIcon>{url}</ExternalLink> : url || w.title}
+          title={
+            phase === 'serving' ? (
+              <ExternalLink href={url} native showExternalIcon>
+                {url}
+              </ExternalLink>
+            ) : (
+              url || w.title
+            )
+          }
         />
       </SettingsSection>
     </SettingsContent>

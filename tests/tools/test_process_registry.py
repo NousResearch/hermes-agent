@@ -887,7 +887,7 @@ class TestSpawnEnvSanitization:
 
         with patch.dict(os.environ, {
             "PATH": "/usr/bin:/bin",
-            "HOME": "/home/user",
+            "HOME": "/home/user", "USERPROFILE": r"C:\Users\testuser",  # ntpath resolves ~ via USERPROFILE, not HOME (#137196)
             "USER": "tester",
             "TELEGRAM_BOT_TOKEN": "bot-secret",
             "FIRECRAWL_API_KEY": "fc-secret",

@@ -310,7 +310,7 @@ export const MessageLine = memo(function MessageLine({
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
-            {glyph}{' '}
+            {msg.role === 'user' ? '▌' : glyph}{' '}
           </Text>
         </NoSelect>
 

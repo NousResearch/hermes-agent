@@ -72,3 +72,23 @@ def test_allowed_redirect_keeps_content_and_requested_url_for_the_cache(scrape, 
     assert entry["content"] == "# landed"
     # web_tools_extract files a redirected page under metadata.sourceURL (the requested URL).
     assert entry["metadata"]["sourceURL"] == REQUESTED
+
+
+def test_keyless_extract_reports_the_redirect_target_for_the_shared_gate(monkeypatch, tmp_path):
+    """The keyless REST path must surface ``metadata.url`` too: reporting the requested URL hid the
+    redirect target from the dispatch-level re-gate, so a blocklisted landing page was returned."""
+    from plugins.web import keyless_mcp
+    from tools import web_tools_extract
+
+    monkeypatch.setattr(firecrawl_provider._KeylessFirecrawlClient, "scrape",
+                        lambda self, **_kw: _rest_payload("https://blocked.example/page"))
+    entry = keyless_mcp.firecrawl_extract_keyless([REQUESTED])[0]
+    assert entry["url"] == "https://blocked.example/page"
+    assert entry["metadata"]["sourceURL"] == REQUESTED  # the cache still keys it by the requested URL
+
+    config = tmp_path / "config.yaml"
+    config.write_text(json.dumps({"security": {"website_blocklist": {"enabled": True, "domains": ["blocked.example"]}}}))
+    real_check = website_policy.check_website_access
+    monkeypatch.setattr(website_policy, "check_website_access", lambda url: real_check(url, config_path=config))
+    gated = asyncio.run(web_tools_extract._gate_final_urls([entry], {REQUESTED}))[0]
+    assert gated["content"] == "" and gated["blocked_by_policy"]["host"] == "blocked.example"

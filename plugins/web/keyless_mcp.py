@@ -302,14 +302,19 @@ def firecrawl_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 
 def firecrawl_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
-    from plugins.web.firecrawl.provider import _KeylessFirecrawlClient, _extract_scrape_payload, _with_scrape_status
+    from plugins.web.firecrawl.provider import (
+        _KeylessFirecrawlClient, _extract_scrape_payload, _final_url, _with_scrape_status,
+    )
     client = _KeylessFirecrawlClient()
 
     def _fetch(url: str) -> dict[str, Any]:
         payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"])) or {}
-        metadata = payload.get("metadata") or {}
-        title = metadata.get("title") if isinstance(metadata, dict) else None
-        return _with_scrape_status(_page(url, title or "", payload.get("markdown") or payload.get("html") or ""), metadata)
+        metadata = payload.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        content = payload.get("markdown") or payload.get("html") or ""
+        # Report the post-redirect page as ``url`` so the shared dispatch re-gates it.
+        page = _page(_final_url(metadata, url), metadata.get("title") or "", content, source_url=url)
+        return _with_scrape_status(page, metadata)
 
     return _per_url(urls, _fetch, "firecrawl")
 

@@ -98,3 +98,37 @@ def test_an_uncached_refetch_never_retargets_the_old_entry(monkeypatch):
     later = _RedirectingProvider()
     result = _extract(later)[0]
     assert later.calls == 1 and not result.get("cached"), "the old blocked page was served from cache"
+
+
+def test_interleaved_writers_never_pair_one_body_with_anothers_final_url(monkeypatch):
+    """Two fetches of one key: A writes its body, B writes its body and final URL, then A's late
+    final-URL write lands. B's body must stay paired with B's destination, so blocking B's host
+    makes the hit a miss instead of serving it under A's still-allowed destination."""
+    check, safe = _policy()
+    monkeypatch.setattr("tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+
+    def landing(host, body):
+        class _Provider(_RedirectingProvider):
+            async def extract(self, urls, format=None):
+                self.calls += 1
+                return [{"url": f"https://{host}/", "content": body, "raw_content": body,
+                         "metadata": {"sourceURL": urls[0]}}]
+        return _Provider()
+
+    real_record, deferred = wrc.extract_cache_record_final_url, []
+    monkeypatch.setattr(wrc, "extract_cache_record_final_url", lambda *a, **k: deferred.append((a, k)))
+    def fetch(provider):  # straight to the fetch+cache-write path, as two concurrent misses would
+        asyncio.run(wte._dispatch_extract(provider, [REDIRECTOR], None))
+
+    fetch(landing("allowed-a.example", "BODY A"))  # A-put; A-final held back
+    monkeypatch.setattr(wrc, "extract_cache_record_final_url", real_record)
+    fetch(landing("origin-b.example", "BODY B"))  # B-put, B-final
+    for args, kwargs in deferred:  # A-final lands last
+        real_record(*args, **kwargs)
+
+    check, safe = _policy(blocked_host="origin-b.example")
+    monkeypatch.setattr("tools.website_policy.check_website_access", check)
+    later = _RedirectingProvider()
+    result = _extract(later)[0]
+    assert later.calls == 1 and not result.get("cached"), "B's blocked body was served under A's final URL"

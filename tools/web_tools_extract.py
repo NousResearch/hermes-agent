@@ -250,7 +250,7 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
         if url and _content and not fetched.get("error"):
             stored = extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
             if stored and fetched.get("url") and fetched["url"] != url:
-                extract_cache_record_final_url(url, fetched["url"], format=format, provider=provider.name)
+                extract_cache_record_final_url(url, fetched["url"], _content, format=format, provider=provider.name)
     return results
 
 

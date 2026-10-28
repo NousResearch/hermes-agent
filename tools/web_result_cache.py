@@ -274,20 +274,30 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
         content = file_path.read_text(encoding="utf-8-sig")
     except Exception:
         return None
+    # The body file and its index entry are separate writes; serve only the body the entry (and its
+    # ``final_url``) was recorded for. Entries from before the digest carry no ``final_url`` either.
+    if ("content_sha256" in entry or "final_url" in entry) and entry.get("content_sha256") != _content_sha(content):
+        return None
     logger.info("web_extract cache hit: %s", url)
     return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True,
             "final_url": entry.get("final_url") or url}
 
 
-def extract_cache_record_final_url(url: str, final_url: str, format: Optional[str] = None, provider: str = "") -> None:
+def _content_sha(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def extract_cache_record_final_url(
+    url: str, final_url: str, content: str, format: Optional[str] = None, provider: str = ""
+) -> None:
     """Remember the post-redirect URL behind a cached page, so a hit can re-run the website policy and
     SSRF gates against the page it actually serves (a blocklist added after caching must still bite).
-    Call only after ``extract_cache_put`` wrote this content: a skipped write must not retarget the
-    older entry still on disk."""
+    Compare-and-set on *content*: when another fetch of the same key wrote its body in between (or this
+    write was skipped), the entry is left alone rather than pairing that body with this final URL."""
     with _index_lock:
         index = _load_index()
         entry = index.get(_url_digest(url, format, provider))
-        if entry is None:
+        if entry is None or entry.get("content_sha256") != _content_sha(content):
             return
         entry["final_url"] = final_url
         _save_index(index)
@@ -312,6 +322,7 @@ def extract_cache_put(
             index = _load_index()
             index[_url_digest(url, format, provider)] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+                "content_sha256": _content_sha(content),
             }
             _save_index(index)
         return True

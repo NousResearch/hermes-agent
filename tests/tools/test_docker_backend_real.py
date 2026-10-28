@@ -201,7 +201,9 @@ def test_desktop_workspace_selection_and_recreation(
                     "source": "desktop",
                 }
             )
-            assert terminal_tool.resolve_task_overrides(sid)["cwd_source"] == "session"
+            assert terminal_tool.resolve_task_overrides(sid)["cwd_source"] == (
+                "session" if mount else "process"
+            )
             key = _env_key(sid)
             expected = f"project-{index}" if mount else "original"
             for _ in range(2):

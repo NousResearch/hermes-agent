@@ -108,7 +108,20 @@ def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
                     "source": "desktop",
                 }
             )
-            assert terminal_tool.resolve_task_overrides(sid)["cwd_source"] == "session"
+            overrides = terminal_tool.resolve_task_overrides(sid)
+            assert overrides["cwd_source"] == ("session" if mount else "process")
+            if not mount:
+                assert overrides["cwd"] == ""
+                terminal_tool.record_session_cwd(sid, "/workspace/subdir")
+                vars(server)["_register_session_cwd"](
+                    {
+                        "session_key": sid,
+                        "cwd": str(workspace),
+                        "explicit_cwd": True,
+                        "source": "desktop",
+                    }
+                )
+                assert terminal_tool.get_session_cwd(sid) == "/workspace/subdir"
             plans.append(_plan(sid))
             assert (
                 terminal_tool._resolve_container_task_id(plans[-1][0]) == plans[-1][0]

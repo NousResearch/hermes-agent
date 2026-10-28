@@ -510,18 +510,25 @@ def _register_session_cwd(session: dict | None) -> None:
     if hints is not None and hasattr(hints, "rebind_working_dir"):
         hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
-        from tools.terminal_tool import register_task_env_overrides
+        from tools.terminal_tool import _get_env_config, register_task_env_overrides
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
         # The cwd/override record is keyed by the ROUTED home (#123989). session.create is a plain
         # @method, so bind the session's own profile home here or the record lands under the raw key
         # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
         # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
         import hermes_constants as hc
+        from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
         with contextlib.ExitStack() as stack:
             profile_home = session.get("profile_home")
             if profile_home and hc.hermes_home_key(hc.get_hermes_home()) != hc.hermes_home_key(profile_home):
                 stack.callback(hc.reset_hermes_home_override, hc.set_hermes_home_override(str(profile_home)))
+                stack.enter_context(install_and_reset_profile_terminal_scope(profile_home))
+            terminal = _get_env_config()
+            if terminal["env_type"] == "docker" and not terminal["docker_mount_cwd_to_workspace"]:
+                # The Desktop workspace is host context, not a directory in this sandbox.
+                # An empty override leaves its configured cwd and subsequent in-container cd intact.
+                cwd, cwd_source = "", "process"
             register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
 
 

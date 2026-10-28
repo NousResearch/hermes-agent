@@ -328,21 +328,43 @@ def admission_display(payload):
 
 def _route_identity(source):
     """Identity of a message source for wake admission: the routing/provenance fields
-    reconstructible from a persisted delegation origin — platform, chat ids, thread,
-    scope, profile, and the user the wake is bound to (upstream contract from
-    ``871d05520a``: user drift must refuse, ``group_sessions_per_user`` isolation
-    depends on it). Deliberately excludes ``message_id`` (a wake is not a reply to the
-    stale trigger, #52694) and display-only fields a persisted origin cannot
-    reconstruct (``chat_name``, ``chat_topic``): under a full-dict comparison a wake
-    for a NAMED Telegram forum topic was unadmittable by construction (eternal
-    ``admission_conflict`` → 48h terminal drop), while unnamed topics (``chat_topic``
-    absent on both sides) delivered.
+    reconstructible from a persisted delegation origin, normalized exactly the way
+    ``build_session_key`` normalizes them, so a wake is admitted iff both sides map to
+    the same session route:
+
+    - thread continuity (Discord auto-threads): ``thread_id``, else the
+      ``prospective_thread_id`` of the channel-initiating message, with the
+      ``chat_type`` slot normalized to ``thread`` — key parity (session.py).
+    - participant: ``_canonical_participant`` (``user_id_alt or user_id``, WhatsApp
+      canonicalized) — key parity. ``user_name`` stays raw: the upstream drift
+      contract (``871d05520a``) requires user-name drift to refuse.
+    - profile: ``None`` and ``'default'`` normalize to the same namespace.
+    - scope: only Slack scopes sessions; a Discord/WhatsApp ``scope_id`` drift must
+      not refuse what the key admits.
+
+    Deliberately excluded: ``message_id`` (a wake is not a reply to the stale
+    trigger, #52694) and display-only fields a persisted origin cannot reconstruct
+    (``chat_name``, ``chat_topic``) — under a full-dict comparison a wake for a
+    NAMED Telegram forum topic was unadmittable by construction (eternal
+    ``admission_conflict`` → 48h terminal drop) while unnamed topics delivered.
 
     Session-key binding is enforced independently by ``_owner`` and
     ``check_automation_route`` via ``_generate_session_key``."""
-    return {field: getattr(source, field, None) for field in
-            ('platform', 'chat_id', 'chat_type', 'thread_id', 'scope_id', 'profile',
-             'user_id', 'user_name')}
+    from gateway.session import Platform, _canonical_participant
+    thread_id = source.thread_id or (
+        None if source.chat_type == 'dm' else getattr(source, 'prospective_thread_id', None))
+    chat_type_slot = 'thread' if thread_id and not source.thread_id else source.chat_type
+    profile = getattr(source, 'profile', None)
+    return {
+        'platform': source.platform,
+        'chat_id': source.chat_id,
+        'chat_type': chat_type_slot,
+        'thread_id': thread_id,
+        'scope_id': source.scope_id if source.platform == Platform.SLACK else None,
+        'profile': None if profile in (None, 'default') else profile,
+        'participant': _canonical_participant(source),
+        'user_name': source.user_name,
+    }
 
 
 def committed_route_envelope(authority, entry):

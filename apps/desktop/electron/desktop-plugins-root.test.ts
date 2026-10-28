@@ -425,3 +425,61 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(fs.readdirSync(appRoot)).toEqual([])
   })
 })
+
+describe('desktop tree publication', () => {
+  it.skipIf(process.platform === 'win32')(
+    'refuses an installed combined package whose desktop half links elsewhere in the package',
+    async () => {
+      // The Desktop install modal lands a combined package through the agent install, then publishes its
+      // desktop half from plugins/<name>/desktop via this reconcile, not through the git installer.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const pkg = path.join(home, 'plugins', 'media')
+      write(path.join(pkg, 'plugin.yaml'), 'name: media\n')
+      write(path.join(pkg, 'assets', 'asset.txt'), 'package file')
+      write(path.join(pkg, 'desktop', 'plugin.js'), 'export default {}')
+      fs.symlinkSync('../assets/asset.txt', path.join(pkg, 'desktop', 'asset.txt'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      try {
+        expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+        expect(warn.mock.calls.flat().join(' ')).toContain('symbolic link (asset.txt)')
+      } finally {
+        warn.mockRestore()
+      }
+
+      // Nothing published and nothing staged.
+      expect(fs.existsSync(appRoot) ? fs.readdirSync(appRoot) : []).toEqual([])
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')('refuses an installed package whose desktop folder is a link', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    write(path.join(home, 'elsewhere', 'plugin.js'), 'export default {}')
+    fs.mkdirSync(path.join(home, 'plugins', 'media'), { recursive: true })
+    fs.symlinkSync(path.join(home, 'elsewhere'), path.join(home, 'plugins', 'media', 'desktop'))
+
+    await expect(materializeDesktopHalf(path.join(home, 'plugins', 'media'), appRoot)).rejects.toThrow(
+      'folder is a symbolic link'
+    )
+    expect(fs.existsSync(path.join(appRoot, 'media'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'still publishes a development checkout the user linked in, links inside it included',
+    async () => {
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const checkout = path.join(home, 'src', 'media')
+      write(path.join(checkout, 'desktop', 'plugin.js'), 'export default {}')
+      write(path.join(checkout, 'assets', 'asset.txt'), 'checkout file')
+      fs.symlinkSync('../assets/asset.txt', path.join(checkout, 'desktop', 'asset.txt'))
+      fs.mkdirSync(path.join(home, 'plugins'), { recursive: true })
+      fs.symlinkSync(checkout, path.join(home, 'plugins', 'media'))
+
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+      expect(fs.readFileSync(path.join(appRoot, 'media', 'asset.txt'), 'utf8')).toBe('checkout file')
+    }
+  )
+})

@@ -454,45 +454,6 @@ export function guiInstallSourceRefusal(identifier: string): null | string {
   return 'Plugins are installed from Hermes Desktop over https:// only. Use `hermes plugins install` in a terminal for other sources.'
 }
 
-// The same cap the Webapp's host-side desktop install applies to the copied tree.
-const DESKTOP_TREE_MAX_BYTES = 64 * 1024 * 1024
-
-/** Refuse a desktop tree that reaches outside the clone or is too big to copy. A symlink anywhere on the
- *  way to it, or inside it, would publish whatever it points at on this machine (or a dangling link into
- *  the deleted clone) as part of the plugin, so the tree must be plain files and folders. */
-async function assertPlainDesktopTree(cloneRoot: string, sourceDir: string): Promise<void> {
-  const realRoot = await fsp.realpath(cloneRoot)
-
-  if ((await fsp.realpath(sourceDir)) !== path.join(realRoot, path.relative(cloneRoot, sourceDir))) {
-    throw new Error('The desktop plugin folder is a symbolic link; it is not installed.')
-  }
-
-  let total = 0
-  const pending = [sourceDir]
-
-  while (pending.length > 0) {
-    const dir = pending.pop()!
-
-    for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name)
-
-      if (entry.isSymbolicLink()) {
-        throw new Error(`The desktop plugin contains a symbolic link (${path.relative(sourceDir, full)}); it is not installed.`)
-      }
-
-      if (entry.isDirectory()) {
-        pending.push(full)
-      } else {
-        total += (await fsp.lstat(full)).size
-
-        if (total > DESKTOP_TREE_MAX_BYTES) {
-          throw new Error(`The desktop plugin is larger than ${DESKTOP_TREE_MAX_BYTES / (1024 * 1024)} MB.`)
-        }
-      }
-    }
-  }
-}
-
 function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure: boolean } {
   if (gitUrl.startsWith('http://') || gitUrl.startsWith('file://')) {
     return {
@@ -579,8 +540,6 @@ export async function installDesktopPluginFromGit(
       const sourceDir =
         detected.desktopSourceSubdir === '.' ? pluginRoot : path.join(pluginRoot, detected.desktopSourceSubdir)
 
-      await assertPlainDesktopTree(cloneRoot, sourceDir)
-
       // A repo carrying BOTH halves is one package: land its desktop half under
       // the AGENT package name, so the copy this app makes and the one
       // `reconcileUnifiedDesktopHalves` would make are the same folder (#100412)
@@ -611,7 +570,7 @@ export async function installDesktopPluginFromGit(
         // part of that publication — without it the Plugins page cannot tell this
         // copy belongs to the agent row (it sits on "copying…" forever) and the
         // half loads default-enabled instead of opt-in.
-        await publishDesktopTree(sourceDir, targetDir, async staged => {
+        await publishDesktopTree({ dir: sourceDir, plainWithin: cloneRoot }, targetDir, async staged => {
           if (!packageName) {
             // A desktop-only repo is a standalone plugin. A package marker it
             // ships would name another package's agent half as its own (pairing

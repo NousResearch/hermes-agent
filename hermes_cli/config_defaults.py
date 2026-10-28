@@ -2096,6 +2096,15 @@ DEFAULT_CONFIG = {
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
+    "profiles": {  # Profile creation defaults.
+        # Where a NEW profile's gateway will be supervised: "auto" follows the runtime_kind the
+        # serving gateway stamps into gateway_state.json (native wherever nothing containerized
+        # runs, today's behaviour), "container" / "native" force it.
+        "runtime": "auto",
+        # Container name used ONLY to render the exact `docker exec <name> ...` hand-off command
+        # after creating a containerized profile. Never shelled out to and never inspected.
+        "container_name": "hermes",
+    },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).

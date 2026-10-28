@@ -751,7 +751,7 @@ def test_local_only_report_card_is_exempt_and_costs_no_lookup(
 
     monkeypatch.setattr(kbd, "_resolve_pr_state", _resolve)
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="tell gabriel the PR is ready", assignee="chief",
+        tid = kb.create_task(conn, title="notify operator the PR is ready", assignee="chief",
                              completion_contract="local-only")
         kb.add_comment(conn, tid, author="chief",
                        body="PR #78 is ready: https://github.com/example/repo/pull/78")

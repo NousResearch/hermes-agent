@@ -7,10 +7,13 @@ import { triggerHaptic } from '@/lib/haptics'
 import { persistString, storedString } from '@/lib/storage'
 
 import {
+  adoptLegacyEdits,
   compactDraftStash,
   DRAFT_STASH_STORAGE_KEY,
   hasDraftStash,
+  healLegacyMirror,
   newerEntry,
+  nextStashStamp,
   readDraftStash,
   readLegacyDrafts,
   type StashEntries,
@@ -316,10 +319,21 @@ const cloneDraft = (draft: SessionDraft): SessionDraft => ({
 // What this window last read from or wrote to the shared stash, cleared
 // markers included. A reload applies only entries newer than this, and a write
 // puts back any entry here that storage has since lost to a stale writer.
-// The pre-v4 list seeds it only before any window has written v4: after
-// that the list is a mirror that can lag a moment behind, and reading it
-// could bring back a draft whose cleared marker has expired.
+// The pre-v4 list seeds it before any window has written v4; after that only
+// what an older build changed in that list since this build wrote it counts.
 let persistedDrafts: StashEntries = hasDraftStash() ? readDraftStash() : readLegacyDrafts(SESSION_DRAFTS_STORAGE_KEY)
+
+if (typeof window !== 'undefined' && hasDraftStash()) {
+  const adopted = adoptLegacyEdits(persistedDrafts, SESSION_DRAFTS_STORAGE_KEY, Date.now())
+
+  if (adopted) {
+    persistedDrafts = compactDraftStash(adopted, MAX_PERSISTED_DRAFTS, Date.now())
+    writeDraftStash(persistedDrafts, SESSION_DRAFTS_STORAGE_KEY)
+  } else {
+    // A list another window left one write behind: rewrite it before its receipt expires.
+    healLegacyMirror(SESSION_DRAFTS_STORAGE_KEY)
+  }
+}
 
 const draftsBySession = new Map<string, SessionDraft>(
   [...persistedDrafts]
@@ -434,7 +448,7 @@ function applyStoredDraft(key: string, entry: StashEntry): void {
 }
 
 /** Merge storage with this window's copy (plus `local`, this window's new save) and write back what storage lacks. */
-function syncPersistedDrafts(local?: { entry: StashEntry; key: string }): void {
+function syncPersistedDrafts(local?: { key: string; text: string | null }): void {
   const stored = readDraftStash()
   const merged: StashEntries = new Map()
   let rewrite = Boolean(local)
@@ -455,7 +469,9 @@ function syncPersistedDrafts(local?: { entry: StashEntry; key: string }): void {
   }
 
   if (local) {
-    merged.set(local.key, local.entry)
+    // Later than every entry any window has saved, whatever the wall clock
+    // says, so the save wins the merge everywhere and the cap never evicts it.
+    merged.set(local.key, { at: nextStashStamp(merged, Date.now()), text: local.text })
   }
 
   persistedDrafts = rewrite ? compactDraftStash(merged, MAX_PERSISTED_DRAFTS, Date.now()) : merged
@@ -473,6 +489,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
     if (event.key === DRAFT_STASH_STORAGE_KEY || event.key === null) {
       syncPersistedDrafts()
+      healLegacyMirror(SESSION_DRAFTS_STORAGE_KEY)
     }
   })
 }
@@ -535,9 +552,7 @@ export function stashSessionDraft(scope: string | null | undefined, text: string
 
   // Clearing a draft this window never saw saved has nothing to clear.
   if (saved !== null || previous?.text) {
-    // Stamped later than any copy of this key this window has seen, so the
-    // save wins the merge in every window.
-    syncPersistedDrafts({ entry: { at: Math.max(Date.now(), (previous?.at ?? 0) + 1), text: saved }, key })
+    syncPersistedDrafts({ key, text: saved })
   }
 
   publishDraftTitle(key, deriveDraftTitle(text))

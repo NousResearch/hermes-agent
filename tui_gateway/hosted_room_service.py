@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -35,6 +36,7 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+logger = logging.getLogger(__name__)
 
 
 def task_member_id(task: Mapping[str, Any]) -> str:
@@ -45,6 +47,32 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
     """A pending action naming the exact attempt ``groups.retry``/``discard`` fence on."""
     return {"kind": kind, "member_id": task_member_id(task), "task_id": task["identity"].task_id,
             "execution_generation": task["execution_generation"]}
+
+
+def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
+    """Read the room owner's config, never the current member's profile scope. A malformed value
+    keeps today's defaults (logged) rather than taking every room on this store offline."""
+    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(root))
+    try:
+        config = load_user_config_effective(root / "config.yaml")
+    finally:
+        reset_hermes_home_override(token)
+    try:
+        rooms = config.get("hosted_rooms", {})
+        if not isinstance(rooms, Mapping):
+            raise discussion.DiscussionValidationError("hosted_rooms must be a mapping")
+        settings = rooms.get("discussion", {})
+        if not isinstance(settings, Mapping):
+            raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
+        return discussion.DiscussionLimits(
+            max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
+            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+    except discussion.DiscussionValidationError as exc:
+        logger.warning("ignoring hosted_rooms.discussion in %s/config.yaml: %s", root, exc)
+        return discussion.DiscussionLimits()
 
 
 def _hosted_room_turn_timeout_seconds() -> float:
@@ -79,10 +107,13 @@ class HostedRoomService:
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
+        self.discussion_limits = _discussion_limits(self.root)
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
-        self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
+        self.policy_checkpoint = HostedRoomPolicyCheckpoint(
+            self.db_path,
+            max_active_events=1 + 2 * discussion.MAX_DISCUSSION_MEMBERS * self.discussion_limits.max_rounds)
         self.rpc = self._make_rpc(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
@@ -108,7 +139,7 @@ class HostedRoomService:
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
 
     def _make_rpc(self, server):
-        return HostedRoomServerRPC(server)
+        return HostedRoomServerRPC(server, db_path=self.db_path)
 
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""
@@ -452,7 +483,7 @@ class HostedRoomService:
                 return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                initial_watermarks=snapshot.watermarks, freeze_input_context=True)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits)
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)

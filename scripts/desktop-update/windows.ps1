@@ -72,6 +72,7 @@ param(
     [int]$ProbeTimeoutSeconds = 60,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
+    [switch]$SelfTestLogConcurrency,
     [switch]$SelfTestMarker,
     [switch]$SelfTestWorkingDirectory,
     [string]$HandoffRun = "",
@@ -89,7 +90,7 @@ if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey
 }
 $targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLogConcurrency -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
@@ -103,10 +104,74 @@ $MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
 $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
+$script:HandoffLogMutex = $null
+# One mutex per log path (case-normalized: the same HERMES_HOME spelled
+# differently must still serialize), hashed because a mutex name cannot carry
+# path characters.
+$handoffLogHash = ""
+$handoffSha = [System.Security.Cryptography.SHA1]::Create()
+try {
+    $handoffLogHash = [BitConverter]::ToString($handoffSha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($LogPath.ToLowerInvariant())), 0, 8).Replace("-", "")
+} finally { $handoffSha.Dispose() }
+$script:HandoffLogMutexName = "Global\HermesHandoffLog-$handoffLogHash"
+# Lines the log could not take yet, oldest first (Write-HandoffLog).
+$script:PendingLogLines = New-Object System.Collections.Generic.List[string]
+
+function Sync-HandoffLog {
+    # Append every pending line in one write, oldest first. False while another process still
+    # holds the log: the lines stay queued for the next attempt instead of being dropped.
+    if ($script:PendingLogLines.Count -eq 0) { return $true }
+    $held = $false
+    try {
+        $mutex = $script:HandoffLogMutex
+        if (-not $mutex) {
+            # Named, so every writer's own instance joins the same OS object;
+            # lazily created because runspaces cannot share the parent's
+            # instance. Created unsignalled: ownership comes from WaitOne.
+            $mutex = $script:HandoffLogMutex = New-Object System.Threading.Mutex($false, $script:HandoffLogMutexName)
+        }
+        try { $held = $mutex.WaitOne(5000) }
+        catch [System.Threading.AbandonedMutexException] { $held = $true }  # a writer died mid-append; the wait still granted ownership
+        # AppendData with full sharing: never conflicts with a reader, and lands at end-of-file
+        # atomically even beside a writer that skipped the mutex (its wait timed out).
+        $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append,
+            [System.Security.AccessControl.FileSystemRights]::AppendData,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete), 4096, [System.IO.FileOptions]::None)
+        try {
+            # Encoded only once the file is open: a held log retried on every poll of a long step
+            # must not re-encode the whole growing queue each time.
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes((($script:PendingLogLines -join "`r`n") + "`r`n"))
+            $fs.Write($bytes, 0, $bytes.Length)
+        } finally { $fs.Dispose() }
+    } catch {
+        return $false
+    } finally {
+        if ($held) { try { $script:HandoffLogMutex.ReleaseMutex() } catch {} }
+    }
+    $script:PendingLogLines.Clear()
+    return $true
+}
+
+function Complete-HandoffLog([int]$Seconds = 10) {
+    # Before exiting: a holder that outlives the run would otherwise take the last lines with it.
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while (-not (Sync-HandoffLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+}
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
-    try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    # Add-Content is unsafe once a second writer is live: PowerShell caches a
+    # content writer per path, so the second writer (an overlapping hand-off
+    # process, or any future runspace writer) gets a handle the first already
+    # consumed -- Windows PowerShell 5.1 floods "stream is not readable"
+    # errors while PowerShell 7 silently loses lines (#126152). A named mutex
+    # serializes appends across processes and runspaces. Any other holder (a
+    # scanner on the just-closed file, a reader opened without write sharing)
+    # still fails an append: that line waits in the queue and lands, in order,
+    # with the next append that succeeds. A relayed stage is marked seen before
+    # it is logged, so a dropped line there was never written again.
+    $script:PendingLogLines.Add($line)
+    [void](Sync-HandoffLog)
     if ($MarkerOp) { return }   # a helper op's stdout is its one verdict line
     if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
     Write-Host $line
@@ -118,12 +183,19 @@ function Write-HandoffLog([string]$Message) {
 New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
 try { . (Join-Path $PSScriptRoot 'marker.ps1') } catch {
     Write-HandoffLog "Update aborted: $PSScriptRoot\marker.ps1 could not be loaded ($($_.Exception.Message)). Nothing was changed. Repair the installation and try again."
+    Complete-HandoffLog
     exit 3
 }
 
-# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch.
-if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; exit 0 }   # Start-MarkerCustodian's watcher
-if ($MarkerOp) { exit (Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun) }
+# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch. Each releases the
+# marker lock before it returns; the log flush comes after. A reclaim/withdraw flush is short
+# because Electron bounds the whole helper (MARKER_HELPER_TIMEOUT_MS); its verdict is already out.
+if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; Complete-HandoffLog; exit 0 }   # Start-MarkerCustodian's watcher
+if ($MarkerOp) {
+    $markerOpCode = Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun
+    Complete-HandoffLog 3
+    exit $markerOpCode
+}
 
 # The Desktop's identity is pinned now: a reused pid later is not "still open".
 $script:DesktopCt = $null
@@ -133,7 +205,7 @@ if ($DesktopPid -gt 0) {
     $script:DesktopSeenAlive = $desktopProbe.Alive
     $script:DesktopCt = $desktopProbe.Ct
 }
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLogConcurrency) {
     $script:MarkerClaim = Invoke-MarkerClaim
 }
 
@@ -1212,6 +1284,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
         Update-MarkerHeartbeat
+        [void](Sync-HandoffLog)
         if ((Get-Date) -ge $nextStageCheck) {
             Sync-ChildStage
             $nextStageCheck = (Get-Date).AddSeconds(1)
@@ -1386,7 +1459,7 @@ exit 7
     # Writes straight to the console stream, holding nothing: a step that is
     # merely loud. `hermes update` is this shape -- the Electron/vite build
     # alone is megabytes. Few large lines rather than many small ones on
-    # purpose: Write-HandoffLog is one Add-Content per line and runs inside the
+    # purpose: Write-HandoffLog is one file append per line and runs inside the
     # measured window, so line-heavy output would time the logger instead of
     # the drain.
     $floodSource = @'
@@ -1534,6 +1607,85 @@ exit 3
         exit 1
     }
     Write-Host "PIPE-DRAIN SELF-TEST: PASS $detail"
+    exit 0
+}
+
+# ── -SelfTestLogConcurrency: Write-HandoffLog under concurrent writers ─────
+# Add-Content drops lines (and on 5.1, errors) once a second writer is live
+# (#126152). Run the REAL function from a runspace pool -- every writer then
+# holds its own lazy mutex instance against the same named OS mutex, which is
+# exactly what an overlapping hand-off process or future runspace writer does
+# -- and hold the file to the exact writers*lines count with no torn lines.
+if ($SelfTestLogConcurrency) {
+    $writers = 8
+    $linesEach = 100
+    $target = Join-Path $TempDir ("handoff-log-concurrency-{0}.log" -f $PID)
+    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+
+    # Single-quoted halves on purpose: the function text carries $-tokens that
+    # must survive verbatim into the runspace script. Extracted from this
+    # file's AST because ${function:...} stringifies to the body only, which
+    # would leave the runspace without a callable definition.
+    $fnAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null).FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @("Write-HandoffLog", "Sync-HandoffLog", "Complete-HandoffLog")
+    }, $true)
+    if (-not $fnAst -or $fnAst.Count -ne 3) {
+        Write-Host "LOG-CONCURRENCY SELF-TEST: FAIL -- the hand-off log writer definitions were not found in this script"
+        exit 1
+    }
+    $fnText = (@($fnAst) | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
+    $body = @'
+param([string]$TargetLog, [string]$MutexName, [int]$Count, [int]$WriterId)
+$LogPath = $TargetLog
+$script:HandoffLogMutexName = $MutexName
+$script:HandoffLogMutex = $null
+$script:PendingLogLines = New-Object System.Collections.Generic.List[string]
+$script:ConsoleInput = $false
+
+'@ + $fnText + @'
+
+for ($i = 0; $i -lt $Count; $i++) { Write-HandoffLog ("w$WriterId line$i") }
+Complete-HandoffLog
+'@
+    $pool = [runspacefactory]::CreateRunspacePool(1, $writers)
+    $pool.Open()
+    $handles = @()
+    try {
+        foreach ($w in 1..$writers) {
+            $ps = [powershell]::Create()
+            $ps.RunspacePool = $pool
+            [void]$ps.AddScript($body).AddArgument($target).AddArgument($script:HandoffLogMutexName).AddArgument($linesEach).AddArgument($w)
+            $handles += @{ PS = $ps; Handle = $ps.BeginInvoke() }
+        }
+        foreach ($h in $handles) {
+            try { $h.PS.EndInvoke($h.Handle) } catch {}
+            $h.PS.Dispose()
+        }
+    } finally {
+        $pool.Close()
+        $pool.Dispose()
+    }
+
+    $problems = @()
+    $lines = @()
+    if (Test-Path -LiteralPath $target) { $lines = @(Get-Content -LiteralPath $target) }
+    if ($lines.Count -ne ($writers * $linesEach)) {
+        $problems += "expected $($writers * $linesEach) lines, found $($lines.Count) -- concurrent writers lost or duplicated lines"
+    }
+    foreach ($w in 1..$writers) {
+        $mine = @($lines | Where-Object { $_ -match " w$w line\d+$" })
+        if ($mine.Count -ne $linesEach) { $problems += "writer $w contributed $($mine.Count) of $linesEach lines" }
+    }
+    # A torn interleave leaves a line without its timestamp prefix + payload shape.
+    $intact = @($lines | Where-Object { $_ -cmatch "^\d{4}-\d{2}-\d{2}T\S+ w\d+ line\d+$" })
+    if ($intact.Count -ne $lines.Count) { $problems += "$($lines.Count - $intact.Count) lines are torn or malformed" }
+
+    if ($problems.Count -gt 0) {
+        Write-Host "LOG-CONCURRENCY SELF-TEST: FAIL -- $($problems -join '; ')"
+        exit 1
+    }
+    Write-Host "LOG-CONCURRENCY SELF-TEST: PASS writers=$writers linesEach=$linesEach file=$target"
     exit 0
 }
 
@@ -1905,5 +2057,6 @@ try {
         }
     }
     if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
+    Complete-HandoffLog
 }
 exit $finalCode

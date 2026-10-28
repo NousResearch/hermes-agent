@@ -24,6 +24,10 @@ export interface TimelinePartMetadata {
   storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
+  /** A clarify row's tie to the session's live request, set by the transcript re-arm
+   *  (`restorePendingClarifyToolCall`): the id of the request it bound to this row, or `''` on every
+   *  other open clarify row it saw. Only the row carrying the live request's id renders it. */
+  clarifyRequestId?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata

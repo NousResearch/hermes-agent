@@ -127,12 +127,14 @@ async def test_kept_local_bot_chat_history_is_adopted_in_place(headless, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_bot_chat_stamped_with_a_forwarded_login_subject_is_never_moved_aside(headless):
-    # A same-user peer may mint a native ticket for a structured login subject (#138915), and that
-    # ticket adopts its own row, so the row stays where it is, as on main.
+async def test_a_bot_chat_stamped_with_a_forwarded_login_subject_is_never_moved_aside(headless, monkeypatch):
+    # A structured login subject is the machine owner (the Webapp is single-user), so the owner's
+    # delivery adopts the row in place with its history, never moving it aside.
+    import gateway.session_worker_reservation as reservation
+    monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
     db = headless.authority.db
     old = _squatter(db, 'tui_bot_chat', column='user_id', value='auth:v1:["basic","","alice"]')
-    with pytest.raises(RuntimeStoreError) as refused:
-        await _deliver(headless.authority, 'f')
-    assert refused.value.reason == 'not_found'
+    db.append_message(old, 'user', 'earlier')
+    record = await _deliver(headless.authority, 'f')
+    assert record['session_id'] == old
     assert db.get_session_by_title('Bot Chat')['id'] == old and len(db._read_all('SELECT id FROM sessions')) == 1

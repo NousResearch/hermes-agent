@@ -18,13 +18,16 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli import config_backend as _config_backend
+from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
-from hermes_cli.config_backend import config_cache_version, config_cache_version_or_none, config_exists
+from hermes_cli.config_backend import (
+    config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
 from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read
 
 logger = logging.getLogger(__name__)
@@ -584,25 +587,6 @@ def remove_wrapper_script(name: str) -> bool:
     return False
 
 
-def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
-    """Migrate a copied config.yaml to the current schema (non-interactive, scoped to the new
-    profile); otherwise the first desktop/doctor view shows a scary ``v0 -> latest`` warning."""
-    if not config_exists(profile_dir / "config.yaml"):
-        return
-    # Creation must not fail over an unmigratable old config; `hermes doctor --fix` surfaces
-    # the detailed error in the target profile.
-    with contextlib.suppress(Exception):
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import check_config_version, migrate_config
-        token = set_hermes_home_override(str(profile_dir))
-        try:
-            current_ver, latest_ver = check_config_version()
-            if current_ver < latest_ver:
-                migrate_config(interactive=False, quiet=True)
-        finally:
-            reset_hermes_home_override(token)
-
-
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Alias name of the wrapper activating *profile_name*, or None. For listing ALL profiles
     prefer :func:`build_alias_map`: per-profile calls re-read every wrapper N times (O(N*M)),
@@ -1128,6 +1112,7 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     """Directory to clone from: the named profile, or the active profile when ``None``."""
+    require_file_tooling("Profile clone")
     if clone_from is None:
         from hermes_constants import get_hermes_home
         source_dir = get_hermes_home()
@@ -2279,6 +2264,17 @@ def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
         logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
 
 
+def _refuse_rename_without_file_tooling(old_canon: str) -> None:
+    """A remote config backend keys each profile's settings by its canonical name, and the plane
+    has no rename: renaming the local home would leave the settings under the old name and read
+    another (possibly populated) level under the new one. Refused before any side effect."""
+    backend = _config_backend.get_config_backend()
+    if not backend.supports_file_tooling():
+        raise ValueError(
+            f"Cannot rename profile '{old_canon}': its config lives in the {backend.name!r} config "
+            "backend under that name, and renaming it there is not supported. Nothing was changed.")
+
+
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2293,6 +2289,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     new_canon = _canon_valid(new_name)
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
+    _refuse_rename_without_file_tooling(old_canon)
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
     if not old_dir.is_dir():

@@ -27,12 +27,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
+from hermes_cli.config_backend import ConfigBackendUnavailable
 from utils import file_cache_version
 
 logger = logging.getLogger(__name__)
 
 _PROFILE_RESCAN_INTERVAL_SECS = 30.0
-_PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
+_PROFILE_SIGNATURE_FILES = (".env",)  # config.yaml: the config backend's version, below
 # Bound for one own-gateway liveness probe (``live_gateway_pid_for_home``): the control-socket
 # read it can end in has no timeout of its own — on Windows the named pipe stalls there until
 # its peer answers — so the await needs one. A healthy identify answers in milliseconds.
@@ -47,10 +48,15 @@ def _stat_signature(path: Path) -> Optional[tuple]:
 
 
 def profile_serve_signature(home: Path) -> tuple:
-    """Change detector for a served profile's credentials/config: ``file_cache_version`` per file,
-    hashed every time (``always_digest``): it is compared long after it was taken, and a racy digest
-    going empty would read as a change and reconnect the profile's adapters."""
-    sig = []
+    """Change detector for a served profile's credentials/config: the config backend's signature
+    of its config layer, then ``file_cache_version`` of ``.env``. Each is hashed every time
+    (``always_digest``) where it is a file: it is compared long after it was taken, and a racy
+    digest going empty would read as a change and reconnect the profile's adapters. A remote layer
+    changes with no local file change, so its signature is the backend's version. A config backend
+    outage raises ``ConfigBackendUnavailable``; the reconcile cycle contains it and retries."""
+    from hermes_cli.config_backend import config_version_or_none, supports_file_tooling
+    cfg = Path(home) / "config.yaml"
+    sig = [_stat_signature(cfg) if supports_file_tooling() else config_version_or_none(cfg)]
     for name in _PROFILE_SIGNATURE_FILES:
         try:
             sig.append(file_cache_version(Path(home) / name, always_digest=True))
@@ -120,7 +126,7 @@ class GatewayProfileReconcileMixin:
                     await self.reconcile_served_profiles(reason="watcher")
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (Exception, ConfigBackendUnavailable):  # a config outage is a SystemExit by design
                 logger.warning("Served-profile reconcile failed; retrying next cycle", exc_info=True)
 
     async def _sync_hooks_on_consent_change(self) -> None:
@@ -409,7 +415,7 @@ class GatewayProfileReconcileMixin:
             return None
         try:
             await serve_profile_runtime(self, name, home)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # unservable now: parked, retried by rescan
             if self.session_authorities.for_home(home) is not None:
                 # Retirement of the failed attempt missed its deadline: its writer may still use
                 # this home, so the reservation and authority stay; the profile is parked (no

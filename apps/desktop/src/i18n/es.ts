@@ -2245,8 +2245,8 @@ export const esOverrides = {
       defaultDirTitle: 'Directorio de proyecto predeterminado',
       defaultDirDesc:
         'Las sesiones nuevas empiezan en esta carpeta salvo que elijas otra. Déjala sin definir para usar tu directorio de inicio.',
-      defaultDirUpdated:
-        'Directorio de proyecto predeterminado actualizado; inicia un chat nuevo (Ctrl/⌘+N) para que el cambio surta efecto.',
+      defaultDirUpdated: shortcut =>
+        `Directorio de proyecto predeterminado actualizado; inicia un chat nuevo${shortcut ? ` (${shortcut})` : ''} para que el cambio surta efecto.`,
       defaultsTo: label => `Predeterminado: ${label}.`,
       change: 'Cambiar',
       choose: 'Elegir',

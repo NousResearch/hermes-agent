@@ -129,7 +129,7 @@ class FailedConfigRead(dict):
     after one transient EMFILE/EIO replaced the whole file with the fallback plus the caller's edit.
     A dict subclass so the refusal survives the load→mutate→save round trip at every call site."""
 
-    def __init__(self, data: Any = (), *, error: Exception):
+    def __init__(self, data: Any = (), *, error: BaseException):
         super().__init__(data)
         self.read_error = error
 
@@ -146,6 +146,8 @@ def _refuse_failed_read(config_path: Path, data: Any) -> None:
     exc = data.read_error
     if isinstance(exc, OSError):
         raise _refuse_overwrite(config_path, "could not be read", exc, _read_error_fix(exc))
+    if isinstance(exc, SystemExit):  # ConfigBackendUnavailable: the config backend could not serve it
+        raise RuntimeError(f"The config could not be read, so this change was not saved: {exc.code}")
     raise _refuse_overwrite(
         config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display()))
 

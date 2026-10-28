@@ -1155,8 +1155,8 @@ class GatewayStartupMixin:
             logger.log(level, fail_fmt, *fail_args, exc_info=True)
 
     def _recover_secondary_process_checkpoints(self, process_registry) -> int:
-        """Replay every SERVED secondary profile's ``processes.json`` under its own scope.
-        The launch profile's file was already read by ``recover_from_checkpoint`` above."""
+        """Replay every SERVED secondary profile's ``processes.json`` and unsettled completion
+        receipts under its own scope. The launch profile's were already read above."""
         if not getattr(self.config, "multiplex_profiles", False):
             return 0
         from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
@@ -1169,6 +1169,7 @@ class GatewayStartupMixin:
             try:
                 with _profile_runtime_scope(Path(profile_home), {}):
                     recovered += process_registry.recover_from_checkpoint()
+                    recovered += process_registry.restore_pending_notifications()
             except Exception:
                 logger.warning("Process checkpoint recovery for profile %r failed", profile_name, exc_info=True)
         return recovered
@@ -1188,6 +1189,10 @@ class GatewayStartupMixin:
         with _log_suppressed(logging.WARNING, "Process checkpoint recovery: %s"):
             from tools.process_registry import process_registry
             recovered = process_registry.recover_from_checkpoint()
+            # The checkpoint holds live PIDs only; a process that exited while the gateway was
+            # down or stopping left just its receipt. Not gated on a clean exit: SIGTERM drops
+            # the in-memory completion queue too.
+            recovered += process_registry.restore_pending_notifications()
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)

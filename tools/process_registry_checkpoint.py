@@ -74,7 +74,7 @@ class ProcessCheckpointMixin:
         were recovered as detached sessions."""
         from tools.process_registry import (
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
-            _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
+            _CHECKPOINT_DEFAULTS, _stop_systemd_unit,
         )
         from tools.process_registry_output_log import adoptable_log
 
@@ -147,13 +147,39 @@ class ProcessCheckpointMixin:
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
             # Re-enqueue watcher so gateway can resume notifications
             if session.watcher_interval > 0:
-                self.pending_watchers.append({
-                    "session_id": session.id,
-                    "check_interval": session.watcher_interval,
-                    "session_key": session.session_key,
-                    **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
-                    "notify_on_complete": session.notify_on_complete,
-                    "parent_session_id": session.parent_session_id,
-                })
+                self._queue_recovered_watcher(session)
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
         return recovered
+
+    def restore_pending_notifications(self) -> int:
+        """Gateway startup: re-arm the watcher of every completion whose notification never settled.
+
+        A process that exits while the gateway is down or shutting down leaves only its receipt:
+        the completion queue and the watcher were in memory, and the checkpoint holds live PIDs
+        only. The restored session is an exited snapshot with no handle, so nothing is re-run or
+        signalled. Delivery is at-least-once: a crash between acceptance and settling replays once.
+        """
+        from tools.process_registry_results import pending_notification_results
+
+        restored = 0
+        for session in pending_notification_results():
+            with self._lock:
+                if session.id in self._running or session.id in self._finished:
+                    continue
+                self._finished[session.id] = session
+            self._queue_recovered_watcher(session)
+            restored += 1
+            logger.info("Re-armed undelivered completion notification for %s", session.id)
+        return restored
+
+    def _queue_recovered_watcher(self, session) -> None:
+        from tools.process_registry import _WATCHER_ROUTE_KEYS
+
+        self.pending_watchers.append({
+            "session_id": session.id,
+            "check_interval": session.watcher_interval,
+            "session_key": session.session_key,
+            **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
+            "notify_on_complete": session.notify_on_complete,
+            "parent_session_id": session.parent_session_id,
+        })

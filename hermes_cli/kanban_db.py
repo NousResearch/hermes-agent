@@ -278,6 +278,7 @@ _TICK_ACTIVITY_FIELDS = (
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable", "skipped_pool_exhausted", "released_leases",
+    "routed_by_guard", "skipped_routing_guard",
 )
 
 

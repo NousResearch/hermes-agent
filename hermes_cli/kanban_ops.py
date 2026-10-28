@@ -106,6 +106,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "routed_by_guard": [
+                {"task_id": tid, "from": old, "to": new}
+                for (tid, old, new) in res.routed_by_guard
+            ],
+            "skipped_routing_guard": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.skipped_routing_guard
+            ],
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
                 for (tid, reason) in res.respawn_guarded
@@ -141,6 +149,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
             f"{', '.join(res.auto_assigned_default)}"
         )
+    for tid, old, new in res.routed_by_guard:
+        print(f"Routed by routing guard: {tid}  {old} -> {new or '(none)'}")
+    for tid, reason in res.skipped_routing_guard:
+        print(f"Skipped (routing guard, no legal lane) {tid}: {reason}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:

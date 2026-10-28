@@ -103,6 +103,17 @@ class DispatchResult:
     """Unassigned task ids that had ``kanban.default_assignee`` applied this
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
     acting on the fallback rule rather than explicit assignments."""
+    routed_by_guard: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, original_assignee, new_assignee)`` rerouted by the
+    dispatch-time routing guard (:mod:`hermes_cli.kanban_db_dispatch_routing`)
+    before the claim: the card edits an instruction surface owned by its own
+    assignee, so it must never reach that profile's worker."""
+    skipped_routing_guard: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` NOT spawned because the routing guard found the
+    assignee owns a surface the card edits AND no legal alternative lane exists.
+    Operator-actionable: assign a legal lane or configure one. The row keeps its
+    assignee and is re-evaluated on every later tick."""
+
     skipped_nonspawnable: list[str] = field(default_factory=list)
     """Ready task ids whose assignee names a control-plane lane (e.g. a Claude
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
@@ -165,6 +176,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_pool_exhausted:
             counts["pool_exhausted"] = counts.get("pool_exhausted", 0) + len(res.skipped_pool_exhausted)
+        if res.skipped_routing_guard:
+            counts["routing_guard"] = counts.get("routing_guard", 0) + len(res.skipped_routing_guard)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -1942,12 +1955,35 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    lanes: Optional[GuardLaneSet] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
     skip is recorded on ``result``.
+
+    The routing net runs FIRST, before the profile/cap/respawn gates and before
+    the claim: those gates must judge the lane the worker would actually run
+    under, and a card that is about to be rerouted must not spend a claim.
     """
     task_id = row["id"]
+    # Final routing net (:mod:`hermes_cli.kanban_db_dispatch_routing`): a card
+    # whose own assignee owns an instruction surface it edits must never reach a
+    # worker, no matter which write path put it in this lane.
+    routing = apply_dispatch_routing_guard(
+        conn, task_id, assignee, row["title"], row["body"],
+        lanes=lanes, dry_run=dry_run,
+    )
+    if routing.decision is not None and routing.decision.rewritten:
+        if routing.skipped:
+            result.skipped_routing_guard.append((task_id, routing.reason))
+            return False
+        result.routed_by_guard.append(
+            (task_id, routing.decision.original_assignee or assignee, routing.assignee or ""),
+        )
+    if not routing.assignee:  # defensive: never claim/spawn without a lane
+        result.skipped_routing_guard.append((task_id, routing.reason or "routing guard left no lane"))
+        return False
+    assignee = routing.assignee
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -2074,6 +2110,13 @@ def _apply_default_assignee(
     Mutating the row keeps board state honest: the task is legitimately owned
     by the default, not "unassigned but secretly routed". ``dry_run`` reports
     without writing. Returns False when the write failed.
+
+    This writes the operator's routing INTENT and is deliberately not guarded:
+    the routing guard runs on the row immediately afterwards, inside
+    :func:`_dispatch_lane_task`, so a default lane that owns a surface this card
+    edits is rerouted (or the spawn skipped) in the same tick, before any claim.
+    Keeping the guard out of here means there is exactly one place - the lane
+    task - that can move a ready row's assignee on the dispatch path.
     """
     if dry_run:
         return True
@@ -2185,9 +2228,13 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    ``title``/``body`` ride along for the dispatch-time routing guard, which is
+    the last chance to notice that a row's assignee owns a surface it edits.
+    """
     return conn.execute(
-        "SELECT id, assignee, workspace_kind, workspace_path FROM tasks "
+        "SELECT id, assignee, workspace_kind, workspace_path, title, body FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2199,14 +2246,16 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    lanes: Optional[GuardLaneSet] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    assignee already at the per-profile cap, respawn-guarded, or skip-only for
+    the dispatch-time routing guard — cannot consume the reservation, so it must
+    not withhold capacity from an otherwise ready task (one such row would pin
+    ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
@@ -2216,6 +2265,13 @@ def _any_spawnable_review(
         assignee = row["assignee"]
         if not assignee:
             continue
+        # Same net, read-only: a row the guard would reroute is judged under its
+        # NEW lane; a row it would skip cannot hold a slot.
+        routing = decide_dispatch_routing(assignee, row["title"], row["body"], lanes=lanes)
+        if routing.rewritten:
+            if routing.assignee is None:
+                continue
+            assignee = routing.assignee
         if profile_exists is not None and not profile_exists(assignee):
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
@@ -2298,6 +2354,17 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    # Dispatch-time routing net (:mod:`hermes_cli.kanban_db_dispatch_routing`).
+    # Candidate lanes are this tick's ``kanban.default_assignee`` (the raw
+    # operator value; "" when unset disables that lane) plus the configured
+    # routing-guard fallback, filtered to profiles this home may spawn. Resolved
+    # ONCE for the whole tick: the ready loop, the review loop and the review
+    # reservation must agree about which lanes are legal, and each lane costs a
+    # profile lookup. Resolved BEFORE the reservation so a guard-skipped review
+    # row cannot hold ready-lane capacity.
+    guard_lanes = spawnable_guard_lanes(
+        _profile_exists_fn(), default_assignee=default_assignee or "",
+    )
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
@@ -2306,12 +2373,14 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        lanes=guard_lanes,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        lanes=guard_lanes,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2329,6 +2398,10 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
+            # The write above is the operator's routing intent, not the last
+            # word on routing: _dispatch_lane_task's routing net runs on this
+            # row in the same tick and may reroute (or skip) that lane before
+            # anything is claimed. See kanban_db_dispatch_routing's module docs.
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
@@ -2629,4 +2702,16 @@ from hermes_cli.kanban_db_dispatch_respawn import (
     _is_handoff_event,
     _rows_since,
     check_respawn_guard,
+)
+
+# The dispatch-time routing net is the last check before a worker exists; it
+# lives in its own module (detection, lane eligibility, audit and the CAS write)
+# and is re-exported here so ``_dispatch_lane_task``/``_dispatch_once_locked``
+# resolve it through the facade and tests can patch it there.
+from hermes_cli.kanban_db_dispatch_routing import (
+    DispatchRoutingOutcome,
+    GuardLaneSet,
+    apply_dispatch_routing_guard,
+    decide_dispatch_routing,
+    spawnable_guard_lanes,
 )

@@ -146,6 +146,17 @@ export function groupActivityLabel(event: GroupActivityEntry, group?: null | str
     return base
   }
 
+  // Crash ≠ consensus: a degraded drive went quiet WITHOUT a cap while at
+  // least one member turn ended in failure — the count of failed seats is
+  // what the user needs from this row (why 770: 'this round could not
+  // settle — N seats failed', surfaced in the room, not in ledger
+  // archaeology). Render the reason like a failure row does.
+  if (kind === 'degraded') {
+    const gap = String(event?.reason || '').trim()
+
+    return gap ? `${base} — ${gap}` : base
+  }
+
   const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot', group)
   const reason = kind === 'failed' ? String(event?.reason || '').trim() : ''
 
@@ -165,6 +176,7 @@ const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {
   failed: 'hit an error',
   cancelled: 'turn interrupted by a newer message',
   settled: 'turn settled',
+  degraded: 'the round could not settle',
   capped: 'turn stopped at the round/message cap',
   delivered: 'delivered a late reply',
   held: 'is held (stopped by you) — @mention it or say resume to release',
@@ -180,6 +192,7 @@ export const GROUP_ACTIVITY_GLYPHS: Record<GroupActivityKind, string> = {
   failed: 'error',
   cancelled: 'close',
   settled: 'check-all',
+  degraded: 'warning',
   capped: 'debug-step-over',
   delivered: 'mail-read',
   held: 'debug-pause',
@@ -189,7 +202,7 @@ export const GROUP_ACTIVITY_GLYPHS: Record<GroupActivityKind, string> = {
 /** Text tone for an activity row: quiet for pass/cancel/settle, accent for
  *  work and real replies, destructive for failures and timeouts. */
 export function groupActivityTone(kind: GroupActivityKind) {
-  if (kind === 'failed' || kind === 'timed-out') {
+  if (kind === 'failed' || kind === 'timed-out' || kind === 'degraded') {
     return 'text-destructive'
   }
 

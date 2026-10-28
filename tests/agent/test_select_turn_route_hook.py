@@ -100,3 +100,20 @@ def test_subagents_are_not_routed(tmp_path, monkeypatch):
         agent.is_subagent = True
         assert agent.run_conversation("delegated work")["model"] == "fake-model"
         assert calls == [] and routed.main_requests() == []
+
+
+@pytest.mark.parametrize("content,text,attached", [
+    ("plain words", "plain words", False),
+    ([{"type": "text", "text": "@tag look at this"}, {"type": "image_url", "image_url": {"url": "data:x"}}],
+     "@tag look at this", True),
+    ([{"type": "input_text", "text": "a"}, {"type": "input_text", "text": "b"}], "a\nb", False),
+    ([{"type": "image_url", "image_url": {"url": "data:x"}}], "", True),
+])
+def test_hook_gets_the_text_of_a_message_with_attachments(monkeypatch, content, text, attached):
+    """A message with an image still reaches the router with its words (and any routing tag)."""
+    from types import SimpleNamespace
+    from agent.voice_turn_route import _plugin_route
+    calls = _install(monkeypatch, lambda **_: None)
+    agent = SimpleNamespace(session_id="s", platform="desktop", provider="p", model="m")
+    _plugin_route(agent, [{"role": "user", "content": content}])
+    assert (calls[0]["user_message"], calls[0]["has_attachments"]) == (text, attached)

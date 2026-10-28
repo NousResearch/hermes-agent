@@ -134,6 +134,18 @@ def _warn_once(agent: Any, target: dict[str, Any], reason: str, task: str = TASK
 PLUGIN_TASK = "plugin_route"
 
 
+def _message_text(content: Any) -> tuple[str, bool]:
+    """(text, has_attachments) of a user message: the text parts of a multimodal message are kept,
+    so a router still sees the words (and any routing tag) of a message that carries an image."""
+    if isinstance(content, str):
+        return content, False
+    if not isinstance(content, list):
+        return "", content is not None
+    parts = [p for p in content if isinstance(p, dict)]
+    text = "\n".join(str(p.get("text") or "") for p in parts if p.get("type") in ("text", "input_text"))
+    return text, any(p.get("type") not in ("text", "input_text") for p in parts)
+
+
 def _plugin_route(agent: Any, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """The route entry a ``select_turn_route`` plugin picked for this turn, or None (use the main model).
 
@@ -146,14 +158,14 @@ def _plugin_route(agent: Any, messages: list[dict[str, Any]]) -> Optional[dict[s
     if not has_hook("select_turn_route"):
         return None
     last = next((m for m in reversed(messages) if m.get("role") == "user"), None) or {}
-    text = last.get("content")
+    text, has_attachments = _message_text(last.get("content"))
     try:
         answers = invoke_hook(
             "select_turn_route",
             session_id=str(getattr(agent, "session_id", "") or ""),
             platform=str(getattr(agent, "platform", "") or ""),
-            user_message=text if isinstance(text, str) else "",
-            has_attachments=not isinstance(text, str),
+            user_message=text,
+            has_attachments=has_attachments,
             message_count=len(messages),
             session_provider=str(agent.provider or ""),
             session_model=str(agent.model or ""),

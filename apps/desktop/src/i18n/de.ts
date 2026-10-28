@@ -20,6 +20,7 @@ import { dePluginPreviewAccess } from './de_plugin_preview_access'
 import { dePluginUpdate } from './de_plugin_update'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
+import { deQuotaRerun } from './de_quota_rerun'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
@@ -27,6 +28,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  quotaRerun: deQuotaRerun,
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
   intro: introDe,

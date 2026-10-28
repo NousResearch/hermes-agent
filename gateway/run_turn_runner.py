@@ -75,7 +75,9 @@ _LEDGER_PASSTHROUGH_KEYS = (
 # Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
 # so the authority's ``message.complete`` carries the same error card the TUI path builds;
 # ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
-_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
+# ``quota_resume`` / ``failed_turn_notice``: a usage-limit rerun queued for this turn (run_turn_usage_hold).
+_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message",
+                            "quota_resume", "failed_turn_notice")
 
 
 def _finite_viewer_turn() -> bool:
@@ -1290,6 +1292,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             text, reason, retryable = _resolution_failure_reply(exc, ctx.source.platform)
             return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
                                   "failed": True, "completed": False, "error": str(exc)}, reason, retryable)
+        # A provider at a usage limit (agent/usage_hold.py): answer now instead of failing into it.
+        from gateway.run_turn_usage_hold import held_turn_result
+        if (held := held_turn_result(runner, ctx, runtime_kwargs)) is not None:
+            return held
         from gateway.session_authorities import active_authority
         from gateway.session_worker_construct import session_routing
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
@@ -1347,6 +1353,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.session_local_inventory import publish_settled_info
                 publish_settled_info(self, agent)
         persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
+        from gateway.run_turn_usage_hold import schedule_failed_turn
+        schedule_failed_turn(runner, ctx, result)  # a reported usage reset: rerun it then (opt-in)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:
             # The classic `chat -q` process exit bounded the codex app-server child; a finite turn

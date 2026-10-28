@@ -1541,6 +1541,8 @@ class GatewayStartupMixin:
             )
         self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
         self._start_loop_heartbeat_task()
+        from gateway.run_turn_usage_hold import rerun_watcher
+        self._spawn_supervised(lambda: rerun_watcher(self), "usage_hold_reruns")
         from gateway.run_heartbeat_restore import restore_heartbeat_watches
         self._start_heartbeat_poller()  # Keep retrying even when the first scan is empty.
         await restore_heartbeat_watches(self)

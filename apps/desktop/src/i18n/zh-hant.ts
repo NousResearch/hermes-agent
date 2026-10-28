@@ -11,9 +11,11 @@ import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantFirstRun } from './zh-hant_first_run'
+import { zhHantQuotaRerun } from './zh-hant_quota_rerun'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  quotaRerun: zhHantQuotaRerun,
 
   catalog: {
     add: '新增',

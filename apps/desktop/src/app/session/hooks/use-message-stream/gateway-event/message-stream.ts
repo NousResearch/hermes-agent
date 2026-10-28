@@ -6,7 +6,7 @@ import { translateNow } from '@/i18n'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { parseErrorSurface } from '@/lib/error-surface'
+import { parseErrorSurface, withScheduledRerun } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
@@ -84,7 +84,7 @@ function turnFailure(payload: GatewayEventPayload | undefined, finalText: string
   return {
     error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
     partial: Boolean(payload.partial),
-    surface: parseErrorSurface(payload.error_surface)
+    surface: withScheduledRerun(parseErrorSurface(payload.error_surface), payload.quota_resume)
   }
 }
 

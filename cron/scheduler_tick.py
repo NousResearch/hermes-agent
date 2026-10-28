@@ -160,6 +160,10 @@ def _tick_admitted(
         # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
         # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
+        # A provider already at a usage limit: wait/skip per job instead of N failing fires.
+        from cron.quota_hold import hold_due_jobs_for_provider_limits
+        due_jobs = hold_due_jobs_for_provider_limits(
+            due_jobs, _sched.load_config_readonly() or {}, _sched._job_fallback_chain)
         due_jobs = _advance_or_drop_recurring(_sched, due_jobs)
         if not due_jobs:
             _sched._sweep_mcp_orphans()

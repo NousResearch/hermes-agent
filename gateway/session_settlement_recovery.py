@@ -71,6 +71,11 @@ def completion_payload(row, settled, response, captured):
             model=str(captured_result.get('model') or ''))
     if isinstance(surface, dict):
         complete['error_surface'] = surface
+    # The usage-limit plan and whether the gateway queued the rerun (``run_turn_usage_hold``): the
+    # limit card names the rerun time only when one is actually scheduled. A held turn never ran an
+    # agent, so this is not a local-viewer-only field.
+    if isinstance(captured_result.get('quota_resume'), dict) and complete['status'] == 'error':
+        complete['quota_resume'] = dict(captured_result['quota_resume'])
     if response and captured_result.get('response_reused'):
         complete['response_reused'] = True
     if captured_result.get('local_viewer'):

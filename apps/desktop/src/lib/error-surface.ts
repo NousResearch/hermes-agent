@@ -116,6 +116,9 @@ export interface ErrorSurface {
    *  limit (best first) and the credits option — the card's one-click buttons
    *  (agent/plan_limits.py). Absent on older backends. */
   usageLimit?: UsageLimitSurface
+  /** Epoch seconds the BACKEND will rerun this turn itself (`quota_resume.scheduled` on the
+   *  terminal frame). The card states it instead of offering its own client-side retry. */
+  rerunAt?: number
 }
 
 export interface UsageLimitSuggestion {
@@ -207,6 +210,17 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
       : {}),
     ...(usageLimit ? { usageLimit } : {})
   }
+}
+
+/** Stamp the backend-owned rerun (message.complete `quota_resume`) onto the card's surface. */
+export function withScheduledRerun(surface: ErrorSurface | null, quotaResume: unknown): ErrorSurface | null {
+  const raw = quotaResume as { resume_at?: unknown; scheduled?: unknown } | null | undefined
+
+  if (!surface || raw?.scheduled !== true || typeof raw.resume_at !== 'number' || !Number.isFinite(raw.resume_at)) {
+    return surface
+  }
+
+  return { ...surface, rerunAt: raw.resume_at }
 }
 
 /** "HH:mm" for a provider reset moment, in the user's local clock. */

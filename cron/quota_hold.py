@@ -163,3 +163,105 @@ def hold_notice(job: dict[str, Any], hold_seconds: Optional[float]) -> str:
         f"through {safe_strftime(window_end, '%Y-%m-%d %H:%M %Z')} and resumes at the first safe "
         "opportunity afterwards; no further alerts are sent while the provider is unavailable."
     )
+
+
+# Per-job choice when its provider is already known to be at a usage limit at fire time:
+# "wait" (default) runs the job once when the limit resets; "skip" drops the occurrences inside
+# the window and resumes on the job's natural schedule afterwards.
+ON_LIMIT_KEY = "on_limit"
+ON_LIMIT_CHOICES = ("wait", "skip")
+
+
+def hold_seconds_for_failed_run(exc: BaseException, agent: Any) -> Optional[float]:
+    """Seconds to park a failed run: the AuthError hint, else the provider-scoped usage hold the
+    agent's own terminal path just recorded (``agent.usage_hold``; any provider, any 429 shape)."""
+    hint = hold_seconds_from_failure(exc)
+    if hint or agent is None:
+        return hint
+    from agent.usage_hold import active_hold
+
+    hold = active_hold(getattr(agent, "provider", ""), getattr(agent, "base_url", ""))
+    return max(1.0, hold["until"] - _hermes_now().timestamp()) if hold else None
+
+
+def _job_route(job: dict[str, Any], cfg: dict[str, Any]) -> tuple[str, str]:
+    """Provider + base_url a job will call, resolved exactly as ``_resolve_job_runtime`` does
+    (pin > cron default > persisted config, through ``resolve_runtime_provider``) so a bare
+    ``custom`` pin or a named custom provider lands on the same ``custom:<url>`` key the failing
+    turn recorded. An unresolvable route is never held (fail-open: the run reports it)."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    kwargs: dict[str, Any] = {
+        "requested": job.get("provider") or str(cron_cfg.get("model_provider") or "").strip() or None,
+        "target_model": job.get("model") or "",
+    }
+    if job.get("base_url"):
+        kwargs["explicit_base_url"] = job.get("base_url")
+    try:
+        runtime = resolve_runtime_provider(**kwargs) or {}
+    except Exception:  # health: allow BLE001 -- resolve failures are the run's to report, not the gate's
+        logger.debug("usage-limit gate: route for job %s unresolvable", job.get("id"), exc_info=True)
+        return "", ""
+    return str(runtime.get("provider") or ""), str(runtime.get("base_url") or "")
+
+
+def _defer_for_provider_hold(job_id: str, hold: dict[str, Any]) -> bool:
+    """Move a due job past its provider's window under the jobs lock (wait or skip)."""
+    from cron.jobs import _parse_aware, _with_job, compute_next_run, save_jobs
+
+    def apply(jobs, _i, job):
+        schedule = job.get("schedule") or {}
+        if schedule.get("kind") not in {"cron", "interval"} or job.get("state") == "paused":
+            return False
+        # The due scan stamped this slot as handed to the dispatcher; parking is a deliberate
+        # reschedule, so the stamp must go in the same save or the next scan "restores" it.
+        slot_stamped = job.pop("pending_slot", None) is not None
+        window_end = datetime.fromtimestamp(float(hold["until"]) + HOLD_SLACK_SECONDS).astimezone()
+        natural = compute_next_run(schedule, window_end.isoformat())
+        if job.get(ON_LIMIT_KEY) == "skip":
+            parked = natural or window_end.isoformat()
+            job.pop(SCHEDULE_EXPR_KEY, None)
+            job["last_status"] = "skipped_usage_limit"
+        else:
+            parked = window_end.isoformat()
+            # The catch-up fire is off-lattice for a cron expr; fingerprint it (is_recovery_fire).
+            if schedule.get("kind") == "cron" and natural != parked:
+                job[SCHEDULE_EXPR_KEY] = schedule.get("expr")
+        current = _parse_aware(job.get("next_run_at"))
+        if current is not None and current >= _parse_aware(parked):
+            if slot_stamped:
+                save_jobs(jobs)
+            return False  # already parked at or past the window by another tick
+        job["next_run_at"] = parked
+        job[STATE_KEY] = parked
+        save_jobs(jobs)
+        return True
+
+    return bool(_with_job(job_id, apply, missing=False))
+
+
+def hold_due_jobs_for_provider_limits(due_jobs: list, cfg: dict[str, Any], fallback_chain) -> list:
+    """Pre-fire gate: jobs whose provider is held at a usage limit are parked (wait) or skipped
+    instead of firing into the wall. Jobs with a fallback chain, script-only jobs and one-shots
+    run as before. Returns the jobs that may fire now."""
+    from agent.usage_hold import active_hold, any_active_hold, format_until
+
+    if not any_active_hold():
+        return list(due_jobs)  # nothing held: skip per-job route resolution entirely
+    runnable = []
+    for job in due_jobs:
+        hold = None
+        schedule = job.get("schedule")
+        kind = schedule.get("kind") if isinstance(schedule, dict) else None
+        if not job.get("no_agent") and kind in {"cron", "interval"} and not fallback_chain(job, cfg):
+            hold = active_hold(*_job_route(job, cfg))
+        if hold is None:
+            runnable.append(job)
+            continue
+        if _defer_for_provider_hold(job["id"], hold):
+            logger.warning(
+                "Job '%s': %s is at a usage limit until %s — %s instead of firing into it",
+                job.get("name", job["id"]), hold.get("provider"), format_until(hold),
+                "skipping occurrences" if job.get(ON_LIMIT_KEY) == "skip" else "waiting for the reset")
+    return runnable

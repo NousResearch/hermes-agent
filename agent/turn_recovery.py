@@ -1166,7 +1166,7 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, attempts: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: list[dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any, delivered: str = "",
+    base_url: Any, model: Any, delivered: str = "", error_context: Any = None,
 ) -> dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -1302,6 +1302,13 @@ def max_retries_exhausted_result(
         _stamp_free_tier(result, _free_tier_kind, (
             _welcome_tier_guidance(classified, model=model, in_chat=True, door=False)
             if _welcome_hint else _final_response))
+    # Subscription quota wall: carry the provider's own reset deadline to the surfaces
+    # so a client can wait it out instead of handing the user a blind Retry. Only
+    # attached when a deadline was actually reported — never guessed.
+    from agent.quota_resume import plan_for_failed_turn
+    if (_resume_plan := plan_for_failed_turn(
+            agent, classified, error_context=error_context, provider=provider, base_url=base_url)):
+        result["quota_resume"] = _resume_plan
     return result
 
 

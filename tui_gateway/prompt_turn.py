@@ -9,6 +9,7 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -898,7 +899,7 @@ def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
             committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
-def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
+def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int, *, sid: str = ""):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
@@ -938,7 +939,13 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # Structured billing-wall descriptor: the client renders recovery without re-parsing text.
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block
-        payload["failure_reason"] = result.get("failure_reason")
+    # Classified reason for every failure, not just billing walls: a client can only
+    # tell a quota wall from an overload if the reason travels with the failure.
+    if status == "error" and (_failure_reason := result.get("failure_reason")):
+        payload["failure_reason"] = _failure_reason
+    # Provider-reported quota reset ({eligible, resume_at, source, provider, reason}) so
+    # the client can wait out the window instead of offering a blind Retry.
+    _attach_quota_resume(payload, result.get("quota_resume"), sid, session, st.prompt_text)
     if rendered := render_message(raw, cols):
         payload["rendered"] = rendered
     error_value = result.get("error")
@@ -1110,6 +1117,11 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
+    # A new turn supersedes any pending quota resume: the user is driving again, and the
+    # resume note ("finish the interrupted request") would talk over what they just asked.
+    # A non-resume turn also starts a new request, resetting the resume budget.
+    with contextlib.suppress(Exception):
+        _quota_resume_take_turn(session, rid)
     from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):
@@ -1164,7 +1176,7 @@ def _run_prompt_submit(
                 display_metadata, turn_author, text)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
-            payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            payload, raw, status = _complete_turn_payload(session, st, status_note, cols, sid=sid)
             if status == "complete":
                 # Before message.complete: the desktop re-reads the sign-in offer on that event.
                 from tui_gateway.free_tier_task_done import note_task_done

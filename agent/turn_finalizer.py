@@ -879,6 +879,8 @@ def finalize_turn(
             platform=_platform,
         )
 
+    from agent.usage_hold import release_after_turn
+    release_after_turn(agent, completed=completed, failed=failed)
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
     return result

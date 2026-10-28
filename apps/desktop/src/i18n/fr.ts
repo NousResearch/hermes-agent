@@ -21,12 +21,14 @@ import { frPluginPreviewAccess } from './fr_plugin_preview_access'
 import { frPluginUpdate } from './fr_plugin_update'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
+import { frQuotaRerun } from './fr_quota_rerun'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  quotaRerun: frQuotaRerun,
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
   intro: introFr,

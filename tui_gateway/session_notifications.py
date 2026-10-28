@@ -305,7 +305,11 @@ def _session_owns_live_wakeup_schedule(session: dict) -> bool:
     ``session`` — the reapers must then keep the detached session (and with it the poller) alive, or the schedule
     freezes until a client reattaches. Gateway-routed schedules are fired by the gateway, so they never pin the
     session here. Bounded: a loop pauses at its tick budget and a stopped/paused schedule releases the session.
-    Fail-open to False: an unreadable store must not make a session unreapable."""
+    Fail-open to False: an unreadable store must not make a session unreapable.
+    A pending quota resume counts too: only this poller fires it, and it is bounded by the
+    resume cap (``agent.quota_resume.DEFAULT_MAX_WAIT_SECONDS``) and cleared when it fires."""
+    if isinstance(session.get("_quota_resume_at"), (int, float)):
+        return True
     if not (sid_key := session.get("session_key") or ""):
         return False
     try:
@@ -740,7 +744,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_quota_resume_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
@@ -754,6 +758,13 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                     fire(sid, session)
                 except Exception as tick_exc:
                     _notif_log_failure(f"{what} poll failed", tick_exc)
+        # Provider quota window reopened: finish the turn its usage limit killed.
+        if now - last_quota_resume_poll >= _QUOTA_RESUME_POLL_SECONDS:
+            last_quota_resume_poll = now
+            try:
+                _maybe_fire_quota_resume(sid, session)
+            except Exception as quota_exc:  # health: allow BLE001 -- poller must survive; logged
+                _notif_log_failure("quota resume poll failed", quota_exc)
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)

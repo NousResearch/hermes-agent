@@ -29,6 +29,7 @@ import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { QuotaRerunCopy } from './types_quota_rerun'
 import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
@@ -93,6 +94,7 @@ export interface Translations extends NoticeTranslations {
   appTour: AppTourTranslations
   firstRun: FirstRunCopy
   externalOpenFailed: ExternalOpenFailedCopy
+  quotaRerun: QuotaRerunCopy
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]

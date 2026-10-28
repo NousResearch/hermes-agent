@@ -186,9 +186,11 @@ function Harness({
   onRestoreToMessage,
   onReload,
   isRunning = false,
-  isDisabled = false
+  isDisabled = false,
+  after = []
 }: {
   assistant?: ThreadMessage
+  after?: ThreadMessage[]
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => void
   onRestoreToMessage?: (messageId: string) => void
@@ -197,7 +199,7 @@ function Harness({
   isDisabled?: boolean
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistant],
+    messages: [userMessage(), assistant, ...after],
     isRunning,
     isDisabled,
     onNew: async () => {},
@@ -492,6 +494,52 @@ describe('scheduled retry at the usage-limit reset (#98852)', () => {
     render(<Harness assistant={rateLimited(Math.floor(Date.now() / 1000) - 60)} onReload={onReload} />)
     expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: armName })).toBeNull()
+  })
+
+  it('states the rerun the backend armed and offers no client-side retry that would run it twice', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    const armed = failedMessage(
+      { code: 'rate_limit', layer: 'provider', provider: 'openai', rerunAt: resetsAt + 45, resetsAt, retryable: true },
+      'HTTP 429: {"error":{"message":"Rate limit reached"}}'
+    )
+
+    render(<Harness assistant={armed} onReload={onReload} />)
+
+    expect((await screen.findByTestId('error-rerun-scheduled')).textContent).toMatch(
+      /^Hermes will rerun this at \d\d:\d\d, when the limit resets$/
+    )
+    expect(screen.queryByRole('button', { name: /^Retry when the limit resets/ })).toBeNull()
+    expect(onReload).not.toHaveBeenCalled()
+  })
+
+  it("keeps the rerun note above the failure's own trailing notice row, and drops it once the chat moves on", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    const armed = failedMessage({
+      code: 'rate_limit',
+      layer: 'provider',
+      rerunAt: resetsAt + 45,
+      resetsAt,
+      retryable: true
+    })
+
+    const notice = {
+      id: 'failed-turn-notice',
+      role: 'system',
+      content: [{ type: 'text', text: 'Your request was not processed.' }],
+      createdAt,
+      metadata: { custom: {} }
+    } as unknown as ThreadMessage
+
+    const { unmount } = render(<Harness after={[notice]} assistant={armed} />)
+    expect(await screen.findByTestId('error-rerun-scheduled')).toBeTruthy()
+    unmount()
+
+    render(<Harness after={[notice, { ...userMessage(), id: 'user-2' }]} assistant={armed} />)
+    await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.queryByTestId('error-rerun-scheduled')).toBeNull()
   })
 })
 

@@ -9,10 +9,12 @@ import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arFirstRun } from './ar_first_run'
+import { arQuotaRerun } from './ar_quota_rerun'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
+  quotaRerun: arQuotaRerun,
 
   catalog: {
     add: 'إضافة',

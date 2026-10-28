@@ -111,6 +111,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, reason) in res.respawn_guarded
             ],
             "rate_limited": res.rate_limited,
+            "skipped_usage_held": res.skipped_usage_held,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
@@ -150,6 +151,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Guarded ({reason}): {tid}")
     if res.rate_limited:
         print(f"Rate-limited (released to ready, no failure counted): {', '.join(res.rate_limited)}")
+    if res.skipped_usage_held:
+        print(f"Waiting for a provider usage limit to reset: {', '.join(res.skipped_usage_held)}")
     if res.skipped_locked:
         print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
     if res.memory_pressure:

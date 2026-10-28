@@ -21,12 +21,14 @@ import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
+import { esQuotaRerun } from './es_quota_rerun'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  quotaRerun: esQuotaRerun,
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
   intro: introEs,

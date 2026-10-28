@@ -892,6 +892,13 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
     if a["interpreter"] is not None:
         # CLI-only lane like reasoning_effort; update_job trims, empty string clears.
         updates["interpreter"] = a["interpreter"]
+    if a["on_limit"] is not None:
+        # CLI-only lane (`hermes cron edit --on-limit`): validated with the rest of this update, so a
+        # refused edit changes nothing.
+        from cron.quota_hold import ON_LIMIT_CHOICES, ON_LIMIT_KEY
+        if a["on_limit"] not in ON_LIMIT_CHOICES:
+            return f"on_limit must be one of {', '.join(ON_LIMIT_CHOICES)}"
+        updates[ON_LIMIT_KEY] = a["on_limit"]
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
@@ -1048,7 +1055,8 @@ def cronjob(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
-    interpreter: Optional[str] = None) -> str:
+    interpreter: Optional[str] = None,
+    on_limit: Optional[str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility

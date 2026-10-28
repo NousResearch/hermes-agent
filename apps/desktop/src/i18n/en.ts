@@ -26,6 +26,7 @@ import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
+import { enQuotaRerun } from './en_quota_rerun'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
@@ -34,6 +35,7 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   externalOpenFailed: enExternalOpenFailed,
+  quotaRerun: enQuotaRerun,
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
   firstRun: enFirstRun,

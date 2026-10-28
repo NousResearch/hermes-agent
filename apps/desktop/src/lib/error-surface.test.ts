@@ -8,7 +8,8 @@ import {
   type ErrorSurface,
   formatErrorDiagnostics,
   formatLimitReset,
-  parseErrorSurface
+  parseErrorSurface,
+  withScheduledRerun
 } from './error-surface'
 import { errorCardText } from './error-surface-copy'
 
@@ -331,5 +332,17 @@ describe('out of credits (not a window plan)', () => {
       expect(plan.openBilling).toBe(false)
       expect(plan.switchProvider && plan.diagnostics).toBe(true)
     }
+  })
+})
+
+describe('withScheduledRerun', () => {
+  const surface: ErrorSurface = { code: 'rate_limit', layer: 'provider', retryable: true }
+
+  it('stamps rerunAt only when the backend says it armed the rerun', () => {
+    expect(withScheduledRerun(surface, { resume_at: 1_800_000_000, scheduled: true })?.rerunAt).toBe(1_800_000_000)
+    expect(withScheduledRerun(surface, { resume_at: 1_800_000_000, scheduled: false })?.rerunAt).toBeUndefined()
+    expect(withScheduledRerun(surface, { eligible: true, resume_at: 1_800_000_000 })?.rerunAt).toBeUndefined()
+    expect(withScheduledRerun(surface, undefined)).toBe(surface)
+    expect(withScheduledRerun(null, { resume_at: 1, scheduled: true })).toBeNull()
   })
 })

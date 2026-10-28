@@ -110,6 +110,9 @@ export type GatewayEventPayload = {
   // descriptor naming which stack layer failed (agent/error_surface.py).
   // Absent on older gateways; consumers must fall back to string heuristics.
   error_surface?: unknown
+  // message.complete on a usage-limit failure: the reset plan + whether the backend armed its
+  // own rerun (`scheduled`, tui_gateway/session_quota_resume.py).
+  quota_resume?: unknown
   inline_diff?: string
   duration_s?: number
   todos?: unknown

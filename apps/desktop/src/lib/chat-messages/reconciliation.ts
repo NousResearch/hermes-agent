@@ -393,6 +393,27 @@ function persistedTailErrorMatches(
     )
 }
 
+// The stored tail card replaces the local one (#124379), but only the live terminal frame knows
+// the backend armed a rerun (`quota_resume.scheduled`). Keep it, or the refresh swaps "Hermes will
+// rerun this" back to the client-side "Retry when the limit resets" and the turn could run twice.
+function carryRerunToStoredTail(mergedNextMessages: ChatMessage[], local: ChatMessage): void {
+  const rerunAt = local.errorSurface?.rerunAt
+
+  const index = mergedNextMessages.findLastIndex(
+    message =>
+      message.role === 'assistant' &&
+      !message.hidden &&
+      Boolean(message.error) &&
+      message.errorSurface?.code === local.errorSurface?.code
+  )
+
+  const stored = mergedNextMessages[index]
+
+  if (rerunAt !== undefined && stored?.errorSurface && stored.errorSurface.rerunAt === undefined) {
+    mergedNextMessages[index] = { ...stored, errorSurface: { ...stored.errorSurface, rerunAt } }
+  }
+}
+
 /**
  * Where the refresh already holds a local failed assistant: the index of the
  * stored assistant to fold its error onto, `represented` when the refresh
@@ -488,6 +509,8 @@ function localAssistantErrorIdsToPreserve(
     const twinIndex = storedFailedTurnIndex(mergedNextMessages, currentMessages, index, hydratedId)
 
     if (twinIndex === 'represented') {
+      carryRerunToStoredTail(mergedNextMessages, message)
+
       continue
     }
 

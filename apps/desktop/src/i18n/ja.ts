@@ -22,11 +22,13 @@ import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
 import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
+import { jaQuotaRerun } from './ja_quota_rerun'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  quotaRerun: jaQuotaRerun,
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {

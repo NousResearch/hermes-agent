@@ -777,7 +777,17 @@ _JOB_DETAIL_LINES = (
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
     ("workdir", "  Workdir: {}"),
-    ("interpreter", "  Python: {}"))
+    ("interpreter", "  Python: {}"),
+    ("on_limit", "  On usage limit: {}"))
+
+
+def _set_on_limit(job_id: str, args) -> Optional[dict[str, Any]]:
+    """``--on-limit``: a stored job field the scheduler's usage-limit gate reads (cron/quota_hold.py)."""
+    choice = getattr(args, "on_limit", None)
+    if not choice:
+        return None
+    from cron.jobs import update_job
+    return update_job(job_id, {"on_limit": choice})
 
 
 def _print_job_details(job_data: dict[str, Any]) -> None:
@@ -801,6 +811,7 @@ def cron_create(args):
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
+    result["job"] = _set_on_limit(result["job_id"], args) or result.get("job", {})
     print(color(f"Created job: {result['job_id']}", Colors.GREEN))
     print(f"  Name: {result['name']}\n  Schedule: {result['schedule']}")
     if result.get("skills"):
@@ -842,7 +853,8 @@ def cron_edit(args):
     result = _cron_api(action="update", job_id=args.job_id,
                        schedule=getattr(args, "schedule", None),
                        prompt=getattr(args, "prompt", None), skills=final_skills,
-                       no_agent=getattr(args, "no_agent", None), **_job_api_kwargs(args))
+                       no_agent=getattr(args, "no_agent", None), on_limit=getattr(args, "on_limit", None),
+                       **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1

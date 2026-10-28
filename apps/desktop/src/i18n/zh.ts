@@ -21,11 +21,13 @@ import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
 import { zhPluginUpdate } from './zh_plugin_update'
 import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
+import { zhQuotaRerun } from './zh_quota_rerun'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  quotaRerun: zhQuotaRerun,
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',

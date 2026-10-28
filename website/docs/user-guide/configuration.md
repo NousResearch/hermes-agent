@@ -2876,7 +2876,8 @@ browser:
   # Cloud browser selection (written by `hermes tools` → Browser Automation)
   cloud_provider: local          # local | browserbase | browser-use | firecrawl | nous | <provider plugin>; unset = autodetect from credentials
   auto_local_for_private_urls: true  # With a cloud provider, open LAN/localhost URLs in a local Chromium
-  allow_private_urls: false      # Allow private/internal addresses (localhost, 192.168.x.x, ...)
+                                     # (ignores allow_private_urls; false = refuse them instead)
+  allow_private_urls: false      # Legacy alias of security.allow_private_urls (guards cloud/CDP browsers, not the local Chromium)
   # Optional CDP override — when set, the browser tools attach to your own
   # Chromium-family browser (as /browser connect does) instead of launching one.
   cdp_url: ""

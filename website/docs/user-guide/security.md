@@ -793,6 +793,27 @@ When on, web tools, the browser, vision URL fetches, and gateway media downloads
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 
+#### What `allow_private_urls` covers, and what it doesn't
+
+The setting guards the fetches Hermes makes or hands to a remote browser; it does
+not stop every route to a private host. With it `false`:
+
+| Surface | Private URL (`localhost`, `192.168.x.x`, ...) |
+|---|---|
+| `web_extract` | Refused before any backend is called. With it `true`, hosted extract backends still fetch from their own servers and cannot reach your LAN. |
+| `vision_analyze` URL fetches, image/video result downloads, gateway media downloads | Refused |
+| `browser_exec` on a cloud provider with `browser.auto_local_for_private_urls: false`, on a `/browser connect` (CDP) endpoint, or with a Docker/SSH/Modal terminal backend | Refused (`Blocked: URL targets a private or internal address`) |
+| `browser_cdp` raw CDP calls on those same backends | Refused for private page URLs |
+| `browser_exec` on a cloud provider with `browser.auto_local_for_private_urls: true` (the default) | **Opens**, in a local Chromium sidecar on the Hermes host ([hybrid routing](./features/browser.md#hybrid-routing-cloud-for-public-urls-local-for-lanlocalhost)) |
+| `browser_exec` on the local Chromium with a local terminal backend | **Opens**: the browser reaches nothing the terminal can't |
+| `terminal` (`curl http://localhost`, ...) | **Opens**: no URL guard |
+
+Cloud-metadata endpoints are refused on every row except `terminal`, sidecar and
+local Chromium included. To keep the agent's browser off private hosts while a cloud provider is
+configured, set `browser.auto_local_for_private_urls: false`; that matters most on
+hosted installs (Docker, a VPS), where the sidecar sees the host's own loopback
+services and its LAN.
+
 #### Local proxy fake-ip ranges
 
 A TUN proxy in fake-ip mode (Mihomo/Clash `fake-ip`, Surge enhanced mode) answers DNS with an

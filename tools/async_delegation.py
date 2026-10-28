@@ -98,6 +98,8 @@ _ACTIVE_STATES = ("running", "stalling")
 _ROUTING_KEYS = ("scope_id", "user_id", "user_name")
 # Structured stall metadata — additive, present only on stall finalizations.
 _STALL_META_KEYS = ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_phase", "stall_grace_seconds")
+# output_schema verdict of a single child — present only when the call declared a schema.
+_SCHEMA_KEYS = ("schema_valid", "schema_errors", "schema_retries", "schema_note")
 # Private stall bookkeeping on the record -> public field in list_async_delegations().
 _STALL_FIELD_MAP = (("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
                     ("_stall_threshold_seconds", "stall_threshold_seconds"), ("_stall_in_tool", "stall_in_tool"))
@@ -1014,7 +1016,8 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
     else:
         payload = {
             "summary": result.get("summary"), "error": result.get("error"), "api_calls": result.get("api_calls", 0),
-            "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
+            "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2)),
+            **{k: result[k] for k in _SCHEMA_KEYS if k in result}}
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
         # session_key routes back to the originating gateway session; "" => CLI.

@@ -150,6 +150,20 @@ def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
 
 
+def _schema_lines(entry: dict) -> list[str]:
+    """Name a failed output_schema verdict: a "completed" child whose answer broke the declared
+    contract must not read as a clean result to a parent that gates on the schema."""
+    if entry.get("schema_valid") is not False:
+        return []
+    errors = entry.get("schema_errors") or []
+    return [
+        "SCHEMA: invalid — the final answer does not satisfy the declared output_schema"
+        + (" (after 1 retry)" if entry.get("schema_retries") else "")
+        + "; the text below is the raw, UNVALIDATED answer.",
+        *(f"  - {error}" for error in errors[:10]),
+    ]
+
+
 def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
@@ -236,12 +250,14 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         idx, r_truncated = r.get("task_index", 0), _is_truncated(r)
         r_status, r_summary, r_error = r.get("status", "?"), r.get("summary"), r.get("error")
         r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
-        icon = "⚠" if r_truncated else ("✓" if r_status in _DONE else "✗")
+        r_schema = _schema_lines(r)
+        icon = "⚠" if r_truncated or r_schema else ("✓" if r_status in _DONE else "✗")
         header = (f"--- {icon} TASK {idx + 1}/{n}" + (f": {r_goal}" if r_goal else "") + f"  (status={r_status}"
                   + (f", api_calls={r['api_calls']}" if r.get("api_calls") else "")
                   + (f", {r['duration_seconds']}s" if r.get("duration_seconds") is not None else "")
-                  + (", TRUNCATED: hit max_iterations — work may be incomplete" if r_truncated else ""))
-        lines += ["", header + ") ---"]
+                  + (", TRUNCATED: hit max_iterations — work may be incomplete" if r_truncated else "")
+                  + (", SCHEMA INVALID" if r_schema else ""))
+        lines += ["", header + ") ---", *r_schema]
         if r_status in _DONE and r_summary:
             if r_truncated:
                 lines.append(_TRUNCATED_SUMMARY_NOTE)
@@ -299,7 +315,7 @@ def _format_async_delegation(evt: dict) -> str:
     lines += _notice_lines([evt]) + [
         f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
-        "--- RESULT ---"]
+        "--- RESULT ---", *_schema_lines(evt)]
     if status in _DONE and summary:
         if truncated:
             lines.append(_TRUNCATED_SUMMARY_NOTE)

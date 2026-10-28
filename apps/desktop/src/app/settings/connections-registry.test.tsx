@@ -102,7 +102,7 @@ describe('externally managed updates', () => {
       ]
     })
 
-    Object.assign(window.hermesDesktop.connections, { updateAll })
+    Object.assign(window.hermesDesktop.connections!, { updateAll })
     render(<ConnectionsRegistrySection />)
     fireEvent.click(await screen.findByRole('button', { name: 'Update all instances' }))
 

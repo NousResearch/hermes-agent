@@ -181,6 +181,8 @@ export default class App extends PureComponent<Props, State> {
   keyParseState = INITIAL_STATE
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null
+  // Check-phase hop between that timer firing and the flush; see flushIncomplete
+  incompleteFlushImmediate: NodeJS.Immediate | null = null
   // Timeout durations for incomplete sequences (ms)
   readonly NORMAL_TIMEOUT = 50 // Short timeout for regular esc sequences
   readonly PASTE_TIMEOUT = 500 // Longer timeout for paste operations
@@ -278,6 +280,11 @@ export default class App extends PureComponent<Props, State> {
     if (this.incompleteEscapeTimer) {
       clearTimeout(this.incompleteEscapeTimer)
       this.incompleteEscapeTimer = null
+    }
+
+    if (this.incompleteFlushImmediate) {
+      clearImmediate(this.incompleteFlushImmediate)
+      this.incompleteFlushImmediate = null
     }
 
     if (this.mouseWatchdogTimer) {
@@ -504,11 +511,31 @@ export default class App extends PureComponent<Props, State> {
       })
   }
 
-  // Helper to flush incomplete escape sequences
+  // Timer callback for incomplete escape sequences, unterminated pastes and a
+  // held CR. Node runs timers before the poll phase, so after an event-loop
+  // stall this fires while the next chunk still sits unread in the fd, where
+  // stdin.readableLength cannot see it; flushing here would submit a held CR
+  // ahead of the paste chunk that follows it. Decide in the check phase
+  // instead, after this turn's poll has read whatever was waiting: any read
+  // replaces keyParseState, which voids this flush (processInput re-arms the
+  // timer when the new state still needs one).
   flushIncomplete = (): void => {
-    // Clear the timer reference
     this.incompleteEscapeTimer = null
+    const state = this.keyParseState
 
+    if (this.incompleteFlushImmediate) {
+      clearImmediate(this.incompleteFlushImmediate)
+    }
+
+    this.incompleteFlushImmediate = setImmediate(() => {
+      this.incompleteFlushImmediate = null
+
+      if (this.keyParseState === state) {
+        this.flushIfIdle()
+      }
+    })
+  }
+  flushIfIdle = (): void => {
     // Only proceed if we have an incomplete escape sequence or an unterminated
     // bracketed paste. Missing paste-end markers otherwise leave every later
     // keystroke trapped in the paste buffer.

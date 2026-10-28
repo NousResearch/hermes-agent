@@ -25,10 +25,16 @@ BURST_END_QUIET_S = 0.25
 
 
 def note_text_change(cli) -> float:
-    """Record a buffer change; input arriving inside the quiet window keeps a paste burst alive."""
+    """Record a buffer change; input arriving inside the quiet window keeps a paste burst alive.
+
+    So does input arriving while an Enter is held, however late a stalled loop reads it: it makes
+    that Enter a pasted newline, so the paste's own trailing Enter stays one too.
+    """
     now = monotonic()
-    if now - getattr(cli, "_tui_paste_burst_at", float("-inf")) < BURST_END_QUIET_S:
+    held = getattr(cli, "_tui_held_enter", None) is not None
+    if held or now - getattr(cli, "_tui_paste_burst_at", float("-inf")) < BURST_END_QUIET_S:
         cli._tui_paste_burst_at = now
+        cli._tui_held_enter = None
     return now
 
 
@@ -52,13 +58,20 @@ def handle_burst_enter(cli, event, buf) -> bool:
         return True  # inside (or the tail of) a multi-line paste
     with_newline = buf.document
     changed_at = getattr(cli, "_tui_last_text_change", 0.0)
+    held = cli._tui_held_enter = object()
 
     def _settle() -> None:
+        if cli._tui_held_enter is held:
+            cli._tui_held_enter = None
         if not app.is_running or buf.document != with_newline or cli._tui_last_text_change != changed_at:
             return  # more input arrived (or the buffer was edited): the newline stays
         buf.document = before
         cli._tui_submit_buffer(event, buf)
         app.invalidate()
 
-    loop.call_later(BURST_END_QUIET_S, _settle)
+    # Decide only after one more selector pass has run its reader callbacks: a loop stalled past
+    # the window can reach this timer with the next chunk still unread (a signal handler that
+    # interrupts the selector past its deadline returns no events). asyncio runs a call_soon
+    # queued now ahead of the next pass's readers; the second hop runs after them.
+    loop.call_later(BURST_END_QUIET_S, loop.call_soon, loop.call_soon, _settle)
     return True

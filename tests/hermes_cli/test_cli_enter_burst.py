@@ -8,7 +8,10 @@ burst clock is a controlled one, advanced explicitly, so a slow runner cannot ch
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import queue
+import selectors
 from collections import deque
 from types import SimpleNamespace
 
@@ -36,15 +39,18 @@ class _Loop:
         self.clock = clock
         self.scheduled = []
 
-    def call_later(self, delay, callback):
-        self.scheduled.append((delay, callback))
+    def call_later(self, delay, callback, *args):
+        self.scheduled.append((delay, callback, args))
+
+    def call_soon(self, callback, *args):  # no input arrives between hops
+        callback(*args)
 
     def run_scheduled(self):
         """Let the quiet window elapse with no input, then fire what was scheduled."""
         pending, self.scheduled = self.scheduled, []
-        for delay, callback in pending:
+        for delay, callback, args in pending:
             self.clock.advance(delay)
-            callback()
+            callback(*args)
 
 
 @pytest.fixture
@@ -98,7 +104,7 @@ def test_text_and_enter_in_one_write_submits_after_the_quiet_window(clock):
     # Not an ordinary submit: a provisional newline waits for the quiet window.
     assert _submitted(shell) == []
     assert buf.text == "/help\n"
-    assert [delay for delay, _ in loop.scheduled] == [BURST_END_QUIET_S]
+    assert [delay for delay, *_ in loop.scheduled] == [BURST_END_QUIET_S]
     loop.run_scheduled()                          # input stayed quiet
     assert _submitted(shell) == ["/help"]
     assert buf.text == ""
@@ -164,4 +170,59 @@ def test_paste_whose_reads_continue_past_the_quiet_window_never_submits(clock):
     _enter(shell, app, more_keys_in_read=False)   # the paste's trailing newline
     loop.run_scheduled()
     assert buf.text == "one\ntwo continued again end\n"
+    assert _submitted(shell) == []
+
+
+class _StallingSelector(selectors.DefaultSelector):
+    """One select() returns no events after the loop stalled past its deadline, as CPython does
+    when a signal handler interrupts the wait and the deadline has passed by the time it returns."""
+
+    stall = None
+
+    def select(self, timeout=None):
+        if self.stall is not None:
+            stall, self.stall = self.stall, None
+            stall()
+            return []
+        return super().select(timeout)
+
+
+def test_chunk_waiting_through_an_event_loop_stall_is_read_before_the_quiet_window_ends(clock):
+    """Under host load the loop can stall past the quiet window while the rest of a paste already
+    waits in stdin, and reach the quiet-window timer before reading it. The waiting text keeps the
+    provisional newline, and the paste's own trailing Enter (read with it) stays a newline too.
+    A real selector loop and pipe, on the controlled clock."""
+    shell, buf, _fake_loop, app = _rig(clock)
+    selector = _StallingSelector()
+    loop = asyncio.SelectorEventLoop(selector)
+    loop.time = clock
+    app.loop = loop
+    read_fd, write_fd = os.pipe()
+    try:
+        def _read():  # what prompt_toolkit's reader does with a read of text + Enter
+            text, enter, _ = os.read(read_fd, 1024).decode().partition("\r")
+            buf.insert_text(text)
+            if enter:
+                _enter(shell, app, more_keys_in_read=False)
+
+        loop.add_reader(read_fd, _read)
+        buf.insert_text("one")
+        _enter(shell, app, more_keys_in_read=False)
+
+        def _stall():  # the window elapses and the next chunk lands meanwhile
+            clock.advance(BURST_END_QUIET_S + 0.15)
+            os.write(write_fd, b"two end\r")
+
+        selector.stall = _stall
+        for advance in (0, BURST_END_QUIET_S):  # the stalled passes, then a quiet window later
+            clock.advance(advance)
+            for _ in range(4):  # stop() queued first: each run_forever() is one zero-timeout pass
+                loop.call_soon(loop.stop)
+                loop.run_forever()
+    finally:
+        loop.remove_reader(read_fd)
+        loop.close()
+        os.close(read_fd)
+        os.close(write_fd)
+    assert buf.text == "one\ntwo end\n"
     assert _submitted(shell) == []

@@ -160,7 +160,7 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
     so a batch with one never triggers it. Rescued batches are never cached.
     """
     import inspect
-    from tools.web_result_cache import extract_cache_put
+    from tools.web_result_cache import extract_cache_put, extract_cache_record_final_url
     timeout = _extract_timeout_seconds()
     try:
         if inspect.iscoroutinefunction(provider.extract):
@@ -200,7 +200,20 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+            if fetched.get("url") and fetched["url"] != url:
+                extract_cache_record_final_url(url, fetched["url"], format=format, provider=provider.name)
     return results
+
+
+async def _cached_final_url_allowed(hit: dict, requested: str) -> bool:
+    """Gate a cache hit on the URL its content came from: a redirector cached before its target was
+    blocklisted (or turned private) must not keep serving that target. Consumes ``final_url``."""
+    final_url = hit.pop("final_url", requested)
+    if final_url == requested:  # the requested URL already passed both gates
+        return True
+    from tools.url_safety import async_is_safe_url
+    from tools.website_policy import check_website_access
+    return check_website_access(final_url) is None and await async_is_safe_url(final_url)
 
 
 async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[str]) -> list[dict]:
@@ -208,7 +221,7 @@ async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[st
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
-    control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
+    control; policy-blocked URLs are cache misses, judged on both the requested and the cached final URL. Keys include provider and format, so switching either
     within the TTL never serves the other's content."""
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
@@ -219,6 +232,8 @@ async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[st
         except Exception:
             _policy_block = None
         hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
+        if hit is not None and not await _cached_final_url_allowed(hit, url):
+            hit = None  # a miss: the live fetch re-checks the redirect and refuses with blocked_by_policy
         if hit is not None:
             cached_results[position] = hit
         else:

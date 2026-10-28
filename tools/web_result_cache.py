@@ -275,7 +275,20 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
     except Exception:
         return None
     logger.info("web_extract cache hit: %s", url)
-    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
+    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True,
+            "final_url": entry.get("final_url") or url}
+
+
+def extract_cache_record_final_url(url: str, final_url: str, format: Optional[str] = None, provider: str = "") -> None:
+    """Remember the post-redirect URL behind a cached page, so a hit can re-run the website policy and
+    SSRF gates against the page it actually serves (a blocklist added after caching must still bite)."""
+    with _index_lock:
+        index = _load_index()
+        entry = index.get(_url_digest(url, format, provider))
+        if entry is None:
+            return
+        entry["final_url"] = final_url
+        _save_index(index)
 
 
 def extract_cache_put(

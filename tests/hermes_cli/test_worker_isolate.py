@@ -25,7 +25,7 @@ import pytest
 
 
 def test_build_isolated_worker_argv_prefix_and_separator():
-    """Argv wraps the worker with unshare -Urm <launcher> -- <worker argv>.
+    """Argv wraps the worker with unshare -Urm --propagation slave <launcher> -- <worker argv>.
 
     The ``--`` separator is mandatory: a worker command beginning with a
     flag must never get eaten by the launcher.
@@ -37,11 +37,15 @@ def test_build_isolated_worker_argv_prefix_and_separator():
         agent_home="/p/agent",
         worktree="/p/agent/.worktrees/t_x",
     )
-    # ``unshare -Urm <launcher-argv> -- <worker argv>``. The launcher argv
-    # starts with sys.executable + ``-m hermes_cli.worker_isolate _launcher``,
-    # so ``-Urm`` is at position 1 and the launcher takes over from 2.
+    # ``unshare -Urm --propagation slave <launcher-argv> -- <worker argv>``.
+    # The launcher argv starts with sys.executable +
+    # ``-m hermes_cli.worker_isolate _launcher``, so the launcher takes over
+    # from the end of the unshare prefix.
     assert argv[0] == "unshare"
-    assert argv[1] == "-Urm"
+    # The prefix carries --propagation slave: without it unshare -m
+    # defaults to "private" and the worker never sees the host's mounts
+    # (NFS exports included) -- t_78d2cb41.
+    assert argv[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     # The launcher is invoked as ``python -m hermes_cli.worker_isolate _launcher``.
     assert "-m" in argv and "hermes_cli.worker_isolate" in argv
     assert "_launcher" in argv
@@ -55,13 +59,56 @@ def test_build_isolated_worker_argv_prefix_and_separator():
     assert argv[sep + 1:] == ["hermes", "chat", "-q", "hello"]
 
 
+def test_every_spawn_path_keeps_the_mount_propagation_flag():
+    """Every isolated spawn path must keep the worker's namespace a SLAVE.
+
+    ``unshare -m`` defaults to ``--propagation private``, which severs the
+    worker's mount namespace from the host's shared subtree: the worker then
+    receives no mount the host creates afterwards, and the mounts it
+    inherited at clone time go stale.
+
+    On hermes that made every NFS export under ``/mnt/Stor1`` unusable from
+    a worker -- the worker saw only the bare ``autofs`` placeholder and every
+    lookup returned ELOOP. The flag is therefore load-bearing on ALL spawn
+    paths (worker, scratch, cron), not just one of them.
+    """
+    from hermes_cli.worker_isolate import (
+        build_isolated_cron_worker_argv,
+        build_isolated_scratch_worker_argv,
+        build_isolated_worker_argv,
+    )
+
+    prefix = ["unshare", "-Urm", "--propagation", "slave"]
+    paths = {
+        "worker": build_isolated_worker_argv(
+            ["hermes", "chat"], agent_home="/p/agent",
+        ),
+        "scratch": build_isolated_scratch_worker_argv(
+            ["hermes", "chat"], agent_home="/p/agent", scratch="/p/scratch",
+        ),
+        "cron": build_isolated_cron_worker_argv(
+            ["python", "-m", "cron.scheduler"], agent_home="/p/agent",
+        ),
+    }
+    for name, argv in paths.items():
+        assert argv[:4] == prefix, f"{name} spawn path lost the propagation flag: {argv[:6]!r}"
+        # The propagation flag must come BEFORE the launcher, or unshare
+        # treats it as the command to run.
+        assert argv.index("--propagation") < argv.index("_launcher"), (
+            f"{name} spawn path puts --propagation after the launcher: {argv[:8]!r}"
+        )
+
+
 def test_build_isolated_worker_argv_no_worktree():
     """A non-worktree task still wraps in unshare -Urm, just without --worktree."""
     from hermes_cli.worker_isolate import build_isolated_worker_argv
 
     argv = build_isolated_worker_argv(["echo", "ok"], agent_home="/p/agent")
     assert argv[0] == "unshare"
-    assert argv[1] == "-Urm"
+    # The prefix carries --propagation slave: without it unshare -m
+    # defaults to "private" and the worker never sees the host's mounts
+    # (NFS exports included) -- t_78d2cb41.
+    assert argv[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     assert "--worktree" not in argv
     assert argv[-2:] == ["echo", "ok"]
     assert "--" in argv
@@ -235,7 +282,10 @@ def test_isolation_worker_argv_wraps_when_worktree_under_agent_home(tmp_path, mo
     task = _make_task()
     argv = kbd._isolation_worker_argv(task, ["hermes", "chat"], str(worktree))
     assert argv[0] == "unshare"
-    assert argv[1] == "-Urm"
+    # The prefix carries --propagation slave: without it unshare -m
+    # defaults to "private" and the worker never sees the host's mounts
+    # (NFS exports included) -- t_78d2cb41.
+    assert argv[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     assert "--worktree" in argv
     assert str(worktree) in argv
 
@@ -679,7 +729,10 @@ def test_build_isolated_cron_worker_argv_no_worktree_flag():
         agent_home="/p/agent",
     )
     assert argv[0] == "unshare"
-    assert argv[1] == "-Urm"
+    # The prefix carries --propagation slave: without it unshare -m
+    # defaults to "private" and the worker never sees the host's mounts
+    # (NFS exports included) -- t_78d2cb41.
+    assert argv[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     assert "--cron" in argv
     # A cron worker has no --worktree flag (it's mutually exclusive).
     assert "--worktree" not in argv
@@ -717,7 +770,10 @@ def test_build_isolated_scratch_worker_argv_shape():
         ["hermes", "chat"], agent_home="/p/agent", scratch="/p/scratch",
     )
     assert argv[0] == "unshare"
-    assert argv[1] == "-Urm"
+    # The prefix carries --propagation slave: without it unshare -m
+    # defaults to "private" and the worker never sees the host's mounts
+    # (NFS exports included) -- t_78d2cb41.
+    assert argv[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     assert "--scratch" in argv
     assert argv[argv.index("--scratch") + 1] == "/p/scratch"
     assert "--worktree" not in argv
@@ -989,7 +1045,7 @@ def test_cron_isolation_argv_returns_unwrapped_when_kill_switch_truthy(monkeypat
     sentinel = ["/usr/bin/python", "-m", "cron.scheduler", "--external-worker-file", "/dev/null"]
     wrapped = _cron_isolation_argv(sentinel, tmp_path)
     assert wrapped != sentinel
-    assert wrapped[0] == "unshare" and wrapped[1] == "-Urm"
+    assert wrapped[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     assert "--cron" in wrapped
     assert wrapped[-len(sentinel):] == sentinel
 

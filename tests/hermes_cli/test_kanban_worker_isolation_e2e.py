@@ -132,7 +132,7 @@ def test_default_spawn_wraps_worktree_task_in_unshare(tmp_path, monkeypatch):
 
     cmd = seen["cmd"]
     assert cmd[0] == "unshare", f"expected unshare prefix; full cmd={cmd!r}"
-    assert cmd[1] == "-Urm"
+    assert cmd[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     # The launcher module is the next thing; it takes agent_home + --worktree.
     assert "hermes_cli.worker_isolate" in cmd
     assert "_launcher" in cmd
@@ -163,7 +163,7 @@ def test_default_spawn_wraps_scratch_task_outside_agent_home(tmp_path, monkeypat
 
     cmd = seen["cmd"]
     assert cmd[0] == "unshare", f"expected unshare prefix; full cmd={cmd!r}"
-    assert cmd[1] == "-Urm"
+    assert cmd[:4] == ["unshare", "-Urm", "--propagation", "slave"]
     assert "hermes_cli.worker_isolate" in cmd
     assert "_launcher" in cmd
     assert str(agent_home) in cmd

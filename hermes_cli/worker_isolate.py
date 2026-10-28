@@ -105,6 +105,29 @@ _KILL_SWITCH = "HERMES_WORKER_ISOLATION"
 # this host -- see ``_mount`` -- and must not block the worker spawn.
 _MOUNT_TIMEOUT_SECONDS = 15
 
+# The ``unshare`` argv prefix that enters the worker's user+mount namespace.
+#
+# ``--propagation slave`` is REQUIRED, not cosmetic: ``unshare -m`` defaults
+# to ``--propagation private``, which severs the new namespace from the
+# host's shared subtree. The worker then receives no mount the host creates
+# afterwards, and the mounts it inherited at clone time go stale.
+#
+# On this host that broke every NFS export under ``/mnt/Stor1``: systemd
+# mounted the exports on the host (``/`` is ``shared:1``) but the worker's
+# ``/`` was private, so the worker kept seeing only the bare ``autofs``
+# placeholders and every path lookup through one returned ELOOP
+# ("Too many levels of symbolic links"). Measured on hermes 2026-10-28
+# (t_78d2cb41), mounting a fresh tmpfs on the host AFTER the worker
+# namespace was created:
+#
+#     unshare -Urm                      -> 0 mounts received   (BROKEN)
+#     unshare -Urm --propagation slave  -> 1 mount received    (fixed)
+#
+# ``slave`` rather than ``shared``: a slave receives the host's propagation
+# events but does not propagate its own mounts back out, which preserves the
+# isolation guarantee this module exists to provide.
+_UNSHARE_ARGV_PREFIX = ("unshare", "-Urm", "--propagation", "slave")
+
 
 @dataclass(frozen=True)
 class IsolationConfig:
@@ -261,9 +284,16 @@ def build_isolated_worker_argv(
 ) -> List[str]:
     """Return the launcher-prefixed worker argv.
 
-    The nesting the dispatcher needs is ``[unshare, -Urm, launcher.py, --,
-    command...]``. The launcher's own argv includes the carve-out paths so
-    it can bind-mount them rw before flipping the tree ro.
+    The nesting the dispatcher needs is ``[unshare, -Urm, --propagation
+    slave, launcher.py, --, command...]``. The launcher's own argv includes
+    the carve-out paths so it can bind-mount them rw before flipping the
+    tree ro.
+
+    ``--propagation slave`` keeps the worker's namespace a SLAVE of the
+    host's shared mount subtree, so the worker RECEIVES the host's mounts
+    (NFS exports included) without being able to push its own mounts back
+    out. Without it ``unshare -m`` defaults to ``private`` and the worker
+    sees none of them -- see ``_UNSHARE_ARGV_PREFIX``.
 
     Pure function: no syscalls, no env reads -- unit-test the shape without
     ever touching the host mount table. The actual mount dance lives in
@@ -276,7 +306,7 @@ def build_isolated_worker_argv(
     launcher_argv = _build_launcher_argv(agent_home=agent_home, worktree=worktree, extra_rw=extra_rw)
     # ``--`` separates the launcher from the worker argv so a worker command
     # beginning with a flag never gets eaten by the launcher.
-    return ["unshare", "-Urm", *launcher_argv, "--", *command]
+    return [*_UNSHARE_ARGV_PREFIX, *launcher_argv, "--", *command]
 
 
 def _build_launcher_argv(
@@ -287,7 +317,7 @@ def _build_launcher_argv(
     cron: bool = False,
     scratch: Optional[str] = None,
 ) -> List[str]:
-    """Argv for the launcher itself (without the ``unshare -Urm`` prefix).
+    """Argv for the launcher itself (without the ``unshare`` prefix).
 
     Layout: ``[<py>, -m, hermes_cli.worker_isolate, _launcher, <agent_home>,
     [--cron] [--worktree <path> | --scratch <path>] [--rw <path>...] --
@@ -349,7 +379,7 @@ def build_isolated_scratch_worker_argv(
     launcher_argv = _build_launcher_argv(
         agent_home=agent_home, worktree=None, extra_rw=extra_rw, scratch=scratch,
     )
-    return ["unshare", "-Urm", *launcher_argv, "--", *command]
+    return [*_UNSHARE_ARGV_PREFIX, *launcher_argv, "--", *command]
 
 
 def build_isolated_cron_worker_argv(
@@ -400,7 +430,7 @@ def build_isolated_cron_worker_argv(
     )
     # ``--`` separates the launcher from the worker argv so a worker command
     # beginning with a flag never gets eaten by the launcher.
-    return ["unshare", "-Urm", *launcher_argv, "--", *command]
+    return [*_UNSHARE_ARGV_PREFIX, *launcher_argv, "--", *command]
 
 
 def _launcher_module_target() -> str:
@@ -427,7 +457,7 @@ def _launcher_main(argv: List[str]) -> int:
     """Standalone entry point for ``python -m hermes_cli.worker_isolate _launcher -- ...``.
 
     Runs inside the freshly-created user+mount namespace. The parent
-    dispatcher already entered ``unshare -Urm``; here we do the bind dance
+    dispatcher already entered the ``unshare`` namespace; here we do the bind dance
     and ``exec`` the worker argv.
 
     Argv layout::
@@ -847,7 +877,7 @@ def _make_staging_dir(parent: str) -> Optional[str]:
     makes the staging bind a bind whose target lives inside its own
     source.
 
-    Inside the ``unshare -Urm`` namespace the launcher runs as uid 0 and
+    Inside the ``unshare`` namespace the launcher runs as uid 0 and
     the kernel DOES accept that bind (verified 2026-10-26, t_4722df6f:
     ``mount --bind /home/serveradmin/.hermes <dir-inside-it>`` succeeds
     with rc=0 inside the namespace). So this is NOT a correctness fix for

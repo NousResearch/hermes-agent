@@ -36,3 +36,26 @@ def test_audit_only_history_is_empty_but_errors_remain_context(tmp_path):
         path.write_text("# Cron Job: monitor\n**Status:** monitor source failed\n\nConnection refused\n", encoding="utf-8")
         prompt, injected = _inject_context_from(job, "next")
         assert injected and "Connection refused" in prompt
+
+
+def test_undecodable_output_skips_file_not_run(tmp_path):
+    """Binary strays matching the `*.md` glob (e.g. macOS AppleDouble `._*.md`) must be
+    skipped per-file, falling through to older archives, instead of crashing the run
+    with UnicodeDecodeError (#105582 class, seen in the wild 2026-10-08/09)."""
+    with jobs.use_cron_store(tmp_path):
+        directory = jobs.get_cron_output_dir() / "abcdef"
+        directory.mkdir(parents=True)
+        # Good older archive — must be the one injected.
+        good = directory / "2026-10-07_09-00-00.md"
+        good.write_text(
+            "# Cron Job: email check\n\n**Status:** all clear, nothing new\n\n---\n\nEmail check complete.\n",
+            encoding="utf-8")
+        os.utime(good, (10, 10))
+        # Undecodable newest file — binary header like AppleDouble xattr payload.
+        stray = directory / "2026-10-08_09-00-00.md"
+        stray.write_bytes(b"\x00\x05\x16\x07Microsoft Office Mac\x00\xa3\x03\x00\x00\x00")
+        os.utime(stray, (20, 20))
+        job = {"id": "abcdef", "context_from": ["self"]}
+        prompt, injected = _inject_context_from(job, "next")
+        assert injected and "Email check complete." in prompt
+        assert "Microsoft Office Mac" not in prompt

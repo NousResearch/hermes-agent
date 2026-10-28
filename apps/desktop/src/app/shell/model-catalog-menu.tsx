@@ -21,6 +21,7 @@ import {
   useState
 } from 'react'
 
+import { InstanceModelPreferences } from '@/components/instance-model-preferences'
 import { PlanLimitLine, UsageLevelTag } from '@/components/model-picker'
 import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
@@ -44,6 +45,7 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
+import { hiddenModel } from '@/lib/instance-model-preferences'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
@@ -52,6 +54,7 @@ import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
+import { $instanceModels } from '@/store/instance-model-preferences'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   type LocalModelsOwner,
@@ -274,6 +277,7 @@ export function ModelCatalogMenu({
   // preference owned by the catalog, so the composer pill, session tiles and
   // the kanban override all show the same Favorites section.
   const favoriteKeys = useStore($favoriteModels)
+  const instancePreferences = useStore($instanceModels)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
@@ -366,8 +370,8 @@ export function ModelCatalogMenu({
   // explicit "always show me this one". A search turns the section off — a
   // query means "show me every match", listed in their provider's place.
   const favoriteRows = useMemo(
-    () => (q ? [] : resolveFavoriteRows(pickerProviders, favoriteKeys)),
-    [pickerProviders, favoriteKeys, q]
+    () => (q ? [] : resolveFavoriteRows(pickerProviders, favoriteKeys).filter(row => (!window.hermesDesktop?.api || instancePreferences.snapshot !== null || instancePreferences.status === 'legacy') && !hiddenModel(instancePreferences.snapshot, row.provider.slug, row.family.id))),
+    [pickerProviders, favoriteKeys, q, instancePreferences.snapshot, instancePreferences.status]
   )
 
   // The same rows are dropped from the provider groups, so no model is ever
@@ -387,8 +391,8 @@ export function ModelCatalogMenu({
         { model: current.model, provider: current.provider },
         shownKeys,
         q ? null : favoriteSet
-      ),
-    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
+      ).map(group => ({ ...group, families: group.families.filter(family => !hiddenModel(instancePreferences.snapshot, group.provider.slug, family.id)) })).filter(group => group.families.length > 0 && (!window.hermesDesktop?.api || instancePreferences.snapshot !== null || instancePreferences.status === 'legacy')),
+    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet, instancePreferences.snapshot, instancePreferences.status]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -697,6 +701,7 @@ export function ModelCatalogMenu({
 
   return (
     <>
+      <InstanceModelPreferences connectionId={ownerConnectionId} profile={profile} providers={pickerProviders} />
       {header}
       <DropdownMenuSearch
         aria-label={copy.search}

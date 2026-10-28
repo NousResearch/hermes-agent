@@ -594,3 +594,7 @@ The detailed state contract lives in the scoped
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.
+
+### Instance model preferences
+
+Favorites and explicit visibility overrides belong to the connected Hermes instance when its preference API is available; the renderer is a cache. Explicit hide wins over favorites, current-row pinning and catalog search in this mode, while the current model remains visible in the composer status and is never changed by preference sync. Edit Models can restore hidden rows. Keep the local-only behavior for identified older backends. Importing previous renderer settings requires confirmation, preserves originals and skips fields already chosen or cancelled on the instance. Show a compact sync/legacy status and actionable errors; never present an unacknowledged write as saved.

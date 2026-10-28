@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
+import { InstanceModelPreferences } from '@/components/instance-model-preferences'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -27,6 +28,7 @@ import {
   resetModelVisibilityKeepingCustoms,
   withCustomModels
 } from '@/store/custom-models'
+import { $instanceModels } from '@/store/instance-model-preferences'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -80,6 +82,8 @@ export function ModelVisibilityDialog({
   const copy = t.modelVisibility
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
+  const preferenceView = useStore($instanceModels)
+  const preferencesReady = !window.hermesDesktop?.api || preferenceView.status === 'legacy' || preferenceView.snapshot !== null
   const collapsedProviders = useStore($collapsedProviders)
   const customModels = useStore($customModels)
 
@@ -141,6 +145,7 @@ export function ModelVisibilityDialog({
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent bodyClassName="gap-0 overflow-hidden p-0" className="max-w-xs">
+        <InstanceModelPreferences connectionId={ownerConnectionId} enabled={open} profile={profile} providers={providers} />
         <DialogHeader className="px-3 pb-1 pt-3">
           <DialogTitle className="text-[0.8125rem]">{copy.title}</DialogTitle>
         </DialogHeader>
@@ -163,7 +168,7 @@ export function ModelVisibilityDialog({
               {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
             </div>
           ) : (
-            providers.map(provider => {
+            providers.filter(() => preferencesReady).map(provider => {
               const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
 
               if (models.length === 0) {

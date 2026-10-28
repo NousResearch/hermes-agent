@@ -7,6 +7,7 @@ Split out of ``hermes_cli.kanban_db``; facade helpers are late-imported inside f
 
 from __future__ import annotations
 
+import contextlib
 import re
 import sqlite3
 from typing import Any, Optional
@@ -41,7 +42,9 @@ def _resolve_project_link(
     try:
         with _pdb.connect_closing() as _pconn:
             project_obj = _pdb.get_project(_pconn, project_id)
-    except Exception:
+    except (sqlite3.Error, OSError):
+        # An unreadable store resolves nothing; the board fallback below
+        # still runs and an unresolved request is reported, not dropped silently.
         project_obj = None
     link_report: Optional[dict] = None
     if project_obj is None:

@@ -2,6 +2,9 @@
 connected for the grace window and no turn is running (#101626): it is detached from any parent on
 purpose, so the client count IS its liveness signal."""
 
+from threading import Event
+
+import pytest
 from fastapi import FastAPI, WebSocket
 from starlette.testclient import TestClient
 
@@ -78,6 +81,183 @@ def test_watchdog_sets_should_exit_and_only_arms_for_ssh_isolated_backends(monke
         assert isinstance(ws_mod.app.state.ssh_isolated_clients, IdleClientTracker)
     finally:
         ws_mod.app.state._state.pop("ssh_isolated_clients", None)  # process-global app: never leak the tracker
+
+
+def test_attached_ssh_backend_retires_after_checkout_changes_only_with_idle_permit(monkeypatch):
+    """An attached WebSocket must not keep a provably idle, code-skewed backend alive forever."""
+    from gateway import code_skew
+    from hermes_cli import backend_retirement, web_server_idle_proof
+
+    fence = backend_retirement.RetirementFence()
+    monkeypatch.setattr(backend_retirement, "retirement", fence)
+    monkeypatch.setattr(web_server_idle_proof, "idle_proof", lambda: {"idle": True})
+    monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("old", "new"))
+    tracker = IdleClientTracker()
+    tracker.on_open()  # The SSH Desktop client is still connected.
+
+    class _Server:
+        should_exit = False
+
+    server = _Server()
+    thread = start_idle_watchdog(server, tracker, grace_s=900, poll_s=0.01, probe=lambda: False)
+    try:
+        thread.join(timeout=2)
+        assert server.should_exit is True
+        assert fence.acquire() is False  # New work cannot race a graceful exit.
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("unavailable_or_busy", [None, False])
+def test_code_skew_waits_for_human_input_or_unreadable_idle_proof(monkeypatch, unavailable_or_busy):
+    from gateway import code_skew
+    from hermes_cli import backend_retirement, web_server_idle_proof
+
+    fence = backend_retirement.RetirementFence()
+    monkeypatch.setattr(backend_retirement, "retirement", fence)
+    verdict = [unavailable_or_busy]
+    attempted = Event()
+    monkeypatch.setattr(web_server_idle_proof, "idle_proof", lambda: {"idle": verdict[0]})
+    prepare = fence.prepare
+
+    def prepare_and_signal():
+        result = prepare()
+        attempted.set()  # The boot-time probe is not the retirement attempt.
+        return result
+
+    monkeypatch.setattr(fence, "prepare", prepare_and_signal)
+    monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("old", "new"))
+    tracker = IdleClientTracker()
+    tracker.on_open()
+
+    class _Server:
+        should_exit = False
+
+    server = _Server()
+    thread = start_idle_watchdog(server, tracker, poll_s=0.01)
+    try:
+        assert attempted.wait(timeout=2)
+        assert server.should_exit is False
+        verdict[0] = True
+        thread.join(timeout=2)
+        assert server.should_exit is True
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2)
+
+
+def test_skewed_backend_waits_for_admitted_work_and_unskewed_backend_does_not_retire(monkeypatch):
+    from gateway import code_skew
+    from hermes_cli import backend_retirement, web_server_idle_proof
+
+    fence = backend_retirement.RetirementFence()
+    monkeypatch.setattr(backend_retirement, "retirement", fence)
+    monkeypatch.setattr(web_server_idle_proof, "idle_proof", lambda: {"idle": True})
+    changed = [False]
+    checked = Event()
+
+    def detect():
+        checked.set()
+        return ("old", "new") if changed[0] else None
+
+    monkeypatch.setattr(code_skew, "detect_code_skew", detect)
+    tracker = IdleClientTracker()
+    tracker.on_open()
+
+    class _Server:
+        should_exit = False
+
+    server = _Server()
+    thread = start_idle_watchdog(server, tracker, poll_s=0.01)
+    try:
+        assert checked.wait(timeout=2)
+        assert server.should_exit is False
+        assert fence.acquire() is True
+        fence.release()
+        with fence.work() as admitted:
+            assert admitted
+            changed[0] = True
+            checked.clear()
+            assert checked.wait(timeout=2)
+            assert server.should_exit is False
+        thread.join(timeout=2)
+        assert server.should_exit is True
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2)
+
+
+def test_skew_retirement_import_error_is_retried_without_killing_idle_watchdog(monkeypatch):
+    from gateway import code_skew
+    from hermes_cli import backend_retirement, web_server_idle_proof
+
+    fence = backend_retirement.RetirementFence()
+    monkeypatch.setattr(backend_retirement, "retirement", fence)
+    monkeypatch.setattr(web_server_idle_proof, "idle_proof", lambda: {"idle": True})
+    monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("old", "new"))
+    prepare = fence.prepare
+    attempts = []
+
+    def flaky_prepare():
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise ImportError("stale module during update")
+        return prepare()
+
+    monkeypatch.setattr(fence, "prepare", flaky_prepare)
+    tracker = IdleClientTracker()
+    tracker.on_open()
+
+    class _Server:
+        should_exit = False
+
+    server = _Server()
+    thread = start_idle_watchdog(server, tracker, poll_s=0.01)
+    try:
+        thread.join(timeout=2)
+        assert len(attempts) >= 2
+        assert server.should_exit is True
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2)
+
+
+def test_real_git_revision_change_retires_attached_ssh_backend(tmp_path, monkeypatch):
+    """Exercise the boot fingerprint, on-disk checkout change, fence and watchdog together."""
+    from gateway import code_skew
+    from hermes_cli import backend_retirement, web_server_idle_proof
+
+    root = tmp_path / "checkout"
+    ref = root / ".git" / "refs" / "heads" / "main"
+    ref.parent.mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    ref.write_text("a" * 40 + "\n")
+    monkeypatch.setattr(code_skew, "_PROJECT_ROOT", root)
+    monkeypatch.setattr(code_skew, "_boot_fingerprint", None)
+    code_skew.record_boot_fingerprint()
+    assert code_skew.detect_code_skew() is None
+
+    fence = backend_retirement.RetirementFence()
+    monkeypatch.setattr(backend_retirement, "retirement", fence)
+    monkeypatch.setattr(web_server_idle_proof, "idle_proof", lambda: {"idle": True})
+    tracker = IdleClientTracker()
+    tracker.on_open()
+
+    class _Server:
+        should_exit = False
+
+    server = _Server()
+    thread = start_idle_watchdog(server, tracker, poll_s=0.01)
+    try:
+        ref.write_text("b" * 40 + "\n")
+        assert code_skew.detect_code_skew() == ("a" * 10, "b" * 10)
+        thread.join(timeout=2)
+        assert server.should_exit is True
+        assert fence.acquire() is False
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2)
 
 
 def test_turn_probe_counts_in_flight_cron_execution():

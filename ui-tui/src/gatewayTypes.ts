@@ -96,6 +96,9 @@ export interface ConfigDisplayConfig {
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
    *  honors on its user/assistant labels (#41531). */
   timestamps?: boolean
+  /** Pinned turn anchor above the transcript — `pinned` (default) shows the
+   *  TurnAnchorBar, `echo` keeps the legacy status-bar text, `off` hides both. */
+  turn_anchor?: 'echo' | 'off' | 'pinned'
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a
    * turn starts delegating, via a one-time transient activity hint.  Opens

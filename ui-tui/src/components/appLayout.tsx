@@ -40,6 +40,7 @@ import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
+import { PinnedTurnAnchor } from './turnAnchorBar.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -270,16 +271,25 @@ const TranscriptPane = memo(function TranscriptPane({
           {transcriptContent}
         </Box>
       ) : (
-        <ScrollBox
-          flexDirection="column"
-          flexGrow={1}
-          flexShrink={1}
-          onClick={clearBlankSelection}
-          ref={transcript.scrollRef}
-          stickyScroll
-        >
-          {transcriptContent}
-        </ScrollBox>
+        <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          <PinnedTurnAnchor
+            cols={composer.cols}
+            messages={transcript.historyItems}
+            offsets={transcript.virtualHistory.offsets}
+            scrollRef={transcript.scrollRef}
+            t={ui.theme}
+          />
+          <ScrollBox
+            flexDirection="column"
+            flexGrow={1}
+            flexShrink={1}
+            onClick={clearBlankSelection}
+            ref={transcript.scrollRef}
+            stickyScroll
+          >
+            {transcriptContent}
+          </ScrollBox>
+        </Box>
       )}
 
       {!nativeMode && (
@@ -288,7 +298,7 @@ const TranscriptPane = memo(function TranscriptPane({
         </NoSelect>
       )}
 
-      {!nativeMode && (
+      {!nativeMode && ui.turnAnchor === 'echo' && (
         <StickyPromptTracker
           messages={transcript.historyItems}
           offsets={transcript.virtualHistory.offsets}

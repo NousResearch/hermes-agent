@@ -371,6 +371,9 @@ export interface UiState {
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
+  /** `display.turn_anchor` — pinned bar above the transcript (default),
+   *  legacy status-bar echo, or off. */
+  turnAnchor: 'echo' | 'off' | 'pinned'
   usage: Usage
 }
 

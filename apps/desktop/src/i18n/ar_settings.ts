@@ -50,7 +50,7 @@ export const arSettings = {
       appearanceTypography: 'الخطوط والتحجيم',
       appearanceWindowLayout: 'النافذة والتخطيط',
       appearanceChatDisplay: 'عرض المحادثة',
-      appearancePet: 'الحيوان الأليف',
+      appearanceCompanion: 'الحيوان الأليف',
       appearanceGeneral: 'عام',
       modelMain: 'النموذج الرئيسي',
       modelAuxiliary: 'النماذج المساعدة',
@@ -388,10 +388,10 @@ export const arSettings = {
       installed: name => `تم تثبيت ${name}`,
       removeTheme: 'إزالة الثيم',
       importedBadge: 'مستورد',
-      pet: {
+      companion: {
         title: 'حيوان أليف',
         intro:
-          'تبنَّ تعويذة petdex متحركة تطفو فوق التطبيق وتتفاعل مع ما يفعله Hermes — تجري أثناء تنفيذ الأدوات، وتحتفل عند النجاح، وتعبس عند الأخطاء.',
+          'تبنَّ تعويذة companiondex متحركة تطفو فوق التطبيق وتتفاعل مع ما يفعله Hermes — تجري أثناء تنفيذ الأدوات، وتحتفل عند النجاح، وتعبس عند الأخطاء.',
         restartHint:
           'تحتاج الحيوانات الأليفة إلى إعادة تشغيل سريعة — بدأ التطبيق العامل قبل إضافة هذه الميزة. أغلق Hermes وأعد فتحه، ثم ارجع إلى هنا.',
         scaleTitle: 'الحجم',
@@ -399,7 +399,7 @@ export const arSettings = {
         chooseTitle: 'اختر حيوانا أليفا',
         chooseDesc: 'اختياره يثبّته (إن لزم) ويجعله نشطا.',
         searchPlaceholder: 'البحث عن حيوانات أليفة...',
-        unreachable: 'تعذّر الوصول إلى معرض petdex. تحقق من اتصالك وأعد فتح هذه الصفحة.',
+        unreachable: 'تعذّر الوصول إلى معرض companiondex. تحقق من اتصالك وأعد فتح هذه الصفحة.',
         noMatch: query => `لا توجد حيوانات أليفة تطابق "${query}".`,
         installedTag: 'مثبّت',
         generatedTag: 'مُولّد',
@@ -414,7 +414,7 @@ export const arSettings = {
         renameTitle: 'إعادة تسمية الحيوان الأليف',
         renamePlaceholder: 'سمِّ حيوانك الأليف',
         renameSave: 'حفظ',
-        exportPet: name => `تصدير ${name}`,
+        exportCompanion: name => `تصدير ${name}`,
         adoptFailed: slug => `تعذّر تبني ${slug}`,
         uninstallFailed: slug => `تعذّر إلغاء تثبيت ${slug}`,
         renameFailed: slug => `تعذّرت إعادة تسمية ${slug}`,

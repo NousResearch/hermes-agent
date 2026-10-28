@@ -5,15 +5,15 @@ import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakd
 import { eventSourceMatchesOwner, gatewayEventSource } from '@/lib/replay-gap-owner'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
+  type CompanionChangeMeta,
   noteGatewayReady,
+  notifyCompanionChanged,
   notifyCronChanged,
   notifyPairingChanged,
-  notifyPetChanged,
   notifyPlatformsChanged,
   notifyProjectsChanged,
   notifySessionsChanged,
   notifySetupReady,
-  type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
@@ -31,7 +31,7 @@ function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeS
   // Seed the active skin into the desktop theme registry without applying,
   // so a fresh connect never overrides the user's persisted desktop theme.
   ingestBackendSkin(ready?.skin, { apply: false })
-  // Backends with the change watcher broadcast pet/cron/sessions change
+  // Backends with the change watcher broadcast companion/cron/sessions change
   // events; consumers demote their legacy polls to slow backstops.
   setChangeEventsAvailable(Boolean(ready?.change_events))
 
@@ -75,7 +75,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (
-    event.type === 'pet.changed' ||
+    event.type === 'companion.changed' ||
     event.type === 'cron.changed' ||
     event.type === 'sessions.changed' ||
     event.type === 'projects.changed' ||
@@ -88,8 +88,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // changes apply — background profile sockets (and other connections'
     // gateways) watch their own homes.
     if (fromActiveSource()) {
-      if (event.type === 'pet.changed') {
-        notifyPetChanged(payload as PetChangeMeta | undefined)
+      if (event.type === 'companion.changed') {
+        notifyCompanionChanged(payload as CompanionChangeMeta | undefined)
       } else if (event.type === 'cron.changed') {
         notifyCronChanged()
       } else if (event.type === 'projects.changed') {

@@ -403,6 +403,276 @@
       }
     },
     {
+      "name": "companion.cancel",
+      "summary": "Stop an in-flight companion generate/hatch by token (idempotent).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionCancelResult"
+        }
+      }
+    },
+    {
+      "name": "companion.cells",
+      "summary": "Half-block cell frames (or a kitty placement) for one companion state.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionCellsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionCellsResult"
+        }
+      }
+    },
+    {
+      "name": "companion.disable",
+      "summary": "Turn the companion display off from the desktop picker.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "companion.export",
+      "summary": "Export an installed companion as a re-importable .zip.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionSlugParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionExportResult"
+        }
+      }
+    },
+    {
+      "name": "companion.gallery",
+      "summary": "Companiondex gallery + local install state (installed-only offline); localOnly skips the remote manifest.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionGalleryParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionGalleryResult"
+        }
+      }
+    },
+    {
+      "name": "companion.generate",
+      "summary": "Candidate base looks for a new companion (draft step); drafts also stream via companion.generate.progress.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionGenerateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionGenerateResult"
+        }
+      }
+    },
+    {
+      "name": "companion.generate.status",
+      "summary": "Whether companion generation is possible (a reference-capable image backend) and which providers.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionGenerateStatusResult"
+        }
+      }
+    },
+    {
+      "name": "companion.hatch",
+      "summary": "Turn a base draft into a full spritesheet companion; progress streams via companion.hatch.progress.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionHatchParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionHatchResult"
+        }
+      }
+    },
+    {
+      "name": "companion.info",
+      "summary": "Active companion for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionInfoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionInfoResult"
+        }
+      }
+    },
+    {
+      "name": "companion.info.meta",
+      "summary": "Cheap active-companion metadata used to avoid full payload refreshes.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionInfoMetaResult"
+        }
+      }
+    },
+    {
+      "name": "companion.remove",
+      "summary": "Uninstall a companion (delete its directory); if it was active, turn the display off.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionSlugParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionSlugResult"
+        }
+      }
+    },
+    {
+      "name": "companion.rename",
+      "summary": "Rename a companion's display name + realign its slug/dir; follows the active slug in config.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionRenameParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionSlugResult"
+        }
+      }
+    },
+    {
+      "name": "companion.scale",
+      "summary": "Persist display.companion.scale (clamped to engine bounds) from the desktop slider.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionScaleParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionScaleResult"
+        }
+      }
+    },
+    {
+      "name": "companion.select",
+      "summary": "Adopt a companion: install (if needed) + activate; writes display.companion.* to config.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionSlugParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionSlugResult"
+        }
+      }
+    },
+    {
+      "name": "companion.thumb",
+      "summary": "Idle-frame PNG data URI for the picker (desktop CSP breaks CDN <img>).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionThumbParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompanionThumbResult"
+        }
+      }
+    },
+    {
       "name": "complete.path",
       "summary": "Path / @-reference completions for the composer (files, folders, profiles, plugin providers).",
       "params": [
@@ -2127,276 +2397,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PdfAttachResult"
-        }
-      }
-    },
-    {
-      "name": "pet.cancel",
-      "summary": "Stop an in-flight pet generate/hatch by token (idempotent).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetCancelParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetCancelResult"
-        }
-      }
-    },
-    {
-      "name": "pet.cells",
-      "summary": "Half-block cell frames (or a kitty placement) for one pet state.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetCellsParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetCellsResult"
-        }
-      }
-    },
-    {
-      "name": "pet.disable",
-      "summary": "Turn the pet display off from the desktop picker.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/OkResult"
-        }
-      }
-    },
-    {
-      "name": "pet.export",
-      "summary": "Export an installed pet as a re-importable .zip.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetSlugParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetExportResult"
-        }
-      }
-    },
-    {
-      "name": "pet.gallery",
-      "summary": "Petdex gallery + local install state (installed-only offline); localOnly skips the remote manifest.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetGalleryParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetGalleryResult"
-        }
-      }
-    },
-    {
-      "name": "pet.generate",
-      "summary": "Candidate base looks for a new pet (draft step); drafts also stream via pet.generate.progress.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetGenerateParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetGenerateResult"
-        }
-      }
-    },
-    {
-      "name": "pet.generate.status",
-      "summary": "Whether pet generation is possible (a reference-capable image backend) and which providers.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetGenerateStatusResult"
-        }
-      }
-    },
-    {
-      "name": "pet.hatch",
-      "summary": "Turn a base draft into a full spritesheet pet; progress streams via pet.hatch.progress.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetHatchParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetHatchResult"
-        }
-      }
-    },
-    {
-      "name": "pet.info",
-      "summary": "Active pet for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetInfoParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetInfoResult"
-        }
-      }
-    },
-    {
-      "name": "pet.info.meta",
-      "summary": "Cheap active-pet metadata used to avoid full payload refreshes.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetInfoMetaResult"
-        }
-      }
-    },
-    {
-      "name": "pet.remove",
-      "summary": "Uninstall a pet (delete its directory); if it was active, turn the display off.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetSlugParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetSlugResult"
-        }
-      }
-    },
-    {
-      "name": "pet.rename",
-      "summary": "Rename a pet's display name + realign its slug/dir; follows the active slug in config.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetRenameParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetSlugResult"
-        }
-      }
-    },
-    {
-      "name": "pet.scale",
-      "summary": "Persist display.pet.scale (clamped to engine bounds) from the desktop slider.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetScaleParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetScaleResult"
-        }
-      }
-    },
-    {
-      "name": "pet.select",
-      "summary": "Adopt a pet: install (if needed) + activate; writes display.pet.* to config.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetSlugParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetSlugResult"
-        }
-      }
-    },
-    {
-      "name": "pet.thumb",
-      "summary": "Idle-frame PNG data URI for the picker (desktop CSP breaks CDN <img>).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/PetThumbParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/PetThumbResult"
         }
       }
     },
@@ -11430,7 +11430,7 @@
       },
       "ChangeSignalPayload": {
         "additionalProperties": true,
-        "description": "``change_watcher._CHANGE_WATCHES`` payload fn \u2014 ``{}`` for every watch except pet.changed.",
+        "description": "``change_watcher._CHANGE_WATCHES`` payload fn \u2014 ``{}`` for every watch except companion.changed.",
         "properties": {},
         "title": "ChangeSignalPayload",
         "type": "object"
@@ -12244,6 +12244,1538 @@
           }
         },
         "title": "CommandsCatalogResult",
+        "type": "object"
+      },
+      "CompanionCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Token"
+          }
+        },
+        "title": "CompanionCancelParams",
+        "type": "object"
+      },
+      "CompanionCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "CompanionCancelResult",
+        "type": "object"
+      },
+      "CompanionCellsParams": {
+        "additionalProperties": false,
+        "description": "``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "graphics": {
+            "default": false,
+            "title": "Graphics",
+            "type": "boolean"
+          }
+        },
+        "title": "CompanionCellsParams",
+        "type": "object"
+      },
+      "CompanionCellsResult": {
+        "additionalProperties": false,
+        "description": "Unicode: ``frames`` is frame \u2192 row \u2192 cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics``\nset): ``frames`` are transmit escapes and ``placeholder`` the text grid.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slug"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Displayname"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "frameMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framems"
+          },
+          "frames": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "items": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "type": "array"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Frames"
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scale"
+          },
+          "graphics": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Graphics"
+          },
+          "imageId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Imageid"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Color"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rows"
+          },
+          "placeholder": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Placeholder"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "CompanionCellsResult",
+        "type": "object"
+      },
+      "CompanionChangedPayload": {
+        "additionalProperties": true,
+        "description": "``change_watcher._companion_changed_payload`` \u2014 ``companion.info.meta``-shaped; ``{enabled: false}`` when off.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slug"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Displayname"
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scale"
+          },
+          "spritesheetRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spritesheetrevision"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "CompanionChangedPayload",
+        "type": "object"
+      },
+      "CompanionDraft": {
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "dataUri": {
+            "title": "Datauri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "dataUri"
+        ],
+        "title": "CompanionDraft",
+        "type": "object"
+      },
+      "CompanionExportResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "zipBase64": {
+            "title": "Zipbase64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "filename",
+          "zipBase64"
+        ],
+        "title": "CompanionExportResult",
+        "type": "object"
+      },
+      "CompanionGalleryEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "displayName": {
+            "title": "Displayname",
+            "type": "string"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "spritesheetUrl": {
+            "default": "",
+            "title": "Spritesheeturl",
+            "type": "string"
+          },
+          "curated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Curated"
+          },
+          "generated": {
+            "default": false,
+            "title": "Generated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug",
+          "displayName",
+          "installed"
+        ],
+        "title": "CompanionGalleryEntry",
+        "type": "object"
+      },
+      "CompanionGalleryParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "localOnly": {
+            "default": false,
+            "title": "Localonly",
+            "type": "boolean"
+          }
+        },
+        "title": "CompanionGalleryParams",
+        "type": "object"
+      },
+      "CompanionGalleryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "active": {
+            "default": "",
+            "title": "Active",
+            "type": "string"
+          },
+          "companions": {
+            "items": {
+              "$ref": "#/components/schemas/CompanionGalleryEntry"
+            },
+            "title": "Companions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "CompanionGalleryResult",
+        "type": "object"
+      },
+      "CompanionGenProvider": {
+        "additionalProperties": false,
+        "description": "``agent/companion/generate/imagegen.py::list_sprite_providers`` row.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "default"
+        ],
+        "title": "CompanionGenProvider",
+        "type": "object"
+      },
+      "CompanionGenerateParams": {
+        "additionalProperties": false,
+        "description": "``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one).",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "referenceImage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Referenceimage"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Count"
+          },
+          "style": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Style"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          }
+        },
+        "title": "CompanionGenerateParams",
+        "type": "object"
+      },
+      "CompanionGenerateProgressPayload": {
+        "additionalProperties": true,
+        "description": "``methods_session`` companion.generate: token-only init frame, then one per draft.",
+        "properties": {
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Index"
+          },
+          "dataUri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Datauri"
+          }
+        },
+        "required": [
+          "token",
+          "count"
+        ],
+        "title": "CompanionGenerateProgressPayload",
+        "type": "object"
+      },
+      "CompanionGenerateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/CompanionDraft"
+            },
+            "title": "Drafts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "token",
+          "drafts"
+        ],
+        "title": "CompanionGenerateResult",
+        "type": "object"
+      },
+      "CompanionGenerateStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/CompanionGenProvider"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available",
+          "providers"
+        ],
+        "title": "CompanionGenerateStatusResult",
+        "type": "object"
+      },
+      "CompanionHatchParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "cancelToken": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Canceltoken"
+          },
+          "index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Index"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "style": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Style"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          }
+        },
+        "required": [
+          "token",
+          "name"
+        ],
+        "title": "CompanionHatchParams",
+        "type": "object"
+      },
+      "CompanionHatchProgressPayload": {
+        "additionalProperties": true,
+        "description": "``methods_session`` companion.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form.",
+        "properties": {
+          "event": {
+            "title": "Event",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "done": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Done"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total"
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "CompanionHatchProgressPayload",
+        "type": "object"
+      },
+      "CompanionHatchResult": {
+        "additionalProperties": false,
+        "description": "The hatched companion is installed but NOT active (``companion.select`` adopts, ``companion.remove`` discards).",
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "displayName": {
+            "title": "Displayname",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {},
+            "title": "Warnings",
+            "type": "array"
+          },
+          "companion": {
+            "$ref": "#/components/schemas/CompanionSpritePayload"
+          }
+        },
+        "required": [
+          "ok",
+          "slug",
+          "displayName",
+          "companion"
+        ],
+        "title": "CompanionHatchResult",
+        "type": "object"
+      },
+      "CompanionInfoMetaResult": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slug"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Displayname"
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scale"
+          },
+          "spritesheetRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spritesheetrevision"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "CompanionInfoMetaResult",
+        "type": "object"
+      },
+      "CompanionInfoParams": {
+        "additionalProperties": false,
+        "description": "``knownRevision``: the spritesheet revision the caller already holds (send-once bytes).",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "knownRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Knownrevision"
+          }
+        },
+        "title": "CompanionInfoParams",
+        "type": "object"
+      },
+      "CompanionInfoResult": {
+        "additionalProperties": true,
+        "description": "``server._companion_sprite_payload`` behind ``enabled``; every sprite field is absent when the companion\ndisplay is off, ``spritesheetBase64`` is elided when ``spritesheetUnchanged``.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slug"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Displayname"
+          },
+          "mime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mime"
+          },
+          "spritesheetBase64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spritesheetbase64"
+          },
+          "spritesheetRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spritesheetrevision"
+          },
+          "spritesheetUnchanged": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spritesheetunchanged"
+          },
+          "frameW": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framew"
+          },
+          "frameH": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Frameh"
+          },
+          "framesPerState": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framesperstate"
+          },
+          "framesByState": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framesbystate"
+          },
+          "framesByRow": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framesbyrow"
+          },
+          "loopMs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Loopms"
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scale"
+          },
+          "stateRows": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Staterows"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "CompanionInfoResult",
+        "type": "object"
+      },
+      "CompanionRenameParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name"
+        ],
+        "title": "CompanionRenameParams",
+        "type": "object"
+      },
+      "CompanionScaleParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "scale": {
+            "default": null,
+            "title": "Scale"
+          }
+        },
+        "title": "CompanionScaleParams",
+        "type": "object"
+      },
+      "CompanionScaleResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "scale": {
+            "title": "Scale",
+            "type": "number"
+          }
+        },
+        "required": [
+          "ok",
+          "scale"
+        ],
+        "title": "CompanionScaleResult",
+        "type": "object"
+      },
+      "CompanionSlugParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "title": "CompanionSlugParams",
+        "type": "object"
+      },
+      "CompanionSlugResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Displayname"
+          }
+        },
+        "required": [
+          "ok",
+          "slug"
+        ],
+        "title": "CompanionSlugResult",
+        "type": "object"
+      },
+      "CompanionSpritePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slug"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Displayname"
+          },
+          "mime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mime"
+          },
+          "spritesheetBase64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spritesheetbase64"
+          },
+          "spritesheetRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spritesheetrevision"
+          },
+          "frameW": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framew"
+          },
+          "frameH": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Frameh"
+          },
+          "framesPerState": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framesperstate"
+          },
+          "framesByState": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framesbystate"
+          },
+          "framesByRow": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Framesbyrow"
+          },
+          "loopMs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Loopms"
+          },
+          "scale": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scale"
+          },
+          "stateRows": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Staterows"
+          }
+        },
+        "title": "CompanionSpritePayload",
+        "type": "object"
+      },
+      "CompanionThumbParams": {
+        "additionalProperties": false,
+        "description": "``url``: spritesheet source for a not-yet-installed companion.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Url"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "title": "CompanionThumbParams",
+        "type": "object"
+      },
+      "CompanionThumbResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "dataUri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Datauri"
+          }
+        },
+        "required": [
+          "ok",
+          "slug"
+        ],
+        "title": "CompanionThumbResult",
         "type": "object"
       },
       "CompletePathParams": {
@@ -25530,1538 +27062,6 @@
           "complete"
         ],
         "title": "PersistedTurn",
-        "type": "object"
-      },
-      "PetCancelParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Token"
-          }
-        },
-        "title": "PetCancelParams",
-        "type": "object"
-      },
-      "PetCancelResult": {
-        "additionalProperties": false,
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "PetCancelResult",
-        "type": "object"
-      },
-      "PetCellsParams": {
-        "additionalProperties": false,
-        "description": "``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width.",
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "State"
-          },
-          "cols": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cols"
-          },
-          "graphics": {
-            "default": false,
-            "title": "Graphics",
-            "type": "boolean"
-          }
-        },
-        "title": "PetCellsParams",
-        "type": "object"
-      },
-      "PetCellsResult": {
-        "additionalProperties": false,
-        "description": "Unicode: ``frames`` is frame \u2192 row \u2192 cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics``\nset): ``frames`` are transmit escapes and ``placeholder`` the text grid.",
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "slug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Slug"
-          },
-          "displayName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Displayname"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "State"
-          },
-          "cols": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cols"
-          },
-          "frameMs": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framems"
-          },
-          "frames": {
-            "anyOf": [
-              {
-                "items": {
-                  "items": {
-                    "items": {
-                      "items": {
-                        "type": "integer"
-                      },
-                      "type": "array"
-                    },
-                    "type": "array"
-                  },
-                  "type": "array"
-                },
-                "type": "array"
-              },
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Frames"
-          },
-          "scale": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Scale"
-          },
-          "graphics": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Graphics"
-          },
-          "imageId": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageid"
-          },
-          "color": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Color"
-          },
-          "rows": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Rows"
-          },
-          "placeholder": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Placeholder"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "PetCellsResult",
-        "type": "object"
-      },
-      "PetChangedPayload": {
-        "additionalProperties": true,
-        "description": "``change_watcher._pet_changed_payload`` \u2014 ``pet.info.meta``-shaped; ``{enabled: false}`` when off.",
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "slug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Slug"
-          },
-          "displayName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Displayname"
-          },
-          "scale": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Scale"
-          },
-          "spritesheetRevision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spritesheetrevision"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "PetChangedPayload",
-        "type": "object"
-      },
-      "PetDraft": {
-        "additionalProperties": false,
-        "properties": {
-          "index": {
-            "title": "Index",
-            "type": "integer"
-          },
-          "dataUri": {
-            "title": "Datauri",
-            "type": "string"
-          }
-        },
-        "required": [
-          "index",
-          "dataUri"
-        ],
-        "title": "PetDraft",
-        "type": "object"
-      },
-      "PetExportResult": {
-        "additionalProperties": false,
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "filename": {
-            "title": "Filename",
-            "type": "string"
-          },
-          "zipBase64": {
-            "title": "Zipbase64",
-            "type": "string"
-          }
-        },
-        "required": [
-          "ok",
-          "filename",
-          "zipBase64"
-        ],
-        "title": "PetExportResult",
-        "type": "object"
-      },
-      "PetGalleryEntry": {
-        "additionalProperties": false,
-        "properties": {
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "displayName": {
-            "title": "Displayname",
-            "type": "string"
-          },
-          "installed": {
-            "title": "Installed",
-            "type": "boolean"
-          },
-          "spritesheetUrl": {
-            "default": "",
-            "title": "Spritesheeturl",
-            "type": "string"
-          },
-          "curated": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Curated"
-          },
-          "generated": {
-            "default": false,
-            "title": "Generated",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "slug",
-          "displayName",
-          "installed"
-        ],
-        "title": "PetGalleryEntry",
-        "type": "object"
-      },
-      "PetGalleryParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "localOnly": {
-            "default": false,
-            "title": "Localonly",
-            "type": "boolean"
-          }
-        },
-        "title": "PetGalleryParams",
-        "type": "object"
-      },
-      "PetGalleryResult": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "active": {
-            "default": "",
-            "title": "Active",
-            "type": "string"
-          },
-          "pets": {
-            "items": {
-              "$ref": "#/components/schemas/PetGalleryEntry"
-            },
-            "title": "Pets",
-            "type": "array"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "PetGalleryResult",
-        "type": "object"
-      },
-      "PetGenProvider": {
-        "additionalProperties": false,
-        "description": "``agent/pet/generate/imagegen.py::list_sprite_providers`` row.",
-        "properties": {
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "default": {
-            "type": "boolean",
-            "title": "Default"
-          }
-        },
-        "required": [
-          "name",
-          "label",
-          "default"
-        ],
-        "title": "PetGenProvider",
-        "type": "object"
-      },
-      "PetGenerateParams": {
-        "additionalProperties": false,
-        "description": "``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one).",
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "prompt": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Prompt"
-          },
-          "referenceImage": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Referenceimage"
-          },
-          "count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Count"
-          },
-          "style": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Style"
-          },
-          "provider": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Provider"
-          }
-        },
-        "title": "PetGenerateParams",
-        "type": "object"
-      },
-      "PetGenerateProgressPayload": {
-        "additionalProperties": true,
-        "description": "``methods_session`` pet.generate: token-only init frame, then one per draft.",
-        "properties": {
-          "token": {
-            "title": "Token",
-            "type": "string"
-          },
-          "count": {
-            "title": "Count",
-            "type": "integer"
-          },
-          "index": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Index"
-          },
-          "dataUri": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Datauri"
-          }
-        },
-        "required": [
-          "token",
-          "count"
-        ],
-        "title": "PetGenerateProgressPayload",
-        "type": "object"
-      },
-      "PetGenerateResult": {
-        "additionalProperties": false,
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "token": {
-            "title": "Token",
-            "type": "string"
-          },
-          "drafts": {
-            "items": {
-              "$ref": "#/components/schemas/PetDraft"
-            },
-            "title": "Drafts",
-            "type": "array"
-          }
-        },
-        "required": [
-          "ok",
-          "token",
-          "drafts"
-        ],
-        "title": "PetGenerateResult",
-        "type": "object"
-      },
-      "PetGenerateStatusResult": {
-        "additionalProperties": false,
-        "properties": {
-          "available": {
-            "title": "Available",
-            "type": "boolean"
-          },
-          "providers": {
-            "items": {
-              "$ref": "#/components/schemas/PetGenProvider"
-            },
-            "title": "Providers",
-            "type": "array"
-          }
-        },
-        "required": [
-          "available",
-          "providers"
-        ],
-        "title": "PetGenerateStatusResult",
-        "type": "object"
-      },
-      "PetHatchParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "token": {
-            "title": "Token",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "cancelToken": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Canceltoken"
-          },
-          "index": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Index"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Description"
-          },
-          "prompt": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Prompt"
-          },
-          "style": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Style"
-          },
-          "provider": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Provider"
-          }
-        },
-        "required": [
-          "token",
-          "name"
-        ],
-        "title": "PetHatchParams",
-        "type": "object"
-      },
-      "PetHatchProgressPayload": {
-        "additionalProperties": true,
-        "description": "``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form.",
-        "properties": {
-          "event": {
-            "title": "Event",
-            "type": "string"
-          },
-          "detail": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Detail"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "State"
-          },
-          "done": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Done"
-          },
-          "total": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Total"
-          }
-        },
-        "required": [
-          "event"
-        ],
-        "title": "PetHatchProgressPayload",
-        "type": "object"
-      },
-      "PetHatchResult": {
-        "additionalProperties": false,
-        "description": "The hatched pet is installed but NOT active (``pet.select`` adopts, ``pet.remove`` discards).",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "displayName": {
-            "title": "Displayname",
-            "type": "string"
-          },
-          "warnings": {
-            "items": {},
-            "title": "Warnings",
-            "type": "array"
-          },
-          "pet": {
-            "$ref": "#/components/schemas/PetSpritePayload"
-          }
-        },
-        "required": [
-          "ok",
-          "slug",
-          "displayName",
-          "pet"
-        ],
-        "title": "PetHatchResult",
-        "type": "object"
-      },
-      "PetInfoMetaResult": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "slug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Slug"
-          },
-          "displayName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Displayname"
-          },
-          "scale": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Scale"
-          },
-          "spritesheetRevision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spritesheetrevision"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "PetInfoMetaResult",
-        "type": "object"
-      },
-      "PetInfoParams": {
-        "additionalProperties": false,
-        "description": "``knownRevision``: the spritesheet revision the caller already holds (send-once bytes).",
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "knownRevision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Knownrevision"
-          }
-        },
-        "title": "PetInfoParams",
-        "type": "object"
-      },
-      "PetInfoResult": {
-        "additionalProperties": true,
-        "description": "``server._pet_sprite_payload`` behind ``enabled``; every sprite field is absent when the pet\ndisplay is off, ``spritesheetBase64`` is elided when ``spritesheetUnchanged``.",
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "slug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Slug"
-          },
-          "displayName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Displayname"
-          },
-          "mime": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Mime"
-          },
-          "spritesheetBase64": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spritesheetbase64"
-          },
-          "spritesheetRevision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spritesheetrevision"
-          },
-          "spritesheetUnchanged": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spritesheetunchanged"
-          },
-          "frameW": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framew"
-          },
-          "frameH": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Frameh"
-          },
-          "framesPerState": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framesperstate"
-          },
-          "framesByState": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "integer"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framesbystate"
-          },
-          "framesByRow": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "integer"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framesbyrow"
-          },
-          "loopMs": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Loopms"
-          },
-          "scale": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Scale"
-          },
-          "stateRows": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Staterows"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "PetInfoResult",
-        "type": "object"
-      },
-      "PetRenameParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "slug",
-          "name"
-        ],
-        "title": "PetRenameParams",
-        "type": "object"
-      },
-      "PetScaleParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "scale": {
-            "default": null,
-            "title": "Scale"
-          }
-        },
-        "title": "PetScaleParams",
-        "type": "object"
-      },
-      "PetScaleResult": {
-        "additionalProperties": false,
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "scale": {
-            "title": "Scale",
-            "type": "number"
-          }
-        },
-        "required": [
-          "ok",
-          "scale"
-        ],
-        "title": "PetScaleResult",
-        "type": "object"
-      },
-      "PetSlugParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          }
-        },
-        "required": [
-          "slug"
-        ],
-        "title": "PetSlugParams",
-        "type": "object"
-      },
-      "PetSlugResult": {
-        "additionalProperties": false,
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "displayName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Displayname"
-          }
-        },
-        "required": [
-          "ok",
-          "slug"
-        ],
-        "title": "PetSlugResult",
-        "type": "object"
-      },
-      "PetSpritePayload": {
-        "additionalProperties": false,
-        "properties": {
-          "slug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Slug"
-          },
-          "displayName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Displayname"
-          },
-          "mime": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Mime"
-          },
-          "spritesheetBase64": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spritesheetbase64"
-          },
-          "spritesheetRevision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spritesheetrevision"
-          },
-          "frameW": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framew"
-          },
-          "frameH": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Frameh"
-          },
-          "framesPerState": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framesperstate"
-          },
-          "framesByState": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "integer"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framesbystate"
-          },
-          "framesByRow": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "integer"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Framesbyrow"
-          },
-          "loopMs": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Loopms"
-          },
-          "scale": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Scale"
-          },
-          "stateRows": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Staterows"
-          }
-        },
-        "title": "PetSpritePayload",
-        "type": "object"
-      },
-      "PetThumbParams": {
-        "additionalProperties": false,
-        "description": "``url``: spritesheet source for a not-yet-installed pet.",
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Url"
-          }
-        },
-        "required": [
-          "slug"
-        ],
-        "title": "PetThumbParams",
-        "type": "object"
-      },
-      "PetThumbResult": {
-        "additionalProperties": false,
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "dataUri": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Datauri"
-          }
-        },
-        "required": [
-          "ok",
-          "slug"
-        ],
-        "title": "PetThumbResult",
         "type": "object"
       },
       "PingParams": {
@@ -48939,6 +48939,42 @@
       ]
     },
     {
+      "name": "companion.changed",
+      "summary": "The active companion / its spritesheet changed (watcher).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionChangedPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "companion.generate.progress",
+      "summary": "Companion base-draft generation progress.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionGenerateProgressPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "companion.hatch.progress",
+      "summary": "Companion hatch (row drawing) progress.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/CompanionHatchProgressPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "connection.request",
       "summary": "A connection operation opened on this session; the desktop renders its card.",
       "params": [
@@ -49234,42 +49270,6 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/PaneRevealPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "pet.changed",
-      "summary": "The active pet / its spritesheet changed (watcher).",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/PetChangedPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "pet.generate.progress",
-      "summary": "Pet base-draft generation progress.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/PetGenerateProgressPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "pet.hatch.progress",
-      "summary": "Pet hatch (row drawing) progress.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/PetHatchProgressPayload"
           }
         }
       ]

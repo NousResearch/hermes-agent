@@ -41,7 +41,7 @@ export function ensureMainWindow<T extends MainWindowLike>(
 /**
  * Whether the last-chat-window `closed` fallback must quit the app (#130810).
  *
- * Hidden helpers (Quick Entry, HUD, pet overlay) are still BrowserWindows,
+ * Hidden helpers (Quick Entry, HUD, companion overlay) are still BrowserWindows,
  * so `window-all-closed` never fires while one lingers. This fallback quits
  * when no chat surface remains. It is keyed on whether a quit is actually in
  * progress (`quitInProgress`), never on the overlay-suppression latch

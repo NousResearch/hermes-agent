@@ -969,11 +969,11 @@ DEFAULT_CONFIG = {
             "fields": [],
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
-        # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across
-        # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.
-        "pet": {
+        # Companiondex animated mascot (github.com/crafter-station/companiondex): cosmetic sprite across
+        # CLI/TUI/desktop, managed with `hermes companions`. No effect on prompt caching.
+        "companion": {
             "enabled": False,
-            "slug": "",   # active pet slug in get_hermes_home()/pets/; empty → first installed
+            "slug": "",   # active companion slug in get_hermes_home()/companions/; empty → first installed
             # auto (detect kitty/iTerm2/sixel, else unicode half-blocks) | kitty | iterm | sixel |
             # unicode | off
             "render_mode": "auto",

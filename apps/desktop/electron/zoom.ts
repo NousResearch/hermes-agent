@@ -198,7 +198,7 @@ export function installZoomReassertOnNavigation(webContents, reassert) {
 
 /**
  * Zoom-wiring decision per window kind. Chat windows (main + session + the HUD)
- * keep global UI zoom; the pet overlay and the Quick Entry composer opt out
+ * keep global UI zoom; the companion overlay and the Quick Entry composer opt out
  * because they size their own OS window and inheriting zoom would crop or
  * overflow them.
  *
@@ -207,7 +207,7 @@ export function installZoomReassertOnNavigation(webContents, reassert) {
  */
 export const ZOOM_WINDOW_CONFIG = {
   chat: { zoom: true },
-  petOverlay: { zoom: false },
+  companionOverlay: { zoom: false },
   quickEntry: { zoom: false },
   wakeIndicator: { zoom: false }
 } as const

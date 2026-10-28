@@ -1,5 +1,5 @@
 // Picker overlays: the /model provider→model→effort picker, the Ctrl+X live
-// session switcher (orchestrator), and the /pet gallery picker. Owned
+// session switcher (orchestrator), and the /companion gallery picker. Owned
 // namespace: `pickers`.
 //
 // Hotkey chords (`Enter`, `Esc`, `^g`, `↑/↓`…) are tokens and stay as-is inside
@@ -166,15 +166,15 @@ export const pickersEn = {
         refresh: ' refresh · '
       }
     },
-    pet: {
-      title: 'Pets',
-      loading: 'loading pets…',
+    companion: {
+      title: 'Companions',
+      loading: 'loading companions…',
       adopting: 'adopting…',
-      petCountOne: (count: number) => `${count} pet`,
-      petCountOther: (count: number) => `${count} pets`,
+      companionCountOne: (count: number) => `${count} companion`,
+      companionCountOther: (count: number) => `${count} companions`,
       // {0} = the filter text the user typed.
-      noMatches: (query: string) => `no pets match "${query}"`,
-      noneAvailable: 'no pets available',
+      noMatches: (query: string) => `no companions match "${query}"`,
+      noneAvailable: 'no companions available',
       officialTag: ' · official',
       escCancelHint: 'Esc cancel',
       hint: '↑/↓ select · Enter adopt · type to filter · Esc cancel'

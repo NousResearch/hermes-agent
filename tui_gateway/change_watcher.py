@@ -1,4 +1,4 @@
-"""Skin + config-change watcher: on-disk signatures for skin/pet/cron/sessions/platforms/
+"""Skin + config-change watcher: on-disk signatures for skin/companion/cron/sessions/platforms/
 pairing/bot-relay state and the broadcast loop that pushes *.changed events. Bodies are
 rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 
@@ -154,34 +154,34 @@ def _broadcast_skin_if_changed() -> None:
                     peer.write(frame)
 
 
-def _active_pet():
-    """(pet, scale) when an enabled pet with an existing sheet is selected, else None."""
-    enabled, pet, scale = _pet_active_selection()
-    return (pet, scale) if enabled and pet is not None and pet.exists else None
+def _active_companion():
+    """(companion, scale) when an enabled companion with an existing sheet is selected, else None."""
+    enabled, companion, scale = _companion_active_selection()
+    return (companion, scale) if enabled and companion is not None and companion.exists else None
 
 
-def _pet_sig() -> tuple:
-    """(slug, spritesheet revision, scale) of the active pet — ("off",) when none."""
+def _companion_sig() -> tuple:
+    """(slug, spritesheet revision, scale) of the active companion — ("off",) when none."""
     display = _load_cfg().get("display") or {}
-    pet_cfg = display.get("pet") if isinstance(display.get("pet"), dict) else {}
-    if not pet_cfg or not is_truthy_value(pet_cfg.get("enabled"), default=False):
+    companion_cfg = display.get("companion") if isinstance(display.get("companion"), dict) else {}
+    if not companion_cfg or not is_truthy_value(companion_cfg.get("enabled"), default=False):
         return ("off",)
     try:
-        if active := _active_pet():
-            pet, scale = active
-            return (pet.slug, _pet_sheet_revision(pet.spritesheet), scale)
+        if active := _active_companion():
+            companion, scale = active
+            return (companion.slug, _companion_sheet_revision(companion.spritesheet), scale)
     except Exception:
         pass
     return ("off",)
 
 
-def _pet_changed_payload() -> dict:
-    """``pet.info.meta``-shaped payload so the renderer can decide whether to refetch sprites."""
+def _companion_changed_payload() -> dict:
+    """``companion.info.meta``-shaped payload so the renderer can decide whether to refetch sprites."""
     try:
-        if active := _active_pet():
-            pet, scale = active
-            return {"enabled": True, "slug": pet.slug, "displayName": pet.display_name,
-                    "scale": scale, "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)}
+        if active := _active_companion():
+            companion, scale = active
+            return {"enabled": True, "slug": companion.slug, "displayName": companion.display_name,
+                    "scale": scale, "spritesheetRevision": _companion_sheet_revision(companion.spritesheet)}
     except Exception:
         pass
     return {"enabled": False}
@@ -372,11 +372,11 @@ def _skills_sig():
 
 
 # event → (check interval, signature fn, payload fn). Signatures are stat-cheap; the interval
-# keeps pricier probes (pet resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
+# keeps pricier probes (companion resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
 # moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
-    "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
+    "companion.changed": (2.0, _companion_sig, _companion_changed_payload),
     "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), dict),
     "sessions.changed": (0.5, _sessions_sig, dict),
     # Projects created/switched by CLI or agent tooling write projects.db without any

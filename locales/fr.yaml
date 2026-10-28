@@ -1889,10 +1889,10 @@ slash:
     description: "Passer en revue les écritures mémoire en attente / activer ou désactiver la validation"
   bundles:
     description: "Lister les bundles de skills (alias /<name> pour plusieurs skills)"
-  pet:
-    description: "Activer/désactiver ou adopter une mascotte petdex (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Activer/désactiver ou adopter une mascotte companiondex (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Générer un nouvel animal petdex à partir d'une description"
+    description: "Générer un nouvel animal companiondex à partir d'une description"
   learn:
     description: "Apprendre une skill réutilisable à partir de ce que vous décrivez (dossiers, URL, cette conversation, notes)"
   init:
@@ -3005,13 +3005,13 @@ cli:
       no_base_draft: "(x_x) Aucune ébauche de base n'est revenue — réessayez."
       failed: "(x_x) Échec de l'éclosion : {error}"
       hatched: "(^_^)b {name} a éclos et a été adopté — il arrive dans un instant !"
-    pet:
+    companion:
       is_out: "(^_^)b {name} est de sortie — il arrive dans un instant."
       put_away_named: "(-_-)zzZ {name} est rangé."
       put_away: "(-_-)zzZ Animal rangé."
-      usage_scale: "(o_o) Usage : /pet scale <facteur>  (ex. /pet scale 0.5)"
+      usage_scale: "(o_o) Usage : /companion scale <facteur>  (ex. /companion scale 0.5)"
       scale_set: "(^_^) Échelle de l'animal → {scale}."
-      fetching: "(o_o) Récupération de '{name}' depuis le petdex…"
+      fetching: "(o_o) Récupération de '{name}' depuis le companiondex…"
       adopt_failed: "(x_x) Impossible d'adopter '{name}' : {error}"
       error: "(x_x) {error}"
     diff:

@@ -1637,10 +1637,10 @@ slash:
     description: "Ausstehende Memory-Schreibvorgänge prüfen / Genehmigungsschranke umschalten"
   bundles:
     description: "Skill-Bundles auflisten (Aliasse /<name> für mehrere Skills)"
-  pet:
-    description: "Petdex-Maskottchen umschalten oder adoptieren (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Companiondex-Maskottchen umschalten oder adoptieren (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Neues Petdex-Haustier aus einer Beschreibung erzeugen"
+    description: "Neues Companiondex-Haustier aus einer Beschreibung erzeugen"
   learn:
     description: "Einen wiederverwendbaren Skill aus allem lernen, was Sie beschreiben (Verzeichnisse, URLs, dieser Chat, Notizen)"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) Kein Grundentwurf zurückgekommen — versuchen Sie es erneut."
       failed: "(x_x) Ausbrüten fehlgeschlagen: {error}"
       hatched: "(^_^)b {name} ist ausgebrütet und adoptiert — erscheint gleich!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} ist draußen — erscheint gleich."
       put_away_named: "(-_-)zzZ {name} weggelegt."
       put_away: "(-_-)zzZ Haustier weggelegt."
-      usage_scale: "(o_o) Verwendung: /pet scale <Faktor>  (z. B. /pet scale 0.5)"
+      usage_scale: "(o_o) Verwendung: /companion scale <Faktor>  (z. B. /companion scale 0.5)"
       scale_set: "(^_^) Haustiergröße → {scale}."
-      fetching: "(o_o) Hole '{name}' aus dem Petdex…"
+      fetching: "(o_o) Hole '{name}' aus dem Companiondex…"
       adopt_failed: "(x_x) '{name}' konnte nicht adoptiert werden: {error}"
       error: "(x_x) {error}"
     diff:

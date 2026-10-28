@@ -947,8 +947,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         finally:
             self._active_session_lease = None
 
-    _PET_FRAME_INTERVAL = 0.16
-    _PET_CFG_INTERVAL = 2.5
+    _COMPANION_FRAME_INTERVAL = 0.16
+    _COMPANION_CFG_INTERVAL = 2.5
 
     def _install_tool_callbacks(self) -> None:
         """Install tool callbacks that need the live prompt UI."""
@@ -1417,7 +1417,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
         app = self._tui_build_application(layout, kb, style)
         _disable_prompt_toolkit_cpr_warning(app)
-        app.after_render += self._pet_flush_kitty_frame
+        app.after_render += self._companion_flush_kitty_frame
         from hermes_cli.observability.shared_metrics_startup import cli_prompt_ready_handler
         app.after_render += cli_prompt_ready_handler()
         self._app = app
@@ -1486,7 +1486,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 _mark_tui_input_modes_active()
                 if self._tui_multiline_shortcuts:
                     _enable_extended_enter_keys(app.output)
-                self._pet_start_anim()
+                self._companion_start_anim()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass

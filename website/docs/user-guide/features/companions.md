@@ -1,0 +1,236 @@
+---
+sidebar_position: 11
+title: "Companions (Companiondex Mascots)"
+description: "Adopt an animated mascot that reacts to agent activity across the CLI, TUI, and desktop app"
+---
+
+# Companions
+
+Hermes can show an animated **companion** — a small mascot sprite that reacts to what
+the agent is doing (idle, running a tool, thinking, finishing, failing) across
+the **CLI**, **TUI**, and **desktop app**. Companions come from the public
+[companiondex](https://github.com/crafter-station/companiondex) gallery.
+
+Companions are purely cosmetic. They have **no effect on prompt caching, tokens, or
+the agent's behavior** — the sprite is a display concern only. The feature is
+**off by default** and stays dormant until you install and select a companion.
+
+## How it works
+
+- Companions are installed into your profile's `companions/` directory
+  (`<HERMES_HOME>/companions/<slug>/`), so each [profile](../profiles.md) keeps its
+  own set.
+- Selecting a companion writes `display.companion.slug` and `display.companion.enabled` to
+  `config.yaml` — nothing is stored as a secret or env var.
+- Each surface watches the activity it already tracks and maps it to one of six
+  animation states. The mapping lives in one place so every surface behaves the
+  same:
+
+  | Agent activity | Companion state |
+  | --- | --- |
+  | A tool/turn just failed | `failed` |
+  | A plan finished (all todos done) | `jump` (celebrate) |
+  | A turn finished cleanly | `wave` |
+  | A tool is executing | `run` |
+  | The model is thinking/reading | `review` |
+  | Turn in flight (unspecified) | `run` |
+  | Blocked on you (a clarify/approval prompt is open) | `waiting` (falls back to `idle` on legacy 8-row sheets) |
+  | Nothing happening | `idle` |
+
+## Rendering
+
+In the terminal (CLI/TUI), Hermes renders the sprite at full fidelity when your
+terminal supports a graphics protocol (**kitty**, **Ghostty**, **WezTerm**,
+**iTerm2**, or **sixel**). Otherwise it falls back automatically to a truecolor
+Unicode **half-block** rendering. Inside a pipe or redirect (no TTY), terminal
+rendering is disabled by design.
+
+The desktop app draws the companion as a floating sprite on a canvas and toggles it
+from **Settings → Appearance**.
+
+## Quick start (CLI)
+
+```bash
+# Browse the gallery (filter by substring)
+hermes companions list
+hermes companions list cat
+
+# Install a companion and make it active in one step
+hermes companions install boba --select
+
+# Preview / animate it in your terminal (Ctrl+C to stop)
+hermes companions show
+
+# Check your setup
+hermes companions doctor
+```
+
+## `hermes companions` commands
+
+| Goal | Command |
+| --- | --- |
+| Browse the gallery | `hermes companions list [query] [--limit N]` |
+| List installed companions | `hermes companions list --installed` |
+| Install a companion | `hermes companions install <slug> [--select] [--force]` |
+| Set the active companion | `hermes companions select [slug]` (omit slug for a picker) |
+| Resize the companion everywhere | `hermes companions scale <factor>` (e.g. `0.5`, clamped 0.1–3.0) |
+| Preview/animate | `hermes companions show [slug] [--state <s>] [--cycle] [--once] [--mode <m>] [--scale <f>]` |
+| Disable the companion | `hermes companions off` |
+| Remove an installed companion | `hermes companions remove <slug>` |
+| Diagnose setup | `hermes companions doctor` |
+
+`hermes companions show` flags:
+
+- `--state` — play a single state (`idle`, `wave`, `run`, `failed`, `review`,
+  `jump`).
+- `--cycle` — cycle through every state.
+- `--once` — play once instead of looping.
+- `--mode` — override the render protocol (`kitty`, `iterm`, `sixel`,
+  `unicode`, `auto`).
+- `--scale` — override the on-screen scale (`0` = use config).
+
+## `/companion` slash command
+
+Inside the CLI and TUI you can manage the companion without leaving the session:
+
+- `/companion` — toggle the companion on/off (adopts the first installed companion if none is
+  active).
+- `/companion list` — browse the gallery.
+- `/companion scale <factor>` — resize the companion everywhere (e.g. `/companion scale 0.5`).
+- `/companion <slug>` — adopt a specific companion.
+- `/companion off` — disable the companion.
+
+In the TUI, `/companion list` opens an interactive picker overlay; in the desktop app
+it opens the Cmd+K companion palette.
+
+## Generating a companion (`/hatch`)
+
+Beyond installing pre-made companions from the gallery, Hermes can **generate a brand-new companion** from a text description — its own AI sprite-generation pipeline.
+
+- CLI/TUI: `/hatch <description>` (alias `/generate-companion`), or `hermes companions` → the generate flow.
+- Desktop app: the Pokédex-style **generate** UI — an animated egg, hatch FX, and a draft picker.
+
+How generation works (a two-step, cost-bounded flow):
+
+1. **Base drafts** — a handful of cheap, prompt-only "what should this companion look like" variants are generated. You pick one, or remix/retry for a fresh round.
+2. **Hatch** — the chosen base is used as a reference image to generate one grounded animation row per Hermes state (idle, thinking, tool use, etc.), which are deterministically sliced into frames and packed into a standard companiondex/Codex atlas (8×9 grid of 192×208 cells). The result is a valid spritesheet you keep — and could `companiondex submit`.
+
+### Image backend
+
+Generation uses the active [image-generation provider](./image-generation.md), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
+
+- Resolution order prefers Nous Portal → OpenAI → OpenRouter.
+- If no reference-capable backend is configured, generation surfaces an actionable error pointing you to `hermes tools` → Image Generation. (Installing/adopting existing gallery companions needs no image backend.)
+- Override the backend with the `HERMES_COMPANION_IMAGE_PROVIDER` env var (e.g. `HERMES_COMPANION_IMAGE_PROVIDER=openrouter`).
+
+## Desktop app
+
+In the desktop app you can manage the companion two ways:
+
+- **Cmd+K → "Companions…"** — browse, search, adopt, and toggle companions without leaving
+  the keyboard (mirrors the theme picker).
+- **Settings → Appearance** — the same gallery plus a **size slider** that
+  resizes the floating mascot live as you drag.
+
+Both adopt/toggle/resize the floating mascot in place — size changes apply
+instantly; adopting a new companion lights it up within a moment.
+
+### Roaming
+
+Settings → Appearance has a **Roam** toggle: when enabled, the companion wanders the
+window on its own while the agent is idle — walking surfaces, pausing, and
+hopping between spots. Roaming only runs while the companion is in-window, active,
+and the agent is at rest; any agent-driven state (working, celebrating)
+immediately takes over. The toggle is off by default and persists across
+restarts.
+
+### Alt+wheel resizing
+
+Hold **Alt** and scroll the mouse wheel over the companion to resize it in place —
+in the app window and on the popped-out overlay alike. The overlay zooms
+toward the cursor position and the resulting scale is persisted, so it
+survives restarts and stays in sync with the in-app companion.
+
+### Vibe reactions
+
+Say something nice to the agent — "good bot", "thank you", "ily", `<3`, or a
+heart emoji — and the companion reacts with floating hearts (desktop) or a heart
+flash (CLI/TUI). Detection is a curated, token-free lexicon matched locally on
+each user message (no model call); it fires on affection and gratitude aimed at
+the agent, not general positive sentiment. All surfaces — CLI companion, TUI, desktop
+floating companion, and the pop-out overlay — react off the same signal.
+
+### Pop-out overlay
+
+**Shift-click** the floating companion to pop it out into its own transparent,
+always-on-top desktop window. Out there it stays visible while Hermes is
+minimized (Codex-style), so a glance tells you what the agent is doing.
+
+Gestures once it's popped out:
+
+| Gesture | Action |
+| --- | --- |
+| **Drag** | Move the companion anywhere on screen, even outside the app. Its spot and in/out state persist across restarts. |
+| **Single-click** | Open a mini composer to send a prompt to the most recent session — without surfacing the app. |
+| **Double-click** | Toggle the app window: minimize it if it's up front, restore it if it's hidden. |
+| **Shift-click** | Pop the companion back into the window. |
+| **Mail icon** | Appears only when a turn finished while you were away; click to raise the app on the most recent thread (and mark it read). |
+
+Only the popped-out companion shows a **speech bubble** (`working…`, `thinking…`,
+`your turn`, …) — in-window the app itself is the surface, so the companion stays
+quiet there.
+
+The overlay is a pure puppet of the in-app companion — it carries no separate gateway
+connection and never appears in the dock or app switcher.
+
+## Configuration
+
+All settings live under `display.companion` in `config.yaml`:
+
+```yaml
+display:
+  companion:
+    enabled: false        # master on/off (true once you select a companion)
+    slug: ""              # active companion; empty = first installed
+    render_mode: auto      # auto | kitty | iterm | sixel | unicode | off
+    scale: 0.33           # master size knob (relative to native 192x208 frames)
+    unicode_cols: 0       # hard override for terminal width (0 = derive from scale)
+```
+
+- **`scale`** is the single master size knob. One number shrinks every surface:
+  the desktop canvas scales its pixels by it, and the CLI/TUI derive their
+  terminal column width from it. The half-block fallback clamps to a legibility
+  floor — it can't shrink as far as true-pixel kitty/GUI rendering without
+  turning to mush, so the same `scale` looks crisp under kitty but is floored in
+  half-blocks.
+- **`render_mode: auto`** detects kitty/iTerm2/sixel and falls back to unicode
+  half-blocks. Set it explicitly to force a protocol or `off` to disable
+  terminal rendering while keeping the companion on the desktop.
+- **`unicode_cols`** pins the terminal column width independently of `scale`;
+  leave it at `0` to derive width from `scale`.
+
+## Troubleshooting
+
+Run `hermes companions doctor` — it reports:
+
+- the companions directory and which companions are installed,
+- `display.companion.enabled`, `display.companion.slug`, and the resolved active companion,
+- the configured `render_mode`, the detected terminal graphics protocol, and the
+  effective mode for a TTY,
+- whether Pillow (used for sprite decoding) is importable.
+
+It prints `✓ ready` once a companion is installed, selected, enabled, and Pillow is
+available.
+
+Common gotchas:
+
+- A companion only shows once one is **installed AND selected** (`enabled: true`).
+- Inside a pipe/redirect (no TTY), terminal rendering is disabled by design.
+- The companiondex npm CLI installs to `~/.codex/companions`; Hermes uses its own
+  profile-scoped `<HERMES_HOME>/companions/` instead — install through `hermes companions`.
+
+## See also
+
+- The [`hermes-agent` skill](../skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md)
+  lets the agent install and switch companions for you on request (see its
+  `references/companiondex.md`).

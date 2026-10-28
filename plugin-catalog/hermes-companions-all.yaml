@@ -1,0 +1,17 @@
+name: hermes-companions-all
+repo: https://github.com/poponline63/hermes-companions-all
+sha: 4ea8dfab97fe591f598886d699c3076ea1bb58ad
+description: Browse every companion installed for this Hermes profile in its own desktop pane
+  (thumbnails, search, click-to-adopt), plus a read-only list_companions tool for the agent.
+maintainer: poponline63
+tier: community
+category: desktop
+requires_hermes: ">=0.19"
+docs_url: https://github.com/poponline63/hermes-companions-all
+platforms: []
+capabilities:
+  provides_tools:
+  - list_companions
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

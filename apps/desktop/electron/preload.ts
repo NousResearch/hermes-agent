@@ -104,32 +104,32 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   chatOnboarding: {
     size: mode => ipcRenderer.send('hermes:window:size', mode)
   },
-  petOverlay: {
+  companionOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.
-    open: request => ipcRenderer.invoke('hermes:pet-overlay:open', request),
-    close: () => ipcRenderer.invoke('hermes:pet-overlay:close'),
-    setBounds: bounds => ipcRenderer.send('hermes:pet-overlay:set-bounds', bounds),
-    setIgnoreMouse: ignore => ipcRenderer.send('hermes:pet-overlay:ignore-mouse', ignore),
+    open: request => ipcRenderer.invoke('hermes:companion-overlay:open', request),
+    close: () => ipcRenderer.invoke('hermes:companion-overlay:close'),
+    setBounds: bounds => ipcRenderer.send('hermes:companion-overlay:set-bounds', bounds),
+    setIgnoreMouse: ignore => ipcRenderer.send('hermes:companion-overlay:ignore-mouse', ignore),
     // Flip the overlay focusable (and focus it) while the composer needs keys.
-    setFocusable: focusable => ipcRenderer.send('hermes:pet-overlay:set-focusable', focusable),
-    // Main renderer → overlay (forwarded by main): push the latest pet state.
-    pushState: payload => ipcRenderer.send('hermes:pet-overlay:state', payload),
+    setFocusable: focusable => ipcRenderer.send('hermes:companion-overlay:set-focusable', focusable),
+    // Main renderer → overlay (forwarded by main): push the latest companion state.
+    pushState: payload => ipcRenderer.send('hermes:companion-overlay:state', payload),
     // Overlay → main renderer (forwarded by main): pop back in / composer submit.
-    control: payload => ipcRenderer.send('hermes:pet-overlay:control', payload),
+    control: payload => ipcRenderer.send('hermes:companion-overlay:control', payload),
     // Overlay subscribes to state pushes.
     onState: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:pet-overlay:state', listener)
+      ipcRenderer.on('hermes:companion-overlay:state', listener)
 
-      return () => ipcRenderer.removeListener('hermes:pet-overlay:state', listener)
+      return () => ipcRenderer.removeListener('hermes:companion-overlay:state', listener)
     },
     // Main renderer subscribes to overlay control messages.
     onControl: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:pet-overlay:control', listener)
+      ipcRenderer.on('hermes:companion-overlay:control', listener)
 
-      return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
+      return () => ipcRenderer.removeListener('hermes:companion-overlay:control', listener)
     }
   },
   // HUD mode: the chrome-free floating chat. A full app renderer (own gateway)

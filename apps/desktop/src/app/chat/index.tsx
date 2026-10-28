@@ -25,13 +25,13 @@ import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $companionActive } from '@/store/companion'
+import { $companionOverlayActive } from '@/store/companion-overlay'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $introView } from '@/store/onboarding-intro'
-import { $petActive } from '@/store/pet'
-import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
 import {
   $connection,
@@ -552,10 +552,10 @@ const ChatViewContent = memo(function ChatViewContent({
   const currentCwd = useStore(view.$cwd)
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
-  // A pet anywhere (in-window or popped out) owns the hearts; composer only when none.
-  const petActive = useStore($petActive)
-  const petOverlayActive = useStore($petOverlayActive)
-  const petPresent = petActive || petOverlayActive
+  // A companion anywhere (in-window or popped out) owns the hearts; composer only when none.
+  const companionActive = useStore($companionActive)
+  const companionOverlayActive = useStore($companionOverlayActive)
+  const companionPresent = companionActive || companionOverlayActive
   const freshDraftReady = useStore($freshDraftReady)
   const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
@@ -808,9 +808,9 @@ const ChatViewContent = memo(function ChatViewContent({
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}
           {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
-          {/* Vibe hearts rise from the composer only when no pet is out (else
-              they play on the pet). Fired by the core `reaction` event. */}
-          {!petPresent && (
+          {/* Vibe hearts rise from the composer only when no companion is out (else
+              they play on the companion). Fired by the core `reaction` event. */}
+          {!companionPresent && (
             <HeartField
               className="absolute inset-x-0 z-30"
               config={COMPOSER_HEART_CONFIG}

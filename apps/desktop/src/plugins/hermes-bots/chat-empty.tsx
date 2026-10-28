@@ -75,7 +75,7 @@ export function BotChatEmpty({ sessionId }: { sessionId: string }) {
   const meta = botRosterMeta(bot, allMeta)
   const name = displayName(bot, meta)
   const { color, image, shape } = botAppearance(bot.name, meta)
-  // Same rule the rows use: keep a real photo or pet, drop the SVG backfill so
+  // Same rule the rows use: keep a real photo or companion, drop the SVG backfill so
   // the math face can animate.
   const photo = Boolean(image && !isBackfilledFacePng(image))
 

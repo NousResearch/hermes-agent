@@ -7,7 +7,7 @@
 # user's OWN durable state — config.yaml (additive rewrites only), .env,
 # auth.json, state.db (row counts may not shrink), gateway_state.json,
 # memories/, cron/, sessions/, profiles/, photon/, desktop-plugins/,
-# tui-widgets/, skins/, pets/, and skills/.archive/. Additions are fine; an
+# tui-widgets/, skins/, companions/, and skills/.archive/. Additions are fine; an
 # upgrade may add files, it may not take yours away or alter them.
 #
 # Everything this verifies is produced by the PRODUCT through the ordinary user

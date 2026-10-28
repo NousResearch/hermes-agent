@@ -175,7 +175,7 @@ export function setTranslucencyScope(scope: GlassScope): void {
 }
 
 // Glass thins surfaces only in real chat windows (the primary window and
-// secondary session windows). The HUD, pet overlay, quick entry and wake
+// secondary session windows). The HUD, companion overlay, quick entry and wake
 // indicator are transparent special-purpose windows that manage their own
 // backgrounds — a page-surface rewrite there would fight them.
 const CHAT_WINDOW_KINDS = new Set([null, 'secondary', 'browser'])
@@ -334,7 +334,7 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
   // Is the user's Glass setting live at all — the same answer in every window.
   const glassLive = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED
   // ...and may THIS window's field surfaces be rewritten for it. Only real
-  // chat windows: the HUD, pet overlay, quick entry and wake indicator are
+  // chat windows: the HUD, companion overlay, quick entry and wake indicator are
   // transparent windows that own their backgrounds, and the surface rewrite
   // would fight them. The HUD still wants the first answer, because its band
   // paints the app's field mix from `--translucency-glass-keep` and its native

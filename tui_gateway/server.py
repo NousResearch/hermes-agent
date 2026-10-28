@@ -30,7 +30,7 @@ from hermes_constants import (
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
-from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
+from tui_gateway.companion_sheet import _clone_companion_payload, _companion_row_frame_counts, _companion_sheet_revision, _companion_state_rows
 from utils import is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
@@ -172,7 +172,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # stays inline so fast-path ordering stays sane (write_json is _stdout_lock-guarded). Why each is slow:
 # billing/subscription/usage = blocking portal (+Stripe) round-trips; complete.* = git ls-files /
 # prompt_toolkit import + skill scan; model.options = credential pool + pricing + provider probe;
-# pet.* = network or PNG decode (generate = several image-model round-trips); reload.mcp /
+# companion.* = network or PNG decode (generate = several image-model round-trips); reload.mcp /
 # mcp.servers.* = rediscovery, cold npx spawn, ~30s OAuth wait; profiles.* = skill-tree walk + state.db
 # open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
@@ -185,7 +185,7 @@ _LONG_HANDLERS = frozenset({
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
-    "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
+    "companion.cells", "companion.gallery", "companion.generate", "companion.hatch", "companion.info", "companion.select", "companion.thumb",
     "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
     "mcp.servers.oauth.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
@@ -1803,86 +1803,86 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 
 
 
-# Pet helpers are fail-open throughout: a decode hiccup degrades to a static fallback rather than
-# breaking the (cosmetic) pet surface.
-_pet_payload_cache_lock = threading.Lock()
-_pet_payload_cache: dict[tuple, dict] = {}
+# Companion helpers are fail-open throughout: a decode hiccup degrades to a static fallback rather than
+# breaking the (cosmetic) companion surface.
+_companion_payload_cache_lock = threading.Lock()
+_companion_payload_cache: dict[tuple, dict] = {}
 
 
-def _pet_cfg() -> dict:
-    """``display.pet`` from the canonical config ({} on any failure)."""
+def _companion_cfg() -> dict:
+    """``display.companion`` from the canonical config ({} on any failure)."""
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config
         display = load_config().get("display")
-        pet = display.get("pet") if isinstance(display, dict) else None
-        return pet if isinstance(pet, dict) else {}
+        companion = display.get("companion") if isinstance(display, dict) else None
+        return companion if isinstance(companion, dict) else {}
     return {}
 
 
-def _pet_config_scale() -> float:
-    """Configured ``display.pet.scale`` (or the engine default), never raises."""
-    from agent.pet import constants
+def _companion_config_scale() -> float:
+    """Configured ``display.companion.scale`` (or the engine default), never raises."""
+    from agent.companion import constants
     with contextlib.suppress(Exception):
-        return float(_pet_cfg().get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+        return float(_companion_cfg().get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
     return constants.DEFAULT_SCALE
 
 
-def _pet_sprite_payload(pet, *, scale: float) -> dict:
-    """Renderer payload (spritesheet bytes + geometry) for *pet* — one shape for ``pet.info`` (active
-    mascot) and ``pet.hatch`` (unadopted preview)."""
+def _companion_sprite_payload(companion, *, scale: float) -> dict:
+    """Renderer payload (spritesheet bytes + geometry) for *companion* — one shape for ``companion.info`` (active
+    mascot) and ``companion.hatch`` (unadopted preview)."""
     import base64
-    from agent.pet import constants
+    from agent.companion import constants
     try:
-        stat = pet.spritesheet.stat()
-        cache_key = (str(pet.spritesheet), stat.st_mtime_ns, stat.st_size, pet.slug, pet.display_name, round(scale, 4))
+        stat = companion.spritesheet.stat()
+        cache_key = (str(companion.spritesheet), stat.st_mtime_ns, stat.st_size, companion.slug, companion.display_name, round(scale, 4))
     except Exception:
         cache_key = None
     if cache_key is not None:
-        with _pet_payload_cache_lock:
-            cached = _pet_payload_cache.get(cache_key)
+        with _companion_payload_cache_lock:
+            cached = _companion_payload_cache.get(cache_key)
         if cached is not None:
-            return _clone_pet_payload(cached)
+            return _clone_companion_payload(cached)
     try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
-        from agent.pet import render
-        frames_by_state = render.state_frame_counts(str(pet.spritesheet))
+        from agent.companion import render
+        frames_by_state = render.state_frame_counts(str(companion.spritesheet))
     except Exception:
         frames_by_state = {}
-    raw = pet.spritesheet.read_bytes()
-    mime = "image/png" if pet.spritesheet.suffix.lower() == ".png" else "image/webp"
+    raw = companion.spritesheet.read_bytes()
+    mime = "image/png" if companion.spritesheet.suffix.lower() == ".png" else "image/webp"
     payload = {
-        "slug": pet.slug, "displayName": pet.display_name, "mime": mime,
+        "slug": companion.slug, "displayName": companion.display_name, "mime": mime,
         "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
-        "spritesheetRevision": _pet_sheet_revision(pet.spritesheet), "frameW": constants.FRAME_W,
+        "spritesheetRevision": _companion_sheet_revision(companion.spritesheet), "frameW": constants.FRAME_W,
         "frameH": constants.FRAME_H, "framesPerState": constants.FRAMES_PER_STATE,
         "framesByState": frames_by_state,
-        "framesByRow": _pet_row_frame_counts(pet.spritesheet), "loopMs": constants.LOOP_MS,
-        "scale": scale, "stateRows": _pet_state_rows(pet.spritesheet),
+        "framesByRow": _companion_row_frame_counts(companion.spritesheet), "loopMs": constants.LOOP_MS,
+        "scale": scale, "stateRows": _companion_state_rows(companion.spritesheet),
     }
     if cache_key is not None:
-        with _pet_payload_cache_lock:
-            _pet_payload_cache[cache_key] = payload
-            while len(_pet_payload_cache) > 8:
-                _pet_payload_cache.pop(next(iter(_pet_payload_cache)))
-    return _clone_pet_payload(payload)
+        with _companion_payload_cache_lock:
+            _companion_payload_cache[cache_key] = payload
+            while len(_companion_payload_cache) > 8:
+                _companion_payload_cache.pop(next(iter(_companion_payload_cache)))
+    return _clone_companion_payload(payload)
 
 
-def _pet_active_selection():
-    """Resolve configured active pet + scale from config."""
-    from agent.pet import constants, store
-    pet_cfg = _pet_cfg()
-    enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
-    pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or "")) if enabled else None
-    return enabled, pet, float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+def _companion_active_selection():
+    """Resolve configured active companion + scale from config."""
+    from agent.companion import constants, store
+    companion_cfg = _companion_cfg()
+    enabled = is_truthy_value(companion_cfg.get("enabled"), default=False)
+    companion = store.resolve_active_companion(str(companion_cfg.get("slug", "") or "")) if enabled else None
+    return enabled, companion, float(companion_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
 
 
-def _pet_gen_root():
+def _companion_gen_root():
     """Profile-scoped staging dir for in-progress generation drafts."""
-    root = get_hermes_home() / "cache" / "pet-gen"
+    root = get_hermes_home() / "cache" / "companion-gen"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def _pet_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
+def _companion_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
     """Drop stale draft staging dirs so cache never grows unbounded."""
     import shutil
     try:
@@ -1890,10 +1890,10 @@ def _pet_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
         for child in (c for c in root.iterdir() if c.is_dir() and now - c.stat().st_mtime > max_age_s):
             shutil.rmtree(child, ignore_errors=True)
     except Exception as exc:
-        logger.debug("pet-gen sweep failed: %s", exc)
+        logger.debug("companion-gen sweep failed: %s", exc)
 
 
-def _pet_png_data_uri(path, *, max_px: int = 160) -> str:
+def _companion_png_data_uri(path, *, max_px: int = 160) -> str:
     """Downscaled PNG data URI for a draft image (small preview payload)."""
     import base64, io
     from PIL import Image
@@ -1904,56 +1904,56 @@ def _pet_png_data_uri(path, *, max_px: int = 160) -> str:
     return "data:image/png;base64," + base64.standard_b64encode(buf.getvalue()).decode("ascii")
 
 
-# Cooperative cancellation for pet generation: Stop aborts the RPC, but the pool job keeps running unless
-# pet.cancel flips its token (polled between provider calls).
-_pet_cancel_lock = threading.Lock()
-_pet_cancelled: set[str] = set()
-_PET_REFERENCE_MIME_EXT = {"png": "png", "jpeg": "jpg", "jpg": "jpg", "webp": "webp", "gif": "gif"}
+# Cooperative cancellation for companion generation: Stop aborts the RPC, but the pool job keeps running unless
+# companion.cancel flips its token (polled between provider calls).
+_companion_cancel_lock = threading.Lock()
+_companion_cancelled: set[str] = set()
+_COMPANION_REFERENCE_MIME_EXT = {"png": "png", "jpeg": "jpg", "jpg": "jpg", "webp": "webp", "gif": "gif"}
 try:
-    _PET_REFERENCE_MAX_BYTES = max(1, int(os.environ.get("HERMES_PET_REFERENCE_MAX_BYTES") or str(16 * 1024 * 1024)))
+    _COMPANION_REFERENCE_MAX_BYTES = max(1, int(os.environ.get("HERMES_COMPANION_REFERENCE_MAX_BYTES") or str(16 * 1024 * 1024)))
 except (TypeError, ValueError):
-    _PET_REFERENCE_MAX_BYTES = 16 * 1024 * 1024
+    _COMPANION_REFERENCE_MAX_BYTES = 16 * 1024 * 1024
 
 
-def _pet_reference_images_from_data_url(ref_raw: str, stage) -> list:
+def _companion_reference_images_from_data_url(ref_raw: str, stage) -> list:
     """Decode + validate a reference-image data URL into the stage dir."""
     import base64, binascii
     import re as _re
     match = _re.match(r"^data:image/([a-zA-Z0-9.+-]+);base64,(.*)$", ref_raw, _re.DOTALL)
     if not match:
         raise ValueError("invalid reference image format")
-    if (ext := _PET_REFERENCE_MIME_EXT.get(match.group(1).lower())) is None:
+    if (ext := _COMPANION_REFERENCE_MIME_EXT.get(match.group(1).lower())) is None:
         raise ValueError("unsupported reference image type")
     payload = "".join(match.group(2).split())
-    if (len(payload) * 3) // 4 > _PET_REFERENCE_MAX_BYTES:
+    if (len(payload) * 3) // 4 > _COMPANION_REFERENCE_MAX_BYTES:
         raise ValueError("reference image too large")
     try:
         raw = base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ValueError("invalid reference image data") from exc
-    if len(raw) > _PET_REFERENCE_MAX_BYTES:
+    if len(raw) > _COMPANION_REFERENCE_MAX_BYTES:
         raise ValueError("reference image too large")
     (ref_path := stage / f"reference.{ext}").write_bytes(raw)
     return [ref_path]
 
 
-def _pet_cancel_arm(token: str) -> None:
+def _companion_cancel_arm(token: str) -> None:
     """Clear a stale cancel flag at the start of a generate/hatch run."""
-    with _pet_cancel_lock:
-        _pet_cancelled.discard(token)
+    with _companion_cancel_lock:
+        _companion_cancelled.discard(token)
 
 
-_pet_cancel_release = _pet_cancel_arm
+_companion_cancel_release = _companion_cancel_arm
 
 
-def _pet_cancel_request(token: str) -> None:
-    with _pet_cancel_lock:
-        _pet_cancelled.add(token)
+def _companion_cancel_request(token: str) -> None:
+    with _companion_cancel_lock:
+        _companion_cancelled.add(token)
 
 
-def _pet_is_cancelled(token: str) -> bool:
-    with _pet_cancel_lock:
-        return token in _pet_cancelled
+def _companion_is_cancelled(token: str) -> bool:
+    with _companion_cancel_lock:
+        return token in _companion_cancelled
 
 
 # ── Spawn-tree snapshots: the TUI owns subagent state (/agents overlay; registry in tools/delegate_tool), posts

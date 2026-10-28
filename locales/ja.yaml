@@ -1637,10 +1637,10 @@ slash:
     description: "保留中のメモリ書き込みをレビュー / 承認ゲートを切り替え"
   bundles:
     description: "スキルバンドルを一覧表示（複数スキルのエイリアス /<name>）"
-  pet:
-    description: "petdex マスコットを切り替えまたは迎える（/pet、/pet list、/pet <slug>）"
+  companion:
+    description: "companiondex マスコットを切り替えまたは迎える（/companion、/companion list、/companion <slug>）"
   hatch:
-    description: "説明文から新しい petdex ペットを生成"
+    description: "説明文から新しい companiondex ペットを生成"
   learn:
     description: "説明したもの（ディレクトリ、URL、このチャット、メモ）から再利用可能なスキルを学習"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) ベースの下書きが返ってきませんでした — もう一度お試しください。"
       failed: "(x_x) 孵化に失敗しました: {error}"
       hatched: "(^_^)b {name} が孵化して仲間になりました — まもなく登場します！"
-    pet:
+    companion:
       is_out: "(^_^)b {name} が出てきました — まもなく登場します。"
       put_away_named: "(-_-)zzZ {name} をしまいました。"
       put_away: "(-_-)zzZ ペットをしまいました。"
-      usage_scale: "(o_o) 使い方: /pet scale <倍率>  (例: /pet scale 0.5)"
+      usage_scale: "(o_o) 使い方: /companion scale <倍率>  (例: /companion scale 0.5)"
       scale_set: "(^_^) ペットの倍率 → {scale}。"
-      fetching: "(o_o) petdex から '{name}' を取得中…"
+      fetching: "(o_o) companiondex から '{name}' を取得中…"
       adopt_failed: "(x_x) '{name}' を引き取れませんでした: {error}"
       error: "(x_x) {error}"
     diff:

@@ -1637,10 +1637,10 @@ slash:
     description: "Rivedi le scritture in memoria in attesa / attiva o disattiva il controllo di approvazione"
   bundles:
     description: "Elenca i bundle di skill (alias /<nome> per più skill)"
-  pet:
-    description: "Attiva/disattiva o adotta una mascotte petdex (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Attiva/disattiva o adotta una mascotte companiondex (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Genera un nuovo animaletto petdex da una descrizione"
+    description: "Genera un nuovo animaletto companiondex da una descrizione"
   learn:
     description: "Impara una skill riutilizzabile da qualsiasi cosa tu descriva (directory, URL, questa chat, appunti)"
   init:
@@ -2719,21 +2719,21 @@ cli:
       progress_compose: "┊ composizione dello spritesheet…"
       progress_save: "┊ salvataggio…"
       progress_drawing: "┊ disegno {state}…"
-      describe_prompt: "(o_o) Descrivi il tuo pet: "
+      describe_prompt: "(o_o) Descrivi il tuo companion: "
       usage: "(o_o) Uso: /hatch <description>  (es. /hatch a tiny cyber fox)"
-      default_name: "Pet"
+      default_name: "Companion"
       designing: "(o_o) Progettazione di '{concept}'… (circa un minuto di chiamate al modello immagini)"
       base_failed: "(x_x) Impossibile generare l'aspetto di base: {error}"
       no_base_draft: "(x_x) Nessuna bozza di base ricevuta — riprova."
       failed: "(x_x) Schiusa non riuscita: {error}"
       hatched: "(^_^)b {name} è nato ed è stato adottato — comparirà tra poco!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} è fuori — comparirà tra poco."
       put_away_named: "(-_-)zzZ {name} messo a riposo."
-      put_away: "(-_-)zzZ Pet messo a riposo."
-      usage_scale: "(o_o) Uso: /pet scale <factor>  (es. /pet scale 0.5)"
-      scale_set: "(^_^) Scala del pet → {scale}."
-      fetching: "(o_o) Recupero di '{name}' dal petdex…"
+      put_away: "(-_-)zzZ Companion messo a riposo."
+      usage_scale: "(o_o) Uso: /companion scale <factor>  (es. /companion scale 0.5)"
+      scale_set: "(^_^) Scala del companion → {scale}."
+      fetching: "(o_o) Recupero di '{name}' dal companiondex…"
       adopt_failed: "(x_x) Impossibile adottare '{name}': {error}"
       error: "(x_x) {error}"
     diff:

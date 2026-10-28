@@ -8885,11 +8885,11 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     assert emitted[0][2]["approval_mode"] == "manual"
 
 
-def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch):
-    """display.pet.enabled: "false" (quoted) must report enabled=False.
+def test_companion_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch):
+    """display.companion.enabled: "false" (quoted) must report enabled=False.
 
     The old check was bool(value) — bool('false') is True, so a hand-edited
-    quoted YAML value kept the petdex mascot enabled against the operator's
+    quoted YAML value kept the companiondex mascot enabled against the operator's
     explicit intent.
     """
     import hermes_yaml as yaml
@@ -8897,24 +8897,24 @@ def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump({"display": {"pet": {"enabled": "false"}}})
+        yaml.safe_dump({"display": {"companion": {"enabled": "false"}}})
     )
 
     response = server.handle_request(
-        {"id": "1", "method": "pet.gallery", "params": {}}
+        {"id": "1", "method": "companion.gallery", "params": {}}
     )
     assert response["result"]["enabled"] is False
 
 
-def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
-    """pet.info with a matching knownRevision must not resend the sheet bytes.
+def test_companion_info_known_revision_elides_spritesheet(monkeypatch):
+    """companion.info with a matching knownRevision must not resend the sheet bytes.
 
     The spritesheet payload is multi-MB; resending it on every backstop
     refresh stalls the WS write loop (#54730). A caller passing the revision
     it already holds gets metadata plus spritesheetUnchanged instead.
     """
 
-    class _FakePet:
+    class _FakeCompanion:
         slug = "codex"
         display_name = "Codex"
         exists = True
@@ -8931,12 +8931,12 @@ def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
         "scale": 0.33,
     }
 
-    monkeypatch.setattr(server, "_pet_active_selection", lambda: (True, _FakePet(), 0.33))
-    monkeypatch.setattr(server, "_pet_sprite_payload", lambda pet, *, scale: dict(payload))
+    monkeypatch.setattr(server, "_companion_active_selection", lambda: (True, _FakeCompanion(), 0.33))
+    monkeypatch.setattr(server, "_companion_sprite_payload", lambda companion, *, scale: dict(payload))
 
     # Matching revision: bytes elided, unchanged marker set.
     resp = server.handle_request(
-        {"id": "1", "method": "pet.info", "params": {"knownRevision": "123:456"}}
+        {"id": "1", "method": "companion.info", "params": {"knownRevision": "123:456"}}
     )
     assert resp["result"]["enabled"] is True
     assert "spritesheetBase64" not in resp["result"]
@@ -8945,13 +8945,13 @@ def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
 
     # Stale revision: full payload still flows.
     resp = server.handle_request(
-        {"id": "2", "method": "pet.info", "params": {"knownRevision": "999:999"}}
+        {"id": "2", "method": "companion.info", "params": {"knownRevision": "999:999"}}
     )
     assert resp["result"]["spritesheetBase64"] == "A" * 1024
     assert "spritesheetUnchanged" not in resp["result"]
 
     # No revision (legacy callers): full payload.
-    resp = server.handle_request({"id": "3", "method": "pet.info", "params": {}})
+    resp = server.handle_request({"id": "3", "method": "companion.info", "params": {}})
     assert resp["result"]["spritesheetBase64"] == "A" * 1024
 
 

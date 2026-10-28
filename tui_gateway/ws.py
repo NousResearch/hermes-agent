@@ -390,7 +390,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
         if (_is_unknown_method(resp) and req_method in server._methods
                 and legacy_fallback_allowed(actor, req_method)):
             # Session verbs live on the authority; everything else the sidecar still
-            # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
+            # registers (companion, wake word, connectors) keeps its legacy handler. A legacy
             # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
             # method neither side knows, which the client's capability fallbacks key on.
             resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
@@ -637,7 +637,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         authority_connection = _authority_connection(ws, transport, auth_identity, operator)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
-        # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
+        # change_events: this backend broadcasts companion/cron/sessions.changed, so clients can demote legacy
         # polls to backstops. replay_epoch lets reconnecting clients detect a backend restart and reset
         # their per-session seq watermarks (event_replay).
         ready_ok = await transport.write_async({

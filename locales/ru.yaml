@@ -1637,10 +1637,10 @@ slash:
     description: "Просмотреть ожидающие записи в память / переключить шлюз одобрения"
   bundles:
     description: "Показать бандлы навыков (псевдонимы /<имя> для нескольких навыков)"
-  pet:
-    description: "Переключить или завести питомца-маскота petdex (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Переключить или завести питомца-маскота companiondex (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Создать нового питомца petdex по описанию"
+    description: "Создать нового питомца companiondex по описанию"
   learn:
     description: "Освоить переиспользуемый навык из чего угодно (каталоги, URL, этот чат, заметки)"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) Базовый набросок не получен — попробуйте ещё раз."
       failed: "(x_x) Hatch не удался: {error}"
       hatched: "(^_^)b {name} вылупился и принят — скоро появится!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} выпущен — скоро появится."
       put_away_named: "(-_-)zzZ {name} убран."
       put_away: "(-_-)zzZ Питомец убран."
-      usage_scale: "(o_o) Использование: /pet scale <множитель>  (например, /pet scale 0.5)"
+      usage_scale: "(o_o) Использование: /companion scale <множитель>  (например, /companion scale 0.5)"
       scale_set: "(^_^) Масштаб питомца → {scale}."
-      fetching: "(o_o) Загружаем «{name}» из petdex…"
+      fetching: "(o_o) Загружаем «{name}» из companiondex…"
       adopt_failed: "(x_x) Не удалось принять «{name}»: {error}"
       error: "(x_x) {error}"
     diff:

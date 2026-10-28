@@ -13,7 +13,7 @@ export interface SelectableCardState {
 
 /**
  * Shared emphasis for selectable list cards across settings surfaces (theme
- * picker, pet picker, Marketplace results, provider rows…). Three tiers:
+ * picker, companion picker, Marketplace results, provider rows…). Three tiers:
  * active > prominent > muted. Keeps the "installed = solid, not-installed =
  * quiet" pattern consistent everywhere instead of each picker rolling its own.
  *

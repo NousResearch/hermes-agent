@@ -103,7 +103,7 @@ def _placeholder_patterns(text: str) -> list[re.Pattern[str]]:
             segs = segs[:-1]
         parts = [r"[^.]+" if re.fullmatch(r"<[\w-]+>|\*", s) else re.escape(s) for s in segs]
         # `agent.*` in prose names a section, it doesn't document every key under it: a
-        # trailing glob needs two segments ahead of it (`auxiliary.<task>.*`, `display.pet.*`).
+        # trailing glob needs two segments ahead of it (`auxiliary.<task>.*`, `display.companion.*`).
         if len(parts) >= 2:
             pats.add(r"\.".join(parts) + tail)
     return [re.compile(p + r"$") for p in sorted(pats)]

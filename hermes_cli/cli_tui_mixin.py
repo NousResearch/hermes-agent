@@ -388,7 +388,7 @@ class CLITuiMixin:
             spinner_widget,
             spacer,
             *self._get_extra_tui_widgets(),
-            getattr(self, "_pet_widget", None),
+            getattr(self, "_companion_widget", None),
             getattr(self, "_stash_panel_widget", None),
             getattr(self, "_subagent_dock_widget", None),
             status_bar,
@@ -2107,12 +2107,12 @@ class CLITuiMixin:
             content=FormattedTextControl(self._tui_spinner_text),
             height=self._tui_spinner_height,
             wrap_lines=True)
-        # Petdex mascot — right-aligned Kitty placeholder or half-block sprite above the prompt;
-        # height 0 when no pet is enabled. The animation thread queues virtual Kitty frames;
+        # Companiondex mascot — right-aligned Kitty placeholder or half-block sprite above the prompt;
+        # height 0 when no companion is enabled. The animation thread queues virtual Kitty frames;
         # after_render writes them out-of-band while prompt_toolkit owns the placeholder grid.
-        self._pet_widget = Window(
-            content=FormattedTextControl(self._pet_fragments),
-            height=self._pet_widget_height,
+        self._companion_widget = Window(
+            content=FormattedTextControl(self._companion_fragments),
+            height=self._companion_widget_height,
             align=WindowAlign.RIGHT)
         # Hint line above the input: only for interactive prompts that need extra instructions
         # (sudo countdown, approval navigation, clarify); the agent-running hint is the placeholder.

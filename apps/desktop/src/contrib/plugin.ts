@@ -24,9 +24,9 @@ import {
   runPluginAppAction
 } from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
+import { $companionActive } from '@/store/companion'
+import { clearCompanionMessages, type CompanionSayOptions, sayCompanionMessage } from '@/store/companion-plugin-messages'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
-import { $petActive } from '@/store/pet'
-import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
 import { createPluginFiles, type PluginFiles } from './plugin-files'
@@ -43,8 +43,8 @@ export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'
+export type { CompanionMessageTone, CompanionSayOptions } from '@/store/companion-plugin-messages'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
-export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
@@ -88,20 +88,20 @@ export interface PluginOs {
   writeClipboard: (text: string) => Promise<boolean>
 }
 
-/** The pet door: short lines in the core pet's speech bubble, attributed to
- *  this plugin, instead of locating the pet in the app DOM and drawing over
- *  it. The host renders them in the in-window pet and the pop-out overlay;
- *  they show only while the user has a pet visible. */
-export interface PluginPet {
+/** The companion door: short lines in the core companion's speech bubble, attributed to
+ *  this plugin, instead of locating the companion in the app DOM and drawing over
+ *  it. The host renders them in the in-window companion and the pop-out overlay;
+ *  they show only while the user has a companion visible. */
+export interface PluginCompanion {
   /** Show one plain-text line (no HTML; control characters stripped, capped
    *  at 120 chars) with this plugin's name as a small label. Lasts `ttlMs`
    *  (default 6 s, clamped 1–30 s); the same `id` replaces in place. Core
    *  error / waiting-on-you states keep priority over it. Rate-limited per
    *  plugin. Returns a disposer that removes the line early. */
-  say: (text: string, options?: PetSayOptions) => () => void
+  say: (text: string, options?: CompanionSayOptions) => () => void
   /** Remove one line by `id`, or every line this plugin has up. */
   clear: (id?: string) => void
-  /** True while a pet is installed and shown (in-window or popped out). A
+  /** True while a companion is installed and shown (in-window or popped out). A
    *  plugin can fall back to its own chip or pane while this is false. */
   visible: ReadableAtom<boolean>
 }
@@ -161,10 +161,10 @@ export interface PluginContext {
    *  manager, clipboard — attributed to this plugin, result-shaped (never
    *  throws for a missing capability). */
   os: PluginOs
-  /** The pet door: lines in the core pet's speech bubble, attributed to this
+  /** The companion door: lines in the core companion's speech bubble, attributed to this
    *  plugin and cleared when it unloads. Feature-detect on older hosts:
-   *  `ctx.pet?.say(...)`. */
-  pet: PluginPet
+   *  `ctx.companion?.say(...)`. */
+  companion: PluginCompanion
   /** Run a built-in app action (toggle the browser panel, open Settings,
    *  focus the composer, …) through the same handler its keyboard shortcut
    *  and palette entry use, so rebinding or unbinding the shortcut changes
@@ -289,20 +289,20 @@ function createPluginOs(pluginId: string): PluginOs {
 // Lines are attributed by the inventory name the loader published before
 // register() ran; the id is the fallback. Every line this plugin still has up
 // is cleared with it on unload/disable (tracked on first use).
-function createPluginPet(pluginId: string, track: (dispose: () => void) => () => void): PluginPet {
+function createPluginCompanion(pluginId: string, track: (dispose: () => void) => () => void): PluginCompanion {
   let tracked = false
 
   return {
-    clear: id => clearPetMessages(pluginId, id),
+    clear: id => clearCompanionMessages(pluginId, id),
     say: (text, options) => {
       if (!tracked) {
         tracked = true
-        track(() => clearPetMessages(pluginId))
+        track(() => clearCompanionMessages(pluginId))
       }
 
-      return sayPetMessage(pluginId, $pluginRecords.get()[pluginId]?.name ?? pluginId, text, options)
+      return sayCompanionMessage(pluginId, $pluginRecords.get()[pluginId]?.name ?? pluginId, text, options)
     },
-    visible: $petActive
+    visible: $companionActive
   }
 }
 
@@ -396,7 +396,7 @@ export function createPluginContext(
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),
-    pet: createPluginPet(pluginId, track),
+    companion: createPluginCompanion(pluginId, track),
     runAction: id => runPluginAppAction(pluginId, id),
     listActions: listPluginAppActions,
     preview: createPluginPreview(pluginId, capabilities),

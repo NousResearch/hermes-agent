@@ -1,7 +1,7 @@
 """Smoke tests for the final batch of subcommand builders extracted from main().
 
 These groups either imported their handler from a sibling module inside the
-parser block (moa, fallback, migrate, bundles, checkpoints, curator, pets,
+parser block (moa, fallback, migrate, bundles, checkpoints, curator, companions,
 journey, secrets, egress) or carried a closure handler that only closed over
 its own parser (worktree, browser, computer-use, sessions, completion). The
 closures moved verbatim into the builder; sessions/completion take the handler

@@ -1,4 +1,4 @@
-"""Status bar, spinner, turn-summary, pet pane, and prompt-stash rendering for the
+"""Status bar, spinner, turn-summary, companion pane, and prompt-stash rendering for the
 interactive CLI.
 
 Mixin bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are imported LAZILY
@@ -13,7 +13,7 @@ import threading
 import time
 
 from agent.i18n import t
-from agent.pet import render as pet_render
+from agent.companion import render as companion_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
 
@@ -40,7 +40,7 @@ def _finite(v):
 
 
 class CLIStatusBarMixin:
-    """Status bar, spinner, turn-summary, pet pane, and prompt-stash rendering for the
+    """Status bar, spinner, turn-summary, companion pane, and prompt-stash rendering for the
     interactive CLI."""
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
@@ -648,105 +648,105 @@ class CLIStatusBarMixin:
         except Exception:
             logger.debug("Turn summary render failed", exc_info=True)
 
-    # ── pet pane ──────────────────────────────────────────────────────────────
+    # ── companion pane ──────────────────────────────────────────────────────────────
 
-    def _pet_clear_runtime(self) -> None:
-        """Drop renderer + queued Kitty state. Caller holds ``_pet_lock``."""
-        self._pet_enabled = False
-        self._pet_renderer = None
-        self._pet_frames_cache.clear()
-        self._pet_kitty_cache.clear()
-        self._pet_kitty_pending = ""
-        self._pet_kitty_image_id = 0
+    def _companion_clear_runtime(self) -> None:
+        """Drop renderer + queued Kitty state. Caller holds ``_companion_lock``."""
+        self._companion_enabled = False
+        self._companion_renderer = None
+        self._companion_frames_cache.clear()
+        self._companion_kitty_cache.clear()
+        self._companion_kitty_pending = ""
+        self._companion_kitty_image_id = 0
 
-    def _pet_resolve_config(self) -> None:
-        """(Re)resolve the active pet from config so ``/pet`` / ``hermes pets`` changes apply
+    def _companion_resolve_config(self) -> None:
+        """(Re)resolve the active companion from config so ``/companion`` / ``hermes companions`` changes apply
         without a restart (mirrors the TUI's steady poll). Fail-open: any problem disables."""
         try:
-            from agent.pet import constants, store
+            from agent.companion import constants, store
             from hermes_cli.config import load_config
             from utils import is_truthy_value
 
             cfg = load_config()
             display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
-            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
-            enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
-            slug = str(pet_cfg.get("slug", "") or "")
-            scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
-            cols = constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
-            configured_mode = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+            companion_cfg = display.get("companion", {}) if isinstance(display.get("companion"), dict) else {}
+            enabled = is_truthy_value(companion_cfg.get("enabled"), default=False)
+            slug = str(companion_cfg.get("slug", "") or "")
+            scale = float(companion_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+            cols = constants.resolve_cols(scale, companion_cfg.get("unicode_cols", 0))
+            configured_mode = str(companion_cfg.get("render_mode", "auto") or "auto").lower()
             # Placeholders only on kitty/Ghostty: WezTerm speaks kitty APC but not U+10EEEE
             # while detect_terminal_graphics() still says kitty, hence the narrower gate.
             use_kitty = (
-                configured_mode in ("", "auto", "kitty") and pet_render.supports_kitty_placeholders()
+                configured_mode in ("", "auto", "kitty") and companion_render.supports_kitty_placeholders()
             )
             renderer_mode = "kitty" if use_kitty else "unicode"
 
-            pet = None
+            companion = None
             if enabled and configured_mode != "off":
-                pet = store.resolve_active_pet(slug)
-            if pet is None or not pet.exists:
-                with self._pet_lock:
-                    self._pet_clear_runtime()
+                companion = store.resolve_active_companion(slug)
+            if companion is None or not companion.exists:
+                with self._companion_lock:
+                    self._companion_clear_runtime()
                 return
 
-            with self._pet_lock:
-                # Rebuild only when the resolved pet, mode, or geometry changes.
+            with self._companion_lock:
+                # Rebuild only when the resolved companion, mode, or geometry changes.
                 if (
-                    self._pet_renderer is None
-                    or self._pet_slug != pet.slug
-                    or self._pet_cols != cols
-                    or self._pet_scale != scale
-                    or self._pet_renderer.mode != renderer_mode):
-                    self._pet_renderer = pet_render.PetRenderer(
-                        str(pet.spritesheet), mode=renderer_mode, scale=scale, unicode_cols=cols)
-                    self._pet_slug = pet.slug
-                    self._pet_cols = cols
-                    self._pet_scale = scale
-                    self._pet_frames_cache.clear()
-                    self._pet_kitty_cache.clear()
-                    self._pet_kitty_pending = ""
-                    self._pet_kitty_image_id = pet_render.kitty_image_id(pet.slug)
-                    self._pet_frame_idx = 0
-                self._pet_enabled = True
+                    self._companion_renderer is None
+                    or self._companion_slug != companion.slug
+                    or self._companion_cols != cols
+                    or self._companion_scale != scale
+                    or self._companion_renderer.mode != renderer_mode):
+                    self._companion_renderer = companion_render.CompanionRenderer(
+                        str(companion.spritesheet), mode=renderer_mode, scale=scale, unicode_cols=cols)
+                    self._companion_slug = companion.slug
+                    self._companion_cols = cols
+                    self._companion_scale = scale
+                    self._companion_frames_cache.clear()
+                    self._companion_kitty_cache.clear()
+                    self._companion_kitty_pending = ""
+                    self._companion_kitty_image_id = companion_render.kitty_image_id(companion.slug)
+                    self._companion_frame_idx = 0
+                self._companion_enabled = True
         except Exception:
-            with self._pet_lock:
-                self._pet_clear_runtime()
+            with self._companion_lock:
+                self._companion_clear_runtime()
 
-    def _pet_flash(self, state: str, secs: float = 1.6) -> None:
+    def _companion_flash(self, state: str, secs: float = 1.6) -> None:
         """Briefly force a transient reaction (wave/jump/failed) before resting."""
-        self._pet_event = state
-        self._pet_event_until = time.monotonic() + secs
+        self._companion_event = state
+        self._companion_event_until = time.monotonic() + secs
 
     def _on_reaction(self, kind: str) -> None:
-        """Core-detected user affection (ily / <3 / good bot): the pet's share of the vibe
+        """Core-detected user affection (ily / <3 / good bot): the companion's share of the vibe
         signal that plays hearts on the TUI/desktop."""
         if kind == "vibe":
-            self._pet_flash("jump")
+            self._companion_flash("jump")
 
-    def _pet_react_turn_end(self) -> None:
+    def _companion_react_turn_end(self) -> None:
         """End-of-turn beat: failed on error, jump on a finished plan, else wave."""
-        if not self._pet_enabled:
+        if not self._companion_enabled:
             return
-        from agent.pet.state import todos_all_done
+        from agent.companion.state import todos_all_done
 
-        if self._pet_turn_error:
-            self._pet_flash("failed")
+        if self._companion_turn_error:
+            self._companion_flash("failed")
             return
         try:
             store = getattr(self.agent, "_todo_store", None)
             done = todos_all_done(store.read()) if store else False
         except Exception:
             done = False
-        self._pet_flash("jump" if done else "wave")
+        self._companion_flash("jump" if done else "wave")
 
-    def _derive_pet_state(self) -> str:
-        """A live transient beat wins; otherwise the shared ``agent.pet.state.derive_pet_state``
+    def _derive_companion_state(self) -> str:
+        """A live transient beat wins; otherwise the shared ``agent.companion.state.derive_companion_state``
         priority order so the CLI can't drift from the TUI/desktop."""
-        if self._pet_event and time.monotonic() < self._pet_event_until:
-            return self._pet_event
-        self._pet_event = ""
-        from agent.pet.state import derive_pet_state
+        if self._companion_event and time.monotonic() < self._companion_event_until:
+            return self._companion_event
+        self._companion_event = ""
+        from agent.companion.state import derive_companion_state
 
         # Any blocking modal (approval / clarify / sudo / secret / slash confirm) means the
         # agent is paused on the user → `waiting`, which outranks the in-flight signals.
@@ -756,70 +756,70 @@ class CLIStatusBarMixin:
             or self._sudo_state
             or self._secret_state
             or getattr(self, "_slash_confirm_state", None))
-        return derive_pet_state(
+        return derive_companion_state(
             awaiting_input=awaiting_input,
             busy=getattr(self, "_agent_running", False),
-            reasoning=self._pet_reasoning,
+            reasoning=self._companion_reasoning,
         ).value
 
-    def _pet_frames_for(self, state: str) -> list:
+    def _companion_frames_for(self, state: str) -> list:
         """Return (and cache) the half-block grids for one state."""
-        cached = self._pet_frames_cache.get(state)
+        cached = self._companion_frames_cache.get(state)
         if cached is not None:
             return cached
-        renderer = self._pet_renderer
+        renderer = self._companion_renderer
         if renderer is None:
             return []
         try:
             count = renderer.frame_count(state) or 1
-            grids = [renderer.cells(state, i, cols=self._pet_cols) for i in range(count)]
+            grids = [renderer.cells(state, i, cols=self._companion_cols) for i in range(count)]
         except Exception:
             grids = []
-        self._pet_frames_cache[state] = grids
+        self._companion_frames_cache[state] = grids
         return grids
 
-    def _pet_kitty_payload_for(self, state: str) -> dict | None:
+    def _companion_kitty_payload_for(self, state: str) -> dict | None:
         """Return and cache a Kitty virtual-placeholder payload for *state*."""
-        with self._pet_lock:
-            cached = self._pet_kitty_cache.get(state)
+        with self._companion_lock:
+            cached = self._companion_kitty_cache.get(state)
             if cached is not None:
                 return cached
-            renderer = self._pet_renderer
-            image_id = self._pet_kitty_image_id
+            renderer = self._companion_renderer
+            image_id = self._companion_kitty_image_id
             if renderer is None or renderer.mode != "kitty":
                 return None
         try:
-            # PNG encoding outside _pet_lock: first visit of a state must not stall the prompt.
+            # PNG encoding outside _companion_lock: first visit of a state must not stall the prompt.
             payload = renderer.kitty_payload(state, image_id=image_id)
         except Exception:
             payload = None
         if payload is not None:
             payload = {**payload, "image_id": image_id}
-            with self._pet_lock:
-                if self._pet_renderer is renderer and self._pet_kitty_image_id == image_id:
-                    self._pet_kitty_cache[state] = payload
+            with self._companion_lock:
+                if self._companion_renderer is renderer and self._companion_kitty_image_id == image_id:
+                    self._companion_kitty_cache[state] = payload
         return payload
 
-    def _pet_queue_kitty_frame(self, state: str | None = None) -> None:
+    def _companion_queue_kitty_frame(self, state: str | None = None) -> None:
         """Queue one virtual Kitty frame for the next prompt_toolkit render. No-op when the
-        pet pane was never initialized (``__new__`` fixtures, redraw on a pet-less CLI)."""
-        if not getattr(self, "_pet_enabled", False):
+        companion pane was never initialized (``__new__`` fixtures, redraw on a companion-less CLI)."""
+        if not getattr(self, "_companion_enabled", False):
             return
         if state is None:
-            state = self._derive_pet_state()
-        payload = self._pet_kitty_payload_for(state)
+            state = self._derive_companion_state()
+        payload = self._companion_kitty_payload_for(state)
         if not payload or not payload.get("frames"):
             return
-        with self._pet_lock:
-            if self._pet_renderer is not None and self._pet_renderer.mode == "kitty":
+        with self._companion_lock:
+            if self._companion_renderer is not None and self._companion_renderer.mode == "kitty":
                 frames = payload["frames"]
-                self._pet_kitty_pending = frames[self._pet_frame_idx % len(frames)]
+                self._companion_kitty_pending = frames[self._companion_frame_idx % len(frames)]
 
-    def _pet_flush_kitty_frame(self, app) -> None:
+    def _companion_flush_kitty_frame(self, app) -> None:
         """Write a queued APC after prompt_toolkit has finished its screen diff."""
-        with self._pet_lock:
-            frame = self._pet_kitty_pending
-            self._pet_kitty_pending = ""
+        with self._companion_lock:
+            frame = self._companion_kitty_pending
+            self._companion_kitty_pending = ""
         if not frame:
             return
         try:
@@ -829,35 +829,35 @@ class CLIStatusBarMixin:
         except (OSError, ValueError):
             pass
 
-    def _pet_view(self) -> tuple[str, bool] | None:
-        """(state, is_kitty) for the current frame, or None when no pet shows."""
-        with self._pet_lock:
-            if not self._pet_enabled or self._pet_renderer is None:
+    def _companion_view(self) -> tuple[str, bool] | None:
+        """(state, is_kitty) for the current frame, or None when no companion shows."""
+        with self._companion_lock:
+            if not self._companion_enabled or self._companion_renderer is None:
                 return None
-            return self._derive_pet_state(), self._pet_renderer.mode == "kitty"
+            return self._derive_companion_state(), self._companion_renderer.mode == "kitty"
 
-    def _pet_fragments(self):
-        """prompt_toolkit FormattedText for the current pet frame, or []."""
-        view = self._pet_view()
+    def _companion_fragments(self):
+        """prompt_toolkit FormattedText for the current companion frame, or []."""
+        view = self._companion_view()
         if view is None:
             return []
         state, kitty = view
         frags = []
         if kitty:
-            payload = self._pet_kitty_payload_for(state)
+            payload = self._companion_kitty_payload_for(state)
             if not payload:
                 return []
-            color = pet_render.kitty_color_hex(payload["image_id"])
+            color = companion_render.kitty_color_hex(payload["image_id"])
             for y, row in enumerate(payload["placeholder"]):
                 if y:
                     frags.append(("", "\n"))
                 frags.append((f"fg:{color}", row))
             return frags
-        with self._pet_lock:
-            grids = self._pet_frames_for(state)
+        with self._companion_lock:
+            grids = self._companion_frames_for(state)
             if not grids:
                 return []
-            grid = grids[self._pet_frame_idx % len(grids)]
+            grid = grids[self._companion_frame_idx % len(grids)]
 
         def _hex(r, g, b):
             return f"#{r:02x}{g:02x}{b:02x}"
@@ -879,65 +879,65 @@ class CLIStatusBarMixin:
                     frags.append((f"fg:{_hex(br, bg, bb)}", "▄"))
         return frags
 
-    def _pet_widget_height(self) -> int:
-        """Visible rows for the pet window — 0 collapses it when no pet shows."""
-        view = self._pet_view()
+    def _companion_widget_height(self) -> int:
+        """Visible rows for the companion window — 0 collapses it when no companion shows."""
+        view = self._companion_view()
         if view is None:
             return 0
         state, kitty = view
         if kitty:
-            payload = self._pet_kitty_payload_for(state)
+            payload = self._companion_kitty_payload_for(state)
             return int(payload.get("rows", 0)) if payload else 0
-        with self._pet_lock:
-            grids = self._pet_frames_for(state)
+        with self._companion_lock:
+            grids = self._companion_frames_for(state)
             return len(grids[0]) if grids and grids[0] else 0
 
-    def _pet_anim_loop(self) -> None:
-        """Advance the frame + invalidate on a timer while a pet is enabled."""
-        while self._pet_anim_running:
-            time.sleep(self._PET_FRAME_INTERVAL)
+    def _companion_anim_loop(self) -> None:
+        """Advance the frame + invalidate on a timer while a companion is enabled."""
+        while self._companion_anim_running:
+            time.sleep(self._COMPANION_FRAME_INTERVAL)
             if getattr(self, "_terminal_io_broken", False):
-                self._pet_anim_running = False
+                self._companion_anim_running = False
                 break
             now = time.monotonic()
-            if now - self._pet_cfg_checked >= self._PET_CFG_INTERVAL:
-                self._pet_cfg_checked = now
-                self._pet_resolve_config()
-            if not self._pet_enabled:
+            if now - self._companion_cfg_checked >= self._COMPANION_CFG_INTERVAL:
+                self._companion_cfg_checked = now
+                self._companion_resolve_config()
+            if not self._companion_enabled:
                 continue
-            with self._pet_lock:
-                self._pet_frame_idx += 1
-                kitty = self._pet_renderer is not None and self._pet_renderer.mode == "kitty"
+            with self._companion_lock:
+                self._companion_frame_idx += 1
+                kitty = self._companion_renderer is not None and self._companion_renderer.mode == "kitty"
             if kitty:
-                self._pet_queue_kitty_frame()
+                self._companion_queue_kitty_frame()
             app = getattr(self, "_app", None)
             if app is not None:
                 try:
                     app.invalidate()
                 except OSError as exc:
                     if getattr(exc, "errno", None) == errno.EIO:
-                        self._mark_terminal_io_broken("pet_anim")
+                        self._mark_terminal_io_broken("companion_anim")
                         break
                 except Exception:
                     pass
 
-    def _pet_start_anim(self) -> None:
-        if self._pet_anim_running:
+    def _companion_start_anim(self) -> None:
+        if self._companion_anim_running:
             return
-        self._pet_resolve_config()
-        view = self._pet_view()
+        self._companion_resolve_config()
+        view = self._companion_view()
         if view is not None and view[1]:
-            self._pet_queue_kitty_frame()
-        self._pet_anim_running = True
-        self._pet_anim_thread = threading.Thread(target=self._pet_anim_loop, daemon=True)
-        self._pet_anim_thread.start()
+            self._companion_queue_kitty_frame()
+        self._companion_anim_running = True
+        self._companion_anim_thread = threading.Thread(target=self._companion_anim_loop, daemon=True)
+        self._companion_anim_thread.start()
 
-    def _pet_stop_anim(self) -> None:
-        self._pet_anim_running = False
-        thread = self._pet_anim_thread
+    def _companion_stop_anim(self) -> None:
+        self._companion_anim_running = False
+        thread = self._companion_anim_thread
         if thread is not None:
             thread.join(timeout=0.3)
-        self._pet_anim_thread = None
+        self._companion_anim_thread = None
 
     # ── voice ─────────────────────────────────────────────────────────────────
 

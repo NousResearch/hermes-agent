@@ -574,7 +574,7 @@ class CLIModalMixin:
             write_tty(seq)
             return
 
-        # Agent thread. The loop thread may be mid-write of a 12 KB kitty pet frame that the tty
+        # Agent thread. The loop thread may be mid-write of a 12 KB kitty companion frame that the tty
         # drains ~1 KB at a time; a second writer on the same tty (/dev/tty, sys.stdout) splices
         # in, the foreign ESC aborts the APC, and the terminal paints the rest of the payload as
         # base64 at the input cursor. Serialize behind the renderer instead.
@@ -582,7 +582,7 @@ class CLIModalMixin:
             try:
                 _write_terminal_sequence(app, seq)
             except (OSError, ValueError):
-                pass  # dead tty: same fail-quiet as _pet_flush_kitty_frame
+                pass  # dead tty: same fail-quiet as _companion_flush_kitty_frame
 
         _run_on_app_loop(app, _emit)
 

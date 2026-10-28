@@ -323,7 +323,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
         _reg("curator"),
         "status, *run, *pause, *resume, *pin, *unpin, *restore, list-archived, *archive, *prune, "
         "*backup, *rollback"),
-    "pets": (_reg("pets"), "list, *install, *select, show, *off, *scale, *remove, doctor"),
+    "companions": (_reg("companions"), "list, *install, *select, show, *off, *scale, *remove, doctor"),
 }
 
 # Only extracted/registered families skip nested prompts after console confirmation

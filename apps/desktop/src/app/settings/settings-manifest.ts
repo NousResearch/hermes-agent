@@ -139,10 +139,10 @@ export const SETTINGS_MANIFEST = {
       'reasoningCollapsed'
     ),
     embeds: appearanceSetting('chat-display', ['external content', 'privacy'], 'embeds'),
-    pet: {
-      subpage: 'pet',
-      keywords: ['pet', 'mascot', 'petdex', 'companion', 'buddy'],
-      copy: t => ({ label: t.settings.appearance.pet.chooseTitle, description: t.settings.appearance.pet.chooseDesc })
+    companion: {
+      subpage: 'companion',
+      keywords: ['companion', 'mascot', 'companiondex', 'companion', 'buddy'],
+      copy: t => ({ label: t.settings.appearance.companion.chooseTitle, description: t.settings.appearance.companion.chooseDesc })
     }
   },
   chat: {

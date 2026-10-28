@@ -15,11 +15,11 @@ import type { WindowSizeMode } from '../electron/window-size-types'
 import type { UiPreferencesBridge } from './lib/ui-preferences/sync'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
-  PetOverlayBounds,
-  PetOverlayControl,
-  PetOverlayOpenRequest,
-  PetOverlayStatePayload
-} from './store/pet-overlay'
+  CompanionOverlayBounds,
+  CompanionOverlayControl,
+  CompanionOverlayOpenRequest,
+  CompanionOverlayStatePayload
+} from './store/companion-overlay'
 import type {
   QuickEntryStatePush,
   QuickEntryStatus,
@@ -139,19 +139,19 @@ declare global {
       chatOnboarding?: {
         size: (mode: WindowSizeMode) => void
       }
-      // The pop-out pet overlay: a transparent always-on-top window hosting only
+      // The pop-out companion overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
-      petOverlay?: {
-        open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
+      companionOverlay?: {
+        open: (request: CompanionOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: CompanionOverlayBounds }>
         close: () => Promise<{ ok: boolean }>
-        setBounds: (bounds: PetOverlayBounds) => void
+        setBounds: (bounds: CompanionOverlayBounds) => void
         setIgnoreMouse: (ignore: boolean) => void
         setFocusable: (focusable: boolean) => void
-        pushState: (payload: PetOverlayStatePayload) => void
-        control: (payload: PetOverlayControl) => void
-        onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
-        onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+        pushState: (payload: CompanionOverlayStatePayload) => void
+        control: (payload: CompanionOverlayControl) => void
+        onState: (callback: (payload: CompanionOverlayStatePayload) => void) => () => void
+        onControl: (callback: (payload: CompanionOverlayControl) => void) => () => void
       }
       // HUD mode: the chrome-free floating chat. A FULL app renderer with its
       // own gateway (like an instance window), sized and skinned as a floating

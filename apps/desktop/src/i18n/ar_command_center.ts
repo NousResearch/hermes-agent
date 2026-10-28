@@ -15,11 +15,11 @@ export const arCommandCenter = {
     settings: 'الإعدادات',
     changeTheme: 'تغيير الثيم',
     changeColorMode: 'تغيير نمط الألوان',
-    pets: {
+    companions: {
       title: 'الحيوانات الأليفة',
       placeholder: 'البحث في الحيوانات الأليفة...',
-      loading: 'جار تحميل معرض petdex...',
-      error: 'تعذّر الوصول إلى معرض petdex.',
+      loading: 'جار تحميل معرض companiondex...',
+      error: 'تعذّر الوصول إلى معرض companiondex.',
       staleBackend: 'أعد تشغيل Hermes لاستخدام الحيوانات الأليفة — الخادم الخلفي أقدم من هذه الميزة.',
       empty: 'لا توجد حيوانات أليفة مطابقة.',
       turnOff: 'إيقاف التشغيل',
@@ -30,7 +30,7 @@ export const arCommandCenter = {
       toggleFailed: enabled => `تعذّر ${enabled ? 'تشغيل' : 'إيقاف'} الحيوان الأليف.`,
       noneAvailable: 'لا توجد حيوانات أليفة متاحة — اختر واحدا أدناه لتثبيته.'
     },
-    generatePet: {
+    generateCompanion: {
       title: 'توليد حيوان أليف',
       placeholder: 'صف حيوانا أليفا لتوليده...',
       promptHint: 'اكتب وصفا، ثم اضغط Enter لرسم أربعة مظاهر.',

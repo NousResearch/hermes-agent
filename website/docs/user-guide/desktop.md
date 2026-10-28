@@ -439,7 +439,7 @@ The app also surfaces the broader Hermes management surface so you don't have to
 **Bot Mode** ships with the app and is on by default: a "one chat per agent"
 roster where every [Hermes profile](./profiles.md) appears as a bot with its
 own avatar (geometric face, uploaded image, AI-generated portrait, or a pixel
-pet), its own canonical **Bot Chat** conversation, and its own **Routines**
+companion), its own canonical **Bot Chat** conversation, and its own **Routines**
 (recurring tasks backed by Hermes cron). The roster lives in the left
 sidebar as a tab next to your conversations — a **Sessions | Bots** tab
 strip — rather than a second pane stacked below the session list. Installs

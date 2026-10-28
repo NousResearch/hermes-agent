@@ -8,12 +8,12 @@ import { isProviderSetupErrorCode, isProviderSetupErrorMessage } from '@/lib/pro
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
+import { flashCompanionActivity, setCompanionActivity } from '@/store/companion'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { setTurnStartedAt } from '@/store/session'
 import { clearActiveSessionTodos } from '@/store/todos'
@@ -318,8 +318,8 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: false, toolRunning: false })
-      flashPetActivity({ error: true })
+      setCompanionActivity({ reasoning: false, toolRunning: false })
+      flashCompanionActivity({ error: true })
     }
 
     dispatchNativeNotification({

@@ -15,11 +15,11 @@ export const zhHantCommandCenter = {
     settings: '設定',
     changeTheme: '變更主題',
     changeColorMode: '變更色彩模式…',
-    pets: {
+    companions: {
       title: '寵物',
       placeholder: '搜尋寵物…',
-      loading: '正在載入 petdex 畫廊…',
-      error: '無法連線至 petdex 畫廊。',
+      loading: '正在載入 companiondex 畫廊…',
+      error: '無法連線至 companiondex 畫廊。',
       staleBackend: '請重新啟動 Hermes 以使用寵物功能。',
       empty: '沒有符合的寵物。',
       turnOff: '關閉',
@@ -30,7 +30,7 @@ export const zhHantCommandCenter = {
       toggleFailed: enabled => `無法${enabled ? '開啟' : '關閉'}寵物顯示。`,
       noneAvailable: '尚無可用寵物——請在下方選擇一個安裝。'
     },
-    generatePet: {
+    generateCompanion: {
       title: '生成寵物',
       placeholder: '描述要生成的寵物……',
       promptHint: '輸入描述，然後按 Enter 生成四種造型。',

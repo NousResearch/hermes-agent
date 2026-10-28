@@ -1637,10 +1637,10 @@ slash:
     description: "Revisar escrituras de memoria pendientes / alternar la puerta de aprobación"
   bundles:
     description: "Listar paquetes de skills (alias /<name> para varias skills)"
-  pet:
-    description: "Alternar o adoptar una mascota de petdex (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Alternar o adoptar una mascota de companiondex (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Generar una nueva mascota de petdex a partir de una descripción"
+    description: "Generar una nueva mascota de companiondex a partir de una descripción"
   learn:
     description: "Aprender una skill reutilizable a partir de lo que describas (directorios, URLs, este chat, notas)"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) No llegó ningún borrador base — inténtalo de nuevo."
       failed: "(x_x) La incubación falló: {error}"
       hatched: "(^_^)b ¡{name} nació y fue adoptado — aparecerá en un momento!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} está fuera — aparecerá en un momento."
       put_away_named: "(-_-)zzZ {name} guardado."
       put_away: "(-_-)zzZ Mascota guardada."
-      usage_scale: "(o_o) Uso: /pet scale <factor>  (p. ej. /pet scale 0.5)"
+      usage_scale: "(o_o) Uso: /companion scale <factor>  (p. ej. /companion scale 0.5)"
       scale_set: "(^_^) Escala de la mascota → {scale}."
-      fetching: "(o_o) Obteniendo '{name}' del petdex…"
+      fetching: "(o_o) Obteniendo '{name}' del companiondex…"
       adopt_failed: "(x_x) No se pudo adoptar '{name}': {error}"
       error: "(x_x) {error}"
     diff:

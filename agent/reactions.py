@@ -2,7 +2,7 @@
 
 The only kind today is ``vibe`` — affection/gratitude aimed at the agent (``ily``, ``<3``,
 ``good bot``, a heart emoji), NOT general positive sentiment ("this is great" does not fire).
-Single source of truth for the CLI pet, TUI heart and desktop hearts via
+Single source of truth for the CLI companion, TUI heart and desktop hearts via
 ``AIAgent.reaction_callback``; :func:`detect_reaction` returns a *kind* string so new kinds
 can be added without touching callers.
 """

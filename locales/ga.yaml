@@ -1637,10 +1637,10 @@ slash:
     description: "Athbhreithnigh scríobhanna cuimhne atá ag fanacht / scoránaigh geata an cheadaithe"
   bundles:
     description: "Liostáil cuachta scileanna (ailiasanna /<name> do scileanna iomadúla)"
-  pet:
-    description: "Scoránaigh nó uchtaigh mascóid petdex (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Scoránaigh nó uchtaigh mascóid companiondex (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Gin peata petdex nua ó chur síos"
+    description: "Gin peata companiondex nua ó chur síos"
   learn:
     description: "Foghlaim scil in-athúsáidte ó rud ar bith a chuireann tú síos (eolairí, URLanna, an comhrá seo, nótaí)"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) Níor tháinig aon bhundréacht ar ais — bain triail eile as."
       failed: "(x_x) Theip ar /hatch: {error}"
       hatched: "(^_^)b Tá {name} gortha agus uchtaithe — léimfidh sé isteach ar ball beag!"
-    pet:
+    companion:
       is_out: "(^_^)b Tá {name} amuigh — léimfidh sé isteach ar ball beag."
       put_away_named: "(-_-)zzZ {name} curtha i leataobh."
       put_away: "(-_-)zzZ Peata curtha i leataobh."
-      usage_scale: "(o_o) Úsáid: /pet scale <factor>  (m.sh. /pet scale 0.5)"
+      usage_scale: "(o_o) Úsáid: /companion scale <factor>  (m.sh. /companion scale 0.5)"
       scale_set: "(^_^) Scála an pheata → {scale}."
-      fetching: "(o_o) Ag fáil '{name}' ón petdex…"
+      fetching: "(o_o) Ag fáil '{name}' ón companiondex…"
       adopt_failed: "(x_x) Níorbh fhéidir '{name}' a uchtú: {error}"
       error: "(x_x) {error}"
     diff:

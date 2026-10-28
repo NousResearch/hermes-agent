@@ -5,7 +5,7 @@ import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 /** Whether the global command palette (Cmd/Ctrl+K) is currently open. */
 export const $commandPaletteOpen = atom(false)
 
-/** Optional nested page to open when the palette next opens (e.g. `pets`). */
+/** Optional nested page to open when the palette next opens (e.g. `companions`). */
 export const $commandPalettePage = atom<string | null>(null)
 
 /** Optional search text to prefill when the palette next opens (type-to-search
@@ -16,7 +16,7 @@ export function openCommandPalette(): void {
   $commandPaletteOpen.set(true)
 }
 
-/** Open the palette directly on a nested page (`theme`, `pets`, …). */
+/** Open the palette directly on a nested page (`theme`, `companions`, …). */
 export function openCommandPalettePage(page: string, seed?: string): void {
   $commandPalettePage.set(page)
 

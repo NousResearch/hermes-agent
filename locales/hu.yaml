@@ -866,7 +866,7 @@ gateway:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Az átjáró sikeresen újraindult. A munkameneted folytatódik."
     online: "♻️ Az átjáró elérhető — a Hermes visszatért, és készen áll."
-    db_corrupt: "⚠️ A munkamenet-adatbázis sérülését észleltük. Az üzenetek mentése sikertelen lehet. Helyreállítási lehetőségek:\n1. Futtasd: `hermes {profile_arg}doctor --fix`\n2. Állítsd le az átjárót, majd állítsd helyre így:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (ha helyreállíthatónak jelzi) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — a helyreállítás először pillanatképet készít a sérült fájlról; NE futtasd a `sqlite3 ... \".recover\"` parancsot az élő state.db fájlon, egy sebezhető sqlite3 CLI tovább rongálhatja\n3. Állítsd vissza egy biztonsági mentésből innen: {backups_dir}/\nA `hermes {profile_arg}doctor` parancs tisztított diagnosztikát ad."
+    db_corrupt: "⚠️ A munkamenet-adatbázis sérülését észleltük. Az üzenetek mentése sikertelen lehet. Helyreállítási lehetőségek:\n1. Futtasd: `hermes {profile_arg}doctor --fix`\n2. Állítsd le az átjárót, majd állítsd helyre így:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (ha helyreállíthatónak jelzi) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — a helyreállítás először pillanatkécompanion készít a sérült fájlról; NE futtasd a `sqlite3 ... \".recover\"` parancsot az élő state.db fájlon, egy sebezhető sqlite3 CLI tovább rongálhatja\n3. Állítsd vissza egy biztonsági mentésből innen: {backups_dir}/\nA `hermes {profile_arg}doctor` parancs tisztított diagnosztikát ad."
     db_fts_corrupt: "⚠️ A munkamenet-adatbázis a keresőindexre (FTS5) korlátozódó sérülési hibát jelzett; az üzenettáblák nem sérültek. A javításig az üzenetek mentése sikertelen lehet: futtasd a `hermes {profile_arg}doctor --fix` parancsot, majd indítsd újra az átjárót. Ne futtass helyreállító eszközöket, és ne állíts vissza biztonsági mentést, hacsak a `hermes {profile_arg}doctor` nem igazol sérülést."
     db_then_restart: "{action} Ezután: `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ A munkamenet-adatbázis nem érhető el — az üzenetek mentése sikertelen lehet, és a /resume üres lesz. Ok: {cause}. {action}"
@@ -1356,7 +1356,7 @@ platform:
     handoff:
       default_name: "Hermes-munkamenet"
     media:
-      image_download_failed: "Nem sikerült letölteni és feltölteni a képet a Matrixba. A forrás URL-t nem mutatom, mert privát tokeneket tartalmazhat."
+      image_download_failed: "Nem sikerült letölteni és feltölteni a kécompanion a Matrixba. A forrás URL-t nem mutatom, mert privát tokeneket tartalmazhat."
     approval:
       typed_hint_once: "Válaszolj `!approve`-val az egyszeri futtatáshoz, vagy `!deny`-jal a megszakításhoz."
       typed_hint_session: "Válaszolj `!approve session`-nel, hogy a mintát a munkamenetre jóváhagyd, `!approve`-val az egyszeri futtatáshoz, vagy `!deny`-jal a megszakításhoz."
@@ -1654,10 +1654,10 @@ slash:
     description: "Függőben lévő memóriaírások átnézése / a jóváhagyási kapu be-/kikapcsolása"
   bundles:
     description: "Skillcsomagok listázása (/<name> aliasok több skillhez)"
-  pet:
-    description: "Petdex kabala be-/kikapcsolása vagy befogadása (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Companiondex kabala be-/kikapcsolása vagy befogadása (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Új petdex kedvenc létrehozása leírás alapján"
+    description: "Új companiondex kedvenc létrehozása leírás alapján"
   learn:
     description: "Újrahasznosítható skill tanulása bármiből, amit leírsz (mappák, URL-ek, ez a chat, jegyzetek)"
   init:
@@ -2744,13 +2744,13 @@ cli:
       no_base_draft: "(x_x) Nem jött vissza alapvázlat — próbáld újra."
       failed: "(x_x) A kikeltés nem sikerült: {error}"
       hatched: "(^_^)b {name} kikelt, és be is fogadtad — hamarosan megjelenik!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} kint van — hamarosan megjelenik."
       put_away_named: "(-_-)zzZ {name} elrakva."
       put_away: "(-_-)zzZ Kisállat elrakva."
-      usage_scale: "(o_o) Használat: /pet scale <szorzó>  (pl. /pet scale 0.5)"
+      usage_scale: "(o_o) Használat: /companion scale <szorzó>  (pl. /companion scale 0.5)"
       scale_set: "(^_^) Kisállat mérete → {scale}."
-      fetching: "(o_o) '{name}' letöltése a petdexből…"
+      fetching: "(o_o) '{name}' letöltése a companiondexből…"
       adopt_failed: "(x_x) Nem sikerült befogadni: '{name}': {error}"
       error: "(x_x) {error}"
     diff:
@@ -3547,7 +3547,7 @@ explainer:
     locked: "a kör leállt, mert a munkamenet-tároló foglalt volt (egy másik Hermes-folyamat írt az állapot-adatbázisba). Az üzeneted valószínűleg már mentve van — kérlek, küldd el újra egy pillanat múlva."
     replaced: "a munkamenet-adatbázis fájlját lecserélték, miközben a Hermes futott, így ez az üzenet nem lett mentve (egy másolat itt található: {home}/sessions/). Állítsd le a Hermest (`hermes {profile_arg}gateway stop`), futtasd a `hermes {profile_arg}doctor` parancsot — de NE a `hermes {profile_arg}doctor --fix` parancsot, mert az a rossz fájlt javítaná helyben —, majd indítsd újra, és küldd el még egyszer az üzenetedet. A haladó helyreállítási lépéseket a napló tartalmazza."
     deleted_wal: "egy másik Hermes-folyamat még a munkamenet-adatbázis írásnaplójának (WAL) egy régi példányát tartja fogva, ezért a Hermes a fájl védelmében leállította az írást, és ez az üzenet nem lett mentve (egy másolat itt található: {home}/sessions/). Semmi nem veszett el. Lépj ki minden Hermes-folyamatból ezen a profilon (Desktop app, `hermes {profile_arg}gateway stop`, dashboard, cron), futtasd a `hermes {profile_arg}doctor` parancsot — ez megnevezi a naplót még fogva tartó folyamatokat —, majd indítsd újra a Hermest, és küldd el még egyszer az üzenetedet. Amíg futnak, ne futtasd a `doctor --fix` parancsot, és ne törölj state.db fájlokat. Útmutató: {recovery_docs}"
-    corrupt: "a kör leállt, mert az állapot-adatbázis szerkezeti sérülést jelzett (az átirat újraindításkor elveszett volna). A lemezhely felszabadítása nem segít. Helyreállítási lehetőségek:\n1. Futtasd a `hermes {profile_arg}doctor --fix` parancsot\n2. Állítsd le az átjárót, majd állítsd helyre így:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (ha helyreállíthatónak jelzi) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — a helyreállítás először pillanatképet készít a sérült fájlról; NE futtass `sqlite3 ... \".recover\"` parancsot az élő state.db fájlon, egy sebezhető sqlite3 CLI tovább ronthatja\n3. Állítsd vissza egy biztonsági mentésből innen: {backups_dir}/\nEzután küldd el újra az üzenetedet."
+    corrupt: "a kör leállt, mert az állapot-adatbázis szerkezeti sérülést jelzett (az átirat újraindításkor elveszett volna). A lemezhely felszabadítása nem segít. Helyreállítási lehetőségek:\n1. Futtasd a `hermes {profile_arg}doctor --fix` parancsot\n2. Állítsd le az átjárót, majd állítsd helyre így:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (ha helyreállíthatónak jelzi) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — a helyreállítás először pillanatkécompanion készít a sérült fájlról; NE futtass `sqlite3 ... \".recover\"` parancsot az élő state.db fájlon, egy sebezhető sqlite3 CLI tovább ronthatja\n3. Állítsd vissza egy biztonsági mentésből innen: {backups_dir}/\nEzután küldd el újra az üzenetedet."
     fts_index: "a kör leállt, mert a munkamenet-keresési index (FTS5) sérült, és nem lehetett leválasztani, így ez az üzenet nem lett mentve. Az üzenettároló maga nem sérült: ne futtass helyreállító eszközöket, és ne állíts vissza biztonsági mentést. Futtasd a `hermes {profile_arg}doctor --fix` parancsot (vagy indítsd újra a Hermest, ami megnyitáskor megjavítja az indexet), majd küldd el újra az üzenetedet."
     disk: "A Hermes nem tudta lemezre menteni ezt a beszélgetést, ezért inkább leállt, mint hogy elvesszenek az üzeneteid. A lemez valószínűleg megtelt: szabadíts fel helyet (vagy javítsd a {home}/state.db jogosultságait), majd küldd el újra az üzenetedet."
     default: "A Hermes nem tudta menteni ezt a beszélgetést, ezért inkább leállt, mint hogy elvesszenek az üzeneteid. Lehetséges okok: megtelt a meghajtó, vagy egy másik Hermes-folyamat tartja fogva az adatbázist. Zárd be a többi Hermes-ablakot, futtasd a `hermes {profile_arg}doctor` parancsot a tároló ellenőrzéséhez, majd küldd el újra az üzenetedet."
@@ -3586,7 +3586,7 @@ tips:
   t025: "A /reload-mcp újraindítás nélkül, menet közben tölti újra az MCP-szerverek konfigurációját."
   t026: "A /usage megmutatja a tokenhasználatot, a költségek bontását és a munkamenet időtartamát."
   t027: "A /insights az utolsó 30 nap használati statisztikáit mutatja."
-  t028: "A /paste képet keres a vágólapodon, és csatolja a következő üzenetedhez."
+  t028: "A /paste kécompanion keres a vágólapodon, és csatolja a következő üzenetedhez."
   t029: "A /profile megmutatja, melyik profil aktív, és hol van a saját mappája."
   t030: "A /config egy pillantással áttekinthetően mutatja a jelenlegi konfigurációdat."
   t031: "A /stop leállítja az ügynök által indított összes futó háttérfolyamatot."
@@ -3604,7 +3604,7 @@ tips:
   t043: "A Ctrl+Z a háttérbe küldi a Hermest — a folytatáshoz futtasd a shellben az fg parancsot."
   t044: "A Tab elfogadja az automatikus javaslat szürke szövegét, vagy kiegészíti a slash-parancsokat."
   t045: "Írj új üzenetet, miközben az ügynök dolgozik, hogy megszakítsd és új irányba tereld."
-  t046: "Az Alt+V képet illeszt be a vágólapodról a beszélgetésbe."
+  t046: "Az Alt+V kécompanion illeszt be a vágólapodról a beszélgetésbe."
   t047: "5 vagy több sor beillesztésekor a tartalom automatikusan fájlba kerül, és helyette egy tömör hivatkozás jelenik meg."
   t048: "A hermes -c a legutóbbi CLI-munkamenetedet folytatja. A hermes -c \"project name\" cím alapján folytat."
   t049: "A hermes -w elkülönített git worktree-t hoz létre — ideális párhuzamos ügynök-munkafolyamatokhoz."
@@ -3613,7 +3613,7 @@ tips:
   t052: "A hermes chat -s github-pr-workflow már indításkor betölt egy skillt."
   t053: "A hermes chat -q \"query\" egyetlen nem interaktív lekérdezést futtat, majd kilép."
   t054: "A hermes chat --max-turns 1000 felülírja az alapértelmezett, körönkénti 500 iterációs limitet."
-  t055: "A hermes chat --checkpoints minden destruktív fájlmódosítás előtt fájlrendszer-pillanatképet készít."
+  t055: "A hermes chat --checkpoints minden destruktív fájlmódosítás előtt fájlrendszer-pillanatkécompanion készít."
   t056: "A hermes --yolo az egész munkamenetre kihagyja a veszélyes parancsok jóváhagyási kérdéseit."
   t057: "A hermes chat --source telegram megjelöli a munkamenetet, hogy a hermes sessions list kimenetében szűrhető legyen."
   t058: "A hermes -p work chat egy adott profil alatt fut, az alapértelmezett módosítása nélkül."
@@ -3844,7 +3844,7 @@ tips:
   t283: "A ~/.hermes/skills/.hub/quarantine/ alatti skill-karantén a biztonsági felülvizsgálatra váró skilleket tárolja."
   t284: "A /steer <prompt> a következő eszközhívás után beszúr egy megjegyzést — így menet közben terelheted az irányt megszakítás nélkül."
   t285: "A /goal <text> állandó Ralph-loop célt állít be — a Hermes körről körre automatikusan folytatja, amíg egy bíráló késznek nem ítéli."
-  t286: "A /snapshot create [label] teljes állapot-pillanatképet ment a Hermes konfigurációjáról; a /snapshot restore <id> később visszaállítja."
+  t286: "A /snapshot create [label] teljes állapot-pillanatkécompanion ment a Hermes konfigurációjáról; a /snapshot restore <id> később visszaállítja."
   t287: "A /copy [N] a vágólapra másolja az asszisztens utolsó válaszát, számmal pedig a hátulról N-ediket."
   t288: "A /redraw teljes UI-újrarajzolást kényszerít ki — javítja a tmux-átméretezés vagy az egérkijelölés utáni terminálhibákat."
   t289: "A /agents (alias: /tasks) megmutatja az aktív ügynököket és a futó háttérfeladatokat az aktuális munkamenetben."
@@ -3907,7 +3907,7 @@ tips:
   t346: "A /debug feltölt egy támogatási csomagot (rendszerinfó + naplók), és megosztható linkeket ad vissza — chatben is működik."
   t347: "A hermes -z \"<prompt>\" a legtisztább egylövetű mód: csak a végső válasz a stdout-on, semmi más — ideális szkriptekben csövezéshez."
   t348: "A hermes chat --pass-session-id beszúrja a munkamenet-azonosítót a rendszerpromptba, hogy az ügynök hivatkozhasson rá."
-  t349: "A hermes chat --image path/to/pic.png helyi képet csatol egyetlen -q lekérdezéshez külön feltöltési lépés nélkül."
+  t349: "A hermes chat --image path/to/pic.png helyi kécompanion csatol egyetlen -q lekérdezéshez külön feltöltési lépés nélkül."
   t350: "A hermes chat --ignore-user-config kihagyja az aktív felhasználói konfigurációt — reprodukálható hibajelentésekhez és CI-futásokhoz."
   t351: "A hermes chat --source tool megjelöli a programozott chateket, hogy ne zsúfolják tele a hermes sessions list kimenetét."
   t352: "A hermes dump --show-keys kitakart API-kulcs-ujjlenyomatokat is tartalmaz a mélyebb támogatási hibakereséshez."

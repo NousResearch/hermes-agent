@@ -453,8 +453,8 @@ export const sessionVaultCodeRequest = (sessionId: string | null) =>
   computed(vaultCode.$all, all => all[keyFor(sessionId)] ?? null)
 
 // True when the active session is blocked on the user (clarify question or an
-// approval / sudo / secret prompt). Mirrors the pet's `awaitingInput` concept
-// (agent/pet/state.py): the turn is paused on you, not working — so callers can
+// approval / sudo / secret prompt). Mirrors the companion's `awaitingInput` concept
+// (agent/companion/state.py): the turn is paused on you, not working — so callers can
 // suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
 // decide, instead of treating the wait as an in-flight turn.
 export const $activeSessionAwaitingInput = computed(

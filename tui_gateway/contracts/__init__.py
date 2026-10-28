@@ -2,7 +2,7 @@
 module is listed here so the generator and the runtime see the same catalog."""
 
 from . import (
-    billing_delegation_pets,
+    billing_delegation_companions,
     common,
     config_free_tier_control,
     connectors,
@@ -14,7 +14,7 @@ from . import (
     liveness,
     machine,
     profiles_vault_complete_foreign_subagents,
-    projects_pets,
+    projects_companions,
     prompt_voice,
     server_requests,
     sessions,

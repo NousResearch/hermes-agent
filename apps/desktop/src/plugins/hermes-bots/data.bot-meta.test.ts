@@ -197,12 +197,12 @@ describe('avatar asset sync fires only on a real change', () => {
     ])
   })
 
-  it('never ships the image or the pet icon inside ui_meta', async () => {
+  it('never ships the image or the companion icon inside ui_meta', async () => {
     // ui_meta rides every profiles.list and is capped at 64KB; the image goes
     // to the uncapped profile asset store instead.
     const calls = recordRequests()
 
-    await saveBotMeta('ops', { image: 'data:image/png;base64,CCCC', pet: 'pet-cat', title: 'Ops' })
+    await saveBotMeta('ops', { image: 'data:image/png;base64,CCCC', companion: 'companion-cat', title: 'Ops' })
 
     const configure = calls.find(call => call.method === 'profiles.configure')
     const uiMeta = (configure?.params.ui_meta as Record<string, Record<string, unknown>>)['hermes-bots']
@@ -277,7 +277,7 @@ describe('server metadata reconciliation', () => {
     // Identity is the profile's "Bot Chat" registry row, resolved by name.
     // Old `meta.chat` pointers must never look meaningful again.
     $botMeta.set({
-      default: { chat: '4f6f6798ad6f', image: 'data:image/png;base64,avatar', pet: 'pet-cat', shape: 'cloud' }
+      default: { chat: '4f6f6798ad6f', image: 'data:image/png;base64,avatar', companion: 'companion-cat', shape: 'cloud' }
     })
 
     mergeServerMeta([serverRow('default', { color: '#8b5cf6', shape: 'cloud', title: 'Hermana' })])
@@ -287,7 +287,7 @@ describe('server metadata reconciliation', () => {
     expect(Object.hasOwn(current, 'chat')).toBe(false)
     // Local-only fields the server copy never carries survive the overlay.
     expect(current.image).toBe('data:image/png;base64,avatar')
-    expect(current.pet).toBe('pet-cat')
+    expect(current.companion).toBe('companion-cat')
 
     const [key, value] = storageMock.set.mock.calls.at(-1) as [string, Record<string, Record<string, unknown>>]
 

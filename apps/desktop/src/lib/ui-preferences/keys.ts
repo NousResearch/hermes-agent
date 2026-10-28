@@ -10,7 +10,7 @@
  * - credentials, grants and connection config: gateway registry, custom model
  *   endpoints, plugin decisions and preview-script grants, embed permissions;
  * - per-window or per-device runtime state: layout tree, open tiles and tabs,
- *   last route/session, scroll, zoom, pet and popout geometry, keep-awake;
+ *   last route/session, scroll, zoom, companion and popout geometry, keep-awake;
  * - drafts, queues, journals and caches: composer queue, in-flight turns,
  *   pending/prepared submissions, previews, pricing, backend skin cache, the
  *   "provider configured" onboarding cache (each backend answers that itself);

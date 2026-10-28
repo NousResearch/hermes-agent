@@ -1062,7 +1062,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _pr(f"  {_t('worktree.ready', path=wt_info['path'])}",
             f"  {_t('worktree.branch', branch=wt_info['branch'])}", f"  {_t('worktree.tools_in_worktree')}")
 
-    # ---- /personality, /pet, /hatch -------------------------------------------------------
+    # ---- /personality, /companion, /hatch -------------------------------------------------------
     def _handle_personality_command(self, cmd: str):
         """Handle /personality [name] — list or set a predefined personality. All resolution and
         persistence goes through hermes_cli.personality, the single owner of personality state."""
@@ -1108,47 +1108,47 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             _pr(_t("personality.set_to", face=face, name=name, scope=scope),
                 f"  \"{_ellipsize(personality_prompt, 60)}\"")
 
-    def _handle_pet_command(self, cmd: str):
-        """Handle /pet [toggle|list|scale <n>|off|<slug>] — the petdex mascot. Writes
-        ``display.pet.*`` to config; pet surfaces pick it up on their next poll."""
-        from agent.pet import store
-        from agent.pet.manifest import ManifestError
-        from hermes_cli.pets import (
-            _set_active, _set_enabled, print_pet_gallery, set_pet_scale, toggle_pet_display)
+    def _handle_companion_command(self, cmd: str):
+        """Handle /companion [toggle|list|scale <n>|off|<slug>] — the companiondex mascot. Writes
+        ``display.companion.*`` to config; companion surfaces pick it up on their next poll."""
+        from agent.companion import store
+        from agent.companion.manifest import ManifestError
+        from hermes_cli.companions import (
+            _set_active, _set_enabled, print_companion_gallery, set_companion_scale, toggle_companion_display)
         arg = _command_arg(cmd)
         low = arg.lower()
         if not arg or low == "toggle":
-            enabled, name, err = toggle_pet_display()
-            print(_t("pet.error", error=err) if err else _t("pet.is_out", name=name) if enabled
-                  else _t("pet.put_away_named", name=name) if name else _t("pet.put_away"))
+            enabled, name, err = toggle_companion_display()
+            print(_t("companion.error", error=err) if err else _t("companion.is_out", name=name) if enabled
+                  else _t("companion.put_away_named", name=name) if name else _t("companion.put_away"))
         elif low in ("list", "gallery", "browse", "all"):
-            print_pet_gallery()
+            print_companion_gallery()
         elif low == "scale" or low.startswith("scale "):
             value = arg[len("scale"):].strip()
             if not value:
-                return print(_t("pet.usage_scale"))
-            scale, err = set_pet_scale(value)
-            print(_t("pet.error", error=err) if err else _t("pet.scale_set", scale=f"{scale:g}"))
+                return print(_t("companion.usage_scale"))
+            scale, err = set_companion_scale(value)
+            print(_t("companion.error", error=err) if err else _t("companion.scale_set", scale=f"{scale:g}"))
         elif low == "off":
             _set_enabled(False)
-            print(_t("pet.put_away"))
+            print(_t("companion.put_away"))
         else:
-            print(_t("pet.fetching", name=arg))
+            print(_t("companion.fetching", name=arg))
             try:
-                pet = store.install_pet(arg)
-            except (store.PetStoreError, ManifestError) as exc:
-                return print(_t("pet.adopt_failed", name=arg, error=exc))
+                companion = store.install_companion(arg)
+            except (store.CompanionStoreError, ManifestError) as exc:
+                return print(_t("companion.adopt_failed", name=arg, error=exc))
             _set_active(arg)
-            print(_t("pet.is_out", name=pet.display_name))
+            print(_t("companion.is_out", name=companion.display_name))
 
     def _handle_hatch_command(self, cmd: str):
-        """Generate ("hatch") a new petdex pet from a description: base look, one animation row
+        """Generate ("hatch") a new companiondex companion from a description: base look, one animation row
         per state, spritesheet, then adopt. Progress streams inline (~a minute of image calls).
         The desktop app opens a richer overlay for this command instead."""
-        from agent.pet import store
-        from agent.pet.generate import orchestrate
-        from agent.pet.generate.imagegen import GenerationError
-        from hermes_cli.pets import _set_active
+        from agent.companion import store
+        from agent.companion.generate import orchestrate
+        from agent.companion.generate.imagegen import GenerationError
+        from hermes_cli.companions import _set_active
         concept = _command_arg(cmd)
         if not concept:
             # prompt_toolkit owns stdin on this daemon thread — raw input() never renders and eats
@@ -1168,7 +1168,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         # A short, friendly display name from the first few words of the concept.
         display_name = (" ".join(w.capitalize() for w in concept.split()[:3])[:28].strip()
                         or _t("hatch.default_name"))
-        slug = store.slugify(display_name) or store.slugify(concept) or "pet"
+        slug = store.slugify(display_name) or store.slugify(concept) or "companion"
         print(_t("hatch.designing", concept=concept))
         try:
             drafts = orchestrate.generate_base_drafts(concept, n=1)
@@ -1184,7 +1184,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 print(f"  {_t(_HATCH_PROGRESS[event])}")
 
         try:
-            result = orchestrate.hatch_pet(
+            result = orchestrate.hatch_companion(
                 base_image=drafts[0], slug=slug, display_name=display_name, concept=concept,
                 on_progress=_progress)
         except GenerationError as exc:

@@ -10,13 +10,13 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { CompanionPicker } from './companionPicker.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { ConnectorsOverlay } from './connectorsOverlay.js'
 import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
-import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
@@ -319,12 +319,12 @@ export function FloatingOverlays({
     })
   }
 
-  if (overlay.petPicker) {
+  if (overlay.companionPicker) {
     widgets.push({
-      id: 'pet-picker',
+      id: 'companion-picker',
       render: width => (
         <FloatBox color={theme.color.border}>
-          <PetPicker gw={gw} maxWidth={width} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
+          <CompanionPicker gw={gw} maxWidth={width} onClose={() => patchOverlayState({ companionPicker: false })} t={theme} />
         </FloatBox>
       )
     })

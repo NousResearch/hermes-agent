@@ -194,7 +194,7 @@ export type BotsMessages = {
     /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
     kickoff: string
   }
-  /** Avatar picker: shapes, blobs, pets, uploads, generation. */
+  /** Avatar picker: shapes, blobs, companions, uploads, generation. */
   avatar: {
     classicShapes: string
     blobFromName: string
@@ -204,14 +204,14 @@ export type BotsMessages = {
     tabBot: string
     tabGenerate: string
     upload: string
-    tabPet: string
+    tabCompanion: string
     removeImage: string
     removeBackToShape: string
     describePlaceholder: string
     describeHint: string
     matchTheName: string
-    pickPet: string
-    petLoadFailed: string
+    pickCompanion: string
+    companionLoadFailed: string
     imageTooLarge: string
     generationFailed: string
     savedLocally: string

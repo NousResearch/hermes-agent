@@ -127,16 +127,16 @@ describe('dispatchNativeNotification focus gating', () => {
     expect(notify).not.toHaveBeenCalled()
   })
 
-  it('fires a global completion notification while away with no active session (pet gen)', () => {
+  it('fires a global completion notification while away with no active session (companion gen)', () => {
     setActiveSessionId(null)
-    dispatchNativeNotification({ global: true, kind: 'backgroundDone', title: 'Your pet hatched' })
+    dispatchNativeNotification({ global: true, kind: 'backgroundDone', title: 'Your companion hatched' })
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
   it('suppresses a global notification when the window is focused', () => {
     setWindowState({ focused: true, hidden: false })
     setActiveSessionId(null)
-    dispatchNativeNotification({ global: true, kind: 'backgroundDone', title: 'Your pet hatched' })
+    dispatchNativeNotification({ global: true, kind: 'backgroundDone', title: 'Your companion hatched' })
     expect(notify).not.toHaveBeenCalled()
   })
 })

@@ -82,7 +82,7 @@ if (isTransparentWindow()) {
 }
 
 if (winParam === 'overlay') {
-  void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
+  void import('./app/companion-overlay/overlay-root').then(({ mountCompanionOverlay }) => mountCompanionOverlay())
 } else if (winParam === 'quick') {
   void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
 } else if (winParam === 'wake') {

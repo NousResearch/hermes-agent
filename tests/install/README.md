@@ -242,7 +242,7 @@ Alongside the plugin-tree contract below, every upgrade leg also carries a
 re-syncs it), but it may not delete or modify the user's own durable state —
 `.env`, `auth.json`, `state.db`, `gateway_state.json`, `memories/`, `cron/`,
 `sessions/`, `profiles/`, `photon/`, `desktop-plugins/`, `tui-widgets/`,
-`skins/`, `pets/`, `skills/.archive/` — and `state.db` may not lose rows.
+`skins/`, `companions/`, `skills/.archive/` — and `state.db` may not lose rows.
 
 - `e2e-assets/verify-user-state.py` is the shared, stdlib-only, read-only
   verifier. It records row counts for `state.db` rather than bytes (a live

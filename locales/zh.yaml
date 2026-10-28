@@ -1637,10 +1637,10 @@ slash:
     description: "审阅待写入的记忆 / 开关审批门控"
   bundles:
     description: "列出技能包（为多个技能提供 /<name> 别名）"
-  pet:
-    description: "开关或领养 petdex 吉祥物（/pet、/pet list、/pet <slug>）"
+  companion:
+    description: "开关或领养 companiondex 吉祥物（/companion、/companion list、/companion <slug>）"
   hatch:
-    description: "根据描述生成一只新的 petdex 宠物"
+    description: "根据描述生成一只新的 companiondex 宠物"
   learn:
     description: "从你描述的任何内容学习可复用技能（目录、URL、本次聊天、笔记）"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) 没有返回基础草稿 — 请重试。"
       failed: "(x_x) 孵化失败：{error}"
       hatched: "(^_^)b {name} 已孵化并领养 — 马上就会出现！"
-    pet:
+    companion:
       is_out: "(^_^)b {name} 已放出 — 马上就会出现。"
       put_away_named: "(-_-)zzZ {name} 已收起。"
       put_away: "(-_-)zzZ 宠物已收起。"
-      usage_scale: "(o_o) 用法：/pet scale <倍数>  （例如 /pet scale 0.5）"
+      usage_scale: "(o_o) 用法：/companion scale <倍数>  （例如 /companion scale 0.5）"
       scale_set: "(^_^) 宠物缩放 → {scale}。"
-      fetching: "(o_o) 正在从 petdex 获取 '{name}'…"
+      fetching: "(o_o) 正在从 companiondex 获取 '{name}'…"
       adopt_failed: "(x_x) 无法领养 '{name}'：{error}"
       error: "(x_x) {error}"
     diff:

@@ -766,7 +766,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
         model_chain = self._resolve_model_chain(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
-        # ``reference_images`` (pet generator, local paths) + the generic ``image_url`` surface.
+        # ``reference_images`` (companion generator, local paths) + the generic ``image_url`` surface.
         references = [str(ref) for ref in kwargs.get("reference_images") or []]
         if image_url:
             references.append(str(image_url))

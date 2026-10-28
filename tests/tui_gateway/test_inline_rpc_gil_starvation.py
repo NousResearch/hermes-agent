@@ -5,7 +5,7 @@ The WS read loop in ``handle_ws()`` processes requests sequentially via
 (NOT in ``_LONG_HANDLERS``) run ``handle_request()`` synchronously inside
 ``dispatch()``, blocking the loop from reading the next request. Under GIL
 pressure from multiple concurrent agent turns, even lightweight RPCs like
-``session.list`` and ``pet.info`` can take seconds, causing frontend requests
+``session.list`` and ``companion.info`` can take seconds, causing frontend requests
 to time out (120s) and the WebSocket to disconnect — the false "needs setup"
 failure mode (#50005).
 

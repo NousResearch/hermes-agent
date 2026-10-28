@@ -3,7 +3,7 @@
  *
  * Historically only the primary window (`createWindow()`) attached a
  * `console-message` hook, so a renderer crash in ANY other window — secondary
- * session windows, instance windows, the HUD, quick entry, the pet overlay —
+ * session windows, instance windows, the HUD, quick entry, the companion overlay —
  * evaporated with the window: nothing in desktop.log, nothing to attach to a
  * bug report (#79428 defect B). The React error boundary logs crashes via
  * `console.error`, so windows without the hook also lost every boundary catch.

@@ -7,7 +7,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 
 // A Webapp tab's one socket answers for the profile its gateway runs as, and the gateway refuses a
 // request naming a profile it does not serve (`profile_mismatch`). Boot requests that name the tab's
-// profile (approval mode, model options, the pet, shared metrics, setup checks) can go out before boot
+// profile (approval mode, model options, the companion, shared metrics, setup checks) can go out before boot
 // adopts the primary, so the renderer must start on the gateway's own profile, not on `default`. The
 // page the gateway serves sets these globals before any module evaluates (web_server_dashboard.py).
 type PageGlobals = { __HERMES_DASHBOARD_PROFILE__?: string; __HERMES_UI_SURFACE__?: string }

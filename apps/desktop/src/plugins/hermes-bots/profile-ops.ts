@@ -195,7 +195,7 @@ export function pullServerAvatars(roster: RosterRow[]) {
           // notices. Do not park it on the roster or the live face dies —
           // and remember the answer, or the empty image slot re-fetches the
           // same raster on every roster tick.
-          if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.pet) {
+          if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.companion) {
             avatarFaceOnly.add(key)
 
             return
@@ -235,7 +235,7 @@ function serverReportedTitle(bot: RosterRow, server: BotMeta | null): string | u
 
 /** Server ui_meta (per roster row) beats local storage for the compact
  *  fields it carries; local-only fields (avatar image data URL, extracted
- *  pet icon) are PRESERVED — the server copy never includes them, so a
+ *  companion icon) are PRESERVED — the server copy never includes them, so a
  *  naive replace would wipe a just-saved image avatar on the next roster
  *  paint. When server bot metadata exists, an omitted chat is authoritative
  *  deletion; local still fills all gaps for older gateways with no metadata.

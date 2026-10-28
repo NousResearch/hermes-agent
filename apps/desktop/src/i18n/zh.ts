@@ -460,7 +460,7 @@ export const zhOverrides = {
       appearanceTypography: '字体与缩放',
       appearanceWindowLayout: '窗口与布局',
       appearanceChatDisplay: '聊天显示',
-      appearancePet: '宠物',
+      appearanceCompanion: '宠物',
       appearanceGeneral: '常规',
       modelMain: '主模型',
       modelAuxiliary: '辅助模型',
@@ -816,10 +816,10 @@ export const zhOverrides = {
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
       importedBadge: '已导入',
-      pet: {
+      companion: {
         title: '宠物',
         intro:
-          '领养一只悬浮在应用上的 petdex 动画宠物，它会根据 Hermes 的状态做出反应——工具执行时奔跑、成功时欢呼、出错时沮丧。',
+          '领养一只悬浮在应用上的 companiondex 动画宠物，它会根据 Hermes 的状态做出反应——工具执行时奔跑、成功时欢呼、出错时沮丧。',
         restartHint: '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Hermes，然后回到此处。',
         scaleTitle: '大小',
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
@@ -828,7 +828,7 @@ export const zhOverrides = {
         chooseTitle: '选择宠物',
         chooseDesc: '选择后会自动安装（如需）并设为当前宠物。',
         searchPlaceholder: '搜索宠物…',
-        unreachable: '无法连接到 petdex 画廊。请检查网络连接并重新打开此页面。',
+        unreachable: '无法连接到 companiondex 画廊。请检查网络连接并重新打开此页面。',
         noMatch: query => `没有匹配「${query}」的宠物。`,
         installedTag: '已安装',
         generatedTag: '生成',
@@ -843,7 +843,7 @@ export const zhOverrides = {
         renameTitle: '重命名宠物',
         renamePlaceholder: '给宠物起个名字',
         renameSave: '保存',
-        exportPet: name => `导出 ${name}`,
+        exportCompanion: name => `导出 ${name}`,
         adoptFailed: slug => `无法领养 ${slug}`,
         uninstallFailed: slug => `无法卸载 ${slug}`,
         renameFailed: slug => `无法重命名 ${slug}`,
@@ -2249,11 +2249,11 @@ export const zhOverrides = {
     settings: '设置',
     changeTheme: '更改主题',
     changeColorMode: '更改颜色模式…',
-    pets: {
+    companions: {
       title: '宠物',
       placeholder: '搜索宠物…',
-      loading: '正在加载 petdex 画廊…',
-      error: '无法连接到 petdex 画廊。',
+      loading: '正在加载 companiondex 画廊…',
+      error: '无法连接到 companiondex 画廊。',
       staleBackend: '请重启 Hermes 以使用宠物功能——当前后端版本过旧。',
       empty: '没有匹配的宠物。',
       turnOff: '关闭',
@@ -2264,7 +2264,7 @@ export const zhOverrides = {
       toggleFailed: enabled => `无法${enabled ? '开启' : '关闭'}宠物显示。`,
       noneAvailable: '暂无可用宠物——请在下方选择一个安装。'
     },
-    generatePet: {
+    generateCompanion: {
       title: '生成宠物',
       placeholder: '描述要生成的宠物……',
       promptHint: '输入描述，然后按 Enter 生成四种造型。',
@@ -3288,7 +3288,7 @@ export const zhOverrides = {
       '/tools': '管理工具',
       '/memory': '查看待处理的记忆写入，或切换批准闸门',
       '/bundles': '列出技能包（可用 /<name> 作为多个技能的别名）',
-      '/pet': '切换或领养 petdex 吉祥物（/pet、/pet list、/pet boba）',
+      '/companion': '切换或领养 companiondex 吉祥物（/companion、/companion list、/companion boba）',
       '/hatch': '生成新的宠物（打开宠物生成器）',
       '/learn': '从你描述的任何内容（目录、URL、此聊天、笔记）学习可复用的技能',
       '/init': '扫描仓库并生成或更新 AGENTS.md 项目指引',

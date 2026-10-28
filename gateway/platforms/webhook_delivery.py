@@ -65,6 +65,11 @@ def snapshot_destination(adapter, delivery):
         if home is None:
             raise RuntimeStoreError('not_found')
         result['deliver_extra']['chat_id'] = home.chat_id
+        # Frozen with the chat so a later /sethome cannot pair the old chat with a new topic,
+        # and only when set so topic-less snapshots keep their fingerprint.
+        extra = result['deliver_extra']
+        if home.thread_id and not (extra.get('message_thread_id') or extra.get('thread_id')):
+            extra['thread_id'] = str(home.thread_id)
     return result
 
 

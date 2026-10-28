@@ -193,7 +193,7 @@ export function ProjectsOverview({
                 outlined
                 onClick={() => {
                   writeKanbanBoard(openProject_.board);
-                  navigate(kanbanPath());
+                  navigate(kanbanPath({ board: openProject_.board }));
                 }}
               >
                 Kanban ↗

@@ -399,7 +399,7 @@ export function ProjectsWorkbench({
                       className="ml-auto font-mono text-[10.5px] uppercase tracking-wider text-midground/40 hover:text-midground cursor-pointer"
                       onClick={() => {
                         writeKanbanBoard(selectedProject.board);
-                        navigate(kanbanPath());
+                        navigate(kanbanPath({ board: selectedProject.board }));
                       }}
                     >
                       Open Kanban ↗
@@ -426,13 +426,13 @@ export function ProjectsWorkbench({
                         onClick={() => {
                           writeKanbanBoard(selectedProject.board);
                           writeKanbanTask(t.id);
-                          navigate(kanbanPath());
+                          navigate(kanbanPath({ board: selectedProject.board, task: t.id }));
                         }}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
                             writeKanbanBoard(selectedProject.board);
                             writeKanbanTask(t.id);
-                            navigate(kanbanPath());
+                            navigate(kanbanPath({ board: selectedProject.board, task: t.id }));
                           }
                         }}
                       >

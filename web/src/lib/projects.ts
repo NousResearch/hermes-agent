@@ -94,10 +94,26 @@ export function writeKanbanTask(taskId: string | null | undefined): void {
 }
 
 /**
- * Navigate path for the Kanban plugin page.  Always `/kanban`; the board is
- * pre-selected via `writeKanbanBoard` rather than via URL params because the
- * current plugin build does not read URL search params on mount.
+ * Build the navigation path for the Kanban plugin page.
+ *
+ * With no arguments returns `/kanban`.
+ * Passing `board` and/or `task` appends them as query params so the URL
+ * carries the deep-link contract even before the plugin consumes it:
+ *   kanbanPath({ board: "default" })           → /kanban?board=default
+ *   kanbanPath({ board: "default", task: "t_1" }) → /kanban?board=default&task=t_1
+ *
+ * The plugin currently reads the board from localStorage (`writeKanbanBoard`)
+ * rather than from the URL; the query params are added now so the contract is
+ * in place and the plugin can pick them up without another web-side change.
  */
-export function kanbanPath(): string {
-  return "/kanban";
+export function kanbanPath(options?: {
+  board?: string | null;
+  task?: string | null;
+}): string {
+  if (!options) return "/kanban";
+  const params = new URLSearchParams();
+  if (options.board) params.set("board", options.board);
+  if (options.task) params.set("task", options.task);
+  const qs = params.toString();
+  return qs ? `/kanban?${qs}` : "/kanban";
 }

@@ -337,8 +337,36 @@ describe("writeKanbanBoard", () => {
 });
 
 describe("kanbanPath", () => {
-  it("returns /kanban", () => {
+  it("returns /kanban with no arguments", () => {
     expect(kanbanPath()).toBe("/kanban");
+  });
+
+  it("returns /kanban with an empty options object", () => {
+    expect(kanbanPath({})).toBe("/kanban");
+  });
+
+  it("appends board query param when board is provided", () => {
+    expect(kanbanPath({ board: "default" })).toBe("/kanban?board=default");
+  });
+
+  it("appends task query param when task is provided", () => {
+    expect(kanbanPath({ task: "t_abc123" })).toBe("/kanban?task=t_abc123");
+  });
+
+  it("appends both board and task query params", () => {
+    expect(kanbanPath({ board: "my-board", task: "t_xyz" })).toBe(
+      "/kanban?board=my-board&task=t_xyz"
+    );
+  });
+
+  it("encodes special characters in board slug", () => {
+    expect(kanbanPath({ board: "board with spaces" })).toBe(
+      "/kanban?board=board+with+spaces"
+    );
+  });
+
+  it("ignores null board and task values", () => {
+    expect(kanbanPath({ board: null, task: null })).toBe("/kanban");
   });
 });
 

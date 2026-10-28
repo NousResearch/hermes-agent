@@ -1832,11 +1832,13 @@ Fires for each provider attempt immediately before sending it. This is observer-
 
 #### `post_api_request`
 
-Fires after a provider response has been normalized successfully. This is observer-only. Prefer the sanitized `response`; `assistant_message` is the raw normalized message, and `usage` contains accounting data.
+Fires after a provider response has been normalized successfully, including a capped or partial response before truncation recovery. A `finish_reason` of `length` is not proof that usage is absent: returned accounting data is preserved, while missing usage remains unknown. This is observer-only. Prefer the sanitized `response`; `assistant_message` is the raw normalized message.
 
 #### `api_request_error`
 
 Fires for a failed provider attempt with status/retry timing, an `error` object, and sanitized `request`. This is observer-only. Error messages may still contain provider or user data.
+
+Interrupts and redirected attempts also dispatch this terminal hook. Early request rebuilds and interpreter-exit errors retain their original request identity; a protocol fallback does not relabel the failed attempt with the replacement API mode. Each main-attempt begin resets a bounded terminal-dispatch claim shared by the post and error paths, so a recovery failure cannot emit a second terminal for an already-observed response. A new begin permits a new terminal even when retry identifiers are reused. This is dispatch deduplication, not a delivery guarantee or a provider invoice.
 
 ### Auxiliary-call observer hooks
 
@@ -1867,6 +1869,8 @@ when their logical `api_request_id` is the same:
 An attempt ends when its body is exhausted/closed or the transport/body raises,
 not merely when headers arrive. Reading is lazy: observation never reads ahead,
 parses the HTTP body, records headers wholesale or changes proxy/TLS policy.
+Logical cancellation does not itself establish HTTP-body closure: an absent
+`http_attempt_end` remains a coverage gap, not a fabricated transport outcome.
 Endpoint hashes are pseudonymous identifiers, not proof of anonymity. Requests
 outside an owning turn can have empty identity fields; do not invent attribution.
 

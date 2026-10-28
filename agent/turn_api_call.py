@@ -181,11 +181,28 @@ class ApiInterruptVerdict:
 def handle_api_interrupt(
     agent: Any, *, _retry: Any, thinking_spinner: Any, messages: Any, conversation_history: Any,
     api_start_time: Any, interrupted: Any, final_response: Any,
+    api_request_id: Any = None, api_call_count: Any = None, api_kwargs: Any = None,
+    effective_task_id: Any = None, turn_id: Any = None,
 ) -> ApiInterruptVerdict:
     """``InterruptedError`` during the provider call: a pending redirect keeps its correction
     queued for the outer-loop rebuild; otherwise keep any streamed partial text so the next
-    turn has a record of the half-finished reply."""
+    turn has a record of the half-finished reply. Either exit closes the logical call with
+    ``api_request_error`` — an observer that saw the begin must get one terminal, and a
+    cancelled call never has usage to report (null, not zero)."""
     from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+    def _close_logical_call(reason: str) -> None:
+        # The error hook is fail-open and absent on bare AIAgent stand-ins in tests.
+        close = getattr(agent, "_invoke_api_request_error_hook", None)
+        if close is None:
+            return
+        close(
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            api_call_count=api_call_count or 0, api_start_time=api_start_time,
+            api_kwargs=api_kwargs, error_type="InterruptedError",
+            error_message="Agent interrupted during API call",
+            retry_count=None, max_retries=None, retryable=False, reason=reason,
+        )
 
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
     # redirect() cancelled only this request: keep the correction queued, clear the
@@ -193,10 +210,12 @@ def handle_api_interrupt(
     # signed/encrypted reasoning items.
     if agent._has_pending_redirect() and agent.clear_interrupt(preserve_redirect=True):
         _retry.restart_with_redirected_messages = True
+        _close_logical_call("redirected")
         return ApiInterruptVerdict("break", thinking_spinner, interrupted, final_response)
     api_elapsed = time.time() - api_start_time
     agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
     interrupted = True
+    _close_logical_call("interrupted")
     # A Stop during the empty-response nudge request leaves the synthetic assistant+nudge
     # pair after an executed tool result; strip it so the row appended below follows the tool
     # row (the finalizer then closes the tail with this exit's own reason).

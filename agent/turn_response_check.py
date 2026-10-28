@@ -171,6 +171,15 @@ def check_api_response(
         return _verdict("break")
 
     if finish_reason == "length":
+        # A capped/partial response may carry real usage. Observe it before recovery
+        # mutates the route or raises; the normal intake shares the terminal claim.
+        from agent.turn_response_intake import _fire_post_api_request_hook
+        _fire_post_api_request_hook(
+            agent, response, None, finish_reason,
+            api_messages=api_messages, api_call_count=api_call_count,
+            api_duration=api_duration, api_start_time=api_start_time,
+            api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
+        )
         _tv = recover_from_truncation(
             agent, response, finish_reason, _retry, messages=messages,
             conversation_history=conversation_history, api_kwargs=api_kwargs,
@@ -181,6 +190,7 @@ def check_api_response(
             truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
             compression_attempts=compression_attempts,
         )
+
         messages = _tv.messages
         length_continue_retries = _tv.length_continue_retries
         truncated_response_parts = _tv.truncated_response_parts

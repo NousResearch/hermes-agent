@@ -1163,7 +1163,13 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_path = args.get("workspace_path")
     project_id = args.get("project") or args.get("project_id")
     project_source_task_id = None
-    _inherit_project = workspace_kind is None and workspace_path is None
+    # Project inheritance: safe when no literal path is being shared.
+    # ``scratch`` (default) and ``worktree`` (repo-anchored) both produce a
+    # fresh per-task directory, so the project's repo anchor can be inherited
+    # without sharing a checkout.  ``dir`` (explicit workspace_path) is the
+    # only kind where directory sharing is intentional — keep the original
+    # restriction so callers must be explicit about cross-task sharing.
+    _inherit_project = workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")

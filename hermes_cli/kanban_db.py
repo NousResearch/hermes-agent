@@ -3887,6 +3887,47 @@ def _append_event(
     )
 
 
+def _record_kanban_end_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    outcome: str,
+) -> None:
+    """Write a kanban-specific end_reason to the task's originating session.
+
+    Only fires when the task has a ``session_id`` (set when the task was
+    created from within an agent loop).  Uses ``SessionDB.end_session`` which
+    is a no-op when the session is already closed (first-writer-wins), so an
+    existing ``ws_orphan_reap`` or ``cli_close`` end_reason is preserved.
+
+    ``outcome`` must be one of the four terminal kanban outcomes:
+    completed / crashed / timed_out / gave_up.
+
+    Best-effort: any failure is silently swallowed so it never blocks the
+    surrounding task transition.
+    """
+    _OUTCOME_MAP = {
+        "completed": "kanban_completed",
+        "crashed": "kanban_crashed",
+        "timed_out": "kanban_timeout",
+        "gave_up": "kanban_gave_up",
+    }
+    end_reason = _OUTCOME_MAP.get(outcome)
+    if not end_reason:
+        return
+    try:
+        row = conn.execute(
+            "SELECT session_id FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row or not row["session_id"]:
+            return
+        session_id = row["session_id"]
+        from hermes_state import SessionDB
+        SessionDB().end_session(session_id, end_reason)
+    except Exception:
+        pass
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4922,6 +4963,8 @@ def complete_task(
             summary=summary if summary is not None else result,
             metadata=metadata,
         )
+        # Record kanban end_reason on the originating session (best-effort).
+        _record_kanban_end_reason(conn, task_id, outcome="completed")
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
@@ -7326,6 +7369,8 @@ def enforce_max_runtime(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
                 timed_out.append(tid)
+                # Record kanban end_reason on the originating session.
+                _record_kanban_end_reason(conn, tid, outcome="timed_out")
         # Increment the unified failure counter. Outside the write_txn
         # above because ``_record_task_failure`` opens its own. If the
         # breaker trips, this flips the task ``ready → blocked`` and
@@ -7737,6 +7782,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (row["id"], pid, row["claim_lock"],
                          protocol_violation, error_text)
                     )
+                    # Record kanban end_reason on the originating session.
+                    _record_kanban_end_reason(conn, row["id"], outcome="crashed")
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
     # on top of the event we already emitted).
@@ -7958,6 +8005,8 @@ def _record_task_failure(
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
+            # Record kanban end_reason on the originating session.
+            _record_kanban_end_reason(conn, task_id, outcome="gave_up")
             blocked = True
         else:
             # Below threshold.
@@ -9189,6 +9238,17 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    # Parent-session lineage: if this task was created from within an agent
+    # session (task.session_id is non-NULL), propagate that id so the worker's
+    # new session row is linked back to its originating conversation.  This
+    # makes worker sessions discoverable via parent_session_id without a new
+    # DB column.  HermesCLI.__init__ reads HERMES_PARENT_SESSION_ID and
+    # forwards it to AIAgent → SessionDB.create_session(parent_session_id=...).
+    if task.session_id:
+        env["HERMES_PARENT_SESSION_ID"] = task.session_id
+    else:
+        env.pop("HERMES_PARENT_SESSION_ID", None)
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

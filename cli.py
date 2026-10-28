@@ -4089,6 +4089,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        parent_session: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -4333,6 +4334,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
+        # --parent-session: record this session as a child of an existing
+        # session. Propagated to AIAgent so the session DB row carries the
+        # lineage link. Silently ignored if the id is invalid / the session
+        # does not exist (best-effort — worker spawn must never fail here).
+        self.parent_session = parent_session or os.environ.get("HERMES_PARENT_SESSION_ID") or None
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
         # pass skip_context_files=True and skip_memory=True to AIAgent so

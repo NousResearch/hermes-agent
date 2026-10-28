@@ -6,7 +6,7 @@ the locking, persistence and failure classification around that hook; the
 plugin owns only the token POST. This sibling module keeps that logic out of
 ``agent/credential_pool.py`` (near the size cap).
 
-Contract (documented in website/docs/developer-guide/model-provider-plugin.md):
+Contract (documented in apps/docs/content/en/developer-guide/model-provider-plugin.md):
 
 * the hook returns a mapping of rotated values — dataclass field names
   (``access_token``, ``refresh_token``, ``expires_at_ms`` …) replace the row's

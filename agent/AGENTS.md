@@ -89,11 +89,11 @@ once on `auxiliary.compression.fallback_chain`, and a repeated stall (a stall-cl
 the cooldown ladder) ends with the deterministic fallback summary through the same pipeline — never a
 prune committed outside the lease/fence. Compression is the sanctioned
 cache break — keep it the only one. Full detail:
-`website/docs/developer-guide/context-compression-and-caching.md`.
+`apps/docs/content/en/developer-guide/context-compression-and-caching.md`.
 
 ## Model and provider resolution
 
-- Runtime provider/model resolution and its precedence: `website/docs/developer-guide/provider-runtime.md`.
+- Runtime provider/model resolution and its precedence: `apps/docs/content/en/developer-guide/provider-runtime.md`.
   Provider profiles are plugins (`plugins/model-providers/<name>/`, see `plugins/AGENTS.md`);
   `agent/model_metadata.py` holds context lengths and capabilities.
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
@@ -147,6 +147,6 @@ Loop/phase tests go in `tests/agent/`; patch the binding the phase actually read
 message-shape invariants (alternation, byte-stable system prompt) rather than snapshotting prompt
 text.
 
-Long-form: `website/docs/developer-guide/agent-loop.md`, `prompt-assembly.md`,
+Long-form: `apps/docs/content/en/developer-guide/agent-loop.md`, `prompt-assembly.md`,
 `context-compression-and-caching.md`, `provider-runtime.md`, `session-storage.md`,
 `subagent-lifecycle-api.md`.

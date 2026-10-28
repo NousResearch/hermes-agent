@@ -13,7 +13,8 @@ Usage:
     # CI (set GITHUB_TOKEN as secret)
     GITHUB_TOKEN=ghp_... python scripts/build_skills_index.py
 
-Output: website/static/api/skills-index.json
+Output: apps/docs/public/api/skills-index.json (served at
+/docs/api/skills-index.json by the docs app)
 """
 
 import json
@@ -40,7 +41,7 @@ from tools.skills_hub_skillssh import SkillsShSource
 from tools.skills_hub_sources import BrowseShSource, LobeHubSource, WellKnownSkillSource
 import httpx
 
-OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
+OUTPUT_PATH = os.path.join(REPO_ROOT, "apps", "docs", "public", "api", "skills-index.json")
 INDEX_VERSION = 1
 CLAWHUB_ENRICH_BUDGET_SECONDS = 480
 # Per-repo cap on contents/<candidate>/SKILL.md probes when the recursive tree is truncated.
@@ -457,7 +458,7 @@ def main():
         )
         # IMPORTANT: do NOT write OUTPUT_PATH on failure. The index file is
         # gitignored, so a fresh deploy checkout has no copy on disk — leaving
-        # it absent lets website/scripts/extract-skills.py fall back to the
+        # it absent lets apps/docs/scripts/extract-skills.py fall back to the
         # legacy snapshot cache (or skip the unified index) instead of reading
         # a degenerate file. Writing-then-exiting-2 was the bug that shipped an
         # index with every GitHub-API source dropped to zero: deploy-site.yml

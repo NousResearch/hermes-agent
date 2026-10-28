@@ -4,14 +4,14 @@ import curation from '../../../../../shared/src/catalog-curation.json'
 
 const { artwork, featured } = curation
 
-const images = import.meta.glob<string>('../../../../../../website/static/img/catalog/*.jpg', {
+const images = import.meta.glob<string>('../../../../../../apps/docs/public/img/catalog/*.jpg', {
   eager: true,
   import: 'default',
   query: '?url'
 })
 
 const artworkUrl = (filename: string | undefined) =>
-  filename ? images[`../../../../../../website/static/img/catalog/${filename}`] ?? null : null
+  filename ? images[`../../../../../../apps/docs/public/img/catalog/${filename}`] ?? null : null
 
 interface CurationRow {
   name?: string

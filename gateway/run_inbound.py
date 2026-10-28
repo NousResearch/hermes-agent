@@ -238,8 +238,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             else:
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
-        # The busy path charged this event on arrival; a drained follow-up must not pay twice.
-        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
+        # The durable FIFO reconstructs the event, so its trusted execution context (not an
+        # event field) proves arrival already spent the budget. Authorization above stays fresh.
+        if (not executing_admission.get() and not getattr(event, "_bot_loop_admitted", False)
+                and not self._admit_bot_message_for_source(source)):
             return None
         return event, source, False
 

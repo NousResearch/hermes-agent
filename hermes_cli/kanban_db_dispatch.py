@@ -142,6 +142,11 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    receipt_unknown: list[str] = field(default_factory=list)
+    """Task ids whose submitter lost the owner's receipt across a restart (the
+    receipt-lost sentinel exit) with no ``worker_result`` on the board: released to
+    ``ready`` WITHOUT counting a failure, exactly like a quota wall — the host's
+    restart window is not the card's failure."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -170,6 +175,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.receipt_unknown:
+            counts["receipt_unknown"] = counts.get("receipt_unknown", 0) + len(res.receipt_unknown)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -224,8 +231,10 @@ def _classify_worker_exit(pid: int) -> tuple[str, Optional[int]]:
     """``(kind, code)`` for a reaped worker PID: ``clean_exit`` (rc 0 while
     still ``running`` = protocol violation), ``rate_limited``
     (``KANBAN_RATE_LIMIT_EXIT_CODE``, never counts as a failure),
-    ``nonzero_exit``, ``signaled`` (``code`` is the signal), ``unknown`` (pid
-    not in the reap registry; ``code`` None)."""
+    ``receipt_unknown`` (``KANBAN_RECEIPT_UNKNOWN_EXIT_CODE``: the submitter lost
+    the owner's receipt and the board holds no result — requeued, never counts as
+    a failure), ``nonzero_exit``, ``signaled`` (``code`` is the signal),
+    ``unknown`` (pid not in the reap registry; ``code`` None)."""
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
         return ("unknown", None)
@@ -251,6 +260,8 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
         return ("rate_limited", code)
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
+    if code == _kb.KANBAN_RECEIPT_UNKNOWN_EXIT_CODE:
+        return ("receipt_unknown", code)
     return ("nonzero_exit", code)
 
 
@@ -960,7 +971,9 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     ).fetchall()
     for row in rows:
         outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
+        if outcome in ("rate_limited", "receipt_unknown"):
+            # Neutral: neither a quota wall nor a lost receipt says anything about
+            # the task, so they never break a trailing violation streak.
             continue
         if outcome == "crashed" and (
             _kb._json_dict(row["metadata"]).get("protocol_violation")
@@ -1051,12 +1064,21 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    receipt_unknown: bool = False
+    """``KANBAN_RECEIPT_UNKNOWN_EXIT_CODE``: the submitter's receipt died across an
+    owner restart and the board holds no result for the attempt — the host's
+    condition, not the card's: requeued without counting a failure."""
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # doesn't show a phantom crash for a quota wall; a lost receipt is booked
+        # under its own neutral outcome for the same reason.
+        if self.rate_limited:
+            return "rate_limited"
+        if self.receipt_unknown:
+            return "receipt_unknown"
+        return "crashed"
 
 
 def _classify_dead_worker(
@@ -1136,6 +1158,19 @@ def _classify_dead_worker_exit(
             {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code, "terminal_provider": True},
             terminal_provider=True,
         )
+    if kind == "receipt_unknown":
+        # The receipt's answer died across an owner restart and the board recorded no
+        # result for this attempt either: nothing about the card failed, the submitter
+        # only lost its witness. Requeue like the quota wall — never a failure, so the
+        # breaker cannot trip on an owner-restart window.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} lost its receipt across an owner restart with no result on the board "
+            f"(exit {code}) — requeued without counting a failure",
+            "receipt_unknown",
+            {"pid": pid, "claimer": claimer, "exit_code": code},
+            receipt_unknown=True,
+        )
     if kind == "nonzero_exit":
         error_text = f"pid {pid} exited with code {code}"
     elif kind == "signaled":
@@ -1155,6 +1190,9 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    # Lost-receipt requeues: released to the source phase like ``rate_limited``,
+    # never counted as a failure (see ``KANBAN_RECEIPT_UNKNOWN_EXIT_CODE``).
+    receipt_unknown: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
@@ -1222,18 +1260,22 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.receipt_unknown:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
-                # board UI and retry worker need the corrective message.
+                # board UI and retry worker need the corrective message. A lost
+                # receipt is a host-side requeue too: no counter, but the board
+                # must say why the card came back.
                 conn.execute(
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+            elif dead.receipt_unknown:
+                sweep.receipt_unknown.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -1327,17 +1369,20 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     tasks claimed by *this host* only — other hosts' PIDs are meaningless.
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
-    wall, released WITHOUT counting a failure and surfaced via the
-    ``_last_rate_limited`` attribute (the return stays crashed-only).
+    wall and ``KANBAN_RECEIPT_UNKNOWN_EXIT_CODE`` a receipt lost across an
+    owner restart — both released WITHOUT counting a failure and surfaced via
+    the ``_last_rate_limited`` / ``_last_receipt_unknown`` attributes (the
+    return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
-    # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
-    # requeues did NOT count a failure and are NOT crashes.
+    # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited and
+    # lost-receipt requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_receipt_unknown = sweep.receipt_unknown  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -2229,6 +2274,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.receipt_unknown.extend(getattr(detect_crashed_workers, "_last_receipt_unknown", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

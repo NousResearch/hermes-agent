@@ -23,6 +23,16 @@ _TRANSIENT_OWNER_STATES = frozenset({'draining', 'starting'})
 ADMISSION_ANSWER_MARGIN_S = 60.0
 
 
+class KanbanReceiptLost(Exception):
+    """The receipt went ``unknown`` AND the board holds no ``worker_result`` for the attempt.
+
+    The card itself never failed — only this submitter lost its witness (an owner restart
+    fences the admission that way) — so the process exits ``KANBAN_RECEIPT_UNKNOWN_EXIT_CODE``
+    and the dead-worker sweep requeues the card WITHOUT counting a failure, instead of spending
+    its retry budget on the host's restart window (t_0b026e13: crashed x2 -> gave_up).
+    """
+
+
 def admission_answer_budget():
     """Seconds to wait for ``kanban.run``'s answer: the longest the owner's admission write can
     wait on the board lock (``write_txn`` retries ``BEGIN IMMEDIATE`` ``_BUSY_MAX_RETRIES`` times,
@@ -60,7 +70,6 @@ async def _discard(events):
 
 
 async def _submit_claim(client, params, board_db):
-    from hermes_cli.gateway_client import GatewayClientError
     db = str(await asyncio.to_thread(Path(board_db).resolve))
     # The owner answers only after it checks the claim and writes its ``owner_admitted`` marker
     # in one board write transaction. The board (the cross-profile dispatch bus) can make that
@@ -75,10 +84,19 @@ async def _submit_claim(client, params, board_db):
     while receipt['status'] not in {'terminal', 'unknown'}:
         await asyncio.sleep(.2)
         receipt = await client.rpc('prompt.receipt', session_id=sid, admission_id=receipt['admission_id'])
-    if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
+    if receipt['status'] == 'unknown':
+        # The receipt and the board are two books. ``unknown`` only says this submitter lost
+        # the owner's answer (an owner restart fences the admission that way); the board still
+        # holds the attempt's terminal result whenever the worker settled before the fence.
+        # Raising here booked a card whose work had already landed as crashed (crashed x2 ->
+        # gave_up), so read the board back before calling anything failed.
+        if result.get('exit_code') is None:
+            raise KanbanReceiptLost('no worker_result on the board for this attempt')
+        if result.get('last_output'):
+            print(result['last_output'])
+        return result['exit_code']
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
     if result.get('last_output'):
         print(result['last_output'])
@@ -110,6 +128,12 @@ def _submit():
         for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT', 'TERMINAL_CWD'):
             os.environ.pop(key, None)
         return asyncio.run(run(params, board_db))
+    except KanbanReceiptLost as exc:
+        # A lost receipt is the host's, not the card's: exit the sentinel the dead-worker
+        # sweep requeues WITHOUT counting a failure (same channel as the quota wall).
+        print(f'Kanban receipt lost: {exc}', file=sys.stderr)
+        from hermes_cli.kanban_db import KANBAN_RECEIPT_UNKNOWN_EXIT_CODE
+        return KANBAN_RECEIPT_UNKNOWN_EXIT_CODE
     except (KeyError, ValueError, OSError) as exc:
         print(f'Kanban owner refused: {exc}', file=sys.stderr)
         return 1

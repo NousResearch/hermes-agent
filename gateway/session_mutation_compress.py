@@ -132,6 +132,9 @@ def _plugin_engine(authority, policy, config, model, runtime, resident, target):
     if engine is None:
         return None
     from agent.model_metadata import get_model_context_length
+    thresholds = (config.get('compression') or {}).get('model_thresholds')
+    if isinstance(thresholds, dict) and thresholds:  # before update_model, like agent init
+        engine.model_thresholds = {str(k): float(v) for k, v in thresholds.items()}
     base_url, api_key = runtime.get('base_url') or '', runtime.get('api_key') or ''
     provider = runtime.get('provider') or ''
     context_length = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider,

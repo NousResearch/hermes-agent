@@ -44,5 +44,6 @@ export const zhNotifications = {
   muteSoundsDesc: '关闭自动完成、唤醒词和思考提示音、触感反馈以及系统通知声音。声音预览和语音回复仍会播放。',
   completionSoundTitle: '完成提示音',
   completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
-  completionSoundPreview: '预览'
+  completionSoundPreview: '预览',
+  completionSoundVolume: '音量'
 }

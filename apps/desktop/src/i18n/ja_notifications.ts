@@ -45,5 +45,6 @@ export const jaNotifications = {
     '完了・ウェイクワード・思考中の自動通知音、触覚フィードバック、OS 通知の音を無効にします。サウンドのプレビューと音声による応答は引き続き再生されます。',
   completionSoundTitle: '完了サウンド',
   completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
-  completionSoundPreview: '試聴'
+  completionSoundPreview: '試聴',
+  completionSoundVolume: '音量'
 }

@@ -267,7 +267,8 @@ export const arSettings = {
         'يكتم تنبيهات الاكتمال وكلمة التنبيه والتفكير التلقائية والاستجابة اللمسية وأصوات إشعارات النظام. تظل معاينات الصوت والردود المنطوقة مسموعة.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
-      completionSoundPreview: 'معاينة'
+      completionSoundPreview: 'معاينة',
+      completionSoundVolume: 'الصوت'
     },
     sections: {
       model: 'النموذج',

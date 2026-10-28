@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_state_runtime import RuntimeStoreError
 
@@ -69,6 +70,15 @@ async def prepare_compress(authority, live, payload, prepared):
         with policy_scope(policy, authority=authority):
             from agent.conversation_compression import _pre_compress_memory_context
             memory_context = _pre_compress_memory_context(resident, head, False) if resident is not None else ''
+            engine = _plugin_engine(authority, policy, config, model, runtime, resident, snapshot['target'])
+            if engine is not None:
+                from agent.conversation_compression import _supported_compression_kwargs
+                compressed = engine.compress(json.loads(json.dumps(head)), **_supported_compression_kwargs(
+                    engine.compress, current_tokens=estimate_request_tokens_rough(head),
+                    focus_topic=request.focus_topic, force=True, memory_context=memory_context))
+                if compressed == head:
+                    return None, engine
+                return rejoin_compressed_head_and_tail(compressed, tail), engine
             compressor = ContextCompressor(model, base_url=runtime.get('base_url') or '',
                 api_key=runtime.get('api_key') or '', provider=runtime.get('provider') or '',
                 api_mode=runtime.get('api_mode') or '', quiet_mode=True, abort_on_summary_failure=True,
@@ -96,8 +106,67 @@ async def prepare_compress(authority, live, payload, prepared):
     hook = None if policy.safe_mode else {  # same rough basis as the agent path's compaction record
         'before_tokens': estimate_messages_tokens_rough(messages),
         'after_tokens': estimate_messages_tokens_rough(compressed), 'messages_removed': len(messages) - len(compressed)}
-    return dict(prepared, messages=compressed, summary=summary, post_compaction=hook,
+    # The committed boundary is announced to the engine that compressed (``on_session_start``
+    # with boundary_reason="compression"), as the agent path does after its own commit.
+    engine_owner = SimpleNamespace(context_compressor=compressor, platform=_platform(live.source),
+                                   _gateway_session_key=live.route,
+                                   owned=resident is None and not isinstance(compressor, ContextCompressor))
+    return dict(prepared, messages=compressed, summary=summary, post_compaction=hook, engine_owner=engine_owner,
                 in_place=is_truthy_value(options.get('in_place'), default=True))
+
+
+def _plugin_engine(authority, policy, config, model, runtime, resident, target):
+    """The session's configured plugin context engine, or None for the built-in compressor.
+
+    A resident agent's engine is the one bound to this session. A cold or managed-worker session
+    gets the engine its frozen policy names, selected and bound the way agent init does, so a
+    plugin engine compresses its own history instead of having it rewritten underneath it."""
+    from agent.context_compressor import ContextCompressor
+    if resident is not None:
+        engine = getattr(resident, 'context_compressor', None)
+        return None if engine is None or isinstance(engine, ContextCompressor) else engine
+    if policy.safe_mode:
+        return None
+    from agent.agent_init import _select_context_engine
+    engine = _select_context_engine(config)
+    if engine is None:
+        return None
+    from agent.model_metadata import get_model_context_length
+    base_url, api_key = runtime.get('base_url') or '', runtime.get('api_key') or ''
+    provider = runtime.get('provider') or ''
+    context_length = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider,
+                                              custom_providers=config.get('custom_providers'))
+    engine.update_model(model=model, context_length=context_length, base_url=base_url, api_key=api_key,
+                        provider=provider, api_mode=runtime.get('api_mode') or '')
+    bind = getattr(engine, 'bind_session_state', None)
+    if callable(bind):
+        bind(session_db=authority.db, session_id=target)
+    return engine
+
+
+def _platform(source):
+    platform = getattr(source, 'platform', None)
+    return getattr(platform, 'value', platform) or 'cli'
+
+
+async def notify_committed_compress(authority, prepared, result):
+    """The agent path's post-commit notification for a committed ``/compress``: the context engine's
+    compression boundary plus relay/metrics segment hand-off. A cold session's engine was built for
+    this compression only, so it also gets the session-end a resident agent's boundary eviction gives."""
+    from agent.conversation_compression import _notify_context_engine_compression_complete
+    from gateway.run import _async_profile_runtime_scope
+    owner, target = prepared['engine_owner'], result['target_session_id']
+
+    def notify():
+        _notify_context_engine_compression_complete(
+            owner, new_session_id=target, old_session_id=result['previous_target_session_id'])
+        if owner.owned:
+            owner.context_compressor.on_session_end(target, prepared['messages'])
+    try:
+        async with _async_profile_runtime_scope(Path(authority.profile_id)):
+            await asyncio.to_thread(notify)
+    except Exception:  # health: allow BLE001 -- the compaction is committed; an engine failure must not fail the reply
+        logger.warning('context engine compression notification failed', exc_info=True)
 
 
 async def fire_post_compaction_hook(authority, prepared, result):

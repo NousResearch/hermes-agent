@@ -268,6 +268,10 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 from gateway.session_onboarding import ending_run_on_delete
                 commit = partial(ending_run_on_delete, authority.db, ref.session_id, commit)
             result = await asyncio.to_thread(commit)
+        if operation == 'compress' and applied:
+            # Before the projection's boundary eviction ends the resident agent's engine session.
+            from gateway.session_mutation_compress import notify_committed_compress
+            await notify_committed_compress(authority, prepared, result)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
         finally:

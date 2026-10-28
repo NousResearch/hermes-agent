@@ -834,6 +834,31 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     assert {entry.source for entry in entries} == {"manual:hermes_pkce", "hermes_pkce"}
 
 
+@pytest.mark.parametrize("token, expected", [
+    ("sk-ant-api03-seeded", "api_key"),
+    ("sk-ant-usr01-seeded", "api_key"),
+    ("sk-ant-svc01-seeded", "api_key"),
+    ("sk-ant-admin01-seeded", "api_key"),
+    ("sk-ant-oat01-seeded", "oauth"),
+])
+def test_load_pool_classifies_anthropic_env_key_by_family(tmp_path, monkeypatch, token, expected):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", token)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+    from agent.credential_pool import load_pool
+
+    entry = load_pool("anthropic").select()
+
+    assert entry is not None
+    assert entry.source == "env:ANTHROPIC_API_KEY"
+    assert entry.auth_type == expected
+
+
 def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

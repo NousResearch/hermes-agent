@@ -40,6 +40,20 @@ class TestIsOAuthToken:
     def test_api_key(self):
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
+    @pytest.mark.parametrize("key", [
+        "sk-ant-usr01-abcdef1234567890",
+        "sk-ant-svc01-abcdef1234567890",
+        "sk-ant-admin01-abcdef1234567890",
+    ])
+    def test_identity_backed_console_keys(self, key):
+        # Personal (usr), service-account (svc) and admin Console keys pay per
+        # token and authenticate as x-api-key, like sk-ant-api (upstream #133856).
+        assert _is_oauth_token(key) is False
+
+    def test_unknown_sk_ant_prefix_stays_oauth(self):
+        # OAuth prefixes Anthropic ships later must keep working.
+        assert _is_oauth_token("sk-ant-xyz01-abcdef1234567890") is True
+
     def test_managed_key(self):
         # Managed keys from ~/.claude.json without a recognisable Anthropic
         # prefix are not positively identified as OAuth.  They enter the system
@@ -102,6 +116,24 @@ class TestBuildAnthropicClient:
             assert "context-1m-2025-08-07" not in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
+
+    @pytest.mark.parametrize("key", [
+        "sk-ant-usr01-something",
+        "sk-ant-svc01-something",
+        "sk-ant-admin01-something",
+    ])
+    def test_console_key_families_use_api_key(self, key):
+        # Personal, service-account and admin Console keys: x-api-key, no Claude Code identity.
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(key)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == key
+            assert "auth_token" not in kwargs
+            assert "user-agent" not in kwargs["default_headers"]
+            assert "x-app" not in kwargs["default_headers"]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "oauth-2025-04-20" not in betas
+            assert "claude-code-20250219" not in betas
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

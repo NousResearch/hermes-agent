@@ -1810,6 +1810,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             "ANTHROPIC_API_KEY",
         ]
 
+    from agent.anthropic_adapter import _CONSOLE_API_KEY_PREFIXES
+
     for env_var in env_vars:
         # Prefer ~/.hermes/.env over os.environ
         token = _get_env_prefer_dotenv(env_var)
@@ -1819,7 +1821,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if _is_source_suppressed(provider, source):
             continue
         active_sources.add(source)
-        auth_type = AUTH_TYPE_OAUTH if provider == "anthropic" and not token.startswith("sk-ant-api") else AUTH_TYPE_API_KEY
+        auth_type = AUTH_TYPE_OAUTH if provider == "anthropic" and not token.startswith(_CONSOLE_API_KEY_PREFIXES) else AUTH_TYPE_API_KEY
         base_url = env_url or pconfig.inference_base_url
         if provider == "kimi-coding":
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)

@@ -5,7 +5,7 @@ Anthropic's Messages API. Follows the same pattern as the codex_responses
 adapter — all provider-specific logic is isolated here.
 
 Auth supports:
-  - Regular API keys (sk-ant-api*) → x-api-key header
+  - Console API keys (sk-ant-api*/-usr*/-svc*/-admin*) → x-api-key header
   - OAuth setup-tokens (sk-ant-oat*) → Bearer auth + beta header
   - Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json) → Bearer auth
 """
@@ -313,6 +313,10 @@ def _detect_claude_code_version() -> str:
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp_"
+# Console API-key families: legacy (api), personal (usr), service account (svc) and
+# admin keys. None of them is an OAuth token: they authenticate as x-api-key, without
+# the Claude Code identity (backport of upstream #133856).
+_CONSOLE_API_KEY_PREFIXES = ("sk-ant-api", "sk-ant-usr", "sk-ant-svc", "sk-ant-admin")
 
 
 def _get_claude_code_version() -> str:
@@ -327,17 +331,19 @@ def _is_oauth_token(key: str) -> bool:
     """Check if the key is an Anthropic OAuth/setup token.
 
     Positively identifies Anthropic OAuth tokens by their key format:
-    - ``sk-ant-`` prefix (but NOT ``sk-ant-api``) → setup tokens, managed keys
+    - ``sk-ant-`` prefix (but NOT a Console API-key family: ``sk-ant-api``,
+      ``-usr``, ``-svc``, ``-admin``) → setup tokens, managed keys
     - ``eyJ`` prefix → JWTs from the Anthropic OAuth flow
     - ``cc-`` prefix → Claude Code OAuth access tokens (from CLAUDE_CODE_OAUTH_TOKEN)
 
     Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match any pattern
-    and correctly return False.
+    and correctly return False. Unknown ``sk-ant-`` prefixes still count as
+    OAuth, so OAuth prefixes Anthropic ships later keep working.
     """
     if not key:
         return False
-    # Regular Anthropic Console API keys — x-api-key auth, never OAuth
-    if key.startswith("sk-ant-api"):
+    # Anthropic Console API keys — x-api-key auth, never OAuth
+    if key.startswith(_CONSOLE_API_KEY_PREFIXES):
         return False
     # Anthropic-issued tokens (setup-tokens sk-ant-oat-*, managed keys)
     if key.startswith("sk-ant-"):

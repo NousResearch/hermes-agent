@@ -716,6 +716,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
         from agent.tool_progress_relay import current_tool_progress
         report = current_tool_progress()
+        from tools.mcp_tool_private import PrivateCall
+        private = kwargs.get("_private_call")
+        if private is not None and type(private) is not PrivateCall:
+            raise PermissionError("private request capability required")
 
         async def _on_progress(progress, total, message):
             if report is not None:
@@ -725,14 +729,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(
-                        server, server_name, tool_name, args, _on_progress if report is not None else None)
+                    from contextlib import nullcontext
+                    attachment = private.attach(server, tool_name, args) if private is not None else nullcontext()
+                    with attachment:
+                        result = await _call_tool_racing_stdio_death(
+                            server, server_name, tool_name, args, _on_progress if report is not None else None)
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()
-            return _render_call_tool_result(result, server_name, image_paths)
+            rendered = _render_call_tool_result(result, server_name, image_paths)
+            if private is not None and private._wire_ref and private._wire_ref in rendered:
+                return tool_error("Private invocation transport material in result; result withheld")
+            return rendered
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
@@ -740,7 +750,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         text = _dispatch(
             server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
+            (() if private is not None else
+             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired)),
             _on_failure, record_outcome=True)
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text

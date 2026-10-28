@@ -499,6 +499,12 @@ class PluginContext(PluginCapabilityCtxMixin):
                      " (override)" if override else "")
         return handle
 
+    @property
+    def invocations(self):
+        """Private native-origin calls (opt-in provider; no model-visible claims)."""
+        from hermes_cli.private_invocations import Invocations
+        return Invocations(self)
+
     def call_mcp(
         self, server: str, tool: str, arguments: Optional[dict[str, Any]] = None,
         timeout: float = 30,
@@ -535,24 +541,8 @@ class PluginContext(PluginCapabilityCtxMixin):
     @classmethod
     def _mcp_envelope(cls, raw: Any) -> dict[str, Any]:
         """Normalize an MCP handler result string into a stable envelope."""
-        if not isinstance(raw, str):
-            raw = "" if raw is None else str(raw)
-        truncated = len(raw) > cls._MCP_RESULT_CHAR_CAP
-        if truncated:
-            raw = raw[: cls._MCP_RESULT_CHAR_CAP] + "… [truncated]"
-        try:
-            parsed: Any = json.loads(raw)
-        except (ValueError, TypeError):
-            parsed = None
-        if isinstance(parsed, dict) and "error" in parsed:
-            envelope: dict[str, Any] = {"ok": False, "error": parsed["error"]}
-        elif isinstance(parsed, dict) and "result" in parsed:
-            envelope = {"ok": True, "result": parsed["result"]}
-            if "structuredContent" in parsed:
-                envelope["structuredContent"] = parsed["structuredContent"]
-        else:
-            envelope = {"ok": True, "result": parsed if parsed is not None else raw}
-        return {**envelope, "truncated": True} if truncated else envelope
+        from hermes_cli.private_invocations import mcp_envelope
+        return mcp_envelope(raw, cls._MCP_RESULT_CHAR_CAP)
 
     @staticmethod
     def _mcp_allowlist(plugin_id: str) -> list[str]:

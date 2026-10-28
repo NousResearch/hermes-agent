@@ -630,9 +630,23 @@ class PluginDispatchMixin:
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
-                if inspect.isawaitable(ret):
-                    ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                from tools.registry import _bound_host_context, _bind_handler_context
+                host = _bound_host_context() if hook_name == "post_gateway_admission" else None
+
+                async def invoke_callback():
+                    # wait_for creates a task: transfer only into the owned callback,
+                    # and close its handler lease on exit/error/cancellation.
+                    with _bind_handler_context(host):
+                        result = cb(**self._hook_callback_kwargs(cb, kwargs))
+                        return await result if inspect.isawaitable(result) else result
+
+                if host is not None:
+                    ret = await (asyncio.wait_for(invoke_callback(), timeout)
+                                 if use_timeout else invoke_callback())
+                else:
+                    ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                    if inspect.isawaitable(ret):
+                        ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:
                     results.append(ret)
             except TimeoutError:

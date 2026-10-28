@@ -586,15 +586,25 @@ class MCPServerTransportMixin:
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
 
+        from tools.mcp_tool_private import request_hook
+        client_kwargs["event_hooks"]["request"] = [request_hook(self, str(url))]
+        from tools.mcp_tool_private import response_hook
+        client_kwargs["event_hooks"]["response"].append(response_hook(self))
+        # Protected calls forbid redirects; ordinary calls retain their prior behavior.
+
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
             async with _build_client(**client_kwargs) as http_client:
+                self._private_carrier_ready = True
                 # Without max_sse_event_size the SDK parses each event against httpx2's 1 MiB default,
                 # a tighter second cap under our wire cap: a large tools/list or tool result (an
                 # editor screenshot) failed outright.
-                async with _core.streamable_http_client(url, http_client=http_client,
-                                                        max_sse_event_size=_MCP_HTTP_MAX_BODY_BYTES) as streams:
-                    yield streams
+                try:
+                    async with _core.streamable_http_client(url, http_client=http_client,
+                                                            max_sse_event_size=_MCP_HTTP_MAX_BODY_BYTES) as streams:
+                        yield streams
+                finally:
+                    self._private_carrier_ready = False
         return _owned_client_streams()
 
     async def _run_http(self, config: dict):

@@ -40,11 +40,13 @@ async def run_post_admission_hook(
             from hermes_cli.lifecycle import ainvoke_hook, has_hook
             if not has_hook(POST_ADMISSION_HOOK):
                 return False, None
-            results = await ainvoke_hook(
-                POST_ADMISSION_HOOK, session_key=session_key,
-                platform=source.platform.value if source.platform else "",
-                source=source.to_dict(), message_id=event.message_id, text=event.text or "",
-            )
+            from hermes_cli.private_invocations import admitted_origin
+            with admitted_origin(runner, event, source, session_key):
+                results = await ainvoke_hook(
+                    POST_ADMISSION_HOOK, session_key=session_key,
+                    platform=source.platform.value if source.platform else "",
+                    source=source.to_dict(), message_id=event.message_id, text=event.text or "",
+                )
     except asyncio.CancelledError:
         raise
     except Exception:

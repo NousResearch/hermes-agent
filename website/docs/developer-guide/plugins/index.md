@@ -2607,3 +2607,9 @@ def handler(args, **kwargs):
 # Good — model knows exactly when and how
 "description": "Evaluate a mathematical expression. Use for arithmetic, trig, logarithms. Supports: +, -, *, /, **, sqrt, sin, cos, log, pi, e."
 ```
+
+## Private invocation prototype
+
+The opt-in [private invocation prototype](../private-invocations.md) adds a
+native-admission lease and exact direct MCP call carrier for trusted integrations.
+It is unqualified source, not a released compatibility promise.

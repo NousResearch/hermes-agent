@@ -1183,16 +1183,9 @@ def create_task(
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
-    from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_pr_acceptance import contract_and_declaration
 
-    # Capture the RAW argument before normalisation: ``validate_contract``
-    # folds an omitted (None) contract into "local-only", so the stored column
-    # cannot distinguish a declared report card from one that never said. The
-    # created event records the raw value, and the ``active_pr`` guard
-    # (``kanban_db_pr_guard``) reads it back as the authority on whether
-    # "local-only" was an explicit declaration.
-    raw_contract = completion_contract
-    completion_contract = validate_contract(completion_contract)
+    completion_contract, raw_contract = contract_and_declaration(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)

@@ -8,6 +8,7 @@ are made.
 import io
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -15,7 +16,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
 
@@ -1964,9 +1964,9 @@ class TestConcurrentToolExecution:
         with patch("model_tools.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
-        assert starts[0][2]["text"].startswith("sk-pro")
-        assert completes[0][2]["text"].startswith("sk-pro")
-        assert progress[0][2].startswith("sk-pro")
+        assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", starts[0][2]["text"])
+        assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", completes[0][2]["text"])
+        assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", progress[0][2])
         assert secret not in repr(starts + completes + progress)
 
 
@@ -6155,7 +6155,7 @@ class TestStreamingApiCall:
         assert secret not in str(exc_info.value)
         assert secret not in exc_info.value.raw_text
         assert secret not in exc_info.value.body["error"]["message"]
-        assert "sk-" in exc_info.value.body["error"]["message"]
+        assert re.fullmatch(r"request validation failed: token=\*\*\*#[0-9a-f]{6}", exc_info.value.body["error"]["message"])
         agent.stream_delta_callback.assert_not_called()
 
     def test_provider_error_prefix_like_normal_text_flushes_to_callback(self, agent):

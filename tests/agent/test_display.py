@@ -1,5 +1,6 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
+import re
 import pytest
 from unittest.mock import MagicMock
 
@@ -73,7 +74,7 @@ class TestBuildToolPreview:
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})
         assert result is not None
         assert secret not in result
-        assert "sk-pro" in result and "..." in result
+        assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", result)
 
     def test_browser_type_preview_keeps_normal_text(self):
         text = "hello world search query"
@@ -88,7 +89,7 @@ class TestBuildToolPreview:
         )
         assert secret not in str(safe_args)
         assert safe_args["ref"] == "@e3"
-        assert safe_args["text"].startswith("ghp_AB")
+        assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", safe_args["text"])
 
 
 
@@ -197,8 +198,8 @@ class TestCuteToolMessagePreviewLength:
             result='{"success": true, "typed": "sk-pro...EFGH"}',
         )
 
-        assert secret not in line
-        assert "sk-pro" in line
+        assert secret not in line and secret[:6] not in line and secret[-4:] not in line
+        assert re.search(r'"\*\*\*#[0-9a-f]{6}"', line)
 
     def test_browser_type_cute_message_keeps_normal_text(self):
         text = "hello world"

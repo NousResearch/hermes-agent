@@ -2048,8 +2048,8 @@ class SlackAdapter(BasePlatformAdapter):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
-    def native_task_cards_enabled(self) -> bool:
-        """Return whether Slack-native tool progress is explicitly enabled."""
+    def native_task_cards_enabled(self, chat_id: Optional[str] = None) -> bool:
+        """Return whether Slack-native tool progress is explicitly enabled (workspace-wide)."""
         extra = self.config.extra if isinstance(self.config.extra, dict) else {}
         streaming = extra.get("streaming")
         progress = streaming.get("progress") if isinstance(streaming, dict) else None

@@ -25,6 +25,7 @@ Every adapter extends `BasePlatformAdapter` from `gateway/platforms/base.py` and
 - **`send()`** — Send a text message to a chat *(abstract)*
 - **`send_typing()`** — Show typing indicator (optional override)
 - **`get_chat_info()`** — Return chat metadata (optional override)
+- **`native_task_cards_enabled(chat_id)`**, **`send_native_task_card_progress()`**, **`stop_native_task_card_progress()`** — Render tool progress as ID-correlated task cards instead of text progress lines (optional; the Slack adapter is the reference)
 
 Inbound messages are received by the adapter and forwarded via `self.handle_message(event)`, which the base class routes to the gateway runner.
 

@@ -323,14 +323,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     # streaming makes the stream THE message, so the adapter tracks the open draft
     # per turn and converts that turn's final send() into draft(final=true).
 
-    def supports_native_task_cards(self) -> bool:
+    def supports_native_task_cards(self, chat_id: Optional[str] = None) -> bool:
         """Explicit advertisement required — same no-fail-open rule as "draft"."""
-        return "task_card" in (self.descriptor.supported_ops or ())
+        descriptor = self._descriptor_for_chat(chat_id) if chat_id else self.descriptor
+        return "task_card" in (descriptor.supported_ops or ())
 
-    def native_task_cards_enabled(self) -> bool:
-        """TurnRunner opt-in probe (gateway/run.py calls THIS name, same contract as
-        native Slack); without the alias the card lane silently stays text-mode."""
-        return self.supports_native_task_cards()
+    def native_task_cards_enabled(self, chat_id: Optional[str] = None) -> bool:
+        """TurnRunner opt-in probe; without this alias the card lane silently stays text-mode."""
+        return self.supports_native_task_cards(chat_id)
 
     @staticmethod
     def _draft_key(chat_id: str, metadata: Optional[dict[str, Any]]) -> str:
@@ -680,7 +680,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         path: an escaping exception there skipped final delivery, so transport
         errors degrade to the TurnRunner's text fallback instead of raising.
         """
-        if not self.supports_native_task_cards():
+        if not self.supports_native_task_cards(chat_id):
             return SendResult(success=False, error="connector does not advertise task_card")
         if self._transport is None:
             return SendResult(success=False, error="no transport")

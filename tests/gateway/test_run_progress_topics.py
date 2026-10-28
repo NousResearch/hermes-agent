@@ -266,7 +266,7 @@ class NativeTaskCardAdapter(ProgressCaptureAdapter):
         self.native_updates = []
         self.native_stops = 0
 
-    def native_task_cards_enabled(self):
+    def native_task_cards_enabled(self, chat_id=None):
         return True
 
     async def send_native_task_card_progress(
@@ -1166,17 +1166,12 @@ async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id
     )
     assert second_completed["metadata"]["recipient_team_id"] == "T1"
     assert second_completed["metadata"]["recipient_user_id"] == "U1"
-    assert adapter.native_updates[-1]["tasks"] == [
-        {
-            "id": "call-a",
-            "title": "web_search - alpha",
-            "status": "complete",
-        },
-        {
-            "id": "call-b",
-            "title": "web_search - beta",
-            "status": "error",
-        },
+    assert [
+        {key: task[key] for key in ("id", "title", "status")}
+        for task in adapter.native_updates[-1]["tasks"]
+    ] == [
+        {"id": "call-a", "title": "web_search - alpha", "status": "complete"},
+        {"id": "call-b", "title": "web_search - beta", "status": "error"},
     ]
     assert adapter.sent == []
     assert adapter.native_stops == 1

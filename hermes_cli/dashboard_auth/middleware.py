@@ -40,11 +40,17 @@ _log = logging.getLogger(__name__)
 
 # Prefix-matched bypass list: auth bootstrap routes and static asset mounts. ``/assets/`` with
 # the trailing slash matches ``/assets/foo.css`` but not ``/assetsleak``.
+#
+# The installable-app trio (manifest, service worker, icons) is here because Chrome fetches them
+# on its own schedule, not always with session cookies; a gated answer is the login page, which
+# fails the manifest parse and the worker registration, so the dashboard never installs. They
+# carry no data: a name, a start_url, two icons, and a worker that never intercepts requests.
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
-    "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
+    "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/",
+    "/manifest.webmanifest", "/sw.js", "/pwa/")
 
 
 def _path_is_public(path: str) -> bool:

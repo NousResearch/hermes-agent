@@ -92,6 +92,20 @@ def test_index_declares_the_manifest_and_registers_the_worker(tmp_path, monkeypa
     assert "navigator.serviceWorker.register('/sw.js'" in html
 
 
+def test_manifest_and_worker_are_reachable_without_a_session():
+    # Chrome fetches the manifest, the icons and the worker script on its own schedule, and a
+    # gated fetch answers with the login page — which fails the manifest parse and the worker
+    # registration, so the app never becomes installable. None of these carry data.
+    from hermes_cli.dashboard_auth.middleware import _path_is_public
+
+    assert _path_is_public("/manifest.webmanifest")
+    assert _path_is_public("/sw.js")
+    assert _path_is_public("/pwa/icon-192.png")
+    # The gate still holds everywhere else.
+    assert not _path_is_public("/sessions")
+    assert not _path_is_public("/api/sessions")
+
+
 def test_index_registration_follows_the_forwarded_prefix(tmp_path, monkeypatch):
     client = _mounted(tmp_path, monkeypatch)
 

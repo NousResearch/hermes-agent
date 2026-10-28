@@ -203,9 +203,14 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
   const hasYaml =
     pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) || pathExistsSync(path.join(pluginRoot, 'plugin.yml'))
 
-  const hasInit = pathExistsSync(path.join(pluginRoot, '__init__.py'))
   const hasPortable = pathExistsSync(path.join(pluginRoot, 'plugin.json'))
-  const agent = (hasYaml && hasInit) || hasPortable
+  // A package IS an agent half as soon as it carries a manifest. `__init__.py` is optional:
+  // manifest-only plugins are legitimate (`hermes plugins validate` admits them — they ship a
+  // `dashboard/plugin_api.py` backend and no `register(ctx)`). Requiring the Python entry point
+  // hid those packages from the install plan entirely: `installAgentHalf` never ran, the app
+  // landed the desktop half alone, and every `ctx.rest` call 404'd — on a local backend and on a
+  // remote gateway alike.
+  const agent = hasYaml || hasPortable
 
   const desktopEntry = findDesktopEntry(pluginRoot)
   const desktop = desktopEntry !== null

@@ -27,10 +27,10 @@
       "expect": { "agent": true, "desktop": false, "agent_name": "unnamed-plugin" }
     },
     {
-      "name": "a yaml manifest without __init__.py is not an agent half",
+      "name": "a yaml manifest without __init__.py is still an agent package",
       "root": "manifest-only",
       "files": { "plugin.yaml": "name: manifest-only\n" },
-      "expect": { "agent": false, "desktop": false, "agent_name": null }
+      "expect": { "agent": true, "desktop": false, "agent_name": "manifest-only" }
     },
     {
       "name": "a portable plugin.json is an agent half named by it",

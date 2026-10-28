@@ -49,12 +49,17 @@ def _manifest_name(path: Path, loads) -> Optional[str]:
 
 
 def detect_components(root: Path, fallback_name: str) -> dict[str, Any]:
-    """Electron's ``detectPluginComponents``: an agent half is ``plugin.yaml``/``plugin.yml`` with
-    ``__init__.py``, or a portable ``plugin.json``; a desktop half is ``plugin.js`` at the root or in
-    ``desktop/``."""
+    """Electron's ``detectPluginComponents``: an agent half is a ``plugin.yaml``/``plugin.yml`` manifest
+    or a portable ``plugin.json``; a desktop half is ``plugin.js`` at the root or in ``desktop/``.
+
+    ``__init__.py`` is not part of the rule: manifest-only plugins are real packages (a
+    ``dashboard/plugin_api.py`` backend and no ``register(ctx)``), which ``hermes plugins validate``
+    admits and the installer puts down. Requiring the Python entry point made both inspectors report
+    such a repository as desktop-only, so a Desktop install skipped the agent half and every
+    ``ctx.rest`` call answered 404."""
     yaml_path = next((root / n for n in ("plugin.yaml", "plugin.yml") if (root / n).is_file()), None)
     portable = root / "plugin.json"
-    agent = (yaml_path is not None and (root / "__init__.py").is_file()) or portable.is_file()
+    agent = yaml_path is not None or portable.is_file()
     desktop = (root / "plugin.js").is_file() or (root / "desktop" / "plugin.js").is_file()
     agent_name = None
     if agent:

@@ -94,6 +94,24 @@ describe('detectPluginComponents', () => {
     }
   })
 
+  it('detects a manifest-only package — dashboard backend, no __init__.py', async () => {
+    const root = mkdtemp('hermes-plugin-manifest-only-')
+    roots.push(root)
+    fs.writeFileSync(path.join(root, 'plugin.yaml'), 'name: bulletin\n')
+    fs.mkdirSync(path.join(root, 'dashboard'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'dashboard', 'manifest.json'), '{"name":"bulletin","api":"plugin_api.py"}\n')
+    fs.mkdirSync(path.join(root, 'desktop'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'desktop', 'plugin.js'), 'export default { id: "bulletin" }')
+
+    // Catalog plugins that ship a dashboard API but no register(ctx) are still packages: the
+    // install plan must run the agent half, or the desktop half lands alone and ctx.rest 404s.
+    await expect(detectPluginComponents(root)).resolves.toMatchObject({
+      agent: true,
+      desktop: true,
+      agentName: 'bulletin'
+    })
+  })
+
   it('detects agent-only layout', async () => {
     const root = mkdtemp('hermes-plugin-agent-')
     roots.push(root)

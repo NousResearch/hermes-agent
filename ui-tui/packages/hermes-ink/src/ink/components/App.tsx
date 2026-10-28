@@ -11,6 +11,7 @@ import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
 import instances from '../instances.js'
 import {
+  BURST_END_QUIET_MS,
   DECRPM_STATUS,
   INITIAL_STATE,
   type ParsedInput,
@@ -511,7 +512,7 @@ export default class App extends PureComponent<Props, State> {
     // Only proceed if we have an incomplete escape sequence or an unterminated
     // bracketed paste. Missing paste-end markers otherwise leave every later
     // keystroke trapped in the paste buffer.
-    if (!this.keyParseState.incomplete && this.keyParseState.mode !== 'IN_PASTE') {
+    if (!this.keyParseState.incomplete && this.keyParseState.mode !== 'IN_PASTE' && !this.keyParseState.pendingReturn) {
       return
     }
 
@@ -524,10 +525,7 @@ export default class App extends PureComponent<Props, State> {
     // drain stdin next and clear this timer. Prevents both the spurious
     // Escape key and the lost scroll event.
     if (this.props.stdin.readableLength > 0) {
-      this.incompleteEscapeTimer = setTimeout(
-        this.flushIncomplete,
-        this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT
-      )
+      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.flushTimeout())
 
       return
     }
@@ -555,17 +553,22 @@ export default class App extends PureComponent<Props, State> {
     // If we have incomplete escape sequences or an unterminated paste, set a
     // timer to flush/reset them. Paste starts are complete CSI sequences, so
     // checking only `incomplete` would never arm the watchdog.
-    if (this.keyParseState.incomplete || this.keyParseState.mode === 'IN_PASTE') {
+    // A held trailing CR (scripted `text` + Enter) is released by the same flush.
+    if (this.keyParseState.incomplete || this.keyParseState.mode === 'IN_PASTE' || this.keyParseState.pendingReturn) {
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
         clearTimeout(this.incompleteEscapeTimer)
       }
 
-      this.incompleteEscapeTimer = setTimeout(
-        this.flushIncomplete,
-        this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT
-      )
+      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.flushTimeout())
     }
+  }
+  flushTimeout = (): number => {
+    if (this.keyParseState.mode === 'IN_PASTE') {
+      return this.PASTE_TIMEOUT
+    }
+
+    return this.keyParseState.pendingReturn ? BURST_END_QUIET_MS : this.NORMAL_TIMEOUT
   }
   handleReadable = (): void => {
     // Detect long stdin gaps (tmux attach, ssh reconnect, laptop wake).

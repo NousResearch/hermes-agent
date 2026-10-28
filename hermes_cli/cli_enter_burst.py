@@ -14,7 +14,7 @@ keeps the newline.
 
 from __future__ import annotations
 
-import time
+from time import monotonic
 
 RAPID_INPUT_ENTER_WINDOW_S = 0.05
 # Long enough for the next read of a paste split across reads (slow SSH links), short enough
@@ -29,25 +29,25 @@ def handle_burst_enter(cli, event, buf) -> bool:
     ``cli._tui_submit_buffer(event, buf)`` is called later when this Enter turns out to end the
     burst.
     """
-    if time.monotonic() - getattr(cli, "_tui_last_text_change", 0.0) >= RAPID_INPUT_ENTER_WINDOW_S:
+    now = monotonic()
+    if now - getattr(cli, "_tui_last_text_change", 0.0) >= RAPID_INPUT_ENTER_WINDOW_S:
         return False
-    now = time.monotonic()
     pasted_newline_before = now - getattr(cli, "_tui_burst_newline_at", 0.0) < BURST_END_QUIET_S
     cli._tui_burst_newline_at = now
+    before = buf.document  # the newline lands at the cursor, not necessarily at the end
     buf.insert_text("\n")
     app = event.app
     key_processor = getattr(app, "key_processor", None)
     loop = getattr(app, "loop", None)
     if key_processor is None or loop is None or key_processor.input_queue or pasted_newline_before:
         return True  # inside (or the tail of) a multi-line paste
-    snapshot = buf.text
+    with_newline = buf.document
     changed_at = getattr(cli, "_tui_last_text_change", 0.0)
 
     def _settle() -> None:
-        if not app.is_running or buf.text != snapshot or cli._tui_last_text_change != changed_at:
+        if not app.is_running or buf.document != with_newline or cli._tui_last_text_change != changed_at:
             return  # more input arrived (or the buffer was edited): the newline stays
-        buf.text = snapshot[:-1]
-        buf.cursor_position = len(buf.text)
+        buf.document = before
         cli._tui_submit_buffer(event, buf)
         app.invalidate()
 

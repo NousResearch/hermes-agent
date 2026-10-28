@@ -1,7 +1,7 @@
 """Already-published canary pages remain orderable after the claim-tag change."""
 import pytest
 
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 from tests.scripts.test_render_builds_publication import rbt
 
 

@@ -17,6 +17,7 @@ import pytest
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
+    _publish_runtime_main,
     build_turn_context,
 )
 
@@ -169,6 +170,17 @@ def _build(agent, **overrides):
     )
     kwargs.update(overrides)
     return build_turn_context(**kwargs)
+
+
+def test_publish_runtime_main_snapshots_resolved_default_headers():
+    """Auxiliary work must reuse custom gateway headers resolved for this turn."""
+    agent = _FakeAgent()
+    agent._client_kwargs = {"default_headers": {"api-key": "gateway-header-token"}}
+
+    with patch("agent.auxiliary_client.set_runtime_main") as publish:
+        _publish_runtime_main(agent)
+
+    assert publish.call_args.kwargs["default_headers"] == {"api-key": "gateway-header-token"}
 
 
 def test_returns_turn_context_with_user_message_appended():

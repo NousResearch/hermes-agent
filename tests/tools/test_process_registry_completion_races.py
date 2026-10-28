@@ -250,10 +250,11 @@ class _SandboxEnv:
         self.delta, self.alive, self.hooks = delta, alive, hooks or {}
 
     def execute(self, command, **_kwargs):
-        if command.startswith("kill -0"):
-            step, out = "check", "0\n" if self.alive else "1\n"
+        if command == "LC_ALL=C ps -eo pid=,pgid=,stat=":
+            step, out = "check", "1 1 S\n" + ("4242 4242 S\n" if self.alive else "")
         elif command.startswith("kill "):
-            return {"output": ""}
+            self.alive = False
+            return {"output": "", "returncode": 0}
         elif command.startswith("cat "):
             step, out = "exit", "0\n"
         else:
@@ -261,7 +262,7 @@ class _SandboxEnv:
         hook = self.hooks.pop(step, None)
         if hook:
             hook()
-        return {"output": out}
+        return {"output": out, "returncode": 0}
 
 
 def _sandbox_session(registry, monkeypatch, env) -> ProcessSession:
@@ -312,7 +313,9 @@ def test_a_lost_sandbox_without_a_kill_is_reported_lost(monkeypatch):
     def lose_the_backend():
         raise RuntimeError("sandbox reaped")
 
-    env = _SandboxEnv(hooks={"check": lose_the_backend})
+    # A transport failure reading output is backend loss; an unconfirmed group
+    # probe is deliberately retryable rather than a fabricated exit.
+    env = _SandboxEnv(hooks={"delta": lose_the_backend})
     session = _sandbox_session(registry, monkeypatch, env)
 
     _poll_sandbox(registry, session, env)

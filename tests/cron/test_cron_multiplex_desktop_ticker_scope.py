@@ -284,7 +284,7 @@ def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_p
         token = set_hermes_home_override(str(home))
         try:
             return create_job(prompt=None, schedule="every 1h", script=f"{name}.sh",
-                              no_agent=True, deliver="local")["id"]
+                              target="scheduler", no_agent=True, deliver="local")["id"]
         finally:
             reset_hermes_home_override(token)
 

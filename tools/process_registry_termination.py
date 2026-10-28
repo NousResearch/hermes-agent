@@ -147,12 +147,11 @@ class ProcessTerminationMixin:
     _KILL_SETTLE_SECONDS = 1.0
 
     def _post_kill_survivors(self, session: "ProcessSession") -> list[int]:
-        """Host PIDs still alive once the kill signals have had time to land (#115490).
+        """Owned PIDs still alive once the kill signals have had time to land.
 
-        Fail-closed: anything unverifiable counts as a survivor, so a kill
-        that leaves a live tree can never write a killed receipt. Sandbox
-        (env) sessions have no host-visible tree and are unverifiable by
-        design — they return no survivors, preserving existing behavior."""
+        Remote sessions require an exact in-sandbox group probe; an unavailable
+        probe raises rather than silently certifying successful cleanup.
+        """
         deadline = time.monotonic() + self._KILL_SETTLE_SECONDS
         while True:
             survivors = self._probe_survivors(session)
@@ -161,6 +160,8 @@ class ProcessTerminationMixin:
             time.sleep(0.05)
 
     def _probe_survivors(self, session: "ProcessSession") -> list[int]:
+        if session.pid_scope == "sandbox" and session.env_ref is not None:
+            return self._remote_group_members(session)
         survivors: list[int] = []
         proc = getattr(session, "process", None)
         if proc is not None:

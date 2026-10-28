@@ -23,6 +23,9 @@ def _validate_job_mode_invariants(
     monitor_url: Optional[str],
     no_agent: bool,
     script: Optional[str],
+    *,
+    target: str = "scheduler",
+    workdir: Optional[str] = None,
 ) -> None:
     """Execution-mode invariants shared by create_job and update_job (no bypass via the update
     door)."""
@@ -30,6 +33,10 @@ def _validate_job_mode_invariants(
         raise ValueError(
             "monitor_script and monitor_url are mutually exclusive — a job "
             "can only have one monitor source.")
+    if monitor_script and target == "backend":
+        raise ValueError(
+            "monitor_script runs on the scheduler host and cannot be combined with "
+            "target='backend'. Use target='scheduler' for this job.")
     if (monitor_script or monitor_url) and no_agent:
         raise ValueError(
             "monitor_script/monitor_url cannot be combined with no_agent=True — "
@@ -37,7 +44,9 @@ def _validate_job_mode_invariants(
             "based on source changes. Use a plain no_agent script job instead.")
     if no_agent and not script:
         raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
-    if script and _script_is_command_line(script):
+    # Backend paths (including local-backend absolute paths) are checked by the
+    # target-aware file probe, not the scheduler's scripts-directory resolver.
+    if script and target == "scheduler" and _script_is_command_line(script):
         raise ValueError(SCRIPT_IS_COMMAND_LINE_ERROR.format(
             scripts_dir=display_hermes_home() + "/scripts/", script=script))
 

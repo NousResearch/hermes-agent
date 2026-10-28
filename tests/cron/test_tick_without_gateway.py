@@ -165,7 +165,7 @@ def test_no_agent_jobs_still_fire_without_a_gateway(cron_home, monkeypatch):
         scheduler_authority, "reconcile_pending",
         lambda *, allow_connect=True: None)
     job = J.create_job(prompt=None, schedule="every 1h", name="script", script="fire.sh",
-                       no_agent=True, deliver="local")
+                       target="scheduler", no_agent=True, deliver="local")
     _make_due(job["id"])
 
     assert S.tick(verbose=False, headless=True) == 1

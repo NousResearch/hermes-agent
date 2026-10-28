@@ -1,0 +1,52 @@
+# Vendor-hosted remote MCP catalog submission; approval follows maintainer review.
+manifest_version: 1
+
+name: sota2
+description: "Compare published AI solution rankings, company facts and research benchmarks with sources."
+source: https://www.sota2.com/with-ai
+
+transport:
+  type: http
+  url: https://www.sota2.com/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_companies
+    - get_company
+    - list_industries
+    - list_tasks
+    - get_solution_rankings
+    - list_company_leaderboards
+    - get_company_leaderboard
+    - list_research_domains
+    - search_research
+    - get_research_entity
+    - get_research_benchmark
+
+suggest:
+  keywords:
+    - "sota2"
+    - "AI solution rankings"
+  hosts:
+    - sota2.com
+  examples:
+    - "Find AI solution rankings for a specific industry and task."
+    - "Compare source-linked research results for one benchmark metric."
+
+post_install: |
+  No account, API key or credentials are required. Restart the session
+  after installation to discover the enabled read-only tools.
+
+  Read published AI solution rankings, company facts, reported revenue
+  leaderboards and research benchmarks. Use industry/task discovery and
+  canonical IDs, preserve ranking scope and pagination, and cite sources.
+  Reported revenue, ARR, estimates and forecasts remain separately labeled.
+  Vendor compliance claims and research results are not independent audits.
+  The tools read public data and provide no account, payment or write actions.
+
+  Documentation: https://www.sota2.com/with-ai
+  Privacy: https://www.sota2.com/mcp-privacy
+  Contact: leo@pageonelab.com.

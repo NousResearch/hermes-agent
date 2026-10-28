@@ -1,0 +1,42 @@
+# Vendor-hosted remote MCP catalog submission; approval follows maintainer review.
+manifest_version: 1
+
+name: brek
+description: "Search hotels, compare room offers and public or masked wholesale rates, then continue on Brek."
+source: https://www.brek.com/help/connectors
+
+transport:
+  type: http
+  url: https://mcp.brek.com/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_accommodations
+    - get_accommodation_details
+    - get_accommodation_offers
+
+suggest:
+  keywords:
+    - "brek"
+    - "wholesale hotels"
+  hosts:
+    - brek.com
+  examples:
+    - "Find hotels in Bellevue for my travel dates."
+    - "Compare room offers, breakfast and cancellation terms."
+
+post_install: |
+  No account, API key or credentials are required. Restart the session
+  after installation to discover the enabled read-only tools.
+
+  Search hotel stays, inspect undated property facts and compare live room offers.
+  Private wholesale prices are masked; exact prices, sign-in, booking and
+  payment continue on brek.com. The MCP tools never create reservations or
+  take payments. Prices and availability can change.
+
+  Documentation: https://www.brek.com/help/connectors
+  Privacy: https://www.brek.com/privacy
+  Contact: leo@pageonelab.com.

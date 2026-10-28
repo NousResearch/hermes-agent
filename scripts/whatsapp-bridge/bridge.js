@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, generateMessageIDV2, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -31,7 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
-import { createOutboundIdTracker } from './outbound_ids.js';
+import { createOutboundIdTracker, withRegisteredMessageId } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
@@ -76,11 +76,9 @@ const WHATSAPP_DEBUG =
 // "owner just typed in this customer chat" — needed for handover / sliding
 // TTL flows. Default OFF: existing deployments see no behavior change.
 //
-// Heuristic limitation: we distinguish bot-API-sent from owner-typed by
-// looking up `key.id` in `recentlySentIds` (populated when /send returns).
-// On bridge restart that set is empty, so a few in-flight bot replies may
-// briefly look like owner-typed until they age out. Acceptable; we don't
-// persist the set.
+// We distinguish bot-API-sent from owner-typed by looking up `key.id` in
+// `recentlySentIds`. Every send registers its id there before the SDK call,
+// and the set is persisted in the session dir so it survives a restart.
 const FORWARD_OWNER_MESSAGES =
   typeof process !== 'undefined' &&
   process.env &&
@@ -164,7 +162,14 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
     );
   });
   return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
+    Promise.race([
+      sock.sendMessage(
+        chatId,
+        payload,
+        withRegisteredMessageId(recentlySentIds, options, () => generateMessageIDV2(sock.user?.id)),
+      ),
+      timeoutPromise,
+    ])
       .finally(() => clearTimeout(timer))
   );
 }
@@ -263,8 +268,11 @@ const MAX_QUEUE_SIZE = 100;
 //      bot-API outbound messages from owner-typed messages on the linked
 //      device so we can forward only the latter.
 // Capacity bounded (see outbound_ids.js) to keep memory flat under
-// sustained sending.
-const recentlySentIds = createOutboundIdTracker(512);
+// sustained sending. Persisted next to the auth state so echoes of
+// pre-restart sends are still recognised after a bridge restart.
+const recentlySentIds = createOutboundIdTracker(512, {
+  persistPath: path.join(SESSION_DIR, 'outbound_ids.json'),
+});
 const recentlyProcessedPollUpdates = createOutboundIdTracker(512);
 const messageStore = createBoundedMessageStore(512);
 // Bounded cache of already-downloaded inbound media, so a later reply to an

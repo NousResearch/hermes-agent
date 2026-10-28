@@ -111,6 +111,9 @@ class MessageEvent:
     # ``message_id`` with new text, so native admission keys it apart from the original send.
     # Appended for positional compat (see the field-order rule above).
     edit_revision: Optional[str] = None
+    # Trusted adapters may request one skill-command expansion before generic busy routing.
+    # This is not serialized and is appended last for positional compatibility.
+    preprocess_skill_command_before_busy: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -154,5 +157,9 @@ class MessageEvent:
             return self.text
         parts = self._command_text().lstrip().split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
-        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
-        return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        # iOS auto-corrects -- to — (em dash) and - to – (en dash).
+        # Adapter-generated skill commands may carry verbatim user content after
+        # a trusted transport envelope; preserve that content byte-for-byte.
+        if not self.metadata.get("preserve_command_args"):
+            args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        return args

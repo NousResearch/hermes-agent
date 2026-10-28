@@ -1836,3 +1836,19 @@ class TestMaskTokenRevealsNothing:
         out = redact_sensitive_text("token " + ".".join(parts), force=True)
         assert out.startswith("token ***"), out
         assert not any(part[:6] in out or part[-4:] in out for part in parts)
+
+
+class TestSecretHeaderKeepsClosingQuote:
+    """``X-Api-Key: <tok>'`` inside a quoted curl arg: the mask must not swallow the closing
+    quote (same credential class as ``_AUTH_HEADER_RE``), or the echoed command stops parsing."""
+
+    def test_single_quoted_curl_header(self, fp_home):
+        token = "hunter" + "2" * 14
+        out = redact_sensitive_text("curl -H 'X-Api-Key: " + token + "' https://x", force=True)
+        assert token not in out
+        assert re.fullmatch(r"curl -H 'X-Api-Key: \*\*\*#[0-9a-f]{6}' https://x", out), out
+
+    def test_double_quoted_curl_header(self, fp_home):
+        token = "hunter" + "2" * 14
+        out = redact_sensitive_text('curl -H "x-goog-api-key: ' + token + '" https://x', force=True)
+        assert re.fullmatch(r'curl -H "x-goog-api-key: \*\*\*#[0-9a-f]{6}" https://x', out), out

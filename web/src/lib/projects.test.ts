@@ -205,6 +205,95 @@ describe("KanbanBadge", () => {
   });
 });
 
+// ── mapProjectSessionToSessionInfo ────────────────────────────────────────────
+
+import { mapProjectSessionToSessionInfo } from "@/lib/projects";
+import type { ProjectSession } from "@/lib/api";
+
+function mkProjectSession(
+  overrides: Partial<ProjectSession> = {},
+): ProjectSession {
+  return {
+    id: "sess-1",
+    title: "Test Session",
+    model: "claude-sonnet",
+    cwd: "/workspace/hermes",
+    lastActive: "2026-10-28T10:00:00.000Z",
+    endReason: null,
+    task: null,
+    ...overrides,
+  };
+}
+
+describe("mapProjectSessionToSessionInfo", () => {
+  it("maps id and title verbatim", () => {
+    const ps = mkProjectSession({ id: "abc", title: "My Session" });
+    const si = mapProjectSessionToSessionInfo(ps);
+    expect(si.id).toBe("abc");
+    expect(si.title).toBe("My Session");
+  });
+
+  it("maps model verbatim", () => {
+    const ps = mkProjectSession({ model: "gpt-5" });
+    const si = mapProjectSessionToSessionInfo(ps);
+    expect(si.model).toBe("gpt-5");
+  });
+
+  it("converts ISO lastActive to unix seconds for last_active", () => {
+    const isoDate = "2026-10-28T10:00:00.000Z";
+    const expectedUnix = new Date(isoDate).getTime() / 1000;
+    const si = mapProjectSessionToSessionInfo(mkProjectSession({ lastActive: isoDate }));
+    expect(si.last_active).toBeCloseTo(expectedUnix, 0);
+    expect(si.started_at).toBeCloseTo(expectedUnix, 0);
+  });
+
+  it("is_active is true when endReason is null", () => {
+    const si = mapProjectSessionToSessionInfo(mkProjectSession({ endReason: null }));
+    expect(si.is_active).toBe(true);
+  });
+
+  it("is_active is false when endReason is set", () => {
+    const si = mapProjectSessionToSessionInfo(mkProjectSession({ endReason: "user_exit" }));
+    expect(si.is_active).toBe(false);
+    expect(si.ended_at).not.toBeNull();
+  });
+
+  it("ended_at is null when endReason is null", () => {
+    const si = mapProjectSessionToSessionInfo(mkProjectSession({ endReason: null }));
+    expect(si.ended_at).toBeNull();
+  });
+
+  it("handles null lastActive gracefully (zero timestamps)", () => {
+    const si = mapProjectSessionToSessionInfo(mkProjectSession({ lastActive: null }));
+    expect(si.last_active).toBe(0);
+    expect(si.started_at).toBe(0);
+  });
+
+  it("empty-string title maps to null", () => {
+    const si = mapProjectSessionToSessionInfo(mkProjectSession({ title: "" }));
+    expect(si.title).toBeNull();
+  });
+});
+
+// ── projectQueryPath ──────────────────────────────────────────────────────────
+
+import { projectQueryPath } from "@/lib/projects";
+
+describe("projectQueryPath", () => {
+  it("returns /projects?id=<id> for a plain id", () => {
+    expect(projectQueryPath("my-project")).toBe("/projects?id=my-project");
+  });
+
+  it("URI-encodes special characters in the id", () => {
+    expect(projectQueryPath("a b/c")).toBe("/projects?id=a%20b%2Fc");
+  });
+
+  it("handles UUID-style ids", () => {
+    const id = "proj-abc-123";
+    expect(projectQueryPath(id)).toBe(`/projects?id=${id}`);
+  });
+});
+
 // ── API error surface ─────────────────────────────────────────────────────────
 
 describe("api.getProjects error surfacing", () => {

@@ -43,6 +43,7 @@ import type {
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
+import { mapProjectSessionToSessionInfo } from "@/lib/projects";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
@@ -831,17 +832,26 @@ export default function SessionsPage() {
     // another process) don't flicker the whole page or drop the user's
     // scroll position.
     if (!silent) setLoading(true);
-    api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
-      .then((resp) => {
-        setSessions(resp.sessions);
-        setTotal(resp.total);
+
+    const fetch = projectFilter
+      ? api.getProjectSessions(projectFilter).then((resp) => ({
+          sessions: resp.sessions.map(mapProjectSessionToSessionInfo),
+          total: resp.sessions.length,
+        }))
+      : api
+          .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+          .then((resp) => ({ sessions: resp.sessions, total: resp.total }));
+
+    fetch
+      .then(({ sessions, total }) => {
+        setSessions(sessions);
+        setTotal(total);
       })
       .catch(() => {})
       .finally(() => {
         if (!silent) setLoading(false);
       });
-  }, []);
+  }, [projectFilter]);
 
   const loadStats = useCallback(() => {
     api
@@ -1270,7 +1280,7 @@ export default function SessionsPage() {
   const isSearching = Boolean(search.trim());
   const showOverviewTab =
     platformEntries.length > 0 || recentSessions.length > 0;
-  const showList = view === "list" || isSearching || !showOverviewTab;
+  const showList = view === "list" || isSearching || !showOverviewTab || !!projectFilter;
   const showPagination = showList && !searchResults && total > PAGE_SIZE;
 
   const alerts: { message: string; detail?: string }[] = [];

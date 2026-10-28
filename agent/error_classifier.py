@@ -867,6 +867,20 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     return _v(_R.format_error, retryable=False, should_fallback=True, error_context=ctx)
 
 
+PLAN_SHARING_CAP_MARKER = "plan sharing limit reached"
+
+
+def is_plan_sharing_cap(message: object) -> bool:
+    """True for the shared-plan allowance wall, a 400 whose text is about a spent plan window.
+
+    The Nous gateway answers every call with it while an account's shared plan is spent, and its own
+    copy says bought credits do not apply until plan sharing is paused. Message-matched rather than
+    status-matched on purpose: the same body reaches us with no status when a stream relays it, and
+    aggregators forward it verbatim. ``.lower()`` because casing drifts between relays.
+    """
+    return PLAN_SHARING_CAP_MARKER in str(message or "").lower()
+
+
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
@@ -876,6 +890,14 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome
+    # A spent shared-plan allowance, not a malformed request. Objecting to the request shape is what
+    # ``format_error`` says, and it is also what made this expensive: a 400 still fell back
+    # (should_fallback), but format_error arms no cooldown — ``_arm_rate_limit_cooldown`` only benches
+    # rate-limit kinds — so ``restore_primary_runtime`` put the capped primary back on the wire at the
+    # top of every turn (~126 dead calls and minutes of dead wall-clock per day, one per turn), with
+    # no reset header to switch off early. retryable stays False: the identical request cannot succeed.
+    if is_plan_sharing_cap(msg):
+        return _v(_R.rate_limit, retryable=False, should_fallback=True)
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):

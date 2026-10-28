@@ -69,6 +69,15 @@ def held_markers(job: dict[str, Any]) -> dict[str, Any]:
     return {key: job[key] for key in _MARKERS if key in job} if queued(job) else {}
 
 
+def reschedule(job: dict[str, Any], at: str) -> None:
+    """Move ``next_run_at`` from a failure-path planner (the quota hold). A queued
+    run-now's marker moves with it: the run-now is delayed, not turned into a scheduled fire that
+    would spend a repeat run and drop the slot saved in RESTORE_KEY."""
+    if queued(job):
+        job["manual_run_at"] = at
+    job["next_run_at"] = at
+
+
 def settle(job: dict[str, Any], now: str) -> None:
     """After an extra fire: ``repeat.completed`` untouched, the job keeps its pending slot, and a
     run-now queued during the run (``queued``) is left for its own claim. A slot that passed while

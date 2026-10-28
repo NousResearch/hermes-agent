@@ -173,3 +173,34 @@ def test_trigger_landing_during_a_manual_run_survives_its_completion(clock):
     assert (after["state"], after["next_run_at"]) == ("scheduled", slot)
     assert after["repeat"] == {"times": 1, "completed": 0}
 
+
+
+def test_quota_hold_on_a_manual_run_delays_a_queued_run_now_without_spending_the_schedule(
+    clock, monkeypatch,
+):
+    """A manual run hits a provider quota window while another run-now is queued: the hold delays
+    that queued run-now to the window boundary, where it still fires as an extra run. It spends no
+    repeat run and the scheduled slot after the window stays put."""
+    monkeypatch.setattr("cron.quota_hold._hermes_now", lambda: clock["now"])
+    job = create_job("digest", "every 60m", name="digest", repeat=3)
+    slot = job["next_run_at"]  # 10:00
+    clock["now"] += timedelta(minutes=20)
+    claimed = claim_job_for_fire(job["id"], manual=True, return_job=True)
+    assert isinstance(claimed, dict) and claim_dispatch(job["id"])
+    clock["now"] += timedelta(seconds=10)
+    trigger_job(job["id"])  # queued while the manual run is in flight
+    clock["now"] += timedelta(seconds=10)
+    assert mark_job_run(job["id"], success=False, error="quota", quota_hold_seconds=600,
+                        expected_fire_owner=claimed["fire_claim"]["by"])
+
+    held = get_job(job["id"])
+    assert held["next_run_at"] > clock["now"].isoformat()  # parked through the closed window
+    assert get_due_jobs() == []
+    clock["now"] = datetime.fromisoformat(held["next_run_at"]) + timedelta(seconds=5)  # ~09:31
+    due = get_due_jobs()
+    assert [d["id"] for d in due] == [job["id"]]
+    advance_next_runs([d["id"] for d in due])
+    _fire(job["id"])  # the delayed run-now
+
+    after = get_job(job["id"])
+    assert (after["next_run_at"], after["repeat"]) == (slot, {"times": 3, "completed": 0})

@@ -45,3 +45,28 @@ def test_other_files_still_require_sign_in(gated_webapp, path):
 
     assert response.status_code == 302
     assert "/login" in response.headers["location"]
+
+
+@pytest.mark.parametrize("path", ["/apple-touch-icon.png", "/favicon.ico"])
+def test_missing_page_icon_is_a_404_not_the_page(gated_webapp, path):
+    (web_server.app.state.web_dist / path.lstrip("/")).unlink()
+
+    response = gated_webapp.get(path, follow_redirects=False)
+
+    assert response.status_code == 404
+    assert "html" not in response.headers.get("content-type", "")
+
+
+@pytest.mark.parametrize("path", ["/apple-touch-icon.png", "/favicon.ico"])
+def test_page_icon_linked_outside_the_dist_is_a_404(gated_webapp, tmp_path, path):
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside bytes")
+    icon = web_server.app.state.web_dist / path.lstrip("/")
+    icon.unlink()
+    icon.symlink_to(outside)
+
+    response = gated_webapp.get(path, follow_redirects=False)
+
+    assert response.status_code == 404
+    assert b"outside bytes" not in response.content
+    assert "html" not in response.headers.get("content-type", "")

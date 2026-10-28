@@ -33,7 +33,7 @@ def _manifest_name(path: Path, loads) -> Optional[str]:
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MANIFEST_MAX_BYTES:
             return None
-        data = loads(path.read_text(encoding="utf-8"))
+        data = loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
         return None
     name = data.get("name") if isinstance(data, dict) else None

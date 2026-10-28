@@ -16,7 +16,8 @@ from hermes_cli.plugins_cmd_inspect import inspect_plugin_source
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace").stdout.strip()
 
 
 def _repo(tmp_path: Path, files: dict[str, str], name: str = "source") -> Path:

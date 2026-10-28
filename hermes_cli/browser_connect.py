@@ -1078,6 +1078,19 @@ def _wait_for_browser_debug_ready_or_exit(
 
 _LAUNCH_STDERR_LOG = "launch-stderr.log"
 _STDERR_TAIL_LIMIT = 2000
+# Chrome's own words for why it quit at start (lowercase), each found in a real launch's stderr.
+_STDERR_EXIT_CAUSES = ("socket path too long", "profile appears to be in use")
+
+
+def _stderr_line_explaining_exit(stderr_tail: str) -> str:
+    """The stderr line that says why the browser exited: a known cause, else the first FATAL line,
+    else the last line. Chrome's last line is often noise its helpers log after the browser process
+    has quit (the zygote's "write: Broken pipe")."""
+    lines = [line.strip() for line in stderr_tail.splitlines() if line.strip()]
+    for line in lines:
+        if any(cause in line.lower() for cause in _STDERR_EXIT_CAUSES):
+            return line
+    return next((line for line in lines if ":FATAL:" in line), lines[-1] if lines else "")
 
 
 @dataclass
@@ -1111,7 +1124,7 @@ class ChromeDebugLaunch:
             if attempt.state == "exited" and attempt.stderr_tail:
                 return (
                     f"{os.path.basename(attempt.binary)} exited before the debug port opened: "
-                    f"{attempt.stderr_tail.splitlines()[-1].strip()}")
+                    f"{_stderr_line_explaining_exit(attempt.stderr_tail)}")
         return None
 
 

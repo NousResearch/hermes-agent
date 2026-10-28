@@ -167,7 +167,12 @@ function profileSessionId(row: unknown): string | null {
   const profile =
     row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string' ? row.profile : ''
 
-  return `${profile}\0${id}`
+  const connection =
+    row && typeof row === 'object' && 'connection_id' in row && typeof row.connection_id === 'string'
+      ? row.connection_id
+      : ''
+
+  return `${connection}\0${profile}\0${id}`
 }
 
 export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit: number): unknown[] {
@@ -640,7 +645,7 @@ export async function fetchRegistrySessionRows(
 }
 
 /** Splice registry-gateway rows into an already-merged unified list: dedupe by
- *  profile + session id (a v1 remote-override splice may already carry a row), keep the
+ *  owner + profile + session id (a v1 remote-override splice may already carry a row), keep the
  *  recency sort, and extend the per-profile totals so truncation flags stay
  *  honest. Mutates and returns `merged`/`profileTotals` the way the v1 splice
  *  does. */

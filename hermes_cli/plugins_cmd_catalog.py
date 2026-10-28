@@ -210,7 +210,18 @@ LOGIN_BACKEND_RULE = ("password-manager login backends are accepted only from pl
 _NON_CATALOG_SOURCES = {"project": "a project .hermes/plugins directory", "entrypoint": "a pip entry point"}
 
 
-def login_backend_provenance_error(manifest) -> str:
+BROWSER_PAGE_BACKEND_RULE = ("browser page backends (which carry browser_vault fill scripts) are accepted only from "
+                             "plugins bundled with Hermes or installed from the Hermes plugin catalog at tier "
+                             "verified or official")
+
+
+def browser_page_backend_provenance_error(manifest) -> str:
+    """Why *manifest*'s plugin may not register a browser page backend, or "" when it may (same record and
+    tiers as :func:`login_backend_provenance_error`: the backend receives secret-bearing fill scripts)."""
+    return login_backend_provenance_error(manifest, rule=BROWSER_PAGE_BACKEND_RULE)
+
+
+def login_backend_provenance_error(manifest, rule: str = LOGIN_BACKEND_RULE) -> str:
     """Why *manifest*'s plugin may not register a login backend, or "" when it may.
 
     Read from the installer-owned ``.install-metadata.json`` record of the CURRENT home's plugins dir, never
@@ -219,19 +230,19 @@ def login_backend_provenance_error(manifest) -> str:
     if manifest.source == "bundled":
         return ""
     if manifest.source in _NON_CATALOG_SOURCES:
-        return f"{LOGIN_BACKEND_RULE}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
+        return f"{rule}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
     record = _install_record(Path(manifest.path)) if manifest.source == "user" and manifest.path else None
     block = (record or {}).get("catalog")
     if not isinstance(block, dict) or not block.get("name"):
-        return (f"{LOGIN_BACKEND_RULE}; this plugin was not installed from the Hermes plugin catalog "
+        return (f"{rule}; this plugin was not installed from the Hermes plugin catalog "
                 "(a local directory or Git URL install)")
     if record.get("allow_removed"):
-        return f"{LOGIN_BACKEND_RULE}; this plugin was installed with --allow-removed"
+        return f"{rule}; this plugin was installed with --allow-removed"
     tier = str(block.get("tier") or "community")
     if tier not in LOGIN_BACKEND_TIERS:
-        return f"{LOGIN_BACKEND_RULE}; catalog entry '{block['name']}' is tier {tier}"
+        return f"{rule}; catalog entry '{block['name']}' is tier {tier}"
     if not block.get("pin"):
-        return f"{LOGIN_BACKEND_RULE}; this install is not at the catalog's reviewed pin (installed with --ref)"
+        return f"{rule}; this install is not at the catalog's reviewed pin (installed with --ref)"
     return ""
 
 

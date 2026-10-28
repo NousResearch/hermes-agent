@@ -25,7 +25,7 @@ server = MCPServer("gh")
 
 @server.tool()
 def whoami() -> str:
-    return "GH_TOKEN=" + str(os.environ.get("GH_TOKEN"))
+    return " ".join(sorted(f"{k}={v}" for k, v in os.environ.items() if v.startswith("fake-")))
 
 server.run("stdio")
 """
@@ -112,19 +112,34 @@ def _discover_and_call(homes: dict, tool: str, args: dict) -> dict:
     return results
 
 
-def test_profile_with_other_secret_source_value_gets_its_own_stdio_connection(two_profile_homes, tmp_path):
+def test_profile_with_other_secret_source_value_gets_its_own_stdio_connection(two_profile_homes, tmp_path, monkeypatch):
+    """Each profile's child gets that profile's third-party source values and none of the names the
+    profile itself consumes as a credential: a numbered pool key, a persisted ``env:`` pool row, the
+    ``<NAME>_<PROFILE>`` alias of a bot token, an adapter token. ``ROTATION_CREDENTIAL`` is a pool row
+    only for ``worker``, so ``default`` (which does not consume it) still forwards its own value."""
     server = tmp_path / "gh_server.py"
     server.write_text(textwrap.dedent(_STDIO_SERVER), encoding="utf-8")
+    consumed = ("DEEPSEEK_API_KEY_2", "TELEGRAM_BOT_TOKEN_WORKER", "WEIXIN_TOKEN")
     for name, home in two_profile_homes.items():
-        (home / "secrets.env").write_text(f"GH_TOKEN=fake-token-{name}\n", encoding="utf-8")
+        names = ("GITHUB_PERSONAL_ACCESS_TOKEN", "ROTATION_CREDENTIAL", *(consumed if name == "worker" else ()))
+        (home / "secrets.env").write_text("".join(f"{var}=fake-{var}-{name}\n" for var in names), encoding="utf-8")
         (home / "config.yaml").write_text(yaml.safe_dump({
             "model": _MODEL,
             "secrets": {"command": {"enabled": True, "command": f"cat {home / 'secrets.env'}"}},
             "mcp_servers": {"gh": {"command": sys.executable, "args": [str(server)]}}}), encoding="utf-8")
+    (two_profile_homes["worker"] / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"deepseek": [
+        {"id": "rot", "label": "rot", "auth_type": "api_key", "priority": 0, "source": "env:ROTATION_CREDENTIAL"}]}}),
+        encoding="utf-8")
+    # The default home here IS ``Path.home()/.hermes`` (profiles are HOME-anchored), which the
+    # auth-store seat belt takes for the real user store while pytest's marker is set.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     results = _discover_and_call(two_profile_homes, "mcp__gh__whoami", {})
 
-    assert results == {"default": "GH_TOKEN=fake-token-default", "worker": "GH_TOKEN=fake-token-worker"}
+    assert results == {
+        "default": "GITHUB_PERSONAL_ACCESS_TOKEN=fake-GITHUB_PERSONAL_ACCESS_TOKEN-default "
+                   "ROTATION_CREDENTIAL=fake-ROTATION_CREDENTIAL-default",
+        "worker": "GITHUB_PERSONAL_ACCESS_TOKEN=fake-GITHUB_PERSONAL_ACCESS_TOKEN-worker"}
 
 
 def test_profile_with_other_profile_identity_header_gets_its_own_http_connection(two_profile_homes, tmp_path):

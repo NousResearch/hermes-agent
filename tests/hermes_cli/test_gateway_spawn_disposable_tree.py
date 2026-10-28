@@ -63,6 +63,10 @@ def test_canonical_code_root_still_spawns(tmp_path, monkeypatch):
     seen = []
     # The test runner's own interpreter may live under a scratch venv: pin the canonical one.
     monkeypatch.setattr(start.sys, "executable", str(Path.home() / ".hermes/hermes-agent/venv/bin/python3"))
+    # On darwin the flat Popen is only reached when start_gateway_job declines (returns None);
+    # otherwise launchctl probes via Popen-free subprocess machinery would hit this fake first.
+    # Pinning it to None keeps the spawn on the exact flat-Popen path this test asserts.
+    monkeypatch.setattr(start, "start_gateway_job", lambda *a, **k: None)
 
     def popen(command, **kwargs):
         seen.append(kwargs["cwd"])

@@ -103,6 +103,60 @@ _HEADLESS_MSG = (
     "`hermes dashboard` for the browser UI."
 )
 
+# ---------------------------------------------------------------------------
+# Installable app (PWA)
+# ---------------------------------------------------------------------------
+# Chrome only offers "Install app" for an origin that serves a web app manifest (name, 192px
+# and 512px icons, start_url, standalone display) AND registers a service worker with a fetch
+# handler. Both are served from the backend rather than baked into the bundle so they follow a
+# reverse-proxy prefix (``X-Forwarded-Prefix``) without a rebuild.
+PWA_MANIFEST_PATH = "/manifest.webmanifest"
+PWA_SERVICE_WORKER_PATH = "/sw.js"
+_PWA_ICON_DIR = "pwa"
+# Matches the default dashboard theme background (web/src/themes/presets.ts) so the install
+# splash does not flash a foreign colour before the SPA paints.
+_PWA_BACKGROUND = "#041c1c"
+
+
+def pwa_manifest(prefix: str = "") -> dict[str, Any]:
+    """The dashboard's web app manifest, rooted at the served mount (``prefix`` or ``/``)."""
+    base = prefix or ""
+    return {
+        "id": f"{base}/",
+        "name": "Hermes Agent",
+        "short_name": "Hermes",
+        "description": "Hermes Agent dashboard",
+        "start_url": f"{base}/",
+        "scope": f"{base}/",
+        "display": "standalone",
+        "orientation": "any",
+        "background_color": _PWA_BACKGROUND,
+        "theme_color": _PWA_BACKGROUND,
+        "icons": [
+            {
+                "src": f"{base}/{_PWA_ICON_DIR}/{name}",
+                "sizes": size,
+                "type": "image/png",
+                "purpose": "any",
+            }
+            for name, size in (("icon-192.png", "192x192"), ("icon-512.png", "512x512"))
+        ],
+        "prefer_related_applications": False,
+    }
+
+
+# Deliberately cache-free. The dashboard serves a per-session token inside index.html and
+# per-request data everywhere else, so a caching worker would serve stale credentials, stale
+# session state, or a stale bundle after `hermes update`. The fetch listener exists only to
+# satisfy installability; the browser performs its own network fetch.
+PWA_SERVICE_WORKER_JS = """// Hermes dashboard service worker — installability only, never caches.
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', () => {
+  // Intentionally no interception: the request goes to the network untouched.
+});
+"""
+
 
 def mount_spa(application: FastAPI):
     """Mount the built SPA; unmatched paths fall back to index.html for client-side routing.
@@ -223,8 +277,20 @@ def mount_spa(application: FastAPI):
                          'href="/ds-assets/', 'src="/ds-assets/'):
                 html = html.replace(attr, attr.replace('"/', f'"{prefix}/', 1))
         theme_bootstrap = _render_active_theme_bootstrap_css()
+        # Installable-app wiring: the manifest link and the service-worker registration follow
+        # the mount prefix, and the worker never caches (see PWA_SERVICE_WORKER_JS).
+        pwa_link = f'<link rel="manifest" href="{prefix}{PWA_MANIFEST_PATH}"/>'
+        sw_register = (
+            "<script>if('serviceWorker' in navigator){"
+            "addEventListener('load',function(){"
+            f"navigator.serviceWorker.register('{prefix}{PWA_SERVICE_WORKER_PATH}',"
+            f"{{scope:'{prefix}/'}}).catch(function(){{}});"
+            "});}</script>"
+        )
         if theme_bootstrap:
-            html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
+            html = html.replace("</head>", f"{theme_bootstrap}{pwa_link}{sw_register}</head>", 1)
+        else:
+            html = html.replace("</head>", f"{pwa_link}{sw_register}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
         return HTMLResponse(html, headers=_NO_STORE)
 
@@ -266,6 +332,24 @@ def mount_spa(application: FastAPI):
         await asset_files[directory](scope, receive, send)
 
     application.mount("/assets", serve_assets, name="assets")
+
+    @application.get(PWA_MANIFEST_PATH)
+    async def serve_pwa_manifest(request: Request):
+        """Web app manifest — what makes the dashboard installable as an app."""
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        return JSONResponse(pwa_manifest(prefix), media_type="application/manifest+json", headers=_NO_STORE)
+
+    @application.get(PWA_SERVICE_WORKER_PATH)
+    async def serve_pwa_service_worker(request: Request):
+        """Cache-free service worker; ``Service-Worker-Allowed`` lets it claim the whole mount."""
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        return Response(
+            content=PWA_SERVICE_WORKER_JS,
+            media_type="text/javascript",
+            # no-cache (not no-store): the worker script must be revalidated so a dashboard
+            # update replaces it, while the browser keeps its own byte-code cache for speed.
+            headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": f"{prefix}/"},
+        )
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):

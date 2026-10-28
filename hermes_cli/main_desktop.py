@@ -254,14 +254,46 @@ def _recover_interrupted_swap(live: Path, aside: Path) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+def _move_live_app_aside(live_root: Path, previous: Path, held_by: Optional[list], consent) -> None:
+    """First swap rename. On Windows a refusal names the programs whose working folder is inside
+    ``live_root``, the folder being renamed (#101789), and retries once only after the user
+    consented to closing them. A program in a sibling folder (``win-arm64-unpacked``) does not
+    block this rename, so it is neither named nor offered for closing."""
+    try:
+        _rename_riding_out_file_lock(live_root, previous)
+        return
+    except PermissionError:
+        if sys.platform != "win32":
+            raise
+        from hermes_cli.desktop_release_holders import find_release_cwd_holders, release_after_refused_rename
+        holders, closed = release_after_refused_rename(live_root, consent=consent)
+        if not closed:
+            if held_by is not None:
+                held_by.extend(holders)
+            raise
+    try:
+        _rename_riding_out_file_lock(live_root, previous)
+    except PermissionError:
+        if held_by is not None:
+            held_by.extend(find_release_cwd_holders(live_root))
+        raise
+
+
+def _swap_staged_desktop_app(
+    desktop_dir: Path, staging_dir: Path, *, held_by: Optional[list] = None,
+) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
-    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
+    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises.
+    ``held_by`` collects the named programs that blocked the swap (Windows cwd holders)."""
+    from hermes_cli.desktop_release_holders import take_consent
+    from hermes_cli.update_receipt import _launcher_correlation_id
+    release_dir = desktop_dir / "release"
+    # A "close and retry" consent covers this one attempt of the run it was given for (#101789).
+    consent = take_consent(release_dir, _launcher_correlation_id())
     staged_exe = _desktop_packaged_executable_in(staging_dir)
     if staged_exe is None:
         shutil.rmtree(staging_dir, ignore_errors=True)
         return None
-    release_dir = desktop_dir / "release"
     try:
         staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
         live_root = release_dir / staged_root.name
@@ -278,7 +310,7 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            _rename_riding_out_file_lock(live_root, previous)
+            _move_live_app_aside(live_root, previous, held_by, consent)
         try:
             _rename_riding_out_file_lock(staged_root, live_root)
         except OSError:
@@ -1214,7 +1246,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if _sandbox_helper_is_setuid_root(st):
         return True
 
-    if _desktop_linux_userns_sandbox_available():
+    from hermes_cli.main_desktop_apparmor import chromium_userns_sandbox_verdict
+
+    verdict = chromium_userns_sandbox_verdict(packaged_executable)
+    if verdict if verdict is not None else _desktop_linux_userns_sandbox_available():
         print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
         return True
 
@@ -1403,7 +1438,13 @@ def _promote_staged_desktop_app(
             print(f"✗ The built {staged_executable.name} failed its integrity check: {error}\n"
                   f"    at: {staged_executable}")
         raise RuntimeError(f"Desktop build produced no launchable app. {_PREVIOUS_APP_KEPT}")
-    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+    held_by: list = []
+    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir, held_by=held_by)
+    if packaged_executable is None and held_by:
+        from hermes_cli.desktop_release_holders import describe_block, holder_names
+        print(describe_block(held_by, desktop_dir / "release"))
+        raise RuntimeError(
+            f"Could not publish the desktop build: {holder_names(held_by)} is using its folder. {_PREVIOUS_APP_KEPT}")
     if packaged_executable is None:
         print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
         raise RuntimeError(f"Could not publish the desktop build. {_PREVIOUS_APP_KEPT}")
@@ -1465,6 +1506,9 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     try:
         run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
+            from hermes_cli.update_stage import publish_stage
+
+            publish_stage("Packaging the desktop app")
             run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
                            cwd=desktop_dir, env=build_env)
@@ -1581,10 +1625,12 @@ def _check_desktop_skip_build(
 
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
+    from hermes_cli.main_desktop_apparmor import print_no_sandbox_fallback
+
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            print_no_sandbox_fallback(packaged_executable)
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
@@ -1627,6 +1673,27 @@ def _launch_installed_macos_desktop_app() -> bool:
     return True
 
 
+def _run_desktop_one_shot(args: argparse.Namespace, desktop_dir: Path, *, bundled: bool) -> None:
+    """Run a host-setup one-shot flag, then exit without building or launching."""
+    # macOS: a self-signed code-signing identity so TCC grants survive rebuilds.
+    if getattr(args, "setup_tcc_identity", False):
+        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
+        identity = getattr(args, "identity", None) or "Hermes Local Signing"
+        sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
+    # Linux: the per-binary AppArmor profile for Chromium's namespace sandbox (#130177).
+    if getattr(args, "install_apparmor_profile", False):
+        from hermes_cli.bundled_app import NotBundledApp, resolve_bundle_layout
+        from hermes_cli.main import PROJECT_ROOT
+        from hermes_cli.main_desktop_apparmor import install_profile
+        exe = _desktop_packaged_executable(desktop_dir)
+        if bundled:
+            with contextlib.suppress(NotBundledApp):
+                exe = resolve_bundle_layout(PROJECT_ROOT).launcher
+        if exe is None:
+            print(f"✗ No packaged Hermes Desktop found under {desktop_dir / 'release'}; run `hermes desktop` first.")
+        sys.exit(0 if exe is not None and install_profile(exe) else 1)
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1667,12 +1734,7 @@ def cmd_gui(args: argparse.Namespace):
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
 
-    # macOS-only one-shot: create a self-signed code-signing identity so TCC
-    # grants survive rebuilds, then exit without building/launching.
-    if getattr(args, "setup_tcc_identity", False):
-        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
-        identity = getattr(args, "identity", None) or "Hermes Local Signing"
-        sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
+    _run_desktop_one_shot(args, desktop_dir, bundled=bundled)
 
     if bundled:
         _launch_bundled_desktop(args, env, config_electron_flags)
@@ -1769,6 +1831,7 @@ def cmd_gui(args: argparse.Namespace):
                 raise FileNotFoundError(executable)
         except OSError as exc:
             print(f"✗ Prepared Electron runtime is missing: {exc}")
+            print("  From the project root, run: node scripts/build/electron-runtime.mjs --source .")
             raise SystemExit(1) from exc
         launch_command = [str(executable), "."]
     else:
@@ -1916,14 +1979,7 @@ def _launch_bundled_desktop(
         print("  The install is damaged — reinstall Hermes from the website.")
         sys.exit(1)
 
-    launch_command = [str(layout.launcher)]
-    if not _desktop_linux_sandbox_fixup(layout.launcher):
-        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(layout.launcher):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
-            launch_command.append("--no-sandbox")
-        else:
-            sys.exit(1)
-
+    launch_command = _packaged_desktop_launch_command(layout.launcher)
     launch_command.extend(electron_flags)
     launch_command.extend(_explicit_profile_args())
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)

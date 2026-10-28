@@ -37,7 +37,9 @@ def register_timeout_notice(
     session_key = runner._ctx.session_key or ""
     if not request_id or not session_key:
         return
-    timeout_s = approval_timeout_seconds()
+    timeout_s = approval_data.get("timeout_s")
+    if timeout_s is None:
+        timeout_s = approval_timeout_seconds()
 
     def settle(reason: str) -> None:
         if reason != "timeout":
@@ -73,7 +75,10 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
 
 async def _edit_card(adapter, chat_id: str, message_id: str, content: str) -> bool:
     """Edit the card in place (drops the buttons on platforms whose edit replaces the markup)."""
-    edit: Optional[Callable[..., Any]] = getattr(adapter, "edit_message", None)
+    expire = getattr(type(adapter), "expire_exec_approval", None)
+    edit: Optional[Callable[..., Any]] = (
+        adapter.expire_exec_approval if callable(expire) else getattr(adapter, "edit_message", None)
+    )
     if edit is None:
         return False
     try:

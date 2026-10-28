@@ -195,6 +195,18 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
 
+    def test_resolves_index_heading_written_as_prefix(self, tmp_path):
+        """The skills index groups plugin skills under a ``plugin`` heading; models call
+        ``plugin:<namespace>:<skill>``, which must load the same skill."""
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path, plugin="agent-plugin-blender-5a80e4ba", name="blender")
+        result = json.loads(skill_view("plugin:agent-plugin-blender-5a80e4ba:blender"))
+
+        assert result["success"] is True
+        assert result["name"] == "agent-plugin-blender-5a80e4ba:blender"
+        assert "blender body." in result["content"]
+
     def test_reads_supporting_file_with_containment(self, tmp_path):
         from tools.skills_tool import skill_view
 

@@ -1,13 +1,39 @@
 // Canonical local authority wire adapter. Remote legacy transports keep their
 // existing protocol; unsupported explicit semantics fail before network admission.
 
+import { randomUuid } from '@hermes/shared'
+
 export const CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
+
+/** Dial `/api/ws` or a sibling stream beside it. A local gateway's one-use ticket leaves the URL
+ *  for the gateway subprotocol; a remote route keeps its own query credential. */
+export function openGatewaySocket(url: string): WebSocket {
+  const parsed = new URL(url)
+
+  if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
+  const ticket = parsed.searchParams.get('ticket')
+
+  if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
+  parsed.searchParams.delete('ticket')
+
+  return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
+}
 
 export const canonicalProfile = (profile: unknown): string =>
   typeof profile === 'string' && profile ? profile : 'default'
 
 export const canonicalSessionKey = (sessionId: unknown, profile?: unknown): string =>
   JSON.stringify([canonicalProfile(profile), sessionId])
+
+const admissionObservers = new Set<(admissionId: string, status: string) => void>()
+
+/** Every `prompt.submit` this Desktop's canonical clients send (composer, edit and regenerate,
+ *  Quick Entry, bots) reports its accepted admission here, whichever surface sent it. */
+export function observeCanonicalAdmissions(observer: (admissionId: string, status: string) => void): () => void {
+  admissionObservers.add(observer)
+
+  return () => admissionObservers.delete(observer)
+}
 
 /** Live events and retained snapshots must describe the same answerable card. */
 export function canonicalPromptParams(kind: unknown, sessionId: string, prompt: Record<string, unknown>): Record<string, unknown> {
@@ -185,7 +211,7 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
 
   // The owner admits identified input only. An identityless producer (session tile, quick entry,
   // bot chats) is a fresh send on every call, which is what the legacy wire did with it.
-  if (method === 'prompt.submit' && !params.submission_id && !params.input_id) { return { ...params, submission_id: crypto.randomUUID() } }
+  if (method === 'prompt.submit' && !params.submission_id && !params.input_id) { return { ...params, submission_id: randomUuid() } }
 
   return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
 }
@@ -246,12 +272,16 @@ export class CanonicalDesktopProtocol {
     // failure carries no reason; its outcome is unknown and the token stays for the exact retry.
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
+    // Any typed refusal of a rewind wrote nothing. A derived /undo or /retry is retained by operation
+    // alone, so keeping the refused request would resend it for every later /undo instead of deriving.
+    if (typeof reason === 'string' && params.operation === 'rewind') { this.forgetMutation(params) }
+
     // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
     if (reason !== 'revision_conflict' && reason !== 'stale_generation' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 
     // A confirmed fence refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
-    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    this.forgetMutation(params)
     // The owner names its current fences on the refusal: adopt them so the next attempt presents them.
     const data = (error as { data?: { revision?: unknown; execution_generation?: unknown } })?.data
     const owner = canonicalSessionKey(params.session_id, params.profile)
@@ -289,9 +319,13 @@ export class CanonicalDesktopProtocol {
     return POLICY_EDIT_METHODS.has(method) && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
-  private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
+  // `derived`: the payload was derived from a snapshot (a typed /undo or /retry names the Nth newest user
+  // turn). Keyed by operation alone, as Ink's mutateCanonical and the classic PreparedMutations do: a
+  // retry after a lost reply re-presents the original target, never one re-derived from a transcript the
+  // first attempt already rewound.
+  private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean, derived = false): Record<string, unknown> {
     const owner = canonicalSessionKey(sessionId, profile)
-    const key = JSON.stringify([owner, operation, payload])
+    const key = JSON.stringify([owner, operation, derived ? null : payload])
     this.retireMutations(owner, key)
     const retained = this.mutations.get(key)
 
@@ -303,7 +337,7 @@ export class CanonicalDesktopProtocol {
 
     if (withGeneration && generation === undefined) { throw new Error('Session execution identity unavailable; reconnect before this command') }
 
-    const mutation: Record<string, unknown> = { session_id: sessionId, request_id: crypto.randomUUID(), expected_revision: revision,
+    const mutation: Record<string, unknown> = { session_id: sessionId, request_id: randomUuid(), expected_revision: revision,
       ...(withGeneration ? { expected_generation: generation } : {}), operation, payload }
 
     this.mutations.set(key, mutation)
@@ -317,6 +351,38 @@ export class CanonicalDesktopProtocol {
     // Routing belongs to the envelope, independently of the canonical payload.
     // Creation applies its own default-profile normalization.
     return method !== 'session.create' && params.profile !== undefined ? { ...prepared, profile: params.profile } : prepared
+  }
+
+  private fencedMutation(method: string, params: Record<string, unknown>, fenced: { operation: string; payload: Record<string, unknown> }): Record<string, unknown> {
+    // An edit / regenerate / restore names its target explicitly; a typed /undo or /retry derives it.
+    const derived = method === 'session.rewind' && params.derived_target === true
+
+    // A replay-only probe only ever re-presents the retained rewind (localAnswer handles the rest).
+    if (derived && params.replay_only === true && !this.retainsDerivedRewind(params.session_id, params.profile)) {
+      throw new Error('No retained rewind to replay')
+    }
+
+    return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true, derived)
+  }
+
+  // A typed /undo or /retry whose reply was lost is still retained for its exact retry.
+  private retainsDerivedRewind(sessionId: unknown, profile: unknown): boolean {
+    return this.mutations.has(JSON.stringify([canonicalSessionKey(sessionId, profile), 'rewind', null]))
+  }
+
+  // A request this protocol answers without the owner, or undefined. A replay-only /undo or /retry
+  // probe with no retained rewind owes nothing: no request is sent, and the command derives its target.
+  localAnswer(method: string, params: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (method === 'session.rewind' && params.replay_only === true && !this.retainsDerivedRewind(params.session_id, params.profile)) {
+      return { session_id: params.session_id, status: 'nothing', rewound_count: 0 }
+    }
+
+    return undefined
+  }
+
+  // Drop the retained request the owner answered: its outcome is known, so no retry may resend it.
+  private forgetMutation(params: Record<string, unknown>) {
+    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
   }
 
   // Only a session's very next control may retry an ambiguous one: any other verb retires the rest.
@@ -379,7 +445,7 @@ export class CanonicalDesktopProtocol {
       'session.rewind': () => ({ operation: 'rewind', payload: { target_message_id: params.target_message_id } })
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 
-    if (fenced) { return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true) }
+    if (fenced) { return this.fencedMutation(method, params, fenced) }
 
     if (method === 'session.model') {
       const payload = { ...(params.payload as Record<string, unknown>), ...(typeof params.confirm === 'string' ? { confirm: params.confirm } : {}) }
@@ -473,7 +539,7 @@ export class CanonicalDesktopProtocol {
       ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && typeof value === 'string' && value !== '')))
 
     const key = JSON.stringify(result)
-    const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
+    const requestId = params.request_id ?? this.creates.get(key) ?? randomUuid()
     this.creates.set(key, String(requestId))
 
     return { ...result, request_id: requestId, source: 'gui' }
@@ -600,9 +666,17 @@ export class CanonicalDesktopProtocol {
 
   private admissionReceipt(method: string, params: Record<string, unknown>, value: any): any {
     if (method === 'prompt.submit') {
+      // TUI-26: a bare stop phrase typed into a LOCAL voice chat ended that chat on the owner and
+      // admitted nothing. An allowlisted no-admission variant: only these fields pass through.
+      if (value.voice_stopped === true && value.admission_id === undefined && value.ref === undefined) {
+        return { voice_stopped: true, session_id: params.session_id, submission_id: params.submission_id ?? params.input_id }
+      }
+
       if (value.ref?.session_id !== params.session_id || typeof value.admission_id !== 'string') {
         throw new Error('Canonical admission receipt destination mismatch')
       }
+
+      for (const observe of admissionObservers) { observe(value.admission_id, String(value.status ?? '')) }
 
       return { ...value, session_id: value.ref.session_id, submission_id: params.submission_id ?? params.input_id }
     }
@@ -619,7 +693,7 @@ export class CanonicalDesktopProtocol {
   private mutationReceipt(method: string, params: Record<string, unknown>, value: any): any {
     if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
-    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    this.forgetMutation(params)
     this.settleModelConfirmation(params)
     this.retireSupersededMutations(params, value.revision)
 
@@ -675,9 +749,10 @@ export class CanonicalDesktopProtocol {
       return projected
     })
 
-    const open_requests = prompts.map((prompt: Record<string, unknown>) => ({
+    // The owner's server requests (setup cards, batch clarify, sudo) ride beside the projected prompts.
+    const open_requests = [...(value.open_requests ?? []), ...prompts.map((prompt: Record<string, unknown>) => ({
       id: prompt.prompt_id, method: prompt.kind, params: canonicalPromptParams(prompt.kind, sid, prompt)
-    }))
+    }))]
 
     return { ...value, open_requests, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, replay_epoch: value.replay_epoch, last_sequence: value.last_sequence, execution_generation: value.execution_generation, running: value.running } }
   }

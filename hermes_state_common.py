@@ -359,6 +359,22 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+# A first prompt is durable in ``session_admissions`` from admission on, while its transcript row lands
+# only at turn start; a restart in between leaves the admission ``unknown`` and the session at 0
+# messages. Only a session with neither messages nor an admission is an empty launch stub.
+_NOT_A_LAUNCH_STUB_SQL = (
+    "(s.message_count > 0 OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = s.id))")
+
+
+def launch_stub_filter_sql(db) -> str:
+    """``sessions s`` predicate that drops empty launch stubs (the CLI crashed or a resume failed before
+    the first turn). A read-only open does not migrate, so a store from before the runtime tables may
+    lack ``session_admissions``; messages alone decide there."""
+    if db._read_all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_admissions'"):
+        return _NOT_A_LAUNCH_STUB_SQL
+    return "s.message_count > 0"
+
+
 def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
     """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
     matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``

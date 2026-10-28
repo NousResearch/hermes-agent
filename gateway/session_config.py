@@ -33,6 +33,16 @@ def _authorize(connection, ref, params):
     return None
 
 
+def mcp_revision(policy, cfg) -> str:
+    """``mcp_rev``: the MCP-relevant sections a client polls (``config.get mtime``) and names back on
+    ``reload.mcp``. Read from the session's frozen policy when it has one — a live config edit is not an
+    MCP reload request, it reaches a chat as a committed generation — so the value a client is told to load
+    is the value the session already holds."""
+    return hashlib.sha256(json.dumps({k: (policy.config() if policy else cfg).get(k)
+                                      for k in ('mcp', 'mcp_servers', 'tools')},
+                                     sort_keys=True).encode()).hexdigest()[:12]
+
+
 def _client_config(cfg):
     # Native full-config consumers are presentation-only. Do not export provider,
     # MCP, plugin or terminal configuration (which can contain arbitrary secrets).
@@ -71,6 +81,7 @@ async def config_get(connection, ref, params):
     def read():
         from gateway.run import _profile_runtime_scope
         from hermes_cli.config import load_config
+        from hermes_cli.config_backend import config_version_or_none, version_token
         from hermes_cli.config_effective import load_user_config_effective
         from hermes_constants import DEFAULT_INDICATOR_STYLE
         from tools.approval_context import _get_approval_mode
@@ -82,13 +93,9 @@ async def config_get(connection, ref, params):
                 # The user's own settings, not DEFAULT_CONFIG: clients read an absent key as their
                 # own default (the TUI streams unless display.streaming is explicitly false).
                 'full': lambda: {'config': _client_config(load_user_config_effective(home / 'config.yaml'))},
-                'mtime': lambda: {'mtime': (home / 'config.yaml').stat().st_mtime
-                                 if (home / 'config.yaml').exists() else 0,
+                'mtime': lambda: {'mtime': version_token(config_version_or_none(home / 'config.yaml')),
                                  # Frozen tool policy is not a live MCP reload request.
-                                 'mcp_rev': hashlib.sha256(json.dumps({
-                                     k: (policy.config() if policy else cfg).get(k)
-                                     for k in ('mcp', 'mcp_servers', 'tools')},
-                                     sort_keys=True).encode()).hexdigest()[:12]},
+                                 'mcp_rev': mcp_revision(policy, cfg)},
                 'reasoning': lambda: _reasoning(agent, policy, cfg, connection, ref),
                 'fast': lambda: _fast(connection, ref, policy, agent, cfg),
                 'skin': lambda: {'value': display.get('skin', 'default')},
@@ -109,6 +116,8 @@ async def config_get(connection, ref, params):
 def session_voice_mode(connection, ref):
     """``off`` / ``voice_only`` / ``all``: the session's ``/voice`` mode as the messaging handler stored it."""
     runner, live = connection.authority.runner, connection.authority.sessions[ref.session_id]
+    if live.source is None:  # a history mount: no chat for a voice mode to belong to
+        return 'off'
     modes = getattr(runner, '_voice_mode', None) or {}
     return modes.get(runner._voice_key_for_source(live.source), 'off')
 
@@ -123,6 +132,8 @@ def local_voice_enabled(session_id):
     for authority in all_authorities(_ACTIVE_RUNNER):
         live = getattr(authority, 'sessions', {}).get(session_id)
         if live is not None:
+            if live.source is None:  # a history mount: no chat for a voice mode to belong to
+                return False
             modes = getattr(_ACTIVE_RUNNER, '_voice_mode', None) or {}
             return modes.get(_ACTIVE_RUNNER._voice_key_for_source(live.source), 'off') != 'off'
     return None
@@ -218,8 +229,8 @@ async def model_options(connection, ref, params):
             selected = provider
             if selected == 'custom':
                 from hermes_cli.runtime_provider import canonical_custom_identity
-                selected = canonical_custom_identity(base_url=base_url, config_provider=ctx.current_provider,
-                                                     model=model) or selected
+                selected = canonical_custom_identity(base_url=base_url, config_provider=ctx.current_provider, model=model,
+                                                     requested=getattr(agent, 'requested_provider', None)) or selected
             return build_model_options_payload(ctx.with_overrides(current_provider=selected,
                 current_model=model, current_base_url=base_url), **{k: params[k] for k in flags & params.keys()})
     return await asyncio.to_thread(discover)

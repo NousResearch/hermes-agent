@@ -17,6 +17,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone, UTC
 from pathlib import Path
+from collections.abc import Collection
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -27,6 +28,7 @@ from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
+from hermes_cli.web_whatsapp_session import _backup_whatsapp_session
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
@@ -51,6 +53,8 @@ _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "h
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
 load_env = late("load_env", "hermes_cli.config")
+get_secret_source_values = late("get_secret_source_values", "hermes_cli.env_loader")
+builtin_platform_status = late("builtin_platform_status", "gateway.config_env")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
@@ -103,10 +107,10 @@ def _env_value_rules(platform_id: str) -> dict[str, tuple[Any, str]]:
     """``{env key: (accepts(value), 400 detail)}`` declared on the platform plugin's PlatformEntry
     (``env_value_rules``; e.g. Telegram/Slack reject credentials clearly in the wrong field).
 
-    Resolve this in the request's own scope, right after :func:`_require_platform`: the catalog build
-    there has just materialized every plugin entry, so the lookup imports nothing, whereas inside
-    ``_profile_scope`` the registry's profile overlay may not hold the entry and every rule would
-    silently stop applying. Without rules on the entry (the dashboard's own profile disabled the
+    Resolve this in the target profile's scope, right after :func:`_require_platform`: the catalog build
+    there has just materialized that profile's plugin entries, so the lookup imports nothing, whereas in
+    a scope whose catalog was never built the registry's overlay may not hold the entry and every rule
+    would silently stop applying. Without rules on the entry (the dashboard's own profile disabled the
     plugin, a user plugin overrides it) a bundled platform's ``dashboard_card.py`` answers, read from
     its file: the rules guard the edited profile's values whatever the dashboard's profile loads."""
     from gateway.platform_env import bundled_sibling
@@ -156,23 +160,30 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 
 def _platform_enablement(
-    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
+    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
+    source_keys: Collection[str] = (),
 ) -> tuple[bool, bool, dict | None]:
-    """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
-    config.yaml + .env only — load_gateway_config()'s env-override layer reads
-    os.environ and would leak the root install's tokens into the profile's state."""
+    """(enabled, configured, home_channel). Profile-scoped: the profile's config.yaml, .env and
+    enabled secret sources only, never ``load_gateway_config()`` (see ``builtin_platform_status``)."""
     required = entry["required_env"]
     if scoped:
-        configured = bool(required) and all(env_on_disk.get(key) for key in required)
+        # ``source_keys``: names the profile's enabled secret sources resolved (1Password, Bitwarden, a plugin).
+        configured = bool(required) and all(env_on_disk.get(key) or key in source_keys for key in required)
         try:
-            plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
+            config = load_config()
+            plat_cfg = (config.get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
-            # Setup writes credentials without a platforms entry; explicit disable wins.
-            raw_enabled = plat_cfg.get("enabled")
-            enabled = False if raw_enabled is False else bool(raw_enabled) or configured
+            status = None if required else builtin_platform_status(platform_id, config)
+            if status is not None:
+                enabled, configured = status  # token-free built-in: nothing to judge but the gateway's verdict
+            else:
+                # Setup writes credentials without a platforms entry; explicit disable wins.
+                raw_enabled = plat_cfg.get("enabled")
+                enabled = False if raw_enabled is False else bool(raw_enabled) or configured
             home_channel = hc if isinstance(hc, dict) else None
-        except Exception:
+        except Exception:  # health: allow BLE001 -- one platform's bad config must not blank the page
+            _log.debug("Profile-scoped status for %s failed", platform_id, exc_info=True)
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
@@ -192,7 +203,7 @@ def _platform_enablement(
 
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
-    scoped: bool = False, profile_home: Optional[Path] = None,
+    scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -227,12 +238,12 @@ def _messaging_platform_payload(
     for key in entry["env_vars"]:
         value, info = env_value(key), _messaging_env_info(key)
         env_vars.append({
-            "key": key, "required": key in entry["required_env"], "is_set": bool(value),
+            "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
             "value": value if info["is_list"] else None, **info,
         })
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
     if gateway_running and runtime_platform.get("mirrored_from"):
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
@@ -289,7 +300,12 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # ``hermes --profile X serve``).
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
     runtime = served_profile_runtime(own_home, runtime) or runtime
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
+    # Credentials a secret manager supplies have no .env line; only values the profile's enabled
+    # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
+    source_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
+    source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
+                                        profile_home=scoped_dir, source_keys=source_keys)
             for entry in entries]
 
 
@@ -435,6 +451,7 @@ def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
     except Exception:
         with contextlib.suppress(Exception):
             proc.kill()
+            proc.wait(timeout=3)
 
 
 def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WHATSAPP_ONBOARDING_TERMINAL_STATUSES) -> None:
@@ -485,7 +502,8 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
                 record = _whatsapp_onboarding_sessions.get(pairing_id)
                 if not record or record.proc is not proc:
                     return
-                _apply_pairing_event(record, payload)
+                if record.status not in {"cancelled", "expired"}:
+                    _apply_pairing_event(record, payload)
         returncode = proc.wait()
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
@@ -501,40 +519,71 @@ def _run_whatsapp_pairing(pairing_id: str, session_path: Path, mode: str) -> Non
     with _whatsapp_onboarding_lock:
         record = _whatsapp_onboarding_sessions.get(pairing_id)
         if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+            if record:
+                _release_whatsapp_reservation(record)
             return
         record.status = "installing"
+        record.starting_process = True
 
     try:
-        proc = _spawn_whatsapp_pairing_process(session_path, mode)
-    except Exception as exc:
-        _fail_whatsapp_pairing(pairing_id, str(exc))
-        return
-
-    with _whatsapp_onboarding_lock:
-        record = _whatsapp_onboarding_sessions.get(pairing_id)
-        if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
-            _terminate_whatsapp_pairing(proc)
+        try:
+            proc = _spawn_whatsapp_pairing_process(session_path, mode)
+        except Exception as exc:
+            _fail_whatsapp_pairing(pairing_id, str(exc))
             return
-        record.proc = proc
-        record.status = "starting"
 
-    _watch_whatsapp_pairing(pairing_id, proc)
+        with _whatsapp_onboarding_lock:
+            record.starting_process = False
+            record.proc = proc
+            if record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+                _terminate_whatsapp_pairing(proc)
+                return
+            record.status = "starting"
+
+        _watch_whatsapp_pairing(pairing_id, proc)
+    finally:
+        with _whatsapp_onboarding_lock:
+            record.starting_process = False
+            _release_whatsapp_reservation(record)
+
+
+def _release_whatsapp_reservation(record: _WhatsAppOnboardingSession) -> None:
+    """Call under the onboarding lock. A live writer keeps its reservation."""
+    if not record.session_reserved or record.starting_process:
+        return
+    if record.proc is None and record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+        return  # A queued worker has not entered its startup section yet.
+    if record.proc is not None and record.proc.poll() is None:
+        return
+    from gateway.status_scoped_locks import release_scoped_lock
+
+    release_scoped_lock("whatsapp-session", record.session_path)
+    record.session_reserved = False
+    if record.expiry_timer is not None:
+        record.expiry_timer.cancel()
+
+
+def _expire_whatsapp_pairing(record: _WhatsAppOnboardingSession) -> None:
+    with _whatsapp_onboarding_lock:
+        if record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES or record.session_reserved:
+            record.status = "expired"
+            record.error = "WhatsApp QR setup expired. Start a new setup."
+            _terminate_whatsapp_pairing(record.proc)
+        _release_whatsapp_reservation(record)
 
 
 def _prune_whatsapp_onboarding_sessions() -> None:
     now = time.time()
     remove_ids: list[str] = []
     for pairing_id, record in _whatsapp_onboarding_sessions.items():
+        _release_whatsapp_reservation(record)
         live = record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES
         if live and record.proc is not None and record.proc.poll() is not None:
             record.status = "error"
             record.error = "WhatsApp pairing process exited before pairing completed."
-            live = False
-        if live and record.expires_at_ts <= now:
-            _terminate_whatsapp_pairing(record.proc)
-            record.status = "expired"
-            record.error = "WhatsApp QR setup expired. Start a new setup."
-        if record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES and record.expires_at_ts + 300 <= now:
+        if record.expires_at_ts <= now:
+            _expire_whatsapp_pairing(record)
+        if record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES and not record.session_reserved and record.expires_at_ts + 300 <= now:
             remove_ids.append(pairing_id)
     for pairing_id in remove_ids:
         _whatsapp_onboarding_sessions.pop(pairing_id, None)
@@ -555,28 +604,81 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
     return pairing_id
 
 
+def _reserve_whatsapp_session(record: _WhatsAppOnboardingSession) -> None:
+    """Reserve before moving keys or launching a writer, including its queued start."""
+    from gateway.status import acquire_scoped_lock
+
+    busy = "WhatsApp is in use. Disable WhatsApp and restart the gateway, then try re-pairing again."
+    for existing in _whatsapp_onboarding_sessions.values():
+        if existing.session_path == record.session_path and (
+            existing.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES
+            or existing.session_reserved or existing.starting_process
+            or (existing.proc is not None and existing.proc.poll() is None)
+        ):
+            raise HTTPException(status_code=409, detail="Another WhatsApp QR setup is still active. Cancel it or wait for it to stop before re-pairing.")
+    acquired, previous = acquire_scoped_lock("whatsapp-session", record.session_path, metadata={"owner_kind": "process"})
+    if not acquired or previous and previous.get("pid") == os.getpid():
+        # Self-reacquisition is allowed for gateway reconnects. Reset must not
+        # borrow or release a lock already held by this process.
+        raise HTTPException(status_code=409, detail=busy)
+    record.session_reserved = True
+
+
+def _launch_whatsapp_pairing(pairing_id: str, record: _WhatsAppOnboardingSession, session_path: Path) -> None:
+    from agent.memory_provider import spawn_context_thread
+
+    record.expiry_timer = threading.Timer(_WHATSAPP_ONBOARDING_TTL_SECONDS, _expire_whatsapp_pairing, args=(record,))
+    record.expiry_timer.daemon = True
+    launched = False
+    try:
+        record.expiry_timer.start()
+        spawn_context_thread(_run_whatsapp_pairing, name="whatsapp-pairing",
+                             args=(pairing_id, session_path, record.mode)).start()
+        launched = True
+    finally:
+        if not launched:
+            record.status = "error"
+            _release_whatsapp_reservation(record)
+
+
 @router.post("/api/messaging/whatsapp/onboarding/start")
-async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
+async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart, profile: Optional[str] = None):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
 
-    with _config_profile_scope(body.profile):
+    target_profile = body.profile or profile
+    with _config_profile_scope(target_profile), _whatsapp_onboarding_lock:
+        _prune_whatsapp_onboarding_sessions()
         session_path = _whatsapp_session_path()
+        if any(r.session_path == str(session_path) and r.session_reserved for r in _whatsapp_onboarding_sessions.values()):
+            raise HTTPException(status_code=409, detail="Another WhatsApp QR setup is still active. Cancel it or wait for it to stop before re-pairing.")
         expires_at_ts = time.time() + _WHATSAPP_ONBOARDING_TTL_SECONDS
-        fields = dict(
+        fields: dict[str, Any] = dict(
             proc=None, mode=mode, allowed_users=allowed_users, session_path=str(session_path),
             expires_at=datetime.fromtimestamp(expires_at_ts, UTC).isoformat().replace("+00:00", "Z"),
-            expires_at_ts=expires_at_ts, profile=body.profile,
+            expires_at_ts=expires_at_ts, profile=target_profile,
         )
-        already_linked = (session_path / "creds.json").exists()
+        already_linked = not body.reset_session and (session_path / "creds.json").exists()
         if already_linked:  # creds on disk: report connected without pairing
             account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
             fields.update(status="connected", account_id=account_id, account_name=account_name, account_phone=account_phone)
 
-    record = _WhatsAppOnboardingSession(**fields)
-    pairing_id = _register_whatsapp_session(session_path, record)
-    if not already_linked:
-        threading.Thread(target=_run_whatsapp_pairing, args=(pairing_id, session_path, mode), daemon=True).start()
+        record = _WhatsAppOnboardingSession(**fields)
+        if already_linked:
+            pairing_id = _register_whatsapp_session(session_path, record)
+        else:
+            _reserve_whatsapp_session(record)
+            launched = False
+            try:
+                if body.reset_session:
+                    _backup_whatsapp_session(session_path)
+                pairing_id = _register_whatsapp_session(session_path, record)
+                _launch_whatsapp_pairing(pairing_id, record, session_path)
+                launched = True
+            finally:
+                if not launched:
+                    record.status = "error"
+                    _release_whatsapp_reservation(record)
     return _whatsapp_onboarding_payload(pairing_id, record)
 
 
@@ -600,6 +702,7 @@ async def get_whatsapp_onboarding_status(pairing_id: str):
 
 @router.post("/api/messaging/whatsapp/onboarding/{pairing_id}/apply")
 async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApply, profile: Optional[str] = None):
+    await _wait_whatsapp_pairing_flush(pairing_id)
     with _whatsapp_onboarding_lock:
         record = _whatsapp_record_or_404(pairing_id)
         if record.status != "connected":
@@ -623,19 +726,43 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
             _write_platform_enabled("whatsapp", True)
 
     with _whatsapp_onboarding_lock:
-        _whatsapp_onboarding_sessions.pop(pairing_id, None)
+        # A connected pair-only bridge may still be flushing credentials.
+        # Retain it for reset's writer guard until that process has exited.
+        if record.proc is None or record.proc.poll() is not None:
+            _whatsapp_onboarding_sessions.pop(pairing_id, None)
 
     restart_result = _restart_gateway_after_whatsapp_onboarding(effective_profile)
     return {"ok": True, "platform": "whatsapp", "needs_restart": not restart_result["restart_started"], **restart_result}
 
 
+async def _wait_whatsapp_pairing_flush(pairing_id: str) -> None:
+    with _whatsapp_onboarding_lock:
+        record = _whatsapp_record_or_404(pairing_id)
+        if record.status != "connected":
+            raise HTTPException(status_code=409, detail="WhatsApp setup is not connected yet.")
+    if record.session_reserved and record.proc is not None:
+        try:
+            await asyncio.to_thread(record.proc.wait, timeout=3)
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=409, detail="WhatsApp is still saving its linked device. Wait a moment and try Save and restart again.") from exc
+    with _whatsapp_onboarding_lock:
+        _release_whatsapp_reservation(record)
+        if record.session_reserved:
+            raise HTTPException(status_code=409, detail="WhatsApp is still finishing pairing. Wait a moment and try Save and restart again.")
+
+
 @router.delete("/api/messaging/whatsapp/onboarding/{pairing_id}")
 async def cancel_whatsapp_onboarding(pairing_id: str):
     with _whatsapp_onboarding_lock:
-        record = _whatsapp_onboarding_sessions.pop(pairing_id, None)
-    if record:
-        record.status = "cancelled"
-        _terminate_whatsapp_pairing(record.proc)
+        record = _whatsapp_onboarding_sessions.get(pairing_id)
+        if record:
+            record.status = "cancelled"
+            _terminate_whatsapp_pairing(record.proc)
+            _release_whatsapp_reservation(record)
+            # Keep a cancelled worker visible until its process launch has
+            # finished. It may still be opening the session directory.
+            if not record.starting_process and (record.proc is None or record.proc.poll() is not None):
+                _whatsapp_onboarding_sessions.pop(pairing_id, None)
     return {"ok": True}
 
 
@@ -862,10 +989,15 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
 
 @router.put("/api/messaging/platforms/{platform_id}")
 async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate, profile: Optional[str] = None):
-    entry = _require_platform(platform_id)
-    env_value_rules = _env_value_rules(platform_id)
-
     target_profile = body.profile or profile
+
+    def _resolve():
+        # Plugin platforms (and their value rules) are registered per profile: resolve them in the
+        # target's scope, the catalog GET /api/messaging/platforms?profile= lists.
+        with _profile_scope(target_profile):
+            return _require_platform(platform_id), _env_value_rules(platform_id)
+
+    entry, env_value_rules = await asyncio.to_thread(_resolve)
     if body.enabled:
         conflict = await asyncio.to_thread(_multiplex_port_binding_conflict, platform_id, target_profile)
         if conflict:
@@ -1063,11 +1195,10 @@ def _messaging_platform_posture(
 
 @router.post("/api/messaging/platforms/{platform_id}/test")
 async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
-    entry = _require_platform(platform_id)
-    authz_env = _platform_authz_env_names(platform_id)
-
     def _run():
         with _profile_scope(profile) as scoped_dir:
+            entry = _require_platform(platform_id)
+            authz_env = _platform_authz_env_names(platform_id)
             payload = _platform_payloads(scoped_dir, [entry])[0]
             posture = None
             if payload["state"] == "connected":
@@ -1075,9 +1206,9 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
                 # must resolve the ACTIVE profile's env/config/pairing store, not the
                 # dashboard process's root home.
                 posture = _messaging_platform_posture(platform_id, entry, scoped_dir is not None, authz_env)
-            return payload, posture
+            return entry, payload, posture
 
-    payload, posture = await asyncio.to_thread(_run)
+    entry, payload, posture = await asyncio.to_thread(_run)
 
     def result(ok: bool, message: str) -> dict[str, Any]:
         return {"ok": ok, "state": payload["state"], "message": message}

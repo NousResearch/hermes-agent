@@ -20,15 +20,12 @@ from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, 
 
 def _kbc():
     from hermes_cli import kanban_db_connect
-
     return kanban_db_connect
 
 
 def _kbd():
     from hermes_cli import kanban_db_dispatch
-
     return kanban_db_dispatch
-
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 
@@ -52,10 +49,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     try:
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
     except (ValueError, TypeError):
-        logger.warning(
-            "kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 60",
-            kanban_cfg.get("dispatch_interval_seconds"),
-        )
+        logger.warning("kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 60",
+                       kanban_cfg.get("dispatch_interval_seconds"))
         interval = 60.0
     interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
@@ -80,18 +75,12 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     try:
         failure_limit = int(raw_failure_limit)
     except (TypeError, ValueError):
-        logger.warning(
-            "kanban dispatcher: invalid kanban.failure_limit=%r; using default %d",
-            raw_failure_limit,
-            kb.DEFAULT_FAILURE_LIMIT,
-        )
+        logger.warning("kanban dispatcher: invalid kanban.failure_limit=%r; using default %d",
+                       raw_failure_limit, kb.DEFAULT_FAILURE_LIMIT)
         failure_limit = kb.DEFAULT_FAILURE_LIMIT
     if failure_limit < 1:
-        logger.warning(
-            "kanban dispatcher: kanban.failure_limit=%r is below 1; using default %d",
-            raw_failure_limit,
-            kb.DEFAULT_FAILURE_LIMIT,
-        )
+        logger.warning("kanban dispatcher: kanban.failure_limit=%r is below 1; using default %d",
+                       raw_failure_limit, kb.DEFAULT_FAILURE_LIMIT)
         failure_limit = kb.DEFAULT_FAILURE_LIMIT
 
     # 0 disables stale detection.
@@ -99,11 +88,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     try:
         stale_timeout_seconds = int(raw_stale or 0)
     except (TypeError, ValueError):
-        logger.warning(
-            "kanban dispatcher: invalid kanban.dispatch_stale_timeout_seconds=%r; "
-            "disabling stale detection",
-            raw_stale,
-        )
+        logger.warning("kanban dispatcher: invalid kanban.dispatch_stale_timeout_seconds=%r; "
+                       "disabling stale detection", raw_stale)
         stale_timeout_seconds = 0
 
     # Fallback profile for tasks created without an assignee (e.g. via the
@@ -113,11 +99,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     # with existing installs.
     default_assignee = (kanban_cfg.get("default_assignee") or "").strip() or None
     if default_assignee:
-        logger.info(
-            "kanban dispatcher: default_assignee=%r (unassigned ready tasks "
-            "will route to this profile)",
-            default_assignee,
-        )
+        logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
+                    "will route to this profile)", default_assignee)
 
     return _DispatcherSettings(
         interval=interval,
@@ -131,9 +114,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         default_assignee=default_assignee,
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
-        max_in_progress_per_profile=_positive_int_setting(
-            kanban_cfg, "max_in_progress_per_profile"
-        ),
+        max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
     )
 
 
@@ -151,16 +132,13 @@ class _KanbanDispatcher:
     def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:
         self.kb = kb
         self.settings = settings
-        self.disabled_corrupt_boards: dict[
-            str, tuple[tuple[str, int | None, int | None], float]
-        ] = {}
+        self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
         from hermes_cli import kanban_db as _kb
-
         with _kb.pin_first_board_resolution():
             path = self.kb.kanban_db_path(slug)
         try:
@@ -176,9 +154,7 @@ class _KanbanDispatcher:
     def is_corrupt_board_db_error(self, exc: Exception) -> bool:
         if isinstance(exc, _kbc().KanbanDbCorruptError):
             return True
-        return isinstance(exc, sqlite3.DatabaseError) and any(
-            m in str(exc).lower() for m in _CORRUPT_DB_MARKERS
-        )
+        return isinstance(exc, sqlite3.DatabaseError) and any(m in str(exc).lower() for m in _CORRUPT_DB_MARKERS)
 
     def _quarantine_lifted(self, slug: str, fingerprint: tuple) -> bool:
         """Return False while *slug* stays quarantined; lift (and log) otherwise."""
@@ -187,22 +163,13 @@ class _KanbanDispatcher:
             return True
         disabled_fingerprint, disabled_at = disabled_entry
         age = time.monotonic() - disabled_at
-        if (
-            disabled_fingerprint == fingerprint
-            and age < self.CORRUPT_BOARD_RETRY_AFTER_SECONDS
-        ):
+        if disabled_fingerprint == fingerprint and age < self.CORRUPT_BOARD_RETRY_AFTER_SECONDS:
             return False
         if disabled_fingerprint == fingerprint:
-            logger.info(
-                "kanban dispatcher: board %s database fingerprint unchanged "
-                "after %.0fs quarantine; retrying dispatch",
-                slug,
-                age,
-            )
+            logger.info("kanban dispatcher: board %s database fingerprint unchanged "
+                        "after %.0fs quarantine; retrying dispatch", slug, age)
         else:
-            logger.info(
-                "kanban dispatcher: board %s database changed; retrying dispatch", slug
-            )
+            logger.info("kanban dispatcher: board %s database changed; retrying dispatch", slug)
         self.disabled_corrupt_boards.pop(slug, None)
         return True
 
@@ -224,7 +191,6 @@ class _KanbanDispatcher:
             # HERMES_KANBAN_DB every enumerated slug must resolve to the pinned
             # file, or the dispatcher reads per-slug DBs nobody writes.
             from hermes_cli import kanban_db as _kb
-
             with _kb.pin_first_board_resolution():
                 conn = _kbc().connect(board=slug)
                 return _kbd().dispatch_once(conn, board=slug, **kwargs)
@@ -237,8 +203,7 @@ class _KanbanDispatcher:
                     "the file changes, the gateway restarts, or the "
                     "quarantine timer expires. Move or restore the file, "
                     "then run `hermes kanban init` if you need a fresh board.",
-                    slug,
-                    fingerprint[0],
+                    slug, fingerprint[0],
                 )
                 return None
             logger.exception("kanban dispatcher: tick failed on board %s", slug)
@@ -264,15 +229,12 @@ class _KanbanDispatcher:
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
         from hermes_cli import kanban_db as _kb
-
         with _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 conn = None
                 try:
                     conn = _kbc().connect(board=slug)
-                    if kbd.has_spawnable_ready(conn) or (
-                        _review_probe and kbd.has_spawnable_review(conn)
-                    ):
+                    if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
                         return True
                 except Exception:
                     continue
@@ -296,7 +258,6 @@ class _KanbanDispatcher:
         attempted = 0
         successes = 0
         from hermes_cli import kanban_db as _kb
-
         with _default_profile_secret_scope(), _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
@@ -309,11 +270,7 @@ class _KanbanDispatcher:
                     try:
                         triage_ids = _decomp.list_triage_ids()
                     except Exception as exc:
-                        logger.debug(
-                            "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
-                            slug,
-                            exc,
-                        )
+                        logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
                         triage_ids = []
                     for tid in triage_ids:
                         if attempted >= auto_decompose_per_tick:
@@ -337,25 +294,12 @@ class _KanbanDispatcher:
             return 0
         if not outcome.ok:
             # Common no-op reasons (no aux client) must not spam logs every tick.
-            logger.warning(
-                "kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason
-            )
+            logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
             return 0
         if outcome.fanout and outcome.child_ids:
-            logger.info(
-                "kanban auto-decompose [%s]: %s → %d children",
-                slug,
-                tid,
-                len(outcome.child_ids),
-            )
-        elif getattr(outcome, "mode", None) == "repair" and getattr(outcome, "new_status", None):
-            logger.info(
-                "kanban auto-decompose [%s]: %s → repair → %s", slug, tid, outcome.new_status
-            )
+            logger.info("kanban auto-decompose [%s]: %s → %d children", slug, tid, len(outcome.child_ids))
         else:
-            logger.info(
-                "kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid
-            )
+            logger.info("kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid)
         return 1
 
 
@@ -368,21 +312,14 @@ def _default_profile_secret_scope():
     LLM reads ``auxiliary.*`` from ``get_hermes_home()``, so its credentials come
     from that same home. No-op for single-profile gateways.
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope,
-        is_multiplex_active,
-        reset_secret_scope,
-        set_secret_scope,
-    )
+    from agent.secret_scope import is_multiplex_active, reset_secret_scope, set_secret_scope
     from hermes_constants import get_hermes_home
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     if not is_multiplex_active():
         yield
         return
-    token = set_secret_scope(
-        build_profile_secret_scope(Path(get_hermes_home())),
-        profile_home=str(get_hermes_home()),
-    )
+    token = set_secret_scope(owner_secret_scope(Path(get_hermes_home())), profile_home=str(get_hermes_home()))
     try:
         yield
     finally:
@@ -392,16 +329,14 @@ def _default_profile_secret_scope():
 def _log_spawn_results(results: Optional[list]) -> bool:
     """Log per-board spawn summaries; returns whether any board spawned."""
     any_spawned = False
-    for slug, res in results or []:
+    for slug, res in (results or []):
         if res is not None and getattr(res, "spawned", None):
             any_spawned = True
             # Quiet by default: an idle gateway stays silent.
             logger.info(
                 "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
                 "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                slug,
-                len(res.spawned),
-                res.reclaimed,
+                slug, len(res.spawned), res.reclaimed,
                 len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                 res.promoted,

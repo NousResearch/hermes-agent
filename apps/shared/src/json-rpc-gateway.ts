@@ -168,6 +168,14 @@ export class JsonRpcGatewayClient {
   > &
     Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
 
+  /**
+   * This client is the Desktop app on the backend's own machine, read at each socket open
+   * (`JsonRpcRequestChannelOptions.desktopLocal`). Only the Desktop's client knows; others are not.
+   */
+  protected isDesktopLocal(): boolean {
+    return false
+  }
+
   constructor(options: GatewayClientOptions = {}) {
     this.options = {
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
@@ -187,6 +195,7 @@ export class JsonRpcGatewayClient {
     }
     this.channel = new JsonRpcRequestChannel({
       createRequestId: this.options.createRequestId,
+      desktopLocal: () => this.isDesktopLocal(),
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
       heartbeatIntervalMs: this.options.heartbeatIntervalMs,
       // Desktop/web and the TUI alike count any inbound frame as liveness

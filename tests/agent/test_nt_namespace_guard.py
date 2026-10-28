@@ -61,7 +61,7 @@ class TestNtNamespaceGuard(unittest.TestCase):
         join would hide the prefix."""
         from pathlib import Path
 
-        from agent import context_references, copilot_acp_client, tool_executor
+        from agent import acp_client, context_references, tool_executor
         from tools.file_tools import patch_tool, read_file_tool, search_tool, write_file_tool
 
         bad = "\\??\\UNC\\attacker.example\\share\\x"
@@ -80,7 +80,7 @@ class TestNtNamespaceGuard(unittest.TestCase):
             checkpoint_agent = SimpleNamespace(_checkpoint_mgr=MagicMock(enabled=True))
             tool_executor._ensure_file_checkpoint(checkpoint_agent, "write_file", {"path": bad}, "default")
             checkpoint_agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
-            for fs_handler in (copilot_acp_client._fs_read_text_file, copilot_acp_client._fs_write_text_file):
+            for fs_handler in (acp_client._fs_read_text_file, acp_client._fs_write_text_file):
                 with self.assertRaisesRegex(PermissionError, "NT/device namespace"):
                     fs_handler({"path": bad, "content": "x"}, "/tmp")
             with self.assertRaisesRegex(ValueError, "NT/device namespace"):

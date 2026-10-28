@@ -210,6 +210,16 @@ def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
     return False
 
 
+def observe_gateway_settle(session_key: str, request_id: str, observer) -> bool:
+    """Observe a pending approval without replacing its existing settle hook."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.observers.append(observer)
+                return True
+    return False
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:
@@ -1043,7 +1053,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+    if env_type in ("modal", "daytona", "vercel_sandbox"):
         return True
     # Plugin backends declare the same classification through the provider ABI (#94400);
     # fail-soft to False so an unknown or raising backend — or a raising registry

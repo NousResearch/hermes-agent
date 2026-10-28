@@ -28,12 +28,14 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants
+from cron.jobs_model_pin import _main_model_pin
 from cron.scheduler_ownership import _claim_owner_is_dead
-from cron import store_health
+from cron import extra_fire, store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -258,15 +260,14 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
     EVERY cron function forever, so poll LOCK_NB against a deadline; the caller picks the
     degraded mode."""
     if fcntl is not None:
-        deadline = time.monotonic() + timeout
-        while True:
+        def _try_flock() -> bool:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return True
             except OSError:
-                if time.monotonic() >= deadline:
-                    return False
-                time.sleep(0.1)
+                return False
+
+        return poll_until(_try_flock, timeout, 0.1)
     if msvcrt is not None:
         msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
         return True
@@ -1652,26 +1653,6 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
-def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
-    """``(provider, model)`` the main agent runs on right now (``model.default`` + the provider it
-    resolves to), for ``pinned=True`` jobs: the lock is a plain per-job pin, so the scheduler needs
-    no second precedence axis. ``(None, None)`` when nothing is configured (the job stays unpinned)."""
-    from hermes_cli.config_effective import load_user_config_effective
-
-    cfg_path = get_hermes_home() / "config.yaml"
-    cfg = load_user_config_effective(cfg_path) if cfg_path.exists() else {}
-    model_cfg = cfg.get("model") or {}
-    model = model_cfg.get("default") or model_cfg.get("model") if isinstance(model_cfg, dict) else model_cfg
-    model = _normalize_job_optional_text(model)
-    if not model:
-        return None, None
-    provider = None
-    with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
-    return (provider.lower() if provider else None), model
-
-
 def _normalize_job_optional_text(
     value: Any, *, strip_trailing_slash: bool = False
 ) -> Optional[str]:
@@ -2197,8 +2178,9 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[dic
         "paused_at": None,
         "paused_reason": None,
         "next_run_at": manual_run_at,
-        # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state.
-        "manual_run_at": manual_run_at,
+        # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state; the
+        # overwritten slot comes back at claim time (an extra fire, cron/extra_fire.py).
+        "manual_run_at": manual_run_at, extra_fire.RESTORE_KEY: extra_fire.restore_target(job),
         "manual_run_prompt": (extra_prompt or None),
     })
 
@@ -2341,6 +2323,7 @@ def _record_run_outcome(
     """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
     job["last_run_at"] = now
     job.pop("manual_run_at", None)
+    job.pop("manual_run_restore_at", None)
     # The transient manual-run context is single-fire: the run that just completed consumed it.
     job.pop("manual_run_prompt", None)
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
@@ -2437,7 +2420,8 @@ def mark_job_run(
     recover_consumed_fire: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
-    and retire the record as a terminal completion when the repeat limit is reached.
+    and retire the record as a terminal completion when the repeat limit is reached. A manual run
+    (an extra fire, ``cron/extra_fire.py``) bumps nothing and keeps the pending occurrence.
 
     ``delivery_error`` is separate from the agent error: agent succeeded but delivery failed records
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
@@ -2468,11 +2452,17 @@ def mark_job_run(
                     job_id)
                 return False
         now = _hermes_now().isoformat()
+        extra = extra_fire.is_extra(job)  # read before the outcome clears the claim
+        held = extra_fire.held_markers(job) if extra else {}
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        job.update(held)  # a run-now queued mid-run is its own fire, not this one
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
-        _advance_after_run(job, now, ladder_rung=ladder_rung)
+        if extra:  # a manual run: repeat budget and pending occurrence untouched
+            extra_fire.settle(job, now)
+        else:
+            _advance_after_run(job, now, ladder_rung=ladder_rung)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
@@ -2498,71 +2488,6 @@ def mark_job_run(
     return _under_fire_fence(job_id, locked)
 
 
-def _write_oneshot_diagnostic(job: dict[str, Any], text: str, what: str) -> bool:
-    """Best-effort operator-visible trace in the job's output dir; never breaks the caller."""
-    try:
-        save_job_output(job.get("id", ""), text)
-        return True
-    except Exception as e:
-        logger.debug("Failed to write %s diagnostic for job %r: %s", what, job.get("id"), e)
-        return False
-
-
-def _write_wedged_oneshot_diagnostic(job: dict[str, Any]) -> None:
-    """Trace for a wedged one-shot removal: dispatch was claimed but mark_job_run never ran
-    (interrupted mid-run); removing it silently would leave no output, error, or record.
-
-    A finite one-shot whose dispatch was claimed (``repeat.completed`` >= ``repeat.times``) but which never
-    reached ``mark_job_run`` (``last_run_at`` is null) was interrupted mid-run — scheduler restart, gateway
-    kill, or a non-Exception escape (#73973). The recovery guards remove such jobs so they stop appearing
-    due, but a silent removal leaves the user with no output, no error, and no job record. Write a small
-    diagnostic file into the job's output directory so the removal is observable and debuggable.
-    """
-    if job.get("last_run_at") is not None:
-        return  # a prior run was recorded — normal completion race, not a wedge
-    repeat = job.get("repeat") or {}
-    claim = job.get("run_claim") or {}
-    written = _write_oneshot_diagnostic(
-        job,
-        "# Cron job removed without producing output\n\n"
-        f"- job id: {job.get('id')}\n"
-        f"- name: {job.get('name')}\n"
-        f"- dispatch claimed: {repeat.get('completed', '?')}/{repeat.get('times', '?')}\n"
-        f"- run claimed at: {claim.get('at', 'unknown')} by {claim.get('by', 'unknown')}\n"
-        f"- removed at: {_hermes_now().isoformat()}\n\n"
-        "This one-shot job's dispatch was claimed, but the run never "
-        "completed (`last_run_at` was never written) — the scheduler "
-        "process was most likely killed or restarted mid-execution. The "
-        "job has been removed to stop it re-firing; recreate it to run "
-        "again.\n",
-        "wedged-oneshot")
-    if written:
-        logger.warning(
-            "Job '%s': removed without a completed run — diagnostic written to "
-            "its output directory",
-            job.get("name", job.get("id", "?")))
-
-
-def _write_missed_oneshot_diagnostic(job: dict[str, Any], next_run: str) -> None:
-    """Trace for a never-ran one-shot retired outside the grace window (else it would just vanish).
-    """
-    _write_oneshot_diagnostic(
-        job,
-        "# Cron job removed before firing (run time outside grace window)\n\n"
-        f"- job id: {job.get('id')}\n"
-        f"- name: {job.get('name')}\n"
-        f"- scheduled run time: {next_run}\n"
-        f"- grace window: {ONESHOT_GRACE_SECONDS}s\n"
-        f"- removed at: {_hermes_now().isoformat()}\n\n"
-        "This one-shot's run time is more than the grace window in the "
-        "past (scheduler down past the window, host asleep, or jobs.json "
-        "edited), which is outside the 'will never fire' contract "
-        "enforced at create/update/resume time. The job was removed "
-        "without running; recreate it (or use the Run button) to "
-        "schedule it again.\n",
-        "missed-oneshot")
-
-
 def claim_dispatch(job_id: str) -> bool:
     """Atomically claim a finite one-shot dispatch BEFORE execution: ``repeat.completed`` is bumped
     and persisted under the jobs lock so a tick dying mid-execution cannot lose the dispatch
@@ -2579,6 +2504,8 @@ def claim_dispatch(job_id: str) -> bool:
         times = repeat.get("times")
         # Recurring jobs use advance_next_run(); no/infinite repeat limit always dispatches.
         if job.get("schedule", {}).get("kind") != "once" or times is None or times <= 0:
+            return True
+        if extra_fire.is_extra(job):  # a manual run leaves the scheduled fire's budget alone
             return True
         completed = repeat.get("completed", 0)
         label = job.get("name", job.get("id", "?"))
@@ -2598,7 +2525,8 @@ def claim_dispatch(job_id: str) -> bool:
             jobs.pop(i)
             # See #73973.
             save_jobs(jobs, removed_ids={job_id})
-            _write_wedged_oneshot_diagnostic(job)
+            from cron.jobs_oneshot_diagnostics import write_wedged
+            write_wedged(job)
             logger.info(
                 "Job '%s': dispatch limit reached (%d/%d) — removing", label, completed, times)
             return False
@@ -2681,6 +2609,7 @@ def advance_next_runs(job_ids) -> int:
                 job["id"] not in ids
                 or (is_terminal_job(job) and not _is_recoverable_error_job(job))
                 or job.get("schedule", {}).get("kind") not in {"cron", "interval"}
+                or extra_fire.queued(job)  # the claim restores its slot; advancing erases the intent
             ):
                 continue
             new_next = compute_next_run(job["schedule"], now)
@@ -2773,7 +2702,9 @@ def claim_job_for_fire(
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
-        if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+        if slot := extra_fire.pending_slot(job, now, manual_fire):
+            extra_fire.stamp_claim(job, slot)  # off-schedule: the pending occurrence stays
+        elif job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
                 job["next_run_at"] = nxt
@@ -3143,7 +3074,8 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     if isinstance(claim, dict) and claim.get("outage") and not d.job.get("fire_claim"):
         return False
     if not (claim or d.job.get("fire_claim")):
-        _write_missed_oneshot_diagnostic(d.job, d.next_run)
+        from cron.jobs_oneshot_diagnostics import write_missed
+        write_missed(d.job, d.next_run)
         d.scan.retire(d.job["id"])
         d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
     return True
@@ -3187,7 +3119,8 @@ def _oneshot_dispatch_limit_reached(job: dict[str, Any], scan: _DueScan) -> bool
             name, completed, times)
     scan.retire(job["id"])
     # The claimed run never completed here by definition — leave an operator-visible diagnostic.
-    _write_wedged_oneshot_diagnostic(job)
+    from cron.jobs_oneshot_diagnostics import write_wedged
+    write_wedged(job)
     return True
 
 

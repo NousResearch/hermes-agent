@@ -7,14 +7,23 @@ from hermes_cli.web_server_surface import route_on
 
 # Previews keep the freedom they have under no policy at all (any http(s) library, image,
 # fetch, worker or embed); their isolation is the opaque sandbox, not a source list.
-PREVIEW_POLICY = (
-    "default-src 'none'; sandbox allow-scripts; "
+_GUEST_SOURCES = (
+    "default-src 'none'; "
     "script-src * data: blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; "
     "style-src * data: 'unsafe-inline'; img-src * data: blob:; font-src * data:; "
     "media-src * data: blob:; connect-src * data: blob:; worker-src * data: blob:; "
-    "frame-src * data: blob: about:; object-src 'none'; base-uri * about:; form-action 'none'; "
+    "frame-src * data: blob: about:; object-src 'none'; base-uri * about:; "
     "frame-ancestors 'self'"
 )
+PREVIEW_POLICY = f"{_GUEST_SOURCES}; sandbox allow-scripts; form-action 'none'"
+
+# Plugin `SandboxedFrame` data: HTML (the SDK's allowlist, never allow-same-origin): the
+# outer iframe's own sandbox attribute narrows this ceiling to what the plugin asked for,
+# and a nested frame can never hold a flag its parent lacks.
+GUEST_SANDBOX = (
+    "allow-downloads allow-forms allow-orientation-lock allow-pointer-lock allow-presentation allow-scripts"
+)
+GUEST_POLICY = f"{_GUEST_SOURCES}; sandbox {GUEST_SANDBOX}; form-action *"
 
 # D3's CSV/TSV parsers need `new Function` within the opaque preview origin.
 # An inner sandbox keeps file previews inert while the shell receives their HTML.
@@ -28,7 +37,10 @@ addEventListener('message', event => {
   if (event.source === parent && parent !== window &&
       event.origin === new URL(location.href).origin &&
       event.data?.type === 'hermes-preview-document' && typeof event.data.html === 'string') {
-    frame.setAttribute('sandbox', event.data.scripts === true ? 'allow-scripts' : '');
+    const guest = typeof event.data.sandbox === 'string';
+    frame.setAttribute('sandbox', guest ? event.data.sandbox : event.data.scripts === true ? 'allow-scripts' : '');
+    // A plugin's onLoad means its guest document loaded, not this shell.
+    frame.onload = guest ? () => parent.postMessage({type: 'hermes-guest-loaded'}, '*') : null;
     frame.srcdoc = event.data.html;
     document.body.append(frame);
   } else if (event.source === parent && event.origin === new URL(location.href).origin) {
@@ -58,6 +70,15 @@ def mount_preview_assets(application: FastAPI) -> None:
     async def preview_document():
         return HTMLResponse(PREVIEW_HTML, headers={
             "Content-Security-Policy": PREVIEW_POLICY,
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        })
+
+    @application.get("/assets/webapp-guest.html", dependencies=dependencies)
+    async def guest_document():
+        return HTMLResponse(PREVIEW_HTML, headers={
+            "Content-Security-Policy": GUEST_POLICY,
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",

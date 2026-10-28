@@ -37,6 +37,24 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     return _plugin_hooks(hook_name, **kwargs)
 
 
+def invoke_policy_hook(hook_name: str, **kwargs: Any) -> tuple[list[Any], list[Any]]:
+    """:func:`invoke_hook` for policy hooks that must be able to fail closed.
+
+    Returns ``(results, failed_callbacks)``: the non-``None`` callback results and
+    the callbacks that raised or timed out (bounded fail-closed hooks inject a
+    block directive into ``results`` AND appear in ``failed_callbacks``, so a
+    caller can tell "the policy decided no" from "the policy never decided").
+    """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return [], []
+    _observe(hook_name, **kwargs)
+    from hermes_cli import plugins
+
+    return plugins.invoke_policy_hook(hook_name, **kwargs)
+
+
 async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """:func:`invoke_hook` for callers on an event loop: same observers-then-plugins
     composition, with ``async def`` plugin callbacks awaited on that loop."""

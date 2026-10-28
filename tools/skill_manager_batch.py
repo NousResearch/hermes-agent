@@ -236,17 +236,38 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         nm = operations[0].get("name") or default_name
         if not nm:
             return tool_error("operations[0] (delete) needs a 'name'.", success=False)
+        if not _smt._skill_gate_bypass.get():
+            # The operations[] shape is one call = one whole-batch decision, even when
+            # the single op routes to the sole-delete path below.
+            refusal, _approved_digest = _smt._gate_skill_batch(operations)
+            if refusal is not None:
+                return json.dumps(refusal, ensure_ascii=False)
         return _smt.skill_manage(action="delete", name=nm, task_id=task_id, session_id=session_id,
                                  absorbed_into=operations[0].get("absorbed_into"))
     names, err = _validate_batch_ops(operations, default_name, tool_error)
     if err is not None:
         return err
     if not _smt._skill_gate_bypass.get():
+        # Whole-batch decision point (contract 1&2, vernmic 2026-10-08): one
+        # pre_skill_batch dispatch sees every operation together — before the write
+        # gate, snapshots and locks, i.e. before the first mutation. Approval is
+        # bound to the payload digest; a required policy that cannot decide
+        # fail-closes the batch. Default (no hook, no skill_policy.required):
+        # (None, None) and the path below is byte-for-byte the previous behavior.
+        refusal, approved_digest = _smt._gate_skill_batch(operations)
+        if refusal is not None:
+            return json.dumps(refusal, ensure_ascii=False)
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
+            payload = {"action": "batch", "operations": operations}
+            if approved_digest is not None:
+                # Payload binding (contract 1): the staged record carries the digest the
+                # policy approved; replay re-verifies it, so a modified/subset batch can
+                # never reuse this approval.
+                payload["payload_digest"] = approved_digest
+            return payload, gist
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged
@@ -261,10 +282,15 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         if snap_err is not None:
             shutil.rmtree(snap_root, ignore_errors=True)
             return tool_error(snap_err, success=False)
-        # Single-op path with the gate bypassed (the batch already cleared/staged it).
+        # Single-op path with the gate bypassed (the batch already cleared/staged it). Post
+        # observers are buffered: an op is not committed until the whole atomic batch commits.
         results = []
         rollback_failed = False
-        token = _smt._skill_gate_bypass.set(True)
+        failure = None
+        post_events = []
+        gate_token = _smt._skill_gate_bypass.set(True)
+        batch_size_token = _smt._skill_hook_batch_size.set(len(operations))
+        post_token = _smt._skill_post_hook_buffer.set(post_events)
         try:
             for i, op in enumerate(operations):
                 raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
@@ -275,7 +301,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
                     note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
-                    fail = {  # key order is wire-visible
+                    failure = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
                                   f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."),
@@ -284,8 +310,8 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                     # fuzzy-match hints) through — without it the model recovers blind.
                     for k, v in parsed.items():
                         if k not in ("success", "error") and v is not None:
-                            fail.setdefault(k, v)
-                    return json.dumps(fail, ensure_ascii=False)
+                            failure.setdefault(k, v)
+                    break
                 entry = {"name": names[i], "action": op["action"],
                          "file_path": op.get("file_path"), "success": True}
                 # Advisory payloads (linter findings, org-sharing note) ride on the op result; the
@@ -293,12 +319,20 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                 entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
                 results.append(entry)
         finally:
-            _smt._skill_gate_bypass.reset(token)
+            _smt._skill_post_hook_buffer.reset(post_token)
+            _smt._skill_hook_batch_size.reset(batch_size_token)
+            _smt._skill_gate_bypass.reset(gate_token)
             if rollback_failed:
                 # Keep the snapshots so the operator can still recover by hand.
                 logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
             else:
                 shutil.rmtree(snap_root, ignore_errors=True)
+        if failure is not None:
+            # Every attempted operation gets exactly one completion event, and a rolled-back
+            # sibling is reported as failed rather than as a durable success.
+            _smt._flush_skill_post_hooks(post_events, batch_error=failure["error"])
+            return json.dumps(failure, ensure_ascii=False)
+        _smt._flush_skill_post_hooks(post_events)
     # utf-8-sig + errors="replace": SKILL.md files are user-authored and sometimes carry a Notepad BOM or
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms
     # — falling back to the machine locale (cp1252/GBK) would make the same skill render differently per

@@ -286,8 +286,7 @@ pack contains:
 | `WINDOWS.md` | Windows specifics: UIA tree, UWP / `ApplicationFrameHost` hosting, Session 0 isolation, autostart pattern |
 | `LINUX.md` | Linux specifics: AT-SPI tree, X11 / Wayland, terminal-emulator detection |
 | `RECORDING.md` | Trajectory + video recording semantics |
-| `WEB_APPS.md` | Browser-page interaction tips |
-| `TESTS.md` | Replay-by-trajectory workflow |
+| `BROWSER.md` | Browser-page interaction tips |
 
 These are **platform deep dives, not duplicates of the Hermes skill** —
 when an agent reports "on Windows, my click landed on the wrong
@@ -703,7 +702,7 @@ autostart pattern — see
   (macOS no-foreground contract, Windows UIA + Session 0, Linux AT-SPI
   + X11/Wayland, recording, browser pages), run
   `cua-driver skills install` and read `MACOS.md` / `WINDOWS.md` /
-  `LINUX.md` / `RECORDING.md` / `WEB_APPS.md`. Hermes autodetection is a
+  `LINUX.md` / `RECORDING.md` / `BROWSER.md`. Hermes autodetection is a
   planned follow-up; currently point Hermes at the installed pack directory
   or symlink it into your skill space.
 - **cua.ai/docs** — the cua-driver project's documentation:

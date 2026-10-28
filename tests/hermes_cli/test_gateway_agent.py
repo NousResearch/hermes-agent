@@ -123,6 +123,33 @@ def test_tool_events_drive_progress_and_complete_callbacks(make_agent):
     assert completes == [("c1", "read_file", {"path": "notes.txt"}, "{}")]
 
 
+def _write_with_diff():
+    return [frame("tool.complete", {"tool_id": "c1", "name": "write_file", "args": {"path": "a.txt"},
+                                    "result": "{}", "is_error": False, "duration_s": 0.1,
+                                    "inline_diff": "a.txt\n@@ -0,0 +1 @@\n+alpha\n"}),
+            frame("message.complete", {"text": "DONE", "outcome": "completed"})]
+
+
+def test_inline_diff_printed_when_complete_callback_wired(make_agent, monkeypatch):
+    import cli
+    printed, completes = [], []
+    monkeypatch.setattr(cli, "_cprint", lambda text, *a, **k: printed.append(text))
+    agent, _ = make_agent(_write_with_diff(), tool_complete_callback=lambda *a: completes.append(a))
+    agent.run_conversation("write it")
+    assert any("+alpha" in line for line in printed)
+    assert completes == []  # the CLI callback would render the same diff again
+
+
+def test_inline_diff_suppressed_without_complete_callback(make_agent, monkeypatch):
+    """-Q and display.inline_diffs: false leave tool_complete_callback unset; no diff on stdout."""
+    import cli
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", lambda text, *a, **k: printed.append(text))
+    agent, _ = make_agent(_write_with_diff())
+    agent.run_conversation("write it")
+    assert not any("+alpha" in line for line in printed)
+
+
 def test_approval_request_calls_cli_approval_callback_then_responds(make_agent):
     from tools.terminal_tool import set_approval_callback
     seen = []

@@ -191,6 +191,10 @@ class MCPServerTransportMixin:
         mode, so handshake-era servers pay zero extra round-trips. ``stateless`` probes discover first
         (one legacy retry on any error); ``legacy`` is handshake only. A TIMEOUT never falls back."""
         def call(method: str):
+            if method == 'initialize' and getattr(self, '_private_carrier_ready', False):
+                from tools.mcp_tool_private import initialize_with_private_offer
+                return asyncio.wait_for(initialize_with_private_offer(session, self._session_kwargs()),
+                                        timeout=connect_timeout)
             return asyncio.wait_for(getattr(session, method)(), timeout=connect_timeout)
 
         async def attempt(primary, fallback, should_fallback, log_fmt, *log_extra):

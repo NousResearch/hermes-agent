@@ -213,6 +213,7 @@ class Issuer:
                 raise PermissionError("fixed forwarding binding unavailable")
             # Commit before network I/O. No retry or remote absence inference on failure.
             db.execute("UPDATE permits SET status='unknown' WHERE lease=?", (lease,))
+            db.execute("UPDATE operations SET status='unknown' WHERE ref=?", (row['ref'],))
         result = forward_https(target['forwardUrl'], self.forward_context,
                                {"version": 1, "binding": expected, "origin": origin, "input": input_value})
         with self._db() as db:

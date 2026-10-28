@@ -6,6 +6,9 @@ on import, plugin discovery or gateway startup. No header/JSON identity fallback
 import hashlib
 import json
 import ssl
+import socket
+import threading
+from socketserver import ThreadingMixIn
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from hermes_cli.private_invocation_store import canonical
@@ -18,6 +21,22 @@ def serve(issuer, address, tls_context):
         raise ValueError('issuer requires TLS 1.2 or newer')
 
     class Redemption(BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            # Absolute header/body admission deadline also defeats a slow byte trickle.
+            def close_stalled():
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            self._admission_timer = threading.Timer(5, close_stalled)
+            self._admission_timer.daemon = True
+            self._admission_timer.start()
+
+        def finish(self):
+            self._admission_timer.cancel()
+            super().finish()
+
         def log_message(self, format, *args):
             # Neither URL nor request/result/private exceptions enter access logs.
             return
@@ -35,6 +54,7 @@ def serve(issuer, address, tls_context):
                 if not certificate:
                     raise PermissionError('authenticated peer required')
                 request = json.loads(self.rfile.read(length))
+                self._admission_timer.cancel()
                 peer = hashlib.sha256(certificate).hexdigest()
                 if self.path.endswith('/redeem'):
                     if set(request) != {'version', 'reference', 'binding'} or request['version'] != 1:
@@ -60,8 +80,42 @@ def serve(issuer, address, tls_context):
             self.end_headers()
             self.wfile.write(body)
 
-    with HTTPServer(address, Redemption) as server:
-        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
+    class BoundedServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+        request_queue_size = 8
+
+        def __init__(self, *args):
+            self.slots = threading.BoundedSemaphore(4)
+            super().__init__(*args)
+
+        def process_request(self, request, client_address):
+            if not self.slots.acquire(blocking=False):
+                request.close()
+                return
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self.slots.release()
+                raise
+
+        def process_request_thread(self, request, client_address):
+            wrapped = None
+            try:
+                # Accept is raw. A peer cannot block the listener in TLS accept.
+                request.settimeout(5)
+                wrapped = tls_context.wrap_socket(request, server_side=True,
+                                                  do_handshake_on_connect=False)
+                wrapped.do_handshake()
+                # Header parsing has the same finite inactivity deadline.
+                wrapped.settimeout(5)
+                super().process_request_thread(wrapped, client_address)
+            except (OSError, ssl.SSLError):
+                pass
+            finally:
+                (wrapped or request).close()
+                self.slots.release()
+
+    with BoundedServer(address, Redemption) as server:
         server.serve_forever(poll_interval=0.5)
 
 

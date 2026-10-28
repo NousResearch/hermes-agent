@@ -42,7 +42,7 @@ class PrivateCall:
                 or type(args['calls']) is not dict or set(args['calls']) != {'path', 'input'}):
             raise PermissionError('private v1 requires one exact direct call')
         target = self.issuer.targets[self.server]
-        if args['calls']['path'] != target['toolPath']:
+        if args['calls']['path'] != target['catalogPath']:
             raise PermissionError('configured tool path mismatch')
         ref = self.issuer.issue(self.reference, self.server, self.operation, self.action, args['calls']['input'])
         self._wire_ref = ref
@@ -94,3 +94,33 @@ def response_hook(server):
         if getattr(server, '_private_request', None) is not None and 300 <= response.status_code < 400:
             raise PermissionError('private invocation redirects forbidden')
     return check
+
+
+async def initialize_with_private_offer(session, options):
+    """Pinned SDK public request/adopt API: experimental is not extensions.
+
+    No SDK mutation or readiness override. Unsupported SDKs use their ordinary
+    handshake and therefore cannot dispatch a requiring private call.
+    """
+    from importlib.metadata import version
+    if version('mcp') != '2.3.0':
+        return await session.initialize()
+    from mcp import types
+    from mcp_types.version import LATEST_HANDSHAKE_VERSION, HANDSHAKE_PROTOCOL_VERSIONS
+    capabilities = types.ClientCapabilities(
+        experimental={'privateInvocation': DESCRIPTOR},
+        sampling=(options.get('sampling_capabilities') or types.SamplingCapability())
+                 if options.get('sampling_callback') is not None else None,
+        elicitation=types.ElicitationCapability(form=types.FormElicitationCapability(),
+                    url=types.UrlElicitationCapability()) if options.get('elicitation_callback') is not None else None,
+        roots=types.RootsCapability(list_changed=True) if options.get('list_roots_callback') is not None else None,
+    )
+    result = await session.send_request(types.InitializeRequest(params=types.InitializeRequestParams(
+        protocol_version=LATEST_HANDSHAKE_VERSION, capabilities=capabilities,
+        client_info=options.get('client_info') or types.Implementation(name='hermes-agent', version='0'))),
+        types.InitializeResult)
+    if result.protocol_version not in HANDSHAKE_PROTOCOL_VERSIONS:
+        raise RuntimeError('Unsupported private invocation handshake version')
+    session.adopt(result)
+    await session.send_notification(types.InitializedNotification())
+    return result

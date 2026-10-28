@@ -23,16 +23,17 @@ def _bounded_group(group):
     memory = int((root / 'memory.max').read_text())
     tasks = int((root / 'pids.max').read_text())
     quota, period = map(int, (root / 'cpu.max').read_text().split())
-    if not (0 < memory <= 450 * 1024 * 1024 and 0 < tasks <= 12 and 0 < quota <= period):
-        raise ValueError('fixture exceeds 1 CPU / 450 MiB / 12 task allowance')
-    if (root / 'cgroup.procs').read_text().strip():
-        raise ValueError('fixture cgroup must initially be empty and independently owned')
+    if not (0 < memory <= 6 * 1024 * 1024 * 1024 and 0 < tasks <= 256 and 0 < quota <= 4 * period):
+        raise ValueError('fixture exceeds admitted 4 CPU / 6 GiB / 256 task allowance')
+    current = Path('/sys/fs/cgroup' + next(line.split(':', 2)[2].strip() for line in Path('/proc/self/cgroup').read_text().splitlines() if line.startswith('0:')))
+    if current.resolve() != root:
+        raise ValueError('driver must already be owned by the admitted supervisor cgroup')
     return root
 
 
 def run(args):
     fixture = json.loads(Path(args.fixture).read_text(encoding='utf-8'))
-    required = {'home', 'gatewayPython', 'issuerFactory', 'journal', 'cgroup', 'readbackUrl', 'readbackTlsFactory'}
+    required = {'home', 'gatewayPython', 'issuerFactory', 'journal', 'cgroup', 'readbackUrl', 'readbackTlsFactory', 'componentRoot'}
     if set(fixture) != required:
         raise ValueError('exact real-fixture manifest required')
     home = Path(fixture['home']).resolve()
@@ -41,9 +42,15 @@ def run(args):
     group = _bounded_group(fixture['cgroup'])
     # The driver joins before spawning; all descendant threads/processes inherit
     # the aggregate bound. No root provisioning or resource increase is performed.
-    (group / 'cgroup.procs').write_text(str(os.getpid()), encoding='ascii')
-    env = dict(os.environ)
-    env['HERMES_HOME'] = str(home)
+    # Membership was independently provisioned and verified before any allocation.
+    from tools.environments.local import served_profile_child_env
+    # An explicit minimal base prevents launch-profile credentials, selectors and
+    # import paths from becoming a second source of fixture authority.
+    base = {'PATH': os.defpath, 'LANG': 'C.UTF-8'}
+    env = served_profile_child_env(base, target_home=home, inherit_credentials=True)
+    issuer_env = served_profile_child_env(base, target_home=home, inherit_credentials=False)
+    module_path = os.pathsep.join([str(Path(__file__).resolve().parents[1]), str(Path(fixture['componentRoot']).resolve())])
+    env['PYTHONPATH'] = issuer_env['PYTHONPATH'] = module_path
     commands = [[sys.executable, '-m', 'hermes_cli.private_invocation_transport',
                  '--factory', fixture['issuerFactory']],
                 [fixture['gatewayPython'], '-m', 'hermes_cli.main', 'gateway', 'run']]
@@ -55,7 +62,7 @@ def run(args):
             log_path = output / f'process-{index}.private.log'
             log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb')
             files.append(log)
-            children.append(subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT))
+            children.append(subprocess.Popen(command, env=issuer_env if index == 0 else env, stdout=log, stderr=subprocess.STDOUT))
         print('Use genuine human native messaging events in the disposable fixture now.', flush=True)
         end = time.monotonic() + args.seconds
         while time.monotonic() < end:
@@ -72,6 +79,7 @@ def run(args):
         import ssl
         from urllib.parse import urlsplit
         from urllib.request import build_opener, HTTPSHandler, HTTPRedirectHandler, ProxyHandler
+        sys.path.insert(0, str(Path(fixture['componentRoot']).resolve()))
         module, name = fixture['readbackTlsFactory'].split(':', 1)
         tls = getattr(importlib.import_module(module), name)()
         url = urlsplit(fixture['readbackUrl'])

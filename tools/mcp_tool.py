@@ -330,6 +330,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_max_lifetime_seconds",
         "_park_reason",
         "_pending_call_context",
+        "_private_carrier_ready",
+        "_private_request",
         "_pending_refresh_tasks",
         "_permanent_grace_used",
         "_ping_unsupported",
@@ -370,6 +372,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._tools: list = []
         self._registered_tool_names: list[str] = []
         self._config: dict = {}
+        self._private_carrier_ready = False
+        self._private_request = None
         self._error: Optional[Exception] = None
         self._sampling: Optional[SamplingHandler] = None
         self._elicitation: Optional[ElicitationHandler] = None

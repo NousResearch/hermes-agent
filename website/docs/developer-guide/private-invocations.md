@@ -61,9 +61,9 @@ configuration or identity comes from environment variables. No issuer starts
 merely because a plugin or catalog is discovered.
 
 `targets` is operator-owned and keyed by the granted MCP server name. Each entry
-pins `recipientPrincipal`, `appId`, `buildId`, `toolPath`,
+pins `recipientPrincipal`, `appId`, `buildId`, `catalogPath`, `toolPath`,
 `selectedAccountsDigest`, `action: "call"`, `bindingId`, and `forwardUrl`.
-`selectedAccountsDigest` hashes `{appAccountId,userAccountId}` (null is allowed).
+`selectedAccountsDigest` hashes `{app: {requirementName: [accountId]}, user: {requirementName: [accountId]}}`.
 The receiver must independently resolve its actual authenticated principal and
 selected accounts/app/build before redemption. Static target configuration binds
 the recipient and never supplies the messaging origin.
@@ -139,15 +139,15 @@ python -m hermes_cli.private_invocation_conformance \
 ```
 
 The private manifest has exactly `home`, `gatewayPython`, `issuerFactory`,
-`journal`, `cgroup`, `readbackUrl` and `readbackTlsFactory`. `gatewayPython` is the
+`journal`, `cgroup`, `readbackUrl`, `readbackTlsFactory` and `componentRoot`. `gatewayPython` is the
 owned development interpreter with the declared full native gateway dependencies.
 The trusted issuer factory returns `(issuer,address,TLSContext)`. The readback TLS
 factory supplies only the authenticated TLS context; the driver performs an actual
 independent HTTPS GET to read the app effect, refusing redirects. Supply the real paired modified receiver and the
 native plugin policy/consumer in the disposable gateway home. The driver starts
 the actual Hermes gateway and actual issuer in separate processes; genuine humans
-send native Slack events. It refuses a missing or nonempty owned cgroup or limits
-over 1 CPU, 450 MiB and 12 tasks. It never provisions resources or fabricates
+send native Slack events. It requires membership in the already owned supervisor cgroup,
+with limits no greater than 4 CPU, 6 GiB and 256 tasks. It never provisions resources or fabricates
 native events. It records private stdout/stderr and durable observations; exit2
 means the full acceptance matrix remains unqualified even after observations.
 
@@ -156,3 +156,10 @@ negative/tamper/replay/expiry, retained restart/rebind/revocation, lost-write
 reconciliation and result/model/trace confinement, plus ordinary-call compatibility.
 No positive behavioral execution, model call or acceptance is claimed by this source.
 The paired downstream worker catalog still needs an explicit direct-call adaptation.
+
+Trusted targets separate `catalogPath` (for example `tools["example"].dispatch`)
+from `toolPath` (`dispatch`, the resolved app-local identity). Both paths are
+fixed operator policy; appId/buildId independently pin the selected deployment.
+`selectedAccountsDigest` hashes the SDK scopedSelection output: requirement-name
+to account-ID arrays under `app` and (for user scope) `user`, including empty maps.
+Never flatten maps, sort arrays or omit an empty user map for user-scoped calls.

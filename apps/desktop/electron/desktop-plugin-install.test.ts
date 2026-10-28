@@ -124,6 +124,46 @@ describe('detectPluginComponents', () => {
   })
 })
 
+interface DetectionCase {
+  name: string
+  root: string
+  files: Record<string, string>
+  expect: { agent: boolean; desktop: boolean; agent_name: null | string }
+}
+
+// Shared with the gateway's detector (tests/hermes_cli/test_plugins_cmd_inspect.py).
+const DETECTION_CASES = (
+  JSON.parse(
+    fs.readFileSync(path.resolve(here, '..', '..', '..', 'tests', 'fixtures', 'plugin_component_detection.json'), 'utf8')
+  ) as { cases: DetectionCase[] }
+).cases
+
+describe('detectPluginComponents on the shared detection cases', () => {
+  const roots: string[] = []
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each(DETECTION_CASES)('$name', async ({ root, files, expect: expected }) => {
+    const parent = mkdtemp('hermes-detect-')
+    roots.push(parent)
+    const pluginRoot = path.join(parent, root)
+    fs.mkdirSync(pluginRoot)
+
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(pluginRoot, rel)), { recursive: true })
+      fs.writeFileSync(path.join(pluginRoot, rel), text)
+    }
+
+    const detected = await detectPluginComponents(pluginRoot)
+
+    expect({ agent: detected.agent, desktop: detected.desktop, agent_name: detected.agentName }).toEqual(expected)
+  })
+})
+
 describe('probePluginRepo', () => {
   const roots: string[] = []
 

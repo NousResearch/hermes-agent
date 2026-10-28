@@ -4,6 +4,7 @@ Every case clones a real local Git repository through the installer's clone path
 but the catalog lookup and the kill list.
 """
 
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -13,7 +14,11 @@ import pytest
 
 from hermes_cli import plugins_cmd, plugins_cmd_catalog, plugins_cmd_inspect
 from hermes_cli.plugins_cmd import PluginOperationError
-from hermes_cli.plugins_cmd_inspect import inspect_plugin_source
+from hermes_cli.plugins_cmd_inspect import detect_components, inspect_plugin_source
+
+# Shared with native Desktop's detector (apps/desktop/electron/desktop-plugin-install.test.ts).
+_DETECTION_CASES = json.loads((Path(__file__).resolve().parents[1] / "fixtures/plugin_component_detection.json")
+                              .read_text(encoding="utf-8-sig"))["cases"]
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -82,7 +87,7 @@ def test_agent_only_package_is_read_without_running_its_code(tmp_path, sentinel)
     result = inspect_plugin_source(repo.as_uri())
 
     assert result == {"ok": True, "agent": True, "desktop": False, "agent_name": "demo-agent", "desktop_name": None,
-                      "warnings": [result["warnings"][0]], "insecure": True}
+                      "sha": _git(repo, "rev-parse", "HEAD"), "warnings": [result["warnings"][0]], "insecure": True}
     assert "insecure or local scheme" in result["warnings"][0]
     assert not sentinel.exists()
 
@@ -107,7 +112,7 @@ def test_desktop_only_and_portable_packages(tmp_path):
 
     assert inspect_plugin_source(desktop.as_uri()) | {"warnings": []} == {
         "ok": True, "agent": False, "desktop": True, "agent_name": None, "desktop_name": "ui-plugin",
-        "warnings": [], "insecure": True}
+        "sha": _git(desktop, "rev-parse", "HEAD"), "warnings": [], "insecure": True}
     assert inspect_plugin_source(portable.as_uri())["agent_name"] == "portable-one"
 
 
@@ -164,8 +169,33 @@ def test_catalog_entry_is_inspected_at_its_reviewed_pin(tmp_path, sentinel, monk
     unknown = inspect_plugin_source("", catalog_name="missing")
 
     assert (pinned["ok"], pinned["agent"], pinned["desktop"]) == (True, True, False)
+    assert pinned["sha"] == pin
     assert unknown == {"ok": False, "agent": False, "desktop": False, "warnings": [], "insecure": False,
                        "error": "'missing' is not in the Hermes plugin catalog."}
+
+
+def test_the_reported_sha_is_the_commit_read_even_after_the_source_moves(tmp_path, sentinel, monkeypatch):
+    # The install is held to the reviewed commit, so a push after review must not change what is reported.
+    repo = _repo(tmp_path, _agent_files(sentinel))
+    reviewed = _git(repo, "rev-parse", "HEAD")
+
+    assert inspect_plugin_source(repo.as_uri())["sha"] == reviewed
+    moved = _commit(repo, {"desktop/plugin.js": "export default {}\n"})
+    assert inspect_plugin_source(repo.as_uri())["sha"] == reviewed  # a repeat reads the same review
+
+    monkeypatch.setattr(plugins_cmd_inspect, "_RESULT_TTL_SECONDS", -1)
+    assert inspect_plugin_source(repo.as_uri())["sha"] == moved
+
+
+@pytest.mark.parametrize("case", _DETECTION_CASES, ids=lambda case: case["name"])
+def test_detection_matches_the_shared_cases(tmp_path, case):
+    root = tmp_path / case["root"]
+    root.mkdir()
+    for rel, text in case["files"].items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+
+    assert detect_components(root, case["root"]) == case["expect"]
 
 
 def test_inspection_writes_nothing_into_the_profile(tmp_path, sentinel, monkeypatch):
@@ -197,6 +227,7 @@ def test_retry_during_a_slow_clone_joins_it_instead_of_cloning_again(tmp_path, s
 
     assert clones.count == 1
     assert [a["agent_name"] for a in answers] == ["demo-agent", "demo-agent"]
+    assert answers[0]["sha"] == answers[1]["sha"] == _git(repo, "rev-parse", "HEAD")
     assert answers[0] is not answers[1] and answers[0]["warnings"] is not answers[1]["warnings"]
 
 

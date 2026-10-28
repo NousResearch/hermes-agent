@@ -375,6 +375,8 @@ export interface AgentPluginInspection {
   desktopName?: string | null
   warnings: string[]
   insecure?: boolean
+  /** The commit the backend read; absent when it reported none or not a full SHA. */
+  sha?: string
   unavailable?: boolean
   error?: string
 }
@@ -396,6 +398,7 @@ export async function inspectAgentPlugin(
       desktop?: boolean
       agent_name?: string | null
       desktop_name?: string | null
+      sha?: string | null
       warnings?: string[]
       insecure?: boolean
       error?: string
@@ -424,6 +427,7 @@ export async function inspectAgentPlugin(
       desktopName: result?.desktop_name ?? null,
       warnings: result?.warnings ?? [],
       insecure: Boolean(result?.insecure),
+      ...(ok && typeof result.sha === 'string' && COMMIT_SHA_RE.test(result.sha) ? { sha: result.sha.toLowerCase() } : {}),
       ...(ok ? {} : { error: result?.error || 'Inspection failed' })
     }
   } catch (e) {

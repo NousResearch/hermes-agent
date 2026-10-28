@@ -806,8 +806,8 @@ class PluginScanFinding(Result):
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
-    ok payload; ``inspect`` → ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``warnings``/``insecure``
-    or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
+    ok payload; ``inspect`` → ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit
+    read)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
     running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
     live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running
     gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
@@ -851,8 +851,9 @@ class PluginsManageResult(Result):
     onboarding: list[OnboardingCatalogPlugin] | None = None
     # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.
     presence: list[CatalogPluginPresence] | None = None
-    # ``inspect`` → which halves the source ships (``ok`` + ``warnings``, or ``ok=false`` + ``error``) and
-    # whether its URL scheme is insecure; nothing was installed (``hermes_cli.plugins_cmd_inspect``).
+    # ``inspect`` → which halves the source ships (``ok`` + ``warnings``, or ``ok=false`` + ``error``),
+    # the commit it read (``sha``) and whether its URL scheme is insecure; nothing was installed
+    # (``hermes_cli.plugins_cmd_inspect``).
     agent: bool | None = None
     desktop: bool | None = None
     agent_name: str | None = None

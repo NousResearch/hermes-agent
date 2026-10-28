@@ -35,6 +35,9 @@ def test_inspect_reports_halves_and_installs_nothing(tmp_path, monkeypatch):
 
     assert {k: result[k] for k in ("ok", "agent", "desktop", "agent_name", "desktop_name", "insecure")} == {
         "ok": True, "agent": True, "desktop": True, "agent_name": "pkg", "desktop_name": "pkg", "insecure": True}
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+                          encoding="utf-8").stdout.strip()
+    assert result["sha"] == head
     assert not (home / "plugins" / "pkg").exists()
     listed = _manage(action="list")["result"]["plugins"]
     assert all(row["name"] != "pkg" for row in listed)

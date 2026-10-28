@@ -75,9 +75,11 @@ def _failure(error: str, warnings: list[str], insecure: bool) -> dict[str, Any]:
 
 
 def inspect_plugin_source(identifier: str, *, catalog_name: Optional[str] = None) -> dict[str, Any]:
-    """``{ok, agent, desktop, agent_name, desktop_name, warnings, insecure}``, or ``ok: False`` with
+    """``{ok, agent, desktop, agent_name, desktop_name, sha, warnings, insecure}``, or ``ok: False`` with
     ``error``. *catalog_name* inspects the curated entry at its reviewed pin (its repo replaces
-    *identifier*), so the dialog shows exactly what the catalog install will put down.
+    *identifier*), so the dialog shows exactly what the catalog install will put down. ``sha`` is the
+    commit that was read: a source that moves after review must not install a tree nobody inspected,
+    so the install is held to it, as native Desktop's probe is.
 
     A repeat of a request (same profile home, catalog name and source) joins the clone still running
     for it, or reads a successful answer it produced within :data:`_RESULT_TTL_SECONDS`. The browser
@@ -141,7 +143,7 @@ def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
         raise_if_removed(identifier, git_url, *names)
         with tempfile.TemporaryDirectory(prefix="hermes-plugin-inspect-") as tmp:
             clone = Path(tmp) / "plugin"
-            pc._clone_plugin_repo(clone, git_url, revision, subdir)
+            sha = pc._clone_plugin_repo(clone, git_url, revision, subdir)
             root = pc._resolve_subdir_within(clone, subdir) if subdir else clone
             fallback = subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else pc._repo_name_from_url(git_url)
             found = detect_components(root, fallback)
@@ -150,4 +152,4 @@ def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
     if not found["agent"] and not found["desktop"]:
         return _failure("No agent or desktop plugin artifacts found in this repository.", warnings, insecure)
     return {"ok": True, **found, "desktop_name": _desktop_folder_name(git_url, subdir) if found["desktop"] else None,
-            "warnings": warnings, "insecure": insecure}
+            "sha": sha, "warnings": warnings, "insecure": insecure}

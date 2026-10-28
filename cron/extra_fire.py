@@ -58,13 +58,26 @@ def is_extra(job: dict[str, Any]) -> bool:
     return isinstance(claim, dict) and bool(claim.get(_CLAIM_KEY))
 
 
+_MARKERS = ("manual_run_at", RESTORE_KEY, "manual_run_prompt")
+
+
+def held_markers(job: dict[str, Any]) -> dict[str, Any]:
+    """The run-now markers of a ``trigger_job`` that landed while this extra fire was in flight: the
+    claim popped RESTORE_KEY in its own save, so a ``queued`` job at completion was triggered
+    after the claim (``fire_claim.at`` cannot tell: the heartbeat refreshes it). That trigger is
+    its own run-now, so the caller puts these back after the outcome clears the markers."""
+    return {key: job[key] for key in _MARKERS if key in job} if queued(job) else {}
+
+
 def settle(job: dict[str, Any], now: str) -> None:
-    """After an extra fire: ``repeat.completed`` untouched, the job keeps its pending slot. A slot
-    that passed while the run was in flight (the tick lost the claim race) is not dropped: a
-    one-shot fires at once, a recurring job takes its next natural occurrence."""
+    """After an extra fire: ``repeat.completed`` untouched, the job keeps its pending slot, and a
+    run-now queued during the run (``queued``) is left for its own claim. A slot that passed while
+    the run was in flight: a one-shot fires at once; a recurring job DROPS it and takes its next
+    natural occurrence, as on a scheduled run (the tick's pre-run advance has usually moved it
+    already, and keeping it due would make every tick during the run log a lost-claim fire)."""
     from cron.jobs import compute_next_run
 
-    if _future_slot(job.get("next_run_at"), datetime.fromisoformat(now)):
+    if queued(job) or _future_slot(job.get("next_run_at"), datetime.fromisoformat(now)):
         return
     if job.get("schedule", {}).get("kind") == "once":
         job["next_run_at"] = now

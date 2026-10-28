@@ -15,6 +15,7 @@ from cron.jobs import (
     create_job,
     get_due_jobs,
     get_job,
+    heartbeat_fire_claim,
     load_jobs,
     mark_job_run,
     save_jobs,
@@ -150,3 +151,25 @@ def test_run_at_or_after_the_due_slot_is_the_scheduled_fire(clock):
 
     done = get_job(job["id"])
     assert (done["state"], done["repeat"]["completed"]) == ("completed", 1)
+
+
+def test_trigger_landing_during_a_manual_run_survives_its_completion(clock):
+    """A run-now queued while a manual run is in flight is its own extra fire: the in-flight run's
+    completion must not clear it, and firing it must not consume the one-shot."""
+    job = create_job("remind me", "in 30m", name="reminder")
+    slot = job["next_run_at"]
+    claimed = claim_job_for_fire(job["id"], manual=True, return_job=True)
+    assert isinstance(claimed, dict) and claim_dispatch(job["id"])
+
+    clock["now"] += timedelta(seconds=10)
+    trigger_job(job["id"])  # gateway-forwarded run-now while the first run is executing
+    clock["now"] += timedelta(seconds=10)
+    assert heartbeat_fire_claim(job["id"], expected_owner=claimed["fire_claim"]["by"])  # still running
+    assert mark_job_run(job["id"], success=True, expected_fire_owner=claimed["fire_claim"]["by"])
+
+    assert [d["id"] for d in get_due_jobs()] == [job["id"]]  # the queued run-now is still due
+    _fire(job["id"])  # the ticker picks it up
+    after = get_job(job["id"])
+    assert (after["state"], after["next_run_at"]) == ("scheduled", slot)
+    assert after["repeat"] == {"times": 1, "completed": 0}
+

@@ -2453,7 +2453,9 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         extra = extra_fire.is_extra(job)  # read before the outcome clears the claim
+        held = extra_fire.held_markers(job) if extra else {}
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        job.update(held)  # a run-now queued mid-run is its own fire, not this one
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]

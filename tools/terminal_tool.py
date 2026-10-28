@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Terminal tool: run shell commands in the configured backend.
 
-Backends (``TERMINAL_ENV``): local (default), docker, singularity, modal
-(direct or managed gateway), daytona, vercel_sandbox, ssh, plus
-plugin-registered backends. Handles background processes, sandbox lifecycle
-(per-task cache, idle reaper, atexit teardown) and sudo password plumbing.
+Backends (``TERMINAL_ENV``): local (default), docker, modal (direct or
+managed gateway), daytona, vercel_sandbox, ssh, plus plugin-registered
+backends (the ``singularity`` catalog plugin, ...). Handles background
+processes, sandbox lifecycle (per-task cache, idle reaper, atexit teardown)
+and sudo password plumbing.
 Cloud-sandbox persistent filesystems preserve working state across sandbox
 recreation but do NOT guarantee the same live sandbox or long-running
 processes survive cleanup, idle reaping, or Hermes exit.
@@ -40,7 +41,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 
 from tools.registry import tool_error
 from tools.terminal_tool_lifecycle import (
-    _check_disk_usage_warning, _cleanup_inactive_envs, _create_configured_env,
+    _cleanup_inactive_envs, _create_configured_env,
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
@@ -74,9 +75,6 @@ def _safe_parse_import_env(name: str, default: Any, converter, type_label: str):
 
 # Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
 FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env("TERMINAL_MAX_FOREGROUND_TIMEOUT", 600, int, "integer")
-
-# Disk usage warning threshold (in GB)
-DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env("TERMINAL_DISK_WARNING_GB", 500.0, float, "number")
 
 
 # Approval / sudo-prompt UI callbacks (CLI registers prompt_toolkit-aware
@@ -118,6 +116,23 @@ def _current_session_profile() -> str:
     from gateway.session_context import get_session_env
 
     return get_session_env("HERMES_SESSION_PROFILE", "")
+
+
+def _container_profile() -> str:
+    """Profile whose persistent container a session-bound command uses: the bound home's profile when it is not
+    the session's own (a profile-routed subagent runs in its target's home while the session, and the delivery
+    identity HERMES_SESSION_PROFILE carries, stay the parent's; that target may be the launch profile, reached
+    from a routed profile's chat), else the session's. A session with no profile name is the launch profile's,
+    so the launch home's own work keeps the session's key whatever the launch profile is named."""
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from tools.environments.local import _is_routed_home
+
+    override = get_hermes_home_override()
+    session = _current_session_profile()
+    bound = profile_name_for_home(override) if override else None
+    if bound and (bound != session if session else _is_routed_home(override)):
+        return bound
+    return session or "default"
 
 
 from tools.approval import (
@@ -310,8 +325,8 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
 
 def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
     """Register per-task sandbox overrides (``docker_image``/``modal_image``/
-    ``singularity_image``/``daytona_image``, ``env_type``, ``cwd``) before the
-    agent loop runs.
+    ``daytona_image`` or a plugin backend's ``<backend>_image``, ``env_type``,
+    ``cwd``) before the agent loop runs.
 
     A ``cwd`` override takes effect immediately: it becomes the session's
     recorded cwd (until a ``cd`` changes it) and any live env's cwd is updated
@@ -368,10 +383,9 @@ def _resolve_container_alias(task_id: str) -> str:
     return key
 
 
-_ISOLATION_OVERRIDE_KEYS = frozenset({
-    "docker_image", "modal_image", "singularity_image",
-    "daytona_image", "env_type",
-})
+def _is_isolation_override_key(key: str) -> bool:
+    """An image (``docker_image``, a plugin backend's ``<backend>_image``) or ``env_type`` override."""
+    return key == "env_type" or key.endswith("_image")
 
 
 def _has_isolation_overrides(task_id: Optional[str]) -> bool:
@@ -379,7 +393,7 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     "isolated RL/benchmark rollout" predicate shared by key resolution and
     container creation so the two can't drift."""
     overrides = _task_env_overrides.get(_qualify_task_key(task_id)) if task_id else None
-    return bool(overrides and set(overrides) & _ISOLATION_OVERRIDE_KEYS)
+    return bool(overrides and any(_is_isolation_override_key(str(key)) for key in overrides))
 
 
 @dataclass(frozen=True)
@@ -521,7 +535,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
-    profile = _current_session_profile() or "default"
+    profile = _container_profile()
     base = "default" if profile == "default" else f"profile:{profile}"
     return _workspace_container_key(base, task_id)
 
@@ -588,17 +602,18 @@ def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
 # Backends that take an image, keyed to the override/config key carrying it.
 _IMAGE_KEY_BY_BACKEND = {
     "docker": "docker_image",
-    "singularity": "singularity_image",
     "modal": "modal_image",
     "daytona": "daytona_image",
 }
 
 
 def _select_image(env_type: str, overrides: dict[str, Any], config: dict[str, Any]) -> str:
-    """Image for *env_type*: per-task override first, then config; "" for imageless backends."""
+    """Image for *env_type*: per-task override first, then config; "" for imageless backends. A plugin
+    backend gets only its per-task ``<backend>_image`` override (batch runs register one); otherwise it
+    reads its own image setting."""
     key = _IMAGE_KEY_BY_BACKEND.get(env_type)
     if key is None:
-        return ""
+        return overrides.get(f"{env_type}_image") or ""
     return overrides.get(key) or config[key]
 
 
@@ -798,7 +813,6 @@ def _get_env_config() -> dict[str, Any]:
         "docker_image": _tenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_image_pinned": _tenv("TERMINAL_DOCKER_IMAGE_PINNED", "0") == "1",
         "docker_forward_env": docker_forward_env,
-        "singularity_image": _tenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
@@ -1266,8 +1280,6 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         if env is not None:
             return env
 
-        if env_type == "singularity":
-            _check_disk_usage_warning()
         logger.info("Creating new %s environment for task %s...", env_type, eff[:8])
         try:
             new_env = _create_configured_env(

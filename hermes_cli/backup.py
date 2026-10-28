@@ -1217,10 +1217,10 @@ def create_pre_update_backup(
 
 def create_pre_migration_backup(
     hermes_home: Optional[Path] = None, keep: int = _PRE_MIGRATION_DEFAULT_KEEP) -> Optional[Path]:
-    """Full zip backup to ``backups/pre-migration-<timestamp>.zip`` before ``hermes claw migrate``
-    (same dir as update backups so listings/``hermes import`` find it); ``None`` if nothing was
-    found, the write failed, or it was incomplete (salvage kept as ``*.incomplete.zip``). Never
-    raises."""
+    """Full zip backup to ``backups/pre-migration-<timestamp>.zip`` before a plugin's agent import
+    (``hermes import-agent openclaw``), so its name and signature are API; same dir as update backups
+    so ``hermes import`` finds it. ``None`` if nothing was found, the write failed, or it was
+    incomplete (salvage kept as ``*.incomplete.zip``). Never raises."""
     return _create_prefixed_full_backup(
         hermes_home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
 

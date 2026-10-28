@@ -1,3 +1,5 @@
+import { mergeUsage } from '@hermes/shared'
+
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -2521,10 +2523,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/session.resume is an authoritative session snapshot, not a
-      // partial live tick. Clear a missing compression count so switching from
-      // a counted session to an older/cold runtime cannot leak the old value.
-      setCurrentUsage(current => ({ ...current, ...info.usage, compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
+      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
     }
   }
 

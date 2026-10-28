@@ -27,6 +27,8 @@ to deliver it.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -37,6 +39,12 @@ from hermes_cli.memory_provider_migration import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ``terminal.*`` keys a left-core plugin still reads -> the ``.env`` copy core's ``hermes config set`` also
+# wrote. Not in DEFAULT_CONFIG (a seeded default would hide the plugin's env fallback), so ``config
+# set/get`` recognise them here, and ``config unset`` removes that copy too: the plugin falls back to it,
+# and the old value would return instead of the default.
+LEFT_CORE_TERMINAL_KEYS = {"terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE"}
 
 
 def _read_config(home: Path) -> dict:
@@ -147,6 +155,41 @@ def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _bundled_plugin_selected(home, "langfuse")
 
 
+def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run its Singularity backend for *home*: ``terminal.backend`` (or the legacy
+    ``terminal.env_type``) set to ``singularity`` in its config (managed overlay applied, as the bridge
+    reads it), else ``TERMINAL_ENV=singularity`` from its dotenv layers as ``load_hermes_dotenv`` resolves
+    them (the home's ``.env``, then the administrator-managed ``.env`` with override, ``${VAR}``
+    references expanded: :func:`~hermes_cli.env_loader.resolve_home_dotenv`). config.yaml wins over
+    both, as in the bridge. *process_env* (startup) also counts a ``TERMINAL_ENV`` the process received
+    from its environment (systemd unit, Docker, shell export), for the launch home only: ``TERMINAL_*``
+    is process-global (``get_secret`` never scopes it), so for any other served home it is the launch
+    profile's backend, not this one's."""
+    from gateway import config_loader
+    try:
+        terminal = config_loader.read_yaml_layers(home).get("terminal")
+    except Exception:  # malformed config.yaml: the bridge reads nothing from it either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        terminal = None
+    terminal = terminal if isinstance(terminal, dict) else {}
+    configured = str(terminal.get("backend") or terminal.get("env_type") or "").strip()
+    if not configured:
+        from hermes_cli.env_loader import resolve_home_dotenv
+        configured = resolve_home_dotenv(home).get("TERMINAL_ENV", "").strip()
+    if not configured and process_env:
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        if hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home()):
+            configured = os.environ.get("TERMINAL_ENV", "").strip()
+    return configured.lower() == "singularity"
+
+
+def agent_imports_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """*home* registered a ``hermes import-agent`` source for ``--sync`` (its ``import-sync.json``,
+    which scheduled syncs read). A one-shot import leaves no other trace, and installing the plugin
+    for every home would add a command nobody asked for; the old spelling names the install."""
+    return (home / "import-sync.json").is_file()
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -177,14 +220,20 @@ class LeftCoreFeature:
     # Top-level command the plugin registers in place of core's ``hermes auth <cli>`` login
     # (``hermes <cli> login|status|logout``); :func:`moved_command_hint` points the old spelling at it.
     cli: str = ""
-    # Top-level command the plugin registers in place of core's nested ``old_command``
-    # (``hermes mcp serve`` -> ``hermes mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
+    # Top-level command the plugin registers: core's own command kept under its name (``hermes
+    # import-agent``), or in place of core's nested ``old_command`` (``hermes mcp serve`` -> ``hermes
+    # mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
     command: str = ""
     old_command: str = ""
+    # Other top-level commands core shipped that the same plugin now registers (``hermes claw``, the
+    # OpenClaw migration's spelling before ``hermes import-agent openclaw``); hinted like *command*.
+    old_cli: tuple[str, ...] = ()
     # Key of the bundled plugin core shipped (``observability/langfuse``). It stays an alias of the
     # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
     # administrator's pinned list) and for every `hermes plugins <verb>` (:func:`legacy_plugin_alias`).
     plugin_key: str = ""
+    # ``terminal.backend`` value the plugin registers: unknown-backend errors name the install command.
+    terminal_backend: str = ""
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -216,6 +265,17 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="the conversation tools keep their names; MCP clients change their args to [\"mcp-serve\"]",
         command="mcp-serve", old_command="hermes mcp serve",
     ),
+    LeftCoreFeature(
+        plugin="singularity", label="Singularity/Apptainer terminal backend", in_use=singularity_in_use,
+        unchanged="terminal.backend: singularity, terminal.singularity_image (TERMINAL_SINGULARITY_IMAGE) "
+                  "and the container_* limits are unchanged",
+        terminal_backend="singularity",
+    ),
+    LeftCoreFeature(
+        plugin="agent-importers", label="`hermes import-agent`", in_use=agent_imports_in_use,
+        unchanged="`hermes import-agent`, its flags and your import-sync.json sync sources are unchanged",
+        command="import-agent", old_cli=("claw",),
+    ),
 )
 
 def _install_sentence(feature: LeftCoreFeature) -> str:
@@ -228,6 +288,13 @@ def platform_install_hint(platform: str) -> str:
     """For an unknown platform name that left core: the sentence that names its install command for
     the active home, else ``""``. Appended to "unknown platform" errors (``send_message``)."""
     feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+    return f". {_install_sentence(feature)}" if feature else ""
+
+
+def terminal_backend_install_hint(backend: str) -> str:
+    """For a ``terminal.backend`` value that left core: the sentence that names its install command for
+    the active home, else ``""``. Appended to "unknown terminal backend" errors."""
+    feature = next((f for f in LEFT_CORE if f.terminal_backend and f.terminal_backend == backend), None)
     return f". {_install_sentence(feature)}" if feature else ""
 
 
@@ -245,8 +312,8 @@ def legacy_plugin_keys(plugin: str) -> set[str]:
 def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     """For a command a left-core plugin took over: ``hermes auth [<action>] <cli>`` (core's old login
     spelling), core's old nested spelling (``hermes mcp serve``), or the plugin's own ``hermes <cli>`` /
-    ``hermes <command>`` while the plugin is not loaded, the line saying where it went and how to get it
-    for the active home, else ``""``."""
+    ``hermes <command>`` / ``hermes <old_cli>`` while the plugin is not loaded, the line saying where it
+    went and how to get it for the active home, else ``""``."""
     from hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     moved = next((f for f in LEFT_CORE if f.old_command and f.old_command == f"{prog} {value}"), None)
@@ -258,7 +325,7 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     if prog == "hermes auth":
         feature = next((f for f in LEFT_CORE if f.cli and f.cli == value), None)
     elif prog == "hermes":
-        feature = next((f for f in LEFT_CORE if value and value in (f.cli, f.command)), None)
+        feature = next((f for f in LEFT_CORE if value and value in (f.cli, f.command, *f.old_cli)), None)
     else:
         feature = None
     if feature is None:
@@ -272,7 +339,8 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
         old = " ".join(p for p in ("hermes auth", action, value) if p)
         return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: `{old}` is now "
                 f"`hermes {value} {action or 'login'}`.{get}")
-    return f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
+    label = f"`hermes {value}`" if value in feature.old_cli else feature.label
+    return f"{label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
 
 
 def moved_plugin_hint(name: str) -> str:
@@ -569,3 +637,16 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
     except Exception as exc:  # never take agent/gateway start down
         logger.warning("left-core plugin migration failed: %s", exc, exc_info=True)
         return []
+
+
+def recover_for_command(name: Optional[str]) -> None:
+    """``hermes <name>`` names a command a left-core plugin registers, and the active home uses that
+    feature but lacks the plugin: run :func:`recover_at_startup` now, before plugin commands are
+    discovered, so the command it installs runs in this same invocation. A home nothing migrated yet
+    (a Docker image swap runs no ``hermes update``) whose only Hermes process is a scheduled
+    ``hermes import-agent --sync`` never starts an agent or a gateway to do it."""
+    from hermes_constants import get_hermes_home
+    home = Path(get_hermes_home())
+    if any(name and name in (f.cli, f.command, *f.old_cli) and not plugin_present(f.plugin, home)
+           and f.in_use(home) for f in LEFT_CORE):
+        recover_at_startup(say=lambda message: print(message, file=sys.stderr))

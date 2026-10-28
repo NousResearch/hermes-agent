@@ -286,10 +286,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     )
 
     await screen.findByRole('switch', { name: 'web-research' })
-    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added web-research' }).disabled).toBe(true)
-    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Installed web-research' }).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Add web-research' })).toBeNull()
     const available = screen.getByRole('button', { name: 'gif-search' }).closest('article')!
-    fireEvent.click(within(available).getByRole('switch', { name: 'Add gif-search' }))
+    fireEvent.click(within(available).getByRole('button', { name: 'Add gif-search' }))
     await waitFor(() =>
       expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', {
         connectionId: 'homelab',
@@ -437,7 +437,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     }
   })
 
-  it('lists the built-in optional-skills catalog with Add switches that route through the hub pipeline', async () => {
+  it('lists the built-in optional-skills catalog with Add buttons that route through the hub pipeline', async () => {
     // Official optional skills merge into the same catalog as installed ones;
     // an uninstalled row carries an Add switch that routes through the hub
     // action pipeline scoped to the Capabilities profile. A name collision with
@@ -495,10 +495,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     // The row settles once installed skills load (the discovery hero can change
     // as they merge in), so act on the live, enabled switch.
-    await screen.findByRole('switch', { name: 'Add gif-search' })
+    await screen.findByRole('button', { name: 'Add gif-search' })
 
     const install = await waitFor(() => {
-      const row = screen.getByRole<HTMLButtonElement>('switch', { name: 'Add gif-search' })
+      const row = screen.getByRole<HTMLButtonElement>('button', { name: 'Add gif-search' })
 
       expect(row.disabled).toBe(false)
 
@@ -506,8 +506,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     })
 
     expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
-    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
-    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added ascii-art' }).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Add web-research' })).toBeNull()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Added ascii-art' }).disabled).toBe(true)
 
     await act(async () => {
       fireEvent.click(install)
@@ -552,7 +552,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     // The feed settles first; then only the installed row keeps the name,
     // while the distinct community skill stays installable.
-    await screen.findByRole('switch', { name: 'Add gif-search' })
+    await screen.findByRole('button', { name: 'Add gif-search' })
     expect(screen.getAllByRole('button', { name: 'docx' })).toHaveLength(1)
   })
 })

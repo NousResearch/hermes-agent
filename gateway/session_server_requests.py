@@ -22,11 +22,12 @@ _POLL_S = 0.25
 
 
 class _Pending:
-    __slots__ = ("event", "events", "locked", "qids", "result", "session_id", "value")
+    __slots__ = ("event", "events", "locked", "method", "qids", "result", "session_id", "value")
 
-    def __init__(self, session_id, qids=None, events=None):
+    def __init__(self, session_id, qids=None, events=None, method=None):
         self.event = threading.Event()
         self.session_id = session_id
+        self.method = method
         # The live session's own event stream the request went out on: one per authority (profile) and
         # session mount, so a viewer of another profile's same-named session can never settle it.
         self.events = events
@@ -109,6 +110,24 @@ def ask_viewer_result(events, session_id, method, params, *, cancelled=lambda: F
     return pending.result if pending is not None else None
 
 
+def waiting(events, session_id, method) -> bool:
+    """Whether a *method* request is open on this live session's stream (the card still waits)."""
+    with _lock:
+        return any(p.session_id == session_id and p.events is events and p.method == method for p in _open.values())
+
+
+def withdraw(events, session_id, method) -> int:
+    """Settle every open *method* request on this live session's stream with no answer, the way a
+    viewer that answered would: the asker reads None and every renderer gets ``request.cancel
+    reason: resolved``."""
+    with _lock:
+        settled = [_open.pop(rid) for rid, p in list(_open.items())
+                   if p.session_id == session_id and p.events is events and p.method == method]
+    for pending in settled:
+        pending.event.set()
+    return len(settled)
+
+
 def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id, events: False):
     """Lock one answer of an open batch request (``clarify.lock``; editable until the last lock;
     ``None`` = skipped). Returns the question ids still unanswered; the lock that empties it settles
@@ -135,7 +154,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id, qids, events)
+    pending = _Pending(session_id, qids, events, method)
     with _lock:
         _open[request_id] = pending
     events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,

@@ -5,7 +5,7 @@ follows the terminal backend needs three things that are not: the RFB byte strea
 Desktop pane and the sandbox's Xvnc, cua-driver's MCP-over-stdio server, and agent-browser
 invocations whose daemon must outlive the call. All three are "spawn argv in the sandbox, keep
 stdin/stdout as pipes". Each spawn-per-call backend has a local argv prefix that gives exactly that
-(``docker exec -i``, ``ssh``, ``apptainer exec``); this module is the one place that knows it.
+(``docker exec -i``, ``ssh``); this module is the one place that knows them.
 
 SDK backends (modal, daytona, vercel) have no argv prefix: ``exec_prefix`` returns None there and
 the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``). Plugin backends
@@ -28,11 +28,10 @@ logger = logging.getLogger(__name__)
 def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive: bool = True) -> Optional[list[str]]:
     """Local argv that runs its remainder inside ``env``, or None for backends without one.
 
-    ``user`` selects the sandbox-side account (docker only; ssh runs as the configured login, apptainer as
-    the caller). ``interactive`` keeps stdin open (``docker exec -i``); ssh and apptainer always do.
+    ``user`` selects the sandbox-side account (docker only; ssh runs as the configured login).
+    ``interactive`` keeps stdin open (``docker exec -i``); ssh always does.
     """
     from tools.environments.docker import DockerEnvironment
-    from tools.environments.singularity import SingularityEnvironment
     from tools.environments.ssh import SSHEnvironment
 
     if isinstance(env, DockerEnvironment):
@@ -47,10 +46,6 @@ def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive
         return argv + [container]
     if isinstance(env, SSHEnvironment):
         return env._build_ssh_command()
-    if isinstance(env, SingularityEnvironment):
-        if not getattr(env, "_instance_started", False):
-            return None
-        return [env.executable, "exec", f"instance://{env.instance_id}"]
     return _plugin_exec_prefix(env, user=user, interactive=interactive)
 
 

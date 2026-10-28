@@ -656,7 +656,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
 
-    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/singularity;
+    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/a streaming plugin backend;
     ``sandbox_host``), or on the gateway host (the rest of this function). A sandbox backend that cannot host
     a screen refuses rather than silently falling back to the host beside it.
 

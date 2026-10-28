@@ -230,8 +230,27 @@ def notify_serve_backend(name: str, home: Path) -> Optional[dict[str, Any]]:
         return None
 
 
+def _gateway_present() -> bool:
+    """A gateway runs for this profile (its own, or the multiplexer serving it from the root), or a
+    gateway service is installed for it."""
+    from gateway.status import get_running_pid
+    from hermes_cli.gateway import _installed_service_kind
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    homes = {Path(get_hermes_home()).resolve(), Path(get_default_hermes_root()).resolve()}
+    return (any(get_running_pid(home / "gateway.pid", cleanup_stale=False) for home in homes)
+            or _installed_service_kind() is not None)
+
+
+def report_activation(console, name: str) -> None:
+    """After a CLI install/enable: load *name* where it can go live now (:func:`activate_plugin_now`)
+    and print :func:`activation_hint`, or nothing when there is nothing to say."""
+    if hint := activation_hint(activate_plugin_now(name, in_process=False)):
+        console.print(f"[dim]{hint}[/dim]")
+
+
 def activation_hint(result: dict[str, Any]) -> str:
-    """One honest sentence for CLI surfaces from an :func:`activate_plugin_now` result."""
+    """One honest sentence for CLI surfaces from an :func:`activate_plugin_now` result; empty when
+    there is nothing to say."""
     act = result.get("activation") or {}
     live = act.get("live_now") or {}
     connected = [s for s in live.get("mcp_servers") or () if s.get("connected")]
@@ -242,7 +261,9 @@ def activation_hint(result: dict[str, Any]) -> str:
     lines.extend(f"MCP server {s['name']} not connected: {s.get('error') or 'unknown error'}"
                  for s in live.get("mcp_servers") or () if not s.get("connected"))
     if not result.get("gateway_reloaded"):
-        if lines:  # live in open chats; a messaging gateway that starts later loads it at boot
+        # Live in open chats, or no gateway runs or is installed for this profile (first-time setup):
+        # a messaging gateway that starts later loads it at boot, so a restart applies to nothing.
+        if lines or not _gateway_present():
             return "\n".join(lines)
         return "\n".join([*lines, "Restart the gateway for the plugin to take effect:\n  hermes gateway restart"])
     now, deferred = act.get("activated_now") or {}, act.get("deferred") or {}

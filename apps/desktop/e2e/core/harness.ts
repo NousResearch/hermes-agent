@@ -347,6 +347,35 @@ export interface WsRecorder {
 export function recordWebSockets(page: Page): WsRecorder {
   const rec: WsRecorder = { sockets: [], events: [], sent: [] }
 
+  // A new main-frame document (reload, goto) tears down every socket the old
+  // one held, but Playwright forgets its sockets at that commit without
+  // emitting their 'close', so a pre-reload socket would read as live forever.
+  // Retire them at the commit. A same-document (hash) navigation has no
+  // navigation request, so it never retires a live socket.
+  let documentPending = false
+
+  page.on('request', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = true
+    }
+  })
+  page.on('requestfailed', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = false
+    }
+  })
+  page.on('framenavigated', frame => {
+    if (frame !== page.mainFrame() || !documentPending) {
+      return
+    }
+
+    documentPending = false
+
+    for (const entry of rec.sockets) {
+      entry.closed = true
+    }
+  })
+
   page.on('websocket', ws => {
     if (!ws.url().includes('/api/ws')) {
       return

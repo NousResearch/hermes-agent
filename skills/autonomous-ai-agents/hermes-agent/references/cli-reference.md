@@ -133,10 +133,10 @@ hermes send                 One-off message through a gateway platform
 hermes pairing / plugins / insights / journey / computer-use
 hermes acp                  ACP server (IDE integration)
 hermes completion bash|zsh|fish
-hermes update / uninstall / claw migrate
+hermes update / uninstall
 ```
 
-Plugin- and provider-supplied subcommands (e.g. `hermes photon setup`) only appear once their plugin is installed/active.
+Plugin- and provider-supplied subcommands (e.g. `hermes photon setup`) only appear once their plugin is installed/active. Importing from OpenClaw, Claude Code, Codex CLI or Cursor (`hermes import-agent <agent>`, plus the older `hermes claw migrate|cleanup`) comes from the `agent-importers` plugin; a fresh `hermes setup` that finds one of those agents offers to install it.
 
 ### Where to Find Things
 

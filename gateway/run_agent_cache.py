@@ -411,6 +411,9 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.clear()
+        # A /delegation backend pick is conversation-scoped like /model's, but lives with the backends.
+        from agent.delegation_backends import set_session_backend
+        set_session_backend(session_key, None)
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
         # views (not dict), so the isinstance(dict) guard skips them — already handled above.

@@ -15,7 +15,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
-import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import {
@@ -106,12 +106,22 @@ function installAgentHalfHere(record: PluginRecord, profile: null | string) {
     return
   }
 
+  // The package marker carries no tier, so read it from the cached catalog
+  // (a plugin row's `source` is its tier). Not cached: the dialog keeps the
+  // generic Verified badge.
+  const tier = origin.catalogName
+    ? queryClient
+        .getQueryData<CatalogEntry[]>(['public-catalog', 'plugins'])
+        ?.find(entry => entry.name === origin.catalogName)?.source
+    : undefined
+
   openPluginInstallRequest({
     catalogName: origin.catalogName,
     legacyHint: 'agent',
     profile,
     repo: origin.repo,
-    sha: origin.sha
+    sha: origin.sha,
+    tier
   })
 }
 
@@ -207,6 +217,39 @@ function Dash() {
     <span aria-hidden className="w-9 text-center text-(--ui-text-quaternary)">
       —
     </span>
+  )
+}
+
+function UninstallRow({
+  name,
+  note,
+  disabled,
+  onUninstall
+}: {
+  name: string
+  note: string
+  disabled?: boolean
+  onUninstall: () => void
+}) {
+  const { t } = useI18n()
+  const p = t.skills.plugins
+
+  return (
+    <div className="flex items-center gap-3 border-t border-(--ui-stroke-tertiary) pt-4">
+      <div className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {note}
+      </div>
+      <Button
+        aria-label={`${p.uninstall}: ${name}`}
+        className="text-destructive hover:text-destructive"
+        disabled={disabled}
+        onClick={onUninstall}
+        size="xs"
+        variant="text"
+      >
+        {p.uninstall}
+      </Button>
+    </div>
   )
 }
 
@@ -390,37 +433,6 @@ function PackageRow({
               </Tip>
             )}
           </span>
-          {/* Same fixed-slot treatment for Uninstall: present on every row so the
-            halves line up, populated when the agent half is a user install or
-            the row is a standalone desktop plugin. */}
-          <span className="flex size-7 shrink-0 items-center justify-center">
-            {agent && agentRemovable ? (
-              <Tip label={p.uninstallTip(pkg.name, scopeLabel)}>
-                <Button
-                  aria-label={`${p.uninstall}: ${pkg.name}`}
-                  className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
-                  disabled={busy}
-                  onClick={() => onAgentRemove(agent)}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </Tip>
-            ) : desktop && desktopRemovable ? (
-              <Tip label={p.uninstallDesktopTip(pkg.name)}>
-                <Button
-                  aria-label={`${p.uninstall}: ${pkg.name}`}
-                  className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
-                  onClick={() => onDesktopRemove(desktop)}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </Tip>
-            ) : null}
-          </span>
         </div>
 
         {/* The two halves. Desktop is app-level and reads the same whichever
@@ -497,6 +509,26 @@ function PackageRow({
             <Dash />
           )}
         </HalfCell>
+
+        {/* Uninstall lives here, not on the card: the card only installs (+)
+          and switches. Bundled and pip plugins have no row. */}
+        {agent && agentRemovable ? (
+          <UninstallRow
+            disabled={busy}
+            name={pkg.name}
+            note={p.uninstallTip(pkg.name, scopeLabel)}
+            onUninstall={() => onAgentRemove(agent)}
+          />
+        ) : (
+          desktop &&
+          desktopRemovable && (
+            <UninstallRow
+              name={pkg.name}
+              note={p.uninstallDesktopTip(pkg.name)}
+              onUninstall={() => onDesktopRemove(desktop)}
+            />
+          )
+        )}
       </div>
     </>
   )
@@ -697,7 +729,7 @@ export const PluginsTab = memo(function PluginsTab({
   )
 
   // The card switch turns the whole package on or off, like a skill's; per-half
-  // switches and uninstall (trash + confirm) live in the detail's PackageRow.
+  // switches and Uninstall (with confirm) live in the detail's PackageRow.
   const packageSwitch = (pkg: PluginPackage) => {
     const { agent, desktop } = pkg
 
@@ -742,7 +774,9 @@ export const PluginsTab = memo(function PluginsTab({
       kind="plugins"
       matchInstalled={matchInstalled}
       notice={notice}
-      onInstall={entry => openCatalogPluginInstall(entry, scope)}
+      // A plugin row's `source` IS its catalog tier (catalog-data.ts::catalogEntry);
+      // CatalogEntry has no `tier` field, so don't "fix" this to entry.tier.
+      onInstall={entry => openCatalogPluginInstall(entry, scope, { tier: entry.source })}
       onQueryChange={onQueryChange}
       query={query}
       renderInstalledAction={entry => {

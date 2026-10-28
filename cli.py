@@ -1290,10 +1290,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not plugin_handler:
             return
         session_id = getattr(self, "session_id", None) or ""
+        from hermes_cli.plugin_choices import bind_asker, clarify_asker
         try:
-            result = resolve_plugin_command_result(invoke_plugin_command(
-                plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
-                platform="cli"))
+            with bind_asker(clarify_asker(self._clarify_callback)):  # ctx.ask_choice: the clarify panel
+                result = resolve_plugin_command_result(invoke_plugin_command(
+                    plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
+                    platform="cli"))
             if result:
                 _cprint(str(result))
         except Exception as e:

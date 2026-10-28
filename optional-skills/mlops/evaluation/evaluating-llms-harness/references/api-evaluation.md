@@ -187,7 +187,7 @@ Many local inference servers expose OpenAI-compatible APIs (vLLM, Text Generatio
 **Start server**:
 ```bash
 vllm serve meta-llama/Llama-2-7b-hf \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 8000
 ```
 
@@ -241,7 +241,7 @@ lm_eval --model local-completions \
 
 **Start server**:
 ```bash
-./server -m models/llama-2-7b.gguf --host 0.0.0.0 --port 8080
+./server -m models/llama-2-7b.gguf --host 127.0.0.1 --port 8080
 ```
 
 **Evaluate**:

@@ -21,13 +21,14 @@ EXPOSE 8000
 
 CMD ["vllm", "serve", "meta-llama/Llama-3-8B-Instruct", \
      "--host", "0.0.0.0", "--port", "8000", \
+     "--api-key", "replace-with-a-runtime-secret", \
      "--gpu-memory-utilization", "0.9"]
 ```
 
 **Build and run**:
 ```bash
 docker build -t vllm-server .
-docker run --gpus all -p 8000:8000 vllm-server
+docker run --gpus all -p 127.0.0.1:8000:8000 vllm-server
 ```
 
 **Docker Compose** (with metrics):
@@ -42,8 +43,8 @@ services:
       --enable-metrics
       --metrics-port 9090
     ports:
-      - "8000:8000"
-      - "9090:9090"
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:9090:9090"
     deploy:
       resources:
         reservations:

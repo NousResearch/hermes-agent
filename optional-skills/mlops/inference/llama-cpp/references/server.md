@@ -35,7 +35,7 @@ Use the file-specific form when the repo has custom naming or when you already e
 # Basic server
 ./llama-server \
     -m models/llama-2-7b-chat.Q4_K_M.gguf \
-    --host 0.0.0.0 \
+    --host 127.0.0.1 \
     --port 8080 \
     -c 4096  # Context size
 

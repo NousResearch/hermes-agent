@@ -545,12 +545,8 @@ wandb.log({"predictions": predictions_table})
 ### 5. Use Offline Mode for Unstable Connections
 
 ```python
-import os
-
-# Enable offline mode
-os.environ["WANDB_MODE"] = "offline"
-
-wandb.init(project="my-project")
+# Enable offline mode for this run without changing process-wide environment
+wandb.init(project="my-project", mode="offline")
 # ... your code ...
 
 # Sync later
@@ -594,5 +590,4 @@ print(f"Share this URL: {run.url}")
 - `references/sweeps.md` - Comprehensive hyperparameter optimization guide
 - `references/artifacts.md` - Data and model versioning patterns
 - `references/integrations.md` - Framework-specific examples
-
 

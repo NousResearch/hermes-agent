@@ -165,7 +165,7 @@ Hermes uses prompt_toolkit, which requires a real terminal. Use tmux for interac
 terminal(command="tmux new-session -d -s agent1 -x 120 -y 40 'hermes'", timeout=10)
 
 # Wait for the input prompt (❯), then send a message
-terminal(command="timeout 90 sh -c 'until tmux capture-pane -t agent1 -p | grep -q "❯"; do sleep 1; done' && tmux send-keys -t agent1 'Build a FastAPI auth service' && sleep 0.5 && tmux send-keys -t agent1 Enter", timeout=100)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t agent1 -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t agent1 -p | grep -q "❯" && tmux send-keys -t agent1 'Build a FastAPI auth service' && sleep 0.5 && tmux send-keys -t agent1 Enter", timeout=100)
 
 # Read output
 terminal(command="sleep 20 && tmux capture-pane -t agent1 -p", timeout=5)
@@ -196,11 +196,11 @@ process_manage(action="write", session_id="<id>", data="\r")
 ```
 # Agent A: backend
 terminal(command="tmux new-session -d -s backend -x 120 -y 40 'hermes -w'", timeout=10)
-terminal(command="timeout 90 sh -c 'until tmux capture-pane -t backend -p | grep -q "❯"; do sleep 1; done' && tmux send-keys -t backend 'Build REST API for user management' && sleep 0.5 && tmux send-keys -t backend Enter", timeout=100)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t backend -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t backend -p | grep -q "❯" && tmux send-keys -t backend 'Build REST API for user management' && sleep 0.5 && tmux send-keys -t backend Enter", timeout=100)
 
 # Agent B: frontend
 terminal(command="tmux new-session -d -s frontend -x 120 -y 40 'hermes -w'", timeout=10)
-terminal(command="timeout 90 sh -c 'until tmux capture-pane -t frontend -p | grep -q "❯"; do sleep 1; done' && tmux send-keys -t frontend 'Build React dashboard for user management' && sleep 0.5 && tmux send-keys -t frontend Enter", timeout=100)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t frontend -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t frontend -p | grep -q "❯" && tmux send-keys -t frontend 'Build React dashboard for user management' && sleep 0.5 && tmux send-keys -t frontend Enter", timeout=100)
 
 # Check progress, relay context between them
 terminal(command="tmux capture-pane -t backend -p | tail -30", timeout=5)

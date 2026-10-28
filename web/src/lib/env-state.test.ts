@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EnvVarInfo } from "./api";
-import { removeDeletedEnvVarFromState } from "./env-state";
+import { credentialPreview, removeDeletedEnvVarFromState } from "./env-state";
 
 function envVar(overrides: Partial<EnvVarInfo> = {}): EnvVarInfo {
   return {
@@ -40,5 +40,17 @@ describe("removeDeletedEnvVarFromState", () => {
       is_set: false,
       redacted_value: null,
     });
+  });
+});
+
+describe("credentialPreview", () => {
+  it("unwraps the server sentinel", () => {
+    expect(credentialPreview("«redacted:***#a3f91c»")).toBe("***#a3f91c");
+  });
+  it("masks label-less sentinels", () => {
+    expect(credentialPreview("«redacted-secret»")).toBe("••••••••");
+  });
+  it("passes null through", () => {
+    expect(credentialPreview(null)).toBeNull();
   });
 });

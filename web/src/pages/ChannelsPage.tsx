@@ -37,6 +37,7 @@ import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { AllowlistInput } from "@/components/AllowlistInput";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { credentialPreview } from "@/lib/env-state";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 
@@ -518,7 +519,7 @@ export default function ChannelsPage() {
                     className="text-base leading-6 sm:text-xs sm:leading-4"
                     placeholder={
                       field.is_set
-                        ? field.redacted_value || "•••••• (set — leave blank to keep)"
+                        ? credentialPreview(field.redacted_value) || "•••••• (set — leave blank to keep)"
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}

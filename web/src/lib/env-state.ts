@@ -19,3 +19,10 @@ export function removeDeletedEnvVarFromState(
     [key]: { ...info, is_set: false, redacted_value: null },
   };
 }
+
+/** Display form of a server credential preview (``«redacted:***#a3f91c»`` → ``***#a3f91c``,
+ * label-less sentinels → a plain mask); never derived from the secret itself. */
+export const credentialPreview = (value: string | null | undefined): string | null => {
+  if (!value?.startsWith("«redacted")) return value || null;
+  return /^«redacted:(.+)»$/.exec(value)?.[1]?.trim() || "••••••••";
+};

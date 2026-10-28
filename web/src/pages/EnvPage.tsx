@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
-import { removeDeletedEnvVarFromState } from "@/lib/env-state";
+import { credentialPreview, removeDeletedEnvVarFromState } from "@/lib/env-state";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -132,7 +132,7 @@ function EnvVarRow({
   const isRevealed = !!revealed[varKey];
   const displayValue = isRevealed
     ? revealed[varKey]
-    : (info.redacted_value ?? "---");
+    : (credentialPreview(info.redacted_value) ?? "---");
 
   // Compact inline row for unset, non-editing keys (used inside provider groups)
   if (compact && !info.is_set && !isEditing) {
@@ -305,7 +305,7 @@ function EnvVarRow({
               info.is_set
                 ? t.env.replaceCurrentValue.replace(
                     "{preview}",
-                    info.redacted_value ?? "---",
+                    credentialPreview(info.redacted_value) ?? "---",
                   )
                 : t.env.enterValue
             }
@@ -695,7 +695,7 @@ export default function EnvPage() {
               [key]: {
                 ...prev[key],
                 is_set: true,
-                redacted_value: value.slice(0, 4) + "..." + value.slice(-4),
+                redacted_value: "«redacted-secret»",
               },
             }
           : prev,

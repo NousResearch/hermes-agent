@@ -27,7 +27,8 @@ def profile_b(tmp_path, monkeypatch):
     served = launch / "profiles" / "b"
     served.mkdir(parents=True)
     (served / "config.yaml").write_text(
-        "terminal:\n  backend: docker\n  docker_image: b-image\n", encoding="utf-8")
+        "terminal:\n  backend: docker\n  docker_image: b-image\n  home_mode: profile\n",
+        encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("TERMINAL_ENV", "local")  # ambient launch-profile policy
@@ -133,3 +134,32 @@ def test_worker_for_another_profile_keeps_the_instance_config_deployment(profile
     env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
     assert env.get("FIXTURE_CONFIG_PLANE") == "plane-1", "B's worker lost the instance's config deployment"
     assert "FIXTURE_PLANE_TOKEN" not in env, "B's worker inherited the launch profile's .env credential"
+
+
+def test_worker_profile_scope_reports_the_assigned_profiles_home_mode(profile_b):
+    """``terminal.home_mode`` must survive the profile projection as a terminal policy value.
+
+    ``TERMINAL_HOME_MODE`` is the variable ``hermes_constants.get_subprocess_home`` reads, so a
+    mode the profile pins in its own ``config.yaml`` has to reach the bound scope the dispatcher
+    reads through; otherwise the profile's isolation silently is not policy at all (#146103).
+    """
+    with kanban_db_dispatch._worker_profile_scope(str(profile_b)):
+        scope = get_terminal_scope() or {}
+    assert scope.get("TERMINAL_HOME_MODE") == "profile", (
+        f"the profile's own home_mode is missing from its terminal policy: {scope!r}")
+
+
+def test_worker_for_another_profile_does_not_inherit_the_dispatchers_home_mode(
+        profile_b, tmp_path, monkeypatch):
+    """The spawned env must not carry the LAUNCH profile's mode over B's own config (#146103).
+
+    ``gateway/run.py`` bridges ``terminal.home_mode`` into ``TERMINAL_HOME_MODE`` for the
+    dispatcher's process, and that value describes the LAUNCH profile (``auto`` = the OS user's
+    real home). Inheriting it silenced B's ``home_mode: profile`` in the worker's own terminal —
+    the isolation a profile relies on (no ``~/.ssh``, no ``~/.config/gh``). The child re-bridges
+    its own config, so the launch value must not cross.
+    """
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "auto")  # what the dispatcher's bridge exported
+    env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
+    assert "TERMINAL_HOME_MODE" not in env, (
+        f"B's worker inherited the dispatcher's terminal home mode: {env['TERMINAL_HOME_MODE']!r}")

@@ -30,7 +30,7 @@ def table(monkeypatch):
     monkeypatch.setattr(cpe, "_STATIC_NAMES", frozenset({"CORE_KEY"}))
     monkeypatch.setattr(cpe, "_PROVIDER_NAMES", set())
     t = OptionalEnvVars({"CORE_KEY": {"description": "core"}, "PLUG_KEY": {"description": "platform"}})
-    t.arm(cpe._add_provider_entries)
+    t.arm(cpe._provider_entries, cpe._PROVIDER_NAMES.update)
     return t
 
 

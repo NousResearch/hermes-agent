@@ -2,33 +2,43 @@
 
 import threading
 
-_FILL_LOCK = threading.RLock()  # re-entrant: the fill itself reads the table
+_FILL_LOCK = threading.Lock()  # held only to publish: the fill itself runs holding no lock
+_FILLING = threading.local()   # .active: this thread is running the fill (it reads the table)
 
 
 class OptionalEnvVars(dict):
-    """``OPTIONAL_ENV_VARS``: a dict that runs one armed ``fill(table)`` before it is first read.
+    """``OPTIONAL_ENV_VARS``: a dict that runs one armed fill before it is first read.
 
     Some entries (provider profiles') are only known after work that must not run at import
-    (``hermes_cli.config_provider_env``); writes never trigger the fill. A fill that raises is
-    re-armed, so the next read tries again."""
+    (``hermes_cli.config_provider_env``). ``fill()`` returns the entries to add and may read
+    config, so it runs holding no lock (concurrent first readers may each run it; the first to
+    finish publishes, under a lock held only for that). Reads made by the fill itself see the
+    table without them. A fill that raises publishes nothing and stays armed. Writes never fill."""
 
     _fill = None
+    _published = None
 
-    def arm(self, fill) -> None:
-        self._fill = fill
+    def arm(self, fill, published=None) -> None:
+        """``fill() -> dict`` of entries; ``published(entries)`` runs once they are in the table."""
+        self._fill, self._published = fill, published
 
     def _ready(self) -> None:
-        if self._fill is None:
+        fill = self._fill
+        if fill is None or getattr(_FILLING, "active", False):
             return
+        _FILLING.active = True
+        try:
+            entries = fill()
+        finally:
+            _FILLING.active = False
         with _FILL_LOCK:
-            fill, self._fill = self._fill, None
-            if fill is None:
-                return
-            try:
-                fill(self)
-            except BaseException:
-                self._fill = fill
-                raise
+            if self._fill is not fill:
+                return  # another reader published first
+            for key, value in entries.items():
+                dict.__setitem__(self, key, value)
+            self._fill = None
+            if self._published is not None:
+                self._published(entries)
 
     def __getitem__(self, key):
         self._ready()

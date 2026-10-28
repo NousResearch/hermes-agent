@@ -1,0 +1,18 @@
+name: mariadb-guard
+title: MariaDB Guard
+repo: https://github.com/mariadb/ai-plugins
+sha: c188e6417f2b667db4d3107c8a33e5d98cc29fea
+subdir: hermes/guard-plugin
+version: "26.10.6"
+description: "Companion to mariadb-dev / mariadb-sql: a pre_tool_call hook that blocks the agent from running the mariadb/mysql command-line clients (and similar) for what the mariadb MCP tools do, so no database password reaches a command line, plus a short system-prompt rule saying so. Pure Python, no dependencies, no network calls, no file access. Setting MARIADB_PLUGIN_ALLOW_CLI=1 disables it."
+maintainer: MariaDB
+tier: community
+category: tools
+docs_url: https://github.com/mariadb/ai-plugins#hermes-agent
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

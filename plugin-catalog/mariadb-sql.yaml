@@ -1,0 +1,19 @@
+name: mariadb-sql
+title: MariaDB SQL
+repo: https://github.com/mariadb/ai-plugins
+sha: c188e6417f2b667db4d3107c8a33e5d98cc29fea
+subdir: hermes/sql-plugin
+version: "26.10.6"
+description: "A lighter MariaDB package: 47 skills on MariaDB SQL statements and functions, plus the native mariadb-shell MCP server. Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure: the MCP server is the local mariadb-shell binary, started by scripts/mariadb-mcp-launcher.sh. If no mariadb-shell of the required version is on PATH or in ~/.local/bin, the launcher downloads the official installer from github.com/mariadb-corporation/mariadb-shell, which installs the newest release (checksum-verified against the release SHA256SUMS) into ~/.local/share/mariadb-shell and links it into ~/.local/bin; the binary and its tool set are not covered by the pinned sha. Tools run SQL against the databases the user registered with mariadb-shell, whose passwords stay in mariadb-shell's own OS secret store and never pass through the agent; the sandbox tools download and run local MariaDB server instances. No telemetry."
+maintainer: MariaDB
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/mariadb/ai-plugins#hermes-agent
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

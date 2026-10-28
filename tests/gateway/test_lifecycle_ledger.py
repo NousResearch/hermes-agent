@@ -4,8 +4,8 @@ The ledger is a tiny sentinel state machine:
 ``record_startup`` claims ``state/gateway.lifecycle.json`` as
 ``phase=running``; every exit path calls ``mark_exited``; the next boot's
 ``record_startup``/``detect_unclean_exit`` reports a still-``running``
-sentinel from a dead process as an unclean death (SIGKILL / OOM / VM loss)
-and enriches the report with the last heartbeat's memory sample.
+sentinel from a dead process as an unclean exit of unknown cause and enriches
+the report with that life's own last heartbeat (memory sample).
 """
 from __future__ import annotations
 
@@ -175,6 +175,29 @@ def test_record_startup_carries_unclean_flags_onto_new_sentinel(
     assert sentinel["phase"] == "running"
     assert sentinel["prior_unclean_exit"] is True
     assert sentinel["prior_suspected_oom"] is True
+
+
+@pytest.mark.parametrize("heartbeat", [
+    {"pid": _DEAD_PID + 1, "updated_at": "2026-07-11T05:00:00+00:00"},  # a --replace predecessor's
+    {"pid": _DEAD_PID, "updated_at": "2026-07-11T04:00:00+00:00"},  # older than this life's claim
+])
+def test_heartbeat_from_another_life_lends_no_evidence(tmp_path: Path, heartbeat: dict) -> None:
+    """The heartbeat file outlives its writer: another life's memory sample must not become this
+    life's last liveness or an OOM verdict on the reclaimed sentinel."""
+    _write_sentinel(tmp_path, {
+        "phase": "running",
+        "pid": _DEAD_PID,
+        "start_time": 1000.0,
+        "started_at": "2026-07-11T04:30:00+00:00",
+    })
+    _write_heartbeat(tmp_path, {
+        **heartbeat, "mem": {"mem_total_kib": 1024 * 1024, "mem_available_kib": 20 * 1024}})
+
+    evidence = record_startup(home=tmp_path)
+    assert evidence is not None
+    assert "last_heartbeat_at" not in evidence
+    assert "suspected_oom" not in evidence
+    assert "prior_suspected_oom" not in _read_sentinel(tmp_path)
 
 
 def test_record_startup_clean_boot_has_no_prior_flags(tmp_path: Path) -> None:

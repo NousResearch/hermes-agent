@@ -17,6 +17,7 @@ Human acts on.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 import pytest
@@ -65,23 +66,44 @@ def _receipt(pr_facts=None, summary=None) -> str:
 
 @pytest.fixture
 def gh_env(monkeypatch):
-    """Point the module at a fake ``gh`` and a fake repository resolver."""
-    state = {"stdout": "[]", "returncode": 0, "raises": None, "argv": []}
-
-    def fake_which(name):
-        return "/usr/bin/gh" if name == "gh" else None
+    """Point the module at a fake ``gh`` that answers REST-shaped pull payloads."""
+    state = {
+        "pulls": [], "returncode": 0, "raises": None, "argv": [],
+        "identity": "task-owner",
+    }
 
     def fake_run(argv, *args, **kwargs):
         state["argv"].append(list(argv))
-
-        class _R:
-            pass
-
-        r = _R()
-        r.stdout = state["stdout"]
-        r.returncode = state["returncode"]
         if state["raises"] is not None:
             raise state["raises"]
+
+        class _R:
+            stdout = ""
+            returncode = 0
+
+        r = _R()
+        if "api" in argv and "user" in argv:
+            r.stdout = state["identity"]
+            r.returncode = 0 if state["identity"] else 1
+            return r
+        path = next((a for a in argv if a.startswith("repos/")), "")
+        r.returncode = state["returncode"]
+        if r.returncode != 0:
+            return r
+        entries = list(state["pulls"])
+        m = re.search(r"[?&]head=([^&]+)", path)
+        if m:
+            want = m.group(1)
+            if ":" in want:
+                owner, want_branch = want.split(":", 1)
+                entries = [
+                    e for e in entries
+                    if e.get("head", {}).get("ref") == want_branch
+                    and e.get("head", {}).get("repo", {}).get("owner", {}).get("login") == owner
+                ]
+            else:
+                entries = [e for e in entries if e.get("head", {}).get("ref") == want]
+        r.stdout = json.dumps(entries)
         return r
 
     monkeypatch.setattr(kanban_pr_receipt, "_gh_executable", lambda: "/usr/bin/gh")
@@ -92,26 +114,50 @@ def gh_env(monkeypatch):
     return state
 
 
-def _entry(**over):
-    entry = {
-        "number": 145804,
-        "url": f"https://github.com/{REPO}/pull/145804",
-        "state": "OPEN",
-        "isDraft": False,
-        "headRefName": BRANCH,
-        "headRefOid": HEAD,
-        "baseRefName": "main",
-        "mergedAt": None,
-        "mergeCommit": None,
+def _rest(number=145804, *, state="open", draft=False, merged_at=None, owner="task-owner",
+          ref=None, sha=None, repo=None):
+    """A GitHub REST pull payload (the shape ``gh api .../pulls`` returns)."""
+    ref = BRANCH if ref is None else ref
+    sha = HEAD if sha is None else sha
+    repo = repo if repo is not None else f"{owner}/{REPO.split('/')[1]}"
+    return {
+        "number": number,
+        "html_url": f"https://github.com/{REPO}/pull/{number}",
+        "state": state,
+        "draft": draft,
+        "merged_at": merged_at,
+        "head": {
+            "ref": ref,
+            "sha": sha,
+            "repo": {"full_name": repo, "owner": {"login": owner}},
+        },
+        "base": {"ref": "main"},
     }
-    entry.update(over)
-    return entry
+
+
+def _entry(**over):
+    """Backwards-compatible builder used by the earlier tests."""
+    merged = over.pop("mergedAt", None)
+    owner = over.pop("headRepositoryOwner", None)
+    owner_login = owner.get("login") if isinstance(owner, dict) else None
+    repo = over.pop("headRepository", None)
+    repo_name = repo.get("nameWithOwner") if isinstance(repo, dict) else None
+    return _rest(
+        over.pop("number", 145804),
+        state=str(over.pop("state", "OPEN")).lower(),
+        draft=bool(over.pop("isDraft", False)),
+        merged_at=merged,
+        owner=owner_login or "task-owner",
+        ref=over.pop("headRefName", BRANCH),
+        sha=over.pop("headRefOid", HEAD),
+        repo=repo_name,
+    )
 
 
 @pytest.fixture
 def fake_gh(gh_env):
     def _serve(*entries):
-        gh_env["stdout"] = json.dumps(list(entries))
+        gh_env["pulls"] = list(entries)
         gh_env["returncode"] = 0
         return gh_env
 
@@ -184,7 +230,9 @@ def test_worker_supplied_pr_fields_never_render(fake_gh):
 
 def test_github_returning_a_foreign_repository_is_rejected(fake_gh):
     """Even gh's own output is re-validated: the URL must be the same repo."""
-    fake_gh(_entry(url="https://github.com/attacker/other/pull/145804"))
+    entry = _rest()
+    entry["html_url"] = "https://github.com/attacker/other/pull/145804"
+    fake_gh(entry)
     facts = verify_task_pull_request(conn=None, task=_Task())
     assert facts.verified is False
     assert facts.reason == "pr_url_repository_mismatch"
@@ -192,14 +240,18 @@ def test_github_returning_a_foreign_repository_is_rejected(fake_gh):
 
 
 def test_github_returning_a_mismatched_pr_number_is_rejected(fake_gh):
-    fake_gh(_entry(url=f"https://github.com/{REPO}/pull/1"))
+    entry = _rest()
+    entry["html_url"] = f"https://github.com/{REPO}/pull/1"
+    fake_gh(entry)
     facts = verify_task_pull_request(conn=None, task=_Task())
     assert facts.verified is False
     assert facts.reason == "pr_url_number_mismatch"
 
 
 def test_non_github_url_from_gh_is_rejected(fake_gh):
-    fake_gh(_entry(url="https://evil.example/pull/145804"))
+    entry = _rest()
+    entry["html_url"] = "https://evil.example/pull/145804"
+    fake_gh(entry)
     facts = verify_task_pull_request(conn=None, task=_Task())
     assert facts.verified is False
     assert facts.reason == "pr_url_rejected"
@@ -253,7 +305,7 @@ def test_gh_json_of_wrong_shape_degrades_to_not_verified(gh_env):
 
 
 def test_unknown_github_state_is_rejected(gh_env):
-    gh_env["stdout"] = json.dumps([_entry(state="DRAFT_SOMETHING")])
+    gh_env["pulls"] = [_rest(state="draft_something")]
     facts = verify_task_pull_request(conn=None, task=_Task())
     assert facts.verified is False
     assert facts.reason == "unknown_state"
@@ -302,3 +354,96 @@ def test_pr_facts_are_never_inferred_from_worker_metadata():
     """
     rendered = _receipt({"verified": True, "url": "https://github.com/x/y/pull/1"})
     _assert_no_pr_line(rendered)
+
+
+# --- 6. fork identity binding ----------------------------------------------------
+#
+# A branch name is NOT an identity: it is derived from the project slug and task
+# id, so it is predictable, and two different forks can both hold a branch with
+# that name. Before this binding, a bare ``--head <branch>`` query returned both,
+# and the newest-state preference adopted the MERGED one — reporting another
+# fork's old work as this task's pull request.
+
+
+def test_an_old_merged_pr_from_another_fork_is_never_adopted(fake_gh):
+    """Two forks, same branch name: the task's own OPEN PR wins, not the stale MERGED one."""
+    foreign_merged = _rest(number=900, state="merged", merged_at="2026-10-01T00:00:00Z",
+                           owner="other-fork", sha="a" * 40)
+    own_open = _rest(number=950, state="open")
+    # GitHub holds both; the per-owner query must return only the task owner's.
+    gh_env_state = fake_gh(foreign_merged, own_open)
+
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    assert facts.verified is True
+    assert facts.number == 950, "adopted the wrong fork's PR"
+    assert facts.head_owner == "task-owner"
+    rendered = _receipt(facts)
+    assert "pull/950" in rendered
+    assert "pull/900" not in rendered
+
+
+def test_the_query_is_scoped_to_the_task_owner_not_a_bare_branch(fake_gh):
+    """Every published query must carry ``owner:branch``; a bare branch is never used.
+
+    A bare ``head=<branch>`` returns PRs from *any* fork, so using it would put a
+    stranger's same-named branch in play. The owner comes from identity, not from
+    whatever branches happen to exist.
+    """
+    gh_env_state = fake_gh(_entry())
+    verify_task_pull_request(conn=None, task=_Task())
+
+    paths = [a for argv in gh_env_state["argv"] for a in argv if a.startswith("repos/")]
+    assert paths, "no pull query was made"
+    for path in paths:
+        assert f"head=task-owner:{BRANCH}" in path, path
+        assert f"head={BRANCH}&" not in path and not path.endswith(f"head={BRANCH}"), path
+
+
+def test_a_pr_whose_fork_disagrees_with_the_selector_is_discarded(fake_gh):
+    """If gh answers with a different fork than we asked for, nothing is adopted.
+
+    The per-owner query filters on the fork GitHub reports, so a reply that names
+    ``someone-else`` while we asked for ``task-owner:branch`` is not eligible at
+    all: it is dropped before any state preference can pick it.
+    """
+    impostor = _rest(number=777, owner="someone-else")
+    gh_env_state = fake_gh(impostor)
+    # Discovery names the task's own identity, but the only PR belongs to another fork.
+    gh_env_state["identity"] = "task-owner"
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    assert facts.verified is False
+    assert facts.reason == "no_pull_request_for_task_branch"
+    _assert_no_pr_line(_receipt(facts))
+
+
+def test_unresolvable_fork_identity_fails_closed(gh_env):
+    """No PR and no authenticated identity: the owner is unknown, so say nothing."""
+    gh_env["identity"] = ""
+    gh_env["pulls"] = []
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    assert facts.verified is False
+    assert facts.reason == "head_owner_unresolved"
+    _assert_no_pr_line(_receipt(facts))
+
+
+def test_upstream_owner_cannot_be_used_as_the_head_fork(fake_gh):
+    """A same-named branch in the upstream org itself is someone else's work."""
+    upstream_pr = _rest(number=555, owner=REPO.split("/")[0],
+                        repo=f"{REPO.split('/')[0]}/{REPO.split('/')[1]}")
+    gh_env_state = fake_gh(upstream_pr)
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    # The upstream owner is excluded from the identity candidates, so this PR is
+    # never adopted even though its branch name matches.
+    assert facts.verified is False
+    assert facts.head_owner is None
+
+
+def test_verified_pr_reports_the_fork_it_came_from(fake_gh):
+    """The receipt names the fork, so a Human can see where the PR was pushed from."""
+    fake_gh(_entry())
+    rendered = _receipt(verify_task_pull_request(conn=None, task=_Task()))
+    assert "task-owner" in rendered

@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 from agent.i18n import t
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from gateway.kanban_pr_receipt import PrFacts
 from gateway.wake import session_owned_by_profile
 
 
@@ -562,7 +563,12 @@ def _completion_pr_lines(pr_facts: Any) -> list[str]:
     that a silent receipt names nothing beyond the task pointer. Absence of a PR
     line is the not-verified signal; the Human gets the task link either way.
     """
-    if pr_facts is None or not getattr(pr_facts, "verified", False):
+    if not isinstance(pr_facts, PrFacts):
+        # Strict type check, not duck typing: only this module can construct a
+        # PrFacts, so requiring the type makes "no worker data can reach this
+        # line" provable rather than argued.
+        return []
+    if not pr_facts.verified:
         return []
     number = pr_facts.number
     if getattr(pr_facts, "merged", False):
@@ -578,6 +584,11 @@ def _completion_pr_lines(pr_facts: Any) -> list[str]:
         number=number, url=pr_facts.url, state=t(state_key),
         repository=pr_facts.repository,
     )]
+    if pr_facts.head_owner:
+        lines.append(t(
+            "gateway.kanban.ping.completion.pr.verified_fork",
+            owner=pr_facts.head_owner, repository=pr_facts.repository,
+        ))
     if pr_facts.head_oid:
         lines.append(t(
             "gateway.kanban.ping.completion.pr.head",

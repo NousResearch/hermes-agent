@@ -236,6 +236,7 @@ gateway:
         pr:
           # 仅根据 GitHub 返回结果渲染，并绑定到本任务分支。
           verified: "Pull request：#{number} {url}（{state}）—— 已由 GitHub 在 {repository} 核验"
+          verified_fork: "推送自 fork {owner} —— 已由 GitHub 绑定到 {repository}"
           head: "HEAD：{oid}，分支 {branch}"
           state_open: "已开启"
           state_draft: "已开启（草稿）"

@@ -261,6 +261,7 @@ gateway:
         open_task: "Open task {task_id} on the Kanban board for the full result."
         pr:
           verified: "Pull request: #{number} {url} ({state}) — verified by GitHub in {repository}"
+          verified_fork: "Pushed from fork {owner} — bound to {repository} by GitHub"
           head: "Head: {oid} on branch {branch}"
           state_open: "open"
           state_draft: "open, draft"

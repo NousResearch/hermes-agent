@@ -239,6 +239,7 @@ gateway:
         pr:
           # Rendered only from GitHub's own answer, bound to this task's branch.
           verified: "Pull request: #{number} {url} ({state}) — verified by GitHub in {repository}"
+          verified_fork: "Pushed from fork {owner} — bound to {repository} by GitHub"
           head: "Head: {oid} on branch {branch}"
           state_open: "open"
           state_draft: "open, draft"

@@ -14,6 +14,9 @@ export const arSettings = {
   },
   settings: {
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    localModels: {
+      engineRequired: minimum => (minimum ? `يتطلب llama.cpp ${minimum} أو أحدث` : 'يتطلب محرك llama.cpp أحدث')
+    },
     billing: {
       keepGoingOnCredits: {
         title: 'الاستمرار بالرصيد',

@@ -1321,6 +1321,7 @@ catalog: CatalogTranslations
       connectionChanged: string
       title: string
       runtimeTitle: string
+      engineRequired: (minimum: string | null) => string
       runtimeReady: (backend: string) => string
       serverRunning: string
       runtimeInstalled: string

@@ -331,6 +331,10 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    localModels: {
+      engineRequired: minimum =>
+        minimum ? `Требуется llama.cpp ${minimum} или новее` : 'Требуется более новый движок llama.cpp'
+    },
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {

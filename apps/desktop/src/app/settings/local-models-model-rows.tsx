@@ -134,12 +134,35 @@ export interface CatalogModelRowProps {
   jobs: readonly LocalRuntimeJob[]
 }
 
+function CatalogModelEngineRequirement({ model }: Pick<CatalogModelRowProps, 'model'>): ReactElement | null {
+  const { copy } = useLocalModelsActionScope()
+
+  return model.needs_engine ? (
+    <span className="mt-1.5 block text-(--ui-text-tertiary)">{copy.engineRequired(model.min_engine ?? null)}</span>
+  ) : null
+}
+
+function CatalogModelDownloadButton({ model, status, jobs }: CatalogModelRowProps): ReactElement {
+  const scope: LocalModelsActionScope = useLocalModelsActionScope()
+  const anyDownloadRunning = jobs.some(j => j.kind === 'model-download' && isActiveStatus(j.status))
+
+  return (
+    <Button
+      disabled={model.needs_engine || !model.fits || anyDownloadRunning || !status.runtime_installed}
+      onClick={() => void downloadCatalogModel(scope, model)}
+      size="sm"
+      variant="outline"
+    >
+      <Download />
+      {scope.copy.downloadAction(model.size_label)}
+    </Button>
+  )
+}
+
 export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): ReactElement {
   const scope: LocalModelsActionScope = useLocalModelsActionScope()
   const { copy, owner } = scope
   const dJob: LocalRuntimeJob | null = runningDownloadFor(jobs, model.id)
-
-  const anyDownloadRunning = jobs.some(j => j.kind === 'model-download' && isActiveStatus(j.status))
 
   const activateTarget = model.downloaded_model_id ?? model.model_id
   const isActive = Boolean(activateTarget && status.active_model_id === activateTarget)
@@ -164,7 +187,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
             ) : (
               <Button
                 className={cn(activating && '[&_svg]:animate-spin')}
-                disabled={anyActivationRunning(jobs)}
+                disabled={model.needs_engine || anyActivationRunning(jobs)}
                 onClick={() => void activateModel(scope, activateTarget ?? null, model.display_name)}
                 size="sm"
               >
@@ -180,15 +203,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
         ) : dJob ? (
           <LocalModelDownloadActions job={dJob} owner={owner} />
         ) : (
-          <Button
-            disabled={!model.fits || anyDownloadRunning || !status.runtime_installed}
-            onClick={() => void downloadCatalogModel(scope, model)}
-            size="sm"
-            variant="outline"
-          >
-            <Download />
-            {copy.downloadAction(model.size_label)}
-          </Button>
+          <CatalogModelDownloadButton jobs={jobs} model={model} status={status} />
         )
       }
       below={
@@ -203,6 +218,8 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
       description={
         <>
           {model.description}
+
+          <CatalogModelEngineRequirement model={model} />
 
           <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {/* Memory: the traffic light. Green = runs fully on

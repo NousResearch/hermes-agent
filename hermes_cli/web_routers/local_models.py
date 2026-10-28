@@ -343,6 +343,13 @@ def _engine_too_old(min_engine: str) -> bool:
     return int(tag.removeprefix("b")) < int(min_engine.removeprefix("b"))
 
 
+def _require_model_engine(entry) -> None:
+    if _engine_too_old(entry.min_engine):
+        raise HTTPException(status_code=409, detail=(
+            f"{entry.display_name} needs llama.cpp {entry.min_engine} or newer — "
+            "a compatible managed engine must be available and installed first"))
+
+
 def _eligible_entries():
     """Catalog entries this engine can activate today (engine-gated ones can't be the recommendation either)."""
     return tuple(e for e in catalog.CATALOG if not _engine_too_old(e.min_engine))
@@ -742,11 +749,12 @@ def _download_target(model_id: str):
     """(entry, variant) for a family id (this machine's selected variant — the same planning budget as the
     catalog, so the user downloads exactly the build the row advertised) or an exact variant model_id."""
     entry = catalog.catalog_by_id().get(model_id)
+    variant = None
     if entry is None:  # exact variant id, or nothing we know (404)
-        return catalog.find_entry_for_model(model_id) or _entry_or_404(model_id)
-    if _engine_too_old(entry.min_engine):
-        raise HTTPException(status_code=409, detail=(
-            f"{entry.display_name} needs llama.cpp {entry.min_engine} or newer — update the engine first"))
+        entry, variant = catalog.find_entry_for_model(model_id) or (_entry_or_404(model_id), None)
+    _require_model_engine(entry)
+    if variant is not None:
+        return entry, variant
     choice = catalog.select_variant(entry, hardware.probe_budget(planning=True))
     if choice is None:
         raise HTTPException(status_code=409, detail=f"no variant of {entry.id} fits this machine")
@@ -818,6 +826,7 @@ def _quickstart_target(body: QuickstartBody, budget):
     """
     if body.model_id:
         candidates = [_entry_or_404(body.model_id)]
+        _require_model_engine(candidates[0])
     else:
         picked = catalog.recommended_entry(
             budget, _eligible_entries(), backend=_runtime_section().get("backend", "auto"))
@@ -957,6 +966,9 @@ async def local_models_activate(body: ModelActivateBody, profile: Optional[str] 
     # Split variants stage under their first part — resolve like the other routes.
     if body.model_id not in bootstrap.staged_model_ids():
         raise HTTPException(status_code=404, detail=f"{body.model_id} is not downloaded")
+    entry = catalog.entry_for_model(body.model_id)
+    if entry is not None:
+        _require_model_engine(entry)
     job = _job("model-activate", body.model_id, model_id=body.model_id)
 
     def _run():

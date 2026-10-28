@@ -1528,6 +1528,9 @@ export interface LocalCatalogModel {
    *  Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
+  /** Absent on older backends, which do not report engine eligibility. */
+  needs_engine?: boolean
+  min_engine?: string | null
   downloaded_model_id?: string | null
   downloaded_quant?: string | null
   mtp: boolean

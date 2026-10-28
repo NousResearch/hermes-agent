@@ -21,8 +21,8 @@ SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 # Same tensor selection as context_policy's per-block FFN -ot override.
 _FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
-# A block with an SSM conv filter keeps recurrent state (Mamba2 and gated delta-net alike).
-_SSM_CONV = re.compile(r"blk\.(\d+)\.ssm_conv1d\.weight")
+# SSM and short-convolution filters retain state; their in/out projections do not.
+_STATE_CONV = re.compile(r"blk\.(\d+)\.(?:ssm_conv1d|shortconv\.conv)\.weight$")
 
 # Tensors llama.cpp leaves in the file and reads row by row on demand instead of loading them
 # (create_tensor's TENSOR_READ_LAZY, marked per architecture in the engine's model code). Under the
@@ -67,7 +67,7 @@ _SCALAR_FMT = {
 # general.sampling.* metadata key -> preset INI key.
 _SAMPLING_INI_KEY = {"temp": "temp", "temperature": "temp", "top_p": "top-p",
                      "top_k": "top-k", "min_p": "min-p",
-                     "repeat_penalty": "repeat-penalty",
+                     "repeat_penalty": "repeat-penalty", "penalty_repeat": "repeat-penalty",
                      "presence_penalty": "presence-penalty"}
 
 
@@ -109,7 +109,11 @@ class GGUFHeader:
     def recurrent_state_bytes(self) -> int:
         """One copy of one sequence's recurrent state: an f32 conv window plus the SSM state, per
         block that keeps state. llama.cpp holds one copy per slot per speculative draft position.
-        0 when the file declares no SSM shape."""
+        0 when the file declares neither an SSM nor a short-convolution shape."""
+        shortconv = int(self._arch_key("shortconv.l_cache") or 0)
+        if shortconv > 0 and self.recurrent_blocks:
+            return len(self.recurrent_blocks) * 4 * self.n_embd * (shortconv - 1)
+
         def ssm(key: str) -> int:
             return int(self._arch_key(f"ssm.{key}") or 0)
 
@@ -305,7 +309,7 @@ def _read_part(path: Path) -> GGUFHeader:
                 ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
             elif name in _LAZY_READ_CANDIDATES:
                 lazy_candidate_bytes[name] = nbytes
-            elif m := _SSM_CONV.match(name):
+            elif m := _STATE_CONV.match(name):
                 recurrent_blocks.add(int(m.group(1)))
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,

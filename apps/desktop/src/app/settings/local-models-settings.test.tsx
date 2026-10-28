@@ -331,6 +331,73 @@ describe('LocalModelsSettings', () => {
     )
   })
 
+  it('blocks downloading a model that needs a newer engine while keeping its row visible', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...FITTING_MODEL, needs_engine: true, min_engine: 'b11938' }]
+    })
+    await renderFullPane()
+
+    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
+    const download = screen.getByRole('button', { name: /download · 17\.6 GB/i })
+    expect((download as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(download)
+    expect(mocked.downloadLocalModel).not.toHaveBeenCalled()
+    expect(screen.getByText('Requires llama.cpp b11938 or newer')).toBeTruthy()
+  })
+
+  it('blocks using an already downloaded model that needs a newer engine', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [
+        {
+          ...FITTING_MODEL,
+          downloaded: true,
+          downloaded_model_id: 'staged-model',
+          needs_engine: true,
+          min_engine: 'b11938'
+        }
+      ]
+    })
+    await renderFullPane()
+
+    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
+    const use = screen.getByRole('button', { name: /^use$/i })
+    expect((use as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(use)
+    expect(mocked.activateLocalModel).not.toHaveBeenCalled()
+    expect(screen.getByText('Requires llama.cpp b11938 or newer')).toBeTruthy()
+  })
+
+  it.each([{ needs_engine: false, min_engine: 'b11938' }, {}])(
+    'keeps eligible and older-backend catalog rows usable: %j',
+    async eligibility => {
+      mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+      mocked.getLocalCatalog.mockResolvedValue({
+        models: [
+          { ...FITTING_MODEL, ...eligibility },
+          { ...SPILLED_MODEL, ...eligibility, downloaded: true, downloaded_model_id: 'staged-model' }
+        ]
+      })
+      await renderFullPane()
+
+      expect((screen.getByRole('button', { name: /download · 17\.6 GB/i }) as HTMLButtonElement).disabled).toBe(false)
+      expect((screen.getByRole('button', { name: /^use$/i }) as HTMLButtonElement).disabled).toBe(false)
+      expect(screen.queryByText(/requires.*llama\.cpp/i)).toBeNull()
+    }
+  )
+
+  it('shows a generic engine requirement when the backend supplies no minimum', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...FITTING_MODEL, needs_engine: true, min_engine: null }]
+    })
+    await renderFullPane()
+
+    expect(screen.getByText('Requires a newer llama.cpp engine')).toBeTruthy()
+    expect((screen.getByRole('button', { name: /download ·/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('enables downloads only once the runtime is installed', async () => {
     mocked.getLocalModelsStatus.mockResolvedValue({
       ...BASE_STATUS,

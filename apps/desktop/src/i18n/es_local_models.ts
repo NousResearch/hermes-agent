@@ -6,6 +6,8 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   connectionChanged: 'Cambió la conexión de los modelos locales',
   title: 'Modelos locales',
   runtimeTitle: 'Entorno local',
+  engineRequired: minimum =>
+    minimum ? `Requiere llama.cpp ${minimum} o posterior` : 'Requiere un motor llama.cpp más reciente',
   runtimeReady: backend => `Listo · ${backend}`,
   serverRunning: 'En ejecución',
   runtimeInstalled: 'Entorno llama.cpp instalado',

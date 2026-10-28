@@ -11,7 +11,7 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
     from hermes_state_local import local_receipt
     from hermes_state_runtime import (RuntimeStoreError, admit_session_input, claim_session_input,
@@ -24,7 +24,7 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
                                adapters={}, _draining=False)
     first = runner()
     authority = await initialize_session_authority(first, profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
     params = dict(request_id='lineage', source='gui', cwd=str(tmp_path), model='frozen', toolsets=[])
     ref = create_local_session(authority, actor, params)
     db = authority.db
@@ -104,10 +104,10 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
         compress('compressed-again', 'foreign-child')
     assert db.get_session('foreign-child') is None
     db.set_meta('gateway.local_policy.v1:' + ref.session_id, json.dumps(receipt))
-    foreign = Principal('foreign', 'fixture', actor.capabilities, 'foreign')
+    foreign = SessionActor('foreign', 'fixture', actor.capabilities, 'foreign')
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         await restarted.attach(foreign, ref)
-    wrong_profile = Principal('owner', 'other-profile', actor.capabilities, 'other-profile')
+    wrong_profile = SessionActor('owner', 'other-profile', actor.capabilities, 'other-profile')
     with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
         await restarted.attach(wrong_profile, ref)
     db.create_session('unrelated-fork', source='gui', parent_session_id='compressed-again',

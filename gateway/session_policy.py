@@ -1104,14 +1104,17 @@ def refused_turn_result(policy, exc) -> dict | None:
 
 
 @contextmanager
-def policy_scope(policy, *, authority=None):
+def policy_scope(policy, *, authority=None, home=None):
+    """Bind a session's frozen policy for a turn. *home* is the profile that owns the session (its
+    terminal policy's owner); it defaults to *authority*'s profile."""
     if policy is None:
         yield
         return
     if not workspace_ready(policy):
         raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
-    from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
+    from agent.runtime_scope import bind_terminal_policy
+    from tools.terminal_scope import reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
     if policy.config_secret_ref is not None:
         from gateway.session_policy_credentials import recover_config_secrets
@@ -1125,7 +1128,8 @@ def policy_scope(policy, *, authority=None):
         from dataclasses import replace
         active = replace(policy, toolsets=policy.current_toolsets(policy.config(authority, secrets=False)))
     cwd_token = set_session_cwd(policy.cwd)
-    terminal_token = set_terminal_scope(terminal)
+    owner = home if home is not None else getattr(authority, 'profile_id', None)
+    terminal_token = bind_terminal_policy(terminal, profile_home=owner)
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:

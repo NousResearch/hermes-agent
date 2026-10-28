@@ -95,6 +95,7 @@ class _Binder(ast.NodeVisitor):
     def __init__(self) -> None:
         self.module = self.scope = _Scope(kind="module")
         self.loads: dict[int, _Scope] = {}
+        self.relative: set[str] = set()  # targets bound by a relative import (package unknown)
 
     def _bind(self, name: str, scope: _Scope | None = None) -> None:
         (scope or self.scope).owner(name).others.add(name)
@@ -121,6 +122,8 @@ class _Binder(ast.NodeVisitor):
         for alias in node.names:
             if alias.name != "*":
                 target = f"{node.module}.{alias.name}" if node.module else alias.name
+                if node.level:
+                    self.relative.add(target)
                 self._import(alias.asname or alias.name, target)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -206,10 +209,16 @@ def canonical_tree(tree: ast.Module) -> ast.Module:
         def visit_Name(self, node: ast.Name) -> ast.AST:
             scope = binder.loads.get(id(node))
             target = scope.resolve(node.id) if scope else None
-            if target is None or target == node.id:
+            if target is None:
+                return node
+            # The root records what it resolved from, for rules that must tell an imported module
+            # from a local that shares its name, or a relative import from an absolute one.
+            node.imported, node.relative = True, target in binder.relative
+            if target == node.id:
                 return node
             parts = target.split(".")
-            expr: ast.expr = ast.Name(parts[0], ast.Load())
+            root = expr = ast.Name(parts[0], ast.Load())
+            root.imported, root.relative = True, node.relative
             for part in parts[1:]:
                 expr = ast.Attribute(expr, part, ast.Load())
             return ast.copy_location(expr, node)
@@ -860,6 +869,38 @@ def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 yield node.lineno
 
 
+# The legacy profile setters. Inside a bound runtime scope they cannot split it (a call for another
+# profile moves the whole scope; hosted scopes refuse), but new code binds a scope instead, so each
+# existing call is migrated when its function is next edited.
+_LEGACY_PROFILE_SETTERS = frozenset({
+    "hermes_constants.set_hermes_home_override",
+    "agent.secret_scope.set_secret_scope",
+    "tools.terminal_scope.set_terminal_scope",
+    "tools.terminal_scope.install_profile_terminal_scope",
+})
+
+
+def _is_legacy_setter(call: ast.Call) -> bool:
+    """A call through an imported name: exactly a setter's module path, or, from a relative import
+    (whose package the AST cannot know), a whole-component tail of one that still names the module
+    (``.secret_scope.set_secret_scope``; a bare ``from . import set_secret_scope`` is unknowable)."""
+    root = call.func
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if not getattr(root, "imported", False):
+        return False
+    name = _call_name(call)
+    if getattr(root, "relative", False):
+        return "." in name and any(f".{setter}".endswith(f".{name}") for setter in _LEGACY_PROFILE_SETTERS)
+    return name in _LEGACY_PROFILE_SETTERS
+
+
+def legacy_profile_setter(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_legacy_setter(node):
+            yield node.lineno
+
+
 CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX001": hardcoded_home,
     "HX002": new_env_var,
@@ -874,4 +915,5 @@ CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX011": elif_ladder,
     "HX012": raw_thread,
     "HX013": wall_clock_sleep,
+    "HX014": legacy_profile_setter,
 }

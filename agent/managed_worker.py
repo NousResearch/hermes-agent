@@ -333,6 +333,10 @@ def execute(frame, channel):
     bind_worker_policy(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
+    # This process serves exactly one turn of one profile: bind it as the runtime scope. The
+    # profile state is this process's own (its environment names the home), so only the slot.
+    from hermes_scope import LOCAL_OWNER, LOCAL_TENANT, TurnScope, push_state
+    push_state(scope=TurnScope(LOCAL_TENANT, frame['home'], LOCAL_OWNER, scope['session_id'], scope['execution_id']))
     rpc = WorkerRPC(frame['home'])
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:
@@ -360,7 +364,7 @@ def execute(frame, channel):
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
     try:
-        with policy_scope(policy):
+        with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 # delegate_task stays offered: each child is reserved by the owner under this

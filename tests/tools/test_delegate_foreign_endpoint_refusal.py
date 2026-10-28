@@ -62,3 +62,19 @@ def test_unknown_parent_endpoint_does_not_refuse():
     """No provable parent endpoint (tests, embedders) → keep the old behaviour."""
     creds = _resolve_delegation_credentials(_cfg(), parent_agent=None)
     assert creds["api_key"] is None
+
+
+def test_routes_for_turns_the_refusal_into_a_tool_error():
+    """delegate_tool._routes_for already converts ValueError into (no routes, message);
+    assert the /review path (credentials_cfg) is covered by that conversion."""
+    from tools.delegate_tool import _routes_for
+
+    routes, error = _routes_for(
+        [{"goal": "Review recent work"}],
+        {},
+        {"model": "gemini-4-argon-high", "provider": "", "base_url": CHILD_URL,
+         "api_key": "", "api_mode": "", "key_env": ""},
+        _parent(),
+    )
+    assert routes == []
+    assert error and "refusing to send it to a different host" in error

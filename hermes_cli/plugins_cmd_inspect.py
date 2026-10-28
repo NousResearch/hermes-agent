@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,6 +23,11 @@ import hermes_yaml as yaml
 
 #: A manifest is a few hundred bytes; never read a hostile multi-megabyte one into memory.
 _MANIFEST_MAX_BYTES = 256 * 1024
+#: How long a successful inspection answers a repeat of the same request (see ``inspect_plugin_source``).
+_RESULT_TTL_SECONDS = 600
+#: ``(home, catalog_name, identifier)`` -> ``[future, finished_at]``; ``finished_at`` is None while it runs.
+_inspections: dict[tuple[str, str, str], list] = {}
+_inspections_lock = threading.Lock()
 
 
 def _pc():
@@ -69,7 +77,49 @@ def _failure(error: str, warnings: list[str], insecure: bool) -> dict[str, Any]:
 def inspect_plugin_source(identifier: str, *, catalog_name: Optional[str] = None) -> dict[str, Any]:
     """``{ok, agent, desktop, agent_name, desktop_name, warnings, insecure}``, or ``ok: False`` with
     ``error``. *catalog_name* inspects the curated entry at its reviewed pin (its repo replaces
-    *identifier*), so the dialog shows exactly what the catalog install will put down."""
+    *identifier*), so the dialog shows exactly what the catalog install will put down.
+
+    A repeat of a request (same profile home, catalog name and source) joins the clone still running
+    for it, or reads a successful answer it produced within :data:`_RESULT_TTL_SECONDS`. The browser
+    stops waiting before a slow clone can finish (``plugins.clone_timeout_seconds`` reaches an hour per
+    Git step); its Retry must collect that clone's answer, not start another under the same deadline.
+    A failed read is never kept, so a Retry after one inspects afresh."""
+    from hermes_constants import get_hermes_home
+    key = (str(get_hermes_home()), catalog_name or "", identifier)
+    now = time.monotonic()
+    with _inspections_lock:
+        for stale in [k for k, (_, done) in _inspections.items()
+                      if done is not None and now - done > _RESULT_TTL_SECONDS]:
+            del _inspections[stale]
+        slot = _inspections.get(key)
+        owner = slot is None
+        if owner:
+            slot = _inspections[key] = [Future(), None]
+    future: Future = slot[0]
+    if not owner:
+        return _copy(future.result())
+    try:
+        result = _inspect(identifier, catalog_name)
+    except BaseException as exc:
+        with _inspections_lock:
+            _inspections.pop(key, None)
+        future.set_exception(exc)
+        raise
+    with _inspections_lock:
+        if result["ok"]:
+            slot[1] = time.monotonic()
+        else:
+            _inspections.pop(key, None)
+    future.set_result(result)
+    return _copy(result)
+
+
+def _copy(result: dict[str, Any]) -> dict[str, Any]:
+    """Each caller gets its own answer: one shared by joined requests must not be edited through another."""
+    return {**result, "warnings": list(result["warnings"])}
+
+
+def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
     pc = _pc()
     revision = None
     names: tuple[str, ...] = ()

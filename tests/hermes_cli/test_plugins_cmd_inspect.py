@@ -5,12 +5,13 @@ but the catalog lookup and the kill list.
 """
 
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import plugins_cmd_catalog
+from hermes_cli import plugins_cmd, plugins_cmd_catalog, plugins_cmd_inspect
 from hermes_cli.plugins_cmd import PluginOperationError
 from hermes_cli.plugins_cmd_inspect import inspect_plugin_source
 
@@ -44,6 +45,29 @@ def _commit(repo: Path, files: dict[str, str]) -> str:
 @pytest.fixture
 def sentinel(tmp_path):
     return tmp_path / "imported.flag"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_inspections():
+    plugins_cmd_inspect._inspections.clear()
+    yield
+    plugins_cmd_inspect._inspections.clear()
+
+
+@pytest.fixture
+def clones(monkeypatch):
+    """Count real clones; ``gate`` (when set) holds each clone until it is released."""
+    real = plugins_cmd._clone_plugin_repo
+    state = SimpleNamespace(count=0, started=threading.Event(), gate=None)
+
+    def counting(*args, **kwargs):
+        state.count += 1
+        state.started.set()
+        if state.gate is not None:
+            assert state.gate.wait(30)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo", counting)
+    return state
 
 
 def _agent_files(sentinel: Path, name: str = "demo-agent") -> dict[str, str]:
@@ -152,3 +176,57 @@ def test_inspection_writes_nothing_into_the_profile(tmp_path, sentinel, monkeypa
 
     assert inspect_plugin_source(repo.as_uri())["ok"] is True
     assert not (home / "plugins").exists() or not any((home / "plugins").iterdir())
+
+
+def test_retry_during_a_slow_clone_joins_it_instead_of_cloning_again(tmp_path, sentinel, clones):
+    # The browser gives up on a slow inspection and retries; the retry must get the running clone's answer.
+    repo = _repo(tmp_path, _agent_files(sentinel))
+    clones.gate = threading.Event()
+    answers = []
+    first = threading.Thread(target=lambda: answers.append(inspect_plugin_source(repo.as_uri())))
+    first.start()
+    assert clones.started.wait(30)
+    retry = threading.Thread(target=lambda: answers.append(inspect_plugin_source(repo.as_uri())))
+    retry.start()
+    # Still waiting while the first clone is held: it joined that clone, not a finished answer.
+    retry.join(0.5)
+    assert retry.is_alive() and clones.count == 1
+    clones.gate.set()
+    first.join(30)
+    retry.join(30)
+
+    assert clones.count == 1
+    assert [a["agent_name"] for a in answers] == ["demo-agent", "demo-agent"]
+    assert answers[0] is not answers[1] and answers[0]["warnings"] is not answers[1]["warnings"]
+
+
+def test_a_retry_after_the_clone_finished_reads_its_answer_until_it_expires(tmp_path, sentinel, clones,
+                                                                           monkeypatch):
+    repo = _repo(tmp_path, _agent_files(sentinel))
+
+    assert inspect_plugin_source(repo.as_uri())["ok"] is True
+    assert inspect_plugin_source(repo.as_uri())["ok"] is True
+    assert clones.count == 1
+
+    monkeypatch.setattr(plugins_cmd_inspect, "_RESULT_TTL_SECONDS", -1)
+    assert inspect_plugin_source(repo.as_uri())["ok"] is True
+    assert clones.count == 2
+
+
+def test_a_failed_read_is_not_kept(tmp_path, clones):
+    missing = (tmp_path / "nope").as_uri()
+
+    assert inspect_plugin_source(missing)["ok"] is False
+    assert inspect_plugin_source(missing)["ok"] is False
+    assert clones.count == 2
+    assert not plugins_cmd_inspect._inspections
+
+
+def test_another_profile_never_reads_this_profiles_answer(tmp_path, sentinel, clones, monkeypatch):
+    repo = _repo(tmp_path, _agent_files(sentinel))
+    for home in ("a", "b"):
+        (tmp_path / home).mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / home))
+        assert inspect_plugin_source(repo.as_uri())["ok"] is True
+
+    assert clones.count == 2

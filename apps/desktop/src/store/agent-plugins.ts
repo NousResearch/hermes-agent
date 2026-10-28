@@ -409,7 +409,8 @@ export async function inspectAgentPlugin(
         },
         opts.profile
       ),
-      // A clone runs on the backend, as an install's does.
+      // A clone runs on the backend, as an install's does. One that outlasts this wait keeps running
+      // there, and Retry collects its answer instead of starting another clone.
       PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 

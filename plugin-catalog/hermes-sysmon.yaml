@@ -1,0 +1,17 @@
+name: hermes-sysmon
+repo: https://github.com/imzacksong/hermes-sysmon
+sha: 3af5ed3314b6a8ecae4c694f0e4de24e5ab1882e
+description: 'System monitor for Hermes Desktop: live CPU/RAM/disk/network/GPU statusbar chips
+  plus a detail panel. Read-only backend (psutil + nvidia-smi when present). Zero API keys,
+  zero model tokens.'
+maintainer: imzacksong
+tier: community
+category: desktop
+requires_hermes: '>=0.21'
+docs_url: https://github.com/imzacksong/hermes-sysmon
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

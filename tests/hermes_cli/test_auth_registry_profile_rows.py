@@ -5,6 +5,7 @@ A provider that leaves core keeps its registry row by declaring it on its profil
 adds for it never count as separate providers.
 """
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -57,6 +58,49 @@ def test_ambient_plugin_is_not_env_auto_detected_under_its_aliases(plugin, monke
     assert auth._env_key_auto_detected(lambda n: env.get(n, ""), None) is None
     env["KEYEDCO_TOKEN"] = "tok-keyed-1234567890"
     assert auth._env_key_auto_detected(lambda n: env.get(n, ""), None) == "keyedco"
+
+
+def test_only_a_key_held_for_tools_leaves_an_ambient_profile_unconfigured(plugin, monkeypatch):
+    """An ambient profile's own token (``GH_TOKEN``-style, no ``tools`` entry) is explicit configuration
+    on every surface. A key that also unlocks tools is not, until the user chooses that provider."""
+    from unittest.mock import patch
+
+    from agent.auxiliary_client import get_text_auxiliary_client
+    from hermes_cli import auth
+    from hermes_cli.config import OPTIONAL_ENV_VARS
+    from hermes_cli.inventory import ConfigContext, build_models_payload
+    from hermes_cli.main import _has_any_provider_configured
+
+    for name, ambient in (("tokenco", True), ("toolco", True), ("keyedco", False)):
+        plugin(replace(_token_profile(name, ambient=ambient), default_aux_model=f"{name}-small"))
+    for name in ("TOOLCO_TOKEN", "KEYEDCO_TOKEN"):
+        monkeypatch.setitem(OPTIONAL_ENV_VARS, name, {"tools": ["web_search"], "category": "provider"})
+    status, borrowed = auth.get_auth_status, {}  # a gh login on the host must not decide the first-run check
+    monkeypatch.setattr(auth, "get_auth_status",
+                        lambda pid: borrowed.get(pid) or (status(pid) if pid.endswith("co") else {}))
+    rows = [{"slug": name, "name": name, "models": [f"{name}-small"], "total_models": 1, "is_current": False,
+             "is_user_defined": False, "source": "hermes"} for name in ("tokenco", "toolco", "keyedco")]
+    ctx = ConfigContext(current_provider="openrouter", current_model="openai/gpt-5.5", current_base_url="",
+                        user_providers={}, custom_providers=[])
+
+    def surfaces(env_var: str) -> tuple:
+        """(explicit ids, env pool row counts, first-run check, auxiliary fallback model, picker slugs)."""
+        monkeypatch.setenv(env_var, "tok-1234567890abcdef")
+        provider = env_var.removesuffix("_TOKEN").lower()
+        with patch("hermes_cli.model_switch.list_authenticated_providers", return_value=rows):
+            payload = build_models_payload(ctx, explicit_only=True)
+        listed = [row["slug"] for row in payload["providers"] if row["slug"].endswith("co")]
+        seen = ([name for name in ("tokenco", "toolco", "keyedco") if auth.is_provider_explicitly_configured(name)],
+                auth._pool_entry_is_explicit({"source": f"env:{env_var}"}, provider),
+                _has_any_provider_configured(), get_text_auxiliary_client()[1], listed)
+        monkeypatch.delenv(env_var)
+        return seen
+
+    assert surfaces("TOKENCO_TOKEN") == (["tokenco"], True, True, "tokenco-small", ["tokenco"])
+    assert surfaces("KEYEDCO_TOKEN") == (["keyedco"], True, True, "keyedco-small", ["keyedco"])
+    assert surfaces("TOOLCO_TOKEN") == ([], False, False, None, [])
+    borrowed["tokenco"] = {"logged_in": True, "key_source": "vendor_cli"}  # no env var: a vendor CLI's login
+    assert (auth.is_provider_explicitly_configured("tokenco"), _has_any_provider_configured()) == (False, True)
 
 
 def test_profile_declares_its_registry_row_shape_and_place(plugin, monkeypatch, capsys):

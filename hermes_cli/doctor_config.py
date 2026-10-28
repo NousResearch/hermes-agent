@@ -283,7 +283,9 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"model.provider '{provider_raw}' is unknown. Valid providers: {known_list}. "
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
-    accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    from providers import get_provider_profile
+    accepts_vendor_slug = (policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+                           or bool(policy_id and getattr(get_provider_profile(policy_id), "aggregator", False)))
     # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
     # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
     model_base_url = str(model_section.get("base_url") or "").strip()

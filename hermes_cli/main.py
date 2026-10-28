@@ -1377,7 +1377,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _create_titled_session(title: str) -> Optional[str]:
+def _create_titled_session(title: str, launch=None) -> Optional[str]:
     """Create a fresh titled session (``chat -c <title> --create-if-missing``).
 
     The gateway is the single writer: it creates the session and records the title with user
@@ -1386,10 +1386,13 @@ def _create_titled_session(title: str) -> Optional[str]:
     Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic callers (plugins, scripts) that
     want "send to this named thread, making it if needed" get a deterministic outcome instead of a silent
     no-op.
+
+    *launch* is the caller's explicit launch-flag mapping (model, provider, ...): the created row
+    freezes that route instead of the profile default (see gateway_session_store docstring; hw-lk5).
     """
     try:
         from hermes_cli.gateway_session_store import create_titled_session
-        return create_titled_session(title)
+        return create_titled_session(title, launch)
     except Exception:
         # Programmatic callers rely on --create-if-missing being deterministic;
         # swallow the failure but log the cause so it lands in errors.log
@@ -1417,15 +1420,19 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 args.resume = resolved
             elif getattr(args, "create_if_missing", False):
                 # "send to this named thread, making it if needed" — without it
-                # a quiet send to a not-yet-existing session silently no-ops.
+                # a quiet send to the not-yet-existing session silently no-ops.
                 # --create-if-missing: no session matches the title — create a new session with that title
                 # and proceed. See #86794. The classic CLI's gateway writes it (the single writer);
-                # the TUI keeps main's local row.
+                # the TUI keeps main's local row. The created row must freeze the caller's explicit
+                # launch flags (-m/--model, ...): a created session's later turns ride the resume
+                # contract, so a route dropped here is frozen to the profile default forever (hw-lk5).
+                from hermes_cli.gateway_session_store import _LAUNCH_POLICY
+                launch = {k: getattr(args, k, None) for k in _LAUNCH_POLICY if hasattr(args, k)}
                 if use_tui:
-                    new_sid = _create_titled_session(continue_val)
+                    new_sid = _create_titled_session(continue_val, launch)
                 else:
                     from hermes_cli.gateway_session_store import create_titled_session
-                    new_sid = create_titled_session(continue_val)
+                    new_sid = create_titled_session(continue_val, launch)
                 if new_sid:
                     args.resume = new_sid
                 else:

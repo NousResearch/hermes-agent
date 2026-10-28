@@ -552,13 +552,18 @@ def session_store():
     return GatewaySessionStore()
 
 
-def create_titled_session(title):
+def create_titled_session(title, launch=None):
     """``chat -c <title> --create-if-missing`` for the classic CLI: the gateway's ``session.create``
     with ``title`` (it resolves-or-creates under one owner lock), so this process writes no row.
     Main's ``_create_titled_session`` minted the id and wrote the row itself, with no cwd stamp
     (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
-    "could not be created" copy)."""
-    params = _creation_policy({})
+    "could not be created" copy). *launch* carries the caller's explicit launch flags
+    (-m/--model, --provider, ...): a created row freezes its route exactly like a plain launch,
+    because later turns ride the resume contract (the frozen route wins; a repeated --model only
+    re-checks it). Dropping the flags here made `-c T --create-if-missing -m X` run the whole
+    session on the profile default — the workflow seat-routing bug (hw-lk5): seats pin a model,
+    spawn with --create-if-missing, and every attempt bills the estate default route."""
+    params = _creation_policy(launch or {})
     params["cwd"] = _launch_cwd()
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""

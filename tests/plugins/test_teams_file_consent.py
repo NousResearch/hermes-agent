@@ -9,7 +9,8 @@ Framework rejects. Every rejected activity logs one ERROR line carrying the
 file name, MIME type, size, HTTP status and the response body, so a 400 is
 diagnosable without opening the container.
 
-The adapter is imported plain (the venv has the SDK); the instance is built
+The adapter is imported plain and the sends need the SDK, so the module skips
+without the ``teams`` extra; the instance is built
 with object.__new__ so no App/auth is constructed, sends are captured by
 stubbing _send_via_conv_ref / send, and the consent directory is a tmp_path.
 The upload goes through an httpx.MockTransport -- nothing leaves the process.
@@ -30,6 +31,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from pydantic import BaseModel
+
+pytest.importorskip("microsoft_teams.apps", reason="teams extra not installed")
 
 from plugins.platforms.teams import adapter as teams_adapter
 from plugins.platforms.teams.adapter import TeamsAdapter

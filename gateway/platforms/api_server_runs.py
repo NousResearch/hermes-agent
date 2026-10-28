@@ -741,6 +741,7 @@ async def _admit_run_to_authority(
                 history_from_session=session_history_delivery,
                 session_history_delivery='1' if session_history_delivery else '',
                 bind_declared_conversation=_declared_selected, walked_from=launch.walked_from,
+                approval_timeout_s=launch.agent_kwargs.pop('approval_timeout_s', None),
                 **launch.agent_kwargs)
     except Exception as exc:  # health: allow BLE001 -- answered below; a committed admission is kept
         # A storage failure after the admission committed (a later media-release write) still
@@ -774,6 +775,13 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    approval_timeout = body.get('approval_timeout_s')
+    if 'approval_timeout_s' in body and (
+            type(approval_timeout) is not int or not 1 <= approval_timeout <= 1800
+            or getattr(self.gateway_runner, 'session_authority', None) is None
+            or self._room_grant_token(request) or gateway_session_key
+            or body.get('session_id') or body.get('previous_response_id')):
+        return _json_error(_openai_error, 'approval_timeout_s requires canonical Runs and an integer 1-1800', status=400)
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
@@ -867,9 +875,12 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
+            approval_timeout_s=approval_timeout,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
+    if approval_timeout is None:
+        launch.agent_kwargs.pop('approval_timeout_s')
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.

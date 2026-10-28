@@ -7,10 +7,14 @@ sweeps never look at a ``done`` card again, so a worker that called
 was invisible to every command. The closed ``task_runs`` row now keeps the pid
 and its spawn fingerprint, and ``reap_terminal_workers`` ends such a worker on
 the next tick — never a recycled PID, never a legacy row without a fingerprint.
+The ``terminal_worker_reaped`` event payload carries the closed run's
+``run_outcome`` so a reaper tick following a sanctioned ``blocked`` (or any
+non-completed) transition is never misread as crash-crediting.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -73,6 +77,44 @@ def test_worker_alive_after_completion_is_reaped_on_dispatch_tick(conn):
         assert run["worker_pid"] is None and run["worker_started_at"] is None
         kinds = [r["kind"] for r in conn.execute("SELECT kind FROM task_events WHERE task_id=?", (tid,))]
         assert "terminal_worker_reaped" in kinds
+        # The payload names the closed run's outcome so a reaper tick following a
+        # sanctioned transition reads as hygiene, not crash-crediting.
+        payload = _reaped_payload(conn, tid)
+        assert payload["run_outcome"] == "completed"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def _reaped_payload(conn, tid: str) -> dict:
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind='terminal_worker_reaped' "
+        "ORDER BY id DESC LIMIT 1", (tid,),
+    ).fetchone()
+    assert row is not None and row["payload"] is not None
+    return json.loads(row["payload"])
+
+
+def test_reaped_event_after_blocked_run_carries_blocked_outcome(conn):
+    """The audit misread this observability patch exists for: a sanctioned
+    ``kanban_block`` followed by a reaper tick on the worker that lingered
+    mid-final-summary. The event must say ``run_outcome='blocked'`` so the
+    adjacency is not misread as the block being scored as a crash."""
+    proc = _sleeper()
+    try:
+        tid = kb.create_task(conn, title="blocked lingerer", assignee="coder")
+        kb.claim_task(conn, tid, claimer=kb._claimer_id())
+        run_id = kb._current_run_id(conn, tid)
+        kbd._set_worker_pid(conn, tid, proc.pid)
+        assert kb.block_task(conn, tid, reason="waiting on reviewer", expected_run_id=run_id) is True
+        conn.execute("UPDATE task_runs SET ended_at = ended_at - 600 WHERE id=?", (run_id,))
+
+        assert kbd.reap_terminal_workers(conn) == [tid]
+
+        payload = _reaped_payload(conn, tid)
+        assert payload["run_outcome"] == "blocked"
+        assert payload["pid"] == proc.pid
     finally:
         if proc.poll() is None:
             proc.kill()

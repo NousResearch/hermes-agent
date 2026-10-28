@@ -72,13 +72,12 @@ async def prepare_compress(authority, live, payload, prepared):
             memory_context = _pre_compress_memory_context(resident, head, False) if resident is not None else ''
             engine = _plugin_engine(authority, policy, config, model, runtime, resident, snapshot['target'])
             if engine is not None:
-                from agent.conversation_compression import _supported_compression_kwargs
-                compressed = engine.compress(json.loads(json.dumps(head)), **_supported_compression_kwargs(
-                    engine.compress, current_tokens=estimate_request_tokens_rough(head),
-                    focus_topic=request.focus_topic, force=True, memory_context=memory_context))
-                if compressed == head:
-                    return None, engine
-                return rejoin_compressed_head_and_tail(compressed, tail), engine
+                try:
+                    return _engine_compress(engine, head, tail, messages, request, memory_context), engine
+                except BaseException:
+                    if resident is None:
+                        _end_engine(engine, snapshot['target'], messages)
+                    raise
             compressor = ContextCompressor(model, base_url=runtime.get('base_url') or '',
                 api_key=runtime.get('api_key') or '', provider=runtime.get('provider') or '',
                 api_mode=runtime.get('api_mode') or '', quiet_mode=True, abort_on_summary_failure=True,
@@ -94,6 +93,8 @@ async def prepare_compress(authority, live, payload, prepared):
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression
     if compressed is None:
+        if resident is None and not isinstance(compressor, ContextCompressor):
+            await asyncio.to_thread(_end_engine, compressor, snapshot['target'], messages)
         # Nothing removable (a short session keeps every message): main's read-only
         # "No changes from compression" report, estimated like main's (system prompt + tools).
         row = None if resident is not None else authority.db.get_session(snapshot['target'])  # resident: row unused
@@ -113,6 +114,52 @@ async def prepare_compress(authority, live, payload, prepared):
                                    owned=resident is None and not isinstance(compressor, ContextCompressor))
     return dict(prepared, messages=compressed, summary=summary, post_compaction=hook, engine_owner=engine_owner,
                 in_place=is_truthy_value(options.get('in_place'), default=True))
+
+
+def _engine_compress(engine, head, tail, messages, request, memory_context):
+    """One forced ``compress()`` on a plugin engine; None when it changed nothing or would grow the
+    conversation (the agent path refuses a growing result the same way)."""
+    from agent.conversation_compression import _supported_compression_kwargs
+    from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+    from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+    engine._last_compress_refused_would_grow = False
+    compressed = engine.compress(json.loads(json.dumps(head)), **_supported_compression_kwargs(
+        engine.compress, current_tokens=estimate_request_tokens_rough(head),
+        focus_topic=request.focus_topic, force=True, memory_context=memory_context))
+    if compressed == head:
+        return None
+    compressed = rejoin_compressed_head_and_tail(compressed, tail)
+    if estimate_messages_tokens_rough(compressed) > estimate_messages_tokens_rough(messages):
+        engine._last_compress_refused_would_grow = True  # read by the /compress report
+        return None
+    return compressed
+
+
+def _end_engine(engine, session_id, messages):
+    try:
+        engine.on_session_end(session_id, messages)
+    except Exception:  # health: allow BLE001 -- releasing a one-off engine must not fail /compress
+        logger.warning('context engine on_session_end failed', exc_info=True)
+
+
+def _configured_context_length(config, model, provider, base_url, custom_providers):
+    """The configured window agent init hands a plugin engine: ``model.context_length`` when it
+    describes this runtime, else the matching custom provider's entry."""
+    from agent.agent_init import _scope_context_length_to_default_runtime
+    from hermes_cli.config import get_custom_provider_context_length
+    model_cfg = config.get('model') if isinstance(config.get('model'), dict) else {}
+    try:
+        configured = int(model_cfg['context_length']) if model_cfg.get('context_length') is not None else None
+    except (TypeError, ValueError):
+        configured = None
+    if configured is not None:
+        route = SimpleNamespace(model=model, provider=provider, base_url=base_url)
+        configured = _scope_context_length_to_default_runtime(
+            route, config, model_cfg, custom_providers, configured, base_url)
+    if configured is None and custom_providers:
+        configured = get_custom_provider_context_length(
+            model=model, base_url=base_url, custom_providers=custom_providers)
+    return int(configured) if configured else None
 
 
 def _plugin_engine(authority, policy, config, model, runtime, resident, target):
@@ -135,10 +182,13 @@ def _plugin_engine(authority, policy, config, model, runtime, resident, target):
     thresholds = (config.get('compression') or {}).get('model_thresholds')
     if isinstance(thresholds, dict) and thresholds:  # before update_model, like agent init
         engine.model_thresholds = {str(k): float(v) for k, v in thresholds.items()}
+    from hermes_cli.config import get_compatible_custom_providers
     base_url, api_key = runtime.get('base_url') or '', runtime.get('api_key') or ''
     provider = runtime.get('provider') or ''
-    context_length = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider,
-                                              custom_providers=config.get('custom_providers'))
+    providers = get_compatible_custom_providers(config)
+    context_length = get_model_context_length(
+        model, base_url=base_url, api_key=api_key, provider=provider, custom_providers=providers,
+        config_context_length=_configured_context_length(config, model, provider, base_url, providers))
     engine.update_model(model=model, context_length=context_length, base_url=base_url, api_key=api_key,
                         provider=provider, api_mode=runtime.get('api_mode') or '')
     bind = getattr(engine, 'bind_session_state', None)
@@ -152,19 +202,25 @@ def _platform(source):
     return getattr(platform, 'value', platform) or 'cli'
 
 
-async def notify_committed_compress(authority, prepared, result):
-    """The agent path's post-commit notification for a committed ``/compress``: the context engine's
-    compression boundary plus relay/metrics segment hand-off. A cold session's engine was built for
-    this compression only, so it also gets the session-end a resident agent's boundary eviction gives."""
+async def finish_compress_engine(authority, prepared, result):
+    """After the receipt transaction: a committed ``/compress`` (``result``) gets the agent path's
+    post-commit notification, the engine's compression boundary plus the relay/metrics segment
+    hand-off. A cold session's engine was built for this compression only, so it gets the session
+    end a resident agent's boundary eviction gives, committed or not. An exact retry (no
+    ``engine_owner``) notifies nothing."""
     from agent.conversation_compression import _notify_context_engine_compression_complete
     from gateway.run import _async_profile_runtime_scope
-    owner, target = prepared['engine_owner'], result['target_session_id']
+    owner = (prepared or {}).get('engine_owner')
+    if owner is None or (result is None and not owner.owned):
+        return
 
     def notify():
-        _notify_context_engine_compression_complete(
-            owner, new_session_id=target, old_session_id=result['previous_target_session_id'])
+        if result is not None:
+            _notify_context_engine_compression_complete(owner, new_session_id=result['target_session_id'],
+                                                        old_session_id=result['previous_target_session_id'])
         if owner.owned:
-            owner.context_compressor.on_session_end(target, prepared['messages'])
+            target = result['target_session_id'] if result is not None else prepared['snapshot']['target']
+            _end_engine(owner.context_compressor, target, prepared['messages'])
     try:
         async with _async_profile_runtime_scope(Path(authority.profile_id)):
             await asyncio.to_thread(notify)

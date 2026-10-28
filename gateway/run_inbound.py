@@ -570,11 +570,22 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: MessageEvent, *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Merge *event* into the source adapter's pending slot (no-op without an adapter).
+
+        Direct slot write, so it goes through the same review-admission fence as the FIFO helpers:
+        the merged event IS the next live turn, and an automatic review sampling "no follow-up" a
+        moment earlier must not get its full-transcript request onto the wire beside it.
+        """
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
-        if adapter:
+        if not adapter:
+            return
+
+        def _merge() -> bool:
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+            return True
+
+        self._apply_followup_queue_mutation(adapter, _quick_key, _merge)
 
     async def _hm_busy_slash_or_photo(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
@@ -1185,12 +1196,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _orphan_adapter = self._delivery_adapter_for(source)
             if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
                 return event, source, is_internal
-            _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
+            _rescued = self._rescue_orphaned_overflow(
+                _quick_key, _orphan_adapter, incoming_event=event
+            )
             if _rescued is None:
                 return event, source, is_internal
-            # Into the slot when the chain was a single orphan (post-turn drain picks it up),
-            # otherwise into overflow behind the already-staged next orphan.
-            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
             # Same session key by construction; carry the orphan's own source so reply anchors /
             # thread metadata point at the message actually being answered.
             _rescued_source = getattr(_rescued, "source", None)
@@ -1243,125 +1253,141 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run_turn_review import carry_direct_call_ingress, rehome_turn_completion
+        # The object the caller dispatched: its owner — a direct-call ingress (the drain's
+        # executed row, a /retry re-send, the handoff) or the adapter lifecycle whose admitted
+        # turn the authority's drain ran — reads the turn's review completion off THIS object,
+        # while the turn may run on a rewrite copy or a rescued orphan (below).
+        dispatched = event
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
-        if not is_internal:
-            from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
-            record_gateway_slash_command(event)
-        # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
-        # not on the adapter's raw inbound: profile routing, the ignored-channel
-        # guard, plugin hooks and user authorization all reject events above,
-        # and a rejected event must not be able to clear a refusal belonging to
-        # an active turn. This is also the single entry point every lane shares
-        # — Discord interaction passthrough builds its own MessageEvent and
-        # calls handle_message directly, so a teardown on the relay's inbound
-        # handler left those turns muted.
-
-        _paused_notice = self._hm_estop_gate(event, source, is_internal)
-        if _paused_notice is not None:
-            return _paused_notice
-
-        _quick_key = self._session_key_for_source(source)
-        _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
-        if _reply is not None:
-            return _reply
-
-        _owned, _authority_reply = await self._hm_authority_admission(event, source, _quick_key, is_internal)
-        if _owned:
-            return _authority_reply
-
-        # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
-        self._hm_evict_idle_stale_agent(_quick_key)
-        if self._is_session_running(_quick_key):
-            self._hm_evict_reaped_agent(_quick_key)
-        if self._is_session_running(_quick_key):
-            return await self._hm_handle_running_session_message(event, source, _quick_key)
-
-        _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
-        if _handled:
-            return _result
-
-        # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
-        # conversational "yes" would execute a dangerous command.
-        if not is_internal:
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                # Debounced so a user who forgets about topic mode doesn't get ten reminders.
-                if self._should_send_telegram_lobby_reminder(source):
-                    return self._telegram_topic_root_lobby_message()
-                return None
-            # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
-            # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
-            # only fall to zero. Reversible.
-            if self._external_drain_active:
-                logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
-                return t("gateway.busy.draining_maintenance")
-
-        # Claim this session before any await: many awaits sit between here and _run_agent
-        # registering the real AIAgent; without this sentinel a second message during any of them
-        # passes the "already running" guard and spins up a duplicate agent for the same session.
-        _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
-        if _limit_message is not None:
-            logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
-            return _limit_message
-
-        event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
-
-        _claim_state = self._session_state(_quick_key)
-        if _active_session_lease is not None:
-            _claim_state.turn.lease = _active_session_lease
-        _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
-        _claim_state.turn.event = event
-        _claim_state.turn.started_ts = time.time()
-        from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
-        start_reply_clock(source, internal=is_internal)
-        self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
-
         try:
-            # Fail-open plugin consume inside the claimed slot (#129958); once per message.
             if not is_internal:
-                _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
-                if _consumed:
-                    return _consumer_reply
+                from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
+                record_gateway_slash_command(event)
+            # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
+            # not on the adapter's raw inbound: profile routing, the ignored-channel
+            # guard, plugin hooks and user authorization all reject events above,
+            # and a rejected event must not be able to clear a refusal belonging to
+            # an active turn. This is also the single entry point every lane shares
+            # — Discord interaction passthrough builds its own MessageEvent and
+            # calls handle_message directly, so a teardown on the relay's inbound
+            # handler left those turns muted.
+
+            _paused_notice = self._hm_estop_gate(event, source, is_internal)
+            if _paused_notice is not None:
+                return _paused_notice
+
+            _quick_key = self._session_key_for_source(source)
+            _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
+            if _reply is not None:
+                return _reply
+
+            _owned, _authority_reply = await self._hm_authority_admission(event, source, _quick_key, is_internal)
+            if _owned:
+                return _authority_reply
+
+            # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
+            self._hm_evict_idle_stale_agent(_quick_key)
+            if self._is_session_running(_quick_key):
+                self._hm_evict_reaped_agent(_quick_key)
+            if self._is_session_running(_quick_key):
+                return await self._hm_handle_running_session_message(event, source, _quick_key)
+
+            _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+            if _handled:
+                return _result
+
+            # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
+            # conversational "yes" would execute a dangerous command.
+            if not is_internal:
+                if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+                    # Debounced so a user who forgets about topic mode doesn't get ten reminders.
+                    if self._should_send_telegram_lobby_reminder(source):
+                        return self._telegram_topic_root_lobby_message()
+                    return None
+                # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
+                # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
+                # only fall to zero. Reversible.
+                if self._external_drain_active:
+                    logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
+                    return t("gateway.busy.draining_maintenance")
+
+            # Claim this session before any await: many awaits sit between here and _run_agent
+            # registering the real AIAgent; without this sentinel a second message during any of them
+            # passes the "already running" guard and spins up a duplicate agent for the same session.
+            _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
+            if _limit_message is not None:
+                logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
+                return _limit_message
+
+            event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+            carry_direct_call_ingress(dispatched, event)
+
+            _claim_state = self._session_state(_quick_key)
+            if _active_session_lease is not None:
+                _claim_state.turn.lease = _active_session_lease
+            _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
+            _claim_state.turn.event = event
+            _claim_state.turn.started_ts = time.time()
+            from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
+            start_reply_clock(source, internal=is_internal)
+            self._persist_active_agents()
+            _run_generation = self._begin_session_run_generation(_quick_key)
+
             try:
-                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
-            except TurnLeaseTimeoutError as exc:
-                # A rejected message, not a completed turn: return before the /goal judge so it
-                # cannot consume the resend notice and enqueue a synthetic continuation loop.
-                logger.error(
-                    "Rejecting turn for routing key %s on session %s after "
-                    "turn-lease timeout; transcript load was not started and "
-                    "the user must resend",
-                    _quick_key, exc.session_id,
-                )
-                return t("gateway.busy.another_turn_running")
-            try:
-                await self._run_post_turn_hooks(
-                    agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
-                )
-            except Exception as _goal_exc:
-                logger.debug("post-turn hook failed: %s", _goal_exc)
-            return _agent_result
+                # Fail-open plugin consume inside the claimed slot (#129958); once per message.
+                if not is_internal:
+                    _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
+                    if _consumed:
+                        return _consumer_reply
+                try:
+                    _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+                except TurnLeaseTimeoutError as exc:
+                    # A rejected message, not a completed turn: return before the /goal judge so it
+                    # cannot consume the resend notice and enqueue a synthetic continuation loop.
+                    logger.error(
+                        "Rejecting turn for routing key %s on session %s after "
+                        "turn-lease timeout; transcript load was not started and "
+                        "the user must resend",
+                        _quick_key, exc.session_id,
+                    )
+                    return t("gateway.busy.another_turn_running")
+                try:
+                    await self._run_post_turn_hooks(
+                        agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
+                    )
+                except Exception as _goal_exc:
+                    logger.debug("post-turn hook failed: %s", _goal_exc)
+                return _agent_result
+            finally:
+                # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
+                # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
+                self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
+                # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
+                # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
+                # clears it only once the reply is in the delivery ledger (else a kill in between
+                # left neither marker nor ledger row and the persisted reply was never sent).
+                if not getattr(event, "_turn_marker_handoff", False):
+                    await self._clear_durable_active_turn(event)
+                # Release only this turn's generation. Eviction may immediately admit a replacement
+                # through the cold path; an unconditional release here would then clear the replacement
+                # sentinel/agent and lease. Reset/stop release their stale slot before installing a
+                # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
+                self._release_running_agent_state(_quick_key, run_generation=_run_generation)
+                # Turn lease is keyed by (routing key, run generation) so this unwind can only free
+                # the lease its own turn acquired, never a newer turn's.
+                self._release_turn_lease(_quick_key, _run_generation)
         finally:
-            # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
-            # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
-            self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
-            # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
-            # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
-            # clears it only once the reply is in the delivery ledger (else a kill in between
-            # left neither marker nor ledger row and the persisted reply was never sent).
-            if not getattr(event, "_turn_marker_handoff", False):
-                await self._clear_durable_active_turn(event)
-            # Release only this turn's generation. Eviction may immediately admit a replacement
-            # through the cold path; an unconditional release here would then clear the replacement
-            # sentinel/agent and lease. Reset/stop release their stale slot before installing a
-            # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
-            self._release_running_agent_state(_quick_key, run_generation=_run_generation)
-            # Turn lease is keyed by (routing key, run generation) so this unwind can only free
-            # the lease its own turn acquired, never a newer turn's.
-            self._release_turn_lease(_quick_key, _run_generation)
+            # One re-home on every exit after admission, before the owner reads the
+            # dispatched object: the authority's drain executed the turn and admit_message
+            # adopted its completion onto the rewrite copy before the owned return above, or
+            # the in-process turn parked it on the copy / the rescued orphan. A no-op when the
+            # turn ran on the dispatched object or nothing was adopted (a raise out of
+            # admit_message).
+            rehome_turn_completion(dispatched, event)
 
     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.

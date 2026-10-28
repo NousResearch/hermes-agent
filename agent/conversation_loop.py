@@ -38,6 +38,10 @@ from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
+from agent.turn_review_budget import (
+    _log_refused_review_first_request, _release_review_input_request,
+    _reserve_review_input_request,
+)
 from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
@@ -108,18 +112,6 @@ def _midturn_request_pressure_tokens(
             exc_info=True,
         )
     return approx_tokens + (_estimate_tools_tokens_rough(agent.tools) if agent.tools else 0)
-
-
-def _review_input_budget_exhausted(agent: Any) -> bool:
-    """True when a detached review fork has replayed its aggregate input budget.
-
-    Only forks with an explicit ``_review_input_token_budget`` are gated (#93057). Fires
-    at the top of the NEXT iteration, so the budget-crossing request completes first."""
-    budget = getattr(agent, "_review_input_token_budget", None)
-    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
-        return False
-    used = getattr(agent, "session_input_tokens", 0)
-    return isinstance(used, int) and not isinstance(used, bool) and used >= budget
 
 
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: list[dict[str, Any]]) -> bool:
@@ -1559,7 +1551,15 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
 
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
     (success, a restart armed on ``s._retry``, interrupt, or retries exhausted)."""
+    # The review input budget is reserved once per REQUEST: an attempt that raises produced
+    # no completed response, so its projection is released before the handler decides on a
+    # retry — else a request above half the remaining budget is refused on its own retry.
+    reserved_before_request = getattr(agent, "_review_input_tokens_reserved", 0)
     while s.retry_count < s.max_retries:
+        if not _reserve_review_input_request(agent, s.request_pressure_tokens):
+            s._turn_exit_reason = "review_input_budget_exhausted"
+            _log_refused_review_first_request(agent)
+            return None
         _ng = _run_phase(nous_rate_limit_guard, agent, s)
         if _ng.action == "return":
             return _ng.result
@@ -1574,10 +1574,17 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
                 return _rc.result
             if _rc.action == "break":
                 return None
+            if _rc.action == "continue":
+                # The same request is re-attempted without raising (malformed body, Codex
+                # soft-failure rotate, truncated tool call) and without folded usage:
+                # record_response_usage runs only after validation.
+                _release_review_input_request(agent, reserved_before_request)
         except InterruptedError:
+            _release_review_input_request(agent, reserved_before_request)
             if _run_phase(handle_api_interrupt, agent, s).action == "break":
                 return None
         except Exception as api_error:
+            _release_review_input_request(agent, reserved_before_request)
             _ae = _run_phase(handle_api_error, agent, s, api_error=api_error)
             if _ae.action == "return":
                 return _ae.result

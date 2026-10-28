@@ -45,8 +45,10 @@ async def refine_local_session(runner, source, focus):
     from agent.background_review import finish_background_review_run, prepare_background_review_run
     from gateway.session_tui_side import _side_agent, _side_scope, _spawn
     # The guard is the session's (its side agent is per call): a /refine while one runs joins it, as
-    # the resident agent's does, and the session's next turn cancels it (``_execute_claimed``).
-    run = prepare_background_review_run(live.review)
+    # the resident agent's does, and the session's next turn cancels it (``_execute_claimed``). The
+    # run is published under the session's transcript target, where the resident agent's would be,
+    # so the registry keys it apart from every other session's and answers this one's id with it.
+    run = prepare_background_review_run(live.review, session_id=target)
     tail = t('gateway.refine.focus_suffix', focus=focus) if focus else ''
     if run is None:
         return t('gateway.refine.started', focus_suffix=tail)

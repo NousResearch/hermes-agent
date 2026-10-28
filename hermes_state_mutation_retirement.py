@@ -259,9 +259,15 @@ def retire_prunable(conn, session_ids):
 
 
 def delete_in_transaction(db, conn, session_id, payload):
+    from hermes_state_write_guards import REVIEW_LEASE_YIELD
     from hermes_state_mutation_guards import require_idle, delete_targets
     targets = delete_targets(conn, session_id)
-    require_idle(db, conn, targets)
+    # A background review of a deleted transcript is asked to yield, never refused: the delete
+    # removes its replay basis outright (the rewind rule), and the fork, reviewing an immutable
+    # snapshot with persistence disabled, holds nothing the lease would protect. It stops on its
+    # next renewal tick and releases its row itself. A foreground guard on any target still
+    # refuses, and that rollback lifts the stamp with it.
+    require_idle(db, conn, targets, review_lease_policy=REVIEW_LEASE_YIELD)
     retire_sessions(conn, targets)
     for sid in targets:
         db._bump_conversation_generation(conn, sid, 'session_reset')

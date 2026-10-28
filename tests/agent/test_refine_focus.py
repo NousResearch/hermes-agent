@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from agent.background_review import (
     _COMBINED_REVIEW_PROMPT,
     _MEMORY_REVIEW_PROMPT,
+    finish_background_review_run,
     spawn_background_review_thread,
 )
 
@@ -24,11 +25,15 @@ def test_no_focus_prompt_is_byte_identical():
         agent, [], review_memory=True, review_skills=True
     )
     assert prompt == _COMBINED_REVIEW_PROMPT
+    # spawn publishes an ack-capable review run for the session before returning; release
+    # it so the next spawn on the same session is admitted instead of refused.
+    finish_background_review_run(agent, agent._background_review_run)
 
     _target, prompt = spawn_background_review_thread(
         agent, [], review_memory=True, review_skills=True, focus=None
     )
     assert prompt == _COMBINED_REVIEW_PROMPT
+    finish_background_review_run(agent, agent._background_review_run)
 
     _target, prompt = spawn_background_review_thread(
         agent, [], review_memory=True, review_skills=True, focus="   "

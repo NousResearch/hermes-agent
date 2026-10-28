@@ -623,6 +623,16 @@ Outgoing deliveries (`gateway/delivery.py`) handle:
 
 Cron job deliveries are NOT mirrored into gateway session history — they live in their own cron session only. This is a deliberate design choice to avoid message alternation violations.
 
+## Background review ownership of a gateway turn
+
+The post-turn self-improvement review (`agent/background_review.py`, admitted only through `agent/review_admission.py` — `agent/AGENTS.md` § review) never overlaps a live turn, and a gateway turn's review candidate spawns at most once, after that turn's own confirmed delivery. Three siblings own this:
+
+- `gateway/run_turn_review.py` — `_GatewayReviewAdmission`. `run_turn.py` registers the turn as live before it prepares it and parks the completion (`begin_gateway_review_admission`) on the turn's delivery owner. `bind_agent` runs per turn on the cached agent (the in-task follow-up rebinds and supersedes the first turn's candidate), `capture_candidate` freezes the finalizer's candidate, and `finish` releases the token once and spawns only after a successful terminal delivery. A finished admission stays bound until the next turn's `bind_agent`: a `/stop`, `/new` or teardown cancel can complete the owner while the executor thread is still inside `finalize_turn`, and that late hand-off is dropped as `delivery_unconfirmed` instead of spawning through the facade staging or the direct path. A direct-call ingress (the drain's executed row, a `/retry` re-send, the CLI handoff) completes ownership from the object it dispatched, while `_handle_message` may run the turn on another one (a `pre_gateway_dispatch` rewrite copy, a rescued FIFO orphan): `carry_direct_call_ingress` keeps the marker on the turn's event and `rehome_turn_completion` moves the completion back onto the dispatched object when the handler returns.
+- `gateway/platforms/base_followup_admission.py` — the adapter side: the follow-up fence, the busy-text debounce and the delivery-gated completion (`_complete_review_delivery` runs in the task's `finally`; `delivery_succeeded=False` on a cancel, `pending_followup_handoff` when a queued follow-up takes the reply over).
+- `gateway/session_ingress_review.py` — the shared authority drain's handover of the completion to the waiter that owes the reply (`hand_over_review_completion`, `complete_settled_review`); `tests/gateway/test_background_review_completion_orders.py` walks every completion order.
+
+Every drop is one body-free line, `Background review skipped (owner=<hashed owner>): <slug>`; the slugs live in `agent/review_admission.py`, never inline at a call site.
+
 ## Hooks
 
 Gateway hooks are Python modules that respond to lifecycle events:

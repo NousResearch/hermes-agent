@@ -497,7 +497,14 @@ class RaftAdapter(BasePlatformAdapter):
         session_key = self._event_session_key(event)
         if session_key in self._active_sessions:
             logger.debug("[raft] Wake queued for busy session %s", session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event)
+
+            def _merge() -> bool:
+                merge_pending_message_event(self._pending_messages, session_key, event)
+                return True
+
+            # The queued wake IS the next live turn, so publish it to review admission like every
+            # other accepted follow-up; a wake dropped above never reaches here.
+            self.apply_followup_queue_mutation(session_key, _merge)
             return
         await super().handle_message(event)
 

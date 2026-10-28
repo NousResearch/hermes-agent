@@ -99,6 +99,67 @@ def test_stop_interrupts_a_review_running_after_the_turn_finished(server, monkey
     assert kwargs.get("tool_reason") == "session interrupted"
 
 
+class _UnpublishedExit(threading.Event):
+    """The fork's request exit, never published: the fork is parked in a non-interruptible
+    tool call. Every wait is recorded and returns at once so a regression shows up as a
+    recorded wait instead of a hung RPC."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list = []
+
+    def wait(self, timeout=None):  # Event.wait's shape
+        self.waits.append(timeout)
+        return False
+
+
+def test_stop_does_not_wait_for_the_forks_request_exit(server, monkeypatch):
+    """``session.interrupt`` runs on a tui-rpc pool worker (also: the WS-orphan reaper, the
+    lease-takeover path and the SIGTERM exit path, all through ``_interrupt_session_turn``).
+    No live turn starts there — the next turn on the chat performs its own cancel + wait
+    through the facade registry and the durable lease — so the cancel is passed through
+    WITHOUT the live-turn acknowledgement wait, which escalates for 20s and then never
+    returns for a fork parked in a non-interruptible tool call. A user hitting Stop while
+    only the post-turn review is running must not see the RPC block on it."""
+    from agent.background_review import _BackgroundReviewRun
+
+    review_fork = MagicMock()
+    review_fork.hard_interrupt = MagicMock()
+    session = _session_with_finished_turn_and_live_review(review_fork)
+    agent = session["agent"]
+    agent.session_id = "parent-session"
+    agent._background_review_agent = None
+    run = _BackgroundReviewRun()
+    assert run.begin_request(review_fork) is True
+    run.request_done = _UnpublishedExit()
+    agent._background_review_run = run
+
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda: None)
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+
+    response = server._methods["session.interrupt"](
+        "stop", {"session_id": "ui-session"}
+    )
+
+    assert response["result"]["status"] == "interrupted"
+    assert run.request_done.waits == [], (
+        "session.interrupt parked on the review fork's request exit"
+    )
+    assert run.cancel_requested.is_set(), "the cancel fence must still land"
+
+    for _ in range(50):
+        if review_fork.hard_interrupt.called:
+            break
+        threading.Event().wait(0.05)
+
+    assert review_fork.hard_interrupt.called
+    _, kwargs = review_fork.hard_interrupt.call_args
+    assert kwargs.get("tool_reason") == "session interrupted"
+
+
 def test_stop_without_a_review_is_unaffected(server, monkeypatch):
     """No live review → the new cancellation path is a no-op; the ordinary
     interrupt contract (status, hard_interrupt on the foreground agent)

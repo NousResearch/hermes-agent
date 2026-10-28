@@ -103,6 +103,44 @@ def test_finalize_turn_fires_review_when_flag_unset() -> None:
     agent._spawn_background_review.assert_called_once()
 
 
+def test_gateway_finalizer_exports_review_candidate_until_delivery() -> None:
+    agent = _make_agent(skip_background_review=False)
+    _stub_agent_for_finalize(agent)
+    gateway_admission = MagicMock()
+    agent._gateway_review_admission = gateway_admission
+    agent._active_turn_token = 41
+    agent._active_turn_profile_key = "/profiles/gateway"
+
+    _run_finalize(agent)
+
+    agent._spawn_background_review.assert_not_called()
+    gateway_admission.capture_candidate.assert_called_once_with(
+        agent,
+        [{"role": "assistant", "content": "ok"}],
+        review_memory=True,
+        review_skills=True,
+    )
+
+
+def test_finalizer_defers_review_until_the_durable_turn_lease_is_released() -> None:
+    agent = _make_agent(skip_background_review=False)
+    _stub_agent_for_finalize(agent)
+    agent._active_session_turn_lease_holder = "foreground-holder"
+    agent._active_turn_token = 42
+    agent._active_turn_profile_key = "/profiles/durable"
+
+    _run_finalize(agent)
+
+    agent._spawn_background_review.assert_not_called()
+    assert agent._post_turn_background_review_candidate == {
+        "messages_snapshot": [{"role": "assistant", "content": "ok"}],
+        "review_memory": True,
+        "review_skills": True,
+        "_spawning_turn_token": 42,
+        "_review_profile_key": "/profiles/durable",
+        "_review_session_id": "test-session",
+    }
+
 
 
 def test_persistence_failure_error_fallback_is_pinned_and_leaves_final_response_empty(monkeypatch, tmp_path) -> None:

@@ -9,8 +9,11 @@ wrapper in run_agent.AIAgent._spawn_background_review:
 - dispatch requires sustained process-quiet AND server idle
 - aged-out items dispatch regardless of idleness (delay, never lose)
 - preempted deferred reviews requeue with a bounded attempt cap
+- the dispatch-time enabled re-check reads the enqueuing profile's own config
+- a popped item whose owner already holds a live run is requeued, never clobbers it
 """
 
+import contextvars
 import threading
 import types
 
@@ -61,6 +64,28 @@ class _FakeAgent:
         self.spawned.append(kwargs)
 
 
+@pytest.fixture(autouse=True)
+def clear_review_admission_state():
+    """A published run must not leak into later tests when an assertion fails mid-test."""
+    from agent import review_admission
+
+    with review_admission._lock:
+        review_admission._review_runs.clear()
+    yield
+    with review_admission._lock:
+        review_admission._review_runs.clear()
+
+
+class _NoopThread:
+    """Constructed like threading.Thread but never runs its target: the prepared run stays live."""
+
+    def __init__(self, *, target, daemon=None, name=None):
+        self._target = target
+
+    def start(self):
+        pass
+
+
 def _make_queue(now=None, server_idle=True):
     q = ReviewIdleQueue()
     clock = {"t": 0.0}
@@ -91,6 +116,34 @@ def test_enqueue_coalesces_per_session_newest_wins_oldest_age():
     # time so a busy session cannot push its own age-out forever.
     assert item.kwargs["messages_snapshot"] == ["new"]
     assert item.enqueued_at == 100.0
+
+    q.enqueue(
+        agent,
+        "s1",
+        {"messages_snapshot": ["stale retry"], "task_cfg": {}},
+        replace_existing=False,
+    )
+    with q._lock:
+        assert q._pending["s1"].kwargs["messages_snapshot"] == ["new"]
+
+
+def test_deferred_log_uses_redacted_owner_tag_and_reason(caplog):
+    from agent.review_admission import owner_tag
+
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    profile = "/private/profiles/customer-alpha"
+    session_id = "account@example.com:secret-session-suffix"
+
+    with caplog.at_level("INFO"):
+        q.enqueue(agent, (profile, session_id), {"task_cfg": {}})
+
+    text = caplog.text
+    assert owner_tag(profile, session_id) in text
+    assert "managed_local_deferred" in text
+    assert profile not in text
+    assert session_id not in text
+    assert "session-suffix" not in text
 
 
 def test_dispatch_waits_for_sustained_quiet():
@@ -189,7 +242,7 @@ def _wrapper_agent(monkeypatch, defer="auto", managed=True):
     )
     monkeypatch.setattr(
         riq.QUEUE, "enqueue",
-        lambda a, key, kw: calls["enqueued"].append((key, kw)),
+        lambda a, key, kw, **_opts: calls["enqueued"].append((key, kw)),
     )
     agent._spawn_background_review_now = (
         lambda **kw: calls["spawned"].append(kw)
@@ -199,13 +252,122 @@ def _wrapper_agent(monkeypatch, defer="auto", managed=True):
 
 
 def test_wrapper_defers_managed_local_auto(monkeypatch):
+    monkeypatch.setattr(
+        "agent.review_admission.current_profile_key", lambda: "/profiles/alpha"
+    )
     spawn, calls = _wrapper_agent(monkeypatch, defer="auto", managed=True)
     spawn([{"role": "user", "content": "hi"}], review_memory=True)
     assert len(calls["enqueued"]) == 1
     assert calls["spawned"] == []
     key, kwargs = calls["enqueued"][0]
-    assert key == "sess-x"
+    assert key == ("/profiles/alpha", "sess-x")
     assert kwargs["review_memory"] is True
+    assert kwargs["_review_profile_key"] == "/profiles/alpha"
+
+
+def test_identical_session_ids_in_different_profiles_keep_distinct_queue_slots():
+    import run_agent
+
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    alpha = run_agent._review_queue_key(agent, "/profiles/alpha")
+    beta = run_agent._review_queue_key(agent, "/profiles/beta")
+    q.enqueue(agent, alpha, {"messages_snapshot": ["alpha"], "task_cfg": {}})
+    q.enqueue(agent, beta, {"messages_snapshot": ["beta"], "task_cfg": {}})
+
+    assert q.pending_count() == 2
+
+
+def test_deferred_dispatch_restores_the_enqueue_context():
+    marker = contextvars.ContextVar("review_profile_marker", default="default")
+    q, clock = _make_queue()
+
+    class ContextAgent(_FakeAgent):
+        def _spawn_background_review_now(self, **kwargs):
+            self.spawned.append((marker.get(), kwargs))
+
+    agent = ContextAgent()
+    token = marker.set("origin-profile")
+    try:
+        q.enqueue(agent, ("origin-profile", "sess-x"), {"task_cfg": {}})
+    finally:
+        marker.reset(token)
+    q.note_turn_started()
+    q.note_turn_finished()
+    clock["t"] += _IDLE_SETTLE_S + 1
+    item = q._pop_dispatchable()
+    assert item is not None
+    q._still_enabled = lambda _item: True
+
+    q._dispatch_item(item)
+
+    assert agent.spawned[0][0] == "origin-profile"
+
+
+def test_dispatch_enabled_gate_uses_the_enqueued_profile_context(monkeypatch):
+    enabled = contextvars.ContextVar("review_enabled", default=False)
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (enabled.get(), {}),
+    )
+    token = enabled.set(True)
+    try:
+        q.enqueue(agent, ("profile-b", "sess-x"), {"task_cfg": {}})
+    finally:
+        enabled.reset(token)
+    with q._lock:
+        item = q._pending.pop(("profile-b", "sess-x"))
+
+    q._dispatch_item(item)
+
+    assert len(agent.spawned) == 1
+
+
+def _write_review_config(home, enabled: bool) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "auxiliary:\n  background_review:\n"
+        f"    enabled: {'true' if enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "default_enabled,profile_enabled,expected_spawns",
+    [(True, False, 0), (False, True, 1)],
+    ids=["profile_disabled_wins", "profile_enabled_wins"],
+)
+def test_dispatch_enabled_gate_reads_the_enqueuing_profiles_own_config(
+    tmp_path, monkeypatch, caplog, default_enabled, profile_enabled, expected_spawns
+):
+    """Real config path, no mocks: the dispatcher thread is outside the turn's profile scope, so
+    the enabled re-check must read the config of the HOME the review was queued under, not the
+    process default. Two temp homes with opposite settings pin both directions."""
+    import hermes_constants
+
+    default_home = tmp_path / "default"
+    profile_home = tmp_path / "profile-b"
+    _write_review_config(default_home, default_enabled)
+    _write_review_config(profile_home, profile_enabled)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    override = hermes_constants.set_hermes_home_override(profile_home)
+    try:
+        q.enqueue(agent, ("profile-b", "sess-x"), {"task_cfg": {}})
+    finally:
+        hermes_constants.reset_hermes_home_override(override)
+    with q._lock:
+        item = q._pending.pop(("profile-b", "sess-x"))
+
+    with caplog.at_level("INFO"):
+        q._dispatch_item(item)
+
+    assert len(agent.spawned) == expected_spawns
+    dropped = "disabled_while_queued" in caplog.text
+    assert dropped is (expected_spawns == 0)
 
 
 def test_wrapper_spawns_immediately_for_non_managed(monkeypatch):
@@ -260,12 +422,14 @@ def test_wrapper_cloud_fast_path_skips_runtime_resolution(monkeypatch):
     assert resolved["count"] == 0
 
 
-def test_dispatcher_rechecks_enabled_gate(monkeypatch):
-    """A review disabled while queued must not be resurrected at dispatch."""
+def test_dispatcher_rechecks_enabled_gate(monkeypatch, caplog):
+    """A review disabled while queued must not be resurrected at dispatch, and the drop names
+    the hashed owner plus a stable slug like every other skip decision."""
+    from agent.review_admission import owner_tag
 
     q, clock = _make_queue()
     agent = _FakeAgent()
-    q.enqueue(agent, "s1", {"task_cfg": {}})
+    q.enqueue(agent, ("/profiles/alpha", "s1"), {"task_cfg": {}})
     monkeypatch.setattr(
         "agent.background_review.load_background_review_settings",
         lambda: (False, {}),
@@ -279,6 +443,199 @@ def test_dispatcher_rechecks_enabled_gate(monkeypatch):
     assert item is not None
     assert q._still_enabled(item) is False
 
+    with caplog.at_level("INFO"):
+        q._dispatch_item(item)
+
+    assert agent.spawned == []
+    assert "disabled_while_queued" in caplog.text
+    assert owner_tag("/profiles/alpha", "s1") in caplog.text
+    assert "/profiles/alpha" not in caplog.text
+
+
+def test_aged_dispatch_rejected_after_prepare_finishes_and_requeues_fresh(monkeypatch):
+    """An age-forced dispatch that meets foreground work is delayed, not lost or busy-looped."""
+    import run_agent
+    from agent import review_idle_queue as riq
+
+    q, clock = _make_queue(server_idle=False)
+    monkeypatch.setattr(riq, "QUEUE", q)
+    q._still_enabled = lambda _item: True
+
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "aged-session"
+    agent._background_review_agent = None
+    agent._background_review_run = None
+    agent._background_review_lock = threading.Lock()
+    agent.followup_pending_callback = lambda: True
+
+    queue_key = ("/profiles/alpha", "aged-session")
+    q.enqueue(
+        agent,
+        queue_key,
+        {
+            "messages_snapshot": [{"role": "user", "content": "newest"}],
+            "task_cfg": {"defer_max_age_s": 10},
+            "_review_profile_key": "/profiles/alpha",
+        },
+    )
+    q.note_turn_started()
+    clock["t"] = 11.0
+    item = q._pop_dispatchable()
+    assert item is not None
+
+    q._dispatch_item(item)
+
+    assert agent._background_review_run is None
+    assert q.pending_count() == 1
+    with q._lock:
+        retry = q._pending[queue_key]
+    assert retry.kwargs["messages_snapshot"][0]["content"] == "newest"
+    assert retry.kwargs["_requeue_attempts"] == 1
+    assert retry.kwargs["_idle_queue_origin"] is True
+    assert retry.enqueued_at == 11.0
+    assert q._pop_dispatchable() is None
+
+
+def test_popped_deferred_review_requeues_when_prepare_slot_is_busy(monkeypatch):
+    import run_agent
+    from agent import review_idle_queue as riq
+
+    q, _clock = _make_queue()
+    q._still_enabled = lambda _item: True
+    monkeypatch.setattr(riq, "QUEUE", q)
+    monkeypatch.setattr(
+        "agent.background_review.prepare_background_review_run",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "busy-session"
+    queue_key = ("/profiles/alpha", "busy-session")
+    q.enqueue(
+        agent,
+        queue_key,
+        {
+            "messages_snapshot": [{"role": "user", "content": "newest"}],
+            "task_cfg": {},
+            "_review_profile_key": "/profiles/alpha",
+        },
+    )
+    with q._lock:
+        item = q._pending.pop(queue_key)
+
+    q._dispatch_item(item)
+
+    assert q.pending_count() == 1
+    with q._lock:
+        retry = q._pending[queue_key]
+    assert retry.kwargs["_requeue_attempts"] == 1
+    assert retry.kwargs["messages_snapshot"][0]["content"] == "newest"
+
+
+def test_popped_deferred_review_requeues_while_the_owner_slot_is_occupied(monkeypatch):
+    """The real refusal branch: a live run is already published under the owner key. The popped
+    item is requeued (bounded) without clobbering that run, and dispatches once it exits."""
+    import run_agent
+    from agent import background_review, review_admission
+    from agent import review_idle_queue as riq
+
+    q, _clock = _make_queue()
+    q._still_enabled = lambda _item: True
+    monkeypatch.setattr(riq, "QUEUE", q)
+    monkeypatch.setattr(
+        run_agent, "threading", types.SimpleNamespace(Thread=_NoopThread)
+    )
+    held = background_review._BackgroundReviewRun()
+    assert review_admission.publish_review_run(held, "busy-session", "/profiles/alpha")
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "busy-session"
+    agent._background_review_agent = None
+    agent._background_review_run = held
+    agent._background_review_lock = threading.Lock()
+    agent._delegate_depth = 0
+    queue_key = ("/profiles/alpha", "busy-session")
+    q.enqueue(
+        agent,
+        queue_key,
+        {
+            "messages_snapshot": [{"role": "user", "content": "newest"}],
+            "task_cfg": {},
+            "_review_profile_key": "/profiles/alpha",
+            "_review_session_id": "busy-session",
+        },
+    )
+    with q._lock:
+        item = q._pending.pop(queue_key)
+
+    q._dispatch_item(item)
+
+    assert q.pending_count() == 1
+    with q._lock:
+        retry = q._pending[queue_key]
+    assert retry.kwargs["_requeue_attempts"] == 1
+    assert retry.kwargs["messages_snapshot"][0]["content"] == "newest"
+    assert review_admission.current_review_run("busy-session", "/profiles/alpha") is held
+    assert agent._background_review_run is held
+
+    background_review.finish_background_review_run(agent, held)
+    with q._lock:
+        item = q._pending.pop(queue_key)
+    q._dispatch_item(item)
+
+    assert q.pending_count() == 0
+    successor = agent._background_review_run
+    try:
+        assert successor is not None and successor is not held
+        assert (
+            review_admission.current_review_run("busy-session", "/profiles/alpha")
+            is successor
+        )
+    finally:
+        background_review.finish_background_review_run(agent, successor)
+
+
+def test_deferred_snapshot_is_dropped_if_parent_rotates_sessions(monkeypatch, caplog):
+    import run_agent
+    from agent import review_idle_queue as riq
+    from agent.review_admission import owner_tag
+
+    q, _clock = _make_queue()
+    q._still_enabled = lambda _item: True
+    monkeypatch.setattr(riq, "QUEUE", q)
+    monkeypatch.setattr(run_agent, "_review_should_defer", lambda *_args: True)
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (True, {}),
+    )
+    prepared = []
+    monkeypatch.setattr(
+        "agent.background_review.prepare_background_review_run",
+        lambda *_args, **_kwargs: prepared.append(True),
+    )
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "session-one"
+    agent._delegate_depth = 0
+    agent._active_turn_token = None
+    agent._active_turn_profile_key = "/profiles/alpha"
+    agent._spawn_background_review(
+        [{"role": "user", "content": "session one snapshot"}],
+        review_memory=True,
+    )
+    queue_key = ("/profiles/alpha", "session-one")
+    with q._lock:
+        item = q._pending.pop(queue_key)
+
+    agent.session_id = "session-two"
+    with caplog.at_level("INFO"):
+        q._dispatch_item(item)
+
+    assert prepared == []
+    assert q.pending_count() == 0
+    # The drop names the FROZEN owner the snapshot was queued under, not the rotated parent.
+    assert "stale_review_owner" in caplog.text
+    assert owner_tag("/profiles/alpha", "session-one") in caplog.text
+    assert owner_tag("/profiles/alpha", "session-two") not in caplog.text
+    assert "session-one" not in caplog.text
+
 
 # ── requeue on preemption ────────────────────────────────────────
 
@@ -290,21 +647,21 @@ class _Run:
             self.cancel_requested.set()
 
 
-def _requeue_agent(monkeypatch, managed=True):
+def _requeue_agent(monkeypatch):
     import run_agent
     from agent import review_idle_queue as riq
 
     agent = _FakeAgent()
     calls = {"enqueued": []}
     monkeypatch.setattr(
-        riq, "review_targets_managed_local", lambda a, cfg: managed
-    )
-    monkeypatch.setattr(
         riq.QUEUE, "enqueue",
-        lambda a, key, kw: calls["enqueued"].append(kw),
+        lambda a, key, kw, **_opts: calls["enqueued"].append(kw),
     )
     agent._REVIEW_REQUEUE_MAX_ATTEMPTS = (
         run_agent.AIAgent._REVIEW_REQUEUE_MAX_ATTEMPTS
+    )
+    agent._requeue_deferred_review = types.MethodType(
+        run_agent.AIAgent._requeue_deferred_review, agent
     )
     bound = types.MethodType(
         run_agent.AIAgent._maybe_requeue_preempted_review, agent
@@ -316,7 +673,7 @@ def test_preempted_review_requeues(monkeypatch):
     requeue, calls = _requeue_agent(monkeypatch)
     requeue(_Run(cancelled=True),
             {"task_cfg": {"defer": "auto"}, "focus": None,
-             "_requeue_attempts": 1})
+             "_requeue_attempts": 1, "_idle_queue_origin": True})
     assert len(calls["enqueued"]) == 1
     # The attempt counter rides along so the cap survives the round trip.
     assert calls["enqueued"][0]["_requeue_attempts"] == 1
@@ -326,7 +683,7 @@ def test_completed_review_does_not_requeue(monkeypatch):
     requeue, calls = _requeue_agent(monkeypatch)
     requeue(_Run(cancelled=False),
             {"task_cfg": {"defer": "auto"}, "focus": None,
-             "_requeue_attempts": 1})
+             "_requeue_attempts": 1, "_idle_queue_origin": True})
     assert calls["enqueued"] == []
 
 
@@ -334,15 +691,102 @@ def test_requeue_attempt_cap(monkeypatch):
     requeue, calls = _requeue_agent(monkeypatch)
     requeue(_Run(cancelled=True),
             {"task_cfg": {"defer": "auto"}, "focus": None,
-             "_requeue_attempts": 4})
+             "_requeue_attempts": 4, "_idle_queue_origin": True})
     assert calls["enqueued"] == []
 
 
-def test_requeue_skips_non_managed(monkeypatch):
-    requeue, calls = _requeue_agent(monkeypatch, managed=False)
+def test_requeue_cap_drop_logs_owner_and_slug(monkeypatch, caplog):
+    """Dropping a review for good is a skip decision: hashed owner + stable slug, no raw ids."""
+    from agent.review_admission import owner_tag
+
+    requeue, calls = _requeue_agent(monkeypatch)
+    profile, session_id = "/profiles/alpha", "account@example.com:secret-session"
+    with caplog.at_level("INFO"):
+        requeue(_Run(cancelled=True),
+                {"task_cfg": {"defer": "auto"}, "focus": None,
+                 "_requeue_attempts": 4, "_idle_queue_origin": True,
+                 "_review_profile_key": profile, "_review_session_id": session_id})
+    assert calls["enqueued"] == []
+    assert "requeue_cap_exceeded" in caplog.text
+    assert owner_tag(profile, session_id) in caplog.text
+    assert profile not in caplog.text
+    assert "secret-session" not in caplog.text
+
+
+def test_preempted_requeue_logs_its_own_reason_not_a_fresh_deferral(monkeypatch, caplog):
+    """A requeue re-enters the same queue, but its line must say WHY it is back: reading it as a
+    fresh managed-local deferral hides that a live turn preempted the review."""
+    import run_agent
+    from agent import review_idle_queue as riq
+    from agent.review_admission import owner_tag
+
+    q, _clock = _make_queue()
+    monkeypatch.setattr(riq, "QUEUE", q)
+    agent = _FakeAgent()
+    agent._REVIEW_REQUEUE_MAX_ATTEMPTS = run_agent.AIAgent._REVIEW_REQUEUE_MAX_ATTEMPTS
+    requeue = types.MethodType(run_agent.AIAgent._requeue_deferred_review, agent)
+    profile, session_id = "/profiles/alpha", "account@example.com:secret-session"
+    with caplog.at_level("INFO"):
+        requeue({"task_cfg": {"defer": "auto"}, "focus": None,
+                 "_requeue_attempts": 1, "_idle_queue_origin": True,
+                 "_review_profile_key": profile, "_review_session_id": session_id})
+    assert q.pending_count() == 1
+    assert "preempted_requeued" in caplog.text
+    assert "managed_local_deferred" not in caplog.text
+    assert owner_tag(profile, session_id) in caplog.text
+    assert "secret-session" not in caplog.text
+
+
+def test_review_stopped_by_a_lease_yield_is_dropped_not_requeued(
+    tmp_path, monkeypatch, caplog
+):
+    """A deferred review whose durable lease was asked to yield is NOT requeued: the transcript
+    moved on under it (an edit took the rows back, or another process ran a turn and reviews
+    its own), so replaying the captured snapshot later would learn from turns the user undid.
+    Dropped once, with its own slug and the hashed owner — never the raw session id."""
+    from agent import background_review as background_review_module
+    from agent.review_admission import owner_tag
+    from hermes_state import SessionDB
+
+    profile, session_id = "/profiles/alpha", "account@example.com:secret-session"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(session_id, source="test")
+    user_row_id = db.append_message(session_id, "user", "ask")
+    db.append_message(session_id, "assistant", "reply")
+    fork = types.SimpleNamespace(
+        hard_interrupt=lambda *_a, **_k: None, release_clients=lambda: None
+    )
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        types.SimpleNamespace(_session_db=db), fork, session_id, run
+    )
+    assert reason is None and lease is not None
+    db.rewind_to_message(session_id, user_row_id)  # /undo under the running review
+    assert lease.refresh_tick() is None
+    lease.stop_refresher()
+    lease.release()
+    assert run.cancel_requested.is_set()
+
+    requeue, calls = _requeue_agent(monkeypatch)
+    with caplog.at_level("INFO"):
+        requeue(run, {"task_cfg": {"defer": "auto"}, "focus": None,
+                      "_requeue_attempts": 1, "_idle_queue_origin": True,
+                      "messages_snapshot": [{"role": "user", "content": "ask"}],
+                      "_review_profile_key": profile, "_review_session_id": session_id})
+    assert calls["enqueued"] == []
+    assert "review_dropped_after_lease_yield" in caplog.text
+    assert "preempted_requeued" not in caplog.text
+    assert owner_tag(profile, session_id) in caplog.text
+    assert profile not in caplog.text
+    assert "secret-session" not in caplog.text
+
+
+def test_immediate_automatic_review_does_not_requeue(monkeypatch):
+    requeue, calls = _requeue_agent(monkeypatch)
     requeue(_Run(cancelled=True),
             {"task_cfg": {"defer": "auto"}, "focus": None,
-             "_requeue_attempts": 1})
+             "_requeue_attempts": 1, "_idle_queue_origin": False})
     assert calls["enqueued"] == []
 
 

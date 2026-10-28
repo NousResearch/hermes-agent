@@ -64,6 +64,9 @@ _REGISTRY_GENERATION = 0
 _discovered = False
 _discovering = False
 _PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
+# Widest directory mtime granularity in use (FAT rounds to 2 s, HFS+ to 1 s; a kernel without
+# fine-grained timestamps stamps every change within one ~4 ms clock tick alike).
+_PLUGIN_DIR_MTIME_TICK_NS = 2_000_000_000
 
 
 @dataclass
@@ -85,6 +88,9 @@ class _HomeLayer:
     misses: dict[str, float] = field(default_factory=dict)
     # plugin dir name -> the error its import raised (``plugin_load_error``), until an import succeeds
     errors: dict[str, str] = field(default_factory=dict)
+    # module names of plugins whose profiles this layer already holds as plugin-host proxies: the
+    # hosted path's ``sys.modules`` check, so a rescan never re-imports, re-warns or swaps proxies
+    hosted: set[str] = field(default_factory=set)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -182,11 +188,11 @@ _NAMED_CUSTOM_MEMO_NO_SIG = object()
 
 
 def _has_named_custom_provider(name: str, home: Path | None, hkey: str) -> bool:
-    """``has_named_custom_provider`` memoized on the home's config file signature."""
-    from utils import file_signature
+    """``has_named_custom_provider`` memoized on the home's config cache version."""
+    from hermes_cli.config_backend import config_cache_version
 
     try:
-        sig = file_signature((home / "config.yaml").stat()) if home is not None else None
+        sig = config_cache_version(home / "config.yaml") if home is not None else None
     except OSError:
         sig = None  # no readable config: nothing configured, stable until one appears
     memo = _NAMED_CUSTOM_MEMO.get(hkey)
@@ -452,8 +458,14 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
         return False
     stamps = _plugin_dir_stamps(home)
     if stamps != layer.stamps:
+        # Judge the stamps' age before scanning: a slow scan must not let a stamp read before it
+        # look settled afterwards and get remembered over an install that landed mid-scan.
+        settled = _plugin_dir_stamps_settled(stamps)
         _scan_home_layer(layer, key)
-        layer.stamps = stamps
+        # A stamp still inside its mtime tick may not move for an install landing in that same
+        # tick, which would hide the plugin until some later change: keep it unremembered so the
+        # next periodic check scans again, until the stamps settle.
+        layer.stamps = stamps if settled else ()
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An
         # unpublished stamp rescanned forever; an unpublished check time
@@ -473,6 +485,12 @@ def _plugin_dir_stamps(home: Path) -> tuple:
         except OSError:
             return None
     return (stamp(home / "plugins"), stamp(home / "plugins" / "model-providers"))
+
+
+def _plugin_dir_stamps_settled(stamps: tuple) -> bool:
+    """Whether every stamp is at least one mtime tick away from now (either side: clock skew)."""
+    now = time.time_ns()
+    return all(s is None or abs(now - s) >= _PLUGIN_DIR_MTIME_TICK_NS for s in stamps)
 
 
 def _user_plugins_dir() -> Path | None:
@@ -601,6 +619,9 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
     so it never takes its hosted siblings down with it."""
     global _current_source
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None and module_name in layer.hosted:
+        return  # already imported into this home's layer
     _current_source = source
     try:
         hosted, in_process = load_hosted_profiles(plugin_dir, module_name)
@@ -612,16 +633,19 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
         return
     finally:
         _current_source = None
-    if not in_process:
-        return
-    for name, reason in in_process.items():
-        logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
-                       "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
-    token = _REGISTRATION_ONLY.set(frozenset(in_process))
-    try:
-        _exec_plugin_module(plugin_dir, source, module_name)
-    finally:
-        _REGISTRATION_ONLY.reset(token)
+    if in_process:
+        for name, reason in in_process.items():
+            logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
+                           "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
+        token = _REGISTRATION_ONLY.set(frozenset(in_process))
+        try:
+            _exec_plugin_module(plugin_dir, source, module_name)
+        finally:
+            _REGISTRATION_ONLY.reset(token)
+        if module_name not in sys.modules:
+            return  # the in-process import failed: the next scan retries the plugin
+    if layer is not None:
+        layer.hosted.add(module_name)
 
 
 def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None:

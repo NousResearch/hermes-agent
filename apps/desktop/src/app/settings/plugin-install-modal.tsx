@@ -21,7 +21,7 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { COMMIT_SHA_RE } from '@/store/agent-plugins'
+import { COMMIT_SHA_RE, inspectAgentPlugin } from '@/store/agent-plugins'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -32,7 +32,7 @@ import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, p
 import { $connection } from '@/store/session'
 
 import { PluginInstallDetails } from './plugin-install-details'
-import { type InstallModalCopy, type ProbeResult, runPluginInstall } from './plugin-install-run'
+import { installComponents, type InstallModalCopy, type ProbeResult, runPluginInstall } from './plugin-install-run'
 import { usePluginProbe } from './use-plugin-probe'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)]'
@@ -63,9 +63,22 @@ function pluginTitle(request: PluginInstallRequest, probe: null | ProbeResult): 
   return request.title || request.catalogName || probe?.agentName || probe?.desktopName || repoName(request.repo)
 }
 
-/** The inspection's one-line reason, when it could not read the repository. */
+/** The inspection's one-line reason, when it could not read the repository. An environment that cannot
+ *  inspect at all reads `fallback`, not the transport's wording. */
 function probeFailure(probe: null | ProbeResult, fallback: string): null | string {
-  return probe && !probe.ok ? probe.error || fallback : null
+  return probe && !probe.ok ? (!probe.unavailable && probe.error) || fallback : null
+}
+
+/** A repository read fine but nothing in it can be installed from here (a desktop-only plugin in the
+ *  browser-hosted app): no retry changes that. */
+function nothingInstallable(request: PluginInstallRequest, probe: null | ProbeResult): boolean {
+  if (!probe?.ok) {
+    return false
+  }
+
+  const components = installComponents(request, probe)
+
+  return !components.agent && !components.desktop
 }
 
 function ProbeWarnings({ copy, probe }: { copy: InstallModalCopy; probe: null | ProbeResult }) {
@@ -259,10 +272,11 @@ interface InstallFooterProps {
   installing: boolean
   onInstall: () => void
   onRetry: () => void
+  retryable: boolean
 }
 
-/** Cancel, then Install (one loader while it runs) or, after a failure, Retry. */
-function InstallFooter({ canInstall, failed, installing, onInstall, onRetry }: InstallFooterProps) {
+/** Cancel, then Install (one loader while it runs) or, after a failure, Retry — unless retrying cannot help. */
+function InstallFooter({ canInstall, failed, installing, onInstall, onRetry, retryable }: InstallFooterProps) {
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
 
@@ -272,7 +286,7 @@ function InstallFooter({ canInstall, failed, installing, onInstall, onRetry }: I
         {t.common.cancel}
       </Button>
       {failed ? (
-        <Button onClick={onRetry}>{t.common.retry}</Button>
+        retryable && <Button onClick={onRetry}>{t.common.retry}</Button>
       ) : (
         <Button disabled={!canInstall} onClick={onInstall}>
           {installing && <Loader2 className="animate-spin" />}
@@ -300,10 +314,14 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const profileScope = useStore($profileScope)
   const verified = Boolean(request.catalogName)
   const enable = request.enable ?? true
-  const { probe, start, cancel, settled } = usePluginProbe(m.probeUnavailable)
 
   const [targetProfile, setTargetProfile] = useState(() =>
     normalizeProfileKey(request.profile || activeProfile || profileScope)
+  )
+
+  // Without Electron's inspection (the browser-hosted app) the backend clones and reads the repository.
+  const { probe, start, cancel, settled } = usePluginProbe(m.probeUnavailable, repo =>
+    inspectAgentPlugin(requestGateway, { identifier: repo, catalogName: request.catalogName, profile: targetProfile })
   )
 
   const [advancedOpen, setAdvancedOpen] = useState(!verified)
@@ -322,8 +340,15 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const targetLabel = profileLabel(targetInfo ?? { name: targetProfile })
   const pin = pinRef.trim().toLowerCase()
   const pinInvalid = pin !== '' && !COMMIT_SHA_RE.test(pin)
+  const nothing = nothingInstallable(request, probe)
+
   // Hidden while a retry runs, so the loader is the only thing on screen.
-  const failure = installing ? null : (installError ?? probeFailure(probe, m.probeUnavailable))
+  const failure = installing
+    ? null
+    : (installError ?? probeFailure(probe, m.probeUnavailable) ?? (nothing ? m.nothingToInstall : null))
+
+  // Retrying reruns an install or a read that failed; it cannot add a capability this environment lacks.
+  const retryable = Boolean(installError) || !(probe?.unavailable || nothing)
   const line = `${verified ? m.reviewedByNous : m.securityIntro} ${(enable ? m.installsAndEnables : m.installsOnly)(targetLabel)}`
 
   const install = async () => {
@@ -410,6 +435,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
         installing={installing}
         onInstall={() => void install()}
         onRetry={retry}
+        retryable={retryable}
       />
     </>
   )

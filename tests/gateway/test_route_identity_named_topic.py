@@ -103,6 +103,29 @@ def test_scope_only_discriminates_slack():
     assert _route_identity(slack_a) != _route_identity(replace(slack_a, scope_id='team-b'))
 
 
+def test_whatsapp_dm_identifier_drift_matches():
+    """The WhatsApp twin: the bridge can surface one human as a LID or a phone JID,
+    with device suffixes or a + prefix, WITHIN one conversation (whatsapp_identity.py).
+    build_session_key canonicalizes the DM chat_id; route identity must agree."""
+    def _wa(chat_id):
+        return SessionSource(platform=Platform.WHATSAPP, chat_id=chat_id, chat_type='dm',
+                             user_name='Gold')
+    canonical = _wa('6012@s.whatsapp.net')
+    assert _route_identity(_wa('6012:47@s.whatsapp.net')) == _route_identity(canonical)
+    assert _route_identity(_wa('+6012')) == _route_identity(canonical)
+    assert _route_identity(_wa('6012@lid.whatsapp.net')) == _route_identity(canonical)
+
+
+def test_slack_empty_scope_equals_missing():
+    """A falsy Slack scope is no scope (the key drops falsy scope_id): '' must not
+    differ from None."""
+    empty = SessionSource(platform=Platform.SLACK, chat_id='1', chat_type='channel',
+                          scope_id='', user_id='u1')
+    missing = SessionSource(platform=Platform.SLACK, chat_id='1', chat_type='channel',
+                            user_id='u1')
+    assert _route_identity(empty) == _route_identity(missing)
+
+
 def test_route_discrimination_is_preserved():
     """The identity keeps its teeth: different chats, threads and platforms are still
     different routes."""

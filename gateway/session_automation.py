@@ -328,42 +328,50 @@ def admission_display(payload):
 
 def _route_identity(source):
     """Identity of a message source for wake admission: the routing/provenance fields
-    reconstructible from a persisted delegation origin, normalized exactly the way
+    reconstructible from a persisted delegation origin, normalized the same way
     ``build_session_key`` normalizes them, so a wake is admitted iff both sides map to
     the same session route:
 
+    - WhatsApp DM ``chat_id`` is canonicalized (the bridge can surface one human as a
+      LID or a phone JID, with device suffixes, within one conversation).
     - thread continuity (Discord auto-threads): ``thread_id``, else the
       ``prospective_thread_id`` of the channel-initiating message, with the
-      ``chat_type`` slot normalized to ``thread`` — key parity (session.py).
+      ``chat_type`` slot normalized to ``thread``.
     - participant: ``_canonical_participant`` (``user_id_alt or user_id``, WhatsApp
       canonicalized) — key parity. ``user_name`` stays raw: the upstream drift
       contract (``871d05520a``) requires user-name drift to refuse.
-    - profile: ``None`` and ``'default'`` normalize to the same namespace.
-    - scope: only Slack scopes sessions; a Discord/WhatsApp ``scope_id`` drift must
-      not refuse what the key admits.
+    - profile: ``None`` and ``'default'`` normalize to the same namespace (the key
+      itself takes the profile by argument; session-key equivalence is enforced
+      independently by ``_owner`` and ``check_automation_route``).
+    - scope: only Slack scopes sessions, and a falsy scope is no scope.
 
     Deliberately excluded: ``message_id`` (a wake is not a reply to the stale
     trigger, #52694) and display-only fields a persisted origin cannot reconstruct
     (``chat_name``, ``chat_topic``) — under a full-dict comparison a wake for a
     NAMED Telegram forum topic was unadmittable by construction (eternal
-    ``admission_conflict`` → 48h terminal drop) while unnamed topics delivered.
-
-    Session-key binding is enforced independently by ``_owner`` and
-    ``check_automation_route`` via ``_generate_session_key``."""
-    from gateway.session import Platform, _canonical_participant
+    ``admission_conflict`` → 48h terminal drop) while unnamed topics delivered."""
+    from gateway.session import _canonical_participant, canonical_whatsapp_identifier
+    chat_id = source.chat_id
+    if source.chat_type == 'dm' and source.platform == Platform.WHATSAPP:
+        chat_id = canonical_whatsapp_identifier(chat_id) or chat_id
     thread_id = source.thread_id or (
         None if source.chat_type == 'dm' else getattr(source, 'prospective_thread_id', None))
     chat_type_slot = 'thread' if thread_id and not source.thread_id else source.chat_type
     profile = getattr(source, 'profile', None)
+    scope_id = getattr(source, 'scope_id', None)
+    try:
+        participant = _canonical_participant(source)
+    except AttributeError:
+        participant = None  # duck without participant slots: identity degrades, never crashes
     return {
         'platform': source.platform,
-        'chat_id': source.chat_id,
+        'chat_id': chat_id,
         'chat_type': chat_type_slot,
         'thread_id': thread_id,
-        'scope_id': source.scope_id if source.platform == Platform.SLACK else None,
+        'scope_id': (scope_id or None) if source.platform == Platform.SLACK else None,
         'profile': None if profile in (None, 'default') else profile,
-        'participant': _canonical_participant(source),
-        'user_name': source.user_name,
+        'participant': participant,
+        'user_name': getattr(source, 'user_name', None),
     }
 
 

@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import sys
+import time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -642,6 +643,24 @@ def _hub_rate_limited(sources) -> bool:
                for src in sources)
 
 
+def _rate_limit_retry_line(sources) -> str:
+    """'The limit resets around HH:MM.' when a rate-limited adapter learned the reset time,
+    else "" — install errors say *when* a retry can succeed, not just that it cannot (#140556)."""
+    resets = [r for src in sources
+              if (r := getattr(src, "rate_limit_reset_at", None)
+                  or getattr(getattr(src, "github", None), "rate_limit_reset_at", None))]
+    return (f"The limit resets around {time.strftime('%H:%M', time.localtime(max(resets)))} "
+            "(local time).\n") if resets else ""
+
+
+def _print_rate_limit_hint(c: Console, sources) -> None:
+    """The one rate-limit explanation every hub failure path shares (#140556)."""
+    c.print("[yellow]Hint:[/] GitHub API rate limit exhausted "
+            "(unauthenticated: 60 requests/hour). " + _rate_limit_retry_line(sources)
+            + "Set [bold]GITHUB_TOKEN[/] in your .env or install the [bold]gh[/] CLI and run "
+            "[bold]gh auth login[/] to raise the limit to 5,000/hr.\n")
+
+
 def _hub_rejected_credentials(sources) -> list:
     """Credentials GitHub refused with 401 (the fetch already fell through past them, #98725)."""
     return next((r for src in sources
@@ -668,10 +687,7 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
         c.print(f"[yellow]Hint:[/] GitHub rejected {' and '.join(rejected)} (401 Bad credentials). "
                 f"Replace or remove the token in {display_hermes_home()}/.env, or re-run [bold]gh auth login[/].")
     if rate_limited:
-        c.print("[yellow]Hint:[/] GitHub API rate limit exhausted "
-                "(unauthenticated: 60 requests/hour).\n"
-                "Set [bold]GITHUB_TOKEN[/] in your .env or install the [bold]gh[/] CLI and run "
-                "[bold]gh auth login[/] to raise the limit to 5,000/hr.\n")
+        _print_rate_limit_hint(c, sources)
     else:
         c.print(f"Check the name with [bold]hermes skills search {identifier.rsplit('/', 1)[-1]}[/] "
                 "and check your internet connection. If it keeps failing, run [bold]hermes doctor[/].\n")
@@ -851,6 +867,9 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
             # nothing while GitHub was refusing us is the refusal, not a missing skill.
             if _hub_rate_limited(sources):
                 attempt["failure_class"] = "rate_limited"
+                # The resolver already said "No skill named ... found in any source"; name the
+                # refusal so a batch that exhausted the quota isn't read as missing skills (#140556).
+                _print_rate_limit_hint(c, sources)
             elif _hub_rejected_credentials(sources):
                 attempt["failure_class"] = "auth_rejected"
             return None, "failed", False

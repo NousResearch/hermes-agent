@@ -109,3 +109,25 @@ def test_keyless_rescue_runs_for_backend_failures_not_origin_errors(errors, resc
     assert rescue.called is rescued
     if not rescued:
         assert [r["error"] for r in out] == errors
+
+
+def test_origin_429_does_not_walk_the_keyless_extract_ring():
+    """The target's own 429 is the page's answer: the ring must not fail over and swap it for
+    another vendor's error. A vendor-side 429 still fails over."""
+    calls = []
+
+    def _extractor(vendor, error):
+        def _run(urls):
+            calls.append(vendor)
+            return [{"url": u, "title": "", "content": "", "error": error} for u in urls]
+        return _run
+
+    ring = {"parallel": "HTTP 429 from origin", "firecrawl": "Firecrawl: other error"}
+    with patch.object(keyless_mcp, "_ring_order", return_value=list(ring)), \
+            patch.dict(keyless_mcp._KEYLESS_EXTRACTORS, {v: _extractor(v, e) for v, e in ring.items()}):
+        [entry] = keyless_mcp.extract_with_failover("parallel", ["https://t.test/x"])
+        assert (calls, entry["error"]) == (["parallel"], "HTTP 429 from origin")
+        calls.clear()
+        keyless_mcp._KEYLESS_EXTRACTORS["parallel"] = _extractor("parallel", "HTTP 429: Too Many Requests")
+        [entry] = keyless_mcp.extract_with_failover("parallel", ["https://t.test/x"])
+        assert (calls, entry["error"]) == (["parallel", "firecrawl"], "Firecrawl: other error")

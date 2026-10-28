@@ -14,7 +14,9 @@ import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from plugins.web._common import document as _page, page_error as _page_error, search_fail, search_ok, vendor_error_entry, web_hit as _row
+from plugins.web._common import (
+    document as _page, is_origin_http_error, page_error as _page_error, search_fail, search_ok, vendor_error_entry, web_hit as _row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -417,10 +419,14 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> dict[str, Any
 def extract_with_failover(name: str, urls: list[str]) -> list[dict[str, Any]]:
     """Advances to the next ring vendor only when EVERY url in a batch comes
     back with a rate-limit-shaped error — partial failures and HTTP 403s can
-    be page problems, not provider throttling, and return as-is."""
+    be page problems, not provider throttling, and return as-is. A target's own
+    ``HTTP 429 from origin`` is the page's answer, not the vendor's quota."""
+
+    def _throttled(error: str) -> bool:
+        return bool(error) and not is_origin_http_error(error) and _is_rate_limitish(error)
 
     def _all_throttled(results: list[dict[str, Any]]) -> bool:
-        return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
+        return bool(results) and all(_throttled(r.get("error", "")) for r in results)
 
     order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
     if not order:

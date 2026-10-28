@@ -101,9 +101,9 @@ export function getMemoryProviderOAuthStatus(
 // Memory data + curator (parity with `hermes memory` / `hermes curator`).
 // ---------------------------------------------------------------------------
 
-export function getMemoryStatus(profile?: null | string): Promise<MemoryStatusResponse> {
+export function getMemoryStatus(profile?: ProfileScope): Promise<MemoryStatusResponse> {
   return hermesApi<MemoryStatusResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/memory'
   })
 }

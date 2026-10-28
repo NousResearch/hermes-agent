@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { getMemoryStatus } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { MemoryLayersTranslations } from '@/i18n/types_memory_layers'
 import { $memoryStatusRevision } from '@/store/memory-status'
@@ -157,7 +158,7 @@ export function MemoryLayersSummary({ builtin, onRetry, provider, status, status
 
 interface MemoryLayersPanelProps {
   builtin?: BuiltinToggles
-  profile?: string
+  profile?: ProfileScope
   provider: string
 }
 

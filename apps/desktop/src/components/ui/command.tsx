@@ -46,12 +46,12 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
     // Same row as DropdownMenuSearch + its hairline: no icon, no box.
     return (
       <div
-        className="mb-1 flex items-center gap-2 border-b border-(--ui-stroke-tertiary) px-2 py-1.5"
+        className="mb-1 flex items-center gap-2 border-b border-(--ui-stroke-tertiary) px-2 py-1.5 has-[>input:focus]:border-ring"
         data-slot="command-input-wrapper"
       >
         <CommandPrimitive.Input
           className={cn(
-            'h-4 w-full bg-transparent text-xs leading-none text-foreground outline-none placeholder:text-(--ui-text-tertiary) disabled:cursor-not-allowed disabled:opacity-50',
+            'h-4 w-full bg-transparent text-xs leading-none text-foreground focus:outline-hidden placeholder:text-(--ui-text-tertiary) disabled:cursor-not-allowed disabled:opacity-50',
             className
           )}
           data-slot="command-input"
@@ -64,11 +64,14 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
   }
 
   return (
-    <div className="flex h-11 items-center gap-2 border-b border-border px-3" data-slot="command-input-wrapper">
+    <div
+      className="flex h-11 items-center gap-2 border-b border-border px-3 has-[>input:focus]:border-ring"
+      data-slot="command-input-wrapper"
+    >
       <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
       <CommandPrimitive.Input
         className={cn(
-          'flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+          'flex h-10 w-full rounded-md bg-transparent py-3 text-sm focus:outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
           className
         )}
         data-slot="command-input"
@@ -161,7 +164,7 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
               'cursor-pointer data-[selected=true]:bg-(--ui-control-active-background) data-[selected=true]:text-foreground'
             )
           : 'relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground',
-        'data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50',
+        'data-[selected=true]:outline-hidden data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50',
         className
       )}
       data-slot="command-item"

@@ -35,7 +35,7 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
 export { SIDEBAR_LEAD_ICON_SIZE, SIDEBAR_ROW_CARD_MIN_H, SIDEBAR_TRUNCATED_LEADING } from './row-geometry'
 
 export const SIDEBAR_FOCUS_VISIBLE =
-  'focus-visible:bg-(--ui-control-hover-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-inset'
+  'focus-visible:bg-(--ui-control-hover-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-inset'
 
 // The section header's "+" button, hover-revealed (group/section lives on
 // SidebarSectionHeader), mirroring the artifacts/file browser header

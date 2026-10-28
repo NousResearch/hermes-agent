@@ -90,5 +90,96 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_children_inherit_root_model_override(kanban_home):
+    """Children inherit the triage root's model_override + provider_override
+    so a fan-out runs on the parent's model unless a child overrides."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="rough idea",
+            triage=True,
+            model_override="nous/~deepseek/deepseek-v4-flash-0731",
+            provider_override="nous",
+        )
+
+    children = [
+        {"title": "research", "assignee": "researcher", "parents": []},
+        {"title": "build", "assignee": "engineer", "parents": [0]},
+    ]
+    with kbc.connect() as conn:
+        child_ids = decompose_triage_task(
+            conn, tid, root_assignee="orchestrator", children=children,
+        )
+    assert child_ids is not None and len(child_ids) == 2
+
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, child_ids[0])
+        c1 = kb.get_task(conn, child_ids[1])
+
+    # Both children inherited the root's model override + provider.
+    assert c0.model_override == "nous/~deepseek/deepseek-v4-flash-0731"
+    assert c0.provider_override == "nous"
+    assert c1.model_override == "nous/~deepseek/deepseek-v4-flash-0731"
+    assert c1.provider_override == "nous"
+
+
+def test_decompose_child_override_beats_root_model(kanban_home):
+    """A child dict with its own model_override/provider_override wins over
+    the inherited root values."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="rough idea",
+            triage=True,
+            model_override="parent-model",
+            provider_override="nous",
+        )
+
+    children = [
+        {
+            "title": "research",
+            "assignee": "researcher",
+            "parents": [],
+            "model_override": "custom:llama-server/ornith-1.0-9b",
+            "provider_override": "lmstudio",
+        },
+        {"title": "build", "assignee": "engineer", "parents": [0]},
+    ]
+    with kbc.connect() as conn:
+        child_ids = decompose_triage_task(
+            conn, tid, root_assignee="orchestrator", children=children,
+        )
+    assert child_ids is not None and len(child_ids) == 2
+
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, child_ids[0])
+        c1 = kb.get_task(conn, child_ids[1])
+
+    # c0 overrode; c1 inherited the root.
+    assert c0.model_override == "custom:llama-server/ornith-1.0-9b"
+    assert c0.provider_override == "lmstudio"
+    assert c1.model_override == "parent-model"
+    assert c1.provider_override == "nous"
+
+
+def test_decompose_no_root_model_leaves_children_null(kanban_home):
+    """A triage task with no model override produces children with no model
+    override — normal dispatch resolves from the assignee profile."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough idea", triage=True)
+
+    with kbc.connect() as conn:
+        child_ids = decompose_triage_task(
+            conn, tid, root_assignee="orch",
+            children=[{"title": "task A", "assignee": "researcher"}],
+        )
+    assert child_ids is not None
+
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, child_ids[0])
+    assert c0.model_override is None
+    assert c0.provider_override is None
+
+
 
 

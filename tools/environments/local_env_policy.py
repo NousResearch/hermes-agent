@@ -289,10 +289,26 @@ _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 _SUPERVISED_PROCESS_IDENTITY_VARS = (
     "HERMES_LAUNCHD_LABEL", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
 )
+# The supervisor markers are also profile pins: a CLI under them skips the sticky active_profile
+# (``hermes_cli.main._under_gateway_supervisor``, #74872), and HERMES_GATEWAY_EXTERNAL_SUPERVISOR is an
+# --external-supervisor gateway's ONLY one. A child that loses a marker keeps the pin under a name the
+# restart-route and launch-identity probes never read, so it stays on the gateway's profile without
+# claiming the supervisor.
+GATEWAY_PROFILE_PIN_ENV = "HERMES_GATEWAY_PROFILE_PIN"
+
+
+def carry_gateway_profile_pin(env: dict) -> dict:
+    """Mark *env* with :data:`GATEWAY_PROFILE_PIN_ENV` while it still holds a pinning supervisor marker."""
+    if env.get("HERMES_SUPERVISED_CHILD") or str(
+            env.get("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        env[GATEWAY_PROFILE_PIN_ENV] = "1"
+    return env
 
 
 def strip_supervised_process_identity(env: dict) -> dict:
-    """Drop :data:`_SUPERVISED_PROCESS_IDENTITY_VARS` from a child env, in place; returns *env*."""
+    """Drop :data:`_SUPERVISED_PROCESS_IDENTITY_VARS` from a child env, in place; returns *env*.
+    The profile pin they carried survives (:func:`carry_gateway_profile_pin`)."""
+    carry_gateway_profile_pin(env)
     for name in _SUPERVISED_PROCESS_IDENTITY_VARS:
         env.pop(name, None)
     return env

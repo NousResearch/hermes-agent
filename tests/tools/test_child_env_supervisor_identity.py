@@ -8,6 +8,8 @@ notify socket and watchdog likewise belong to the unit's main process only.
 """
 
 import os
+import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -63,3 +65,27 @@ def test_agent_terminal_child_sees_no_supervisor_identity(tmp_path, monkeypatch)
 
     assert {k: seen[k] for k in OWNER_ONLY} == dict.fromkeys(OWNER_ONLY)
     assert _reads_as_unsupervised({k: v for k, v in seen.items() if v is not None})
+
+
+@pytest.mark.usefixtures("child_env")
+def test_external_supervisor_gateways_tool_child_cli_stays_on_the_gateways_profile(tmp_path, monkeypatch):
+    """Losing the supervisor claim must not unpin the agent's own `hermes ...` commands (#74872)."""
+    from hermes_cli import main as cli_main
+
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "work").mkdir(parents=True)
+    (root / "profiles" / "work" / "config.yaml").write_text("{}\n")
+    (root / "active_profile").write_text("work\n")
+    monkeypatch.setattr(sys, "argv", ["hermes", "cron", "list"])
+
+    def child_cli_home(parent_extra):
+        child = local.build_subprocess_env({**os.environ, "HERMES_HOME": str(root), **parent_extra})
+        with patch.dict(os.environ, child, clear=True):
+            cli_main._apply_profile_override()
+            return child, os.environ["HERMES_HOME"]
+
+    # Control: an unpinned root-home CLI follows the sticky profile.
+    assert child_cli_home({})[1] == str(root / "profiles" / "work")
+    child, home = child_cli_home({"HERMES_GATEWAY_EXTERNAL_SUPERVISOR": "1"})
+    assert home == str(root)
+    assert _reads_as_unsupervised(child)

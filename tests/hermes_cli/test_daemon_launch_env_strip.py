@@ -17,6 +17,7 @@ from tests.waiting import wait_until
 SUPERVISOR_LEAKS = {'XPC_SERVICE_NAME': 'ai.hermes.gateway', 'LAUNCHD_SOCKET': '/tmp/launchd-x/Listeners',
                     'HERMES_LAUNCHD_LABEL': 'ai.hermes.gateway', 'HERMES_GATEWAY_EXTERNAL_SUPERVISOR': '1',
                     'HERMES_SUPERVISED_CHILD': '1'}
+PIN = 'HERMES_GATEWAY_PROFILE_PIN'
 LEAKS = {**SUPERVISOR_LEAKS, 'HERMES_ACCEPT_HOOKS': '1', 'HERMES_KANBAN_TASK': 't_1', 'HERMES_KANBAN_BOARD': 'other',
          'HERMES_KANBAN_DB': '/x/kanban.db', 'HERMES_SESSION_SOURCE': 'kanban', 'TERMINAL_CWD': '/x',
          'HERMES_TENANT': 'acme', 'HERMES_SESSION_SOURCE_EXPLICIT': '1', 'HERMES_TURN_AUTHOR': '{"handle":"x"}',
@@ -40,7 +41,7 @@ def test_daemon_does_not_inherit_hook_consent_or_worker_pins(tmp_path, monkeypat
     executable.write_text(
         '#!' + sys.executable + '\nimport json, os\n'
         + f'open({str(witness)!r}, "w").write(json.dumps('
-        + '{k: os.environ.get(k) for k in ' + repr([*LEAKS, 'HERMES_INFERENCE_MODEL']) + '}))\n',
+        + '{k: os.environ.get(k) for k in ' + repr([*LEAKS, 'HERMES_INFERENCE_MODEL', PIN]) + '}))\n',
         encoding='utf-8')
     executable.chmod(0o700)
     monkeypatch.setattr(sys, 'executable', str(executable))
@@ -54,6 +55,8 @@ def test_daemon_does_not_inherit_hook_consent_or_worker_pins(tmp_path, monkeypat
             child.kill()
             child.wait(timeout=5)
     seen = json.loads(Path(witness).read_text())
+    # The supervisor markers go, but the daemon's own tool children stay on its profile (#74872).
+    assert seen.pop(PIN) == '1'
     assert seen == {**dict.fromkeys(LEAKS), 'HERMES_INFERENCE_MODEL': 'fallback'}
     assert os.environ['HERMES_ACCEPT_HOOKS'] == '1'  # the launching process keeps its own policy
 

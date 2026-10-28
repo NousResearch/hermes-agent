@@ -2375,6 +2375,181 @@ class TestSystemdCgroupIsolation:
 
         assert session.systemd_unit == ""
 
+    @pytest.fixture()
+    def _managed_worker_identity(self, monkeypatch):
+        """Mark this process the way ``agent.managed_worker`` does, with a live gateway above it.
+
+        The gateway pid is stubbed rather than read from a pid file, and ancestry is what the
+        gate consults, so the test does not depend on the runner's process tree (#144495).
+        """
+        from hermes_constants import MANAGED_WORKER_PID_ENV
+
+        gateway_pid = os.getpid() + 4242
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+        monkeypatch.setenv(MANAGED_WORKER_PID_ENV, str(os.getpid()))
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: gateway_pid,
+        )
+        monkeypatch.setattr(
+            "tools.process_registry._has_gateway_ancestor",
+            lambda pid: pid == gateway_pid,
+        )
+        return gateway_pid
+
+    @pytest.mark.parametrize("use_pty", [False, True])
+    def test_managed_worker_scopes_background_jobs(
+        self, registry, monkeypatch, _managed_worker_identity, use_pty
+    ):
+        """Terminal tools run in the managed worker, not the gateway (#144495).
+
+        The worker inherits the gateway's markers but not its pid, so the old gate left
+        every job it started in the gateway's cgroup. Its jobs must get a scope of their own,
+        or ``MemoryHigh`` throttling stalls the gateway event loop with them.
+        """
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        if use_pty:
+            from ptyprocess import PtyProcess
+
+            fake_pty = MagicMock(pid=4321)
+            with (
+                patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("make -j15", cwd="/tmp", use_pty=True)
+            argv = pty_spawn.call_args.args[0]
+        else:
+            fake_popen, captured = self._fake_popen_capture()
+            with (
+                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("make -j15", cwd="/tmp")
+            argv = captured["argv"]
+
+        assert argv[0] == "/usr/bin/systemd-run", argv
+        assert "--scope" in argv
+        unit_idx = argv.index("--unit")
+        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}"
+        assert argv[argv.index("--") + 1 :] == ["/bin/bash", "-lic", "set +m; make -j15"]
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+
+    def test_managed_worker_without_live_gateway_ancestor_does_not_scope(
+        self, registry, monkeypatch, _managed_worker_identity
+    ):
+        """A stale or forged marker is not a licence to create scopes.
+
+        Only a worker the LIVE gateway started qualifies: after a gateway restart the marker's
+        chain no longer reaches the pid file, and scoping to a recycled pid is worse than the
+        plain shell (the scope would name a unit no one reaps).
+        """
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr(
+            "tools.process_registry._has_gateway_ancestor", lambda pid: False
+        )
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"] == ["/bin/bash", "-lic", "set +m; echo hello"]
+        assert session.systemd_unit == ""
+
+    @pytest.mark.parametrize("use_pty", [False, True])
+    def test_inherited_managed_worker_marker_does_not_scope_job(
+        self, registry, monkeypatch, _managed_worker_identity, use_pty
+    ):
+        """A job the worker spawned inherits the marker but must not act as the worker.
+
+        The marker carries the worker's pid, so the value never matches the reader: only the
+        worker itself scopes, and a nested shell keeps its plain argv.
+        """
+        from hermes_constants import MANAGED_WORKER_PID_ENV
+
+        monkeypatch.setenv(MANAGED_WORKER_PID_ENV, str(os.getpid() + 1))
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        if use_pty:
+            from ptyprocess import PtyProcess
+
+            fake_pty = MagicMock(pid=4321)
+            with (
+                patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+            assert pty_spawn.call_args.args[0] == [
+                "/bin/bash",
+                "-lic",
+                "set +m; codex",
+            ]
+        else:
+            fake_popen, captured = self._fake_popen_capture()
+            with (
+                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("echo hello", cwd="/tmp")
+            assert captured["argv"] == ["/bin/bash", "-lic", "set +m; echo hello"]
+
+        assert session.systemd_unit == ""
+
+    def test_gateway_descendant_with_live_ancestor_but_no_marker_does_not_scope(
+        self, registry, monkeypatch, _managed_worker_identity
+    ):
+        """Dropping the worker marker keeps the pre-#144495 behaviour for descendants.
+
+        A foreground child of the gateway is not the process terminal tools run in, so the
+        ancestry check alone must not turn every descendant into a scoper.
+        """
+        from hermes_constants import MANAGED_WORKER_PID_ENV
+
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.delenv(MANAGED_WORKER_PID_ENV, raising=False)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"] == ["/bin/bash", "-lic", "set +m; echo hello"]
+        assert session.systemd_unit == ""
+
     @pytest.mark.platforms("linux")
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
         self, registry, monkeypatch, _gateway_identity

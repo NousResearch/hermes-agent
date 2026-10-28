@@ -22,6 +22,13 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERR
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
+# A gateway-managed worker (``agent/managed_worker.py``) stamps its own pid here at startup.
+# Terminal tools run in that child, not in the gateway, so the background-executor systemd
+# scope gate cannot recognise the worker by the gateway's pid file alone (#144495). The value
+# is a pid, not a flag: every job the worker spawns inherits the variable, and a pid that is
+# not the reader's own keeps those jobs from claiming to be managed workers too.
+MANAGED_WORKER_PID_ENV: str = "HERMES_MANAGED_WORKER_PID"
+
 # Browser-hosted attachments are staged on the Hermes host and then read back
 # as a base64 data URL for the normal remote attachment RPC. Keep the upload
 # and read-back boundaries identical so a successful picker/drop can always be

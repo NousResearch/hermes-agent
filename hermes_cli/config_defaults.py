@@ -1409,6 +1409,8 @@ DEFAULT_CONFIG = {
         # Write each MoA turn (reference + aggregator exact input/output/usage) as JSONL to
         # <hermes_home>/moa-traces/<session_id>.jsonl (or trace_dir) for auditing.
         "save_traces": False,
+        # Daily spend alarm in USD; zero disables. Advisory only and never blocks a turn.
+        "daily_budget_usd": 2.0,
         "trace_dir": "",
         # PII/credential redaction of advisor outputs: "" off | "display" (UI reference blocks +
         # traces only; aggregator sees raw) | "full" (also the aggregator prompt).
@@ -1424,7 +1426,7 @@ DEFAULT_CONFIG = {
                     {"provider": "openai-codex", "model": "gpt-5.5"},
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
-                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                "aggregator": {"provider": "anthropic", "model": "claude-sonnet-5-5", "max_tokens": 2000},
 
                 "enabled": True,
             }

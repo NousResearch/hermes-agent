@@ -105,6 +105,8 @@ def _print_config(config: dict[str, Any]) -> None:
         print(
             f"  Aggregator: {_format_slot(agg_slot)} (acting model — runs every step and carries almost all of the cost)"
         )
+        if agg_slot.get("max_tokens"):
+            print(f"    max_tokens: {agg_slot['max_tokens']} (aggregator-only cap)")
         notice = _provider_mismatch_notice(config, agg_slot)
         if notice:
             print(f"    note: {notice}")

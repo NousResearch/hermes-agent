@@ -162,12 +162,12 @@ def test_print_config_marks_aggregator_as_billed_and_warns_on_provider_mismatch(
     moa_cmd._print_config({"model": {"provider": "openai-codex"}})
 
     out = capsys.readouterr().out
-    # Default preset's aggregator is on openrouter → the notice names both providers.
+    # Default preset's aggregator is Anthropic → the notice names both providers.
     notice = next(line for line in out.splitlines() if "Aggregator is on" in line)
-    assert "openrouter" in notice and "openai-codex" in notice
+    assert "anthropic" in notice and "openai-codex" in notice
 
 
-@pytest.mark.parametrize("cfg", [{"model": {"provider": "openrouter"}}, {}])
+@pytest.mark.parametrize("cfg", [{"model": {"provider": "anthropic"}}, {}])
 def test_billing_notice_silent_when_providers_match_or_main_unknown(cfg, capsys):
     from hermes_cli import moa_cmd
 
@@ -178,6 +178,36 @@ def test_billing_notice_silent_when_providers_match_or_main_unknown(cfg, capsys)
 
 
 # ── Per-slot max_tokens ────────────────────────────────────────────────────
+
+
+def test_aggregator_max_tokens_round_trips_and_validates():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    payload = {"presets": {"p": _valid_preset_payload()}}
+    payload["presets"]["p"]["aggregator"]["max_tokens"] = 2000
+    assert validate_moa_payload(payload) == []
+    normalized = normalize_moa_config(payload)
+    assert normalized["presets"]["p"]["aggregator"]["max_tokens"] == 2000
+    assert normalized["aggregator"]["max_tokens"] == 2000
+
+    for invalid in (0, -1, 1.5, True, "2000"):
+        bad = {"presets": {"p": _valid_preset_payload()}}
+        bad["presets"]["p"]["aggregator"]["max_tokens"] = invalid
+        assert any("max_tokens" in issue for issue in validate_moa_payload(bad))
+
+
+def test_daily_moa_budget_normalizes_and_validates():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    payload = {"daily_budget_usd": 2.0, "presets": {"p": _valid_preset_payload()}}
+    assert validate_moa_payload(payload) == []
+    assert normalize_moa_config(payload)["daily_budget_usd"] == 2.0
+    assert normalize_moa_config({})["daily_budget_usd"] == 0.0
+
+    for invalid in (-1, float("inf"), float("nan"), True, "NaN"):
+        bad = {"daily_budget_usd": invalid, "presets": {"p": _valid_preset_payload()}}
+        assert any("daily_budget_usd" in issue for issue in validate_moa_payload(bad))
+
 
 
 

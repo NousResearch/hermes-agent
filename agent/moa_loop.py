@@ -970,10 +970,14 @@ def aggregate_moa_context(
     try:
         # Undecorated: the prompt embeds this call's reference outputs, so no later call
         # reads it back and a marker would only pay a cache write (is_one_shot_request).
-        synthesis = _extract_text(call_llm(
-            task="moa_aggregator", messages=[{"role": "user", "content": synth_prompt}], temperature=aggregator_temperature,
-            reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
-        ))
+        aggregator_call = {
+            "task": "moa_aggregator", "messages": [{"role": "user", "content": synth_prompt}],
+            "temperature": aggregator_temperature,
+            "reasoning_config": _aggregator_reasoning_config(aggregator), **agg_runtime,
+        }
+        if aggregator.get("max_tokens") is not None:
+            aggregator_call["max_tokens"] = aggregator["max_tokens"]
+        synthesis = _extract_text(call_llm(**aggregator_call))
     except Exception as exc:
         logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
         synthesis = ""
@@ -1077,6 +1081,7 @@ class MoAChatCompletions:
         self._accounting_lock = threading.Lock()
         # Real aggregator slot so cost accounting prices the acting turn at its model.
         self.last_aggregator_slot: Any = None
+        self.last_aggregator_generation_id: str | None = None
         # Full-turn trace parts from a cache-MISS create(), flushed by consume_and_save_trace.
         self._pending_trace: Any = None
         # Per-advisor metrics for observability hooks; NOT consumed (post_api_request
@@ -1155,6 +1160,39 @@ class MoAChatCompletions:
             self.reference_callback(event, **kwargs)
         except Exception as exc:  # pragma: no cover - display must never break the turn
             logger.debug("MoA reference_callback failed for %s: %s", event, exc)
+
+    def _record_aggregator_success(self, aggregator: dict[str, Any], generation_id: Any) -> None:
+        """Keep and log the upstream aggregator ID, not the MoA wrapper's stream ID."""
+        self.last_aggregator_generation_id = str(generation_id) if generation_id else None
+        logger.info(
+            "MoA aggregator succeeded provider=%s model=%s generation_id=%s",
+            aggregator.get("provider") or "unknown", aggregator.get("model") or "unknown",
+            self.last_aggregator_generation_id or "unavailable",
+        )
+
+    def _track_aggregator_stream(self, stream: Any, aggregator: dict[str, Any]):
+        """Pass chunks through unchanged while retaining the provider generation ID."""
+        generation_id = None
+        completed = False
+        try:
+            for chunk in iter(stream):
+                chunk_id = getattr(chunk, "id", None)
+                if isinstance(chunk_id, str) and chunk_id:
+                    generation_id = chunk_id
+                yield chunk
+            completed = True
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
+            if completed:
+                self._record_aggregator_success(aggregator, generation_id)
+            else:
+                logger.warning(
+                    "MoA aggregator stream did not complete provider=%s model=%s",
+                    aggregator.get("provider") or "unknown", aggregator.get("model") or "unknown",
+                )
 
     def prepare(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         """Run the advisor fan-out and return the exact aggregator request, which the
@@ -1235,12 +1273,16 @@ class MoAChatCompletions:
         merged = destination in remembered
         if merged:
             agg_messages = merge_same_role_messages(agg_messages)
-        send = functools.partial(
-            call_llm, task="moa_aggregator", temperature=prepared["aggregator_temperature"],
-            max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
-            reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
+        send_kwargs = {
+            "task": "moa_aggregator", "temperature": prepared["aggregator_temperature"],
+            "tools": tools, "extra_body": agg_extra_body,
+            "reasoning_config": _aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
-        )
+        }
+        agg_max_tokens = aggregator.get("max_tokens", api_kwargs.get("max_tokens"))
+        if agg_max_tokens is not None:
+            send_kwargs["max_tokens"] = agg_max_tokens
+        send = functools.partial(call_llm, **send_kwargs)
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
@@ -1271,7 +1313,15 @@ class MoAChatCompletions:
         if stream and hasattr(agg_response, "choices"):
             # Some adapters (openai-codex Responses) return a completed response even
             # when streaming was requested; hand the loop a one-chunk iterator.
+            self._record_aggregator_success(aggregator, getattr(agg_response, "id", None))
             return iter((_completed_response_as_stream_chunk(agg_response),))
+        if stream:
+            try:
+                iter(agg_response)
+            except TypeError:
+                return agg_response  # test/custom adapter handles may be non-iterable sentinels
+            return self._track_aggregator_stream(agg_response, aggregator)
+        self._record_aggregator_success(aggregator, getattr(agg_response, "id", None))
         return agg_response
 
     def _fanout_cache_key(
@@ -1497,6 +1547,11 @@ class MoAClient:
     @property
     def last_aggregator_slot(self) -> Any:
         return getattr(self.chat.completions, "last_aggregator_slot", None)
+
+    @property
+    def last_aggregator_generation_id(self) -> str | None:
+        facade = getattr(getattr(self, "chat", None), "completions", None)
+        return getattr(facade, "last_aggregator_generation_id", None)
 
     def consume_and_save_trace(self, session_id: Any = None, aggregator_output_fallback: Any = None) -> None:
         return self.chat.completions.consume_and_save_trace(session_id, aggregator_output_fallback=aggregator_output_fallback)

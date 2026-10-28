@@ -15,8 +15,8 @@ DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
     {"provider": "openai-codex", "model": "gpt-5.5"},
     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
 
-DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
-    "provider": "openrouter", "model": "anthropic/claude-opus-4.8"}
+DEFAULT_MOA_AGGREGATOR: dict[str, Any] = {
+    "provider": "anthropic", "model": "claude-sonnet-5-5", "max_tokens": 2000}
 
 DEFAULT_MOA_REFERENCE_TIMEOUT: float | None = None
 
@@ -44,6 +44,14 @@ def _coerce_number(value: Any, cast, default=None, *, positive: bool = False):
     if (cast is float and not math.isfinite(number)) or (positive and number <= 0):
         return default
     return number
+
+
+def _coerce_daily_budget(value: Any) -> float:
+    """Non-negative daily MoA alarm threshold; zero disables the advisory alarm."""
+    if isinstance(value, bool):
+        return 0.0
+    number = _coerce_number(value, float, 0.0)
+    return float(number) if isinstance(number, (int, float)) and math.isfinite(number) and number >= 0 else 0.0
 
 
 def _coerce_reference_timeout(value: Any) -> float | None:
@@ -122,7 +130,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return bool(value)
 
 
-def _slot_problem(slot: Any) -> str | None:
+def _slot_problem(slot: Any, *, allow_max_tokens: bool = False) -> str | None:
     """Human-readable problem for a slot ``_clean_slot`` would drop; None when complete and valid.
 
     Mirrors ``_clean_slot`` exactly so the write-boundary validator (``validate_moa_payload``) and
@@ -137,6 +145,12 @@ def _slot_problem(slot: Any) -> str | None:
         return "provider is required"
     if not model:
         return f"model is required (provider '{provider}' has no model selected)"
+    if "max_tokens" in slot:
+        if not allow_max_tokens:
+            return "max_tokens is only supported on the aggregator slot"
+        cap = slot.get("max_tokens")
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+            return "max_tokens must be a positive integer"
     # MoA is a virtual provider whose presets are themselves MoA runs; allowing one as a slot
     # would create a recursive MoA tree that the runtime guards only catch mid-turn.
     if provider.lower() == "moa":
@@ -144,11 +158,15 @@ def _slot_problem(slot: Any) -> str | None:
     return None
 
 
-def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] | None:
+def _clean_slot(
+    slot: Any, *, include_enabled: bool = False, include_max_tokens: bool = False,
+) -> dict[str, Any] | None:
     # Any slot ``_slot_problem`` rejects is dropped, falling back to the preset's defaults.
-    if _slot_problem(slot) is not None:
+    if _slot_problem(slot, allow_max_tokens=include_max_tokens) is not None:
         return None
     clean: dict[str, Any] = {"provider": str(slot["provider"]).strip(), "model": str(slot["model"]).strip()}
+    if include_max_tokens and "max_tokens" in slot:
+        clean["max_tokens"] = slot["max_tokens"]
     effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
     if effort:
         clean["reasoning_effort"] = effort
@@ -189,6 +207,11 @@ def validate_moa_payload(raw: Any) -> list[str]:
     presets: dict[Any, Any] = presets_raw if isinstance(presets_raw, dict) and presets_raw else {DEFAULT_MOA_PRESET_NAME: raw}
 
     problems: list[str] = []
+    if "daily_budget_usd" in raw:
+        budget = raw.get("daily_budget_usd")
+        parsed_budget = None if isinstance(budget, bool) else _coerce_number(budget, float, None)
+        if parsed_budget is None or parsed_budget < 0:
+            problems.append("daily_budget_usd must be a finite non-negative number")
     for name, preset in presets.items():
         label = str(name or "").strip() or "(unnamed)"
         if not isinstance(preset, dict):
@@ -203,7 +226,7 @@ def validate_moa_payload(raw: Any) -> list[str]:
         if all(issue for _, issue in issues):
             problems.append(f"preset '{label}': needs at least one complete reference model")
 
-        agg_issue = _slot_problem(preset.get("aggregator"))
+        agg_issue = _slot_problem(preset.get("aggregator"), allow_max_tokens=True)
         if agg_issue:
             problems.append(f"preset '{label}' aggregator: {agg_issue}")
     return problems
@@ -219,7 +242,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
     return {
         "enabled": _coerce_bool(raw.get("enabled"), True),
         "reference_models": refs or _default_reference_models(),
-        "aggregator": _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR),
+        "aggregator": _clean_slot(raw.get("aggregator"), include_max_tokens=True) or deepcopy(DEFAULT_MOA_AGGREGATOR),
         # None means 'don't send it — provider default applies'.
         "reference_temperature": _coerce_number(raw.get("reference_temperature"), float),
         "aggregator_temperature": _coerce_number(raw.get("aggregator_temperature"), float),
@@ -275,7 +298,9 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         # Compatibility/flattened view for existing dashboard/desktop callers.
         **{key: deepcopy(presets[default_name][key]) for key in _FLAT_PRESET_KEYS},
         # MoA-level (not per-preset) toggle; see coerce_privacy_filter for the modes.
-        "privacy_filter": coerce_privacy_filter(raw.get("privacy_filter"))}
+        "privacy_filter": coerce_privacy_filter(raw.get("privacy_filter")),
+        # Advisory only: records cumulative MoA spend and emits one ALARM/day after crossing.
+        "daily_budget_usd": _coerce_daily_budget(raw.get("daily_budget_usd"))}
 
 
 def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:

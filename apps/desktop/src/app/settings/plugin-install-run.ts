@@ -26,10 +26,28 @@ const HINT_COMPONENTS = {
   desktop: probe => ({ agent: false, desktop: probe.desktop })
 } satisfies Record<'agent' | 'both' | 'desktop', (probe: ProbeResult) => InstallComponents>
 
+/** Whether this app can put a desktop half down. Native Desktop clones or copies one; the browser-hosted
+ *  app has no disk of its own and its server materialises none, so there a package installs its agent
+ *  half alone. */
+export function desktopInstallSupported(): boolean {
+  return Boolean(window.hermesDesktop?.installDesktopPlugin)
+}
+
 /** What an install puts down: every half the repository has, narrowed by a legacy deep link or by
- *  "install the agent half here" (whose desktop half is already loaded). */
-export function installComponents(request: PluginInstallRequest, probe: ProbeResult): InstallComponents {
-  return HINT_COMPONENTS[request.legacyHint ?? 'both'](probe)
+ *  "install the agent half here" (whose desktop half is already loaded), and by what this app can install. */
+export function installComponents(
+  request: PluginInstallRequest,
+  probe: ProbeResult,
+  desktopSupported = desktopInstallSupported()
+): InstallComponents {
+  const wanted = HINT_COMPONENTS[request.legacyHint ?? 'both'](probe)
+
+  return { agent: wanted.agent, desktop: wanted.desktop && desktopSupported }
+}
+
+/** A desktop half the request wants that this app cannot install: skipped and said so, never reported done. */
+export function skipsDesktopHalf(request: PluginInstallRequest, probe: ProbeResult): boolean {
+  return installComponents(request, probe, true).desktop && !installComponents(request, probe).desktop
 }
 
 /** A unified package installed into a local backend carries its own desktop half; the app copies that half
@@ -199,6 +217,10 @@ export async function runPluginInstall(plan: InstallPlan, deps: InstallDeps): Pr
 
   for (const message of report.successes) {
     notify({ kind: 'success', message })
+  }
+
+  if (agentResult?.ok && skipsDesktopHalf(plan.request, plan.probe)) {
+    notify({ kind: 'warning', message: deps.copy.desktopUnavailable })
   }
 
   if (report.errors.length > 0) {

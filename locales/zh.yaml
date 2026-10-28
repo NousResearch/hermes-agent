@@ -1005,6 +1005,8 @@ platform:
       confirm_title: "确认"
       already_resolved: "这个审批已经处理过了~"
       expired: "⌛ 审批已过期 — 命令未运行（已超时或已在别处处理）"
+      no_longer_pending: "⌛ 这个审批已不再等待（已超时或已在其他地方处理）"
+      click_failed: "⚠️ 无法记录你的选择。请再点一次，或用 /approve 或 /deny 回复。"
       by_user: "{user} {label}"
       resolved_once: "已批准一次"
       resolved_session: "已批准（本会话）"

@@ -1022,6 +1022,8 @@ platform:
       confirm_title: "Megerősítés"
       already_resolved: "Ez a jóváhagyás már eldőlt~"
       expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)"
+      no_longer_pending: "⌛ Ez a jóváhagyás már nincs függőben (lejárt, vagy máshol válaszoltak rá)"
+      click_failed: "⚠️ Nem sikerült rögzíteni a választásodat. Kattints újra, vagy válaszolj a /approve vagy /deny paranccsal."
       by_user: "{label} — {user}"
       resolved_once: "Egyszer jóváhagyva"
       resolved_session: "Jóváhagyva a munkamenetre"

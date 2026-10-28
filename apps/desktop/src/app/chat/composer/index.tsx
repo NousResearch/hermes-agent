@@ -24,7 +24,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
-import { isMacPlatform } from '@/lib/platform'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
@@ -94,11 +94,9 @@ import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
-  composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
-  normalizeComposerEditorDom,
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
@@ -106,6 +104,7 @@ import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
+import { composerTextEntryProps, touchTapFocusHandlers } from './touch-text-entry'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
@@ -160,6 +159,8 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
+  const touchPointer = useStore($touchPointer)
+  const tapFocus = useMemo(() => (touchPointer ? touchTapFocusHandlers() : undefined), [touchPointer])
   const hudWindowing = window.hermesDesktop?.hud?.windowing
   const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
 
@@ -495,20 +496,13 @@ export function ChatBar({
   // flushes to one per paint is lossless.
   const flushRafRef = useRef<number | undefined>(undefined)
 
-  const flushEditorToDraft = (editor: HTMLDivElement) => {
+  const flushEditorToDraft = (editor: HTMLDivElement, typing = false) => {
     if (flushRafRef.current !== undefined) {
       window.cancelAnimationFrame(flushRafRef.current)
       flushRafRef.current = undefined
     }
 
-    normalizeComposerEditorDom(editor)
-
-    const nextDraft = sanitizeComposerInput(composerPlainText(editor))
-
-    if (nextDraft !== draftRef.current) {
-      draftRef.current = nextDraft
-      setComposerText(nextDraft)
-    }
+    syncDraftFromEditor(typing, editor)
 
     window.setTimeout(refreshTrigger, 0)
   }
@@ -523,7 +517,7 @@ export function ChatBar({
 
     flushRafRef.current = window.requestAnimationFrame(() => {
       flushRafRef.current = undefined
-      flushEditorToDraft(editor)
+      flushEditorToDraft(editor, true)
     })
   }
 
@@ -1175,10 +1169,8 @@ export function ChatBar({
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
-        autoCapitalize="off"
-        // Chromium's macOS text-replacement path shares the autocorrect gate.
-        // Keeping spellcheck off below still excludes smart quotes and dashes.
-        autoCorrect={isMacPlatform() ? 'on' : 'off'}
+        {...composerTextEntryProps(touchPointer)}
+        {...tapFocus}
         className={cn(
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
@@ -1242,7 +1234,6 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
-        spellCheck={false}
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />

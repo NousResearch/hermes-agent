@@ -26,6 +26,7 @@ from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
+from gateway.session_detached import detached_route_of
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.warning_notifications import diagnostic_wake_muted
@@ -340,12 +341,19 @@ class GatewayTurnPersistenceMixin:
                 "session intact; the next message retries normally.",
                 session_entry.session_id if session_entry else "?",
             )
-        elif agent_result.get("compression_exhausted") and getattr(source, "platform", None) == Platform.API_SERVER:
+        elif agent_result.get("compression_exhausted") and (
+                getattr(source, "platform", None) == Platform.API_SERVER or detached_route_of(source)):
             # The caller addresses an API conversation by its id and every API door re-validates that
             # binding (``restore_api_session``): a rotated entry would refuse each later request to it
-            # (``admission_conflict``). The caller gets the typed ``compression_exhausted`` result instead.
-            logger.info("Keeping API session %s after compression exhaustion.",
+            # (``admission_conflict``). A conversation its chat moved past has no route of its own to
+            # reset (gateway/session_detached.py): its app viewer gets the start-fresh guidance a
+            # failed overflow turn gives. Never a reset that did not happen.
+            logger.info("Keeping session %s after compression exhaustion.",
                         session_entry.session_id if session_entry else "?")
+            from gateway.run import _context_overflow_reply
+            guidance = _context_overflow_reply() if detached_route_of(source) else ""
+            if guidance not in (response or ""):
+                response = f"{response}\n\n{guidance}" if response else guidance
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             if not self._hmwa_defer_exhaustion_reset(session_entry, session_key, source):
                 session_entry = await self._hmwa_rotate_exhausted_session(session_entry, session_key, source)
@@ -423,9 +431,9 @@ class GatewayTurnPersistenceMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
-        from gateway.response_filters import display_metadata_for_event
+        from gateway.response_filters import persisted_user_metadata_for_event
         display_metadata = {**({"gateway_input_owner": prepared.persistence_owner} if prepared.persistence_owner else {}),
-                            **display_metadata_for_event(event)}
+                            **persisted_user_metadata_for_event(event)}
         if display_metadata:
             _user_entry["display_metadata"] = display_metadata
         if getattr(event, "message_id", None):

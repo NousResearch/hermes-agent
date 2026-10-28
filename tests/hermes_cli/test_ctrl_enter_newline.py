@@ -194,6 +194,47 @@ def test_non_ghostty_terminals_still_push_kitty_protocol():
     assert b"\x1b[>4;2m" in out.written
 
 
+def test_herdr_pane_skips_kitty_push_despite_inherited_wt_session():
+    """herdr panes embed a Ghostty core, so an inherited WT_SESSION must
+    not earn the Kitty push: on non-US layouts (e.g. `/` = Shift+7 on
+    Slovenian) disambiguate mode re-encodes shifted punctuation as CSI-u
+    sequences the alias table doesn't map, and they leak as literal text
+    (#100169).  modifyOtherKeys stays on — Ghostty cores implement it
+    correctly."""
+    import cli as cli_mod
+
+    herdr_env = {
+        "HERDR_ENV": "1",
+        "HERDR_PANE_ID": "w1:p1",
+        "WT_SESSION": "f34fca49-0000-0000-000000000000",
+        "TERM": "xterm-256color",
+    }
+    assert cli_mod._is_ghostty_terminal(herdr_env) is True
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(output=out, env=herdr_env)
+    assert result is True
+    assert b"\x1b[>4;2m" in out.written
+    assert b"\x1b[>1u" not in out.written
+
+
+def test_herdr_env_alone_allowlists_modify_other_keys_only():
+    """A herdr pane without an inherited WT_SESSION gets the full Ghostty
+    treatment: allowlisted for the push, modifyOtherKeys only — without
+    the HERDR_ENV entry nothing in the allowlist matches such a pane and
+    Shift+Enter collapses to a bare CR (#100169)."""
+    import cli as cli_mod
+
+    herdr_pane = {"HERDR_ENV": "1", "TERM_PROGRAM": "herdr", "TERM": "xterm-256color"}
+    assert cli_mod._terminal_supports_extended_enter_keys(herdr_pane) is True
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(output=out, env=herdr_pane)
+    assert result is True
+    assert b"\x1b[>4;2m" in out.written
+    assert b"\x1b[>1u" not in out.written
+
+
 @pytest.mark.platforms("linux")
 def test_proc_version_microsoft_marker_preserves_newline():
     """WSL detection via /proc when env vars are scrubbed (sudo etc.).
@@ -221,11 +262,13 @@ def test_proc_version_microsoft_marker_preserves_newline():
 
 
 def test_is_ghostty_terminal_detection_paths():
-    """_is_ghostty_terminal matches exactly the two allowlist conditions."""
+    """_is_ghostty_terminal matches the TERM_PROGRAM/TERM allowlist paths
+    plus the herdr pane marker (Ghostty core, markers scrubbed)."""
     import cli as cli_mod
 
     assert cli_mod._is_ghostty_terminal({"TERM_PROGRAM": "ghostty"}) is True
     assert cli_mod._is_ghostty_terminal({"TERM": "xterm-ghostty"}) is True
     assert cli_mod._is_ghostty_terminal({"TERM": "XTERM-GHOSTTY"}) is True
+    assert cli_mod._is_ghostty_terminal({"HERDR_ENV": "1"}) is True
     assert cli_mod._is_ghostty_terminal({"TERM_PROGRAM": "iTerm.app"}) is False
     assert cli_mod._is_ghostty_terminal({}) is False

@@ -97,6 +97,27 @@ describe('__runDeadSessionPrunePass', () => {
     expect(getSessionMock).not.toHaveBeenCalled()
   })
 
+  it('keeps an active-profile pin when the unscoped probe hits a different serving profile', async () => {
+    $sessions.set([row('unrelated')])
+    $activeGatewayProfile.set('work')
+    $pinnedSessionIds.set(['active-pin'])
+    // The desktop main backend serves the default profile, so the unscoped
+    // lookup 404s for a session that lives on the sidebar's active profile
+    // (#132868) — the active-profile probe must keep the pin.
+    getSessionMock.mockImplementation(async (id, profileName) => {
+      if (profileName === 'work') {
+        return row(id, { profile: 'work' })
+      }
+
+      throw notFound()
+    })
+
+    await __runDeadSessionPrunePass()
+
+    expect($pinnedSessionIds.get()).toEqual(['active-pin'])
+    expect(getSessionMock).toHaveBeenCalledWith('active-pin', 'work')
+  })
+
   it('defers on non-404 probe failures instead of dropping, and retries later', async () => {
     $sessions.set([row('unrelated')])
     $pinnedSessionIds.set(['flaky-pin'])
@@ -155,6 +176,52 @@ describe('__runDeadSessionPrunePass', () => {
     expect(getSessionMock).toHaveBeenCalledWith('rowless-pin', undefined)
     // Covered pins are alive (their rows exist) — only the rowless pin dies.
     expect($pinnedSessionIds.get()).toEqual(['covered', 'root-covered'])
+  })
+
+  it('skips a pin whose durable root only appears in a loaded row\'s lineage list', async () => {
+    // Pin ids are durable lineage roots; for deep compression chains the row's
+    // _lineage_root_id is a display root that differs from the pin id, and only
+    // _lineage_ids carries both (#132868).
+    $sessions.set([
+      row('tip', { _lineage_root_id: 'display-root', _lineage_ids: ['pin-root', 'display-root', 'tip'] })
+    ])
+    $pinnedSessionIds.set(['pin-root'])
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(getSessionMock).not.toHaveBeenCalled()
+    expect($pinnedSessionIds.get()).toEqual(['pin-root'])
+  })
+
+  it('keeps a pin whose lineage row lands while the probe is in flight', async () => {
+    $sessions.set([row('unrelated')])
+    $pinnedSessionIds.set(['pin-root'])
+    let firstProbe = true
+    let rejectProbe!: (reason: Error) => void
+    getSessionMock.mockImplementation(() => {
+      if (!firstProbe) {
+        return Promise.reject(notFound())
+      }
+
+      firstProbe = false
+
+      return new Promise((_, reject) => {
+        rejectProbe = reject
+      })
+    })
+
+    const pass = __runDeadSessionPrunePass()
+
+    // The sidebar row covering the durable pin root lands mid-probe (a slow
+    // first page) — the 404 verdict must not drop the pin (#132868).
+    $sessions.set([
+      row('tip', { _lineage_root_id: 'display-root', _lineage_ids: ['pin-root', 'display-root', 'tip'] })
+    ])
+    rejectProbe(notFound())
+    await pass
+
+    expect($pinnedSessionIds.get()).toEqual(['pin-root'])
   })
 
   it('defers when the profile list is not loaded yet', async () => {

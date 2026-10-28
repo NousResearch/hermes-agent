@@ -67,6 +67,35 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
+# Matrix sender-label hardening: the display name is attacker-controlled and sits next to
+# the trusted MXID in `[<name> | Matrix user <@id>]`. Drop it for the MXID alone when it
+# reaches for an identity; otherwise keep it with cosmetic hygiene. See
+# _prefix_inbound_sender_context.
+_MATRIX_LABEL_BIDI = "".join(map(chr, (0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+                                       0x2066, 0x2067, 0x2068, 0x2069, 0x061c, 0x200e, 0x200f)))
+
+
+def _matrix_safe_display_name(name: str, max_len: int = 64) -> Optional[str]:
+    """A Matrix display name safe to show beside the trusted MXID, or None if the name
+    asserts an identity and should be dropped (show the MXID alone). Forging the
+    ``| Matrix user <@id>`` suffix needs an MXID shape, a bracketed ``<...>`` id token, a
+    bidi directional-control char (reverse-render), or a line break; none occur in a
+    legitimate name. A clean name is length-capped and has stray ``<``/``>`` mapped to
+    inert lookalikes so the only real ``<...>`` in the label is the trusted MXID."""
+    if (
+        re.search(r"@[^\s:@]+:[^\s@]+", name)
+        or "\n" in name
+        or "\r" in name
+        or re.search(r"<[^\s<>]*[@:][^\s<>]*>", name)
+        or any(c in _MATRIX_LABEL_BIDI for c in name)
+    ):
+        return None
+    name = name.strip()
+    if len(name) > max_len:
+        name = name[:max_len].rstrip() + "…"
+    return name.replace("<", "❬").replace(">", "❭")
+
+
 class GatewayInboundMixin(GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
@@ -1439,10 +1468,16 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             if source.platform == Platform.SLACK and source.user_id:
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
             # Matrix: likewise expose the speaker's verifiable MXID so identity in a
-            # shared room rests on the server-set id, not the mutable display name.
-            # The MXID already carries its leading '@' (@user:server).
+            # shared room rests on the server-set id, not the mutable display name
+            # (the MXID carries its leading '@', @user:server). The display name is
+            # attacker-controlled, so harden it first: drop it for the MXID alone when
+            # it reaches for an identity, else keep it defanged (_matrix_safe_display_name).
             elif source.platform == Platform.MATRIX and source.user_id:
-                _safe_user_name = f"{_safe_user_name} | Matrix user <{source.user_id}>"
+                _hardened = _matrix_safe_display_name(_safe_user_name)
+                if _hardened:
+                    _safe_user_name = f"{_hardened} | Matrix user <{source.user_id}>"
+                else:
+                    _safe_user_name = f"Matrix user <{source.user_id}>"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):

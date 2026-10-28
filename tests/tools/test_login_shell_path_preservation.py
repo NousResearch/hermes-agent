@@ -23,7 +23,7 @@ _PATH_LINE = re.compile(r'^(?:declare -x|export) PATH="(.*)"$', re.MULTILINE)
 def _managed_setup(tmp_path, monkeypatch, *, profile_body: str):
     """A resetting (or no-op) profile plus one fake Hermes-managed bin dir."""
     profile = tmp_path / "profile.sh"
-    profile.write_text(profile_body)
+    profile.write_text(profile_body, encoding="utf-8")
     managed = tmp_path / "managed-bin"
     managed.mkdir()
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -40,7 +40,7 @@ def _managed_setup(tmp_path, monkeypatch, *, profile_body: str):
 
 
 def _snapshot_path_value(env: LocalEnvironment) -> list[str]:
-    content = pathlib.Path(env._snapshot_path).read_text()
+    content = pathlib.Path(env._snapshot_path).read_text(encoding="utf-8-sig")
     match = _PATH_LINE.search(content)
     assert match, f"no PATH line in snapshot:\n{content}"
     return match.group(1).split(":")
@@ -105,7 +105,7 @@ class TestLoginShellPathPreservation:
 
 def _exe(directory, name: str):
     tool = directory / name
-    tool.write_text(f"#!/bin/sh\necho {directory.name}\n")
+    tool.write_text(f"#!/bin/sh\necho {directory.name}\n", encoding="utf-8")
     tool.chmod(0o755)
 
 
@@ -154,7 +154,7 @@ def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_pat
     # is pinned here; the spawn env, argv and restore helper are the production ones.
     login_shell = tmp_path / "login-shell"
     login_shell.write_text(f'#!/bin/bash\nPATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n'
-                           'exec /bin/bash --noprofile --norc -c "$2"\n')
+                           'exec /bin/bash --noprofile --norc -c "$2"\n', encoding="utf-8")
     login_shell.chmod(0o755)
     monkeypatch.setattr("tools.process_registry._find_shell", lambda: str(login_shell))
     registry = ProcessRegistry()

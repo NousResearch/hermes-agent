@@ -15,6 +15,11 @@ from hermes_cli.config import atomic_config_write
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.discord.adapter import DISCORD_AVAILABLE, DiscordAdapter
 
+# The hermetic test environment installs the ``all`` extra set, which deliberately omits
+# messaging extras (discord.py lazy-installs at runtime); these end-to-end loader checks
+# need the real adapter, so run where discord.py is present and skip elsewhere.
+pytestmark = pytest.mark.skipif(not DISCORD_AVAILABLE, reason="discord.py is not installed in this environment")
+
 
 @pytest.mark.parametrize("configured,environment,expected", [(None, None, True), (False, None, False), (True, "false", False), (False, "true", True), (False, "", False)])
 def test_owning_profile_history_switch_and_default(tmp_path, configured, environment, expected):

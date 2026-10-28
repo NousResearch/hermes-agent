@@ -207,6 +207,13 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     """
     from tools.browser_url_policy import eval_ssrf_guard_active
     if not eval_ssrf_guard_active():
+        # The cloud-metadata floor stays unconditional, as in browser_exec's _url_policy_error (#16234).
+        target_url = str((params or {}).get("url") or "").strip()
+        if method in ("Page.navigate", "Target.createTarget") and target_url:
+            from tools.url_safety import is_always_blocked_url
+            if is_always_blocked_url(target_url):
+                return _blocked(f"Blocked: CDP {method} url targets a cloud metadata endpoint ({target_url}).",
+                                method)
         return None
     guard = _METHOD_PARAM_GUARDS.get(method)
     if guard is not None:

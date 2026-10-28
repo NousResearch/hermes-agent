@@ -85,3 +85,14 @@ class TestExpressionScanHelper:
         monkeypatch.setattr(browser_url_policy, "is_always_blocked_url", lambda url: False)
         out = browser_url_policy.expression_targets_private_url("location.href='http://10.0.0.1/';")
         assert out == "http://10.0.0.1/"
+
+
+@pytest.mark.parametrize("local_backend,allow_private", [(True, False), (False, True)])
+def test_raw_cdp_keeps_the_metadata_floor_when_the_private_guard_is_off(monkeypatch, local_backend, allow_private):
+    from tools import browser_cdp_tool, browser_session_cloud
+    monkeypatch.setattr(browser_session_cloud, "is_local_backend", lambda: local_backend)
+    monkeypatch.setattr(browser_session_cloud, "allow_private_urls", lambda: allow_private)
+    guard = browser_cdp_tool._browser_cdp_private_guard
+    for method in ("Page.navigate", "Target.createTarget"):
+        assert "cloud metadata" in guard(method=method, params={"url": "http://169.254.169.254/latest/meta-data/"})
+        assert guard(method=method, params={"url": "http://192.168.1.5/"}) is None

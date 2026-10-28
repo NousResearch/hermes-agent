@@ -11,7 +11,7 @@ import math
 import re
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -45,6 +45,7 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_cron_execution_analytics_for_profile = late("_cron_execution_analytics_for_profile", "hermes_cli.web_server_cron")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 
 def _job_not_found() -> HTTPException:
@@ -627,6 +628,65 @@ def _doc_matches_session(doc_ts: float, session: dict[str, Any], grace_seconds: 
     return start - grace_seconds <= doc_ts <= end + grace_seconds
 
 
+_CRON_ANALYTICS_PERIODS = {7, 30, 90}
+_EMPTY_CRON_USAGE_ANALYTICS = {
+    "usage_runs": 0, "total_tokens": 0, "avg_tokens_per_run": None,
+    "total_cost_usd": 0.0, "avg_cost_usd_per_run": None,
+    "actual_cost_runs": 0, "estimated_cost_runs": 0,
+    "unknown_cost_runs": 0, "incomplete_runs": 0,
+}
+
+
+def _list_cron_analytics_sync(profile: str = "all", days: int = 30):
+    """Per-job usage and attempt rollups for the dashboard's selected period."""
+    try:
+        period_days = int(days)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="days must be 7, 30, or 90") from exc
+    if period_days not in _CRON_ANALYTICS_PERIODS:
+        raise HTTPException(status_code=400, detail="days must be 7, 30, or 90")
+
+    jobs = _list_cron_jobs_sync(profile)
+    cutoff = datetime.now(UTC) - timedelta(days=period_days)
+    cutoff_ts = cutoff.timestamp()
+    cutoff_iso = cutoff.isoformat()
+    dbs: dict[str, Any] = {}
+    analytics: list[dict[str, Any]] = []
+    try:
+        for job in jobs:
+            job_id = str(job.get("id") or "")
+            selected = str(job.get("profile") or job.get("profile_name") or "default")
+            if not job_id:
+                continue
+            if selected not in dbs:
+                try:
+                    dbs[selected] = _open_session_db_for_profile(selected, read_only=True)
+                except HTTPException as exc:
+                    # Script-only profiles legitimately have ledger history but
+                    # no session store. Suppress only that exact open refusal;
+                    # corruption, contention and schema failures remain errors.
+                    if (exc.status_code != 503 or not isinstance(exc.detail, str)
+                            or not exc.detail.startswith("Session store is not initialized.")):
+                        raise
+                    dbs[selected] = None
+            db = dbs[selected]
+            usage = (db.cron_job_usage_analytics(job_id, since=cutoff_ts)
+                     if db is not None else _EMPTY_CRON_USAGE_ANALYTICS)
+            attempts = _cron_execution_analytics_for_profile(selected, job_id, since=cutoff_iso)
+            analytics.append({
+                "job_id": job_id,
+                "profile": selected,
+                "period_days": period_days,
+                **usage,
+                **attempts,
+            })
+    finally:
+        for db in dbs.values():
+            if db is not None:
+                db.close()
+    return {"period_days": period_days, "jobs": analytics}
+
+
 _EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "no_agent"}
 
 
@@ -701,6 +761,11 @@ _CRON_FIRE_RETRY_AFTER_SECONDS = 60
 @router.get("/api/cron/jobs")
 async def list_cron_jobs(profile: str = "all"):
     return await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)
+
+
+@router.get("/api/cron/analytics")
+async def list_cron_analytics(profile: str = "all", days: int = 30):
+    return await _run_cron_dashboard_io(_list_cron_analytics_sync, profile, days)
 
 
 @router.get("/api/cron/jobs/{job_id}")

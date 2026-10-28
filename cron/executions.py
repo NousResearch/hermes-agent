@@ -600,6 +600,59 @@ def list_executions(
     return [dict(row) for row in rows]
 
 
+def execution_analytics(job_id: str, *, since: str) -> dict[str, Any]:
+    """Period attempt counts with an explicit warning for bounded audit history.
+
+    Retention is profile-wide, not per job. Older ledgers have no pruning
+    watermark, so reaching the terminal-row cap conservatively means any job's
+    outcome/manual/retry counts may be incomplete. Session usage is independent.
+    Rank occurrences before filtering the period: an in-period retry is not a
+    first scheduled fire merely because its original attempt predates the cutoff.
+    """
+    with _transaction() as conn:
+        terminal_count = conn.execute(
+            "SELECT COUNT(*) FROM executions WHERE status IN ('completed','failed','unknown')"
+        ).fetchone()[0]
+        rows = conn.execute(
+            """WITH attempts AS (
+                   SELECT status, scheduled_instant, COALESCE(started_at, claimed_at) AS attempt_at,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY scheduled_instant
+                              ORDER BY julianday(claimed_at), claimed_at, id
+                          ) AS attempt_number
+                   FROM executions WHERE job_id=?
+               )
+               SELECT status, scheduled_instant, attempt_number FROM attempts
+               WHERE julianday(attempt_at) >= julianday(?)""",
+            (str(job_id), str(since)),
+        ).fetchall()
+
+    counts = {state: 0 for state in ("completed", "failed", "unknown")}
+    running = manual_runs = scheduled_runs = retry_attempts = 0
+    for row in rows:
+        status = str(row["status"] or "")
+        if status in counts:
+            counts[status] += 1
+        elif status in ("claimed", "running"):
+            running += 1
+        if row["scheduled_instant"] is None:
+            manual_runs += 1
+        elif row["attempt_number"] == 1:
+            scheduled_runs += 1
+        else:
+            retry_attempts += 1
+
+    return {
+        "attempts": len(rows),
+        **counts,
+        "running": running,
+        "manual_runs": manual_runs,
+        "scheduled_runs": scheduled_runs,
+        "retry_attempts": retry_attempts,
+        "history_limited": terminal_count >= max(0, int(MAX_TERMINAL_EXECUTIONS)),
+    }
+
+
 def get_execution(execution_id: str) -> Optional[dict[str, Any]]:
     """Return one exact execution attempt, or ``None`` when it is absent."""
     with _transaction() as conn:

@@ -41,8 +41,8 @@ async def _build_profile_authority(runner, name, home, *, register):
     instance_id = runner.session_runtime_descriptor['instance_id']
     # Each home's store resolves through the runner's scope-following handle cache, exactly
     # the handle every later scoped read of that profile uses (one writer per state.db).
+    db = await asyncio.to_thread(open_profile_store, runner, home)
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        db = getattr(runner._session_db, '_db', runner._session_db)
         if db is None:
             raise RuntimeError(_store_open_failure(runner, home))
         if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
@@ -56,6 +56,46 @@ async def _build_profile_authority(runner, name, home, *, register):
             raise
     registry.replace(home, authority)
     return authority
+
+
+def open_profile_store(runner, home):
+    """*home*'s SessionDB through the runner's scoped handle cache, opened in the CALLING thread
+    under that profile's scope (bound here: a worker thread inherits no scope it was not given).
+
+    Callers run it in a worker: a first open runs the schema / FTS setup, about a second per store
+    on a loaded host, and run on the loop it froze every connected client for the whole
+    multi-profile boot. Later opens of the same path are cache hits."""
+    from gateway.run import _profile_runtime_scope
+    with _profile_runtime_scope(home, hydrate_secrets=False):
+        db = runner._session_db
+        return getattr(db, '_db', db)
+
+
+async def _prewarm_profile_stores(runner, homes):
+    """Open every secondary's store concurrently off the loop before the authorities are built in
+    order. A failed open is not reported here: the cache records it and the authority build that
+    follows parks that profile with the recorded reason."""
+    await asyncio.gather(*(asyncio.to_thread(open_profile_store, runner, home) for _name, home in homes),
+                         return_exceptions=True)
+
+
+def pin_launch_store():
+    """Open the launch profile's state.db in the calling (worker) thread and hold one registry
+    reference, so the synchronous ``SessionStore`` open inside ``GatewayRunner()`` on the loop is a
+    registry hit instead of the schema setup. None when the open fails: the store's own open then
+    reports and backs off exactly as before."""
+    from hermes_state_registry import acquire
+    try:
+        return acquire()
+    except Exception:
+        logger.debug('launch state.db prewarm failed; the store open reports it', exc_info=True)
+        return None
+
+
+def unpin_launch_store(db):
+    if db is not None:
+        from hermes_state_registry import release
+        release(db)
 
 
 def _store_open_failure(runner, home):
@@ -150,6 +190,7 @@ async def initialize_gateway_runtime(runner):
     runner.session_runtime_descriptor = descriptor
     registry = SessionAuthorities(homes[0][1], multiplexed=getattr(runner.config, 'multiplex_profiles', False))
     runner.session_authorities = registry
+    await _prewarm_profile_stores(runner, homes[1:])
     for index, (name, home) in enumerate(homes):
         try:
             await _build_profile_authority(runner, name, home, register=index == 0)
@@ -495,8 +536,53 @@ async def recover_bot_mailbox(authority):
 
 
 async def start_gateway_runtime_api(runner):
-    from gateway.run_api import start_gateway_api
-    runner.session_api = await start_gateway_api(runner)
+    from gateway import run_api
+    from gateway.webapp_listener import (
+        STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
+    )
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    # The bootstrap registered these before its control socket answered; a runner started without it
+    # (an embedded gateway) gets them here, before the listener's slow start.
+    register_control_verbs(runner, home)
+    host, port, webapp, unusable = listener_plan(home)
+    # A webapp: block that asks for the Webapp but cannot be used is reported with its reason.
+    runner.webapp_status = ({"state": "unavailable", "url": None, "reason": unusable} if unusable
+                            else {"state": "off", "url": None, "reason": None} if webapp is None
+                            else dict(STARTING))
+    try:
+        # Without the Webapp the listener is main's: the same call, a private ephemeral port.
+        runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
+                                    if webapp is not None else run_api.start_gateway_api(runner))
+    except (Exception, SystemExit) as exc:
+        if webapp is None:
+            raise
+        # The Webapp's listener could not start (port taken, address unavailable, its browser credential
+        # not storable in the home, or the dashboard's auth gate exiting on a wildcard bind with no
+        # sign-in provider): native clients still need this gateway, so it keeps main's private
+        # listener and reports why the Webapp is not served.
+        if isinstance(exc, SystemExit):
+            reason = str(exc.code).strip()  # the gate's own message names the fix
+        elif isinstance(exc, BrowserCredentialError):
+            reason = str(exc)  # names the file and why it cannot be stored
+        elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
+            reason = f"could not use {exc.filename} ({exc.strerror or exc})"
+        else:
+            cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
+            reason = f"could not listen on {host}:{port} ({cause})"
+        logger.error("Webapp unavailable: %s", reason)
+        runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
+        # Open tabs keep sending their credential to whatever answers on the Webapp's port, and that
+        # is not this gateway now. Replace it, so one captured there never opens this gateway; the
+        # tabs sign in again once the Webapp is back.
+        try:
+            browser_session_token(home, rotate=True)
+        except OSError as write_error:
+            logger.warning("Could not replace the Webapp's browser credential: %s", write_error)
+        runner.session_api = await run_api.start_gateway_api(runner)
+    else:
+        if webapp is not None:
+            runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
     for authority in _authorities(runner):
         await _recover_profile_bot_mailbox(runner, authority)
@@ -566,6 +652,8 @@ async def recover_profile_native_sessions(runner, authority):
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
                     for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
         outcome = await authority.recover_native_sessions(bindings)
+        from gateway.session_detached import recover_detached_sessions
+        outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
     return outcome

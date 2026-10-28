@@ -113,6 +113,26 @@ def test_full_trust_asks_only_past_the_limit_and_unattended_refuses_without_disp
     assert "used about 140 credits" in result["error"] and session.call_tool.await_count == dispatched
 
 
+def test_over_limit_untrusted_prompt_shows_notice_then_arguments_on_the_text_fallback(session):
+    """A surface without approval buttons gets the gateway's plain-text prompt: it carries the spend-limit
+    notice and cost first, then the call's arguments."""
+    from gateway.run import _format_exec_approval_fallback
+    _register(dict(COSTED, spend_limit=30, trust="untrusted"))
+    asked = []
+    token = set_current_session_key("chat-a")
+    try:
+        with patch("tools.approval_prompt.request_elicitation_consent",
+                   side_effect=lambda msg, desc, **kw: asked.append((msg, desc)) or "decline"):
+            handlers._make_tool_handler("srv", "paid_render", 30.0)({"scene": "castle", "notes": "y" * 3_000})
+    finally:
+        reset_current_session_key(token)
+    text = _format_exec_approval_fallback(*asked[0], "/", allow_permanent=False, allow_session=False)
+    notice, cost, arg = (text.find(s) for s in ("goes past the chat's spend limit", "Costs about 40 credits.",
+                                                 '"scene": "castle"'))
+    assert -1 < notice < arg and -1 < cost < arg
+    assert session.call_tool.await_count == 0
+
+
 def test_chats_and_profiles_never_share_a_tally(session):
     _register(COSTED)
     for _ in range(2):

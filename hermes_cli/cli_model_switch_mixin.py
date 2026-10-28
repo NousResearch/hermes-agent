@@ -78,7 +78,7 @@ def stored_session_route(session_meta, *, current_model, current_provider):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
         base_url = api_mode = None
     # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
-    # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
+    # pick the wire per model (OpenCode Zen/Go, Nous, plugin profiles) re-derive both from the stored model, or a
     # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
     # model (#96066) — the CLI/oneshot twin of tui_gateway's _rederive_per_model_route.
     from hermes_cli.model_switch import model_derived_api_mode
@@ -153,7 +153,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             _acting = f"{agg.get('provider')}:{agg.get('model')}"
             _cprint(f"    {t('cli.model.acting_model', model=_acting)}")
 
-    # Provider-aware context chain: Codex OAuth / Copilot / Nous caps win over the raw
+    # Provider-aware context chain: Codex OAuth / Nous / profile live-catalog caps win over the raw
     # models.dev entry (gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
     mi = result.model_info
     agent = cli.agent
@@ -449,12 +449,19 @@ class CLIModelSwitchMixin:
         except Exception:
             pass
 
-        if resolved_provider == "copilot":
-            from hermes_cli.models import copilot_model_api_mode, normalize_copilot_model_id
+        from providers import get_provider_profile
+        profile = get_provider_profile(resolved_provider)
+        try:
+            native_id = profile.normalize_model_id(current_model, api_key=self.api_key or "") if profile else None
+        except Exception:  # a plugin hook failing must not block startup: generic repair continues
+            logger.debug("normalize_model_id(%s) failed", resolved_provider, exc_info=True)
+            native_id = None
+        if native_id is not None:  # a profile-owned id space also re-derives the wire for the new id
+            from hermes_cli.model_switch import model_derived_api_mode
             return _adopt_with_mode(
-                lambda m: normalize_copilot_model_id(m, api_key=self.api_key),
-                lambda m: copilot_model_api_mode(m, api_key=self.api_key),
-                lambda new: t("cli.model.normalized_copilot_model", old=current_model, new=new))
+                lambda m: native_id,
+                lambda m: model_derived_api_mode(resolved_provider, m, self.api_key or "") or self.api_mode,
+                lambda new: t("cli.model.normalized_model", old=current_model, new=new, provider=resolved_provider))
 
         from hermes_cli.models import opencode_provider_family
         if opencode_provider_family(resolved_provider) is not None:
@@ -835,6 +842,11 @@ class CLIModelSwitchMixin:
                 # rather than a dead session (#50163).
                 for _k, _v in _cli_snapshot.items():
                     setattr(self, _k, _v)
+                if str(exc) == "launch_credentials_unavailable":
+                    # No model switch can fix a chat whose launch key changed; say what does.
+                    from hermes_cli.cli_chat_error_copy import refusal_text
+                    _cprint(f"  {refusal_text(exc)}")
+                    return False
                 _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
                 return False
             finally:

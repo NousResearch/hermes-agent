@@ -32,6 +32,145 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+## Use the Desktop workspace from a browser
+
+The gateway can serve this workspace to a normal browser: sessions, profiles, Capabilities, Messaging,
+Artifacts, scheduled jobs, the host file tree, Git review, previews and the terminal rail. This is
+**not the Web Dashboard**. Turn it on once, then open it with `hermes webapp`:
+
+```bash
+hermes config set webapp.enabled true
+hermes gateway restart
+hermes webapp
+```
+
+The gateway then serves the Webapp at `http://127.0.0.1:9120` (see [Configuration → Webapp](./configuration.md#webapp)
+for the host and port). `hermes webapp` builds the bundle when it is out of date, starts the gateway if
+it is not running, and opens a one-use sign-in link. Chats run on that gateway, the same process that
+serves the CLI, the native Desktop and messaging, so every surface sees one conversation with one queue.
+
+**Signing in.** The link works once, within 60 seconds. The browser exchanges it for a sign-in that it
+keeps in that tab, so reloading keeps you signed in, and so does a gateway restart. A fresh tab or a
+bare URL shows instructions instead of access: run `hermes webapp` again for a new link. **New
+Window**, profile windows and session pop-outs hand the sign-in over with their own one-use link. On
+Linux the gateway checks that the browser's connection belongs to your OS user; on Windows the link
+travels only in the browser launcher's command line, which other standard users cannot read. On macOS,
+the BSDs and illumos neither holds, so the command writes the link into a page only your OS user can
+read (in the gateway home's `webapp` folder) and opens that page: the launcher sees only its path.
+On macOS a browser can open where you don't see it (over SSH, on the Mac's own screen): if none did,
+run `hermes webapp --no-open` for the link. Where it cannot open a browser (`--no-open`, an SSH session
+on the BSDs or illumos) and on WSL (where the Windows browser reaches the gateway through WSL's
+relay), it prints the one-use link for you to open instead; until it
+is used it signs a browser in as you, so keep it private. `hermes webapp --sign-out` signs out every
+tab at once: their open connections close, Bot Desktop viewers included, and each shows the sign-in
+instructions. Behind the sign-in gate (below) it also signs out every browser that signed in with a
+dashboard account; each must sign in again. The account tokens such a login keeps in its cookies work
+on the Webapp only as that login (the gateway refuses them as a bearer token, on a connection's URL and
+on its token refresh), so they end with it. A native Hermes app that signed in to the gateway on its own stays signed in.
+
+For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
+serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
+
+**From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
+[dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
+for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
+you run, keep the loopback host and set `webapp.public_url` to the address it serves instead; that
+requires the same sign-in. `hermes webapp` then opens the Webapp's address, where you sign in with
+your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
+registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
+loopback address (a password provider, or sign-in you set up by hand for that address). One-use
+links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely.
+
+**What plain HTTP loses.** Browsers turn off features that need a secure context on a plain-HTTP
+address other than loopback (`http://localhost` and `http://127.0.0.1` count as secure): the bot
+screen viewer, the microphone (dictation, live voice and the remote wake word), reading the clipboard
+(terminal paste, pasting an image) and system notifications. The bot screen and
+live voice say so instead of opening. `hermes webapp` and `hermes webapp --status` print a note when
+the address a browser opens (`webapp.public_url`, else the LAN address **Start** registered sign-in
+for) is plain HTTP on another host. To keep these features, open the Webapp over
+HTTPS (`webapp.public_url`) or through an SSH tunnel to `127.0.0.1`.
+
+:::warning Treat Webapp access like access to Hermes on the host
+A signed-in Webapp user can run arbitrary commands as the OS account running Hermes, run agent tools,
+use host files and Git, and reach that account's environment and credentials. Do not expose it without
+a sign-in provider. Prefer an SSH tunnel, Tailscale or another trusted VPN.
+:::
+
+`hermes webapp --status` shows whether the gateway serves the Webapp. When it cannot (the port is
+taken, sign-in is required and no sign-in provider is set up, or the Webapp's browser sign-in file
+`webapp/session-token` in the Hermes home cannot be read or written), the gateway still serves native
+clients and the status says why. The gateway reads these settings when it starts, so restart it after
+fixing the cause (`hermes gateway restart`). When the port was taken, the gateway also replaces the
+Webapp's sign-in, so open tabs need `hermes webapp` again. When the Webapp's bundle has not been built
+yet, the status says so instead: `hermes webapp` builds it, and the running gateway serves it without a
+restart.
+
+Browser-selected files and pasted or dropped images are staged under the active profile before they
+enter the normal attachment flow, with a **16 MiB** limit per file. Host files download through the
+browser's download manager, and supported audio and video play inline using the server's file-access
+rules. **Save Image** for
+cross-origin URLs needs CORS, with a **25 MiB** limit and a **30-second** deadline. Website links open
+in a separate tab; explicit URL previews use a sandboxed iframe that cannot open popups, so use **Open
+in browser** for sites that refuse embedding. Native-only features stay in Electron: global shortcuts,
+always-on-top overlays, OS-window inspection, external-terminal launch and the updater.
+
+Chats written before the gateway owned sessions show their history but cannot be continued from the
+browser until they are adopted: run `hermes sessions adopt` once on the host (`hermes -p <profile>
+sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI.
+
+### Open it from your phone or another computer
+
+In the native app, **Settings → Web Access** turns the Webapp on for other devices, behind sign-in with
+your Nous account (Providers → Accounts). It appears only in the native app on its local connection,
+and only that app can change it: a browser signed in over the network cannot.
+
+- **This network:** devices on the same Wi-Fi open `http://<this computer's address>:<port>`, where the
+  port is `webapp.port` (9120 unless you set another, or Start chose one for a standalone profile).
+  This is plain HTTP: the connection is not encrypted, so others on the network could read it, and
+  browsers turn off the features listed under **What plain HTTP loses** above. Use it only on a
+  network you trust.
+- **My own URL:** an HTTPS address you already run (Tailscale Serve, a tunnel or a reverse proxy) that
+  forwards to `http://127.0.0.1:<port>`. It is saved as `webapp.public_url`. Never forward that port
+  from your router directly.
+
+**Start** builds the Webapp if it is missing or out of date (the same build `hermes webapp` runs, which
+can take a few minutes the first time), registers its sign-in address with your Nous account when that
+address changed, saves the `webapp:` settings and restarts the gateway, which reads them when it
+starts. While a chat is running the gateway refuses to restart: the pane shows **Restart needed**, the
+settings apply on the next restart, and **Restart gateway** restarts it once the chat ends. **Stop**
+turns the Webapp off the same way. A Webapp you turned on for this computer only
+(`webapp.enabled: true` without Web Access) shows as served on this computer.
+
+Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It leaves
+`dashboard.public_url` alone, so a standalone dashboard you publish separately keeps its own address.
+Its Nous sign-in uses a sign-in client of its own, which the first Start registers with your Nous
+account and keeps in the gateway's home (`webapp/sign-in-registration.json`). Start never reads or
+writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` in `.env`, so turning Web Access on never changes the
+standalone dashboard's Nous sign-in. A standalone profile with its own gateway serves its Webapp on a
+port of its own: when its `webapp.port` is unset, the first Start picks the first free port above 9120
+that no other profile uses and saves it as that profile's `webapp.port`, so its address stays the same
+after restarts. A `webapp.port` you set is always kept. `hermes update` rebuilds the Webapp
+whenever a profile has it turned on.
+If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
+`hermes webapp` rebuilds it.
+
+### Terminal in the Webapp
+
+The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home
+folder unless `terminal.cwd` names another. Dropping files onto it uploads them to the host (**16 MiB**
+each) and types their paths. Refreshing the page or losing the connection detaches the terminal
+without ending its shell; the saved terminal tab reattaches to that shell and its profile. Hiding a
+terminal is not closing it; closing its tab ends the shell. A second browser tab attaching to the same
+terminal takes over the connection.
+
+Detached shells are kept for **15 minutes** while the gateway runs, up to **16 host terminals**
+including detached ones. A gateway restart or update ends them. Reconnecting replays up to **1 MiB** of
+recent output; full-screen programs may need their own redraw command.
+
+The bundle's npm dependencies install into `.build/webapp-workspace` in the checkout, separately from
+the native Desktop, and reinstall only when the lockfile changes. With lazy installs disabled, a plain
+`hermes webapp` does not install them; `--build-only` or `--force-build` does.
+
 ## What's in the app
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
@@ -267,6 +406,12 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
 
+#### Where your display preferences live
+
+Display preferences (theme and light/dark mode, session-list density and sidebar layout, status-bar readouts, transcript and tool display, sounds, keybinds, saved layouts, model-picker favourites, and which tips, tours and first-run onboarding you already saw or skipped) are stored once per computer, in `ui-preferences.json` in the root Hermes home (`~/.hermes/ui-preferences.json` by default; with a custom `HERMES_HOME`, the root of that home, never a profile folder). The desktop app on that computer and every browser that opens the [Webapp](#use-the-desktop-workspace-from-a-browser) it serves read and write the same file. A change in one reaches the others: the desktop app's windows get it within a couple of seconds and Webapp tabs when they regain focus or within about ten seconds. Theme, mode, density and the other settings an open window already follows across windows repaint at once; the rest apply the next time a window or tab loads. This includes another device, a private window, and another address for the same Webapp (`127.0.0.1`, the LAN address, `webapp.public_url`).
+
+The file belongs to the computer, not to a gateway connection or a profile. A desktop app connected to a remote gateway, or to several gateways, keeps its own computer's preferences. Settings that are already per profile, such as the theme picked for one profile, stay per profile inside the file. Credentials, sign-ins, permission grants, drafts and per-window state (open tabs, pane layout, scroll position, zoom) are never written to it and stay in each window or browser. The first time an app or browser meets the file (or finds none), it copies in the settings it has that the file lacks, and adopts the values already there; it never overwrites them, and nothing it has is removed just because the file lacks it. A default an app or browser filled in for itself (for example read-aloud carried over from `voice.auto_tts`) is never copied in, so it cannot replace a setting you chose elsewhere. If the file is ever damaged, it is kept beside the new one as `ui-preferences.json.corrupt-<timestamp>`, and every open window and tab copies its settings back into the new file. If the file exists but cannot be read (for example, its permissions changed), changes wait in each window and are saved once it is readable again.
+
 #### Per-profile settings: the "Applies to" scope
 
 When you have two or more [profiles](./profiles.md), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — plus **Providers → Custom Endpoints** and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:
@@ -487,17 +632,19 @@ Set a username and password, then start the backend bound to a reachable address
 cat >> ~/.hermes/.env <<'EOF'
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
+EOF
 # Recommended: a stable signing secret so sessions survive restarts.
 # Without it a random key is generated per boot and you'll be logged out
-# on every restart.
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
-EOF
+# on every restart. This runs openssl, so the secret is unique to you.
+echo "HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)" >> ~/.hermes/.env
 chmod 600 ~/.hermes/.env
 
 # 2. Run the backend bound to a reachable address. The non-loopback bind
 #    engages the auth gate; the username/password provider handles login.
 hermes serve --host 0.0.0.0 --port 9119
 ```
+
+An earlier version of this recipe wrote the secret line inside the quoted heredoc, which stores the text `$(openssl rand -base64 32)` instead of a random value. If `grep BASIC_AUTH_SECRET ~/.hermes/.env` shows that text, replace the line with a freshly generated secret and restart the backend.
 
 Keep that `hermes serve` process running for as long as you want the desktop app to be able to connect — if it stops, the app can no longer reach the backend. Run it under `systemd`, `tmux`, or your process manager of choice so it survives logout and reboots.
 
@@ -566,6 +713,15 @@ SHA-pinned) plus an import allowlist — not isolation. A plugin whose
 `register()` throws is rolled back and shown as **Failed** with the error on its
 row; **⌘K → Reload desktop plugins** re-reads every installed `plugin.js`,
 including one an installer replaced in place.
+
+The [Webapp](#use-the-desktop-workspace-from-a-browser) loads the desktop plugins installed on the
+host that serves it, from the `desktop-plugins` folder of that host's Hermes root, whichever profile
+the tab is on. A new or removed plugin folder shows up within seconds; an edited `plugin.js` loads on
+**⌘K → Reload desktop plugins**, since a browser cannot watch the host's files. The desktop half of
+an agent+desktop package is copied into the folder by the host itself, so it also appears on a
+headless host that native Desktop never runs on.
+Install and remove desktop plugins from native Desktop or in the folder itself; a plugin's folder
+access (`ctx.files`) is not available in a browser.
 
 **Capabilities → Plugins** is the one place for everything that extends
 Hermes: **one row per plugin**, with two switch columns.
@@ -685,6 +841,10 @@ launcher. PM selects its interpreter and dependency generation. A missing
 bootstrap marker does not force installation when that launcher works.
 
 On Linux, Chromium's own errors go to `HERMES_HOME/logs/desktop-chromium.log`, and a crash of the shell itself leaves a minidump under the app's `Crashpad/` directory (inside Electron's user-data directory, next to `connection.json`). If the window vanishes with `SIGTRAP` in the journal, the `FATAL:` line in that log names the check that fired; attach it to the bug report. Nothing is uploaded.
+
+On Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1` blocks Chromium's user-namespace sandbox for any program without an AppArmor profile. `hermes desktop` checks this through the Hermes binary itself and then uses Chromium's setuid `chrome-sandbox` helper (root-owned, mode 4755), which asks for `sudo` again after each rebuild. That helper is the recommended route. If the helper cannot be set up either, Desktop starts with `--no-sandbox` and the launcher prints both commands, the helper first.
+
+`hermes desktop --install-apparmor-profile` is the opt-in alternative that survives rebuilds: it installs a profile under `/etc/apparmor.d/` (sudo required) that grants user namespaces to this app's path. Chrome and VS Code get the same grant, but for root-owned binaries. This app's path is usually in a checkout your account can write, so any program running as you could put its own binary there and get the user namespaces the restriction withholds. For your account, that is about the same as turning the restriction off. The command refuses install paths containing AppArmor pattern characters (`? * [ ] { } ^ " \` and non-printable characters; see apparmor.d(5) "Globbing"). It checks the profile with `apparmor_parser --skip-kernel-load` before writing anything, and removes the file again if loading it fails.
 
 If Python dependencies are damaged, run the installation's `hermes pm repair`.
 Then restart Desktop. Do not delete guessed `venv` paths or PM facts. For

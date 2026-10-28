@@ -54,7 +54,7 @@ const DESKTOP_KIND_RANK: Record<PluginRecord['kind'], number> = { disk: 0, runti
  *  `plugins/<folder>/`, and a hand-copied folder need not match its manifest
  *  name). Nested rows (`image_gen/foo`) keep their unique canonical key; the
  *  manifest name is the fallback for backends that report no `install_dir`. */
-function agentPackageName(row: AgentPluginRow): string {
+export function agentPackageName(row: AgentPluginRow): string {
   if (row.key?.includes('/')) {
     return row.key
   }

@@ -27,7 +27,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     from hermes_cli import gateway_session_store
 
-    def create_titled(title):
+    def create_titled(title, launch=None):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
@@ -150,13 +150,15 @@ class TestChatCFailLoudlyOnStderr:
     def test_create_if_missing_sets_resume(self, isolated_home, monkeypatch):
         """--create-if-missing resolves to a new session id on args.resume. The classic CLI's
         gateway is the single writer: the titled session is the gateway's ``session.create`` (with
-        ``title``), and this process writes no state.db row."""
+        ``title``), and this process writes no state.db row. The run's own creation flags ride the
+        create so the spawn's same-command resume repeats a frozen route (sys-nnoz8c)."""
         import hermes_cli.main as main_mod
         import hermes_cli.gateway_session_store as store_mod
 
         created = []
         monkeypatch.setattr(store_mod, "create_titled_session",
-                            lambda title: created.append(title) or "local-" + "a" * 64, raising=False)
+                            lambda title, launch=None: created.append((title, launch)) or "local-" + "a" * 64,
+                            raising=False)
         args = type(
             "Args",
             (),
@@ -164,13 +166,15 @@ class TestChatCFailLoudlyOnStderr:
                 "continue_last": "Bot Chat",
                 "resume": None,
                 "create_if_missing": True,
+                "reasoning": "medium",
             },
         )()
 
         main_mod._resolve_continue_arg(args, use_tui=False)
 
         assert args.resume == "local-" + "a" * 64, "resume should be set to the new session id"
-        assert created == ["Bot Chat"]
+        assert created == [("Bot Chat", {"reasoning": "medium"})], \
+            "the spawn's --reasoning must reach session.create as launch policy"
         assert not (isolated_home / "state.db").exists(), "the CLI must not write the titled row itself"
 
     def test_tui_create_if_missing_keeps_the_local_titled_row(self, isolated_home):

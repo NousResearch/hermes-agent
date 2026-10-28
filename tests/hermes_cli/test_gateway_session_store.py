@@ -347,6 +347,26 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
 
 
+def test_create_if_missing_freezes_launch_policy_so_the_same_command_resumes(store, monkeypatch):
+    """sys-nnoz8c: a workflow spawn (`-c <fresh> --create-if-missing --reasoning medium`) resumes the
+    row it just created; session.create must freeze the run's overrides at create time or the spawn's
+    own resume hits check_resume_policy against an override-less launch and exits 2."""
+    db, client = store
+    from hermes_cli import gateway_session_store as gss
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Fresh Named", {"reasoning": "medium", "max_turns": 40})
+    _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    assert params["reasoning"] == "medium" and params["max_turns"] == 40
+    # The owner freezes launch_request as the create params minus the per-request and secret fields;
+    # the same command's resume check (_check_resume_launch) repeats them and must pass, not refuse.
+    frozen = {"info": {"launch_request": {k: v for k, v in params.items()
+                                          if k not in {"request_id", "api_key", "client_env"}}}}
+    gss._check_resume_launch({"reasoning": "medium", "max_turns": 40}, frozen)
+    # A different value on the second run is still refused, never silently dropped.
+    with pytest.raises(GatewayClientError):
+        gss._check_resume_launch({"reasoning": "high", "max_turns": 40}, frozen)
+
+
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
     """Bare ``-c`` (main.py ``_resolve_last_session``) reads main's labels too: a gateway row labelled
     ``local`` that the CLI created is CLI history."""

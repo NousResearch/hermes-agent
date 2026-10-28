@@ -468,13 +468,15 @@ def session_store():
     return GatewaySessionStore()
 
 
-def create_titled_session(title):
+def create_titled_session(title, launch=None):
     """``chat -c <title> --create-if-missing`` for the classic CLI: the gateway's ``session.create``
     with ``title`` (it resolves-or-creates under one owner lock), so this process writes no row.
-    Main's ``_create_titled_session`` minted the id and wrote the row itself, with no cwd stamp
+    The run's explicit ``launch`` flags ride this create so the same command's resume repeats a
+    frozen route instead of being refused as an override (sys-nnoz8c). Main's
+    ``_create_titled_session`` minted the id and wrote the row itself, with no cwd stamp
     (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
     "could not be created" copy)."""
-    params = _creation_policy({})
+    params = _creation_policy(launch or {})
     params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""

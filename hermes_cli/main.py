@@ -1376,11 +1376,13 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _create_titled_session(title: str) -> Optional[str]:
+def _create_titled_session(title: str, launch=None) -> Optional[str]:
     """Create a fresh titled session (``chat -c <title> --create-if-missing``).
 
     The gateway is the single writer: it creates the session and records the title with user
     provenance, so auto-titling never overwrites it (gateway_session_store.create_titled_session).
+    The run's explicit ``launch`` flags freeze on this create so the same command's resume
+    repeats a frozen route instead of being refused (sys-nnoz8c).
 
     Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic callers (plugins, scripts) that
     want "send to this named thread, making it if needed" get a deterministic outcome instead of a silent
@@ -1388,7 +1390,7 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     try:
         from hermes_cli.gateway_session_store import create_titled_session
-        return create_titled_session(title)
+        return create_titled_session(title, launch)
     except Exception:
         # Programmatic callers rely on --create-if-missing being deterministic;
         # swallow the failure but log the cause so it lands in errors.log
@@ -1419,12 +1421,19 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 # a quiet send to a not-yet-existing session silently no-ops.
                 # --create-if-missing: no session matches the title — create a new session with that title
                 # and proceed. See #86794. The classic CLI's gateway writes it (the single writer);
-                # the TUI keeps main's local row.
+                # the TUI keeps main's local row. The run's own creation flags ride the create so the
+                # resume this spawns into repeats a frozen route instead of refusing them (sys-nnoz8c).
+                from hermes_cli.gateway_chat import _launch_flags
+                launch = _launch_flags(args)
+                for key in ("run_budget", "verbose"):
+                    value = getattr(args, key, None)
+                    if value is not None and value is not False:
+                        launch[key] = value
                 if use_tui:
-                    new_sid = _create_titled_session(continue_val)
+                    new_sid = _create_titled_session(continue_val, launch)
                 else:
                     from hermes_cli.gateway_session_store import create_titled_session
-                    new_sid = create_titled_session(continue_val)
+                    new_sid = create_titled_session(continue_val, launch)
                 if new_sid:
                     args.resume = new_sid
                 else:

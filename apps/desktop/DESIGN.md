@@ -582,6 +582,12 @@ The detailed state contract lives in the scoped
 - Keep keyboard focus visible through existing control primitives and theme
   tokens; never globally suppress outlines or focus rings. Titlebar actions
   have no active-background state.
+- Each control has one focus treatment: its existing ring, outline, or field
+  border. Suppress the native outline only when that replacement is visible.
+  In forced-colors mode, use one system-color outline on the focused control
+  (or its field wrapper); don't outline unfocused menu rows or containers.
+- Keyboard users can activate image viewers and return to their available
+  opener when the viewer closes.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".
 

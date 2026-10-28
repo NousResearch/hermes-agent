@@ -1565,6 +1565,18 @@ code {
   outline: none;
 }
 
+/* Forced colors flattens focus border tints and removes shadow rings. The
+   field's chrome owns this fallback, including adorned inputs; independent
+   trailing buttons keep their own focus indicator. */
+@media (forced-colors: active) {
+  .desktop-input-chrome:focus-visible,
+  .desktop-input-chrome:has(> input:focus-visible),
+  [data-slot='composer-surface']:has([data-slot='composer-rich-input']:focus-visible) {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
 .desktop-input-chrome[aria-invalid='true'] {
   border-color: var(--dt-destructive);
 }
@@ -2142,6 +2154,12 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 [data-slot='composer-surface'] {
   border-color: var(--ui-stroke-secondary) !important;
+}
+
+/* The editor delegates focus chrome to its existing surface border. Restrict
+   this to editor focus so a focused toolbar button does not get two indicators. */
+[data-slot='composer-surface']:has([data-slot='composer-rich-input']:focus-visible) {
+  border-color: var(--dt-composer-ring) !important;
 }
 
 [data-slot='composer-fade'] {

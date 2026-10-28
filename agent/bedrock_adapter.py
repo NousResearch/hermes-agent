@@ -406,9 +406,11 @@ def resolve_bedrock_runtime_region(config: Optional[dict[str, Any]] = None) -> s
 
 
 def bedrock_region_from_runtime_url(base_url: str) -> str:
-    """AWS region from a ``bedrock-runtime.<region>.amazonaws.com`` URL (default us-east-1)."""
+    """AWS region from a ``bedrock-runtime.<region>.amazonaws.com`` URL. Without one, the configured
+    runtime region: Bedrock stores no ``model.base_url``, so a caller handed none must still land
+    where startup does, not in us-east-1 (where ``eu.``/``apac.`` profiles do not exist)."""
     m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-    return m.group(1) if m else "us-east-1"
+    return m.group(1) if m else resolve_bedrock_runtime_region()
 
 
 def bedrock_guardrail_config(config: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:

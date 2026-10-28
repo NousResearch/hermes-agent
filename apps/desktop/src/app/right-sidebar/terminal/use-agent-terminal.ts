@@ -6,9 +6,14 @@ import { useEffect, useRef } from 'react'
 
 import { writeClipboardText } from '@/lib/clipboard'
 import { triggerHaptic } from '@/lib/haptics'
+import { $backgroundStatusBySession } from '@/store/composer-status'
 import { useTheme } from '@/themes/context'
 
-import { registerAgentTerminalWriter } from './agent-terminal-stream'
+import {
+  registerAgentTerminalWriter,
+  seedAgentTerminalCommand,
+  syncAgentTerminalSnapshot
+} from './agent-terminal-stream'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
@@ -174,6 +179,17 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
       // Stream live output straight into the terminal (replays backlog on attach).
       unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
+      // Closing can evict the backlog while the registry stays unchanged. Pin
+      // the writer before recovering its snapshot so retention cannot evict it.
+      for (const list of Object.values($backgroundStatusBySession.get())) {
+        const item = list.find(item => item.id === procId)
+
+        if (item) {
+          seedAgentTerminalCommand(procId, item.title)
+          syncAgentTerminalSnapshot(procId, item.output ?? '')
+          break
+        }
+      }
       unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
     }
 

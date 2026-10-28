@@ -77,6 +77,7 @@ export const zhHant: Translations = {
       models: "模型",
       profiles: "多代理設定檔",
       plugins: "外掛管理",
+      projects: "Projects",
       sessions: "工作階段",
       skills: "技能",
     },

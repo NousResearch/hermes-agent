@@ -77,6 +77,7 @@ export const ru: Translations = {
       models: "Модели",
       profiles: "профили: мульти-агенты",
       plugins: "Плагины",
+      projects: "Projects",
       sessions: "Сессии",
       skills: "Навыки",
     },

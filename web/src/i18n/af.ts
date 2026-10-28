@@ -77,6 +77,7 @@ export const af: Translations = {
       models: "Modelle",
       profiles: "profiele : multi-agente",
       plugins: "Inproppe",
+      projects: "Projects",
       sessions: "Sessies",
       skills: "Vaardighede",
     },

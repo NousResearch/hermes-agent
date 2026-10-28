@@ -77,6 +77,7 @@ export const ga: Translations = {
       models: "Samhlacha",
       profiles: "próifílí : il-agents",
       plugins: "Plugins",
+      projects: "Projects",
       sessions: "Seisiúin",
       skills: "Scileanna",
     },

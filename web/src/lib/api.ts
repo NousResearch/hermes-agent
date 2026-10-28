@@ -778,6 +778,41 @@ export const api = {
       appendProfileParam(`/api/sessions/search?q=${encodeURIComponent(q)}`, profile),
     ),
 
+  // ── Projects ──────────────────────────────────────────────────────────────
+  getProjects: (profile = getManagementProfile()) =>
+    fetchJSON<ProjectsListResponse>(
+      appendProfileParam("/api/projects", profile),
+    ),
+  getProjectSessions: (
+    id: string,
+    filter: "all" | "running" | "done" | "failed" | "notask" = "all",
+    q = "",
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<ProjectSessionsResponse>(
+      appendProfileParam(
+        `/api/projects/${encodeURIComponent(id)}/sessions?filter=${filter}${q ? `&q=${encodeURIComponent(q)}` : ""}`,
+        profile,
+      ),
+    ),
+  getProjectBoard: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<ProjectBoardResponse>(
+      appendProfileParam(`/api/projects/${encodeURIComponent(id)}/board`, profile),
+    ),
+  getProjectTree: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<FolderTreeResponse>(
+      appendProfileParam(`/api/projects/${encodeURIComponent(id)}/tree`, profile),
+    ),
+  applyProjectTemplate: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; created: string[] }>(
+      `/api/projects/${encodeURIComponent(id)}/apply-template`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: profile || undefined }),
+      },
+    ),
+
   // OAuth provider management
   getOAuthProviders: () =>
     fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
@@ -2524,6 +2559,98 @@ export interface PluginsHubResponse {
   plugins: HubAgentPluginRow[];
   orphan_dashboard_plugins: PluginManifestResponse[];
   providers: PluginsHubProviders;
+}
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+export interface BoardCounts {
+  todo: number;
+  doing: number;
+  review: number;
+  blocked: number;
+  done: number;
+}
+
+export interface LastEvent {
+  kind: string;
+  title: string;
+  at: string;
+}
+
+export interface UnassignedGroup {
+  path: string;
+  sessionCount: number;
+}
+
+export interface ProjectSummary {
+  id: string;
+  slug: string;
+  name: string;
+  folders: string[];
+  primary: string | null;
+  board: string | null;
+  sessionCount: number;
+  lastActive: string | null;
+  boardCounts: BoardCounts;
+  lastEvent: LastEvent | null;
+}
+
+export interface ProjectsListResponse {
+  projects: ProjectSummary[];
+  unassigned: {
+    sessionCount: number;
+    groups: UnassignedGroup[];
+  };
+}
+
+export interface TaskRef {
+  id: string;
+  status: string;
+  title: string;
+  attempt: number;
+  exitCode?: number | null;
+}
+
+export interface ProjectSession {
+  id: string;
+  title: string;
+  model: string | null;
+  cwd: string | null;
+  lastActive: string | null;
+  endReason: string | null;
+  task: TaskRef | null;
+}
+
+export interface ProjectSessionsResponse {
+  sessions: ProjectSession[];
+  projectId: string;
+}
+
+export interface BoardTask {
+  id: string;
+  title: string;
+  status: string;
+  assignee: string | null;
+  sessionId: string | null;
+  updated: string;
+}
+
+export interface ProjectBoardResponse {
+  tasks: BoardTask[];
+  counts: BoardCounts;
+  board: string | null;
+}
+
+export interface FolderEntry {
+  path: string;
+  isPrimary: boolean;
+  sessionCount: number;
+}
+
+export interface FolderTreeResponse {
+  folders: FolderEntry[];
+  missing: string[];
+  template: string;
 }
 
 export interface AgentPluginInstallRequest {

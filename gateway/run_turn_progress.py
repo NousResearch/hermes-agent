@@ -906,10 +906,29 @@ class GatewayTurnProgressMixin:
 
     def _event_callback_sync(self, event_type: str, context: dict) -> None:
         ctx = self._ctx
+        if event_type == "session:compress":
+            self._carry_live_compression_count(context)
         try:
             asyncio.run_coroutine_threadsafe(ctx._hooks_ref.emit(event_type, context), ctx._loop_for_step)
         except Exception as e:
             logger.debug("event_callback hook error: %s", e)
+
+    def _carry_live_compression_count(self, context: dict) -> None:
+        """An in-turn auto-compaction increments the agent's compressor and emits ``session:compress``,
+        but only the manual ``/compress`` receipt ever wrote the count onto the live session
+        (``session_mutations`` -> ``note_compression``). Without this the count dies with the agent
+        the gateway evicts, and the successor seeded from ``live`` starts at 0 (#146153). ``max``: a
+        late event must not lower a count a manual compress already carried forward."""
+        owner = self._approval_owner
+        count = context.get("compression_count")
+        if owner is None or not isinstance(count, int):
+            return
+        with suppress(Exception):
+            live = owner[0].sessions.get(owner[1])
+            if live is None:
+                return
+            carried = getattr(live, "compression_count", 0)
+            live.compression_count = max(carried if isinstance(carried, int) else 0, count)
 
     def _local_notice_callback_sync(self, notice) -> None:
         """``AgentNotice`` -> ``notification.show`` for local viewers (the TUI's payload)."""

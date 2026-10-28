@@ -871,12 +871,14 @@ def _append_dropped_path_entries(cmd_string: str, parent_path: str) -> str:
     ``/opt/hermes/bin`` and bare ``hermes`` exits 127 (#56634). Dropped dirs go AFTER
     the login PATH in parent order, so a command that resolved before still resolves
     to the same binary (the user's nvm/pyenv keep precedence); only commands that had
-    no match gain one. Present entries are never duplicated; missing dirs are skipped.
+    no match gain one. Present entries are never duplicated; missing absolute dirs are skipped.
     Background commands (``ProcessRegistry.spawn_local``, ``bash -lic``, no snapshot) use
     this same prelude so the two paths cannot diverge."""
     if _IS_WINDOWS:
         return cmd_string  # native PATH stays ``;``-joined; bash sees a converted copy
-    entries = [d for d in dict.fromkeys(parent_path.split(":")) if d and os.path.isdir(d)]
+    # Relative entries resolve against the shell's cwd, not ours, so only absolute ones are checked.
+    entries = [d for d in dict.fromkeys(parent_path.split(":"))
+               if d and (not os.path.isabs(d) or os.path.isdir(d))]
     if not entries:
         return cmd_string
     restore = (f"for __hermes_p in {' '.join(shlex.quote(d) for d in entries)}; do "

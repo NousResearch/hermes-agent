@@ -134,7 +134,10 @@ interface DetectionCase {
 // Shared with the gateway's detector (tests/hermes_cli/test_plugins_cmd_inspect.py).
 const DETECTION_CASES = (
   JSON.parse(
-    fs.readFileSync(path.resolve(here, '..', '..', '..', 'tests', 'fixtures', 'plugin_component_detection.json'), 'utf8')
+    fs.readFileSync(
+      path.resolve(here, '..', '..', '..', 'tests', 'fixtures', 'plugin_component_detection.json'),
+      'utf8'
+    )
   ) as { cases: DetectionCase[] }
 ).cases
 

@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -369,8 +370,24 @@ def _cmd_create(args: argparse.Namespace) -> int:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
     with kbc.connect_closing() as conn:
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply before create so the guard can rewrite
+        # the assignee if needed (same contract as `assign`/`reassign`).
+        from hermes_cli import kanban_routing_guard as rg
+        effective_assignee = args.assignee
+        decision = None
+        if effective_assignee:
+            decision = rg.guard_assignee(effective_assignee, args.title or "", body or "")
+            if decision.rewritten:
+                effective_assignee = decision.assignee
+                # --json keeps stdout parseable; the note still goes out on stderr.
+                print(
+                    f"Routing guard fired: {decision.original_assignee} -> "
+                    f"{decision.assignee or '(unassigned)'} ({decision.lane_source})",
+                    file=sys.stderr if getattr(args, "json", False) else sys.stdout,
+                )
         task_id = kb.create_task(
-            conn, title=args.title, body=body, assignee=args.assignee,
+            conn, title=args.title, body=body, assignee=effective_assignee,
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
@@ -389,6 +406,17 @@ def _cmd_create(args: argparse.Namespace) -> int:
                              if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
+        # An idempotency-key hit returns a PRE-EXISTING card, so only audit a
+        # rewrite the created row actually carries.
+        if (decision is not None and decision.rewritten and task is not None
+                and (task.assignee or None) == (decision.assignee or None)):
+            try:
+                rg.record_guard_decision(conn, task_id, decision, author="cli")
+            except (sqlite3.Error, ValueError) as exc:
+                # The card is already written: report the missing audit, never
+                # turn a successful create into a failure.
+                print(f"kanban: routing guard audit not recorded for {task_id}: {exc}",
+                      file=sys.stderr)
     if getattr(args, "json", False):
         _print_json(_task_to_dict(task))
     else:

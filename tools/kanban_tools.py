@@ -1132,8 +1132,23 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply before create so the guard can rewrite
+        # the assignee if needed (same contract as the dashboard create seam).
+        from hermes_cli import kanban_routing_guard as rg
+        effective_assignee = str(assignee)
+        guard_decision = rg.guard_assignee(
+            effective_assignee, str(title).strip(), args.get("body") or "",
+        )
+        if guard_decision.rewritten:
+            effective_assignee = guard_decision.assignee
+            logger.info(
+                "kanban_create: routing guard fired: %s -> %s (%s)",
+                guard_decision.original_assignee, guard_decision.assignee,
+                guard_decision.lane_source,
+            )
         new_tid = kb.create_task(
-            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
+            conn, title=str(title).strip(), body=args.get("body"), assignee=effective_assignee,
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
             priority=_opt_int(args.get("priority"), 0),
             workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
@@ -1151,7 +1166,18 @@ def _handle_create(args: dict, **kw) -> str:
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
-        landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
+        created_task = kb.get_task(conn, new_tid)
+        # An idempotency-key hit returns a PRE-EXISTING card, so only audit a
+        # rewrite the created row actually carries.
+        if (guard_decision.rewritten and created_task is not None
+                and (created_task.assignee or None) == (guard_decision.assignee or None)):
+            try:
+                rg.record_guard_decision(conn, new_tid, guard_decision, author="kanban_create")
+            except Exception:
+                logger.exception(
+                    "kanban_create: failed to record routing guard audit for task %s", new_tid,
+                )
+        landed = _fields(created_task, _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
         return _ok(task_id=new_tid, **landed, **gate,

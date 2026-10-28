@@ -17,11 +17,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import logging
 import sqlite3
 import time
 from typing import Any, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_routing_guard as rg
+
+logger = logging.getLogger(__name__)
 
 BLACKBOARD_PREFIX = "[swarm:blackboard] "
 
@@ -162,6 +166,73 @@ def create_swarm(
     return created
 
 
+def _guarded_assignee(
+    assignee: Optional[str], title: str, body: str,
+) -> tuple[Optional[str], Optional[rg.GuardDecision]]:
+    """Apply the routing guard to one card's assignee: ``(effective, decision)``.
+
+    A card that edits a profile's own instruction surface must never be handed
+    to that profile, so the guard rewrites the assignee before the write.
+    ``decision`` is None when nothing was rewritten (or the card carries no
+    assignee); callers record the audit for the card they just created.
+    """
+    if not assignee:
+        return assignee, None
+    decision = rg.guard_assignee(assignee, title or "", body or "")
+    if not decision.rewritten:
+        return assignee, None
+    logger.info(
+        "swarm: routing guard fired: %s -> %s (%s)",
+        decision.original_assignee, decision.assignee, decision.lane_source,
+    )
+    return decision.assignee, decision
+
+
+def _record_guard_audit(
+    conn: sqlite3.Connection,
+    task_id: str,
+    decision: Optional[rg.GuardDecision],
+    *,
+    author: str,
+) -> None:
+    """Record the routing-guard audit for a card whose assignee was rewritten.
+
+    A create carrying an idempotency key can return a PRE-EXISTING card, in
+    which case this call never wrote the assignee - so only audit a rewrite the
+    row actually carries. An audit failure never breaks the swarm graph.
+    """
+    if decision is None or not decision.rewritten:
+        return
+    task = kb.get_task(conn, task_id)
+    if task is None or (task.assignee or None) != (decision.assignee or None):
+        return
+    try:
+        rg.record_guard_decision(conn, task_id, decision, author=author)
+    except Exception:
+        logger.exception("swarm: failed to record routing guard audit for task %s", task_id)
+
+
+def _create_guarded_card(
+    conn: sqlite3.Connection,
+    *,
+    assignee: Optional[str],
+    title: str,
+    body: str,
+    author: str,
+    **kwargs: Any,
+) -> str:
+    """``kb.create_task`` with the routing guard applied to *assignee*.
+
+    The audit for a rewrite lands right after the write, inside the transaction
+    the caller already holds, so the graph and its routing record commit
+    together.
+    """
+    effective, decision = _guarded_assignee(assignee, title, body)
+    task_id = kb.create_task(conn, title=title, body=body, assignee=effective, **kwargs)
+    _record_guard_audit(conn, task_id, decision, author=author)
+    return task_id
+
+
 def _create_swarm_uncommitted(
     conn: sqlite3.Connection, *, goal: str, workers: Iterable[SwarmWorkerSpec],
     verifier_assignee: str, synthesizer_assignee: str, root_title: Optional[str],
@@ -185,13 +256,21 @@ def _create_swarm_uncommitted(
         created_by=created_by, tenant=tenant,
         workspace_kind=workspace_kind, workspace_path=workspace_path,
     )
+    # Routing guard on the root: it carries the goal, so it can name a surface
+    # the creating profile owns. The audit waits until the idempotency branch
+    # below has decided whether this call actually created the root.
+    root_title_value = root_title or f"Swarm: {goal.splitlines()[0][:80]}"
+    root_body_value = (
+        "Kanban Swarm v1 planning/root card. This card is completed "
+        "immediately so parallel workers can start while it remains the "
+        f"shared blackboard and audit anchor.\n\nGoal:\n{goal}"
+    )
+    root_assignee, root_decision = _guarded_assignee(created_by, root_title_value, root_body_value)
     root = kb.create_task(
         conn,
-        title=root_title or f"Swarm: {goal.splitlines()[0][:80]}",
-        body="Kanban Swarm v1 planning/root card. This card is completed "
-             "immediately so parallel workers can start while it remains the "
-             f"shared blackboard and audit anchor.\n\nGoal:\n{goal}",
-        assignee=created_by,
+        title=root_title_value,
+        body=root_body_value,
+        assignee=root_assignee,
         priority=priority,
         idempotency_key=idempotency_key,
         initial_status="blocked",
@@ -208,45 +287,54 @@ def _create_swarm_uncommitted(
         if worker_ids and verifier_id and synthesizer_id:
             return SwarmCreated(root, worker_ids, str(verifier_id), str(synthesizer_id))
 
+    _record_guard_audit(conn, root, root_decision, author=created_by)
+
     context_suffix = _swarm_context(root, goal)
-    worker_ids = [
-        kb.create_task(
-            conn,
-            title=spec.title,
-            body=(spec.body or "") + context_suffix,
-            assignee=spec.profile,
-            parents=[root],
-            priority=spec.priority or priority,
-            skills=spec.skills or None,
-            max_runtime_seconds=spec.max_runtime_seconds,
-            **common,
+    worker_ids: list[str] = []
+    for spec in worker_specs:
+        worker_body = (spec.body or "") + context_suffix
+        worker_ids.append(
+            _create_guarded_card(
+                conn,
+                assignee=spec.profile,
+                title=spec.title,
+                body=worker_body,
+                author=created_by,
+                parents=[root],
+                priority=spec.priority or priority,
+                skills=spec.skills or None,
+                max_runtime_seconds=spec.max_runtime_seconds,
+                **common,
+            )
         )
-        for spec in worker_specs
-    ]
-    verifier = kb.create_task(
+    verifier_body_value = (
+        "Review every worker handoff and blackboard update. Gate the swarm: "
+        "complete only with metadata {\"gate\": \"pass\"} when evidence is "
+        "sufficient; otherwise block with exact missing work."
+        + context_suffix
+    )
+    verifier = _create_guarded_card(
         conn,
-        title=verifier_title,
-        body=(
-            "Review every worker handoff and blackboard update. Gate the swarm: "
-            "complete only with metadata {\"gate\": \"pass\"} when evidence is "
-            "sufficient; otherwise block with exact missing work."
-            + context_suffix
-        ),
         assignee=verifier_assignee,
+        title=verifier_title,
+        body=verifier_body_value,
+        author=created_by,
         parents=worker_ids,
         priority=priority,
         skills=["requesting-code-review"],
         **common,
     )
-    synthesizer = kb.create_task(
+    synthesizer_body_value = (
+        "Synthesize the verified worker outputs into the final deliverable. "
+        "Do not start until the verifier has passed the gate."
+        + context_suffix
+    )
+    synthesizer = _create_guarded_card(
         conn,
-        title=synthesizer_title,
-        body=(
-            "Synthesize the verified worker outputs into the final deliverable. "
-            "Do not start until the verifier has passed the gate."
-            + context_suffix
-        ),
         assignee=synthesizer_assignee,
+        title=synthesizer_title,
+        body=synthesizer_body_value,
+        author=created_by,
         parents=[verifier],
         priority=priority,
         skills=["humanizer"],

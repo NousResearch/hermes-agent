@@ -72,6 +72,31 @@ def test_moa_budget_alarm_is_advisory_only(tmp_path):
     # Crossing the threshold is a reported state, not an exception or a call veto.
 
 
+def test_unknown_moa_spend_is_persisted_and_deduplicated(tmp_path):
+    import sqlite3
+
+    from agent.moa_budget import _ledger_path, record_unknown_moa_spend
+
+    home = tmp_path / ".hermes"
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
+    first = record_unknown_moa_spend(
+        "response-without-usage", model="anthropic/claude-sonnet-5-5",
+        reason="response_usage_unavailable", home=home, now=now,
+    )
+    duplicate = record_unknown_moa_spend(
+        "response-without-usage", model="anthropic/claude-sonnet-5-5",
+        reason="response_usage_unavailable", home=home, now=now,
+    )
+
+    assert first.day == "2026-10-28" and first.event_added
+    assert duplicate.day == first.day and not duplicate.event_added
+    with sqlite3.connect(_ledger_path(home)) as conn:
+        row = conn.execute(
+            "SELECT model, reason FROM moa_spend_unknown_events"
+        ).fetchone()
+    assert row == ("anthropic/claude-sonnet-5-5", "response_usage_unavailable")
+
+
 def test_turn_usage_emits_moa_alarm_without_blocking(tmp_path, monkeypatch, caplog):
     from decimal import Decimal
     import logging
@@ -109,3 +134,29 @@ def test_turn_usage_emits_moa_alarm_without_blocking(tmp_path, monkeypatch, capl
     assert outcome.compression_attempts == 0
     assert any("ALARM: MoA daily estimated spend exceeded" in record.getMessage() for record in caplog.records)
 
+
+def test_turn_usage_persists_unknown_moa_spend_without_blocking(tmp_path, monkeypatch, caplog):
+    import logging
+    import sqlite3
+
+    from agent import turn_usage
+    from agent.moa_budget import _ledger_path
+
+    agent = _agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent, "provider", "moa", raising=False)
+    monkeypatch.setattr(agent, "model", "default", raising=False)
+    response = SimpleNamespace(usage=None, id="response-without-usage", model="claude-sonnet-5-5")
+    try:
+        with caplog.at_level(logging.ERROR, logger="agent.conversation_loop"):
+            outcome = turn_usage.record_response_usage(
+                agent, response, messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+                api_duration=0.2, compression_attempts=0, max_compression_attempts=3,
+            )
+    finally:
+        agent.close()
+
+    assert outcome.compression_attempts == 0
+    assert any("ALARM: MoA daily spend estimate unavailable" in record.getMessage() for record in caplog.records)
+    with sqlite3.connect(_ledger_path(tmp_path)) as conn:
+        rows = conn.execute("SELECT model, reason FROM moa_spend_unknown_events").fetchall()
+    assert rows == [("claude-sonnet-5-5", "response_usage_unavailable")]

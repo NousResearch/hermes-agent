@@ -27,6 +27,12 @@ class MoADailySpend:
     alarm_emitted: bool
 
 
+@dataclass(frozen=True)
+class MoAUnknownSpend:
+    day: str
+    event_added: bool
+
+
 def _ledger_path(home: Path | str | None = None) -> Path:
     from hermes_constants import get_default_hermes_root, get_hermes_home
 
@@ -107,3 +113,49 @@ def record_moa_spend(
             alarm_emitted = alarm.rowcount == 1
         conn.commit()
     return MoADailySpend(day, total, budget, event_added, alarm_emitted)
+
+
+def record_unknown_moa_spend(
+    event_id: str,
+    *,
+    model: str,
+    reason: str,
+    home: Path | str | None = None,
+    now: datetime | None = None,
+) -> MoAUnknownSpend:
+    """Persist an unpriced MoA response separately; never turn unknown into $0."""
+    if not str(event_id).strip():
+        raise ValueError("event_id is required")
+
+    local_now = now or datetime.now(_WARSAW)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=_WARSAW)
+    local_now = local_now.astimezone(_WARSAW)
+    day = local_now.date().isoformat()
+    stamp = local_now.isoformat(timespec="seconds")
+    event_hash = hashlib.sha256(str(event_id).encode("utf-8", "replace")).hexdigest()
+    from hermes_constants import get_hermes_home
+
+    profile_home = Path(home) if home is not None else get_hermes_home()
+    path = _ledger_path(profile_home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.touch(mode=0o600, exist_ok=True)
+
+    with sqlite3.connect(path, timeout=10.0) as conn:
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS moa_spend_unknown_events ("
+            "event_hash TEXT PRIMARY KEY, day TEXT NOT NULL, occurred_at TEXT NOT NULL, "
+            "profile_home TEXT NOT NULL, model TEXT NOT NULL, reason TEXT NOT NULL)"
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO moa_spend_unknown_events "
+            "(event_hash, day, occurred_at, profile_home, model, reason) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                event_hash, day, stamp, str(profile_home),
+                str(model or "unknown")[:256], str(reason or "unknown")[:120],
+            ),
+        )
+        conn.commit()
+    return MoAUnknownSpend(day, cursor.rowcount == 1)

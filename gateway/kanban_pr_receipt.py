@@ -214,11 +214,14 @@ def _pr_for_owner_branch(repository: str, branch: str, gh: str, head_owner: str)
     raw = _rest_pulls(repository, gh, head=f"{head_owner}:{branch}")
     if raw is None:
         return None
-    matches = [
-        e for e in (_rest_entry_to_facts_entry(x) for x in raw)
-        if e.get("headRefName") == branch
-        and (e.get("headRepositoryOwner") or {}).get("login", "").lower() == head_owner.lower()
-    ]
+    matches = []
+    for flat in (_rest_entry_to_facts_entry(x) for x in raw):
+        # A deleted fork flattens to ``login: None``; compare through a string so
+        # the rejection is this module's own, not an AttributeError a caller has to
+        # survive. Same rule for a missing branch ref.
+        entry_owner = _entry_head_owner(flat) or ""
+        if flat.get("headRefName") == branch and entry_owner == head_owner.lower():
+            matches.append(flat)
     if not matches:
         return None
 

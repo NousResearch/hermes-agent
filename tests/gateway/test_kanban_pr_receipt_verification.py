@@ -103,10 +103,11 @@ def gh_env(monkeypatch):
 
             if ":" in want:
                 owner, want_branch = want.split(":", 1)
-                entries = [
-                    e for e in entries
-                    if head_of(e) == (want_branch, owner)
-                ]
+                # GitHub's own filter also matches when the fork is gone (repo or
+                # owner null), because the query is about who *pushed*; only the
+                # ref is known. Model that: match on the ref, and let the
+                # implementation do its own fork check.
+                entries = [e for e in entries if head_of(e)[0] == want_branch]
             else:
                 entries = [e for e in entries if head_of(e)[0] == want]
         r.stdout = json.dumps(entries)
@@ -441,10 +442,28 @@ def test_a_deleted_fork_fails_closed_without_raising(fake_gh):
     _assert_no_pr_line(_receipt(facts))
 
 
-def test_a_pr_whose_owner_field_is_null_fails_closed(fake_gh):
-    """``head.repo.owner`` may also be null; same rule."""
+def test_a_pr_with_a_null_owner_but_a_verbatim_fork_still_binds(fake_gh):
+    """GitHub reports the fork twice: ``owner.login`` and ``head.repo.full_name``.
+
+    Real payloads always carry both (verified against the live API), so a null
+    ``owner`` object with an intact ``full_name`` is still a provable fork — the
+    binding reads the repository identity, not one of its two spellings.
+    """
     entry = _rest()
-    entry["head"]["repo"]["owner"] = None
+    entry["head"]["repo"] = {"full_name": "task-owner/example-repo", "owner": None}
+    gh_env_state = fake_gh(entry)
+    gh_env_state["identity"] = "task-owner"
+
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    assert facts.verified is True
+    assert facts.head_owner == "task-owner"
+
+
+def test_a_pr_with_no_fork_identity_at_all_fails_closed(fake_gh):
+    """With neither ``owner.login`` nor ``full_name``, nothing can be bound."""
+    entry = _rest()
+    entry["head"]["repo"] = {"owner": None}
     gh_env_state = fake_gh(entry)
     gh_env_state["identity"] = "task-owner"
 
@@ -483,3 +502,15 @@ def test_verified_pr_reports_the_fork_it_came_from(fake_gh):
     fake_gh(_entry())
     rendered = _receipt(verify_task_pull_request(conn=None, task=_Task()))
     assert "task-owner" in rendered
+
+
+def test_null_branch_ref_payload_does_not_raise(fake_gh):
+    entry = _rest()
+    entry["head"]["ref"] = None
+    gh_env_state = fake_gh(entry)
+    gh_env_state["identity"] = "task-owner"
+
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    assert facts.verified is False
+    _assert_no_pr_line(_receipt(facts))

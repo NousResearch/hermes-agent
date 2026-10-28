@@ -840,6 +840,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: dict[str, asyncio.Task] = {}
         self._closing = False
+        # Serialises token recovery: concurrent send failures must not race into two logins,
+        # each of which would invalidate the other's freshly minted access token.
+        self._relogin_lock = asyncio.Lock()
         self._startup_ts: float = 0.0
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
@@ -1407,8 +1410,63 @@ class MatrixAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
+    @staticmethod
+    def _token_invalid_error(exc: BaseException) -> bool:
+        """True when the homeserver rejected the credentials rather than the request itself.
+
+        Synapse reports a revoked/expired compatibility token as M_UNKNOWN_TOKEN, while older
+        proxies surface the same condition as the literal "Token is not active"."""
+        text = str(exc).lower()
+        return "m_unknown_token" in text or "token is not active" in text or "unknown token" in text
+
+    async def _relogin_on_invalid_token(self, exc: BaseException, token_before: Optional[str]) -> bool:
+        """Replace a dead access token with a fresh login, once, and report whether to retry.
+
+        Only password-based profiles can recover; a static MATRIX_ACCESS_TOKEN must be rotated
+        out of band. The token captured before the failed call lets a task that waited on the
+        lock notice that another task already refreshed it instead of logging in again (which
+        would invalidate the token the first task just installed)."""
+        if not self._token_invalid_error(exc):
+            return False
+        if self._client is None or not (self._password and self._user_id):
+            return False
+        async with self._relogin_lock:
+            api = getattr(self._client, "api", None)
+            current = getattr(api, "token", None)
+            if token_before is not None and current != token_before:
+                return True
+            try:
+                resp = await self._client.login(
+                    identifier=self._user_id, password=self._password,
+                    device_name="Hermes Agent", device_id=self._device_id or None)
+            except Exception as login_exc:
+                logger.error("Matrix: re-login after invalid token failed — %s", login_exc)
+                return False
+            token = str(getattr(resp, "access_token", "") or "")
+            if not token:
+                logger.error("Matrix: re-login returned no access token")
+                return False
+            if api is not None:
+                api.token = token
+            self._access_token = token
+            resolved_device = getattr(resp, "device_id", None)
+            if resolved_device:
+                self._client.device_id = resolved_device
+            logger.warning("Matrix: access token was rejected — re-logged in as %s", self._user_id)
+            return True
+
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
-        """Send one m.room.message event (45s cap) and return its event ID as str."""
+        """Send one m.room.message event (45s cap), recovering once from a dead token."""
+        api = getattr(self._client, "api", None)
+        token_before = getattr(api, "token", None)
+        try:
+            return await self._send_room_message_once(chat_id, msg_content)
+        except Exception as exc:
+            if not await self._relogin_on_invalid_token(exc, token_before):
+                raise
+            return await self._send_room_message_once(chat_id, msg_content)
+
+    async def _send_room_message_once(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
         return str(event_id)
@@ -1461,9 +1519,18 @@ class MatrixAdapter(BasePlatformAdapter):
             "media": {"max_media_bytes": self._max_media_bytes}}
 
     async def _set_typing(self, chat_id: str, timeout: int) -> None:
-        if self._client:
-            with suppress(Exception):
-                await self._client.set_typing(RoomID(chat_id), timeout=timeout)
+        if not self._client:
+            return
+        api = getattr(self._client, "api", None)
+        token_before = getattr(api, "token", None)
+        try:
+            await self._client.set_typing(RoomID(chat_id), timeout=timeout)
+        except Exception as exc:
+            # Typing is best-effort, but a dead token here is a reliable early warning that a
+            # reply is about to fail; recover now so the eventual send does not have to.
+            if await self._relogin_on_invalid_token(exc, token_before):
+                with suppress(Exception):
+                    await self._client.set_typing(RoomID(chat_id), timeout=timeout)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         await self._set_typing(chat_id, 30000)
@@ -1822,12 +1889,20 @@ class MatrixAdapter(BasePlatformAdapter):
             success=False, error=f"Media file exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
 
     async def _send_content_event(self, room_id: str, msg_content: dict[str, Any]) -> SendResult:
-        """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
+        """Send a prebuilt m.room.message payload, recovering once from a dead token."""
+        api = getattr(self._client, "api", None)
+        token_before = getattr(api, "token", None)
         try:
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            if not await self._relogin_on_invalid_token(exc, token_before):
+                return SendResult(success=False, error=str(exc))
+            try:
+                event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+                return SendResult(success=True, message_id=str(event_id))
+            except Exception as retry_exc:
+                return SendResult(success=False, error=str(retry_exc))
 
     async def _send_local_file(
         self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None,

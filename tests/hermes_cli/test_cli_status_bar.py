@@ -156,7 +156,7 @@ class TestCLIStatusBar:
 
         assert cli_mod._reverse_alias_for_display("gpt-5.6-sol", "auto") == "any-gpt56"
 
-    def test_reverse_alias_dict_form_without_provider_uses_model_default(self, monkeypatch):
+    def test_reverse_alias_top_level_without_provider_uses_custom(self, monkeypatch):
         _set_alias_config(
             monkeypatch,
             {
@@ -171,7 +171,8 @@ class TestCLIStatusBar:
             },
         )
 
-        assert cli_mod._reverse_alias_for_display("gpt-5.6-sol", "local-sub2api") == "top-level"
+        assert cli_mod._reverse_alias_for_display("gpt-5.6-sol", "local-sub2api") == "gpt-5.6-sol"
+        assert cli_mod._reverse_alias_for_display("gpt-5.6-sol", "custom") == "top-level"
 
     def test_reverse_alias_dict_form_without_provider_stays_scoped(self, monkeypatch):
         _set_alias_config(

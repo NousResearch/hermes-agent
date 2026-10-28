@@ -293,41 +293,23 @@ def _reverse_alias_for_display(model_name: str, provider: str | None = None) -> 
     if _REVERSE_ALIAS_CACHE is None:
         rmap: dict[tuple[str | None, str], str] = {}
 
-        def remember(alias: str, model: str, alias_provider: str | None, *, wildcard: bool = False) -> None:
+        def remember(alias: str, model: str, alias_provider: str | None) -> None:
             if not model:
                 return
             provider_key = _normalize_provider_for_alias_display(alias_provider)
+            wildcard = not provider_key or provider_key == "auto"
             keys = [(provider_key, model), (None, model)] + ([("*", model)] if wildcard else [])
             for key in keys:
                 if key not in rmap or len(alias) < len(rmap[key]):
                     rmap[key] = alias
 
-        def remember_dict_entry(alias: str, entry: dict, default_provider: str) -> None:
-            m = str(entry.get("model", "") or "").strip()
-            explicit = entry.get("provider")
-            remember(alias, m, explicit or default_provider or "custom")
-            if not explicit and default_provider:
-                remember(alias, m, "custom")
-
         try:
             from hermes_cli.config import load_config
-            cfg = load_config() or {}
-            mdl = cfg.get("model", {}) or {}
-            default_provider = mdl.get("provider", "") if isinstance(mdl, dict) else ""
-            norm_default = _normalize_provider_for_alias_display(default_provider)
-            unscoped_default = not norm_default or norm_default == "auto"
-            ma = cfg.get("model_aliases")
-            for alias, entry in (ma.items() if isinstance(ma, dict) else ()):
-                if isinstance(alias, str) and isinstance(entry, dict):
-                    remember_dict_entry(alias, entry, default_provider)
-            simple = mdl.get("aliases") if isinstance(mdl, dict) else None
-            for alias, val in (simple.items() if isinstance(simple, dict) else ()):
-                if isinstance(alias, str) and isinstance(val, dict):
-                    remember_dict_entry(alias, val, default_provider)
-                elif isinstance(alias, str) and isinstance(val, str) and val.strip():
-                    v = val.strip()
-                    alias_provider, m = v.split("/", 1) if "/" in v else (default_provider, v)
-                    remember(alias, m.strip(), alias_provider, wildcard=("/" not in v and unscoped_default))
+            from hermes_cli.model_switch import _load_direct_aliases
+
+            # Routing owns provider defaults, normalized names and top-level precedence.
+            for alias, route in _load_direct_aliases(load_config() or {}).items():
+                remember(alias, str(route.model or "").strip(), route.provider)
         except Exception:
             pass
         _REVERSE_ALIAS_CACHE = rmap

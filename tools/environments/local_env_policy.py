@@ -276,6 +276,27 @@ def _is_terminal_first_party_env(name: str) -> bool:
 # _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries, preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
+# Identity a supervisor hands to the ONE process it started, which no child of that process owns.
+# HERMES_LAUNCHD_LABEL is the stderr-timestamp wrapper's re-export of its launchd job label for the
+# gateway it starts (#120087); HERMES_GATEWAY_EXTERNAL_SUPERVISOR is stamped into the gateway's own
+# environ by ``gateway run --external-supervisor``. Inherited, a gateway an agent starts from its
+# terminal answers ``launchd``/supervised and takes the exit-75 restart route no supervisor answers.
+# NOTIFY_SOCKET/WATCHDOG_* name the systemd unit's main process (sd_notify's unset_environment).
+# Kept on purpose: XPC_SERVICE_NAME (launchd's own per-process stamp, "0" below the wrapper, which
+# ``hermes update`` compares to tell it runs inside a job), INVOCATION_ID/JOURNAL_STREAM (systemd
+# sets them for every process of the unit, and the gateway-child dispatch reads them there), and the
+# launch markers HERMES_SUPERVISED_CHILD / HERMES_S6_SUPERVISED_CHILD (profile pinning, s6 redirect).
+_SUPERVISED_PROCESS_IDENTITY_VARS = (
+    "HERMES_LAUNCHD_LABEL", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
+)
+
+
+def strip_supervised_process_identity(env: dict) -> dict:
+    """Drop :data:`_SUPERVISED_PROCESS_IDENTITY_VARS` from a child env, in place; returns *env*."""
+    for name in _SUPERVISED_PROCESS_IDENTITY_VARS:
+        env.pop(name, None)
+    return env
+
 
 def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static

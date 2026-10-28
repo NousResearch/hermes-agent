@@ -285,6 +285,13 @@ ${
 })()`
 }
 
+const ANNOTATION_SCRIPTS = new Map<string, (action: PreviewActAction) => string>([
+  ['pin', action => buildPinScript(action, action.text || '')],
+  ['unpin', buildUnpinScript],
+  ['hold', buildHoldScript],
+  ['strobe', buildStrobeScript]
+])
+
 /** Mark the hit, let the page react, and hand back a fresh inventory. */
 function buildFinishScript(settleMs: number): string {
   return `(function () {
@@ -839,17 +846,10 @@ async function actWithChannels(
 ): Promise<PreviewActResult> {
   // Annotation, not interaction: nothing is clicked, nothing settles, and the
   // page is not re-read, so these skip the whole act-then-inventory path.
-  if (typed.kind === 'pin' || typed.kind === 'unpin' || typed.kind === 'hold' || typed.kind === 'strobe') {
-    const mark =
-      typed.kind === 'hold'
-        ? buildHoldScript()
-        : typed.kind === 'strobe'
-          ? buildStrobeScript()
-          : typed.kind === 'pin'
-            ? buildPinScript(typed, typed.text || '')
-            : buildUnpinScript(typed)
+  const annotation = ANNOTATION_SCRIPTS.get(typed.kind)
 
-    const trip = await runJson(run, mark)
+  if (annotation) {
+    const trip = await runJson(run, annotation(typed))
 
     if (trip.kind === 'failed') {
       return { error: trip.error, success: false }

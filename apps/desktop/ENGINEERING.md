@@ -162,6 +162,8 @@ reopens the gesture-less forced-navigation class the advisory closed.
   leases wake the guest and its embedding window; the window controller still
   arbitrates streaming and Wayland fullscreen policy. One operation finishing
   must not suspend overlapping work.
+  Registration belongs in `electron/preview-guest-ipc.ts`; `main.ts` only binds
+  the owner-window wake callback. Keep validation and ownership checks at that IPC boundary.
 - Main owns script readiness, dispatch and document cancellation. Work queued
   during navigation belongs to the incoming page; a promise abandoned in the
   old document must release its lease. Reapply the guest wake after loading:

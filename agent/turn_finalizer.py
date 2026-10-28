@@ -627,7 +627,6 @@ def finalize_turn(
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
-    from agent.conversation_loop import logger
     from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
     from agent.turn_tool_round import max_turn_tool_calls
 

@@ -51,7 +51,7 @@ class _TrimAgent:
         self.iteration_budget = SimpleNamespace(refund=lambda: None)
 
     # -- validation hooks --
-    def _uniquify_tool_call_ids(self, tool_calls):
+    def _uniquify_tool_call_ids(self, tool_calls, taken=None):
         pass
 
     def _repair_tool_call(self, name):
@@ -136,7 +136,6 @@ def _run_trimmed_round(agent, assistant_message):
     import agent.turn_tool_round as ttr
 
     real_compress = ttr.compress_after_tool_results
-    monkey_holder = {}
 
     def _passthrough(a, **kw):
         return SimpleNamespace(

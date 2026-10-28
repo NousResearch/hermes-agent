@@ -53,12 +53,60 @@ def trim_native_tool_replay_carriers(assistant_message, retained_ids):
         ]
 
 
+def _apply_turn_tool_cap(agent, assistant_message, tool_call_count) -> None:
+    """Trim the batch to the remaining per-turn cap and sync replay carriers.
+
+    Dedupe, delegate-cap, and per-turn-cap drops all remove calls that will
+    never produce results. The ordered native replay carriers are synced to
+    the surviving calls before stage snapshots them into the persisted row
+    (invalid-name calls are still present here, so their blocks are kept for
+    the error results appended below).
+    """
+    _turn_tool_remaining = max_turn_tool_calls(agent) - int(tool_call_count or 0)
+    if len(assistant_message.tool_calls) > _turn_tool_remaining:
+        logger.warning(
+            "Trimming %d tool call(s) to the per-turn cap (%s)",
+            len(assistant_message.tool_calls) - max(0, _turn_tool_remaining),
+            max_turn_tool_calls(agent),
+        )
+        assistant_message.tool_calls = assistant_message.tool_calls[:max(0, _turn_tool_remaining)]
+
+    _retained_ids = {coalesce_tool_call_id(tc) for tc in assistant_message.tool_calls}
+    _retained_ids |= {
+        getattr(tc, "id", "") for tc in assistant_message.tool_calls
+        if isinstance(getattr(tc, "id", ""), str)
+    }
+    _retained_ids.discard("")
+    trim_native_tool_replay_carriers(assistant_message, _retained_ids)
+
+
 def max_turn_tool_calls(agent):
     """Per-turn tool-execution cap, tied to the turn iteration limit."""
     try:
         return max(0, int(getattr(agent, "max_iterations", sys.maxsize)))
     except (TypeError, ValueError):
         return sys.maxsize
+
+
+def _turn_tool_cap_hit(agent, tool_call_count):
+    """True + the cap when the per-turn tool-call cap is already reached.
+
+    The caller ends the turn for summary; the warnings live here so the
+    round keeps its shape.
+    """
+    _turn_tool_cap = max_turn_tool_calls(agent)
+    if int(tool_call_count or 0) >= _turn_tool_cap:
+        logger.warning(
+            "Per-turn tool-call cap reached (%s/%s): ending turn for summary",
+            tool_call_count, _turn_tool_cap,
+        )
+        if not agent.quiet_mode:
+            agent._safe_print(
+                f"Tool-call cap reached ({tool_call_count}/{_turn_tool_cap}): requesting summary...",
+                diagnostic=True,
+            )
+        return True, _turn_tool_cap
+    return False, _turn_tool_cap
 
 
 @dataclass
@@ -105,17 +153,8 @@ def run_tool_round(
             result=result,
         )
 
-    _turn_tool_cap = max_turn_tool_calls(agent)
-    if int(tool_call_count or 0) >= _turn_tool_cap:
-        logger.warning(
-            "Per-turn tool-call cap reached (%s/%s): ending turn for summary",
-            tool_call_count, _turn_tool_cap,
-        )
-        if not agent.quiet_mode:
-            agent._safe_print(
-                f"Tool-call cap reached ({tool_call_count}/{_turn_tool_cap}): requesting summary...",
-                diagnostic=True,
-            )
+    _cap_hit, _turn_tool_cap = _turn_tool_cap_hit(agent, tool_call_count)
+    if _cap_hit:
         _turn_exit_reason = "budget_exhausted"
         return _verdict("break")
 
@@ -152,27 +191,7 @@ def run_tool_round(
     # before it is staged (idempotent for already-normalized ids).
     normalize_provider_tool_call_ids(assistant_message.tool_calls)
 
-    _turn_tool_remaining = max_turn_tool_calls(agent) - int(tool_call_count or 0)
-    if len(assistant_message.tool_calls) > _turn_tool_remaining:
-        logger.warning(
-            "Trimming %d tool call(s) to the per-turn cap (%s)",
-            len(assistant_message.tool_calls) - max(0, _turn_tool_remaining),
-            max_turn_tool_calls(agent),
-        )
-        assistant_message.tool_calls = assistant_message.tool_calls[:max(0, _turn_tool_remaining)]
-
-    # Dedupe, delegate-cap, and per-turn-cap drops above all remove calls that
-    # will never produce results. Sync the ordered native replay carriers to
-    # the surviving calls before stage snapshots them into the persisted row
-    # (invalid-name calls are still present here, so their blocks are kept for
-    # the error results appended below).
-    _retained_ids = {coalesce_tool_call_id(tc) for tc in assistant_message.tool_calls}
-    _retained_ids |= {
-        getattr(tc, "id", "") for tc in assistant_message.tool_calls
-        if isinstance(getattr(tc, "id", ""), str)
-    }
-    _retained_ids.discard("")
-    trim_native_tool_replay_carriers(assistant_message, _retained_ids)
+    _apply_turn_tool_cap(agent, assistant_message, tool_call_count)
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.

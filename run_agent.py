@@ -426,6 +426,9 @@ class AIAgent(
                 engine.bind_session_state(getattr(self, "_session_db", None), target_session_id)
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
+        # A browser kept across turns belongs to the conversation that just ended (/new, /resume, /branch).
+        from agent.client_lifecycle import release_session_browsers
+        release_session_browsers(self)
 
     @staticmethod
     def _effective_lmstudio_context_length(config_context_length: Optional[int], runtime_context_length: Any) -> Optional[int]:

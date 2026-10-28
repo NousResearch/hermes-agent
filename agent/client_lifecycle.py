@@ -99,6 +99,15 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
 
+def release_session_browsers(agent: Any) -> None:
+    """Close the browsers of every task id ``agent`` ran a turn under, plus the named sessions those turns drove
+    last. A browser kept across turns (``browser.persist_across_turns``, headed) is keyed by its turn's task id,
+    which a compression rotation or a delegated/cron run makes differ from ``session_id``: closing only that id
+    would leave the rest to the idle reaper after the conversation ended."""
+    from tools.browser_session_lifecycle import cleanup_conversation_browsers
+    cleanup_conversation_browsers(getattr(agent, "_process_owner_task_ids", ()))
+
+
 class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""
@@ -134,7 +143,7 @@ class ClientLifecycleMixin:
                     clear_file_ops_cache(owner)
 
         for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
-                     release_computer_use, forget_file_state):
+                     lambda: release_session_browsers(self), release_computer_use, forget_file_state):
             _quietly(step)
 
     def _client_log_context(self) -> str:

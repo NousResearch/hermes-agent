@@ -105,9 +105,10 @@ and it works on headless servers with no desktop browser at all.
   agent starts logged into nothing, and nothing persists after the session.
 - **Headless by default.** Set `browser.headed: true` for a visible window (see
   [below](#headed-mode-visible-browser-window)).
-- **Automatic cleanup.** The browser is closed after `browser.inactivity_timeout`
-  seconds idle (default 120), when Hermes exits, and by an orphan sweep if a
-  process crashed.
+- **Automatic cleanup.** The browser is closed at the end of each turn (unless
+  [kept between turns](#keep-the-browser-between-turns)), after
+  `browser.inactivity_timeout` seconds idle (default 120), when Hermes exits,
+  and by an orphan sweep if a process crashed.
 
 **Which Chromium.** Hermes picks the first that exists:
 
@@ -141,6 +142,7 @@ browser:
   user_data_dir: ""       # persistent profile directory; "" = fresh profile per session
   chromium_args: []       # extra Chromium command-line flags, e.g. ["--lang=de-DE"]
   headed: false           # true = visible window
+  persist_across_turns: false  # true = keep the browser open between turns
   command_timeout: 30     # Chromium launch timeout floor (seconds)
   inactivity_timeout: 120 # close an idle browser after N seconds
 ```
@@ -148,6 +150,36 @@ browser:
 `browser.user_data_dir` keeps cookies and logins across sessions: every session
 then shares that one profile directory. Leave it empty for isolated, throwaway
 browsing.
+
+### Keep the browser between turns
+
+```yaml
+browser:
+  persist_across_turns: true  # default: false
+  inactivity_timeout: 1800    # optional: allow longer pauses between messages
+```
+
+By default the browser is closed when the agent finishes its reply, so a
+follow-up such as "now click Buy" starts on a blank page. With
+`persist_across_turns: true` the conversation keeps its browser — tabs, the
+current page, cookies and the cloud session — and the next message continues
+where the last one stopped.
+
+The kept browser is closed when:
+
+- it sits idle for `browser.inactivity_timeout` seconds (raise it if you take
+  longer than two minutes to reply);
+- the conversation ends: `/new`, `/resume` or `/branch` to another session,
+  closing the chat, or exiting Hermes.
+
+This applies to every backend: local Chromium, Lightpanda, and cloud providers.
+It covers the chat surfaces (CLI, TUI, desktop, messaging gateway, ACP). A
+Python `AIAgent.chat()` call or a Kanban task turn starts each turn on its own,
+so its browser still closes when the turn ends.
+
+It is off by default because a kept local Chromium holds memory between
+messages and a kept cloud session keeps billing until one of the above closes
+it.
 
 ### Headed mode (visible browser window)
 
@@ -241,8 +273,10 @@ Get your API key at [firecrawl.dev](https://firecrawl.dev), then select **Firecr
 The `.env` keys above supply **credentials only**. The active browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`local`, `browserbase`, `browser-use`, `firecrawl`, or `nous` for the Nous Subscription; provider plugins add their own names). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect from available credentials.
 :::
 
-Cloud sessions consume provider credits. Hermes releases them when the
-conversation ends, after `browser.inactivity_timeout`, and on process exit.
+Cloud sessions consume provider credits. Hermes releases them at the end of
+each turn (or, with [`persist_across_turns`](#keep-the-browser-between-turns),
+when the conversation ends), after `browser.inactivity_timeout`, and on process
+exit.
 
 ### Hybrid routing: cloud for public URLs, local for LAN/localhost
 

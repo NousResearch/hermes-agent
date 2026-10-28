@@ -174,6 +174,32 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         _forget_session_tracking(task)
 
 
+def cleanup_conversation_browsers(task_ids) -> None:
+    """Close every session an ended conversation owns: keyed by one of its turns' task ids (sidecar and
+    served-profile tags included), or a named session (keyed by its name, so ``cleanup_browser(task)`` never
+    matches it) whose last driver was one of them. Per-turn cleanup never calls this."""
+    from tools.browser_session_cdp import stop_cdp_supervisor
+    ids = set(task_ids)
+    bs = _bs()
+
+    def owned(key: str, info: dict) -> bool:
+        return bs.owner_task_id(key) in ids or info.get("driver_task_id") in ids
+
+    with bs._cleanup_lock:
+        keys = [key for key, info in bs._active_sessions.items() if owned(key, info)]
+    for key in keys:
+        # Claim under the lock that stamps drivers: a named session another conversation drove since the
+        # scan above is theirs now and stays open.
+        with bs._cleanup_lock:
+            info = bs._active_sessions.get(key)
+            if info is None or not owned(key, info):
+                continue
+            del bs._active_sessions[key]
+        stop_cdp_supervisor(key)
+        _forget_session_tracking(key)
+        release_session_backend(key, info)
+
+
 def cleanup_profile_browsers(home_key: str) -> None:
     """Close one profile home's sessions, CDP supervisors and harness daemons, and drop its cached config
     (``/browser connect`` on a multiplexed gateway). Other profiles' browsers stay."""

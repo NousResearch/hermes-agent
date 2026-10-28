@@ -148,6 +148,18 @@ def real_profile_note(cache_key: Optional[str]) -> Optional[str]:
         return (_active_sessions.get(cache_key or "default") or {}).get("real_profile_unavailable")
 
 
+def record_session_driver(cache_key: str, task_id: Optional[str]) -> None:
+    """Stamp the task that last drove ``cache_key``'s session. A named session (``bu-named-<name>``) is keyed by
+    its name, not a task, so this is how the conversation that drove it last closes it when that conversation
+    ends (``browser_session_lifecycle.cleanup_conversation_browsers``)."""
+    if not task_id:
+        return
+    with _cleanup_lock:
+        info = _active_sessions.get(cache_key)
+        if info is not None:
+            info["driver_task_id"] = task_id
+
+
 def session_for_task(task_id: Optional[str]) -> dict[str, Any]:
     """The active session serving ``task_id`` (its exact key, else one whose owner is that task), or {}."""
     task = task_id or "default"

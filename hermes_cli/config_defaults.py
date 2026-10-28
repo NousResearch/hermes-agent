@@ -418,8 +418,8 @@ DEFAULT_CONFIG = {
         # Seconds a local Chromium launch may take to open its DevTools port; a launch always waits
         # at least 120 s (a cold first start unpacks the profile).
         "command_timeout": 30,
-        # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
-        "headed": False,
+        "headed": False,  # visible Chromium window (local); kept across turns, idle reaper still applies
+        "persist_across_turns": False,  # any backend: keep the browser between turns; reaper / session end close it
         "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
         # Local browser engine. "auto" = Chromium; "lightpanda" = `lightpanda serve` per session
         # (faster navigation, no screenshots); "chrome" is read as "auto". Ignored while a cloud

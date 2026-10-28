@@ -2868,6 +2868,7 @@ browser:
   inactivity_timeout: 120        # Seconds before an idle browser is closed
   command_timeout: 30            # Chromium launch timeout floor (seconds)
   headed: false                  # true = visible Chromium window (local); keeps the browser open between turns
+  persist_across_turns: false    # true = keep the browser (any backend) open between turns until idle or session end
   engine: auto                   # auto (Chromium) | lightpanda ("chrome" is accepted as auto)
   # Local Chromium launched by Hermes
   executable_path: ""            # Chromium binary override; "" = the packaged Chromium

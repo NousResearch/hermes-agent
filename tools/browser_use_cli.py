@@ -719,6 +719,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if local_sidecar:
         env["BU_NAME"] = _sidecar_daemon_name(session)
     _exec_route_is_sidecar[route_key] = local_sidecar
+    from tools.browser_session import record_session_driver
+    record_session_driver(_backend_cache_key(task_id, session, local_sidecar), task_id)
     local_engine = env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None)
     bot_desktop_browser = bool(local_engine)
     _exec_local_engine.set(local_engine)  # only local browsers carry the sentinel

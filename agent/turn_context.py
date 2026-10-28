@@ -584,6 +584,8 @@ def _bind_turn_identity(
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
+    # No later turn reaches a generated id's resources (chat(), Kanban turns): turn-end cleanup closes them.
+    agent._generated_task_id = None if task_id else effective_task_id
     agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "") or (
         f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"

@@ -363,9 +363,16 @@ def _project_committed(authority, ref, operation, result):
     if operation in {'reset', 'compress'}:
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, ref.session_id)
-        # A session boundary, not a resource evict: memory providers get on_session_end first.
-        evict = getattr(authority.runner, '_evict_cached_agent_at_boundary', None) or authority.runner._evict_cached_agent
-        evict(authority.sessions[ref.session_id].route)
+        # A session boundary, not a resource evict: memory providers get on_session_end first. An in-place
+        # compression keeps the target, so the next turn's task id and the browser kept under it.
+        route = authority.sessions[ref.session_id].route
+        boundary = getattr(authority.runner, '_evict_cached_agent_at_boundary', None)
+        if boundary is None:
+            authority.runner._evict_cached_agent(route)
+        elif operation == 'compress' and result.get('target_session_id') == result.get('previous_target_session_id'):
+            boundary(route, keep_browsers=True)
+        else:
+            boundary(route)
         # Publish the prepared entry, not just its target ID, so fresh-reset and
         # per-session counters match cold recovery in this process too.
         from hermes_state_local import local_receipt

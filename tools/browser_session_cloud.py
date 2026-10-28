@@ -141,6 +141,12 @@ def is_headed_mode() -> bool:
     return _memo("headed", lambda: browser_cfg("headed", False, _truthy))
 
 
+def persist_across_turns() -> bool:
+    """``browser.persist_across_turns``: a conversation's browser (any backend) outlives the turn, so the next
+    message continues on the same page. The idle reaper and the session's end (close, /new) still close it."""
+    return _memo("persist_across_turns", lambda: browser_cfg("persist_across_turns", False, _truthy))
+
+
 def auto_local_for_private_urls() -> bool:
     """``browser.auto_local_for_private_urls`` (default True): route private/LAN URLs to a local sidecar
     browser even with a cloud provider configured."""

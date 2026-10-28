@@ -614,6 +614,13 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+  # Keep the conversation's browser open between turns (every backend), so a
+  # follow-up message ("now click Buy") continues on the same page. Off by
+  # default: a kept local Chromium holds memory and a kept cloud session bills
+  # until the inactivity timeout above (raise it for longer pauses) or until
+  # the conversation ends (/new, exit). Headed mode always keeps it.
+  # persist_across_turns: false
+
   # Local Chromium for browser_exec. Empty executable_path = pm's chromium
   # (`hermes pm install chromium`), the Docker image's build, or a system
   # chromium where pm builds none (Termux). user_data_dir keeps one persistent

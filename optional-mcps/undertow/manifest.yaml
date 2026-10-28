@@ -1,0 +1,28 @@
+manifest_version: 1
+
+name: undertow
+description: Compare position-sized BTC exit estimates with venue depth and snapshot age.
+source: https://liquilens-undertow.com/developers/
+transport:
+  type: http
+  url: https://api.seiche.info/undertow/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - exit_cost
+    - crypto_exit_check
+suggest:
+  keywords:
+    - undertow
+    - btc exit
+  hosts:
+    - liquilens-undertow.com
+post_install: |
+  No account, API key or wallet is needed for the public research endpoint.
+  Start a new session and ask: Estimate a $100,000 BTC exit across covered
+  venues, showing snapshot time, published size rung and missing depth.
+  Call exit_cost with size_usd: 100000. Use crypto_exit_check when comparing
+  sizes or checking freshness. Preserve requested size and the rung used.
+  These are depth-band estimates excluding fees, not executable quotes or
+  guaranteed fills. Public usage limits apply. No orders or transfers occur.

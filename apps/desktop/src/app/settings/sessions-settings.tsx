@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
@@ -19,10 +20,12 @@ import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
+import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
+import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
@@ -32,6 +35,14 @@ import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton,
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 import { useSettingDeepLink } from './use-setting-deep-link'
+
+// The toast names the chord the user actually has: a browser tab and a remap
+// both differ from ⌘/Ctrl+N.
+function newSessionShortcut(): null | string {
+  const combo = bindingsFor('session.new')[0]
+
+  return combo ? formatCombo(combo) : null
+}
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
@@ -329,6 +340,7 @@ function AutoArchiveSetting() {
 function DefaultProjectDirSetting() {
   const { t } = useI18n()
   const s = t.settings.sessions
+  const profile = useStore($connection)?.profile ?? ''
   const [dir, setDir] = useState<null | string>(null)
   const [fallback, setFallback] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -347,6 +359,13 @@ function DefaultProjectDirSetting() {
 
     let alive = true
 
+    // The folder on screen belongs to the profile this effect loaded. Drop it
+    // on a switch so the next paint and the next save both use the profile
+    // that is open now.
+    if (isBrowserHostedDesktop()) {
+      setDir(null)
+    }
+
     void settings.getDefaultProjectDir().then(result => {
       if (!alive) {
         return
@@ -360,7 +379,7 @@ function DefaultProjectDirSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [profile])
 
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
@@ -385,7 +404,7 @@ function DefaultProjectDirSetting() {
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
       applyConfiguredDefaultProjectDir(result.dir)
-      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated(newSessionShortcut()) })
     } catch (err) {
       notifyError(err, s.updateDirFailed)
     } finally {

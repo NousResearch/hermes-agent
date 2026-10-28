@@ -481,6 +481,7 @@ catalog: CatalogTranslations
       microphoneConstraintsUnsupported: string
       microphoneFailed: string
       microphoneInUse: string
+      microphoneNeedsHttps: string
       microphonePermissionDenied: string
       microphoneStartFailed: string
       microphoneUnsupported: string
@@ -1715,7 +1716,7 @@ catalog: CatalogTranslations
       autoArchiveFailed: string
       defaultDirTitle: string
       defaultDirDesc: string
-      defaultDirUpdated: string
+      defaultDirUpdated: (shortcut: null | string) => string
       defaultsTo: (label: string) => string
       change: string
       choose: string
@@ -2438,8 +2439,10 @@ catalog: CatalogTranslations
     exported: string
     failedImport: string
     failedExport: string
+    exportNeedsHost: (name: string) => string
     allProfiles: string
     showAllProfiles: string
+    notServedHere: string
     switchToProfile: (name: string) => string
     switchToConnection: (name: string) => string
     switchConnectionFailed: (name: string) => string
@@ -3268,6 +3271,8 @@ catalog: CatalogTranslations
     versionDetailsTitle: string
     versionDetailsBody: string
     versionDetailsVersion: string
+    versionDetailsClient: string
+    versionDetailsBackend: string
     versionDetailsCommit: string
     versionDetailsBuildOrigin: string
     versionDetailsDistribution: string
@@ -4194,6 +4199,7 @@ catalog: CatalogTranslations
     imageAttach: string
     imageWriteFailed: string
     imageAttachFailed: string
+    attachFailed: string,
     pastedContent: string
     pasteAttachFailed: string
     attachImages: string
@@ -4201,6 +4207,7 @@ catalog: CatalogTranslations
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    dropFilesMore: (count: number) => string
     handoff: {
       pickPlatform: string
       success: (platform: string) => string

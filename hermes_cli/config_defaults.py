@@ -482,8 +482,7 @@ DEFAULT_CONFIG = {
     # and merged are removed; dirty or unpushed ones are archived to refs/hermes/archive/<tree>
     # first (`hermes worktree restore <name>`). Live trees and Kanban t_<hex> trees are never touched.
     "worktrees": {
-        # false = never remove a dirty/unpushed tree (the pre-archive behaviour, exactly).
-        "archive_dirty": True,
+        "archive_dirty": True,  # false = never remove a dirty/unpushed tree (the pre-archive behaviour)
         # Untracked files larger than this (MB) are not archived, so a tree holding one is kept.
         "archive_max_file_mb": 50,
         # The sweep deletes archive refs older than this many days. 0 keeps them forever.
@@ -491,6 +490,7 @@ DEFAULT_CONFIG = {
         # Optional size budget (GB) for idle trees: past it the oldest idle trees are archived and
         # removed first. Live, young and Kanban trees are never counted or touched. 0 = off.
         "max_total_gb": 0,
+        "install_state_retention_days": 14,  # installs/<key> of a missing checkout, unused this long, goes; 0 = never
     },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
@@ -663,7 +663,7 @@ DEFAULT_CONFIG = {
         # (Historical key name.) When True, gpt-5.4/5.5/5.6 and gpt-6 Astra (any slug containing
         # "astra" without "900k") on the ChatGPT Codex OAuth route raise their compaction trigger to
         # 85%: Codex hard-caps them at a 272K window, so the global 50% would compact at ~136K. False = global `threshold`. Only that route; the same models via
-        # OpenAI direct, OpenRouter or Copilot keep the global value.
+        # OpenAI direct, OpenRouter or another relay keep the global value.
         "codex_gpt55_autoraise": True,
         # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
         "codex_gpt55_autoraise_notice": True,
@@ -678,21 +678,21 @@ DEFAULT_CONFIG = {
         # safety margin; explicit values only clamp downward so the server goes first.
         "codex_responses_compact_threshold": None,
         # in_place: compaction rewrites the message list and system prompt WITHOUT rotating the
-        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the
-        # session-rotation bug cluster. Pre-compaction turns are soft-archived under the same id
-        # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
-        # path.
+        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the session-rotation
+        # bug cluster. Pre-compaction turns are soft-archived under the same id (active=0, compacted=1) —
+        # still session_search-able. False = legacy rotating-compaction path.
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
         # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
         # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
         # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
-        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
-        # up front, before the first reply. Time-based complement to `threshold`; skipped when
-        # already at/below threshold × target_ratio; honors the same cooldown/ anti-thrash/lock
-        # guards. Example: 1800 = 30 min.
+        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts up
+        # front, before the first reply. Time-based complement to `threshold`; skipped when already at/below
+        # threshold × target_ratio; honors the same cooldown/anti-thrash/lock guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
+        # Opt-in: write the next summary in the background near the trigger; compaction uses (or waits for) it if it still covers the same messages.
+        "prepare_ahead": False,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
@@ -748,7 +748,7 @@ DEFAULT_CONFIG = {
         # WARNING is logged whenever a non-":free" model is engaged.
         "openrouter_model": "",
         # Endpoints that reject NON-streaming chat (HTTP 400): aux calls are sent with stream=True
-        # and aggregated. Case-insensitive URL substrings; copilot.tencent.com is always
+        # and aggregated. Case-insensitive URL substrings; some vendor endpoints are always
         # stream-only.
         "stream_only_base_urls": [],
         # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url

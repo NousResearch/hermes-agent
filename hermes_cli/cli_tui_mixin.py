@@ -2061,7 +2061,7 @@ class CLITuiMixin:
         # conflict with Ctrl+R readline reverse-search). Config spellings (ctrl/control/alt/option/opt) are
         # normalized to prompt_toolkit's c-x / a-x format via
         # ``normalize_voice_record_key_for_prompt_toolkit`` so the same config value binds identically in
-        # the TUI and CLI (Copilot round-9 review on #19835). ``super``/``win``/``windows`` configs silently
+        # the TUI and CLI (review round-9 on #19835). ``super``/``win``/``windows`` configs silently
         # fall back to the default here since prompt_toolkit has no super modifier — log a warning so users
         # notice the TUI/CLI split instead of a silent mismatch (round-11).
         _raw_key: object = "ctrl+b"
@@ -2086,7 +2086,7 @@ class CLITuiMixin:
             _voice_key = "c-b"
         # Cache the UI label here — same ``_raw_key`` that drives the prompt_toolkit binding below. Every
         # status / placeholder / recording-hint render reads this cached value so display can never drift
-        # from the live keybinding even if the user edits voice.record_key mid-session (Copilot round-13 on
+        # from the live keybinding even if the user edits voice.record_key mid-session (review round-13 on
         # #19835).
         self.set_voice_record_key_cache(_raw_key)
         return pt_key_to_sequence(_voice_key)

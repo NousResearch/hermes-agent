@@ -348,19 +348,26 @@ def worker_exit_code(path, params):
     return worker_result(path, params).get('exit_code', 1)
 
 
+# Who wrote a card attempt's prompts: the dispatcher, never the operator, so memory providers do not
+# file "work kanban task t_..." and the worker's progress notes as the human's own turns (#137406).
+# Not a ``bot:<profile>`` id: a Bot Mode profile named ``kanban`` would share its memory key.
+KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'is_bot': True}
+
+
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
-    result = agent.run_conversation(prompt, conversation_history=history)
+    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 
     def recover(nudge):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
-                                        agent._session_db.get_messages_as_conversation(agent.session_id))
+                                        agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        turn_author=KANBAN_TURN_AUTHOR)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
@@ -382,7 +389,8 @@ def _run_task_turns(agent, frame, history, context):
             kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
-        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id))
+        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        turn_author=KANBAN_TURN_AUTHOR)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,

@@ -782,8 +782,6 @@ from hermes_cli.model_setup_flows import (
     _model_flow_custom,
     _model_flow_azure_foundry,
     _model_flow_named_custom,
-    _model_flow_copilot,
-    _model_flow_copilot_acp,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock,
@@ -794,6 +792,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_ai_gateway,
     _model_flow_plugin_provider,
     _is_profile_plugin_flow_provider,
+    _profile_model_setup_flow,
 )
 from hermes_cli.model_setup_flows_local import _model_flow_local
 logger = logging.getLogger(__name__)
@@ -1155,7 +1154,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     ):
         return True
 
-    # Provider-specific auth fallbacks (e.g. Copilot via gh auth).
+    # Provider-specific auth fallbacks (e.g. a token borrowed from a vendor CLI).
     if not strict_profile_scope:
         try:
             if any(
@@ -1880,8 +1879,6 @@ _PROVIDER_MODEL_FLOWS = {
     "xai-oauth": lambda c, m, a: _model_flow_xai_oauth(c, m, args=a),
     "qwen-oauth": lambda c, m, a: _model_flow_qwen_oauth(c, m),
     "minimax-oauth": lambda c, m, a: _model_flow_minimax_oauth(c, m, args=a),
-    "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
-    "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
     "llamacpp": lambda c, m, a: _model_flow_local(c, m),
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
@@ -1934,11 +1931,10 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
                     active,
                 )
         else:
-            print(
-                f"Warning: Unknown provider '{effective_provider}'. Check 'hermes model' for "
-                "available providers, or run 'hermes doctor' to diagnose config "
-                "issues. Falling back to auto provider detection."
-            )
+            from hermes_cli.left_core_migration import provider_install_hint
+            hint = provider_install_hint(effective_provider) or ("Check 'hermes model' for available providers, or run "
+                                                                  "'hermes doctor' to diagnose config issues.")
+            print(f"Warning: Unknown provider '{effective_provider}'. {hint} Falling back to auto provider detection.")
     if not active:
         try:
             active = resolve_provider("auto")
@@ -2038,7 +2034,8 @@ def select_provider_and_model(args=None):
     saves_before = _model_choice_save_count()
     from hermes_cli.observability.shared_metrics_setup import cli_provider_setup
     with cli_provider_setup(selected_provider):
-        flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
+        # Bespoke core flow, else the profile's own (``model_setup_flow``), else the generic one.
+        flow = _PROVIDER_MODEL_FLOWS.get(selected_provider) or _profile_model_setup_flow(selected_provider)
         if flow is None and _is_profile_plugin_flow_provider(selected_provider):
             # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
             flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)

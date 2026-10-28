@@ -467,6 +467,7 @@ export const esOverrides = {
       microphoneConstraintsUnsupported: 'Este dispositivo no admite las restricciones del micrófono.',
       microphoneFailed: 'Falló el micrófono',
       microphoneInUse: 'El micrófono ya está en uso por otra app.',
+      microphoneNeedsHttps: 'El micrófono necesita una conexión segura. Abre la Webapp por HTTPS, o mediante un túnel SSH a 127.0.0.1, para usarlo.',
       microphonePermissionDenied: 'Se denegó el permiso del micrófono.',
       microphoneStartFailed: 'No se pudo iniciar la grabación del micrófono.',
       microphoneUnsupported: 'Este runtime no admite grabación de micrófono.',
@@ -2244,8 +2245,8 @@ export const esOverrides = {
       defaultDirTitle: 'Directorio de proyecto predeterminado',
       defaultDirDesc:
         'Las sesiones nuevas empiezan en esta carpeta salvo que elijas otra. Déjala sin definir para usar tu directorio de inicio.',
-      defaultDirUpdated:
-        'Directorio de proyecto predeterminado actualizado; inicia un chat nuevo (Ctrl/⌘+N) para que el cambio surta efecto.',
+      defaultDirUpdated: shortcut =>
+        `Directorio de proyecto predeterminado actualizado; inicia un chat nuevo${shortcut ? ` (${shortcut})` : ''} para que el cambio surta efecto.`,
       defaultsTo: label => `Predeterminado: ${label}.`,
       change: 'Cambiar',
       choose: 'Elegir',
@@ -3193,8 +3194,10 @@ export const esOverrides = {
     exported: 'Perfil exportado',
     failedImport: 'No se pudo importar el perfil',
     failedExport: 'No se pudo exportar el perfil',
+    exportNeedsHost: name => `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
     allProfiles: 'Todos los perfiles',
     showAllProfiles: 'Mostrar todos los perfiles',
+    notServedHere: 'No se ofrece aquí',
     switchToProfile: name => `Cambiar a ${name}`,
     switchToConnection: name => `Cambiar a ${name}`,
     switchConnectionFailed: name => `No se pudo conectar a ${name}`,
@@ -4101,6 +4104,8 @@ export const esOverrides = {
     versionDetailsBody:
       'Esta instalación se administra fuera de la app. Actualízala de la misma forma en que la instalaste.',
     versionDetailsVersion: 'Versión',
+    versionDetailsClient: 'Este dispositivo',
+    versionDetailsBackend: 'Backend conectado',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origen de la compilación',
     versionDetailsDistribution: 'Distribución',
@@ -4600,6 +4605,7 @@ export const esOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Estos nombres no se pueden escribir de forma segura en ${shell}: ${paths}`,
     aria: 'Barra lateral derecha',
     panelsAria: 'Paneles de la barra lateral derecha',
     files: 'Sistema de archivos',
@@ -5397,6 +5403,7 @@ export const esOverrides = {
     imageAttach: 'Adjuntar imagen',
     imageWriteFailed: 'No se pudo escribir la imagen en disco.',
     imageAttachFailed: 'No se pudo adjuntar la imagen',
+    attachFailed: 'No se pudo adjuntar',
     pastedContent: 'Contenido pegado',
     pasteAttachFailed: 'No se pudo adjuntar el texto pegado',
     attachImages: 'Adjuntar imágenes',
@@ -5404,6 +5411,7 @@ export const esOverrides = {
     noClipboardImage: 'No se encontró ninguna imagen en el portapapeles',
     clipboardPasteFailed: 'No se pudo pegar desde el portapapeles',
     dropFiles: 'Soltar archivos',
+    dropFilesMore: (count: number) => `y ${count} más`,
     handoff: {
       pickPlatform: 'Elige un destino',
       success: platform => `Transferido a ${platform}. Puedes reanudar aquí cuando quieras.`,

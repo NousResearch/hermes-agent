@@ -269,7 +269,9 @@ def _plugin_alias_owner(canonical: str) -> str:
     if not canonical or _is_static_canonical(canonical):
         return canonical
     from providers import get_provider_profile, list_providers
-    if any(prof.name == canonical for prof in list_providers()):
+    profiles = list_providers()
+    if any(prof.name == canonical for prof in profiles) or not any(
+            canonical in prof.aliases for prof in profiles):
         return canonical
     owner = get_provider_profile(canonical)
     if owner is None or canonical not in owner.aliases or owner.provider_overlay:

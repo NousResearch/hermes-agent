@@ -1842,7 +1842,58 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 #### `pre_auxiliary_call` / `post_auxiliary_call`
 
-Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`, `plugin_side_question` for a plugin's [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), which also carries the asking plugin's `plugin_id`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
+Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per auxiliary relay attempt (outer retries and fallbacks included; SDK-internal retries are separate HTTP attempts) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`, `plugin_side_question` for a plugin's [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), which also carries the asking plugin's `plugin_id`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
+
+### HTTP-attempt and auxiliary-stream observers
+
+`http_attempt_start`, `http_attempt_headers`, `http_attempt_end` and
+`auxiliary_stream_end` are observer-only hooks. A local content-free request-audit
+plugin can use them to retain retry/stream boundaries without wrapping Hermes
+functions at plugin load time. They do not install a collector or export telemetry.
+
+For provider clients built by `build_keepalive_http_client` **after** an HTTP
+subscriber is registered, each httpx transport dispatch receives a distinct
+`http_attempt_id`. SDK retries therefore produce separate physical attempts even
+when their logical `api_request_id` is the same:
+
+- `http_attempt_start`: owning turn/task/provider/model identity when available,
+  `http_attempt_id`, `endpoint_sha256`, `started_at`.
+- `http_attempt_headers`: the same identity plus HTTP `status_code` and an optional
+  bounded `provider_request_id` from the request-ID response header.
+- `http_attempt_end`: the same fields plus `ended_at`, `api_duration`,
+  `transport_outcome` (`body_exhausted`, `body_closed`, `body_error` or
+  `transport_error`) and exception class `error_type`, never exception text.
+
+An attempt ends when its body is exhausted/closed or the transport/body raises,
+not merely when headers arrive. Reading is lazy: observation never reads ahead,
+parses the HTTP body, records headers wholesale or changes proxy/TLS policy.
+Endpoint hashes are pseudonymous identifiers, not proof of anonymity. Requests
+outside an owning turn can have empty identity fields; do not invent attribution.
+
+For streams returned through `run_with_aux_hooks` / `arun_with_aux_hooks`, the
+existing post hook remains a handoff observation. Subscribing to
+`auxiliary_stream_end` adds one terminal event when that stream is exhausted,
+explicitly closed or raises during consumption. It carries the auxiliary
+identity and `started_at`, `stream_outcome` (`consumed`, `closed_early` or
+`consumer_error`), timing, exception class, and any available `status_code`.
+`usage` is the last normalized usage exposed by supported Chat Completions or
+Responses chunks, or `None`; whitelisted numeric counters are additionally
+available in `raw_provider_usage`, together with optional provider response/request
+IDs. These are SDK/adapter observations, not an independent supplier invoice or
+unmodified wire payload. Native adapter translations can still omit fields.
+
+Terminal callbacks run in the context captured by the owning attempt/stream even
+if another profile consumes the returned object. Original chunks and exceptions
+are preserved. A consumer that neither exhausts nor closes a stream emits no
+terminal event; retain that as an unknown boundary, never a zero-cost success.
+Fold stream-terminal usage into its existing logical observation, and do not add
+HTTP attempt rows to logical token totals.
+
+Coverage is deliberately bounded: already-created/uninstrumented clients,
+provider app-server subprocesses and other transports are not observed by this
+factory hook; HTTP-library retries entirely inside one transport dispatch are
+not separate observations. Hooks expose no new storage, retention, pricing,
+usage-field availability guarantee or complete execution-surface coverage.
 
 ### `on_skill_lifecycle`
 

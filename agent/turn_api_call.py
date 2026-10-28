@@ -126,6 +126,7 @@ def perform_api_call(
         )
 
     from hermes_cli.middleware import run_llm_execution_middleware
+    from agent.usage_observer import request_scope
 
     # The ``_model_request_active`` bracket is taken under the redirect lock when one exists,
     # so redirect() can't observe a half-toggled flag.
@@ -136,13 +137,16 @@ def perform_api_call(
         if _model_request_active is not None:
             _model_request_active.set()
     try:
-        response = run_llm_execution_middleware(
-            api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
-            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
-            session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
-            provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
-            api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
-        )
+        with request_scope(dict(task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+                               session_id=agent.session_id or "", platform=agent.platform or "",
+                               model=agent.model, provider=agent.provider, api_mode=agent.api_mode)):
+            response = run_llm_execution_middleware(
+                api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
+                task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+                session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
+                provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
+                api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
+            )
     finally:
         with _bracket:
             if _model_request_active is not None:

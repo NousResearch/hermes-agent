@@ -51,3 +51,56 @@ def test_user_provider_named_like_the_alias_still_wins(monkeypatch):
     assert pdef is not None
     assert pdef.base_url == "https://relay.example.com/v1"
     assert pdef.id != "meta-ai"
+
+
+_HOME_PLUGIN = '''
+from providers import register_provider
+from providers.base import ProviderProfile
+
+register_provider(ProviderProfile(name="my-meta", aliases=("meta",), auth_type="api_key",
+                                  env_vars=("MY_META_KEY",), base_url="https://relay.invalid/v1"))
+'''
+
+
+@pytest.fixture
+def home_with_meta_plugin(tmp_path, monkeypatch):
+    import sys
+
+    import providers
+    from hermes_cli import auth_plugin_providers as app
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    plugin = tmp_path / "plugins" / "model-providers" / "my-meta"
+    plugin.mkdir(parents=True)
+    (plugin / "__init__.py").write_text(_HOME_PLUGIN, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
+    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(providers, "_HOME_LAYERS", {})
+    monkeypatch.setattr(providers, "_PLUGIN_DIR_STAMP_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(app, "PLUGIN_MIRRORED_PROVIDERS", set(app.PLUGIN_MIRRORED_PROVIDERS))
+    rows = list(dict.items(PROVIDER_REGISTRY))
+    token = set_hermes_home_override(tmp_path)
+    yield
+    reset_hermes_home_override(token)
+    PROVIDER_REGISTRY.clear()
+    PROVIDER_REGISTRY.update(rows)
+    for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
+        del sys.modules[mod]
+
+
+@pytest.mark.parametrize("registry", [_CATALOG, {}], ids=["catalog", "offline"])
+def test_home_plugin_claiming_the_alias_wins_over_the_bundled_one(monkeypatch, home_with_meta_plugin, registry):
+    """The registry picks the home's plugin for an alias it declares; resolution must agree."""
+    from providers import get_provider_profile
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: registry)
+
+    pdef = resolve_provider_full("meta")
+
+    assert get_provider_profile("meta").name == "my-meta"
+    assert pdef is not None
+    assert pdef.id == "my-meta"
+    assert pdef.base_url == "https://relay.invalid/v1"

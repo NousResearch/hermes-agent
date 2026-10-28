@@ -263,15 +263,18 @@ def _plugin_alias_owner(canonical: str) -> str:
     ``azure-foundry``) otherwise resolved to the bare models.dev entry whenever the catalog
     loaded and to the plugin when it did not, so ``--provider meta`` persisted a different
     provider depending on the network. ``hermes_cli.auth.resolve_provider`` already answers the
-    plugin id. Built-in ids and overlay profiles keep what ``normalize_provider`` gave them."""
+    plugin id. Built-in ids and overlay profiles keep what ``normalize_provider`` gave them.
+    The owner comes from the registry's own lookup, so the bound home's plugin claiming the alias
+    wins over a bundled one, exactly as ``get_provider_profile`` would pick it."""
     if not canonical or _is_static_canonical(canonical):
         return canonical
-    from providers import list_providers
-    profiles = list_providers()
-    if any(prof.name == canonical for prof in profiles):
+    from providers import get_provider_profile, list_providers
+    if any(prof.name == canonical for prof in list_providers()):
         return canonical
-    owner = next((prof for prof in profiles if canonical in prof.aliases), None)
-    return owner.name if owner is not None and not owner.provider_overlay else canonical
+    owner = get_provider_profile(canonical)
+    if owner is None or canonical not in owner.aliases or owner.provider_overlay:
+        return canonical
+    return owner.name
 
 
 def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderDef]:

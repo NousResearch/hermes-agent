@@ -29,6 +29,7 @@ _CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_exp
                    'edit_revision')
 # Closed metadata contract: only the keys the Baileys adapter stamps on ordinary inbound
 # (``WhatsAppAdapter._build_message_event``) cross native admission; any other key refuses.
+# Another platform's dict metadata never crosses at all — dropped, not refused (#146220).
 _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'whatsapp_from_owner'})
 # Top-level ``nativeMetadata`` keys the bridge emits (scripts/whatsapp-bridge/bridge_helpers.js).
 _WHATSAPP_NATIVE_KEYS = frozenset({'video', 'audio', 'sticker', 'location', 'contact', 'contacts',
@@ -39,12 +40,17 @@ _MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined')
 
 def _native_metadata(event):
     """JSON projection of the adapter metadata a native replay keeps; ``None`` refuses the event.
-    An oversized ``whatsapp_native`` (vCards with photos) is dropped, never refused."""
+    An oversized ``whatsapp_native`` (vCards with photos) is dropped, never refused. Another
+    platform's dict metadata crosses no envelope either — dropped, not refused (#146220), so
+    admission never depends on the field documented as free-form; a non-dict still refuses."""
     metadata = event.metadata
     if not metadata:
         return {}
-    if (not isinstance(metadata, dict) or event.source.platform.value != 'whatsapp'
-            or not set(metadata) <= _WHATSAPP_METADATA):
+    if not isinstance(metadata, dict):
+        return None
+    if event.source.platform.value != 'whatsapp':
+        return {}
+    if not set(metadata) <= _WHATSAPP_METADATA:
         return None
     kind, native = metadata.get('whatsapp_native_type'), metadata.get('whatsapp_native')
     if (kind is not None and not (isinstance(kind, str) and 0 < len(kind) <= 64)

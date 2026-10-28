@@ -92,6 +92,8 @@ class MessageEvent:
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
+    # Readable inside the turn. Only WhatsApp's closed key set crosses native admission into the
+    # persisted envelope; another platform's dict metadata is dropped there, never refused (#146220).
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False

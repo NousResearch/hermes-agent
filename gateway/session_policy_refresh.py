@@ -149,7 +149,7 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     # A bypass launch never reads the profile; cron, Kanban and room routes are not resumed CLI sessions.
     if old.ignore_user_config or old.source not in SURFACES:
         return None
-    home = Path(authority.db.db_path).resolve().parent
+    home = Path(str(authority.profile_id))
     terminal = {} if mcp_only or adopt_only else build_profile_terminal_scope(home)
     live, picked = _load_gateway_config(home / 'config.yaml'), policy_picks(authority.db, session_id)
     base = old

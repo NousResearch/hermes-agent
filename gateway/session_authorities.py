@@ -193,7 +193,7 @@ def authority_for_home(runner, home):
     registry = getattr(runner, 'session_authorities', None)
     if registry is None:
         authority = getattr(runner, 'session_authority', None)
-        if authority is not None and Path(authority.db.db_path).resolve().parent == Path(home).resolve():
+        if authority is not None and Path(str(authority.profile_id)).resolve() == Path(home).resolve():
             return authority
         return None
     return registry.for_home(home)

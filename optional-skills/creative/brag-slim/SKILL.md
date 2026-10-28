@@ -21,7 +21,7 @@ metadata:
 > [latent-spaces/brag](https://github.com/latent-spaces/brag): the project
 > ships `/brag-slim` as a single `SKILL.md` under `skills/brag-slim/`. `hermes
 > skills install official/creative/brag-slim` pulls the current file live from
-> that repo (quarantined and scanned like any hub install) — this directory
+> that repo (quarantined and scanned like any hub install): this directory
 > holds only the catalog metadata, so the vendored copy can never go stale.
 
 `/brag-slim` is the lean `/brag`, written for Claude Opus 5.5: no Hyperframes,

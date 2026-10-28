@@ -1,7 +1,7 @@
 # Named Palettes
 
 28 hardware-accurate and artistic palettes available to `pixel_art()`.
-Palette values are sourced from `pixel-art-studio` (MIT) — see ATTRIBUTION.md in the skill root.
+Palette values are sourced from `pixel-art-studio` (MIT), see ATTRIBUTION.md in the skill root.
 
 Usage: pass the palette name as `palette=` or let a preset select it.
 

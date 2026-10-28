@@ -40,7 +40,7 @@ Print modes:
 | Complementary duotone | General default; dominant plate 70–85%, accent 15–30% with a specific role; fallback pair Cobalt + Terracotta `#2148B8` + `#C65F38` |
 | Overprint duotone | Two plates deliberately overlap; the darker mixed zone is not a third ink |
 
-Catalogs (source of truth — **when an exact value differs, the catalog wins over any prose**; read only the catalog relevant to the current decision):
+Catalogs (source of truth, **when an exact value differs, the catalog wins over any prose**; read only the catalog relevant to the current decision):
 
 | File | Provides |
 |---|---|
@@ -53,20 +53,20 @@ Catalogs (source of truth — **when an exact value differs, the catalog wins ov
 
 References:
 
-- `references/visual-language.md` — full color/space/image-treatment/typography/tone rules
-- `references/composition.md` — layout decision flow, layout families, composition grammar, rhythm
-- `references/quality-gate.md` — originality firewall, hard avoids, inspection checklist
+- `references/visual-language.md`: full color/space/image-treatment/typography/tone rules
+- `references/composition.md`: layout decision flow, layout families, composition grammar, rhythm
+- `references/quality-gate.md`: originality firewall, hard avoids, inspection checklist
 
 ## Procedure
 
 1. **Read the input.** Extract five things:
    - **Subject:** the one person, object, scene, or idea that must remain recognizable.
    - **Intent:** poetic observation, announcement, field note, personal statement, cultural poster, or specimen page.
-   - **Words:** preserve exact supplied text verbatim in its original language — never translate or rewrite it. If no text is supplied, invent one English display phrase of 2–8 words and keep it stable across retries. Omit text only on explicit request.
+   - **Words:** preserve exact supplied text verbatim in its original language, never translate or rewrite it. If no text is supplied, invent one English display phrase of 2–8 words and keep it stable across retries. Omit text only on explicit request.
    - **Image role:** hero photograph, isolated specimen, cropped fragment, texture source, or none.
    - **Representation:** faithful reproduction (default) or abstract symbol extraction (when the user asks for abstract, artistic, loose, experimental, less realistic, or less photographic treatment).
 
-   For a complex topic, pick one concrete visual metaphor; do not illustrate every point. If the user supplies an image, preserve its identity and factual content — crop/isolate/halftone it, never replace the subject or invent branded details.
+   For a complex topic, pick one concrete visual metaphor; do not illustrate every point. If the user supplies an image, preserve its identity and factual content, crop/isolate/halftone it, never replace the subject or invent branded details.
 
 2. **Resolve the recipe manifest.** Fill every field; do not skip any and do not expose the manifest unless the user asks for process details. Look up IDs and exact values in `design-system/`.
 
@@ -96,7 +96,7 @@ References:
    imperfections: <0-2 restrained effect IDs for contemporary work, or 2-3 for tactile/vintage work>
    ````
 
-   Defaults when the user hasn't chosen: ratio `3:4`; substrate Neutral White `#FAFAF7` (Cool Gray `#E9E9E5` for architecture/tech/restrained; Pale Beige `#F5F1E8` only for tactile/archival/nostalgic subjects — never assume beige merely because the work uses halftone or risograph language); mode complementary duotone with Cobalt + Terracotta; empty paper `35%`; tension `relaxed` for reflective/leisure/unspecified cultural subjects, `balanced` for editorial information, `assertive` only for forceful declarations; disruption = one off-center image crop, or one oversized word when there is no image. Explicit user choices override defaults unless they violate the two-ink limit or the originality firewall. Identical inputs must resolve to the identical manifest — never vary palette, layout, percentages, or process for novelty.
+   Defaults when the user hasn't chosen: ratio `3:4`; substrate Neutral White `#FAFAF7` (Cool Gray `#E9E9E5` for architecture/tech/restrained; Pale Beige `#F5F1E8` only for tactile/archival/nostalgic subjects, never assume beige merely because the work uses halftone or risograph language); mode complementary duotone with Cobalt + Terracotta; empty paper `35%`; tension `relaxed` for reflective/leisure/unspecified cultural subjects, `balanced` for editorial information, `assertive` only for forceful declarations; disruption = one off-center image crop, or one oversized word when there is no image. Explicit user choices override defaults unless they violate the two-ink limit or the originality firewall. Identical inputs must resolve to the identical manifest, never vary palette, layout, percentages, or process for novelty.
 
    Resolve generic color words consistently: blue→Cobalt, green→Botanical Green, orange→Terracotta Orange, red→Signal Red, purple→Aubergine, black→Charcoal; green+black→Mint Green + Charcoal; blue+orange→Cobalt + Terracotta. Exact named inks always take precedence.
 
@@ -111,7 +111,7 @@ References:
 
    Describe only visible outcomes. Never mention reference artists, studios, sample posters, or "in the style of."
 
-5. **Generate and inspect.** Call `image_generate` with the compiled prompt. Inspect at full and thumbnail size against the checklist in `references/quality-gate.md`; regenerate once on failure (extra ink, missing plate roles, empty paper outside 25–55%, unrecognizable subject, no ≥5x type scale jump, garbled text, composition copying a reference, no identifiable focal event). If exact text still renders wrong after one retry, generate a text-light base image and state that typography should be overlaid in a layout tool — never pretend distorted text is correct.
+5. **Generate and inspect.** Call `image_generate` with the compiled prompt. Inspect at full and thumbnail size against the checklist in `references/quality-gate.md`; regenerate once on failure (extra ink, missing plate roles, empty paper outside 25–55%, unrecognizable subject, no ≥5x type scale jump, garbled text, composition copying a reference, no identifiable focal event). If exact text still renders wrong after one retry, generate a text-light base image and state that typography should be overlaid in a layout tool, never pretend distorted text is correct.
 
 6. **Deliver.** Save outputs under `./mono-color-output/` in the user's working directory (create it if needed), or another location the user names. Present:
    1. the generated image (path or rendered);
@@ -124,9 +124,9 @@ References:
 
 - **Never more than two printing inks.** The substrate is not an ink; overprint mixing and density variation are not extra inks. Gradients, rainbow accents, and full-color photography are always out.
 - **Catalog wins over prose.** When a hex, ID, range, or geometry in `design-system/` differs from any prose description, use the catalog value.
-- **Preserve supplied text verbatim** — original language, exact wording, no translation unless asked. Never distort microcopy or factual text with imperfection effects.
+- **Preserve supplied text verbatim**: original language, exact wording, no translation unless asked. Never distort microcopy or factual text with imperfection effects.
 - **Never copy a source composition, wording, logo, or artwork.** Change at least four structural features from any supplied reference (see the originality firewall). No fake signatures, mastheads, sponsors, URLs, or invented branding.
-- **Contemporary by default.** Do not add yellowed paper, sepia, distressed borders, or retro props merely because the work uses halftone or limited inks — only when the user asks for vintage/archival mood.
+- **Contemporary by default.** Do not add yellowed paper, sepia, distressed borders, or retro props merely because the work uses halftone or limited inks, only when the user asks for vintage/archival mood.
 - **One focal event, one release zone.** Never center everything, never distribute elements evenly like a template, never fill the quiet zone with decoration.
 
 ## Verification

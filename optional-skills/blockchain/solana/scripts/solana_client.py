@@ -3,7 +3,7 @@
 Solana Blockchain CLI Tool for Hermes Agent
 --------------------------------------------
 Queries the Solana JSON-RPC API and CoinGecko for enriched on-chain data.
-Uses only Python standard library — no external packages required.
+Uses only Python standard library: no external packages required.
 
 Usage:
   python3 solana_client.py stats
@@ -35,7 +35,7 @@ RPC_URL = os.environ.get(
 
 LAMPORTS_PER_SOL = 1_000_000_000
 
-# Well-known Solana token names — avoids API calls for common tokens.
+# Well-known Solana token names: avoids API calls for common tokens.
 # Maps mint address → (symbol, name).
 KNOWN_TOKENS: dict[str, tuple] = {
     "So11111111111111111111111111111111111111112":  ("SOL",   "Solana"),
@@ -124,7 +124,7 @@ def _rpc_call(method: str, params: list | None = None, retries: int = 2) -> Any:
     return None
 
 
-# Keep backward compat — the rest of the code uses `rpc()`.
+# Keep backward compat: the rest of the code uses `rpc()`.
 rpc = _rpc_call
 
 
@@ -169,14 +169,14 @@ def _short_mint(mint: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Price & token name helpers (CoinGecko — free, no API key)
+# Price & token name helpers (CoinGecko: free, no API key)
 # ---------------------------------------------------------------------------
 
 def fetch_prices(mints: list[str], max_lookups: int = 20) -> dict[str, float]:
     """Fetch USD prices for mint addresses via CoinGecko (one per request).
 
     CoinGecko free tier doesn't support batch Solana token lookups,
-    so we do individual calls — capped at *max_lookups* to stay within
+    so we do individual calls: capped at *max_lookups* to stay within
     rate limits. Returns {mint: usd_price}.
     """
     prices: dict[str, float] = {}
@@ -600,7 +600,7 @@ def cmd_whales(args):
         "slot":              slot,
         "min_threshold_SOL": args.min_sol,
         "large_transfers":   whales,
-        "note":              "Scans latest block only — point-in-time snapshot.",
+        "note":              "Scans latest block only: point-in-time snapshot.",
     }
     if sol_price:
         out["sol_price_usd"] = sol_price
@@ -632,7 +632,7 @@ def cmd_price(args):
         out["price_usd"] = prices[mint]
     else:
         out["price_usd"] = None
-        out["note"] = "Price not available — token may not be listed on CoinGecko."
+        out["note"] = "Price not available: token may not be listed on CoinGecko."
     print_json(out)
 
 

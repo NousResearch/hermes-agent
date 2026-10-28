@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-health_check.py — One-stop verification that the ComfyUI environment is ready.
+health_check.py: One-stop verification that the ComfyUI environment is ready.
 
 Runs through the verification checklist:
   1. comfy-cli on PATH

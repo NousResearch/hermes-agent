@@ -16,7 +16,7 @@ metadata:
 required_environment_variables:
   - name: USDA_API_KEY
     prompt: "USDA FoodData Central API key (free)"
-    help: "Get one free at https://fdc.nal.usda.gov/api-key-signup/ — or skip to use DEMO_KEY with lower rate limits"
+    help: "Get one free at https://fdc.nal.usda.gov/api-key-signup/, or skip to use DEMO_KEY with lower rate limits"
     required_for: "higher rate limits on food/nutrition lookups (DEMO_KEY works without signup)"
     optional: true
 ---
@@ -24,12 +24,12 @@ required_environment_variables:
 # Fitness & Nutrition
 
 Expert fitness coach and sports nutritionist skill. Two data sources
-plus offline calculators — everything a gym-goer needs in one place.
+plus offline calculators: everything a gym-goer needs in one place.
 
 **Data sources (all free, no pip dependencies):**
 
-- **wger** (https://wger.de/api/v2/) — open exercise database, 690+ exercises with muscles, equipment, images. Public endpoints need zero authentication.
-- **USDA FoodData Central** (https://api.nal.usda.gov/fdc/v1/) — US government nutrition database, 380,000+ foods. `DEMO_KEY` works instantly; free signup for higher limits.
+- **wger** (https://wger.de/api/v2/): open exercise database, 690+ exercises with muscles, equipment, images. Public endpoints need zero authentication.
+- **USDA FoodData Central** (https://api.nal.usda.gov/fdc/v1/): US government nutrition database, 380,000+ foods. `DEMO_KEY` works instantly; free signup for higher limits.
 
 **Offline calculators (pure stdlib Python):**
 
@@ -55,7 +55,7 @@ Trigger this skill when the user asks about:
 All wger public endpoints return JSON and require no auth. Always add
 `format=json` and `language=2` (English) to exercise queries.
 
-**Step 1 — Identify what the user wants:**
+**Step 1: Identify what the user wants:**
 
 - By muscle → use `/api/v2/exercise/?muscles={id}&language=2&status=2&format=json`
 - By category → use `/api/v2/exercise/?category={id}&language=2&status=2&format=json`
@@ -63,7 +63,7 @@ All wger public endpoints return JSON and require no auth. Always add
 - By name → use `/api/v2/exercise/search/?term={query}&language=english&format=json`
 - Full details → use `/api/v2/exerciseinfo/{exercise_id}/?format=json`
 
-**Step 2 — Reference IDs (so you don't need extra API calls):**
+**Step 2: Reference IDs (so you don't need extra API calls):**
 
 Exercise categories:
 
@@ -105,7 +105,7 @@ Equipment:
 | 9  | Incline bench  |
 | 10 | Kettlebell     |
 
-**Step 3 — Fetch and present results:**
+**Step 3: Fetch and present results:**
 
 ```bash
 # Search exercises by name
@@ -218,13 +218,13 @@ See `references/FORMULAS.md` for the science behind each formula.
 
 ## Pitfalls
 
-- wger exercise endpoint returns **all languages by default** — always add `language=2` for English
-- wger includes **unverified user submissions** — add `status=2` to only get approved exercises
-- USDA `DEMO_KEY` has **30 req/hour** — add `sleep 2` between batch requests or get a free key
-- USDA data is **per 100g** — remind users to scale to their actual portion size
-- BMI does not distinguish muscle from fat — high BMI in muscular people is not necessarily unhealthy
-- Body fat formulas are **estimates** (±3-5%) — recommend DEXA scans for precision
-- 1RM formulas lose accuracy above 10 reps — use sets of 3-5 for best estimates
+- wger exercise endpoint returns **all languages by default**: always add `language=2` for English
+- wger includes **unverified user submissions**: add `status=2` to only get approved exercises
+- USDA `DEMO_KEY` has **30 req/hour**: add `sleep 2` between batch requests or get a free key
+- USDA data is **per 100g**: remind users to scale to their actual portion size
+- BMI does not distinguish muscle from fat: high BMI in muscular people is not necessarily unhealthy
+- Body fat formulas are **estimates** (±3-5%): recommend DEXA scans for precision
+- 1RM formulas lose accuracy above 10 reps: use sets of 3-5 for best estimates
 - wger's `exercise/search` endpoint uses `term` not `query` as the parameter name
 
 ---

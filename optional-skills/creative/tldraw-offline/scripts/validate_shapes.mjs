@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// validate_shapes.mjs — verify that the note/text/frame records this skill
+// validate_shapes.mjs: verify that the note/text/frame records this skill
 // documents are valid against the real tldraw SDK v5 schema.
 //
 // Usage:

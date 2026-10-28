@@ -22,7 +22,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-# Upstream types (AGPL — invoked via subprocess in production; importing here
+# Upstream types (AGPL: invoked via subprocess in production; importing here
 # is fine for skill-side driver scripts the user owns).
 from darwinian_evolver.cli_common import (
     build_hyperparameter_config_from_args,
@@ -64,7 +64,7 @@ def _prompt_llm(prompt: str, max_tokens: int = 1024) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. ORGANISM — what you are evolving.
+# 1. ORGANISM: what you are evolving.
 # ---------------------------------------------------------------------------
 class MyOrganism(Organism):
     # TODO: replace with your artifact field. Common shapes:
@@ -84,7 +84,7 @@ class MyOrganism(Organism):
 
 
 # ---------------------------------------------------------------------------
-# 2. EVALUATOR — score organisms and surface failures the mutator can learn from.
+# 2. EVALUATOR: score organisms and surface failures the mutator can learn from.
 # ---------------------------------------------------------------------------
 class MyFailureCase(EvaluationFailureCase):
     # TODO: include enough context for the LLM to diagnose the failure.
@@ -133,7 +133,7 @@ class MyEvaluator(Evaluator[MyOrganism, EvaluationResult, MyFailureCase]):
 
 
 # ---------------------------------------------------------------------------
-# 3. MUTATOR — LLM proposes an improved organism from a failure case.
+# 3. MUTATOR: LLM proposes an improved organism from a failure case.
 # ---------------------------------------------------------------------------
 class MyMutator(Mutator[MyOrganism, MyFailureCase]):
     PROMPT = """
@@ -186,7 +186,7 @@ Put the new version in the LAST triple-backtick block of your response.
 
 
 # ---------------------------------------------------------------------------
-# Driver — fills in the EvolveProblemLoop boilerplate. You shouldn't need to
+# Driver: fills in the EvolveProblemLoop boilerplate. You shouldn't need to
 # touch anything below this line for a typical run.
 # ---------------------------------------------------------------------------
 def make_problem() -> Problem:

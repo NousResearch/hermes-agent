@@ -25,9 +25,9 @@ metadata:
     homepage: https://shopify.dev/docs/api/admin-graphql
 ---
 
-# Shopify — Admin & Storefront GraphQL APIs
+# Shopify, Admin & Storefront GraphQL APIs
 
-Work with Shopify stores directly through `curl`: list products, manage inventory, pull orders, update customers, read metafields. No SDK, no app framework — just the GraphQL endpoint and a custom-app access token.
+Work with Shopify stores directly through `curl`: list products, manage inventory, pull orders, update customers, read metafields. No SDK, no app framework, just the GraphQL endpoint and a custom-app access token.
 
 The REST Admin API is legacy since 2024-04 and only receives security fixes. **Use GraphQL Admin** for all admin work. Use **Storefront GraphQL** for read-only customer-facing queries (products, collections, cart).
 
@@ -35,7 +35,7 @@ The REST Admin API is legacy since 2024-04 and only receives security fixes. **U
 
 1. In Shopify admin: **Settings → Apps and sales channels → Develop apps → Create an app**.
 2. Click **Configure Admin API scopes**, select what you need (examples below), save.
-3. **Install app** → the Admin API access token appears ONCE. Copy it immediately — Shopify will never show it again. Tokens start with `shpat_`.
+3. **Install app** → the Admin API access token appears ONCE. Copy it immediately, Shopify will never show it again. Tokens start with `shpat_`.
 4. Save to `${HERMES_HOME:-~/.hermes}/.env`:
    ```
    SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxx
@@ -60,7 +60,7 @@ Common scopes by task:
 - **Auth header:** `X-Shopify-Access-Token: $SHOPIFY_ACCESS_TOKEN` (NOT `Authorization: Bearer`)
 - **Method:** always `POST`, always `Content-Type: application/json`, body is `{"query": "...", "variables": {...}}`
 - **HTTP 200 does not mean success.** GraphQL returns errors in a top-level `errors` array and per-field `userErrors`. Always check both.
-- **IDs are GID strings:** `gid://shopify/Product/10079467700516`, `gid://shopify/Variant/...`, `gid://shopify/Order/...`. Pass these verbatim — don't strip the prefix.
+- **IDs are GID strings:** `gid://shopify/Product/10079467700516`, `gid://shopify/Variant/...`, `gid://shopify/Order/...`. Pass these verbatim, don't strip the prefix.
 - **Rate limit:** calculated via query cost (leaky bucket). Each response has `extensions.cost` with `requestedQueryCost`, `actualQueryCost`, `throttleStatus.{currentlyAvailable, maximumAvailable, restoreRate}`. Back off when `currentlyAvailable` drops below your next query's cost. Standard shops = 100 points bucket, 50/s restore; Plus = 1000/100.
 
 Base curl pattern (reusable):
@@ -238,7 +238,7 @@ query($id: ID!) {
 }' '{"id":"gid://shopify/ProductVariant/..."}'
 ```
 
-Adjust stock (delta) — uses `inventoryAdjustQuantities`:
+Adjust stock (delta), uses `inventoryAdjustQuantities`:
 
 ```bash
 shop_gql '
@@ -256,7 +256,7 @@ mutation($input: InventoryAdjustQuantitiesInput!) {
 }'
 ```
 
-Set absolute stock (not delta) — `inventorySetQuantities`:
+Set absolute stock (not delta), `inventorySetQuantities`:
 
 ```bash
 shop_gql '
@@ -298,8 +298,8 @@ mutation($metafields: [MetafieldsSetInput!]!) {
 Different endpoint, different token, used for customer-facing apps/hydrogen-style headless setups. Headers differ:
 
 - **Endpoint:** `https://$SHOPIFY_STORE_DOMAIN/api/$SHOPIFY_API_VERSION/graphql.json`
-- **Auth header (public):** `X-Shopify-Storefront-Access-Token: <public token>` — embeddable in browser
-- **Auth header (private):** `Shopify-Storefront-Private-Token: <private token>` — server-only
+- **Auth header (public):** `X-Shopify-Storefront-Access-Token: <public token>`: embeddable in browser
+- **Auth header (private):** `Shopify-Storefront-Private-Token: <private token>`: server-only
 
 ```bash
 curl -sS -X POST \
@@ -360,7 +360,7 @@ echo -n "$REQUEST_BODY" | openssl dgst -sha256 -hmac "$APP_SECRET" -binary | bas
 - **REST endpoints still exist but are frozen.** Don't write new integrations against `/admin/api/.../products.json`. Use GraphQL.
 - **Token format check.** Admin tokens start with `shpat_`. Storefront public tokens with `shpua_`. If you have one and the wrong header, every request returns 401 without a useful error body.
 - **403 with a valid token = missing scope.** Shopify returns `{"errors":[{"message":"Access denied for ..."}]}`. Re-configure Admin API scopes on the app, then reinstall to regenerate the token.
-- **`userErrors` is empty != success.** Also check `data.<mutation>.<resource>` is non-null. Some failures populate neither — inspect the whole response.
+- **`userErrors` is empty != success.** Also check `data.<mutation>.<resource>` is non-null. Some failures populate neither, inspect the whole response.
 - **GID vs numeric ID.** Legacy REST gave numeric IDs; GraphQL wants full GID strings. To convert: `gid://shopify/Product/<numeric>`.
 - **Rate limit surprise.** A single `products(first: 250)` with deep nesting can cost 1000+ points and throttle immediately on a standard-plan shop. Start narrow, read `extensions.cost`, adjust.
 - **Pagination order.** `products(first: N, reverse: true)` sorts by `id DESC`, not `created_at`. Use `sortKey: CREATED_AT, reverse: true` for "newest first."
@@ -370,4 +370,4 @@ echo -n "$REQUEST_BODY" | openssl dgst -sha256 -hmac "$APP_SECRET" -binary | bas
 
 ## Safety
 
-Mutations in Shopify are real — they create products, charge refunds, cancel orders, ship fulfillments. Before running `productDelete`, `orderCancel`, `refundCreate`, or any bulk mutation: state clearly what the change is, on which shop, and confirm with the user. There is no staging clone of production data unless the user has a separate dev store.
+Mutations in Shopify are real, they create products, charge refunds, cancel orders, ship fulfillments. Before running `productDelete`, `orderCancel`, `refundCreate`, or any bulk mutation: state clearly what the change is, on which shop, and confirm with the user. There is no staging clone of production data unless the user has a separate dev store.

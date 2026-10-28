@@ -14,7 +14,7 @@ metadata:
 # Hyperliquid Skill
 
 Query Hyperliquid market and account data through the public `/info` endpoint.
-Read-only — no API key, no signing, no order placement.
+Read-only: no API key, no signing, no order placement.
 
 12 commands: `dexs`, `markets`, `spots`, `candles`, `funding`, `l2`, `state`,
 `spot-balances`, `fills`, `orders`, `review`, `export`. Stdlib only
@@ -34,13 +34,13 @@ Read-only — no API key, no signing, no order placement.
 
 ## Prerequisites
 
-Stdlib only — no external packages, no API key.
+Stdlib only: no external packages, no API key.
 
 The script reads `${HERMES_HOME:-~/.hermes}/.env` for two optional defaults:
 
-- `HYPERLIQUID_API_URL` — defaults to `https://api.hyperliquid.xyz`. Set to
+- `HYPERLIQUID_API_URL`: defaults to `https://api.hyperliquid.xyz`. Set to
   `https://api.hyperliquid-testnet.xyz` for testnet.
-- `HYPERLIQUID_USER_ADDRESS` — default address for `state`, `spot-balances`,
+- `HYPERLIQUID_USER_ADDRESS`: default address for `state`, `spot-balances`,
   `fills`, `orders`, and `review`. If unset, pass the address as the first
   positional argument.
 
@@ -189,7 +189,7 @@ normalized candle rows, normalized funding rows, summary stats. Use
 - Public info endpoints are rate-limited. Large historical queries may
   return capped windows; iterate with later `startTime` values.
 - `fills --hours ...` uses `userFillsByTime`, which only exposes a
-  recent rolling window — not full archive history.
+  recent rolling window: not full archive history.
 - `historicalOrders` returns recent orders only; not a full export.
 - The `review` command is heuristic. It cannot reconstruct intent,
   order placement quality, or true slippage from fills alone.

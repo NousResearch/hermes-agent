@@ -28,13 +28,13 @@ Fetch Canvas LMS courses and assignments via API token.
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# Canvas LMS — Course & Assignment Access
+# Canvas LMS, Course & Assignment Access
 
 Read-only access to Canvas LMS for listing courses and assignments.
 
 ## Scripts
 
-- `scripts/canvas_api.py` — Python CLI for Canvas API calls
+- `scripts/canvas_api.py`, Python CLI for Canvas API calls
 
 ## Setup
 
@@ -99,15 +99,15 @@ Canvas uses `Link` headers for pagination. The Python script handles pagination 
 
 ## Rules
 
-- This skill is **read-only** — it only fetches data, never modifies courses or assignments
-- On first use, verify auth by running `$CANVAS list_courses` — if it fails with 401, guide the user through setup
+- This skill is **read-only**: it only fetches data, never modifies courses or assignments
+- On first use, verify auth by running `$CANVAS list_courses`, if it fails with 401, guide the user through setup
 - Canvas rate-limits to ~700 requests per 10 minutes; check `X-Rate-Limit-Remaining` header if hitting limits
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
-| 401 Unauthorized | Token invalid or expired — regenerate in Canvas Settings |
+| 401 Unauthorized | Token invalid or expired, regenerate in Canvas Settings|
 | 403 Forbidden | Token lacks permission for this course |
 | Empty course list | Try `--enrollment-state active` or omit the flag to see all states |
 | Wrong institution | Verify `CANVAS_BASE_URL` matches the URL in your browser |

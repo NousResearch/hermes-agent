@@ -33,7 +33,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 ## What's inside
 
-Expert guidance for fine-tuning LLMs with Axolotl — YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support.
+Expert guidance for fine-tuning LLMs with Axolotl, YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support.
 
 Assistance with axolotl development, generated from official documentation.
 

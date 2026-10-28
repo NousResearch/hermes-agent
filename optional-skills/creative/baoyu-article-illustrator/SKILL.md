@@ -28,7 +28,7 @@ Trigger this skill when the user asks to illustrate an article, add images to an
 |-----------|----------|----------|
 | **Type** | Information structure | infographic, scene, flowchart, comparison, framework, timeline |
 | **Style** | Rendering approach | notion, warm, minimal, blueprint, watercolor, elegant |
-| **Palette** | Color scheme (optional) | macaron, warm, neon — overrides style's default colors |
+| **Palette** | Color scheme (optional) | macaron, warm, neon, overrides style's default colors|
 
 Combine freely: `type=infographic, style=vector-illustration, palette=macaron`.
 
@@ -73,10 +73,10 @@ If the user asks for a different layout (e.g., images alongside the article, or 
 
 ## Core Principles
 
-- **Visualize concepts, not metaphors** — if the article uses a metaphor (e.g., "电锯切西瓜"), illustrate the underlying concept, not the literal image.
-- **Labels use article data** — actual numbers, terms, and quotes from the article, not generic placeholders.
-- **Prompt files are reproducibility records** — every illustration must have a saved prompt file under `prompts/` before any image is generated.
-- **Strip secrets** — scan source content for API keys, tokens, or credentials before writing anything to disk.
+- **Visualize concepts, not metaphors**: if the article uses a metaphor (e.g., "电锯切西瓜"), illustrate the underlying concept, not the literal image.
+- **Labels use article data**: actual numbers, terms, and quotes from the article, not generic placeholders.
+- **Prompt files are reproducibility records**: every illustration must have a saved prompt file under `prompts/` before any image is generated.
+- **Strip secrets**: scan source content for API keys, tokens, or credentials before writing anything to disk.
 
 ## Workflow
 
@@ -95,7 +95,7 @@ If the user asks for a different layout (e.g., images alongside the article, or 
 If the user supplies reference images (paths pasted inline, attachments, or a URL):
 
 1. For each reference, call `vision_analyze` with the path/URL and a question asking for style, palette, composition, and subject. Record the returned description in `{output-dir}/references/NN-ref-{slug}.md` via `write_file`.
-2. **Do not** try to copy the binary via `write_file` / `read_file` — those are text-only. If you want a local copy for the record, use `terminal` (`cp "$src" "{output-dir}/references/NN-ref-{slug}.{ext}"`). The skill itself never needs to read the binary; it works off the vision description.
+2. **Do not** try to copy the binary via `write_file` / `read_file`: those are text-only. If you want a local copy for the record, use `terminal` (`cp "$src" "{output-dir}/references/NN-ref-{slug}.{ext}"`). The skill itself never needs to read the binary; it works off the vision description.
 3. Since `image_generate` doesn't take image inputs, the vision description is what gets embedded in prompts during Step 5.
 
 Full procedures: [references/workflow.md](references/workflow.md#step-1-detect-reference-images).
@@ -145,7 +145,7 @@ Full template: [references/workflow.md](references/workflow.md#step-4-generate-o
 
 ### Step 5: Generate Prompts
 
-**BLOCKING**: Every illustration must have a saved prompt file before any image is generated — the prompt file is the reproducibility record.
+**BLOCKING**: Every illustration must have a saved prompt file before any image is generated, the prompt file is the reproducibility record.
 
 For each illustration:
 
@@ -153,7 +153,7 @@ For each illustration:
 2. Save to `{output-dir}/prompts/NN-{type}-{slug}.md` using `write_file` with YAML frontmatter.
 3. Prompts MUST use type-specific templates with structured sections (ZONES / LABELS / COLORS / STYLE / ASPECT).
 4. LABELS MUST include article-specific data: actual numbers, terms, metrics, quotes.
-5. Process references (`direct`/`style`/`palette`) per prompt frontmatter — for `direct` usage, embed a textual description of the reference in the prompt (since `image_generate` doesn't take reference-image inputs).
+5. Process references (`direct`/`style`/`palette`) per prompt frontmatter, for `direct` usage, embed a textual description of the reference in the prompt (since `image_generate` doesn't take reference-image inputs).
 
 ### Step 6: Generate Images
 
@@ -198,10 +198,10 @@ Images: X/N generated
 
 ## Pitfalls
 
-1. **Data integrity is paramount** — never summarize, paraphrase, or alter source statistics. "73% increase" stays "73% increase".
-2. **Strip secrets** — scan source content for API keys, tokens, or credentials before including in any output file.
-3. **Don't illustrate metaphors literally** — visualize the underlying concept.
-4. **Prompt files are mandatory** — no image generation without a saved prompt file. The file is what lets you regenerate or switch backends later.
-5. **`image_generate` aspect ratios** — the tool supports `landscape`, `portrait`, and `square`. Custom ratios map to the nearest option.
-6. **`image_generate` returns a URL, not a local file** — always download via `terminal` (`curl`) before inserting local image paths into the article.
-7. **No backend selection from the agent** — `image_generate` uses whatever model the user configured (default: FAL FLUX 2 Klein 9B). Don't write `"use <model> to generate this"` into prompts expecting it to route.
+1. **Data integrity is paramount**: never summarize, paraphrase, or alter source statistics. "73% increase" stays "73% increase".
+2. **Strip secrets**: scan source content for API keys, tokens, or credentials before including in any output file.
+3. **Don't illustrate metaphors literally**: visualize the underlying concept.
+4. **Prompt files are mandatory**: no image generation without a saved prompt file. The file is what lets you regenerate or switch backends later.
+5. **`image_generate` aspect ratios**: the tool supports `landscape`, `portrait`, and `square`. Custom ratios map to the nearest option.
+6. **`image_generate` returns a URL, not a local file**: always download via `terminal` (`curl`) before inserting local image paths into the article.
+7. **No backend selection from the agent**: `image_generate` uses whatever model the user configured (default: FAL FLUX 2 Klein 9B). Don't write `"use <model> to generate this"` into prompts expecting it to route.

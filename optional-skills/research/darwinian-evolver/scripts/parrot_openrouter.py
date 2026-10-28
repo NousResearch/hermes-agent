@@ -19,7 +19,7 @@ from pathlib import Path
 import jinja2
 from openai import OpenAI
 
-# Vendored problem types from upstream (AGPL — only run via subprocess in production)
+# Vendored problem types from upstream (AGPL: only run via subprocess in production)
 from darwinian_evolver.cli_common import build_hyperparameter_config_from_args
 from darwinian_evolver.cli_common import register_hyperparameter_args
 from darwinian_evolver.cli_common import parse_learning_log_view_type
@@ -53,7 +53,7 @@ def _prompt_llm(prompt: str) -> str:
     except Exception as e:
         # Treat any provider error (rate limit, content filter, schema reject)
         # as a failed response. The evolver will simply see this as a low score
-        # on this organism and move on — much friendlier than killing the run.
+        # on this organism and move on: much friendlier than killing the run.
         return f"<LLM_ERROR: {type(e).__name__}: {e}>"
 
 

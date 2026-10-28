@@ -13,7 +13,7 @@ adapted from alt-glitch's NousResearch/kanban-video-pipeline.
 Usage:
     bootstrap_pipeline.py plan.json [--out setup.sh]
 
-The plan.json schema is documented inline below — see the `validate_plan`
+The plan.json schema is documented inline below: see the `validate_plan`
 function. A minimal example:
 
     {
@@ -202,21 +202,21 @@ def render_brief(plan: dict) -> str:
 
 def render_team_md(plan: dict) -> str:
     """Render TEAM.md from the team list + scene → tool mapping."""
-    lines = [f"# Team & Task Graph — {plan['title']}", "", "## Team", ""]
+    lines = [f"# Team & Task Graph: {plan['title']}", "", "## Team", ""]
     for t in plan["team"]:
         skills = (
             f"loads `{', '.join(t['skills'])}`"
             if t["skills"] else "no skills required"
         )
         lines.append(
-            f"- `{t['profile']}` — {t['responsibilities']} ({skills})"
+            f"- `{t['profile']}`: {t['responsibilities']} ({skills})"
         )
     lines.extend(["", "## Task Graph", "", "```"])
 
     # Build a simple task graph based on conventions
     profiles_by_role = {t["role"]: t["profile"] for t in plan["team"]}
     director = profiles_by_role.get("director", "director")
-    lines.append(f"T0  {director} — decompose")
+    lines.append(f"T0  {director}: decompose")
 
     next_id = 1
     parents_for_renderer: list[str] = ["T0"]
@@ -224,7 +224,7 @@ def render_team_md(plan: dict) -> str:
     if "cinematographer" in profiles_by_role:
         cid = f"T{next_id}"
         lines.append(
-            f"{cid:5} {profiles_by_role['cinematographer']} — visual spec for all scenes (parent: T0)"
+            f"{cid:5} {profiles_by_role['cinematographer']}: visual spec for all scenes (parent: T0)"
         )
         parents_for_renderer = [cid]
         next_id += 1
@@ -232,7 +232,7 @@ def render_team_md(plan: dict) -> str:
     if "music-supervisor" in profiles_by_role:
         cid = f"T{next_id}"
         lines.append(
-            f"{cid:5} {profiles_by_role['music-supervisor']} — track analysis + beats.json (parent: T0)"
+            f"{cid:5} {profiles_by_role['music-supervisor']}: track analysis + beats.json (parent: T0)"
         )
         next_id += 1
         ms_id = cid
@@ -252,7 +252,7 @@ def render_team_md(plan: dict) -> str:
         parents = parents_for_renderer + ([ms_id] if ms_id else [])
         parent_str = ", ".join(parents)
         lines.append(
-            f"{cid:5} {renderer_profile} — scene {s.get('n', '?')}: "
+            f"{cid:5} {renderer_profile}: scene {s.get('n', '?')}: "
             f"{s.get('content', '')[:50]} (parents: {parent_str})"
         )
         scene_ids.append(cid)
@@ -261,7 +261,7 @@ def render_team_md(plan: dict) -> str:
     # VO + audio mix
     if "voice-talent" in profiles_by_role:
         vo_id = f"T{next_id}"
-        lines.append(f"{vo_id:5} {profiles_by_role['voice-talent']} — narration (parent: T0)")
+        lines.append(f"{vo_id:5} {profiles_by_role['voice-talent']}: narration (parent: T0)")
         next_id += 1
     else:
         vo_id = None
@@ -270,7 +270,7 @@ def render_team_md(plan: dict) -> str:
         am_id = f"T{next_id}"
         am_parents = [p for p in [ms_id, vo_id] if p]
         lines.append(
-            f"{am_id:5} {profiles_by_role['audio-mixer']} — mix audio (parents: {', '.join(am_parents)})"
+            f"{am_id:5} {profiles_by_role['audio-mixer']}: mix audio (parents: {', '.join(am_parents)})"
         )
         next_id += 1
     else:
@@ -281,7 +281,7 @@ def render_team_md(plan: dict) -> str:
         ed_id = f"T{next_id}"
         ed_parents = scene_ids + [p for p in [am_id, vo_id, ms_id] if p and p not in scene_ids]
         lines.append(
-            f"{ed_id:5} {profiles_by_role['editor']} — assemble + mux (parents: {', '.join(ed_parents)})"
+            f"{ed_id:5} {profiles_by_role['editor']}: assemble + mux (parents: {', '.join(ed_parents)})"
         )
         next_id += 1
     else:
@@ -291,7 +291,7 @@ def render_team_md(plan: dict) -> str:
     if "captioner" in profiles_by_role and ed_id:
         cap_id = f"T{next_id}"
         lines.append(
-            f"{cap_id:5} {profiles_by_role['captioner']} — SRT + burn (parent: {ed_id})"
+            f"{cap_id:5} {profiles_by_role['captioner']}: SRT + burn (parent: {ed_id})"
         )
         next_id += 1
         last = cap_id
@@ -302,7 +302,7 @@ def render_team_md(plan: dict) -> str:
     if "reviewer" in profiles_by_role and last:
         rv_id = f"T{next_id}"
         lines.append(
-            f"{rv_id:5} {profiles_by_role['reviewer']} — final QA (parent: {last})"
+            f"{rv_id:5} {profiles_by_role['reviewer']}: final QA (parent: {last})"
         )
 
     lines.append("```")
@@ -344,7 +344,7 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
             f'hermes profile create {t["profile"]} --clone 2>/dev/null || true'
         )
 
-    # Profile config — emit JSON arrays so the bash function can pass them
+    # Profile config: emit JSON arrays so the bash function can pass them
     # safely through to the Python YAML patcher.
     profile_configs = []
     for t in plan["team"]:
@@ -356,7 +356,7 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
             f"configure_profile {t['profile']!r} {ts_json!r} {sk_json!r}"
         )
 
-    # SOUL writes — uses heredocs per profile
+    # SOUL writes: uses heredocs per profile
     soul_writes = []
     for t in plan["team"]:
         soul_writes.append(
@@ -374,11 +374,11 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
         'TASTE_EOF\n'
         'cat > "$WORKSPACE/taste/emotional-dna.md" <<\'DNA_EOF\'\n'
         '# Emotional DNA\n\n'
-        '_(What this piece should FEEL like — populate from the brief.)_\n'
+        '_(What this piece should FEEL like: populate from the brief.)_\n'
         'DNA_EOF'
     )
 
-    # Asset copies — leave empty by default; user fills in
+    # Asset copies: leave empty by default; user fills in
     asset_copies = "# Add cp/rsync commands here for any provided assets"
 
     out = tmpl
@@ -419,7 +419,7 @@ def render_soul_md(team_member: dict, plan: dict) -> str:
         common_rules += (
             "- **Do not execute the work yourself.** For every concrete task, "
             "create a kanban task and assign it to the appropriate profile.\n"
-            "- **Decompose, route, comment, approve — that's the whole job.**\n"
+            "- **Decompose, route, comment, approve: that's the whole job.**\n"
             "- **Read TEAM.md** for the canonical task graph. Do not invent "
             "new roles unless the brief truly demands it.\n"
         )

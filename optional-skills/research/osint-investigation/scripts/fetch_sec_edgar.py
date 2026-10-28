@@ -49,7 +49,7 @@ def _resolve_cik(company: str) -> tuple[str, str]:
     """Resolve a company name to a CIK via EDGAR's atom feed.
 
     Returns (cik, resolved_company_name). The feed entries also reveal whether
-    the match is an individual filer (Form 3/4/5 only) — surfaced in the
+    the match is an individual filer (Form 3/4/5 only): surfaced in the
     return value so callers can warn.
     """
     url = "https://www.sec.gov/cgi-bin/browse-edgar"
@@ -103,7 +103,7 @@ def fetch(
     primary_doc = recent.get("primaryDocument", [])
     period = recent.get("reportDate", [])
 
-    # Histogram of available filing types — useful for surfacing why a filter
+    # Histogram of available filing types: useful for surfacing why a filter
     # returned 0 (e.g. user asked for 10-K on an individual Form 4 filer).
     type_hist: dict[str, int] = {}
     for ftype in form:

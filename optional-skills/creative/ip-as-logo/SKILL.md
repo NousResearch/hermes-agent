@@ -18,13 +18,13 @@ metadata:
 Create the simplest possible cute IP character: a compact, lovable symbol that remains recognizable at `32 × 32`, not a detailed character illustration.
 
 > **Hermes adaptation notes** (the rest of this document is the upstream
-> workflow, kept intact — snapshot of
+> workflow, kept intact, snapshot of
 > [s1dashu/ip-as-logo-skill](https://github.com/s1dashu/ip-as-logo-skill)
 > commit [`b1bf517c`](https://github.com/s1dashu/ip-as-logo-skill/commit/b1bf517c54a407452cfaca98a54668cd052f8e63),
-> Aug 20 2026, MIT — see `LICENSE`):
+> Aug 20 2026, MIT, see `LICENSE`):
 >
 > - **Image generation path**: use the built-in `image_generate` tool with
->   `aspect_ratio="square"`. The active backend is user-configured — do not
+>   `aspect_ratio="square"`. The active backend is user-configured, do not
 >   pick or switch models. Modern instruction-following backends (GPT Image,
 >   Seedream, FLUX, Grok Imagine) take the full prompt skeleton with the
 >   natural-language `Constraints:` line; `image_generate` exposes no
@@ -63,7 +63,7 @@ Use when a user wants a mascot, IP character, brand character, or "cute logo" fo
    - If the user accepts all three directions and the six-image proposal, generate two independent variants per direction and label them `A1`, `A2`, `B1`, `B2`, `C1`, and `C2`. Assign `A1`, `B1`, and `C1` to the lower-left and `A2`, `B2`, and `C2` to the lower-right so every direction is tested once from each side.
    - If the user selects one direction but accepts six images, generate six controlled variants of that direction and label them `A1` through `A6`. Assign odd-numbered variants to the lower-left and even-numbered variants to the lower-right.
    - If the user rejects the proposed quantity, directions, or distribution, follow the user's replacement instructions without arguing for the default.
-   - For a pre-authorized reduced batch (e.g. "generate exactly 2") where the user did not pick directions, prefer one direction with N variants labeled `A1..AN`; state the direction and rationale in the report. Skip the three-direction proposal round whenever the request already authorizes a specific batch and forbids further confirmation — the "always present three directions" rule in step 4 applies only when a proposal round is possible.
+   - For a pre-authorized reduced batch (e.g. "generate exactly 2") where the user did not pick directions, prefer one direction with N variants labeled `A1..AN`; state the direction and rationale in the report. Skip the three-direction proposal round whenever the request already authorizes a specific batch and forbids further confirmation, the "always present three directions" rule in step 4 applies only when a proposal round is possible.
    - For any other even default batch size, split candidates equally between lower-left and lower-right. For an odd batch, assign the extra candidate to either side deliberately and record the imbalance. Do not use bottom-center unless the user explicitly requests it.
 7. Default every candidate to exactly three semantic colors in the complete image: exactly two IP base colors plus exactly one background color. Reuse the two IP colors for facial marks rather than introducing additional semantic colors. Follow an explicit user request for another color count. Keep required product cues, identifying features, complexity limits, and any supplied palette consistent enough for useful comparison.
 8. Determine the available image-generation path before promising output. In Hermes this is the `image_generate` tool; if it reports no configured backend, ask the user to enable one (`hermes tools`) instead of fabricating results.
@@ -71,14 +71,14 @@ Use when a user wants a mascot, IP character, brand character, or "cute logo" fo
 10. If the user supplies a background palette, reserve every supplied color for backgrounds unless they explicitly say otherwise. Choose exactly two IP base colors independently for the subject and context unless the user also assigns subject colors. Do not treat any historical or example palette as a closed list of allowed backgrounds.
 11. Abstract each subject using the complexity budget below. Generate every candidate as a separate full-resolution square asset; never ask an image model to compose a contact sheet, grid, or multi-image sheet. Do not use previous candidates as image references when testing prompt-only reproducibility.
 12. Treat each batch as a one-pass creative draw. Generate every requested candidate once, then preserve and deliver every returned result as-is. Do not inspect outputs to block delivery, classify them as recommended or non-recommended, retry them automatically, or repair them with post-processing.
-13. Preserve and label every generated result. Report every label, IP direction and rationale, assigned corner, saved path, prompt/color mapping, and dimensions (when the backend returns only a URL with no pixel size, report "backend-native square" — do not inspect the image just to measure it). Present all results together; generate refinements or replacements only when the user explicitly asks for another draw.
+13. Preserve and label every generated result. Report every label, IP direction and rationale, assigned corner, saved path, prompt/color mapping, and dimensions (when the backend returns only a URL with no pixel size, report "backend-native square", do not inspect the image just to measure it). Present all results together; generate refinements or replacements only when the user explicitly asks for another draw.
 
-When proposing directions before generation, describe each in one compact line: `<IP subject> — <product connection> — <defining silhouette>`. End with a direct proposal to generate six images using the distribution above. Do not turn the discovery phase into a long branding workshop unless the user asks for one.
+When proposing directions before generation, describe each in one compact line: `<IP subject>, <product connection>, <defining silhouette>`. End with a direct proposal to generate six images using the distribution above. Do not turn the discovery phase into a long branding workshop unless the user asks for one.
 
 ## Complexity budget
 
 - Build one dominant continuous outer silhouette from roughly `4–7` large basic geometric shapes. Merge or delete any shape that does not carry identity, expression, or recognition.
-- Use at most one species-defining feature: for example, one large pouch beak, one pair of curled horns, or one broad visor. For limbless or featureless subjects (snakes, ghosts, blobs), the defining feature can be a silhouette gesture — one plump coil, one wavy hem — and the paired-features rule reduces to the two eyes.
+- Use at most one species-defining feature: for example, one large pouch beak, one pair of curled horns, or one broad visor. For limbless or featureless subjects (snakes, ghosts, blobs), the defining feature can be a silhouette gesture, one plump coil, one wavy hem, and the paired-features rule reduces to the two eyes.
 - Use at most two broad internal color regions corresponding to the two IP base colors. Keep the face to two eyes and, only when needed for the expression, one tiny mouth. Omit eyebrows, highlights, nostrils, texture, outlines, and decorative marks unless essential for recognition.
 - Remove repeated feathers, scales, fur tufts, armor plates, buttons, screws, numbers, labels, and other illustrative detail.
 - Make simplification, cuteness, and an endearing baby-like personality the decisive qualities. Favor a large head, compact proportions, soft cheeks, widely spaced simple eyes, and a calm friendly expression when appropriate to the subject.
@@ -144,10 +144,10 @@ Constraints: Use no text or watermark. Add no borders, frames, cards, or present
 
 ## Pitfalls
 
-- The single biggest failure mode is detail creep: models add outlines, texture, extra colors, and scenery. The prompt skeleton's `Constraints:` line is load-bearing — never trim it.
+- The single biggest failure mode is detail creep: models add outlines, texture, extra colors, and scenery. The prompt skeleton's `Constraints:` line is load-bearing, never trim it.
 - Naming the asset a "logo" or "icon" in the generation prompt triggers presentation framing (badges, cards, mockups). Keep the prompt purely pictorial.
 - Asking one call for a grid/contact sheet of variants produces small, inconsistent characters. One candidate per call, always.
-- If two candidates in a batch come back nearly identical, that's normal stochastic behavior — deliver both; do not silently regenerate.
+- If two candidates in a batch come back nearly identical, that's normal stochastic behavior, deliver both; do not silently regenerate.
 
 ## Verification
 

@@ -23,7 +23,7 @@ Usage:
   If --mcp-url / --token-endpoint are omitted, they're read from the token's
   `resource` field and the AS .well-known metadata respectively.
 
-NEVER prints secret values — only lengths, scope, expiry, and HTTP status.
+NEVER prints secret values: only lengths, scope, expiry, and HTTP status.
 """
 import json, os, sys, time, argparse, urllib.request, urllib.error, urllib.parse
 

@@ -4,17 +4,17 @@ Everything runs through `npx hyperframes` (or the globally-installed `hyperframe
 
 ## Workflow
 
-1. **Scaffold** — `npx hyperframes init my-video` (or `npx hyperframes capture <url>` if starting from a website)
-2. **Write** — author HTML composition (see `composition.md`)
-3. **Lint** — `npx hyperframes lint`
-4. **Validate** — `npx hyperframes validate` (WCAG contrast audit)
-5. **Inspect** — `npx hyperframes inspect` (visual layout audit)
-6. **Preview** — `npx hyperframes preview`
-7. **Render** — `npx hyperframes render`
+1. **Scaffold**: `npx hyperframes init my-video` (or `npx hyperframes capture <url>` if starting from a website)
+2. **Write**: author HTML composition (see `composition.md`)
+3. **Lint**: `npx hyperframes lint`
+4. **Validate**: `npx hyperframes validate` (WCAG contrast audit)
+5. **Inspect**: `npx hyperframes inspect` (visual layout audit)
+6. **Preview**: `npx hyperframes preview`
+7. **Render**: `npx hyperframes render`
 
-Always lint before preview/render — catches missing `data-composition-id`, overlapping tracks, and unregistered timelines.
+Always lint before preview/render, catches missing `data-composition-id`: overlapping tracks, and unregistered timelines.
 
-## init — Scaffold a Project
+## init, Scaffold a Project
 
 ```bash
 npx hyperframes init my-video                        # interactive wizard
@@ -28,7 +28,7 @@ Templates: `blank`, `warm-grain`, `play-mode`, `swiss-grid`, `vignelli`, `decisi
 
 `init` creates the correct file structure, copies media, transcribes audio with Whisper, and installs authoring skills. Use it instead of creating files by hand.
 
-## capture — Website → Editable Components
+## capture, Website → Editable Components
 
 ```bash
 npx hyperframes capture https://example.com                  # → captures/example.com/
@@ -39,7 +39,7 @@ npx hyperframes capture https://example.com --skip-assets    # skip images/SVGs
 
 Captures the site into `captures/<hostname>/capture/` by default, producing `capture/screenshots/`, `capture/assets/`, `capture/extracted/` (tokens.json, visible-text.txt, fonts.json), and a self-contained snapshot.
 
-All downstream steps (DESIGN.md, SCRIPT.md, STORYBOARD, composition) read from the `capture/` subfolder — see `website-to-video.md`.
+All downstream steps (DESIGN.md, SCRIPT.md, STORYBOARD, composition) read from the `capture/` subfolder, see `website-to-video.md`.
 
 ## lint
 
@@ -59,7 +59,7 @@ npx hyperframes validate                 # WCAG contrast audit at 5 timestamps
 npx hyperframes validate --no-contrast   # skip while iterating
 ```
 
-Seeks to 5 timestamps, screenshots the page, samples background pixels behind every text element, and warns on contrast ratios below 4.5:1 (normal text) or 3:1 (large text — 24px+, or 19px+ bold). Run before final render.
+Seeks to 5 timestamps, screenshots the page, samples background pixels behind every text element, and warns on contrast ratios below 4.5:1 (normal text) or 3:1 (large text, 24px+, or 19px+ bold). Run before final render.
 
 ## inspect
 
@@ -71,7 +71,7 @@ npx hyperframes inspect --samples 15    # denser timeline sweep
 npx hyperframes inspect --at 1.5,4,7.25 # explicit hero-frame timestamps
 ```
 
-Use this after `lint` and `validate`, especially for compositions with speech bubbles, cards, captions, or tight typography. Reports overflow, off-frame elements, occluded text, contrast warnings, and per-timestamp layout summaries — catches issues that pure timeline lint can't see (e.g., a caption that wraps past the safe area only at a specific timestamp).
+Use this after `lint` and `validate`: especially for compositions with speech bubbles, cards, captions, or tight typography. Reports overflow, off-frame elements, occluded text, contrast warnings, and per-timestamp layout summaries, catches issues that pure timeline lint can't see (e.g., a caption that wraps past the safe area only at a specific timestamp).
 
 `npx hyperframes layout` is a compatibility alias for the same visual inspection pass.
 
@@ -131,7 +131,7 @@ npx hyperframes tts "Hello there" --voice af_heart --lang fr-fr --output accente
 npx hyperframes tts --list                    # show all voices
 ```
 
-Uses Kokoro (local, no API key). Voice ID first letter encodes language: `a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `j` Japanese, `p` Brazilian Portuguese, `z` Mandarin. The CLI auto-infers the phonemizer locale from that prefix — pass `--lang` only to override (e.g. stylized accents). Valid `--lang` codes: `en-us`, `en-gb`, `es`, `fr-fr`, `hi`, `it`, `pt-br`, `ja`, `zh`. Non-English phonemization requires `espeak-ng` installed system-wide (`apt-get install espeak-ng` / `brew install espeak-ng`).
+Uses Kokoro (local, no API key). Voice ID first letter encodes language: `a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `j` Japanese, `p` Brazilian Portuguese, `z` Mandarin. The CLI auto-infers the phonemizer locale from that prefix, pass `--lang` only to override (e.g. stylized accents). Valid `--lang` codes: `en-us`, `en-gb`, `es`, `fr-fr`, `hi`, `it`, `pt-br`, `ja`, `zh`. Non-English phonemization requires `espeak-ng` installed system-wide (`apt-get install espeak-ng` / `brew install espeak-ng`).
 
 ## doctor
 
@@ -142,7 +142,7 @@ npx hyperframes doctor
 Verifies environment:
 - Node.js >= 22
 - FFmpeg present on PATH
-- Available RAM (renders are memory-hungry — 4 GB minimum)
+- Available RAM (renders are memory-hungry, 4 GB minimum)
 - Chrome binary resolution (`chrome-headless-shell` preferred over system Chrome)
 - Current `hyperframes` version
 
@@ -162,7 +162,7 @@ npx hyperframes browser --clean        # clear the bundled browser cache
 npx hyperframes info
 ```
 
-Prints version, Node version, FFmpeg version, OS, and resolved browser path — useful in bug reports.
+Prints version, Node version, FFmpeg version, OS, and resolved browser path, useful in bug reports.
 
 ## upgrade
 
@@ -170,7 +170,7 @@ Prints version, Node version, FFmpeg version, OS, and resolved browser path — 
 npx hyperframes upgrade -y
 ```
 
-Check for and install updates. Run this if you hit `HeadlessExperimental.beginFrame` errors — the auto-detect fix shipped in `hyperframes@0.4.2` (commit 4c72ba4, March 2026).
+Check for and install updates. Run this if you hit `HeadlessExperimental.beginFrame` errors, the auto-detect fix shipped in `hyperframes@0.4.2` (commit 4c72ba4, March 2026).
 
 ## Other
 

@@ -8,6 +8,7 @@ except ModuleNotFoundError as exc:
         raise
 
 import asyncio
+import contextlib
 import os
 from pathlib import Path
 import sys
@@ -93,6 +94,11 @@ def main():
     try:
         rc = _submit()
     finally:
+        # The reply went to stdout, which is block-buffered when the log is a file: unflushed it would
+        # be written at interpreter exit, i.e. after this trailer, and the trailer is meant to be the
+        # log's LAST line. A stdout that cannot flush must not cost the trailer.
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
         print(f'\n{KANBAN_WORKER_EXIT_TRAILER}{int(rc)}', file=sys.stderr, flush=True)
     return rc
 

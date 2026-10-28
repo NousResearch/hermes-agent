@@ -34,6 +34,11 @@ def exit_single_query(code: int) -> None:
     """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
     if os.environ.get("HERMES_KANBAN_TASK"):
         with contextlib.suppress(Exception):
+            # The trailer must be the log's LAST line, and the reply above it went to stdout without a
+            # flush: stdout is block-buffered when the log is a file, so the reply would otherwise be
+            # written at interpreter exit, after this line, and a reader that checks the tail misses the
+            # witness. A stdout that cannot flush must not cost the trailer.
+            sys.stdout.flush()
             # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
             # captures both streams.
             print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}", file=sys.stderr, flush=True)

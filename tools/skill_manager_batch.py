@@ -83,6 +83,22 @@ def _op_shape_error(action: str, args: dict):
     return None
 
 
+def _batch_target_key(fp: str, skill_name: str) -> str:
+    """The file an op lands on, keyed as the resolver keys it: every accepted main-file
+    spelling ('SKILL.md', '<skill-name>/SKILL.md') is 'SKILL.md'. A deeper '*/SKILL.md'
+    (e.g. 'references/sub/SKILL.md') stays itself — the resolver rejects it at apply time,
+    but the key must not silently collide with the main file first: that collision is what
+    let a write_file('references/sub/SKILL.md') slip past the clobber guard after a
+    full-rewrite patch, since the guard only fired when the keys matched literally."""
+    target = posixpath.normpath(fp.lstrip("/"))
+    if target == "SKILL.md":
+        return target
+    if target.endswith("/SKILL.md") and target.count("/") == 1 \
+            and target.split("/")[0] == posixpath.basename(skill_name):
+        return "SKILL.md"
+    return target
+
+
 def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
     from tools.skill_manager_guards import _background_review_preflight
@@ -122,8 +138,13 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # create and full-rewrite patch (content) always hit SKILL.md.
         full_rewrite = act == "patch" and bool(op.get("content"))
         fp = (op.get("file_path") or "").strip()
-        target = ("SKILL.md" if (act == "create" or full_rewrite or not fp)
-                  else posixpath.normpath(fp.lstrip("/")))
+        if act == "create" or full_rewrite or not fp:
+            target = "SKILL.md"
+        else:
+            # Key every accepted main-file spelling as the main file, exactly as the
+            # resolver resolves it — the guard and the resolver must agree on where an
+            # op lands, or a spelling variant slips the collision the guard exists to catch.
+            target = _batch_target_key(fp, nm)
         key = (nm, target)
         if (act in ("create", "write_file", "remove_file") or full_rewrite) and key in touched_files:
             return fail(i, f": {act} on '{target}' of skill '{nm}' — an earlier op in this "

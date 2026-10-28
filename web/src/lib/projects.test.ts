@@ -342,6 +342,55 @@ describe("kanbanPath", () => {
   });
 });
 
+// ── writeKanbanTask ───────────────────────────────────────────────────────────
+
+import { writeKanbanTask, KANBAN_TASK_LS_KEY } from "@/lib/projects";
+
+const LS_KANBAN_TASK_KEY = KANBAN_TASK_LS_KEY;
+
+describe("writeKanbanTask", () => {
+  beforeEach(() => localStorageStub.clear());
+
+  it("sets the kanban task key in localStorage", () => {
+    writeKanbanTask("t_abc123");
+    expect(localStorageStub.getItem(LS_KANBAN_TASK_KEY)).toBe("t_abc123");
+  });
+
+  it("overwrites a previous task id", () => {
+    writeKanbanTask("t_old");
+    writeKanbanTask("t_new");
+    expect(localStorageStub.getItem(LS_KANBAN_TASK_KEY)).toBe("t_new");
+  });
+
+  it("is a no-op for null", () => {
+    writeKanbanTask("t_existing");
+    writeKanbanTask(null);
+    expect(localStorageStub.getItem(LS_KANBAN_TASK_KEY)).toBe("t_existing");
+  });
+
+  it("is a no-op for undefined", () => {
+    writeKanbanTask("t_existing");
+    writeKanbanTask(undefined);
+    expect(localStorageStub.getItem(LS_KANBAN_TASK_KEY)).toBe("t_existing");
+  });
+
+  it("swallows quota errors without throwing", () => {
+    const orig = localStorageStub.setItem.bind(localStorageStub);
+    localStorageStub.setItem = () => {
+      throw new Error("quota exceeded");
+    };
+    expect(() => writeKanbanTask("t_abc")).not.toThrow();
+    localStorageStub.setItem = orig;
+  });
+
+  it("board and task keys are independent", () => {
+    writeKanbanBoard("my-board");
+    writeKanbanTask("t_taskid");
+    expect(localStorageStub.getItem(LS_KANBAN_KEY)).toBe("my-board");
+    expect(localStorageStub.getItem(LS_KANBAN_TASK_KEY)).toBe("t_taskid");
+  });
+});
+
 // ── API error surface ─────────────────────────────────────────────────────────
 
 describe("api.getProjects error surfacing", () => {

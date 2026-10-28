@@ -51,6 +51,17 @@ export function projectQueryPath(id: string): string {
 const KANBAN_BOARD_LS_KEY = "hermes.kanban.selectedBoard";
 
 /**
+ * localStorage key used to pre-select a specific task when the Kanban plugin
+ * mounts.  The plugin's current dist reads `hermes.kanban.selectedBoard` at
+ * init time; this sibling key follows the same pattern so the plugin can
+ * open the task drawer automatically once it adds support for it.
+ *
+ * @internal  Not yet consumed by the plugin dist — wired here so the web
+ *            side is ready when the plugin is updated.
+ */
+export const KANBAN_TASK_LS_KEY = "hermes.kanban.selectedTask";
+
+/**
  * Persist `boardSlug` to localStorage so the Kanban plugin selects it when
  * the /kanban page mounts.  No-op when `boardSlug` is null/undefined.
  * Swallows quota errors — the plugin handles a missing key gracefully.
@@ -59,6 +70,24 @@ export function writeKanbanBoard(boardSlug: string | null | undefined): void {
   if (!boardSlug) return;
   try {
     localStorage.setItem(KANBAN_BOARD_LS_KEY, boardSlug);
+  } catch {
+    // quota exceeded — ignore
+  }
+}
+
+/**
+ * Persist `taskId` to localStorage so the Kanban plugin can open the task
+ * drawer when the /kanban page mounts.  Follows the same pattern as
+ * `writeKanbanBoard`.
+ *
+ * No-op when `taskId` is null/undefined — a missing key is treated as
+ * "no pre-selected task" by the plugin.
+ * Swallows quota errors — the plugin handles a missing key gracefully.
+ */
+export function writeKanbanTask(taskId: string | null | undefined): void {
+  if (!taskId) return;
+  try {
+    localStorage.setItem(KANBAN_TASK_LS_KEY, taskId);
   } catch {
     // quota exceeded — ignore
   }

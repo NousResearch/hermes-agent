@@ -17,7 +17,7 @@ import { timeAgo } from "@/lib/utils";
 import { KanbanBadge, type KanbanStatus } from "./KanbanBadge";
 import { SessionRow } from "./SessionRow";
 import { FolderTree } from "./FolderTree";
-import { writeKanbanBoard, kanbanPath } from "@/lib/projects";
+import { writeKanbanBoard, writeKanbanTask, kanbanPath } from "@/lib/projects";
 
 type SessionFilter = "all" | "running" | "done" | "failed" | "notask";
 type TabId = "sessions" | "board" | "folders" | "settings";
@@ -425,11 +425,13 @@ export function ProjectsWorkbench({
                         className="grid grid-cols-[auto_1fr_auto_auto] gap-3 items-center px-2.5 py-2.5 border-b border-midground/10 cursor-pointer hover:bg-midground/5 focus:outline-none"
                         onClick={() => {
                           writeKanbanBoard(selectedProject.board);
+                          writeKanbanTask(t.id);
                           navigate(kanbanPath());
                         }}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
                             writeKanbanBoard(selectedProject.board);
+                            writeKanbanTask(t.id);
                             navigate(kanbanPath());
                           }
                         }}

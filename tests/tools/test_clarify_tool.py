@@ -72,6 +72,25 @@ class TestClarifyToolCallbackHandling:
         assert "error" in result
         assert "User cancelled" in result["error"]
 
+    def test_non_dict_string_reply_does_not_crash(self):
+        """A surface returning a bare string must degrade to 'undelivered', not
+        raise ``'str' object has no attribute 'get'`` and swallow the wait."""
+        result = _ask(lambda questions: "some string reply", [{"question": "Pick", "choices": ["A", "B"]}])
+        assert "error" not in result
+        assert result["outcome"] == "undelivered"
+        assert result["notice"] == "some string reply"
+
+    def test_non_dict_none_reply_does_not_crash(self):
+        result = _ask(lambda questions: None, [{"question": "Pick", "choices": ["A", "B"]}])
+        assert "error" not in result
+        assert result["outcome"] == "undelivered"
+
+    def test_non_dict_empty_string_reply_does_not_crash(self):
+        result = _ask(lambda questions: "   ", [{"question": "Pick", "choices": ["A", "B"]}])
+        assert "error" not in result
+        assert result["outcome"] == "undelivered"
+        assert "notice" not in result
+
     def test_user_response_stripped(self):
         """User response should be stripped of whitespace."""
         def mock_callback(questions):

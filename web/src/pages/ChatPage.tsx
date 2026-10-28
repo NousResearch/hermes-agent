@@ -41,6 +41,7 @@ import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-pan
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { createPtyInsertTextForwarder } from "@/lib/pty-insert-text";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -788,13 +789,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.loadAddon(new WebLinksAddon());
 
-    let mobileInputCleanup: (() => void) | null = null;
+    let textareaInputCleanup: (() => void) | null = null;
     // xterm occasionally drops committed dead-key/IME text instead of emitting
     // onData. The compositionend event supplies the authoritative text.
     let sendComposedText: (data: string) => void = () => undefined;
     const compositionForwarder = createPtyCompositionForwarder((data) => {
       sendComposedText(data);
     });
+    // xterm ignores insertText while screenReaderMode is on (#145296), so the
+    // committed text is read off the hidden textarea and forwarded here.
+    let sendInsertedText: (data: string) => void = () => undefined;
+    const insertTextForwarder = createPtyInsertTextForwarder();
     term.open(host);
 
     // IME composition guard (fixes #52111).
@@ -848,11 +853,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         compositionForwarder.onCompositionEnd(ev.data);
       };
 
+      const forwardInsertedText = (ev: Event) => {
+        const typed = insertTextForwarder.takeUnforwardedText(ev as InputEvent);
+        if (typed === null) return;
+        // xterm only clears the textarea on the path it handled; leaving the
+        // value behind is what makes the text accumulate for AT users.
+        textarea.value = "";
+        if (typed) sendInsertedText(typed);
+      };
+
       textarea.addEventListener("beforeinput", markReplacementInput, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
-      mobileInputCleanup = () => {
+      textarea.addEventListener("input", forwardInsertedText, true);
+      textareaInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        textarea.removeEventListener("input", forwardInsertedText, true);
       };
     }
 
@@ -1515,6 +1531,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
+      sendInsertedText = (data) => forwardPtyData(data);
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
@@ -1523,6 +1540,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // onData; only the part that is not an echo of that commit is real.
         const unechoed = compositionForwarder.filterTerminalData(data);
         if (unechoed) {
+          insertTextForwarder.noteTerminalData(unechoed);
           forwardPtyData(unechoed);
         }
       });
@@ -1553,8 +1571,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
-      mobileInputCleanup?.();
+      textareaInputCleanup?.();
       compositionForwarder.dispose();
+      insertTextForwarder.dispose();
       cleanupTouchScroll();
       handleBrowserDropCleanup();
       if (metricsDebounce) clearTimeout(metricsDebounce);

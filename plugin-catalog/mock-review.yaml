@@ -1,8 +1,8 @@
 name: mock-review
 title: Mock Review
 repo: https://github.com/arspesk/hermes-mock-review
-sha: "b4d3c88ccfdf8d8f4d7bed8549fbeb6c1c2020d4"
-version: "1.1.1"
+sha: "bb4740cb5467b8a0445a1701b3214bf1e6b309f7"
+version: "1.1.2"
 description: >-
   Review boards for UI mockups. The agent builds a board from a decisions.json file and
   your prototype pages; you open it on desktop or phone, mark each decision approve,
@@ -31,9 +31,9 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/arspesk/hermes-mock-review#readme
-image: https://raw.githubusercontent.com/arspesk/hermes-mock-review/b4d3c88ccfdf8d8f4d7bed8549fbeb6c1c2020d4/docs/img/catalog-banner.jpg
+image: https://raw.githubusercontent.com/arspesk/hermes-mock-review/bb4740cb5467b8a0445a1701b3214bf1e6b309f7/docs/img/catalog-banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/arspesk/hermes-mock-review/b4d3c88ccfdf8d8f4d7bed8549fbeb6c1c2020d4/docs/img/review-board.png
+  - https://raw.githubusercontent.com/arspesk/hermes-mock-review/bb4740cb5467b8a0445a1701b3214bf1e6b309f7/docs/img/review-board.png
 platforms: []
 known_issues:
   - "here.now hosting needs the official here-now skill in the active profile (`hermes skills install official/productivity/here-now`) and a HERENOW_API_KEY; local and tailnet hosting need neither."

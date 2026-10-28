@@ -280,7 +280,8 @@ class TestListenerDiscovery:
         conn, _ = srv.accept()
         conn.close()  # server side closes first -> TIME_WAIT on 127.0.0.1:<port>
         srv.close()
-        time.sleep(0.1)
+        cli.settimeout(5)
+        assert cli.recv(1) == b""  # wait for the server's FIN, not the clock (main's TIME-WAIT test does the same)
         cli.close()
 
         adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)

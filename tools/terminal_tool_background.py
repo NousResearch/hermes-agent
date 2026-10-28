@@ -145,6 +145,28 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
     process_registry.pending_watchers.append(watcher)
 
 
+def _background_interrupt_result(approval_note: Optional[str] = None) -> str:
+    """Return the standard terminal result for an interrupted background call."""
+    result: dict[str, Any] = {"output": "[Command interrupted]", "exit_code": 130, "error": None}
+    if approval_note:
+        result["approval"] = approval_note.rstrip(".") + ", then interrupted."
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _abort_interrupted_background_spawn(process_registry, proc_session) -> None:
+    """Kill and consume a background process whose tool thread was interrupted mid-spawn."""
+    kill_result = process_registry.kill_process(
+        proc_session.id, source="terminal_interrupt", consume_output=True,
+    )
+    kill_status = kill_result.get("status")
+    failed_start = kill_status == "not_found" and bool(getattr(proc_session, "exited", False))
+    if kill_status not in {"killed", "already_exited"} and not failed_start:
+        raise RuntimeError(
+            "interrupt arrived after background spawn but cleanup failed: "
+            f"{kill_result.get('error') or kill_status or 'unknown error'}"
+        )
+
+
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
@@ -155,19 +177,21 @@ def spawn_background_process(
     persist_on_release: bool = False,
     mounted_host: Optional[str] = None,
     auto_backgrounded: bool = False,
+    clear_interrupt: bool = False,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
     ``auto_backgrounded`` marks a trailing-`&` conversion: the result carries the conversion note
     and skips the silent-background hint, whose "re-launch" advice would start a second copy.
-
-    Never inline-polls ``is_interrupted()``: the spawn detaches and returns
-    exit_code 0 immediately, so the stale-interrupt kill cannot occur here.
     """
+    from tools.interrupt import clear_current_thread_interrupt, is_interrupted
     from tools.process_registry import process_registry
     from tools.terminal_tool import (
         _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
     )
+
+    if clear_interrupt:
+        clear_current_thread_interrupt()
 
     effective_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
@@ -175,11 +199,22 @@ def spawn_background_process(
         env=env,
     )
     try:
+        # Honor a hard interrupt that landed while this tool thread was doing
+        # guard/cwd setup before crossing the spawn boundary.
+        if is_interrupted():
+            return _background_interrupt_result(approval_note)
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
         )
+        # Close the complementary race with reset's fixed-ID snapshot: if an
+        # interrupt won while _spawn was in flight, the process may have
+        # registered after reset took its snapshot. Kill and consume before
+        # attaching watcher metadata so the abandoned turn cannot resurrect.
+        if is_interrupted():
+            _abort_interrupted_background_spawn(process_registry, proc_session)
+            return _background_interrupt_result(approval_note)
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if persist_on_release:

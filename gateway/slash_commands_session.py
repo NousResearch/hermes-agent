@@ -93,6 +93,35 @@ def _reset_process_scoped_tool_state() -> None:
         clear_credential_files()
 
 
+def _snapshot_processes_for_session_reset(session_key: str) -> tuple[str, ...]:
+    """Snapshot non-persisted processes registered to one stable gateway session key."""
+    if not session_key:
+        return ()
+    try:
+        from tools.process_registry import process_registry
+        return process_registry.snapshot_running_ids_for_session(session_key)
+    except Exception:
+        logger.warning("Failed to snapshot background processes for session %s during reset",
+                       session_key, exc_info=True)
+        return ()
+
+
+def _kill_processes_for_session_reset(process_ids: tuple[str, ...]) -> int:
+    """Kill a fixed reset-boundary process snapshot and consume output so reset-killed jobs do not notify the new session."""
+    from tools.process_registry import process_registry
+    killed = 0
+    for process_id in process_ids:
+        try:
+            result = process_registry.kill_process(process_id, source="kill_all", consume_output=True)
+        except Exception:
+            logger.warning("Failed to clean background process %s during session reset",
+                           process_id, exc_info=True)
+            continue
+        if result.get("status") in {"killed", "already_exited"}:
+            killed += 1
+    return killed
+
+
 def _branch_row(msg: dict) -> dict:
     """/branch child row; keeps the api_content sidecar so the branch's first turn replays the
     parent's exact wire bytes (warm provider prompt cache) instead of a cold prefill."""
@@ -139,6 +168,23 @@ class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
     # ------------------------------------------------------------------ /new, /reset
+
+    async def _cleanup_processes_for_reset(self, session_key: str, process_ids: tuple[str, ...]) -> None:
+        """Terminate the pre-reset process snapshot off-loop with the bounded reset budget."""
+        if not process_ids:
+            return
+        try:
+            await asyncio.wait_for(
+                self._run_housekeeping_in_executor(_kill_processes_for_session_reset, process_ids),
+                timeout=_RESET_CLEANUP_TIMEOUT_S)
+        except TimeoutError:
+            logger.warning(
+                "Background process cleanup for session %s exceeded %ss during /new reset; "
+                "proceeding while the worker continues", session_key, _RESET_CLEANUP_TIMEOUT_S)
+        except Exception:
+            logger.warning(
+                "Background process cleanup failed for session %s during /new reset",
+                session_key, exc_info=True)
 
     async def _cleanup_old_agent_for_reset(self, session_key: str) -> None:
         """Close the old agent's tool resources (sandboxes, browsers, subprocesses) before eviction.
@@ -209,6 +255,11 @@ class GatewaySessionCommandsMixin:
         # keeps the slot from becoming a zombie that silently drops all later messages (#28686). Idempotent,
         # so the run's finally calling it again is harmless.
         old_entry = self.session_store._entries.get(session_key)
+        # Snapshot non-persisted processes already registered to this stable session_key
+        # before the first cleanup await so a soft-evicted AIAgent or compression-rotated
+        # session_id cannot leak them, while keeping a replacement turn's processes safe.
+        _reset_process_ids = _snapshot_processes_for_session_reset(session_key)
+        await self._cleanup_processes_for_reset(session_key, _reset_process_ids)
         await self._cleanup_old_agent_for_reset(session_key)
         self._evict_cached_agent(session_key)
         # Conversation boundary: ALL conversation-scoped per-session state + security state in one

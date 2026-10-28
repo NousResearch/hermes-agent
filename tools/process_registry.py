@@ -1590,12 +1590,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
-                "type": "completion",
-                "session_id": session.id,
-                "session_key": session.session_key,
-                "task_id": session.task_id,
-                "owner_task_id": session.owner_task_id,
-                "command": session.command,
+                "type": "completion", "session_id": session.id, "session_key": session.session_key,
+                "task_id": session.task_id, "owner_task_id": session.owner_task_id, "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
                 # A consumer that relays the output (a bot DM's reply) must know it is not whole.
@@ -1609,11 +1605,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
-        return {
-            "exit_code": session.exit_code,
-            "completion_reason": session.completion_reason,
-            "termination_source": session.termination_source,
-        }
+        return {"exit_code": session.exit_code, "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source}
 
     def _release_finished_handles(self, session: ProcessSession):
         """Close a finished session's OS handles (Popen pipes / PTY master).
@@ -2497,11 +2490,21 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         ``default``), shared across turns and sessions, not the turn's id."""
         return frozenset(s.id for s in self.running_owned_by(task_id))
 
+    def snapshot_running_ids_for_session(self, session_key: str) -> tuple[str, ...]:
+        """Capture non-persisted running process IDs for a gateway session key."""
+        if not session_key:
+            return ()
+        with self._lock:
+            return tuple(s.id for s in self._running.values()
+                         if s.session_key == session_key and not s.exited and not s.persist_on_release)
+
     # Kill sources that are agent-lifecycle cleanup (session end / compression / error
     # recovery / turn abandon), not a deliberate stop: those must skip persist_on_release
     # sessions. An explicit stop (process_manage kill, CLI /stop) passes its own source
     # string and still reaches them.
-    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close"})
+    _LIFECYCLE_KILL_SOURCES = frozenset({
+        "kill_all", "gateway_turn_timeout", "gateway_turn_reset", "api_server_sse_disconnect", "agent_close",
+    })
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is
@@ -2509,9 +2512,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         timeout deliberately stopped."""
         return self.kill_all(task_id, exclude_ids=frozenset(baseline_ids or ()), source=source, consume_output=True)
 
-    def kill_all(
-        self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
-        source: str = "kill_all", consume_output: bool = False) -> int:
+    def kill_all(self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
+                 source: str = "kill_all", consume_output: bool = False) -> int:
         """Kill all running processes, optionally only those ``task_id`` spawned (its ``owner_task_id``).
         Returns how many it stopped. A session whose systemd scope did not stop is not counted
         (its descendants may live on), and a later sweep retries it even after it finished.
@@ -2524,16 +2526,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         reaches them, so the user can always stop a persisted process on purpose."""
         lifecycle = source in self._LIFECYCLE_KILL_SOURCES
         with self._lock:
-            targets = [
-                s for s in (*self._running.values(), *self._finished.values())
-                if (task_id is None or s.owner_task_id == task_id)
-                and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending)
-                and not (lifecycle and s.persist_on_release)
-            ]
+            targets = [s for s in (*self._running.values(), *self._finished.values())
+                       if (task_id is None or s.owner_task_id == task_id)
+                       and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending)
+                       and not (lifecycle and s.persist_on_release)]
         results = [self.kill_process(s.id, source=source, consume_output=consume_output) for s in targets]
-        return sum(
-            r.get("status") in {"killed", "already_exited"} and "scope_stop_failed" not in r
-            for r in results)
+        return sum(r.get("status") in {"killed", "already_exited"} and "scope_stop_failed" not in r for r in results)
 
     # ----- Cleanup / Pruning -----
 
@@ -2561,8 +2559,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
-
-
 
 
 process_registry = ProcessRegistry()

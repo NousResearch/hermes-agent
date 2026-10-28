@@ -59,6 +59,13 @@ def test_an_installed_package_brings_its_desktop_half_until_it_is_uninstalled(we
     # The marker is what pairs the half with its agent row and keeps it off until enabled.
     assert (marker["package"], marker["source"]) == ("radar", str(source))
 
+    # A corrupt timestamp in one marker is stale metadata, never an error that hides every plugin.
+    marker_path = hermes_root / "desktop-plugins" / "radar" / ".hermes-package.json"
+    marker_path.write_text(json.dumps({**marker, "sourceMtimeMs": None}), encoding="utf-8")
+    loaded = _loaded(webapp)
+    assert loaded["notes"] == ("mine", None)
+    assert isinstance(loaded["radar"][1]["sourceMtimeMs"], (int, float))
+
     (source / "plugin.js").write_text("export default { v: 2 }", encoding="utf-8")
     later = os.stat(source / "plugin.js").st_mtime + 5
     os.utime(source / "plugin.js", (later, later))

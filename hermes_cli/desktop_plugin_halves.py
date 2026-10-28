@@ -80,7 +80,14 @@ def _read_marker(folder: Path) -> dict | None:
         marker = json.loads((folder / PACKAGE_MARKER).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
-    return marker if isinstance(marker, dict) and marker.get("package") and marker.get("source") else None
+    if not (isinstance(marker, dict) and marker.get("package") and marker.get("source")):
+        return None
+    mtime = marker.get("sourceMtimeMs")
+    if isinstance(mtime, bool) or not isinstance(mtime, (int, float)):
+        # A hand-edited or truncated timestamp is stale metadata: the next pass re-copies the half
+        # instead of raising mid-reconcile and taking every other plugin down with it.
+        marker["sourceMtimeMs"] = -1
+    return marker
 
 
 def _write_marker(folder: Path, marker: dict) -> None:

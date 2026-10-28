@@ -31,8 +31,9 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   }
 })
 
-import { $canonicalGroupBindings, CanonicalGroupList } from './canonical-group-registry'
+import { $canonicalGroupBindings, CanonicalGroupList, publishCanonicalGroup } from './canonical-group-registry'
 import { $groupChatWorkspace } from './group-chat'
+import { dropGroupMainTab, recordGroupMainTab } from './group-panes'
 
 const room = { room_id: 'room-1', name: 'Launch crew', members: [{ member_id: 'm1', profile: 'work', handle: 'work' }] }
 let rooms: (typeof room)[] = []
@@ -69,6 +70,8 @@ afterEach(() => {
   vi.clearAllMocks()
   $canonicalGroupBindings.set({})
   $groupChatWorkspace.set(null)
+  dropGroupMainTab('Launch crew')
+  dropGroupMainTab('Other crew')
 })
 
 async function openDeleteConfirm() {
@@ -108,4 +111,27 @@ it('keeps the row and shows the gateway refusal when the disband fails', async (
   expect(await dialog.findByText(/room is busy/)).toBeTruthy()
   expect(screen.getByRole('button', { hidden: true, name: 'Launch crew' })).toBeTruthy()
   expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
+})
+
+it('closes the tab and selection opened under the room name, and leaves another room open', async () => {
+  const other = { room_id: 'room-2', name: 'Other crew', members: [] }
+  rooms = [room, other]
+  const route = { connectionId: 'local', profile: 'default' }
+  publishCanonicalGroup(route, room.name, { authority: route, room }, 'name')
+  publishCanonicalGroup(route, other.name, { authority: route, room: other }, 'name')
+  const closeAlias = vi.fn()
+  const closeOther = vi.fn()
+  recordGroupMainTab(room.name, closeAlias)
+  recordGroupMainTab(other.name, closeOther)
+  $groupChatWorkspace.set(room.name)
+
+  render(<CanonicalGroupList onOpen={vi.fn()} />)
+  fireEvent.click((await openDeleteConfirm()).getByRole('button', { name: 'Disband' }))
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
+  expect(closeAlias).toHaveBeenCalledTimes(1)
+  expect($groupChatWorkspace.get()).toBeNull()
+  expect(closeOther).not.toHaveBeenCalled()
+  expect(Object.values($canonicalGroupBindings.get()).map(b => b.roomId)).toEqual(expect.arrayContaining(['room-2']))
+  expect(Object.values($canonicalGroupBindings.get()).some(b => b.roomId === 'room-1')).toBe(false)
 })

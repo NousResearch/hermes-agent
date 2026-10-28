@@ -108,13 +108,29 @@ export function publishCanonicalGroup(
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [alias]: binding })
 }
 
+/** Every view string showing this room: its `canonical:` keys, and the name a
+ *  name-opened tab and selection are recorded under (from its route-scoped alias). */
+function canonicalGroupViews({ connectionId, profile, roomId }: CanonicalGroupBinding): Set<string> {
+  const aliasPrefix = canonicalGroupAliasKey({ connectionId, profile }, '')
+  const views = new Set<string>()
+
+  for (const [key, binding] of Object.entries($canonicalGroupBindings.get())) {
+    if (binding.connectionId === connectionId && binding.profile === profile && binding.roomId === roomId) {
+      views.add(key.startsWith(aliasPrefix) ? key.slice(aliasPrefix.length) : key)
+    }
+  }
+
+  return views
+}
+
 interface ListedRoom { binding: CanonicalGroupBinding; key: string; memberCount: number; name: string }
 
 /** Disband on the room's own gateway, then retire it everywhere this window shows it.
  *  A refusal rejects before anything is dropped, so the row stays and the confirm shows why. */
 async function disbandListedRoom(room: ListedRoom, doneMessage: string): Promise<void> {
   await canonicalGroupRequest(room.binding, 'groups.disband', { room_id: room.binding.roomId, cancel_id: randomUuid() })
-  closeGroupChatMainTab(room.key)
+  // Collect before forgetting: the bindings are the only record of which views alias this room.
+  canonicalGroupViews(room.binding).add(room.key).forEach(closeGroupChatMainTab)
   forgetCanonicalGroup(room.binding)
   host.notify({ kind: 'success', message: doneMessage })
 }

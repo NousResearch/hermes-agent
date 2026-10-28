@@ -3920,6 +3920,41 @@ def _worker_session_id_from_events(
         return None
 
 
+def _worker_home_from_events(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Look up the worker's HERMES_HOME from the most recent heartbeat event.
+
+    Workers stamp their HERMES_HOME into heartbeat event payloads via the
+    ``worker_home`` key (added in D-1c).  The dispatcher can use this to
+    open the correct per-profile state.db when writing end_reason for
+    cross-profile workers (crash / timeout paths where the worker has
+    already exited).
+
+    Returns None when no heartbeat with a worker_home has been recorded.
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT payload FROM task_events
+             WHERE task_id = ? AND kind = 'heartbeat'
+               AND json_extract(payload, '$.worker_home') IS NOT NULL
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if not row or not row["payload"]:
+            return None
+        import json as _json
+        payload = _json.loads(row["payload"])
+        return payload.get("worker_home") or None
+    except Exception:
+        return None
+
+
+
 def _record_kanban_end_reason(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3973,16 +4008,22 @@ def _record_kanban_end_reason(
         if not target_session_id:
             return
         from hermes_state import SessionDB
-        # Open the correct profile DB when the worker's HERMES_HOME is pinned
-        # in the env.  During a dispatcher-side call (crash / timeout) the
-        # HERMES_HOME may still point at the dispatcher profile; at that point
-        # the heartbeat lookup already found the session_id, but SessionDB()
-        # defaults to os.environ["HERMES_HOME"] which is the dispatcher's home.
-        # Since we only know the session_id (not the profile home at this point)
-        # we rely on SessionDB() defaulting to the correct home when called from
-        # the worker itself, and accept a silent no-op when called from the
-        # dispatcher with a cross-profile session_id (best-effort).
-        SessionDB().end_session(target_session_id, end_reason)
+        # Resolve the correct profile state.db for cross-profile workers.
+        # Resolution order for the target DB path:
+        # 1. worker_home from heartbeat event payload (dispatcher crash/timeout
+        #    paths: the worker stamped HERMES_HOME into every heartbeat so the
+        #    dispatcher can find its state.db after the worker has exited).
+        # 2. Current HERMES_HOME (same-profile path: the worker is calling
+        #    _record_kanban_end_reason itself, or the dispatcher and worker share
+        #    the same profile — falls back to os.environ["HERMES_HOME"] via
+        #    DEFAULT_DB_PATH).
+        worker_home_dir = _worker_home_from_events(conn, task_id)
+        if worker_home_dir:
+            from pathlib import Path as _Path
+            db_path = _Path(worker_home_dir) / "state.db"
+            SessionDB(db_path=db_path).end_session(target_session_id, end_reason)
+        else:
+            SessionDB().end_session(target_session_id, end_reason)
     except Exception:
         pass
 
@@ -7289,8 +7330,14 @@ def heartbeat_worker(
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
     session_id: Optional[str] = None,
+    worker_home: Optional[str] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
+
+    ``worker_home`` is the worker's HERMES_HOME directory.  When set it is
+    stored in the event payload so the dispatcher can locate the correct
+    per-profile state.db when writing end_reason for cross-profile workers
+    (crash / timeout paths where the worker has already exited).
 
     Called by long-running workers as a liveness signal orthogonal to
     the PID check. A worker that forks a long-lived child (train loop,
@@ -7331,6 +7378,7 @@ def heartbeat_worker(
             {k: v for k, v in (
                 ("note", note),
                 ("session_id", session_id),
+                ("worker_home", worker_home),
             ) if v is not None} or None,
             run_id=run_id,
         )

@@ -306,7 +306,11 @@ def heartbeat_current_worker_from_env() -> bool:
             except (TypeError, ValueError):
                 run_id = None
             try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                kb.heartbeat_worker(
+                    conn, tid, note=None, expected_run_id=run_id,
+                    session_id=os.environ.get("HERMES_SESSION_ID") or None,
+                    worker_home=os.environ.get("HERMES_HOME") or None,
+                )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
         finally:
@@ -837,6 +841,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 note=note,
                 expected_run_id=_worker_run_id(tid),
                 session_id=os.environ.get("HERMES_SESSION_ID") or None,
+                worker_home=os.environ.get("HERMES_HOME") or None,
             )
             if not ok:
                 return tool_error(

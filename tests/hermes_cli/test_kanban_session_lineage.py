@@ -596,3 +596,151 @@ def test_complete_task_passes_worker_session_id(kanban_home):
         args[0] == "worker_session_via_complete_task" and args[1] == "kanban_completed"
         for args in call_args
     ), f"Expected end_reason on worker session, got call_args={call_args}"
+
+
+# ---------------------------------------------------------------------------
+# (g) cross-profile end_reason: dispatcher DB vs worker DB
+# ---------------------------------------------------------------------------
+
+def test_record_kanban_end_reason_cross_profile(tmp_path, monkeypatch):
+    """_record_kanban_end_reason writes end_reason to the worker's own
+    state.db (different HERMES_HOME from the dispatcher), NOT to the
+    dispatcher's state.db or the creator's state.db.
+
+    Regression test for D-1c: previously SessionDB() always opened the
+    dispatcher's HERMES_HOME, silently no-op-ping for cross-profile workers.
+    """
+    import json
+    from pathlib import Path
+    from hermes_state import SessionDB
+
+    # Three separate HERMES_HOME directories:
+    # - dispatcher_home: where the kanban DB lives / where dispatcher runs
+    # - worker_home:     the worker's profile home (different profile)
+    # - creator_home:    the original creator's home (should not be touched)
+    dispatcher_home = tmp_path / "dispatcher"
+    worker_home = tmp_path / "worker"
+    creator_home = tmp_path / "creator"
+    for d in (dispatcher_home, worker_home, creator_home):
+        d.mkdir()
+
+    # Point kanban DB at dispatcher home.
+    monkeypatch.setenv("HERMES_HOME", str(dispatcher_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    # Create worker state.db with a session row.
+    worker_db = SessionDB(db_path=worker_home / "state.db")
+    worker_db.create_session("worker_session_cross", source="kanban")
+
+    # Create creator state.db with a session row (must NOT be touched).
+    creator_db = SessionDB(db_path=creator_home / "state.db")
+    creator_db.create_session("creator_session_cross", source="cli")
+
+    # Create a task whose session_id points to the CREATOR session
+    # (the task was created from a creator conversation).
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cross-profile-test", assignee="kamiyu")
+        conn.execute(
+            "UPDATE tasks SET session_id = ?, status = 'running' WHERE id = ?",
+            ("creator_session_cross", tid),
+        )
+        conn.commit()
+
+    # Simulate a heartbeat from the worker that stamps worker_home.
+    with kb.connect() as conn:
+        conn.execute(
+            "INSERT INTO task_events(task_id, run_id, kind, payload, created_at) "
+            "VALUES(?, NULL, 'heartbeat', ?, strftime('%s','now'))",
+            (tid, json.dumps({
+                "session_id": "worker_session_cross",
+                "worker_home": str(worker_home),
+            })),
+        )
+        conn.commit()
+
+    # Now simulate a dispatcher-side crash: call _record_kanban_end_reason
+    # with HERMES_HOME still pointing at the DISPATCHER home.
+    with kb.connect() as conn:
+        kb._record_kanban_end_reason(conn, tid, outcome="crashed")
+
+    # Verify: worker DB has the end_reason.
+    import sqlite3 as _sqlite3
+    worker_conn = _sqlite3.connect(str(worker_home / "state.db"))
+    worker_conn.row_factory = _sqlite3.Row
+    row = worker_conn.execute(
+        "SELECT end_reason FROM sessions WHERE id = ?",
+        ("worker_session_cross",),
+    ).fetchone()
+    worker_conn.close()
+    assert row is not None, "worker_session_cross should exist in worker DB"
+    assert row["end_reason"] == "kanban_crashed", (
+        f"Worker DB should have kanban_crashed, got {row['end_reason']!r}"
+    )
+
+    # Verify: creator DB must NOT have end_reason set.
+    creator_conn = _sqlite3.connect(str(creator_home / "state.db"))
+    creator_conn.row_factory = _sqlite3.Row
+    creator_row = creator_conn.execute(
+        "SELECT end_reason FROM sessions WHERE id = ?",
+        ("creator_session_cross",),
+    ).fetchone()
+    creator_conn.close()
+    assert creator_row is not None, "creator_session_cross should exist in creator DB"
+    assert creator_row["end_reason"] is None, (
+        f"Creator DB must NOT be touched, got end_reason={creator_row['end_reason']!r}"
+    )
+
+    # Verify: dispatcher DB (same as kanban DB) must NOT have end_reason set.
+    # (The kanban DB is SQLite but has no sessions table — end_reason lives in
+    # state.db, not in kanban.db.  If the dispatcher accidentally opens its own
+    # state.db it would just be a no-op; confirm state.db was not created in
+    # dispatcher_home at all, or if it exists the session is absent.)
+    dispatcher_state = dispatcher_home / "state.db"
+    if dispatcher_state.exists():
+        disp_conn = _sqlite3.connect(str(dispatcher_state))
+        disp_conn.row_factory = _sqlite3.Row
+        disp_row = disp_conn.execute(
+            "SELECT end_reason FROM sessions WHERE id = ?",
+            ("worker_session_cross",),
+        ).fetchone()
+        disp_conn.close()
+        assert disp_row is None, (
+            "Dispatcher state.db must not contain worker_session_cross"
+        )
+
+
+def test_heartbeat_worker_stores_worker_home(kanban_home):
+    """heartbeat_worker() stores worker_home in the event payload."""
+    import json
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="hb-worker-home", assignee="kamiyu")
+        conn.execute(
+            "UPDATE tasks SET status='running' WHERE id=?", (tid,)
+        )
+        conn.commit()
+
+    with kb.connect() as conn:
+        kb.heartbeat_worker(
+            conn, tid,
+            note="test-hb",
+            session_id="sess_hb_wh",
+            worker_home="/tmp/fake_worker_home",
+        )
+        conn.commit()
+
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='heartbeat' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+
+    assert row is not None
+    payload = json.loads(row["payload"])
+    assert payload.get("worker_home") == "/tmp/fake_worker_home", (
+        f"Expected worker_home in heartbeat payload, got {payload}"
+    )
+    assert payload.get("session_id") == "sess_hb_wh"
+

@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  VESZÉLYES PARANCS: {description}"
+  tool_title: "🔐 Eszköz jóváhagyása: {tool}"
+  command_title: "🔐 Parancs jóváhagyása"
   choose_long: "      [o]egyszer  |  [s]munkamenet  |  [a]mindig  |  [d]elutasít"
   choose_short: "      [o]egyszer  |  [s]munkamenet  |  [d]elutasít"
   prompt_long: "      Választás [o/s/a/D]: "

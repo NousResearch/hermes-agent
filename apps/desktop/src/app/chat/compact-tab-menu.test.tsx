@@ -7,12 +7,12 @@ import { group } from '@/components/pane-shell/tree/model'
 import { TreeGroup } from '@/components/pane-shell/tree/renderer/tree-group'
 import { $layoutTree, $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
-import { $sessions } from '@/store/session'
+import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $sessionTiles, type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import type { SessionInfo } from '@/types/hermes'
 
-import { watchSessionTiles } from './session-tile'
+import { watchSessionTiles, workspaceTabActions } from './session-tile'
 
 // The transport: the REST rename the dialog falls back to with no live runtime.
 const renameSession = vi.hoisted(() => vi.fn())
@@ -73,10 +73,11 @@ beforeEach(() => {
     area: 'panes',
     id: 'workspace',
     title: 'Main chat',
-    data: { placement: 'main' },
+    // The production main-tab menu factory, gated on the selected session.
+    data: { placement: 'main', tabActions: workspaceTabActions },
     render: () => <p>main chat</p>
   })
-  $sessions.set([row('s2', 'Trip plan'), row('s3', 'Old draft')])
+  $sessions.set([row('s1', 'Main chat'), row('s2', 'Trip plan'), row('s3', 'Old draft')])
   setSessionTileDelegate(delegate as unknown as SessionTileDelegate)
   renameSession.mockResolvedValue({ title: 'Trip plan v2' })
   $layoutTree.set({ ...group(panes), active: 'workspace', tabStrip: 'always' })
@@ -88,6 +89,7 @@ afterEach(() => {
   disposeWorkspace()
   $layoutTree.set(null)
   $narrowViewport.set(false)
+  $selectedStoredSessionId.set(null)
   delete globalThis.document.documentElement.dataset.hermesDesktopHost
   vi.clearAllMocks()
   vi.unstubAllGlobals()
@@ -121,4 +123,27 @@ it('renames a background tab from the phone picker', async () => {
 
   expect(renameSession).toHaveBeenCalledWith('s2', 'Trip plan v2', undefined)
   await waitFor(() => expect($sessions.get().find(s => s.id === 's2')?.title).toBe('Trip plan v2'))
+})
+
+it("offers the main tab's menu only once it holds a session, and targets that session", async () => {
+  render(<Host />)
+  const picker = () => screen.getByRole('button', { name: /^3 tabs/, hidden: true })
+
+  fireEvent.pointerDown(picker(), { button: 0, ctrlKey: false })
+  expect(screen.queryByRole('menuitem', { name: 'Actions for Main chat' })).toBeNull()
+  fireEvent.pointerDown(picker(), { button: 0, ctrlKey: false })
+
+  act(() => $selectedStoredSessionId.set('s1'))
+  openTabMenu('Main chat')
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+  expect(delegate.archiveSession).toHaveBeenCalledWith('s1')
+})
+
+it('hands focus back to the picker when a tab menu closes without a dialog', async () => {
+  render(<Host />)
+
+  openTabMenu('Trip plan')
+  fireEvent.keyDown((await screen.findByRole('menuitem', { name: 'Archive' })).closest('[role=menu]')!, { key: 'Escape' })
+
+  await waitFor(() => expect(globalThis.document.activeElement).toBe(screen.getByRole('button', { name: /^3 tabs/ })))
 })

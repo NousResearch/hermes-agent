@@ -26,6 +26,36 @@ interface CompactTabPickerProps {
   tabActions?: (id: string) => TabActionsMenu | undefined
 }
 
+interface PickerRowProps {
+  /** Called when the row MOUNTS (each time the picker opens): the main tab
+   *  gains its menu once it holds a session, and the picker's own props do
+   *  not change when that happens. */
+  hasActions: () => boolean
+  onActions: () => void
+  tab: CompactTabPickerProps['tabs'][number]
+}
+
+function PickerRow({ hasActions, onActions, tab }: PickerRowProps) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex items-stretch">
+      <DropdownMenuRadioItem className="min-h-11 min-w-0 flex-1" value={tab.id}>
+        <span className="min-w-0 whitespace-normal break-words">{tab.label ?? tab.title}</span>
+      </DropdownMenuRadioItem>
+      {hasActions() && (
+        <DropdownMenuItem
+          aria-label={t.zones.tabActions(tab.title)}
+          className="min-h-11 min-w-11 shrink-0 justify-center"
+          onSelect={onActions}
+        >
+          <Codicon name="ellipsis" />
+        </DropdownMenuItem>
+      )}
+    </div>
+  )
+}
+
 /** A phone's strip shows its current tab and a count; every open tab stays
  * reachable without a hidden horizontal drag gesture, and so does every tab's
  * menu (archive, delete, rename…) — a phone has no strip to right-click. */
@@ -39,6 +69,7 @@ export function CompactTabPicker({ activeId, tabs, onSelect, onClose, newTab, ta
   // A row's ⋯ hands focus to the tab menu; the closing picker must not pull
   // it back to its trigger (that reads as an outside focus and shuts the menu).
   const handingOff = useRef(false)
+  const pickerRef = useRef<HTMLButtonElement>(null)
   const active = tabs.find(tab => tab.id === activeId)
   const count = t.zones.tabCount(tabs.length)
   const menuFor = menu ? tabActions?.(menu.id) : undefined
@@ -51,6 +82,7 @@ export function CompactTabPicker({ activeId, tabs, onSelect, onClose, newTab, ta
             aria-labelledby={`${countId} ${labelId}`}
             className="min-w-0 flex-1 justify-between"
             data-slot="compact-tab-picker"
+            ref={pickerRef}
             size="touch"
             variant="ghost"
           >
@@ -72,23 +104,15 @@ export function CompactTabPicker({ activeId, tabs, onSelect, onClose, newTab, ta
         >
           <DropdownMenuRadioGroup onValueChange={onSelect} value={activeId}>
             {tabs.map(tab => (
-              <div className="flex items-stretch" key={tab.id}>
-                <DropdownMenuRadioItem className="min-h-11 min-w-0 flex-1" value={tab.id}>
-                  <span className="min-w-0 whitespace-normal break-words">{tab.label ?? tab.title}</span>
-                </DropdownMenuRadioItem>
-                {tabActions?.(tab.id) && (
-                  <DropdownMenuItem
-                    aria-label={t.zones.tabActions(tab.title)}
-                    className="min-h-11 min-w-11 shrink-0 justify-center"
-                    onSelect={() => {
-                      handingOff.current = true
-                      setMenu({ id: tab.id, open: true })
-                    }}
-                  >
-                    <Codicon name="ellipsis" />
-                  </DropdownMenuItem>
-                )}
-              </div>
+              <PickerRow
+                hasActions={() => Boolean(tabActions?.(tab.id))}
+                key={tab.id}
+                onActions={() => {
+                  handingOff.current = true
+                  setMenu({ id: tab.id, open: true })
+                }}
+                tab={tab}
+              />
             ))}
           </DropdownMenuRadioGroup>
           {onClose && (
@@ -104,7 +128,22 @@ export function CompactTabPicker({ activeId, tabs, onSelect, onClose, newTab, ta
       {menu && menuFor && (
         <Fragment key={menu.id}>
           {menuFor({
-            onOpenChange: open => setMenu({ id: menu.id, open }),
+            onOpenChange: open => {
+              setMenu({ id: menu.id, open })
+
+              // The menu's own trigger is an inert anchor, so a plain close
+              // (Escape, a non-dialog verb) would drop focus on the page.
+              // Hand it back to the picker unless a dialog took it.
+              if (!open) {
+                requestAnimationFrame(() => {
+                  const doc = pickerRef.current?.ownerDocument
+
+                  if (!doc?.activeElement || doc.activeElement === doc.body) {
+                    pickerRef.current?.focus()
+                  }
+                })
+              }
+            },
             open: menu.open,
             // The menu drops from the picker row; the row's ⋯ that asked for
             // it went away with the picker.

@@ -15,15 +15,21 @@ import re
 VIBE = "vibe"
 
 # Narrow lexicon: gratitude + love aimed at the agent, hearts, ``<3`` (not ``</3``).
+# Spanish mirrors the English gratitude/affection set (``gracias``, ``te amo``,
+# ``buen bot``) so non-English users get the same reaction. ``te quiero`` is
+# deliberately excluded: it doubles as "I want to …" and would false-positive.
 _VIBE_RE = re.compile(
     "|".join(
         (
             r"\bgood\s*bot\b",
+            r"\bbuen\s*bot\b",
             r"\bi\s*(?:love|luv)\s*(?:you|u|ya)\b",
             r"\b(?:love|luv)\s*(?:you|u|ya)\b",
+            r"\bte\s*amo\b",
             r"\bily(?:sm)?\b",
             r"\bthank\s*(?:you|u)\b",
             r"\b(?:thanks|thx|tysm|ty)\b",
+            r"\bgracias\b",
             r"<3+",  # <3, <33 … but not </3
             # Hearts + affection faces (❤ ♥ 🥰 😍 😘 💕 💖 💗 💞 💛 💜 💚 💙 💓 💘 💝 🩷).
             r"[\u2764\u2665"

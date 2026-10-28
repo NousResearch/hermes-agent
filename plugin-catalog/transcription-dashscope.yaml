@@ -1,0 +1,18 @@
+name: transcription-dashscope
+repo: https://github.com/lgc2333/hermes-plugin-transcription-dashscope
+sha: fe83a514b53b1b50f68e012608741c3fcafcd0ec
+description: >-
+  Speech-to-text for Hermes via DashScope (Qwen) — voice messages and live dictation.
+  Needs a Qwen AI Platform API key.
+maintainer: lgc2333
+tier: community
+version: "0.1.0"
+category: voice
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/lgc2333/hermes-plugin-transcription-dashscope#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

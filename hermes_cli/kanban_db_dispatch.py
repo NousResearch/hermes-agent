@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -375,40 +376,85 @@ def _process_fingerprint(pid: int) -> Optional[str]:
     return f"{current_instantiation_epoch()}|{start}"
 
 
-def _worker_alive(pid: Optional[int], started_at) -> bool:
-    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the fingerprint
-    recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated process can own
-    the number, so bare existence is never enough to extend a claim or to signal. A legacy row without
-    a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
-    rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
-    (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
-    refuses to signal it."""
+# --- Worker-identity probe: verdicts ---------------------------------------------
+# "Is my worker alive?" and "may I signal this pid?" are DIFFERENT questions, and the crash sweep
+# used to answer both with one fail-closed probe: a transient process-table / psutil read failure on
+# a loaded host made ``_pid_recycled`` answer "recycled", booking a crash of a LIVE worker (fleet
+# R5: 42 of 43 'pid not alive' reclaims were exactly that). The probe now returns an explicit
+# verdict. Only GONE (verifiably absent) and MISMATCH (birth verifiably differs) may book a crash;
+# UNREADABLE (live pid, birth could not be re-read) is alive-but-unverified — claims are held, never
+# signalled, and a confirmation window (``_confirm_or_hold_dead_probe``) must pass before a crash is
+# booked. Missing identity is refusal, not permission (#99558): unreadable NEVER grants a signal.
+
+WORKER_IDENTITY_ALIVE = "alive"
+WORKER_IDENTITY_GONE = "gone"
+WORKER_IDENTITY_MISMATCH = "recycled"
+WORKER_IDENTITY_UNVERIFIED = "unverified"
+WORKER_IDENTITY_UNREADABLE = "unreadable"
+WORKER_IDENTITY_LEGACY = "legacy"
+
+
+def probe_worker_identity(pid: Optional[int], recorded) -> tuple[str, Optional[dict]]:
+    """Verdict on a recorded spawn fingerprint against the live process table, plus probe
+    diagnostics (recorded / recomputed / read_failure) for the crash-event payload. A ``None``
+    diagnostic means the answer was reached without a re-read (legacy row / verifiably absent pid)."""
+    if not pid:
+        return WORKER_IDENTITY_GONE, None
+    pid = int(pid)
     if not _kb._pid_alive(pid):
-        return False
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        return True
-    return not _pid_recycled(pid, started_at)
+        return WORKER_IDENTITY_GONE, None
+    if recorded is None:
+        return WORKER_IDENTITY_LEGACY, None
+    if recorded == UNVERIFIED_WORKER_FINGERPRINT:
+        return WORKER_IDENTITY_UNVERIFIED, {"recorded": str(recorded), "recomputed": None}
+    if isinstance(recorded, str) and "|" in recorded:
+        current = _process_fingerprint(pid)
+        if current is None:
+            return WORKER_IDENTITY_UNREADABLE, {
+                "recorded": recorded, "recomputed": None, "read_failure": "fingerprint_unreadable",
+            }
+        return (WORKER_IDENTITY_ALIVE if current == recorded else WORKER_IDENTITY_MISMATCH), None
+    from gateway.status import _start_times_agree, get_process_start_time
+    current = get_process_start_time(pid)
+    if current is None:
+        return WORKER_IDENTITY_UNREADABLE, {
+            "recorded": str(recorded), "recomputed": None, "read_failure": "start_time_unreadable",
+        }
+    try:
+        agrees = _start_times_agree(current, recorded)
+    except (TypeError, ValueError):
+        return WORKER_IDENTITY_UNREADABLE, {
+            "recorded": str(recorded), "recomputed": str(current), "read_failure": "recorded_unparseable",
+        }
+    return (WORKER_IDENTITY_ALIVE if agrees else WORKER_IDENTITY_MISMATCH), None
+
+
+def _worker_alive(pid: Optional[int], started_at) -> bool:
+    """True when ``pid`` may still be the worker we spawned: live AND not verifiably a DIFFERENT
+    process. Fail-OPEN on a transient identity re-read failure — a live pid whose birth cannot be
+    re-read stays "alive" (a claim is never released beside a possibly-live worker) while
+    ``_worker_is_signal_eligible`` independently keeps it unsignalled. ``started_at`` is the
+    fingerprint recorded by ``_set_worker_pid``; a legacy row (``None``) and an UNVERIFIED spawn keep
+    the bare-existence answer."""
+    state, _ = probe_worker_identity(pid, started_at)
+    return state not in (WORKER_IDENTITY_GONE, WORKER_IDENTITY_MISMATCH)
+
+
+def _worker_is_signal_eligible(pid: Optional[int], started_at) -> bool:
+    """Whether ``pid`` may be signalled as OUR worker. Unreadable identity is refusal: the pid is
+    live and provably not ours only on a fingerprint MISMATCH; UNVERIFIED spawns are never
+    signalled by bare number either."""
+    state, _ = probe_worker_identity(pid, started_at)
+    return state in (WORKER_IDENTITY_ALIVE, WORKER_IDENTITY_LEGACY)
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
-    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
-    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
-    if started_at is None or not pid:
-        return False
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        return True
-    if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
-    current = get_process_start_time(int(pid))
-    if current is None:
-        return True
-    try:
-        return not _start_times_agree(current, started_at)
-    except (TypeError, ValueError):
-        return True
+    """True ONLY when the live ``pid``'s birth can be re-read and VERIFIABLY differs from the
+    recorded fingerprint (a proven recycle). A failed re-read is NOT evidence of recycling — it is
+    reported as not-recycled (fail open); signal safety is enforced separately by
+    :func:`_worker_is_signal_eligible`, which never signals an unreadable identity."""
+    state, _ = probe_worker_identity(pid, started_at)
+    return state == WORKER_IDENTITY_MISMATCH
 
 
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
@@ -471,9 +517,16 @@ def _terminate_reclaimed_worker(
         info["signal_refused"] = True
         info["terminated"] = not _kb._pid_alive(pid)
         return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+    if _pid_recycled(pid, started_at):
         info["terminated"] = True
         info["pid_recycled"] = True
+        return info
+    if not _worker_is_signal_eligible(pid, started_at):
+        # Live but its birth cannot be re-read: signalling by bare number is refused (missing
+        # identity is refusal, not permission — #99558). Reported as surviving so the reclaim sweep
+        # HOLDS the claim (and confirms across two probes) instead of killing a possible stranger.
+        info["signal_refused"] = True
+        info["identity_unreadable"] = True
         return info
 
     info["termination_attempted"] = True
@@ -535,6 +588,10 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
     if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
         return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
     alive = _worker_alive(pid, fingerprint)
+    if alive and not _worker_is_signal_eligible(pid, fingerprint):
+        # Live but unreadable identity: this sweep may never kill it, so do NOT clear the reap
+        # evidence yet either — defer to the next tick, when the read recovers or the pid exits.
+        return
     termination = None
     if alive:
         termination = _terminate_reclaimed_worker(
@@ -688,17 +745,31 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                              "identity; not signalled", tid, pid)
             continue
         # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
-        # mismatch) is never signalled: the worker is already gone.
+        # shutdown install their own SIGTERM handler. A recycled PID (PROVEN fingerprint mismatch) is
+        # never signalled: the worker is already gone. A live pid whose identity cannot be re-read is
+        # likewise never signalled — missing identity is refusal (#99558); the card stays held for
+        # the reclaim sweep's two-probe confirmation instead.
         killed = False
         kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
+        if kill is not None and _worker_is_signal_eligible(pid, started_at):
             with contextlib.suppress(ProcessLookupError, OSError):
                 kill(pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
+            if _worker_alive(pid, started_at) and _worker_is_signal_eligible(pid, started_at):
                 killed = _sigkill(kill, pid)
+        elif _worker_alive(pid, started_at):
+            # Live but we cannot tell it is ours (birth unreadable): a timeout expiry is not
+            # identity evidence. Signalling was correctly refused above, and booking ``timed_out``
+            # here would end the run and release the claim beside a worker that may still be
+            # executing — the exact false-dead shape R5 measured. Hold instead: note the sighting
+            # so the reclaim sweep confirms it across ticks and books it once with diagnostics.
+            _kb._log.warning(
+                "kanban dispatch: task %s exceeded max_runtime but worker pid %s identity is "
+                "unreadable; holding (not timed out)", tid, pid,
+            )
+            _confirm_or_hold_dead_probe(_kb.get_current_board(), tid, pid, started_at)
+            continue
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
@@ -1061,7 +1132,7 @@ class _DeadWorker:
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], exit_code=None, *, task_id: Optional[str] = None,
-    board: Optional[str] = None,
+    board: Optional[str] = None, probe_info: Optional[dict] = None,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1069,7 +1140,9 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(
+        pid, claimer, exit_code, task_id=task_id, board=board, probe_info=probe_info,
+    )
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -1085,6 +1158,7 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    probe_info: Optional[dict] = None,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
@@ -1146,6 +1220,11 @@ def _classify_dead_worker_exit(
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code
+    elif kind == "unknown" and probe_info:
+        # ``pid N not alive`` events used to carry NO diagnostics at all (the exit-code branch
+        # above drops them for kind=unknown), which blinded post-hoc analysis of whether a death
+        # was observed or merely inferred from a failed identity read.
+        event_payload["probe"] = probe_info
     return _DeadWorker(kind, code, error_text, "crashed", event_payload)
 
 
@@ -1161,6 +1240,115 @@ class _CrashSweep:
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
+
+
+# --- Dead-probe confirmation (crash sweep) ----------------------------------------
+# One transient process-table / psutil failure on a loaded host used to book a crash of a LIVE
+# worker (fleet R5: 42 of 43 'pid not alive' reclaims were exactly that; heartbeats 2-70 s fresh,
+# never consulted on this path). With the fail-open identity probe only a GONE pid or a PROVEN
+# recycle reaches the booking path at all; a live-but-UNVERIFIED worker is additionally held across
+# a confirmation window so a bookable verdict must be observed on two ticks spaced
+# ``dead_probe_confirm_seconds`` apart (default one dispatch interval). The ledger is a board-local
+# JSON sidecar so the two ticks may be different ``hermes kanban dispatch`` processes, not only the
+# gateway-embedded dispatcher. Best-effort: ledger I/O failure falls back to in-process memory.
+
+DEAD_PROBE_CONFIRM_SECONDS = 60
+DEAD_PROBE_LEDGER_TTL_SECONDS = 24 * 3600.0
+
+
+def _resolve_dead_probe_confirm_seconds() -> int:
+    """``HERMES_KANBAN_DEAD_PROBE_CONFIRM_SECONDS`` (0 = book on the first tick, restoring the
+    one-probe contract for tests) else the default one-interval window."""
+    from hermes_cli.kanban_db import _env_int
+
+    return _env_int("HERMES_KANBAN_DEAD_PROBE_CONFIRM_SECONDS", DEAD_PROBE_CONFIRM_SECONDS)
+
+
+def _dead_probe_ledger_path(board: Optional[str] = None) -> Path:
+    return _kb.board_dir(board) / "dead-probes.json"
+
+
+# In-process fallback for the unserialised paths (unit tests, unwritable board dir).
+_DEAD_PROBE_MEMORY: dict[str, tuple[float, str]] = {}
+
+
+def _dead_probe_first_seen(board: Optional[str], task_id: str) -> Optional[float]:
+    entry = _read_dead_probe_ledger(board).get(task_id)
+    if entry is None:
+        mem = _DEAD_PROBE_MEMORY.get(task_id)
+        return mem[0] if mem else None
+    return entry.get("first_seen")
+
+
+def _note_dead_probe(
+    board: Optional[str], task_id: str, pid: int, fingerprint,
+) -> None:
+    entry = {"first_seen": time.time(), "pid": int(pid), "fingerprint": str(fingerprint)}
+    ledger = _read_dead_probe_ledger(board)
+    ledger[task_id] = entry
+    _write_dead_probe_ledger(board, ledger)
+    _DEAD_PROBE_MEMORY[task_id] = (entry["first_seen"], str(fingerprint))
+
+
+def _clear_dead_probe(board: Optional[str], task_id: str) -> None:
+    ledger = _read_dead_probe_ledger(board)
+    if ledger.pop(task_id, None) is not None:
+        _write_dead_probe_ledger(board, ledger)
+    _DEAD_PROBE_MEMORY.pop(task_id, None)
+
+
+def _read_dead_probe_ledger(board: Optional[str]) -> dict:
+    path = _dead_probe_ledger_path(board)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _write_dead_probe_ledger(board: Optional[str], ledger: dict) -> None:
+    """Prune expired entries and store atomically; I/O failure is logged-and-swallowed (the
+    in-process memory ledger keeps single-process dispatchers correct)."""
+    cutoff = time.time() - DEAD_PROBE_LEDGER_TTL_SECONDS
+    ledger = {
+        tid: e for tid, e in ledger.items()
+        if isinstance(e, dict) and float(e.get("first_seen") or 0) >= cutoff
+    }
+    try:
+        path = _dead_probe_ledger_path(board)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(ledger), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        _kb._log.debug("kanban dispatch: dead-probe ledger write failed: %s", exc)
+
+
+def _confirm_or_hold_dead_probe(
+    board: Optional[str], task_id: str, pid: int, fingerprint,
+) -> bool:
+    """Two-probe gate for a live-but-unverified worker. True = hold this tick; False = the hold is
+    older than the confirmation window (and belongs to THIS pid/fingerprint), so the death may be
+    booked now. A hold recorded against a different pid/fingerprint (the task re-spawned meanwhile)
+    never confirms the new one."""
+    window = _resolve_dead_probe_confirm_seconds()
+    if window <= 0:
+        # Escape hatch: the pre-fix single-probe contract, for operators and tests that want the
+        # old behaviour. Nothing is noted, so no stale hold can survive the switch back.
+        _clear_dead_probe(board, task_id)
+        return False
+    first_seen = _dead_probe_first_seen(board, task_id)
+    entry = _read_dead_probe_ledger(board).get(task_id)
+    if first_seen is not None and (entry is None or (
+            entry.get("pid") == int(pid)
+            and entry.get("fingerprint") == str(fingerprint))):
+        if time.time() - float(first_seen) >= window:
+            _clear_dead_probe(board, task_id)
+            return False
+    _note_dead_probe(board, task_id, pid, fingerprint)
+    return True
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
@@ -1183,8 +1371,30 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             started_at = _kb._to_epoch(_kb._row_get(row, "started_at"))
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
-            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+            fingerprint = _kb._row_get(row, "worker_started_at")
+            # One probe decides everything. ``_worker_alive`` remains the fail-OPEN existence
+            # answer (unreadable identity reads "alive") and is used unchanged by callers that
+            # merely ask "should I leave this claim alone"; the crash sweep branches on the
+            # explicit verdict instead, because "cannot tell" must be treated as its own case:
+            # held, not kept, not killed.
+            state, probe_info = probe_worker_identity(row["worker_pid"], fingerprint)
+            if state in (WORKER_IDENTITY_ALIVE, WORKER_IDENTITY_LEGACY, WORKER_IDENTITY_UNVERIFIED):
+                if state == WORKER_IDENTITY_ALIVE:
+                    # The birth re-read MATCHED: any hold recorded for this task was a transient
+                    # that has since recovered, so it must not linger and confirm a later,
+                    # unrelated verdict on a stale ``first_seen``.
+                    _clear_dead_probe(board, row["id"])
                 continue
+            if state == WORKER_IDENTITY_UNREADABLE:
+                _kb._log.warning(
+                    "kanban dispatch: task %s worker pid %s identity unreadable (%s); deferring "
+                    "reclaim to the confirmation window", row["id"], row["worker_pid"],
+                    (probe_info or {}).get("read_failure") or "unknown",
+                )
+                if _confirm_or_hold_dead_probe(board, row["id"], int(row["worker_pid"]), fingerprint):
+                    continue
+            elif probe_info is None:
+                _clear_dead_probe(board, row["id"])
             # An ambiguous receipt holds the card while the attempt may still run; once nothing
             # can be executing it (a dead bound interpreter, or a run that never bound one): crash.
             if owner_reclaim_blocked(conn, row["id"], crash_sweep=True):
@@ -1193,7 +1403,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             pid = int(row["worker_pid"])
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
+            dead = _classify_dead_worker(
+                pid, row["claim_lock"], exit_code, task_id=row["id"], board=board,
+                probe_info=probe_info,
+            )
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(

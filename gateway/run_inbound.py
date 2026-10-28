@@ -1474,11 +1474,16 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
     async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
+        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str],
+        session_key: str,
     ) -> str:
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
             message_text, audio_paths,
         )
+        # A plugin may consume a voice message by its SPOKEN text, which only exists after
+        # transcription (#145125). The hook runs here, while the turn is still being prepared
+        # and the agent has not run, so a ``handled`` result can still skip the turn.
+        await self._hm_post_transcription_admission(event, source, _successful_transcripts, session_key)
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
         # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
@@ -1488,6 +1493,41 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                 await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
         return message_text
+
+    async def _hm_post_transcription_admission(
+        self, event: MessageEvent, source: SessionSource, transcripts: list[str],
+        session_key: str,
+    ) -> Optional[str]:
+        """Offer a transcribed voice message to the ``post_transcription_admission`` hook.
+
+        Returns the plugin's reply when one consumed the message, else None. A consumed message
+        skips the agent turn: the transcript is recorded on the event and the prepared-text step
+        returns the plugin's reply instead of a prompt for the model.
+
+        ``session_key`` is the turn's authoritative key (the same one
+        ``post_gateway_admission`` received), not a re-derived one: a plugin must see the
+        session the turn actually runs in.
+        """
+        transcript = "\n".join(t for t in (transcripts or []) if (t or "").strip()).strip()
+        if not transcript:
+            return None
+        # No presence check here: which plugins are loaded depends on the ROUTED profile,
+        # which is only known inside the routed scope the hook itself enters. A check in the
+        # ambient scope would miss the plugin on a multiplexed gateway and silently skip
+        # the message it was written for.
+        from gateway.run_inbound_consumer import run_post_transcription_admission_hook
+        try:
+            handled, reply = await run_post_transcription_admission_hook(
+                self, event, source, session_key, transcript,
+            )
+        except Exception:  # health: allow BLE001 -- a plugin hook must never break the turn
+            logger.warning("post_transcription_admission failed; continuing with the agent turn", exc_info=True)
+            return None
+        if not handled:
+            return None
+        event._gateway_transcription_consumed = True
+        event._gateway_transcription_reply = reply
+        return reply
 
     @staticmethod
     def _inbound_attachment_display_name(path: str) -> tuple[str, str]:
@@ -1671,7 +1711,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
-            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths, session_key)
+            # A plugin consumed the voice message by its transcript (#145125): the turn is
+            # answered by the plugin, not by the model. Reuse the existing refusal channel so
+            # the prepare step returns that reply instead of a prompt.
+            if getattr(event, "_gateway_transcription_consumed", False):
+                event._gateway_turn_refusal = getattr(event, "_gateway_transcription_reply", None)
+                return None
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         from gateway.session_context_refs import turn_references

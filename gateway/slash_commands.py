@@ -217,7 +217,18 @@ class GatewaySlashCommandsMixin(
 
     def _reply_metadata(self, event: MessageEvent):
         """Thread/reply metadata for an outbound send anchored on *event*."""
-        return self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+        reply_anchor = self._reply_anchor_for_event(event)
+        metadata = self._thread_metadata_for_source(event.source, reply_anchor)
+        if (metadata and reply_anchor and not metadata.get("reply_to_message_id")
+                and getattr(event.source, "platform", None) == Platform.FEISHU
+                and metadata.get("thread_id")):
+            # Feishu topics: an anchorless send falls through to message.create with
+            # receive_id_type="thread_id", which the create API rejects (99992402), so
+            # the reply is lost. Carry the trigger message id so the adapter replies
+            # inside the topic instead — same pattern as run_turn's
+            # _run_agent_progress_threading status metadata.
+            metadata["reply_to_message_id"] = str(reply_anchor)
+        return metadata
 
     def _adapter_and_key_for(self, event: MessageEvent):
         """``(adapter, session_key)`` for the event's source, either None when no source. The source's
@@ -901,7 +912,15 @@ class GatewaySlashCommandsMixin(
                 logger.warning("/btw side question failed: %s", e)
                 reply = t("gateway.btw.failed", preview=preview, error=str(e))
             if adapter is not None:
-                await adapter.send(source.chat_id, reply, metadata=_thread_metadata)
+                send_result = await adapter.send(source.chat_id, reply, metadata=_thread_metadata)
+                if send_result is not None and not getattr(send_result, "success", True):
+                    # Without this, a failed delivery (e.g. Feishu topics rejecting an
+                    # anchorless create with 99992402) drops the /btw answer silently —
+                    # the answer was generated but never reaches the chat.
+                    logger.error(
+                        "/btw answer delivery failed for chat %s: %s",
+                        source.chat_id, getattr(send_result, "error", None) or "unknown error",
+                    )
 
         self._track_background_task(_run_side_question())
         return t("gateway.btw.started", preview=preview)

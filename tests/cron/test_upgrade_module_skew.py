@@ -48,6 +48,20 @@ job = {"id": "job", "schedule": {"kind": "interval"},
 assert unclaimed_pending_slot(job, now) == stale
 """
 
+_SKILLS_HEAL_SKEW_SCRIPT = """
+import cron.jobs as jobs
+
+# Model a daemon that loaded cron.jobs before the skills heal existed in the store.
+for name in ("_skill_list_items", "_normalize_skill_list"):
+    if hasattr(jobs, name):
+        delattr(jobs, name)
+
+# A sibling that heals via the stdlib-only leaf must still work: prompt assembly is imported
+# standalone, so it cannot lean on cron.jobs attrs a stale daemon lacks.
+from cron.scheduler_prompt import _job_skill_names
+assert _job_skill_names({"skills": ["['x']"]}) == ["x"]
+"""
+
 
 @pytest.mark.parametrize("store", ["notepad", "incidents", "executions", "delivery_queue"])
 def test_lazy_cron_stores_import_against_pre_upgrade_sqlite_util(store):
@@ -67,6 +81,19 @@ def test_occurrences_resolve_fire_claim_constants_without_cached_jobs_exports():
     repo_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, "-c", _OCCURRENCES_SKEW_SCRIPT],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_prompt_skills_heal_without_cached_jobs_exports():
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", _SKILLS_HEAL_SKEW_SCRIPT],
         cwd=repo_root,
         capture_output=True,
         text=True,

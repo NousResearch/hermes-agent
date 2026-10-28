@@ -158,6 +158,29 @@ def test_plugin_cannot_shadow_builtin_and_bad_keys_are_rejected(homes, caplog):
     assert "other:spoof" in caplog.text
 
 
+def test_plugin_can_opt_into_a_stable_non_namespaced_key(homes, caplog):
+    from cron.blueprint_catalog import get_blueprint, list_blueprints
+
+    body = textwrap.dedent(
+        """
+        def register(ctx):
+            common = dict(title="Legacy", description="d", schedule_template="0 9 * * *",
+                          prompt_template="hi", stable_key=True)
+            ctx.register_automation_blueprint("legacy-watch", **common)
+            ctx.register_automation_blueprint("morning-brief", **common)
+        """
+    )
+    _write_plugin(homes["default"], "teamtools", body)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        keys = [bp.key for bp in list_blueprints()]
+    legacy = get_blueprint("legacy-watch")
+    assert legacy is not None and legacy.plugin == "teamtools"
+    assert "legacy-watch" in keys
+    assert keys.count("morning-brief") == 1
+    assert "collides with a built-in" in caplog.text
+
+
 @pytest.mark.parametrize(
     "fields, reason",
     [

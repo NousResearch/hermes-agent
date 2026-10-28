@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agent.credential_pool_admin import retain_sources_not_in
+
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
@@ -2509,15 +2511,6 @@ def _normalize_pool_priorities(provider: str, entries: list[PooledCredential]) -
     return changed
 
 
-def _retain_sources_not_in(entries: list[PooledCredential], drop: set[str]) -> bool:
-    """Remove entries whose source is in *drop*; True if anything was removed."""
-    retained = [entry for entry in entries if entry.source not in drop]
-    if len(retained) == len(entries):
-        return False
-    entries[:] = retained
-    return True
-
-
 class _Seeder:
     """Accumulates ``_upsert_entry`` results for one ``load_pool`` seeding pass."""
 
@@ -2569,7 +2562,7 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
     if _env_val("ANTHROPIC_API_KEY") and not anthropic_oauth_env:
         # Prune stale autodiscovered OAuth entries from a previous OAuth
         # session so a transient 401 cannot revive them.
-        seed.changed |= _retain_sources_not_in(seed.entries, {"hermes_pkce", "claude_code"})
+        seed.changed |= retain_sources_not_in(seed.entries, {"hermes_pkce", "claude_code"})
         return
 
     from agent.anthropic_credentials import (
@@ -2584,7 +2577,7 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
     else:
         # Singleton-seeded rows are otherwise never pruned; the opt-out must also drop the row an
         # earlier (adopting) process persisted, or it keeps rotating a login Hermes no longer reads.
-        seed.changed |= _retain_sources_not_in(seed.entries, {"claude_code"})
+        seed.changed |= retain_sources_not_in(seed.entries, {"claude_code"})
     for source_name, creds in sources:
         if creds and creds.get("accessToken"):
             seed.upsert(source_name, {
@@ -2605,7 +2598,7 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
     has_runtime_material = not guest_without_free_tier(state) and bool(isinstance(state, dict) and (
         str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip()))
     if state and not has_runtime_material:
-        seed.changed |= _retain_sources_not_in(seed.entries, {"device_code", "manual:device_code"})
+        seed.changed |= retain_sources_not_in(seed.entries, {"device_code", "manual:device_code"})
     if not (state and has_runtime_material):
         return
     # Prefer a user-supplied label embedded in the singleton state (``hermes
@@ -2976,6 +2969,8 @@ def _seed_custom_pool(pool_key: str, entries: list[PooledCredential]) -> tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
+    from agent.codex_auth_policy import refuse_mutable_codex_pool
+    refuse_mutable_codex_pool(provider)
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
         # One-time heal for installs that forked this grant across profiles
         # before the clone-strip / root write-through existed (#100339).

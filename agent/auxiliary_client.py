@@ -8,6 +8,7 @@ in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
 """
 
+from agent.auxiliary_codex_auth import codex_base_url_override
 import contextlib
 import contextvars
 import functools
@@ -2108,7 +2109,12 @@ def _resolve_codex_credential_and_base() -> tuple[Optional[str], str]:
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
     token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
-    override = _codex_base_url_override()
+    from agent.codex_auth_policy import codex_auth_read_only
+    if codex_auth_read_only():
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+        creds = resolve_codex_runtime_credentials(read_only=True)
+        return creds["api_key"], creds["base_url"]
+    override = codex_base_url_override()
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
@@ -2954,12 +2960,6 @@ def _build_xai_oauth_aux_client(model: str) -> tuple[Optional[Any], Optional[str
         api_key=api_key, base_url=base_url, default_headers=hermes_xai_default_headers()
     )
     return CodexAuxiliaryClient(real_client, model), model
-
-
-def _codex_base_url_override() -> str:
-    """Profile-scoped ``HERMES_CODEX_BASE_URL`` (same read as the API-key env vars: under a
-    multiplexer the routed profile's .env decides the endpoint, never a sibling's process env)."""
-    return _scoped_key_env("HERMES_CODEX_BASE_URL").rstrip("/")
 
 
 def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:

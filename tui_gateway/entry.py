@@ -14,6 +14,7 @@ import threading
 import time
 import traceback
 from contextlib import suppress
+from collections.abc import Sequence
 
 from tui_gateway._env import env_float
 from tui_gateway._stdin_recovery import handle_spurious_eof
@@ -288,7 +289,16 @@ def _claim_launch_home():
     return home
 
 
-def main():
+def main(argv: Sequence[str] = ()) -> None:
+    """Start one stdio process; only the module CLI forwards host argv."""
+    import argparse
+    from agent.codex_auth_policy import bind_codex_auth_policy
+
+    parser = argparse.ArgumentParser(description="Hermes stdio JSON-RPC gateway")
+    parser.add_argument("--codex-auth-read-only", action="store_true",
+                        help="Read stored Codex credentials without refresh, adoption or auth-store writes (not a sandbox)")
+    args = parser.parse_args(argv)
+    bind_codex_auth_policy(read_only=args.codex_auth_read_only)
     home = _claim_launch_home()
     if home is None:
         _log_exit(f"refused: {server._launch_home()} is owned by a running gateway; attach to it instead")
@@ -392,4 +402,4 @@ def _serve():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

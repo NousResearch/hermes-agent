@@ -573,6 +573,9 @@ class ClientLifecycleMixin:
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
             return False
+        from agent.codex_auth_policy import readonly_codex_agent
+        if readonly_codex_agent(self):
+            return False
         # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
         # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
         try:

@@ -112,7 +112,8 @@ def _load_auth_store_maybe_locked(lock: bool) -> dict[str, Any]:
 def _read_codex_tokens(*, _lock: bool = True) -> dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json)."""
     from hermes_cli.auth import _load_provider_state, _nonempty_str
-    auth_store = _load_auth_store_maybe_locked(_lock)
+    from agent.codex_auth_policy import codex_auth_read_only
+    auth_store = _load_auth_store_maybe_locked(_lock and not codex_auth_read_only())
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
         raise _codex_err(_NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
@@ -190,6 +191,8 @@ def _save_codex_tokens(
     ``set_active=False`` stores credentials for a side tool (image gen) without making Codex the
     active inference provider.
     """
+    from agent.codex_auth_policy import require_codex_auth_writable
+    require_codex_auth_writable()
     from hermes_cli.auth import (
         _auth_file_path, _load_auth_store, _provider_state_transaction, _same_path,
         _save_auth_store, _store_provider_state, _utc_now_z)
@@ -227,6 +230,8 @@ def _recover_codex_tokens_from_cli(
     Desktop/CLI login into another ChatGPT workspace must not replace it silently, and a concurrent
     explicit re-auth must not be overwritten, so the save is a compare-and-swap under the store lock.
     """
+    from agent.codex_auth_policy import require_codex_auth_writable
+    require_codex_auth_writable()
     from agent.credential_pool import _codex_principal_identity
     from agent.credential_sources import adopt_external_logins_enabled
     from hermes_cli.auth import _import_codex_cli_tokens, _provider_state_transaction, _save_codex_tokens
@@ -483,6 +488,8 @@ def _codex_refresh_failure_error(response: httpx.Response) -> AuthError:
 def refresh_codex_oauth_pure(
     access_token: str, refresh_token: str, *, timeout_seconds: float = 20.0) -> dict[str, Any]:
     """Refresh Codex OAuth tokens without mutating Hermes auth state."""
+    from agent.codex_auth_policy import require_codex_auth_writable
+    require_codex_auth_writable()
     from hermes_cli.auth import _nonempty_str, _utc_now_z
     del access_token  # Access token is only used by callers to decide whether to refresh.
     if not _nonempty_str(refresh_token):
@@ -529,6 +536,8 @@ def _refresh_codex_auth_tokens(tokens: dict[str, str], timeout_seconds: float) -
     finds root already rotated by its peer adopts the stored pair instead of replaying the
     consumed token. Both locks wait out a full endpoint timeout so the waiter adopts, not times out.
     """
+    from agent.codex_auth_policy import require_codex_auth_writable
+    require_codex_auth_writable()
     from hermes_cli.auth import _provider_state_transaction, _save_codex_tokens, refresh_codex_oauth_pure
     lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(timeout_seconds) + 5.0)
     with _provider_state_transaction("openai-codex", lock_timeout) as (_store, state, _source):
@@ -610,6 +619,8 @@ def resolve_codex_runtime_credentials(
     from hermes_cli.auth import (
         _auth_store_lock, _codex_access_token_is_expiring, _probe_codex_quota_restored,
         _read_codex_tokens)
+    from agent.codex_auth_policy import codex_auth_read_only
+    read_only = read_only or codex_auth_read_only()
     read_error: Optional[AuthError] = None
     data = None
     observed: Optional[str] = None
@@ -858,6 +869,8 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     rate-limited entry does (a redeemed banked reset restores the whole account; a still-exhausted
     entry just re-freezes with fresh metadata on its next 429).
     """
+    from agent.codex_auth_policy import require_codex_auth_writable
+    require_codex_auth_writable()
     from agent.credential_pool import _borrowed_single_use_pool_root, _profile_owns_pool_provider
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     cleared = 0

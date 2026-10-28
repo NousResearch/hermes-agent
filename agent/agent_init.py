@@ -9,6 +9,8 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 
 from __future__ import annotations
 
+from agent.agent_init_moa import init_moa_client
+
 import logging
 import os
 import re
@@ -344,6 +346,8 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
 
 def _finalize_routing(agent, api_mode, credential_pool):
     from hermes_cli.providers import is_actual_route
+    from agent.codex_auth_policy import bind_agent_codex_auth
+    credential_pool = bind_agent_codex_auth(agent, credential_pool)
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
@@ -704,23 +708,6 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
         _print_key_banner(effective_key, "token")
 
 
-def _init_moa_client(agent, api_key):
-    """provider == "moa": virtual Mixture-of-Agents facade, no real HTTP client."""
-    from agent.moa_loop import bind_moa_runtime
-    # build_moa_facade relays "moa.*" events through tool_progress_callback so every surface
-    # shows each reference's answer before the aggregator acts. Display-only; shared with
-    # fallback-restore so a restored facade keeps emitting.
-    # build_moa_facade wires the reference relay that routes reference-model outputs to the agent's
-    # tool_progress_callback so every surface that already consumes it (CLI spinner/scrollback, TUI,
-    # desktop, gateway) can show each reference's answer as a labelled block before the aggregator acts. The
-    # facade emits "moa.reference", "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
-    # through the same callback the tool lifecycle uses. Best-effort and cache-safe — display-only events,
-    # they never touch the message history. See #53802.
-    bind_moa_runtime(agent, agent.model, api_key)
-    if not agent.quiet_mode:
-        print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
-
-
 def _init_bedrock_client(agent, base_url):
     """bedrock_converse: boto3 directly, no OpenAI client."""
     from agent.bedrock_adapter import bind_bedrock_runtime
@@ -770,6 +757,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
     already bound and there is no OpenAI client to construct.
     """
+    from agent.codex_auth_policy import validate_readonly_codex_primary
+    validate_readonly_codex_primary(agent)
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
@@ -952,7 +941,7 @@ def _build_client(agent, api_key, base_url, fallback_model):
     if agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
     elif agent.provider == "moa":
-        _init_moa_client(agent, api_key)
+        init_moa_client(agent, api_key)
     elif agent.api_mode == "bedrock_converse":
         _init_bedrock_client(agent, base_url)
     else:

@@ -555,6 +555,8 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
     if not is_truthy_value(params.get("mirror_credentials", True)):
         return mirrored
     launch_home = get_hermes_home()
+    from agent.codex_auth_policy import refuse_codex_credential_copy
+    refuse_codex_credential_copy(launch_home)
     # .env: only over the seeded comment-only stub (never a clone's secrets).
     mirrored["env"] = _try(lambda: _mirror_secret(path, launch_home, ".env", lambda src, dst: (
         _env_has_content(src) and not _try(lambda: _env_has_content(dst), False))), False)

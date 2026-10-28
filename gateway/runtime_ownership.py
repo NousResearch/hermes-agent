@@ -24,6 +24,10 @@ class OwnershipConflict(RuntimeError):
     pass
 
 
+class ReservationCancelled(OwnershipConflict):
+    """The waiting reserve's caller gave up: nothing reserved, nothing left held."""
+
+
 def canonical_home(home: Path) -> Path:
     return Path(os.path.normcase(str(Path(home).expanduser().resolve())))
 
@@ -267,18 +271,25 @@ def _conflicting_homes(homes):
     return conflicting
 
 
-def reserve_waiting_out_transient_holders(ownership, homes, *, wait_s: float) -> None:
+def reserve_waiting_out_transient_holders(ownership, homes, *, wait_s: float,
+                                          cancel: threading.Event | None = None) -> None:
     """``ownership.reserve(homes)``, retried until *wait_s* passes while every contender is
     transient: a client's lock probe (gone by the re-check), a browse reconcile, or a holder that has
     not published its record yet (flock taken, record unwritten). A positively identified live owner
     on any home refuses at once. Every grant is a real ``reserve``: the flock is never bypassed.
-    Shared by the gateway boot and the running multiplexer's hot-serve of a new profile."""
+    Shared by the gateway boot and the running multiplexer's hot-serve of a new profile.
+
+    *cancel* set (a worker thread's caller gave up) ends the wait at once and releases a grant
+    that landed meanwhile, raising :class:`ReservationCancelled`: the caller may already have run
+    its ownership cleanup, so nobody would ever release a home taken after it."""
     from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    cancel = threading.Event() if cancel is None else cancel
     deadline = time.monotonic() + wait_s
     logged = False
-    while True:
+    while not cancel.is_set():
+        before = set(ownership.homes)
         try:
-            return ownership.reserve(homes)
+            ownership.reserve(homes)
         except OwnershipConflict:
             # Only the homes that actually conflict decide: a real owner on any of them refuses at
             # once, even while another home is mid-browse (multiplexer boot, all-or-nothing).
@@ -288,13 +299,19 @@ def reserve_waiting_out_transient_holders(ownership, homes, *, wait_s: float) ->
             if len(holders) < len(conflicting) or time.monotonic() >= deadline:
                 raise
             if not conflicting:
-                time.sleep(PROBE_RETRY_BACKOFF_S)  # the holder already let go: a lock probe, never an owner
+                cancel.wait(PROBE_RETRY_BACKOFF_S)  # the holder already let go: a lock probe, never an owner
                 continue
             if not logged:
                 logger.info("Profile %s is held by a short session-store schema catch-up; waiting up to %.0fs",
                             holders[0], wait_s)
                 logged = True
-            time.sleep(TRANSIENT_HOLDER_POLL_S)
+            cancel.wait(TRANSIENT_HOLDER_POLL_S)
+            continue
+        if not cancel.is_set():
+            return
+        for home in {canonical_home(p) for p in homes} - before:
+            ownership.release(home)
+    raise ReservationCancelled(f'Reservation of {", ".join(map(str, homes))} cancelled')
 
 
 def live_runtime_owner(home: Path) -> int | None:

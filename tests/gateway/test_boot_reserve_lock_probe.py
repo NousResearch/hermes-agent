@@ -12,6 +12,7 @@ import fcntl
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -219,3 +220,46 @@ def test_hot_serve_still_parks_a_profile_another_gateway_owns(tmp_path):
         assert time.monotonic() - started < _browse_reconcile_reserve_wait_s() / 2
         assert not process_ownership.owns(fresh)
         assert runner.config._runtime_profile_homes == (("default", root),)
+
+
+def test_cancelled_hot_serve_never_takes_the_profile_after_cleanup(tmp_path, monkeypatch):
+    """The gateway stop cancels the reconcile mid-wait, then releases ownership. The reservation
+    worker must not outlive that cancel: a worker still retrying took the flock once the holder let
+    go, after cleanup, with no coroutine left to serve or release it."""
+    from gateway import runtime_ownership
+
+    root, fresh = _homes(tmp_path)
+    retrying, worker_done = threading.Event(), threading.Event()
+    real_conflicts = runtime_ownership._conflicting_homes
+    real_reserve = runtime_ownership.reserve_waiting_out_transient_holders
+
+    def conflicts(homes):
+        found = real_conflicts(homes)
+        retrying.set()  # the worker refused once and is waiting the holder out
+        return found
+
+    def reserve(*args, **kwargs):
+        try:
+            return real_reserve(*args, **kwargs)
+        finally:
+            worker_done.set()
+
+    monkeypatch.setattr(runtime_ownership, "_conflicting_homes", conflicts)
+    monkeypatch.setattr(runtime_ownership, "reserve_waiting_out_transient_holders", reserve)
+
+    async def scenario(probe):
+        task = asyncio.ensure_future(_HotServeRunner(root)._serve_profile_runtime("boot", fresh))
+        assert await asyncio.to_thread(retrying.wait, 30)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        process_ownership.release(fresh)  # the canceller's ownership cleanup
+        _release(probe)  # the holder lets go after cleanup
+        assert await asyncio.to_thread(worker_done.wait, 30)
+
+    try:
+        with _holder("probe", fresh) as probe:
+            asyncio.run(scenario(probe))
+        assert not process_ownership.owns(fresh)
+    finally:
+        process_ownership.release(fresh)

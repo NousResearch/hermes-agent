@@ -1,5 +1,9 @@
 import type * as React from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
+import { htmlFromDataUrl } from '@/lib/browser-guest-document'
+import { browserBootstrap, endpointUrl } from '@/lib/browser-transport'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 
 /** The sandbox posture guest content gets by default: scripts run, the frame
@@ -93,6 +97,23 @@ export function SandboxedFrame({ className, onError, onLoad, ref, sandbox, src, 
     return null
   }
 
+  const html = isBrowserHostedDesktop() ? htmlFromDataUrl(src) : null
+
+  if (html !== null) {
+    return (
+      <BrowserGuestFrame
+        className={className}
+        html={html}
+        onError={onError}
+        onLoad={onLoad}
+        ref={ref}
+        sandbox={sandbox}
+        style={style}
+        title={title}
+      />
+    )
+  }
+
   return (
     <iframe
       className={cn('size-full border-0 bg-transparent', className)}
@@ -102,6 +123,88 @@ export function SandboxedFrame({ className, onError, onLoad, ref, sandbox, src, 
       ref={ref}
       referrerPolicy="no-referrer"
       sandbox={sanitizeFrameSandbox(sandbox)}
+      src={src}
+      style={style}
+      title={title}
+    />
+  )
+}
+
+interface BrowserGuestFrameProps extends Omit<SandboxedFrameProps, 'src'> {
+  html: string
+}
+
+/** Webapp only: a `data:text/html` document would inherit the page CSP, which
+ *  never runs guest inline scripts. The gateway's guest shell is served with
+ *  its own policy and the SDK allowlist as its sandbox ceiling; this frame's
+ *  sandbox narrows it to the caller's tokens (plus `allow-scripts`, which the
+ *  shell itself needs), and the guest document nested in the shell gets the
+ *  caller's tokens exactly. The shell relays messages both ways, so
+ *  `ref.current.contentWindow.postMessage` and `event.source ===
+ *  ref.current.contentWindow` keep working, and `onLoad` fires once the guest
+ *  document (not the shell) has loaded. */
+function BrowserGuestFrame({ className, html, onError, onLoad, ref, sandbox, style, title }: BrowserGuestFrameProps) {
+  const frame = useRef<HTMLIFrameElement | null>(null)
+  const shellLoad = useRef<React.SyntheticEvent<HTMLIFrameElement> | null>(null)
+  const guestSandbox = sanitizeFrameSandbox(sandbox)
+  const src = endpointUrl('/assets/webapp-guest.html', browserBootstrap()?.basePath || '').href
+
+  const send = useCallback(() => {
+    frame.current?.contentWindow?.postMessage({ type: 'hermes-preview-document', html, sandbox: guestSandbox }, '*')
+  }, [html, guestSandbox])
+
+  useEffect(send, [send])
+
+  useEffect(() => {
+    const guestLoaded = (event: MessageEvent) => {
+      const loaded = shellLoad.current
+
+      if (loaded && event.source === frame.current?.contentWindow && event.data?.type === 'hermes-guest-loaded') {
+        onLoad?.(loaded)
+      }
+    }
+
+    window.addEventListener('message', guestLoaded)
+
+    return () => window.removeEventListener('message', guestLoaded)
+  }, [onLoad])
+
+  const attach = useCallback(
+    (node: HTMLIFrameElement | null) => {
+      frame.current = node
+      const cleanup = typeof ref === 'function' ? ref(node) : undefined
+
+      if (ref && typeof ref !== 'function') {
+        ref.current = node
+      }
+
+      return () => {
+        frame.current = null
+
+        if (typeof cleanup === 'function') {
+          cleanup()
+        } else if (typeof ref === 'function') {
+          ref(null)
+        } else if (ref) {
+          ref.current = null
+        }
+      }
+    },
+    [ref]
+  )
+
+  return (
+    <iframe
+      className={cn('size-full border-0 bg-transparent', className)}
+      loading="lazy"
+      onError={onError}
+      onLoad={event => {
+        shellLoad.current = event
+        send()
+      }}
+      ref={attach}
+      referrerPolicy="no-referrer"
+      sandbox={sanitizeFrameSandbox(`${guestSandbox} allow-scripts`)}
       src={src}
       style={style}
       title={title}

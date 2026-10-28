@@ -69,7 +69,7 @@ _KEYED_LEDGERS = (
     "_lazy_server_configs", "_lazy_server_fingerprints", "_lazy_server_tool_names",
     "_server_connect_retry_after", "_server_connect_failures", "_server_error_counts",
     "_server_breaker_opened_at", "_server_errors_all_application", "_server_trust_levels",
-    "_tool_read_only_hints")
+    "_tool_read_only_hints", "_server_cost_policies")
 _KEYED_SETS = ("_server_connecting", "_parallel_safe_servers")
 
 
@@ -99,4 +99,6 @@ def rekey_unscoped_connections(scope: str) -> None:
         for key in set(_core._servers) | set(_core._lazy_server_tool_names):
             if _key_scope(key) == scope:
                 _core._server_tool_scopes.setdefault(key, set()).add(scope)
+    from tools.mcp_tool_costs import rekey_unscoped
+    rekey_unscoped(scope)  # chats' spend totals follow their server's policy key
     registry.move_to_scope(tool_names, scope)

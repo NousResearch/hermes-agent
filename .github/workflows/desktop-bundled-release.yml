@@ -226,7 +226,11 @@ jobs:
     # Public root is an environment variable, not a repository variable. No
     # secret is injected into admission; downstream jobs consume its outputs.
     environment: release-signing
-    timeout-minutes: 5
+    # The archive step re-downloads every pinned input from R2 to verify its
+    # sha256 (several GB: Chromium, llama.cpp CUDA builds). ~20 s on a normal
+    # day; v0.22.4 rc.1 hit slow R2 reads and the old 5-minute cap cancelled
+    # both Windows chains. The standalone archive job it replaced had 60.
+    timeout-minutes: 30
     permissions:
       contents: read
     outputs:

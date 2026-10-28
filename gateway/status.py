@@ -489,8 +489,8 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+        # Field 22 (ticks) after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
+        return int(stat_path.read_bytes().rsplit(b")", 1)[1].split()[19])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 
@@ -945,13 +945,12 @@ def _pid_exists(pid: int) -> bool:
     psutil, then ctypes ``OpenProcess`` (Windows) / ``os.kill(pid, 0)`` (POSIX). Zombies report
     dead: treating one as alive makes --replace wait forever under systemd Restart=always."""
     pid = int(pid)
+    if os.name == "nt":
+        # ctypes keeps psutil off this hot path (no zombies here). Not a GIL fix: pid_exists measured ~4 us; the
+        # #142085 stall is Process.status() (process_identity). PID 0 is alive to psutil, dead here.
+        return pid_exists_stdlib(pid)
     try:
         import psutil  # type: ignore
-        # Best-effort zombie check: status-read failures fall through to pid_exists().
-        # Windows has no POSIX zombies, and this probe costs ~7 ms per call — once per
-        # registry entry inside the session file lock (#115578). Skip it on Windows and
-        # let pid_exists() below (or the ctypes fallback) decide.
-        probe_zombie = os.name != "nt"
         try:
             # A zombie (defunct) process is still in the process table, so ``psutil.pid_exists()`` returns
             # True for it — but it is already dead: SIGKILL has no effect and it cannot be a running
@@ -961,7 +960,7 @@ def _pid_exists(pid: int) -> bool:
             # #42126). Report zombies as dead so the takeover proceeds. Best-effort: any failure to read
             # status (partial/stub psutil, access denied, transient race) falls through to the authoritative
             # ``pid_exists()`` below rather than raising.
-            if probe_zombie and psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
             return False
@@ -1513,27 +1512,6 @@ def remove_pid_file() -> None:
         _clear_running_pid_cache()
 
 
-def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optional[int]) -> bool:
-    """True when a foreign scoped-lock record no longer names a live gateway: PID missing/dead,
-    start time changed (PID reuse), or the live process is not a gateway -- a readable cmdline says
-    so (also catches boot-time PID+start_time collisions; systemd spawns deterministically);
-    cmdline unreadable AND start_time unknown on either side => the lock record's own argv is the
-    only signal left. Stopped (SIGTSTP) processes look alive to _pid_exists; stale so --replace
-    works."""
-    if existing_pid is None or not _pid_exists(existing_pid):
-        return True
-    recorded_start = existing.get("start_time")
-    current_start = _get_process_start_time(existing_pid)
-    if _start_times_conflict(recorded_start, current_start):
-        return True
-    if not _looks_like_gateway_process(existing_pid):
-        if _read_process_cmdline(existing_pid) is not None:
-            return True
-        if None in (recorded_start, current_start) and not _record_looks_like_gateway(existing):
-            return True
-    return _process_is_stopped(existing_pid)
-
-
 def _process_is_stopped(pid: int) -> bool:
     """True for a stopped / tracing-stop state (T/t) in ``/proc/<pid>/status``."""
     with contextlib.suppress(OSError):
@@ -1548,6 +1526,8 @@ def acquire_scoped_lock(
 ) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity (one Telegram token across homes).
 
+    ``metadata={"owner_kind": "process"}`` allows a non-gateway owner such as
+    a setup process. Its PID/start-time identity still gates stale recovery.
     Raises :class:`gateway.status_lock_dir.ScopedLockDirUnusable` (logged once per dir with the repair) when this token may
     not use the lock dir at all."""
     lock_path = _get_scope_lock_path(scope, identity)
@@ -1562,6 +1542,8 @@ def acquire_scoped_lock(
 def _acquire_scoped_lock_at(
     lock_path: Path, scope: str, identity: str, metadata: Optional[dict[str, Any]]
 ) -> tuple[bool, Optional[dict[str, Any]]]:
+    from gateway.status_scoped_locks import _scoped_lock_record_is_stale
+
     make_user_dir(lock_path.parent, parents=True, exist_ok=True)
     # An existing lock this token may not read (left by an elevated gateway) must raise here:
     # ``_read_json_file`` would call it empty and O_EXCL "in use", a conflict with no holder.
@@ -2057,10 +2039,10 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     lock_record = _read_gateway_lock_record(resolved_lock_path)
     # The PID file is advisory beside a HELD lock: a launch-service gateway keeps serving after its
-    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430). The
-    # holder wrote its own identity into the lock at acquisition, so that record validated against
-    # the live process below is the same proof — raising here blocked every following update.
-    records = (_read_pid_record(resolved_pid_path), lock_record) if pid_exists else (lock_record,)
+    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430) or leaves
+    # it behind (#143331); the lock record validated against the live process below is the proof.
+    from gateway.status_pid_records import strict_identity_records
+    records = strict_identity_records(resolved_pid_path, lock_record, pid_exists)
     if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")
     pid = _pid_from_record(records[0])

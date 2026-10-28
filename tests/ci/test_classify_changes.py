@@ -92,7 +92,12 @@ CASES = {
     # through the same compilers (tests/ci/test_update_ci_routing.py).
     "shared JS builder → frontend + both update suites": (
         ["scripts/build/web.mjs"],
-        _lanes(python=True, frontend=True, e2e_upgrade=True, e2e_desktop_update=True),
+        _lanes(python=True, frontend=True, e2e_upgrade=True, e2e_desktop_update=True, docker=True),
+    ),
+    # The image builds the Webapp through this recipe; Desktop sources do not route to docker.
+    "webapp build recipe → docker": (
+        ["apps/desktop/scripts/build-webapp.mjs"],
+        _lanes(frontend=True, e2e_upgrade=True, e2e_desktop_core=True, e2e_desktop_update=True, docker=True),
     ),
     "root JS tests → frontend": (["tests-js/product-builders.test.mjs"], _lanes(python=True, frontend=True)),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),

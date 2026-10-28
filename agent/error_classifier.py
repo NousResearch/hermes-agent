@@ -127,6 +127,13 @@ _UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
 # scoped on purpose: other providers' billing codes on a 403 stay auth failures.
 _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 
+# Nous usage-window plan: included usage (or the large-model allowance) is spent AND
+# there are no top-up credits. Billing so the pool may rotate to a key the user
+# owns; the message names the reset, so it must never read as transient. Honoured
+# only on a Nous 402 (``_classify_402`` behind ``_is_nous_route``), never via
+# _BILLING_ERROR_CODES, so any other status or upstream keeps main's rules.
+_NOUS_USAGE_WINDOW_402_CODE = "usage_window_and_credits_exhausted"
+
 # Structured codes meaning the account cannot serve paid traffic.
 _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
@@ -1016,7 +1023,7 @@ def classify_api_error(
     The credential is never included in the returned context."""
     from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
-    # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
+    # Some SDK RateLimitErrors (OpenAI-compatible relays) may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
         status_code = 429
     body = _extract_error_body(error)
@@ -1127,12 +1134,42 @@ def _status_5xx(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_SERVER_ERROR
 
 
-def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
-    """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing."""
+def _is_nous_route(c: _Ctx) -> bool:
+    """The usage-window 402 code is Nous's: any other upstream sending it keeps main's text rules."""
+    if (c.provider or "").strip().lower() == "nous":
+        return True
+    from utils import base_url_host_matches
+    return bool(c.base_url) and base_url_host_matches(c.base_url, "nousresearch.com")
+
+
+def _classify_402(error_msg: str, result_fn: Callable[..., Any], code: str = "", body: Any = None) -> Any:
+    """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing.
+    The Nous usage-window code is decisive (its prose names the reset time, which must not
+    demote it to a transient rate limit); every other 402 keeps the text rules. A usage-window 402's
+    optional ``display_message`` (server-set wording) rides in ``error_context`` for the refusal line."""
+    if code == _NOUS_USAGE_WINDOW_402_CODE:
+        # Tagged so recovery skips the paid-entitlement refresh (none restores included usage before the reset).
+        context: dict[str, Any] = {"usage_window": True}
+        if display := _usage_window_display_message(body):
+            context["display_message"] = display
+        # No fallback: another model is the user's call (the limit card offers it), never automatic.
+        return result_fn(**{**_V_BILLING, "should_fallback": False}, error_context=context)
     transient = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and any(
         p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
     )
     return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
+
+
+def _usage_window_display_message(body: Any) -> str:
+    """The server's optional wording for a usage-window 402 (top level or under ``error``), trimmed and
+    capped; "" when absent."""
+    if not isinstance(body, dict):
+        return ""
+    for holder in (body, body.get("error")):
+        value = holder.get("display_message") if isinstance(holder, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:500]
+    return ""
 
 
 def _has_large_inline_image(content: Any) -> bool:
@@ -1259,7 +1296,8 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
-    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
+    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE,
+    402: lambda c: _classify_402(c.msg, dict, c.code if _is_nous_route(c) else "", c.body),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,

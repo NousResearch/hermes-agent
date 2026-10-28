@@ -384,6 +384,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     'user-data': { type: 'string' }, out: { type: 'string' }, phase: { type: 'string' },
     'expect-commit': { type: 'string' }, 'launch-spec': { type: 'string' }, 'mock-url': { type: 'string' },
   } })
+
+  // When the app exits before printing its debugger line, Playwright's Electron.launch rejects
+  // the awaited watcher and leaves its sibling stderr watchers' rejections unhandled. Without a
+  // listener Node dies on those first, so the catch below never writes the failed receipt or the
+  // launch call log (the app's exit code and stderr). Still fail the run.
+  process.on('unhandledRejection', (reason: unknown): void => {
+    console.error(`unhandled rejection: ${redact(String(reason))}`)
+    process.exitCode = 1
+  })
+
   try {
     await runInstalledDesktopSmoke(optionsSchema.parse(values))
   } catch (error) {

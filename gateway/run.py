@@ -4324,12 +4324,50 @@ def _housekeeping_channel_directory(adapters, loop) -> None:
     from gateway.channel_directory import build_channel_directory
     if loop is not None:
         # build_channel_directory is async (Slack web calls) and this is a background thread:
-        # schedule onto the gateway loop and wait briefly so refresh failures still log.
+        # schedule onto the gateway loop and wait briefly so refresh failures still log. The
+        # scheduling thread's context travels with the coroutine (run_coroutine_threadsafe), so a
+        # caller inside ``_profile_runtime_scope`` gets that home's directory AND that home's
+        # session store.
         fut = safe_schedule_threadsafe(
             build_channel_directory(adapters), loop, logger=logger,
             log_message="Channel directory refresh scheduling error")
         if fut is not None:
             fut.result(timeout=30)
+
+
+def _housekeeping_channel_directories(runner, adapters, loop) -> None:
+    """Refresh every served home's channel directory from that home's own bot and store.
+
+    The directory is the gateway's cache of what ITS bot can see, so one bot's view is not another's
+    and a multiplexed process must write one file per served home. Building once per process wrote
+    only ``get_hermes_home()``'s copy (the launch home), so a named profile's directory stayed frozen
+    at whatever a previous single-profile gateway last saw, and a room only that profile's bot ever
+    saw never appeared in its own profile's file.
+    """
+    config = getattr(runner, "config", None)
+    if runner is None or not getattr(config, "multiplex_profiles", False):
+        # Single-profile gateway: one directory, the launch home's, exactly as before.
+        if adapters:
+            _housekeeping_channel_directory(adapters, loop)
+        return
+    from gateway.run_profile_reconcile import _for_each_served_profile
+    # The launch profile owns ``self.adapters``; its name is captured at construction where it
+    # exists, else read before the loop binds any scope (multiplex turns rewrite HERMES_HOME).
+    primary = getattr(runner, "_primary_profile_name", None)
+    if not primary:
+        resolve_active = getattr(runner, "_active_profile_name", None)
+        primary = resolve_active() if callable(resolve_active) else "default"
+    secondary = getattr(runner, "_profile_adapters", None) or {}
+
+    def _refresh(profile_name: str) -> None:
+        # ``self.adapters`` is always the primary (default) profile's map; a named profile's bots
+        # live in ``_profile_adapters``. A profile not (yet) started in this process is skipped:
+        # its file belongs to whoever does serve it, and an empty map here would blank a good file.
+        profile_adapters = adapters if profile_name == primary else secondary.get(profile_name)
+        if profile_adapters:
+            _housekeeping_channel_directory(profile_adapters, loop)
+
+    _for_each_served_profile(runner, _refresh)
 
 
 def _housekeeping_paste_sweep() -> None:
@@ -4499,7 +4537,7 @@ def _start_gateway_housekeeping(
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
         chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
     chores += [
-        (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
+        (5, "Channel directory refresh", lambda: _housekeeping_channel_directories(runner, adapters, loop)),
         (60, "Media cache cleanup", housekeeping_media_caches),
         (60, "Paste sweep", _housekeeping_paste_sweep)]
     # Low disk + auto-prune undecided: ask on the home channel (two syscalls; snoozed per post).

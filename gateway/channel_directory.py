@@ -165,10 +165,11 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
             await _discover(entry.name)
     _apply_channel_aliases(platforms)
     directory = {"updated_at": datetime.now().isoformat(), "platforms": platforms}
+    directory_path = _directory_path()
     try:
-        await asyncio.to_thread(atomic_json_write, _directory_path(), directory)
+        await asyncio.to_thread(atomic_json_write, directory_path, directory)
     except Exception as e:
-        logger.warning("Channel directory: failed to write: %s", e)
+        logger.warning("Channel directory: failed to write %s: %s", directory_path, e)
     return directory
 
 

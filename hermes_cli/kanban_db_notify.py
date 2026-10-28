@@ -418,6 +418,23 @@ def record_notify_ping(
         )
 
 
+def record_notify_wake(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, event_id: int,
+) -> None:
+    """Checkpoint a sent wake independently of the retryable cursor.
+
+    A wake is not idempotent (the creator session runs a whole extra turn), so
+    its watermark must survive a rewind the way the ping's already does.
+    """
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_wake_event_id = MAX(last_wake_event_id, ?) "
+            + _SUB_KEY_WHERE,
+            (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
+        )
+
+
 def rewind_notify_cursor(
     conn: sqlite3.Connection,
     *,

@@ -480,7 +480,8 @@ def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
     for OpenAI-compatible models but the Anthropic SDK prepends its own /v1/messages — strip for
     anthropic_messages, re-append otherwise), then LM Studio normalization."""
     if _models.opencode_provider_family(provider) is not None:
-        base_url = _models.normalize_opencode_base_url(provider, api_mode, base_url)
+        from hermes_cli.models_opencode import normalize_opencode_base_url
+        base_url = normalize_opencode_base_url(provider, api_mode, base_url)
     if provider == "lmstudio":
         base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
     if provider == "actual":

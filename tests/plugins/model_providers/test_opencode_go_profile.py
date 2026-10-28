@@ -67,7 +67,7 @@ class TestOpenCodeZenOxReasoning:
             tools=None,
             provider_profile=opencode_zen_profile,
             reasoning_config={"enabled": True, "effort": "max"},
-            base_url="https://opencode.ai/zen/v1",
+            base_url="https://opencode.ai/inference/openai/v1",
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "max"
@@ -184,7 +184,7 @@ class TestOpenCodeGoDeepSeekThinking:
             tools=None,
             provider_profile=opencode_go_profile,
             reasoning_config={"enabled": True, "effort": "max"},
-            base_url="https://opencode.ai/zen/go/v1",
+            base_url="https://opencode.ai/inference/go/openai/v1",
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "max"
@@ -240,7 +240,7 @@ class TestOpenCodeGoFullKwargsIntegration:
             tools=None,
             provider_profile=opencode_go_profile,
             reasoning_config={"enabled": True, "effort": "high"},
-            base_url="https://opencode.ai/zen/go/v1",
+            base_url="https://opencode.ai/inference/go/openai/v1",
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
@@ -256,7 +256,7 @@ class TestOpenCodeGoFullKwargsIntegration:
             tools=None,
             provider_profile=opencode_go_profile,
             reasoning_config={"enabled": True, "effort": "high"},
-            base_url="https://opencode.ai/zen/go/v1",
+            base_url="https://opencode.ai/inference/go/openai/v1",
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
@@ -268,6 +268,8 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     from datetime import datetime, timezone
 
     from agent.account_usage import fetch_account_usage
+
+    urls = []
 
     class _Response:
         status_code = 200
@@ -284,7 +286,7 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
 
     class _Client:
         def __init__(self, timeout=None):
-            self.urls = []
+            pass
 
         def __enter__(self):
             return self
@@ -293,20 +295,50 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
             return False
 
         def get(self, url, headers=None):
-            self.urls.append(url)
+            urls.append(url)
             return _Response()
 
     monkeypatch.setattr("httpx.Client", _Client)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        # /v1 stripped, as anthropic_messages routing leaves it — the hook must not reuse this base_url.
+        # The Messages base anthropic_messages routing leaves behind — usage is not under any runtime base.
         lambda requested, explicit_base_url=None, explicit_api_key=None: {
-            "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go", "api_key": "sk-test"},
+            "provider": "opencode-go", "base_url": "https://opencode.ai/inference/go/anthropic", "api_key": "sk-test"},
     )
 
     snapshot = fetch_account_usage("opencode-go")
 
     assert snapshot is not None and snapshot.provider == "opencode-go"
+    assert urls == ["https://opencode.ai/inference/go/v1/usage"]
     assert [(w.label, w.used_percent) for w in snapshot.windows] == [
         ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
     assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("provider, base_url, expected", [
+    ("opencode-go", None, "https://opencode.ai/inference/go/v1/models"),
+    ("opencode-go", "https://opencode.ai/inference/go/anthropic", "https://opencode.ai/inference/go/v1/models"),
+    ("opencode-go", "https://opencode.ai/zen/go/v1", "https://opencode.ai/inference/go/v1/models"),
+    ("opencode-zen", "https://opencode.ai/inference/openai/v1", "https://opencode.ai/inference/v1/models"),
+    # A proxy off opencode.ai serves its own listing.
+    ("opencode-go", "https://gateway.internal.example/v1", "https://gateway.internal.example/v1/models"),
+])
+def test_model_listing_uses_the_family_catalog(provider, base_url, expected, monkeypatch):
+    """The catalog has no per-API path, so no opencode.ai runtime base may decide where it is fetched."""
+    import io
+    import json
+
+    import providers
+
+    urls = []
+
+    def _open(request, timeout=None):
+        urls.append(request.full_url)
+        return io.BytesIO(json.dumps({"data": [{"id": "glm-5.3"}]}).encode())
+
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", _open)
+
+    models = providers.get_provider_profile(provider).fetch_models(api_key="sk-test", base_url=base_url)
+
+    assert models == ["glm-5.3"]
+    assert urls == [expected]

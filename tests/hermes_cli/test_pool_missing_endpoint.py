@@ -52,7 +52,6 @@ def test_pool_endpoint_preserves_entry_and_provider_config_boundaries(entry_url,
 def test_missing_endpoint_still_finalizes_anthropic_wire():
     _store_entry("opencode-zen")
     runtime = resolve_runtime_provider(requested="opencode-zen", target_model="claude-sonnet-4-6")
-    default = PROVIDER_REGISTRY["opencode-zen"].inference_base_url
     assert runtime["api_mode"] == "anthropic_messages"
-    assert runtime["base_url"] == default.removesuffix("/v1")
+    assert runtime["base_url"] == "https://opencode.ai/inference/anthropic"
     assert runtime["api_key"] == KEY

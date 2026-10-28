@@ -84,7 +84,7 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     from hermes_cli.model_switch import model_derived_api_mode
     derived = model_derived_api_mode(provider or "", stored_model)
     if derived is not None:
-        from hermes_cli.models import normalize_opencode_base_url
+        from hermes_cli.models_opencode import normalize_opencode_base_url
         api_mode = derived
         base_url = normalize_opencode_base_url(provider, api_mode, base_url) or None
     return stored_model, provider, base_url, api_mode, provider_changed

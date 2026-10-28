@@ -352,7 +352,7 @@ def test_restore_session_model_rederives_per_model_wire_for_opencode_rows(monkey
     stub._restore_session_model(_row(model="deepseek-v4-flash-vision-exp", model_config={
         "gateway_runtime": {"provider": "opencode-go", "base_url": "https://opencode.ai/zen/go",
                             "api_mode": "anthropic_messages"}}))
-    assert (stub.api_mode, stub.base_url) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+    assert (stub.api_mode, stub.base_url) == ("chat_completions", "https://opencode.ai/inference/go/openai/v1")
 
     stub = _make_stub()
     stub._restore_session_model(_row(model="MiniMax-M2.5", model_config={

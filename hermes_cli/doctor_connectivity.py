@@ -79,9 +79,8 @@ def _build_apikey_providers_list() -> list:
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
         ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
-        ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
-        # OpenCode Go has no shared /models endpoint; skip the health check.
-        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                       None,                                  "OPENCODE_GO_BASE_URL", False),
+        ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/inference/v1/models", "OPENCODE_ZEN_BASE_URL", True),
+        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                       "https://opencode.ai/inference/go/v1/models", "OPENCODE_GO_BASE_URL", True),
     ]
     _known_names = {t[0] for t in _static}
     # Providers with a dedicated health check (custom headers/auth): skip their pluggable profiles so
@@ -235,6 +234,9 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     # Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1 (OpenAI-compat surface exposing /models).
     if not base and key.startswith("sk-kimi-"):
         base = "https://api.kimi.com/coding/v1"
+    # OpenCode's catalog has no per-API path, so it is never under an opencode.ai base: probe default_url.
+    if base_url_host_matches(base, "opencode.ai"):
+        base = ""
     # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding sans /v1) lack /models — use the OpenAI-compat /v1 surface.
     if base and base.rstrip("/").endswith("/anthropic"):
         from agent.auxiliary_client import _to_openai_base_url

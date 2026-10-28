@@ -1,9 +1,10 @@
-"""Regression tests for OpenCode /v1 stripping during /model switch.
+"""Regression tests for the OpenCode Anthropic base during /model switch.
 
 When switching to an Anthropic-routed OpenCode model mid-session (e.g.
 ``/model minimax-m2.7`` on opencode-go, or ``/model claude-sonnet-4-6``
-on opencode-zen), the resolved base_url must have its trailing ``/v1``
-stripped before being handed to the Anthropic SDK.
+on opencode-zen), the resolved base_url must be the family's Anthropic
+base (``/inference/go/anthropic``), with no trailing ``/v1``, before being
+handed to the Anthropic SDK.
 
 Without the strip, the SDK prepends its own ``/v1/messages`` path and
 requests hit ``https://opencode.ai/zen/go/v1/v1/messages`` — a double
@@ -88,8 +89,8 @@ class TestOpenCodeGoV1Strip:
 
         assert result.success, f"switch_model failed: {result.error_message}"
         assert result.api_mode == "anthropic_messages"
-        assert result.base_url == "https://opencode.ai/zen/go", (
-            f"Expected /v1 stripped for anthropic_messages; got {result.base_url}"
+        assert result.base_url == "https://opencode.ai/inference/go/anthropic", (
+            f"Expected the Anthropic base for anthropic_messages; got {result.base_url}"
         )
 
 
@@ -109,7 +110,7 @@ class TestOpenCodeZenV1Strip:
 
         assert result.success
         assert result.api_mode == "codex_responses"
-        assert result.base_url == "https://opencode.ai/zen/v1"
+        assert result.base_url == "https://opencode.ai/inference/openai/v1"
 
 
 class TestAgentSwitchModelDefenseInDepth:
@@ -166,8 +167,8 @@ class TestAgentSwitchModelDefenseInDepth:
                     api_mode="anthropic_messages",
                 )
 
-        assert captured.get("base_url") == "https://opencode.ai/zen/go", (
-            f"agent.switch_model did not strip /v1; passed {captured.get('base_url')} "
+        assert captured.get("base_url") == "https://opencode.ai/inference/go/anthropic", (
+            f"agent.switch_model did not use the Anthropic base; passed {captured.get('base_url')} "
             "to build_anthropic_client"
         )
 
@@ -218,7 +219,7 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
         )
 
         assert result.success, f"switch failed: {result.error_message}"
-        assert result.base_url == "https://opencode.ai/zen/v1", (
+        assert result.base_url == "https://opencode.ai/inference/openai/v1", (
             f"base_url wedged at {result.base_url!r} - stale Claude config.default "
             "caused api_mode to be computed as anthropic_messages, stripping /v1, "
             "and chat_completions override never re-added it."

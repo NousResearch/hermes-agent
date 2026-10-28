@@ -23,7 +23,7 @@ def test_provider_override_runtime_uses_the_override_model(_zen_free_default_hom
 
     runtime = _resolve_runtime_agent_kwargs_for_provider("opencode-go", target_model="mimo-v2.5")
     assert runtime["provider"] == "opencode-go"
-    assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert runtime["base_url"] == "https://opencode.ai/inference/go/openai/v1"
 
 
 def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, monkeypatch):
@@ -46,4 +46,4 @@ def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, mon
     fb = gateway_run._resolve_runtime_agent_kwargs()
     assert fb["model"] == "mimo-v2.5"
     assert fb["provider"] == "opencode-go"
-    assert fb["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert fb["base_url"] == "https://opencode.ai/inference/go/openai/v1"

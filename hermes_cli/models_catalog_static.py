@@ -234,7 +234,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3.1-flash-lite-preview", "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6", "openai/gpt-5.4",
     ],
-    # Synced against opencode.ai/docs/zen + live GET /zen/v1/models. Zen/Go are
+    # Synced against opencode.ai/docs/zen + live GET /inference/v1/models. Zen/Go are
     # _LIVE_FIRST_PICKER_PROVIDERS, so this is a discovery floor: live entries lead in the picker
     # and stale curated names never pollute the top. "x-preview-f-free" = "Ox Alpha" stealth model.
     "opencode-zen": [
@@ -251,7 +251,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
     ],
-    # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
+    # Synced against opencode.ai/docs/go + live GET /inference/go/v1/models. Known-delisted models are
     # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
     # — the Go-subscription twin of Zen's Ox Alpha — was delisted 2026-09-09.
     "opencode-go": [

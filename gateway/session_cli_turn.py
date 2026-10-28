@@ -118,7 +118,8 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
         # ``api_mode_for_model``, Nous Portal, OpenCode; ``_rederive_per_model_route``); otherwise ``result.api_mode`` describes the
         # default host, not this session's endpoint, and the session's wire stays.
         from hermes_cli.model_switch import model_derived_api_mode
-        from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+        from hermes_cli.models import opencode_provider_family
+        from hermes_cli.models_opencode import normalize_opencode_base_url
         if model_derived_api_mode(result.target_provider, result.new_model) is not None and result.api_mode:
             runtime['api_mode'] = result.api_mode
         api_mode = runtime.get('api_mode') or None

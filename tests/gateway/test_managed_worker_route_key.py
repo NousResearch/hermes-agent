@@ -112,7 +112,7 @@ def test_bound_launch_key_wins_over_the_route_key(tmp_path, monkeypatch):
     # opencode-go serves this model only on its Responses API (#141861).
     ('muse-spark-1.3-contributor', {'provider': 'opencode-go', 'base_url': 'https://opencode.ai/zen/go/v1'},
      {'OPENCODE_GO_API_KEY': 'fake-opencode-go-key'},
-     {'api_mode': 'codex_responses', 'base_url': 'https://opencode.ai/zen/go/v1'}),
+     {'api_mode': 'codex_responses', 'base_url': 'https://opencode.ai/inference/go/openai/v1'}),
     # Bedrock stores no base_url: the runtime builds the regional endpoint (#143073).
     ('eu.amazon.nova-pro-v1:0', {'provider': 'bedrock'}, {'AWS_REGION': 'eu-west-1'},
      {'api_mode': 'bedrock_converse', 'base_url': 'https://bedrock-runtime.eu-west-1.amazonaws.com'}),

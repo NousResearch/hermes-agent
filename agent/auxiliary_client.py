@@ -749,10 +749,10 @@ def _fast_model_from_catalog(provider_id: str) -> str:
                 logger.debug("No Nous credentials for catalog", exc_info=True)
         if not base_url:
             base_url = str(getattr(get_provider_profile(provider_id), "base_url", "") or "")
-        base_url = base_url.rstrip("/")
+        from hermes_cli.models_opencode import opencode_catalog_base
+        base_url = (opencode_catalog_base(base_url) or base_url).rstrip("/").removesuffix("/v1")
         if not base_url:
             return ""
-        base_url = base_url.removesuffix("/v1")
         # Nous-only args must match the pickers' or the seeded cache loses sale chrome and
         # policy-catalog expiry.
         _nous_kwargs = {}

@@ -174,7 +174,7 @@ class TestApplyStoredSessionRuntime:
         choice = _apply_stored_session_runtime(
             _ModelChoice("ambient-model", "openrouter", api_key=self._AMBIENT_KEY), meta, explicit_model=False)
         assert (choice.model, choice.provider) == ("deepseek-v4-flash-vision-exp", "opencode-go")
-        assert (choice.api_mode, choice.base_url) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+        assert (choice.api_mode, choice.base_url) == ("chat_completions", "https://opencode.ai/inference/go/openai/v1")
 
 class TestRunAgentResumeRuntime:
     """End-to-end wiring: ``_run_agent`` must hand AIAgent the session's stored runtime

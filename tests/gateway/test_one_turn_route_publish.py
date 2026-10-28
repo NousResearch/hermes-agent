@@ -92,9 +92,9 @@ def test_same_provider_override_runs_on_the_targets_wire(monkeypatch):
 
 def test_same_provider_override_reshapes_the_opencode_endpoint_for_its_wire(monkeypatch):
     runtime = _same_provider_override(
-        monkeypatch, "opencode-zen", "minimax-m2.7", "anthropic_messages", "https://opencode.ai/zen",
+        monkeypatch, "opencode-zen", "minimax-m2.7", "anthropic_messages", "https://opencode.ai/inference/anthropic",
         {"base_url": "https://opencode.ai/zen/v1", "api_mode": "chat_completions"})
-    assert (runtime["api_mode"], runtime["base_url"]) == ("anthropic_messages", "https://opencode.ai/zen")
+    assert (runtime["api_mode"], runtime["base_url"]) == ("anthropic_messages", "https://opencode.ai/inference/anthropic")
 
 
 def _running_runner(route, agent):

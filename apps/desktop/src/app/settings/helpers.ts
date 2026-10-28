@@ -25,8 +25,6 @@ export const withoutKey = <T>(record: Record<string, T>, key: string) => {
   return next
 }
 
-export const redactedValue = (v: string) => (v.length <= 8 ? '••••' : `${v.slice(0, 4)}...${v.slice(-4)}`)
-
 // The backend wraps stored-key previews in a write-guard sentinel
 // (hermes_cli/web_routers/_common.redacted_credential_preview): show the inner
 // preview, and a plain mask for the label-less forms.

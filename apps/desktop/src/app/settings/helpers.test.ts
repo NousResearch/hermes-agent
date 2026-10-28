@@ -495,3 +495,10 @@ describe('credentialPreview', () => {
     expect(credentialPreview(null)).toBeNull()
   })
 })
+
+describe('credential previews', () => {
+  it('has no client-side preview builder', async () => {
+    const helpers = await import('./helpers')
+    expect('redactedValue' in helpers).toBe(false)
+  })
+})

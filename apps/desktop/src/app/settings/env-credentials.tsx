@@ -8,7 +8,7 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
-import { asText, includesQuery, redactedValue, withoutKey } from './helpers'
+import { asText, includesQuery, withoutKey } from './helpers'
 import { Pill } from './primitives'
 import type { EnvRowProps } from './types'
 
@@ -114,7 +114,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
     try {
       await setEnvVar(key, value, profile)
-      patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
+      patchVar(key, { is_set: true, redacted_value: '«redacted-secret»' })
       clearLocalState(key, editKey)
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
@@ -139,7 +139,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
     try {
       await setEnvVar(key, trimmed, profile)
-      patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
+      patchVar(key, { is_set: true, redacted_value: '«redacted-secret»' })
       clearLocalState(key)
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', message: toolsets.savedMessage(key), title: toolsets.savedTitle })

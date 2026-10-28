@@ -9,8 +9,11 @@ Framework rejects. Every rejected activity logs one ERROR line carrying the
 file name, MIME type, size, HTTP status and the response body, so a 400 is
 diagnosable without opening the container.
 
-The adapter is imported plain and the sends need the SDK, so the module skips
-without the ``teams`` extra; the instance is built
+The adapter is imported plain. The sends import ``Attachment`` and
+``MessageActivityInput`` lazily; CI does not install the ``teams`` extra, so
+without the real SDK a per-test fixture stubs ``microsoft_teams.api`` with those
+two classes (monkeypatched into sys.modules, so it never leaks into
+tests/gateway/test_teams.py's own mock). The instance is built
 with object.__new__ so no App/auth is constructed, sends are captured by
 stubbing _send_via_conv_ref / send, and the consent directory is a tmp_path.
 The upload goes through an httpx.MockTransport -- nothing leaves the process.
@@ -24,15 +27,16 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import importlib
 import json
 import logging
+import sys
+import types
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from pydantic import BaseModel
-
-pytest.importorskip("microsoft_teams.apps", reason="teams extra not installed")
 
 from plugins.platforms.teams import adapter as teams_adapter
 from plugins.platforms.teams.adapter import TeamsAdapter
@@ -46,6 +50,44 @@ REJECT_URL = "https://smba.trafficmanager.net/ca/TENANT/v3/conversations/DM/acti
 
 class _PydanticContext(BaseModel):
     hermes_file_token: str
+
+
+class _StubAttachment:
+    def __init__(self, content_type=None, content=None, content_url=None, name=None):
+        self.content_type = content_type
+        self.content = content
+        self.content_url = content_url
+        self.name = name
+
+
+class _StubMessageActivityInput:
+    def __init__(self):
+        self.attachments = []
+
+    def add_attachments(self, *attachments):
+        self.attachments.extend(attachments)
+        return self
+
+
+def _real_teams_api():
+    mod = sys.modules.get("microsoft_teams.api")
+    if mod is None:
+        try:
+            mod = importlib.import_module("microsoft_teams.api")
+        except ImportError:
+            return None
+    return mod if getattr(mod, "__file__", None) else None
+
+
+@pytest.fixture(autouse=True)
+def _teams_api(monkeypatch):
+    if _real_teams_api() is not None:
+        return
+    api = types.ModuleType("microsoft_teams.api")
+    api.Attachment = _StubAttachment
+    api.MessageActivityInput = _StubMessageActivityInput
+    monkeypatch.setitem(sys.modules, "microsoft_teams", sys.modules.get("microsoft_teams") or types.ModuleType("microsoft_teams"))
+    monkeypatch.setitem(sys.modules, "microsoft_teams.api", api)
 
 
 def _run(coro):

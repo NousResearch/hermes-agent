@@ -8,6 +8,7 @@
 import asyncio
 import contextlib
 import io
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -48,3 +49,26 @@ def test_probe_timeout_names_server_and_knobs(monkeypatch):
     message = str(info.value)
     assert "hangsrv" in message and "timed out" in message
     assert "connect_timeout" in message and "oauth.timeout" in message
+
+
+def test_login_forces_authorization_after_anonymous_probe(monkeypatch, tmp_path):
+    """Regression for #137289: a public tools/list response must not skip explicit login."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.mcp_config as mc
+
+    provider = MagicMock()
+    provider.force_authorization = AsyncMock()
+    manager = MagicMock()
+    manager.get_or_build_provider.return_value = provider
+    tokens = iter((False, True))
+    monkeypatch.setattr(mc, "_probe_single_server", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mc, "_oauth_tokens_present", lambda name: next(tokens))
+    monkeypatch.setattr("tools.mcp_oauth_manager.get_manager", lambda: manager)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert mc._reauth_oauth_server(
+            "gmail", {"url": "https://gmailmcp.googleapis.com/mcp/v1", "auth": "oauth",
+                      "oauth": {"client_id": "client", "client_secret": "secret"}},
+        )
+
+    provider.force_authorization.assert_awaited_once()

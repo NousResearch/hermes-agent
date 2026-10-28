@@ -123,6 +123,35 @@ class TestOAuthFlagOnRefresh:
         assert result is True
         assert agent._anthropic_api_key == new
 
+    def test_pool_rotated_api_key_not_overwritten_by_singleton_oauth(self, agent):
+        """After pool rotation swaps in a pooled API key (d90e42), _try_refresh_anthropic_client_credentials
+        must not overwrite it with ~/.claude/.credentials.json via resolve_anthropic_token()."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.model = "claude-opus-5-5"
+        agent._anthropic_api_key = "sk-ant-api03-pooled-key"
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = False
+        bound_entry = MagicMock()
+        bound_entry.id = "d90e42"
+        bound_entry.runtime_api_key = "sk-ant-api03-pooled-key"
+        agent._credential_pool = MagicMock()
+        agent._credential_pool.entries.return_value = [bound_entry]
+        agent._credential_pool_entry_id = "d90e42"
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token",
+                  return_value=_OAUTH_LIKE_TOKEN),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is False
+        assert agent._anthropic_api_key == "sk-ant-api03-pooled-key"
+        assert agent._is_anthropic_oauth is False
+
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""
 

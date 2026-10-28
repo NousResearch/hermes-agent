@@ -896,6 +896,31 @@ class ClientLifecycleMixin:
         current_key = str(self._anthropic_api_key or "")
         if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
+        # When bound to a credential-pool entry, keep that entry's credential (e.g. a pooled API key
+        # swapped in on 429) instead of letting resolve_anthropic_token() overwrite it with a singleton
+        # OAuth file (~/.claude/.credentials.json). Only adopt a token refresh on the bound pool entry itself.
+        pool = getattr(self, "_credential_pool", None)
+        entry_id = getattr(self, "_credential_pool_entry_id", None)
+        if pool is not None and entry_id:
+            try:
+                bound = next((e for e in pool.entries() if getattr(e, "id", None) == entry_id), None)
+            except Exception:
+                bound = None
+            if bound is not None:
+                new_token = str(getattr(bound, "runtime_api_key", None) or getattr(bound, "access_token", "") or "").strip()
+                if not new_token or new_token == self._anthropic_api_key:
+                    return False
+                with suppress(Exception):
+                    self._anthropic_client.close()
+                try:
+                    base_url = getattr(self, "_anthropic_base_url", None)
+                    self._anthropic_client = self._build_direct_anthropic_client(new_token, base_url)
+                except Exception as exc:
+                    logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
+                    return False
+                self._anthropic_api_key = self.api_key = new_token
+                self._is_anthropic_oauth = self._anthropic_oauth_flag(new_token)
+                return True
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
             new_token = resolve_anthropic_token(model=self.model)

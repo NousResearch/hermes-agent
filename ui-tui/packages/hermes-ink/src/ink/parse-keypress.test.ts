@@ -134,6 +134,19 @@ describe('parseMultipleKeypresses text control splitting', () => {
 
     expect(keys).toEqual([expect.objectContaining({ raw: 'a\rb' })])
   })
+
+  it('peels the CR ending a single-line read into return (scripted text + Enter in one write)', () => {
+    // `tmux send-keys '/help' Enter` and a PTY write of `/help\r` arrive as one read.
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '/help\r')
+
+    expect(keys).toEqual([expect.objectContaining({ raw: '/help' }), expect.objectContaining({ name: 'return' })])
+  })
+
+  it('keeps the trailing CR of a multi-line non-bracketed paste inside the text token', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'line one\rline two\r')
+
+    expect(keys).toEqual([expect.objectContaining({ raw: 'line one\rline two\r' })])
+  })
 })
 
 describe('parseMultipleKeypresses CSI u (Kitty keyboard protocol)', () => {

@@ -216,6 +216,11 @@ function splitNumericParams(params: string): number[] {
 // token only happens for non-bracketed paste, where peeling it into a
 // `return` keypress would prematurely submit the composer. Leaving them in
 // the token preserves the existing paste/return handling byte-for-byte.
+// The one exception is a single-line token ENDING in CR: nothing follows the
+// CR in the read and no other line break precedes it, so it is the Enter of a
+// scripted `text` + Enter write (`tmux send-keys 'text' Enter`, a PTY write of
+// `text\r`) and is peeled into its own `return`. A multi-line token keeps its
+// trailing CR as paste content, exactly as before.
 function isControlChar(ch: string): boolean {
   const code = ch.charCodeAt(0)
 
@@ -227,6 +232,12 @@ function isControlChar(ch: string): boolean {
 }
 
 function parseTextKeypresses(text: string): ParsedKey[] {
+  const body = text.slice(0, -1)
+
+  if (body && text.endsWith('\r') && !/[\r\n]/.test(body)) {
+    return [...parseTextKeypresses(body), parseKeypress('\r')]
+  }
+
   const keys: ParsedKey[] = []
   let textStart = 0
 

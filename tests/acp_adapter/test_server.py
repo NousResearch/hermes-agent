@@ -241,10 +241,29 @@ class TestSessionOps:
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
 
+    @pytest.mark.asyncio
+    async def test_lifecycle_requests_do_not_create_restore_or_retarget_unsafe_state(self, agent):
+        """Unknown resume/cold cancel stay inert; live retargeting fails while a turn owns state."""
+        manager = agent.session_manager
+        manager.create_session = MagicMock(wraps=manager.create_session)
 
+        with pytest.raises(acp.RequestError, match="Unknown session"):
+            await agent.resume_session(cwd="/other", session_id="unknown")
+        manager.create_session.assert_not_called()
 
+        manager.get_session = MagicMock(side_effect=AssertionError("cancel restored a cold session"))
+        await agent.cancel(session_id="cold-ended")
+        manager.get_session.assert_not_called()
 
-
+        manager.get_session = SessionManager.get_session.__get__(manager)
+        state = manager.create_session(cwd="/original")
+        state.is_running = True
+        with pytest.raises(acp.RequestError, match="busy"):
+            await agent.load_session(cwd="/retargeted", session_id=state.session_id)
+        with pytest.raises(acp.RequestError, match="busy"):
+            await agent.set_session_mode("dont_ask", state.session_id)
+        assert state.cwd == "/original"
+        assert getattr(state, "mode", "default") == "default"
 
     @pytest.mark.asyncio
     async def test_resume_session_replays_persisted_history_to_client(self, agent):

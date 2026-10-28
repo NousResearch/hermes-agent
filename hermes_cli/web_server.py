@@ -12083,6 +12083,423 @@ async def prune_sessions_endpoint(body: SessionPrune):
 
 
 # ---------------------------------------------------------------------------
+# Projects REST API
+# ---------------------------------------------------------------------------
+# Mirrors the tui_gateway project tree but as plain REST so the web dashboard
+# can call it without a JSON-RPC WebSocket.  Uses the same data sources:
+#   - hermes_cli.projects_db  — registered projects
+#   - hermes_state.SessionDB  — session rows (cwd/branch/last_active)
+#   - hermes_cli.kanban_db    — board task counts + last event
+#   - tui_gateway.project_tree.build_tree — grouping logic
+# ---------------------------------------------------------------------------
+
+_STANDARD_TEMPLATE_ITEMS = (".hermes.md", "docs", "work", "assets", ".worktrees")
+
+
+def _open_kanban_for_board(board_slug: Optional[str]):
+    """Return (conn, slug) or (None, None) when board is unavailable."""
+    if not board_slug:
+        return None, None
+    try:
+        from hermes_cli import kanban_db
+        conn = kanban_db.connect(board=board_slug)
+        return conn, board_slug
+    except Exception:
+        return None, None
+
+
+def _board_counts(board_slug: Optional[str]) -> dict:
+    """Quick {todo,doing,review,blocked,done} counts from the bound board."""
+    conn, _ = _open_kanban_for_board(board_slug)
+    if conn is None:
+        return {}
+    try:
+        from hermes_cli import kanban_db
+        stats = kanban_db.board_stats(conn)
+        by_s = stats.get("by_status", {})
+        return {
+            "todo": by_s.get("todo", 0),
+            "doing": by_s.get("doing", 0),
+            "review": by_s.get("review", 0),
+            "blocked": by_s.get("blocked", 0),
+            "done": by_s.get("done", 0),
+        }
+    except Exception:
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _board_last_event(board_slug: Optional[str]) -> Optional[dict]:
+    """Return the most recent task event {kind, title, at} from the board."""
+    conn, _ = _open_kanban_for_board(board_slug)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT te.kind, t.title, te.created_at AS at "
+            "FROM task_events te "
+            "JOIN tasks t ON t.id = te.task_id "
+            "ORDER BY te.created_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {"kind": row["kind"], "title": row["title"], "at": row["at"]}
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _sessions_for_tree(db_path=None) -> list:
+    """Load the minimal session projection needed by build_tree."""
+    import hermes_state
+    db = hermes_state.SessionDB(db_path or hermes_state.DEFAULT_DB_PATH)
+    try:
+        rows = db.list_sessions_rich(
+            limit=2000,
+            order_by_last_active=True,
+            min_message_count=0,
+            include_children=False,
+            include_archived=False,
+        )
+        return [
+            {
+                "id": r.get("id"),
+                "cwd": r.get("cwd"),
+                "git_branch": r.get("git_branch"),
+                "git_repo_root": r.get("git_repo_root"),
+                "started_at": r.get("started_at") or 0,
+                "last_active": r.get("last_active") or r.get("started_at") or 0,
+                "title": r.get("title"),
+                "model": r.get("model"),
+                "source": r.get("source"),
+                "ended_at": r.get("ended_at"),
+                "end_reason": r.get("end_reason"),
+                "message_count": r.get("message_count") or 0,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/api/projects")
+def get_projects():
+    """List all registered projects with session counts, board counts, and last event."""
+    try:
+        from hermes_cli import projects_db as pdb
+        from tui_gateway import project_tree
+
+        with pdb.connect_closing() as conn:
+            projects = [p.to_dict() for p in pdb.list_projects(conn)]
+
+        sessions = _sessions_for_tree()
+        tree = project_tree.build_tree(
+            projects, sessions, [], hydrate=False, exists=os.path.isdir
+        )
+
+        scoped = set(tree.get("scoped_session_ids", []))
+
+        # Enrich explicit (non-auto) projects with board data.
+        result_projects = []
+        project_ids = {p["id"] for p in projects}
+        for node in tree.get("projects", []):
+            if node.get("isAuto"):
+                continue  # skip auto-detected; unregistered folders go to unassigned
+            board_slug = next(
+                (p.get("board_slug") for p in projects if p["id"] == node["id"]),
+                None,
+            )
+            node["boardCounts"] = _board_counts(board_slug)
+            node["lastEvent"] = _board_last_event(board_slug)
+            result_projects.append(node)
+
+        # Unassigned: sessions not claimed by any project.
+        unassigned_sessions = [s for s in sessions if s.get("id") not in scoped]
+        by_cwd: dict = {}
+        for s in unassigned_sessions:
+            cwd = (s.get("cwd") or "").strip()
+            if cwd:
+                by_cwd.setdefault(cwd, 0)
+                by_cwd[cwd] += 1
+        unassigned = {
+            "sessionCount": len(unassigned_sessions),
+            "groups": [
+                {"path": path, "sessionCount": cnt}
+                for path, cnt in sorted(by_cwd.items(), key=lambda x: -x[1])
+            ],
+        }
+
+        return {"projects": result_projects, "unassigned": unassigned}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/projects failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/projects/{project_id}/sessions")
+def get_project_sessions(
+    project_id: str,
+    filter: str = "all",
+    q: str = "",
+):
+    """Sessions for a single project, with task metadata attached."""
+    if filter not in ("all", "running", "done", "failed", "notask"):
+        raise HTTPException(status_code=400, detail="filter must be: all|running|done|failed|notask")
+    try:
+        from hermes_cli import projects_db as pdb, kanban_db
+        from tui_gateway import project_tree
+
+        with pdb.connect_closing() as conn:
+            project = pdb.get_project(conn, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        sessions = _sessions_for_tree()
+        tree = project_tree.build_tree(
+            [project.to_dict()], sessions, [], hydrate=True
+        )
+
+        # Collect sessions scoped to this project from all its lanes/repos.
+        session_map: dict = {}
+        for node in tree.get("projects", []):
+            if node.get("id") != project.id and node.get("id") != project.slug:
+                continue
+            for repo in node.get("repos", []):
+                for group in repo.get("groups", []):
+                    for s in group.get("sessions", []):
+                        session_map[s["id"]] = s
+
+        primary = project.primary_path or ""
+
+        # Build session_id → kanban task mapping from the bound board.
+        task_by_session: dict = {}
+        board_conn, _ = _open_kanban_for_board(project.board_slug)
+        if board_conn is not None:
+            try:
+                rows = board_conn.execute(
+                    "SELECT id, title, status, current_run_id, session_id, result "
+                    "FROM tasks WHERE session_id IS NOT NULL"
+                ).fetchall()
+                for row in rows:
+                    sid = row["session_id"]
+                    if sid:
+                        task_by_session[sid] = {
+                            "id": row["id"],
+                            "title": row["title"],
+                            "status": row["status"],
+                            "attempt": row["current_run_id"],
+                            "exitCode": None,  # not stored directly on task
+                        }
+            except Exception:
+                pass
+            finally:
+                try:
+                    board_conn.close()
+                except Exception:
+                    pass
+
+        result_sessions = []
+        q_lower = q.lower().strip() if q else ""
+        for s in session_map.values():
+            sid = s.get("id", "")
+            task = task_by_session.get(sid)
+
+            # filter
+            if filter == "running":
+                if s.get("ended_at") is not None:
+                    continue
+            elif filter == "done":
+                if s.get("ended_at") is None:
+                    continue
+                if s.get("end_reason") in ("interrupted", "error", "crashed"):
+                    continue
+            elif filter == "failed":
+                if s.get("end_reason") not in ("interrupted", "error", "crashed"):
+                    continue
+            elif filter == "notask":
+                if task is not None:
+                    continue
+
+            # q search (title / cwd)
+            if q_lower:
+                title = (s.get("title") or "").lower()
+                cwd = (s.get("cwd") or "").lower()
+                if q_lower not in title and q_lower not in cwd:
+                    continue
+
+            # relative cwd
+            cwd_abs = (s.get("cwd") or "").strip()
+            if primary and cwd_abs.startswith(primary):
+                rel = cwd_abs[len(primary):].lstrip("/\\") or "."
+            else:
+                rel = cwd_abs
+
+            result_sessions.append({
+                "id": sid,
+                "title": s.get("title"),
+                "model": s.get("model"),
+                "source": s.get("source"),
+                "started_at": s.get("started_at"),
+                "ended_at": s.get("ended_at"),
+                "last_active": s.get("last_active"),
+                "message_count": s.get("message_count", 0),
+                "endReason": s.get("end_reason"),
+                "cwd": rel,
+                "task": task,
+            })
+
+        result_sessions.sort(key=lambda x: -(x.get("last_active") or 0))
+        return {"sessions": result_sessions, "total": len(result_sessions)}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/projects/%s/sessions failed", project_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/projects/{project_id}/board")
+def get_project_board(project_id: str):
+    """Kanban tasks for the project's bound board."""
+    try:
+        from hermes_cli import projects_db as pdb, kanban_db
+
+        with pdb.connect_closing() as conn:
+            project = pdb.get_project(conn, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if not project.board_slug:
+            return {"tasks": [], "counts": {}}
+
+        board_conn, _ = _open_kanban_for_board(project.board_slug)
+        if board_conn is None:
+            return {"tasks": [], "counts": {}}
+        try:
+            tasks = kanban_db.list_tasks(board_conn)
+            stats = kanban_db.board_stats(board_conn)
+            return {
+                "tasks": [
+                    {
+                        "id": t.id,
+                        "title": t.title,
+                        "status": t.status,
+                        "assignee": t.assignee,
+                        "session_id": t.session_id,
+                        "updated_at": t.completed_at or t.started_at or t.created_at,
+                    }
+                    for t in tasks
+                ],
+                "counts": stats.get("by_status", {}),
+            }
+        finally:
+            try:
+                board_conn.close()
+            except Exception:
+                pass
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/projects/%s/board failed", project_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/projects/{project_id}/tree")
+def get_project_tree(project_id: str):
+    """1-depth folder listing for each registered folder + template check."""
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            project = pdb.get_project(conn, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        folders_data = []
+        for folder in project.folders:
+            fpath = Path(folder.path)
+            entries = []
+            missing: list = []
+            if fpath.is_dir():
+                try:
+                    entries = sorted(
+                        [e.name for e in fpath.iterdir() if not e.name.startswith(".")
+                         or e.name in _STANDARD_TEMPLATE_ITEMS],
+                        key=str.lower,
+                    )
+                except PermissionError:
+                    pass
+                for item in _STANDARD_TEMPLATE_ITEMS:
+                    if not (fpath / item).exists():
+                        missing.append(item)
+
+            folders_data.append({
+                "path": folder.path,
+                "label": folder.label,
+                "is_primary": folder.is_primary,
+                "exists": fpath.is_dir(),
+                "entries": entries,
+                "missing": missing,
+            })
+
+        return {"id": project.id, "folders": folders_data}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/projects/%s/tree failed", project_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/projects/{project_id}/apply-template")
+def apply_project_template(project_id: str):
+    """Create missing standard template items in each registered folder.
+
+    Never overwrites existing files.  Only creates: missing dirs + .hermes.md.
+    """
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            project = pdb.get_project(conn, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        created: list = []
+        errors: list = []
+        for folder in project.folders:
+            fpath = Path(folder.path)
+            if not fpath.is_dir():
+                errors.append({"path": folder.path, "error": "folder does not exist"})
+                continue
+            for item in _STANDARD_TEMPLATE_ITEMS:
+                target = fpath / item
+                if target.exists():
+                    continue
+                try:
+                    if item.endswith(".md"):
+                        target.write_text(f"# {project.name}\n")
+                    else:
+                        target.mkdir(parents=True, exist_ok=True)
+                    created.append(str(target))
+                except Exception as exc:
+                    errors.append({"path": str(target), "error": str(exc)})
+
+        return {"created": created, "errors": errors}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/projects/%s/apply-template failed", project_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
 # Log viewer endpoint
 # ---------------------------------------------------------------------------
 
@@ -17502,6 +17919,7 @@ def _resolve_chat_argv(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    project_cwd: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -17552,6 +17970,11 @@ def _resolve_chat_argv(
         apply_terminal_config_to_env(env=env)
     except Exception:
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
+    # Project-scoped chat: override the working directory so the session's cwd
+    # is recorded as the project's primary path in state.db.  This must come
+    # AFTER apply_terminal_config_to_env so it wins over any config-level cwd.
+    if project_cwd:
+        env["TERMINAL_CWD"] = project_cwd
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over
@@ -17683,6 +18106,7 @@ async def _resolve_chat_argv_async(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    project_cwd: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -17701,6 +18125,8 @@ async def _resolve_chat_argv_async(
     }
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
+    if project_cwd is not None:
+        kwargs["project_cwd"] = project_cwd
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
@@ -18432,6 +18858,7 @@ async def pty_ws(ws: WebSocket) -> None:
     raw_resume = ws.query_params.get("resume") or None
     resume = raw_resume
     profile = ws.query_params.get("profile") or None
+    project_param = ws.query_params.get("project") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
@@ -18450,6 +18877,18 @@ async def pty_ws(ws: WebSocket) -> None:
         elif not resume:
             resume = _read_active_session_file(active_session_file)
 
+    # Resolve project primary_path for cwd injection.
+    project_cwd: Optional[str] = None
+    if project_param:
+        try:
+            from hermes_cli import projects_db as _pdb
+            with _pdb.connect_closing() as _pc:
+                _proj = _pdb.get_project(_pc, project_param)
+            if _proj and _proj.primary_path:
+                project_cwd = _proj.primary_path
+        except Exception:
+            _log.debug("Failed to resolve project cwd for project=%s", project_param, exc_info=True)
+
     resolve_kwargs = {
         "resume": resume,
         "sidecar_url": sidecar_url,
@@ -18457,6 +18896,8 @@ async def pty_ws(ws: WebSocket) -> None:
     }
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
+    if project_cwd is not None:
+        resolve_kwargs["project_cwd"] = project_cwd
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)

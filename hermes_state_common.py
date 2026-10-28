@@ -241,6 +241,38 @@ _LISTABLE_CHILD_SQL = (f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.form
     f" OR {_RESET_CHILD_SQL.format(a='s')})")
 
 
+def session_provenance_flags(model_config: Any) -> dict[str, Any]:
+    """Provenance fields a client may see, derived from one row's ``model_config``.
+
+    ``model_config`` never crosses a REST API (it can carry provider secrets), so the projections
+    that ship a row expose the derived bits plus the two session-id markers instead.
+    ``is_reset_child`` is the Python owner of ``_RESET_CHILD_SQL``'s stable-marker half: a ``/new``
+    reset keeps ``parent_session_id`` for durable lineage but starts a NEW conversation, so a
+    client that nests on the parent edge must not render it as a fork.  The legacy same-key
+    heuristic needs the parent row and is SQL-only.
+
+    ``_reset_from`` / ``_branched_from`` ride along because a boolean cannot carry
+    ``_branched_from``'s job: it is an INDEPENDENT parent source (a branch keeps the row it was
+    copied from, which can differ from ``parent_session_id``), and the TUI gateway's
+    ``_project_tree_row`` has always sent both.  They are session ids at the same sensitivity as
+    the ``parent_session_id`` / ``_lineage_root_id`` the payloads already ship — not a snapshot.
+    """
+    if isinstance(model_config, str):
+        try:
+            model_config = json.loads(model_config)
+        except (TypeError, ValueError):
+            model_config = None
+    config = model_config if isinstance(model_config, dict) else {}
+    flags: dict[str, Any] = {
+        "is_internal_child": config.get("_delegate_from") is not None,
+        "is_reset_child": bool(config.get("_reset_from"))}
+    for key in ("_reset_from", "_branched_from"):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            flags[key] = value.strip()
+    return flags
+
+
 def _ephemeral_child_sql(alias: str = "s") -> str:
     """Subagent runs, not branch, reset, or compression children."""
     return (f"({alias}.parent_session_id IS NOT NULL AND NOT ({_BRANCH_CHILD_SQL.format(a=alias)})"

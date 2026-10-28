@@ -1560,3 +1560,29 @@ def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> s
         logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
     _inference_profile_model_cache[profile_arn] = resolved
     return resolved
+
+
+def bedrock_max_output_tokens(model_id: str) -> Optional[int]:
+    """``maxTokens`` to send when a Converse auxiliary caller set none, or None to omit it.
+
+    Omitting ``maxTokens`` does NOT give Claude its model maximum on Bedrock: the service applies a
+    4,096-token default, so long one-shot outputs (compression summaries plus their session log)
+    stop at ``finish_reason=length``. For Claude (bare id, regional/global profile, or an
+    application inference profile ARN that resolves to Claude) return the model's output limit,
+    capped at ``_CONVERSE_AUX_OUTPUT_CAP``: Bedrock reserves input + maxTokens from the TPM quota at
+    request start, so the full 64K-128K ceiling on every aux call would waste quota. Other model
+    families keep the omit behaviour.
+    """
+    resolved = model_id or ""
+    if _APPLICATION_PROFILE_ARN_RE.search(resolved):
+        resolved = _resolve_inference_profile_model_id(resolved)
+    if "anthropic.claude" not in resolved.lower():
+        return None
+    from agent.anthropic_adapter import _get_anthropic_max_output
+
+    return min(_get_anthropic_max_output(resolved.rsplit("/", 1)[-1]), _CONVERSE_AUX_OUTPUT_CAP)
+
+
+# Upper bound for the implicit aux maxTokens above: well over the compression summary target
+# (_SUMMARY_TOKENS_CEILING + the lean session-log budget, ~14K) without reserving a full model ceiling.
+_CONVERSE_AUX_OUTPUT_CAP = 32_000

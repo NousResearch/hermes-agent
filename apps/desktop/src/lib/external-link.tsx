@@ -1,9 +1,9 @@
 import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { hostHas } from '@/lib/host-capabilities'
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $alwaysExternalLinks } from '@/store/external-links'
 
 import { resolveBrandIcon } from './brand-icon'
@@ -269,7 +269,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
 
   if (
     options.native ||
-    isBrowserHostedDesktop() ||
+    !hostHas('inAppLinks') ||
     $alwaysExternalLinks.get() ||
     isConnectorAuthorizationLink(target) ||
     hudForcesNativeLinks() ||

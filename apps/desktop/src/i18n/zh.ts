@@ -11,6 +11,7 @@ import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
 import { zhGatewayHost } from './zh_gateway_host'
 import { zhLocalModels } from './zh_local_models'
+import { zhMemoryLayers } from './zh_memory_layers'
 import { zhModelMenu } from './zh_model_menu'
 import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
@@ -453,6 +454,7 @@ export const zhOverrides = {
   },
 
   settings: {
+    memoryLayers: zhMemoryLayers,
     subpages: {
       appearanceTheme: '主题',
       appearanceTypography: '字体与缩放',
@@ -1879,7 +1881,7 @@ export const zhOverrides = {
       autoArchiveFailed: '无法更新自动归档设置',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
-      defaultDirUpdated: '默认项目目录已更新',
+      defaultDirUpdated: () => '默认项目目录已更新',
       defaultsTo: label => `默认使用 ${label}。`,
       change: '更改',
       choose: '选择',
@@ -2396,9 +2398,6 @@ export const zhOverrides = {
       resume: '恢复',
       runNow: '立即运行',
       memoryData: '记忆数据',
-      memoryDataDesc: '注入每个会话的内置记忆文件',
-      memoryProvider: name => `当前提供方：${name}`,
-      builtinMemory: '内置',
       memoryFile: '智能体记忆（MEMORY.md）',
       userFile: '用户画像（USER.md）',
       bytes: size => size,
@@ -3674,6 +3673,8 @@ export const zhOverrides = {
     versionDetailsTitle: '版本详情',
     versionDetailsBody: '此安装在应用外部管理。请使用与安装时相同的方式更新。',
     versionDetailsVersion: '版本',
+    versionDetailsClient: '本设备',
+    versionDetailsBackend: '已连接的后端',
     versionDetailsCommit: '提交',
     versionDetailsBuildOrigin: '构建来源',
     versionDetailsDistribution: '发行版',

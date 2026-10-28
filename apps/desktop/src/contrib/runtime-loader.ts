@@ -27,7 +27,10 @@
  * and for catalog installs the trust comes from admission (human review of
  * an exact pinned SHA + the static lint in hermes_cli/plugin_validate_desktop.py),
  * not from this loader. The import allowlist below is the one runtime tripwire:
- * a plugin cannot pull a second stage from a URL. A remote source (https +
+ * a plugin cannot pull a second stage from a URL. The Webapp's HTTP door
+ * (`/api/desktop-plugins/*`, browser-desktop-plugins.ts) counts as local: it is
+ * same-origin, reads the serving host's own disk, and runs in a tab that holds no
+ * more authority than that host already grants it. A remote source (https +
  * allowlist) must NOT reuse this pipeline as-is: it needs a real boundary
  * (iframe/worker + CSP + capability gating) before it can land.
  */

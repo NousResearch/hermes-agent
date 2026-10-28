@@ -9,6 +9,7 @@ import { ruConnectors } from './ru_connectors'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
+import { ruMemoryLayers } from './ru_memory_layers'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
@@ -331,6 +332,7 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    memoryLayers: ruMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -1317,8 +1319,8 @@ export const ruOverrides = {
       defaultDirTitle: 'Папка проекта по умолчанию',
       defaultDirDesc:
         'Новые сеансы начинаются в этой папке, если вы не выбрали другую. Оставьте пустым, чтобы использовать домашнюю директорию.',
-      defaultDirUpdated:
-        'Папка проекта по умолчанию обновлена — начните новый чат (Ctrl/⌘+N), чтобы она вступила в силу',
+      defaultDirUpdated: shortcut =>
+        `Папка проекта по умолчанию обновлена — начните новый чат${shortcut ? ` (${shortcut})` : ''}, чтобы она вступила в силу`,
       defaultsTo: label => `По умолчанию: ${label}.`,
       change: 'Изменить',
       choose: 'Выбрать',
@@ -1769,9 +1771,6 @@ export const ruOverrides = {
       resume: 'Продолжить',
       runNow: 'Запустить сейчас',
       memoryData: 'Данные памяти',
-      memoryDataDesc: 'Встроенные файлы памяти, внедряемые в каждый сеанс',
-      memoryProvider: name => `Активный провайдер: ${name}`,
-      builtinMemory: 'встроенный',
       memoryFile: 'Память агента (MEMORY.md)',
       userFile: 'Профиль пользователя (USER.md)',
       bytes: size => size,
@@ -2914,6 +2913,8 @@ export const ruOverrides = {
     gitUnusable: 'Hermes не удалось запустить Git на этом компьютере, поэтому проверить обновления не получилось.',
     latestBody: 'У вас последняя версия.',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: 'Это устройство',
+    versionDetailsBackend: 'Подключённый бэкенд',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',

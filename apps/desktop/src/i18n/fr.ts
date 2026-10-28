@@ -11,6 +11,7 @@ import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
+import { frMemoryLayers } from './fr_memory_layers'
 import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
@@ -681,6 +682,7 @@ export const frOverrides = {
     noResults: 'Aucune langue trouvée'
   },
   settings: {
+    memoryLayers: frMemoryLayers,
     subpages: {
       appearanceTheme: 'Thème',
       appearanceTypography: 'Typographie',
@@ -2262,8 +2264,8 @@ export const frOverrides = {
       defaultDirTitle: 'Répertoire de projet par défaut',
       defaultDirDesc:
         'Les nouvelles sessions commencent dans ce dossier sauf si vous en choisissez un autre. Laissez-le non défini pour utiliser votre répertoire personnel.',
-      defaultDirUpdated:
-        "Répertoire de projet par défaut mis à jour — commencez une nouvelle conversation (Ctrl/⌘+N) pour qu'il prenne effet",
+      defaultDirUpdated: shortcut =>
+        `Répertoire de projet par défaut mis à jour — commencez une nouvelle conversation${shortcut ? ` (${shortcut})` : ''} pour qu'il prenne effet`,
       defaultsTo: label => `Par défaut : ${label}.`,
       change: 'Modifier',
       choose: 'Choisir',
@@ -2866,9 +2868,6 @@ export const frOverrides = {
       resume: 'Reprendre',
       runNow: 'Exécuter maintenant',
       memoryData: 'Données de mémoire',
-      memoryDataDesc: 'Fichiers de mémoire intégrés injectés dans chaque session',
-      memoryProvider: name => `Fournisseur actif : ${name}`,
-      builtinMemory: 'intégré',
       memoryFile: "Mémoire de l'agent (MEMORY.md)",
       userFile: 'Profil utilisateur (USER.md)',
       bytes: size => size,
@@ -4124,6 +4123,8 @@ export const frOverrides = {
     versionDetailsBody:
       "Cette installation est gérée hors de l'application. Mettez-la à jour de la même manière que vous l'avez installée.",
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'Cet appareil',
+    versionDetailsBackend: 'Backend connecté',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origine de la compilation',
     versionDetailsDistribution: 'Distribution',

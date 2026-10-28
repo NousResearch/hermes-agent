@@ -65,6 +65,10 @@ class ExistingService:
     running: bool = False
 
 
+# Kept equal to the Label that nix/homeManagerModules.nix gives the gateway agent.
+HOME_MANAGER_GATEWAY_LABEL = "org.nix-community.home.hermes-agent"
+
+
 def _run(argv: list[str] | tuple[str, ...], deadline: float, *, encoding: str | None = "utf-8"):
     return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                           text=encoding is not None, encoding=encoding, errors="strict" if encoding else None,
@@ -183,10 +187,34 @@ def _s6(home: Path, deadline: float) -> ExistingService | None:
     return ExistingService("s6", (service_name,), manager.is_running(service_name))
 
 
-def _launchd(home: Path, deadline: float) -> ExistingService | None:
-    import pwd
+def _launchd_labels(home: Path) -> list[str]:
     suffix = service_suffix(home)
-    label = f"ai.hermes.gateway{'-' + suffix if suffix else ''}"
+    labels = [f"ai.hermes.gateway{'-' + suffix if suffix else ''}"]
+    # The Home Manager module supervises the gateway under its own label (nix/homeManagerModules.nix,
+    # mkAgent). Without it a client finds no service and starts a detached gateway beside the job.
+    # The module writes this marker into exactly the home its job pins; the HERMES_MANAGED variable
+    # is not consulted because shells and other profiles inherit it.
+    if _read_marker(home / ".managed") == "home-manager":
+        labels.append(HOME_MANAGER_GATEWAY_LABEL)
+    return labels
+
+
+def _read_marker(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _launchd(home: Path, deadline: float) -> ExistingService | None:
+    found = [service for label in _launchd_labels(home) if (service := _launchd_job(home, label, deadline))]
+    if len(found) > 1:
+        raise RuntimeStartError("service_scope_conflict", "conflict")
+    return found[0] if found else None
+
+
+def _launchd_job(home: Path, label: str, deadline: float) -> ExistingService | None:
+    import pwd
     account = pwd.getpwuid(os.getuid())  # windows-footgun: ok — native launchd only
     account_home = Path(account.pw_dir)
     plist = account_home / "Library/LaunchAgents" / f"{label}.plist"

@@ -150,13 +150,17 @@
         };
 
       mkAgent =
-        { argv, logName }:
+        {
+          argv,
+          logName,
+          environment ? { },
+        }:
         {
           enable = true;
           config = {
             Label = "org.nix-community.home.${logName}";
             ProgramArguments = argv;
-            EnvironmentVariables = processEnvironment // {
+            EnvironmentVariables = processEnvironment // environment // {
               PATH = "${unitPath}:/usr/bin:/bin:/usr/sbin:/sbin";
             };
             WorkingDirectory = cfg.workingDirectory;
@@ -412,6 +416,11 @@
               launchd.agents.hermes-agent = mkAgent {
                 argv = common.gatewayArgv cfg;
                 logName = "hermes-agent";
+                # Clients adopt this job as the gateway's service only when it carries the
+                # launcher marker every generated gateway service sets
+                # (hermes_cli/gateway_runtime_service_identity.py). Without the match a client
+                # starts a detached gateway, and the job exits 75 beside it forever.
+                environment.HERMES_SUPERVISED_CHILD = "1";
               };
             })
 

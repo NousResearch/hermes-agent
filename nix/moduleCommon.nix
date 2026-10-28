@@ -924,11 +924,14 @@ let
     '';
 
   # ── Process argv ────────────────────────────────────────────────────────
+  # `gateway run`, not the bare `gateway` alias: clients recognise a service
+  # as the gateway only by this exact subcommand.
   gatewayArgv =
     cfg:
     [
       "${effectivePackage cfg}/bin/hermes"
       "gateway"
+      "run"
     ]
     ++ cfg.extraArgs;
 

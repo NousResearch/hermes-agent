@@ -217,11 +217,45 @@ def _verify_launchd_argv(argv: list[str], home: Path) -> None:
     verify_gateway_argv(command, home, wrapped=wrapped)
 
 
+# Home Manager's launchd module (modules/launchd/default.nix, ``mutateConfig``) runs every agent as
+# ``/bin/sh -c "/bin/wait4path /nix/store && exec <lib.escapeShellArgs argv>"``.
+_NIX_STORE_WAIT = "/bin/wait4path /nix/store && exec "
+# ``lib.strings.escapeShellArg`` leaves an argument bare only when it matches this class.
+_NIX_SHELL_BARE = re.compile(r"[A-Za-z0-9,._+:@%/-]+")
+
+
+def _nix_escape_shell_arg(arg: str) -> str:
+    return arg if _NIX_SHELL_BARE.fullmatch(arg) else "'" + arg.replace("'", "'\\''") + "'"
+
+
+def _home_manager_command(argv: list[str]) -> list[str] | None:
+    """The command inside Home Manager's ``wait4path`` wrapper, or None when ``argv`` is not that form.
+    Accepted only when Nix's quoting regenerates the script byte for byte, so no shell operator or
+    second command rides along."""
+    if len(argv) != 3 or argv[:2] != ["/bin/sh", "-c"] or not argv[2].startswith(_NIX_STORE_WAIT):
+        return None
+    script = argv[2][len(_NIX_STORE_WAIT):]
+    try:
+        command = shlex.split(script)
+    except ValueError:
+        _unverified()
+    if not command or " ".join(map(_nix_escape_shell_arg, command)) != script:
+        _unverified()
+    return command
+
+
 def _launchd_command(argv: list[str]) -> tuple[list[str], bool]:
     """``(command, wrapped)``: the command the launchd job runs, and whether it came out of the Local
     Network wrapper (gateway_launchd.launchd_program_arguments, #71206). The wrapper is accepted only when
     the installer regenerates it byte for byte from the inner command and the two log paths it carries,
-    so no shell operator, substitution, extra JXA or foreign osascript rides along."""
+    so no shell operator, substitution, extra JXA or foreign osascript rides along.
+
+    Home Manager's ``wait4path`` wrapper only delays the start until the Nix store is mounted. It
+    proves nothing about the install, so its inner command is held to the unwrapped rules, which is
+    also the only way a Nix store ``hermes`` can verify."""
+    home_manager = _home_manager_command(argv)
+    if home_manager is not None:
+        return home_manager, False
     if argv[:1] != ["/usr/bin/osascript"]:
         return argv, False
     from hermes_cli.gateway_launchd import launchd_program_arguments

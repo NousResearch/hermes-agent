@@ -1061,10 +1061,10 @@ def _refuse_basetemp_inside_the_checkout(config) -> None:
     resolved = Path(given).resolve()
     if resolved == _CHECKOUT_ROOT or resolved.is_relative_to(_CHECKOUT_ROOT):
         raise pytest.UsageError(
-            "refusing an in-checkout pytest basetemp %s: it lands in the ignored tmp/ tree, "
-            "pytest never prunes a basetemp it was given, and repeated attempts accumulate "
-            "a full workspace copy each (76.2 GB measured in one day). Pass no --basetemp, "
-            "or one outside %s." % (resolved, _CHECKOUT_ROOT))
+            f"refusing an in-checkout pytest basetemp {resolved}: it lands in the ignored "
+            "tmp/ tree, pytest never prunes a basetemp it was given, and repeated attempts "
+            "accumulate a full workspace copy each (76.2 GB measured in one day). Pass no "
+            f"--basetemp, or one outside {_CHECKOUT_ROOT}.")
 
 
 def _require_disk_reserve(config) -> None:
@@ -1080,10 +1080,9 @@ def _require_disk_reserve(config) -> None:
     free = shutil.disk_usage(str(probe)).free
     if free < reserve_mb * 1000 * 1000:
         raise pytest.UsageError(
-            "refusing to run the suite: %.1f GB free on %s, below the %d MB reserve "
-            "(HERMES_TEST_DISK_RESERVE_MB). Free space first; a run that exhausts the "
-            "volume damages retained evidence rather than failing cleanly."
-            % (free / 1e9, probe, reserve_mb))
+            f"refusing to run the suite: {free / 1e9:.1f} GB free on {probe}, below the "
+            f"{reserve_mb} MB reserve (HERMES_TEST_DISK_RESERVE_MB). Free space first; a run "
+            "that exhausts the volume damages retained evidence rather than failing cleanly.")
 
 
 def _relocate_basetemp_outside_operator_home(config) -> None:

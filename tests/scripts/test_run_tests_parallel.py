@@ -817,7 +817,7 @@ def test_external_basetemp_cannot_escape_runner_cleanup(tmp_path, flag):
     probe.write_text("def test_ok(): pass\n")
     result = subprocess.run([sys.executable, str(root / "scripts/run_tests_parallel.py"),
                              str(probe), "--", *flag], cwd=root,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 2
     assert "escapes runner-owned cleanup" in result.stderr
     assert not (root / "external").exists()

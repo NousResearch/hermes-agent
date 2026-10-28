@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -299,6 +300,45 @@ class TestMattermostWebSocketParsing:
         assert msg_event.text == "Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
 
+    @pytest.mark.asyncio
+    async def test_known_peer_bot_is_marked_on_the_inbound_source(self):
+        """Regression for #137027: configured peer bots must enter the loop guard."""
+        self.adapter.config.extra["bot_users"] = ["peer_bot"]
+        self.adapter._download_attachments = AsyncMock(return_value=([], []))
+        post_data = {
+            "id": "post_from_peer", "user_id": "peer_bot", "channel_id": "dm_456", "message": "ping",
+        }
+        event = {
+            "event": "posted",
+            "data": {"post": json.dumps(post_data), "channel_type": "D", "sender_name": "@peer"},
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.await_args.args[0].source.is_bot is True
+
+
+def test_bot_turn_does_not_publish_runtime_status():
+    """#137027: a provider-fallback diagnostic must not become a peer-bot message."""
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_runner = object.__new__(TurnRunner)
+    turn_runner._schedule = MagicMock()
+    turn_runner._ctx = SimpleNamespace(
+        mute_notification_reply=False,
+        source=SimpleNamespace(platform=Platform.MATTERMOST, is_bot=True),
+        _status_adapter=object(),
+        _run_still_current=lambda: True,
+        user_config={},
+        _status_chat_id="dm_456",
+        _status_thread_metadata=None,
+        _cleanup_progress=False,
+    )
+
+    turn_runner._status_callback_sync("warn", "⚠️ Model fallback: unavailable")
+
+    turn_runner._schedule.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_ignore_system_posts(self):
@@ -346,6 +386,25 @@ class TestMattermostWebSocketParsing:
         assert msg_event.text == "/new"
         assert msg_event.message_type is MessageType.COMMAND
         assert msg_event.get_command() == "new"
+
+
+def test_configured_mattermost_bot_is_authorized(monkeypatch):
+    """#137027: peer bots use Mattermost's registered bot-admission policy."""
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    for name in ("MATTERMOST_ALLOW_BOTS", "MATTERMOST_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+    source = SessionSource(
+        platform=Platform.MATTERMOST, chat_id="dm_456", chat_type="dm", user_id="peer_bot",
+        user_name="Peer Bot", is_bot=True,
+    )
+
+    assert runner._is_user_authorized(source) is False
+    monkeypatch.setenv("MATTERMOST_ALLOW_BOTS", "mentions")
+    assert runner._is_user_authorized(source) is True
 
 
 # ---------------------------------------------------------------------------

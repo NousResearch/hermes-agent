@@ -194,20 +194,30 @@ _ECHO_ARGS_MAX_CHARS = 1500
 
 
 def local_batch_error(entries: list[dict[str, Any]]) -> str:
-    """Rejection for a multi-entry batch that names a local tool. Restates the valid
-    shape with the caller's OWN first entry: small models re-send an identical batch
-    when told only the constraint, and the echoed payload is what gets them unstuck."""
+    """Rejection for a multi-entry batch that names a local tool. Local batches up to
+    the dispatch cap are already split and executed (``agent/tool_call_batches.py``),
+    so a batch that reaches the resolver is over the cap — say so and point at batches
+    within it. Restates the valid shape with the caller's OWN first entry: small models
+    re-send an identical batch when told only the constraint, and the echoed payload is
+    what gets them unstuck."""
+    from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
     first = entries[0]
     args = json.dumps(first.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
     if len(args) > _ECHO_ARGS_MAX_CHARS:
         args = "{...}"  # keep the correction readable; the model still has its own arguments
     retry = '{{"calls":[{{"name":{},"arguments":{}}}]}}'.format(json.dumps(first["name"], ensure_ascii=False), args)
-    remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
-                 if len(entries) > 1 else "")
-    return (
-        f"tool_call takes exactly one entry for local tools; you sent {len(entries)}. "
-        f"Retry with only: {retry}{remaining}. Only connectors__ names may be batched together."
-    )
+    if len(entries) > MAX_CALLS_PER_DISPATCH:
+        remaining = (f" then issue the remaining {len(entries) - 1} call(s) in batches of at most "
+                     f"{MAX_CALLS_PER_DISPATCH} entries")
+        head = f"tool_call takes at most {MAX_CALLS_PER_DISPATCH} entries per batch; you sent {len(entries)}."
+    else:
+        # Defensive dispatch path (a malformed connectors__ name partitioned as local):
+        # the batch is within the cap — the membership, not the size, is the problem.
+        remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
+                     if len(entries) > 1 else "")
+        head = (f"tool_call cannot batch these entries together; you sent {len(entries)}. "
+                "Only well-formed connectors__ names may share one batch.")
+    return f"{head} Retry with only: {retry}{remaining}."
 
 
 def unavailable_in_session_reason(name: str) -> str:

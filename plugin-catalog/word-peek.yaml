@@ -1,6 +1,6 @@
 name: word-peek
 repo: https://github.com/lEWFkRAD/word-peek
-sha: 1d4f93b720590e9e4cc2bac31523a525c15c6bd4
+sha: a2a099074b7c25d8a2cc539216dd6775870132e3
 title: Word Peek
 description: >-
   Explore HTML passages in a folder-granted reader, ask Hermes in the passage's
@@ -12,7 +12,7 @@ description: >-
   and exclusive .word-peek-*.bak copies stay in the granted folder.
   Glossary and recovery metadata use plugin storage. No agent tools, hooks,
   middleware, credentials, telemetry or direct model API calls are added.
-image: https://raw.githubusercontent.com/lEWFkRAD/word-peek/1d4f93b720590e9e4cc2bac31523a525c15c6bd4/docs/screenshots/hero.png
+image: https://raw.githubusercontent.com/lEWFkRAD/word-peek/a2a099074b7c25d8a2cc539216dd6775870132e3/docs/screenshots/hero.png
 maintainer: lEWFkRAD
 tier: community
 category: desktop

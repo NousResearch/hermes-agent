@@ -59,7 +59,7 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     (``check=True`` raises on failure via _execute_checked).
 
     The base64 payload always travels as ``stdin_data``: pipe-mode backends
-    (ssh, docker, local, singularity: the real shared-host ones) deliver it on
+    (ssh, docker, local: the real shared-host ones) deliver it on
     real stdin, so it never enters argv where a co-tenant can read it via
     ``/proc/*/cmdline``; ``BaseEnvironment.execute`` embeds it as a heredoc
     for heredoc-mode backends (modal, daytona, vercel), and managed_modal
@@ -153,7 +153,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
             try:
                 conn, _ = server_sock.accept()
                 break
-            except socket.timeout:
+            except TimeoutError:
                 continue
         if conn is None:
             return
@@ -162,7 +162,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
         while True:
             try:
                 chunk = conn.recv(65536)
-            except socket.timeout:
+            except TimeoutError:
                 break
             if not chunk:
                 break
@@ -184,7 +184,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                         call_start=call_start, where="sandbox",
                     ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
                 conn.sendall((resp + "\n").encode())
-    except socket.timeout:
+    except TimeoutError:
         logger.debug("RPC listener socket timeout")
     except OSError as e:
         logger.debug("RPC listener socket error: %s", e, exc_info=True)

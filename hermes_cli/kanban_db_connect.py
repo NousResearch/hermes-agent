@@ -18,6 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from agent.deadline import poll_until
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from pathlib import Path
 from typing import Any
@@ -88,7 +89,7 @@ def _try_lock_nb(handle) -> bool:
         import msvcrt
 
         handle.seek(0)
-        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_NBLCK"), 1)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
     else:
         import fcntl
 
@@ -105,7 +106,7 @@ def _unlock(handle) -> None:
         import msvcrt
 
         handle.seek(0)
-        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
 
@@ -131,15 +132,13 @@ def _cross_process_init_lock(path: Path):
     handle = lock_path.open("a+b")
     acquired = False
     try:
-        deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
-        while True:
+        def _try_lock() -> bool:
             try:
-                acquired = _try_lock_nb(handle)
+                return _try_lock_nb(handle)
             except OSError:
-                acquired = False
-            if acquired or time.monotonic() >= deadline:
-                break
-            time.sleep(_INIT_LOCK_POLL_SECONDS)
+                return False
+
+        acquired = poll_until(_try_lock, _INIT_LOCK_TIMEOUT_SECONDS, _INIT_LOCK_POLL_SECONDS)
         if not acquired:
             _kb._log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "
@@ -1294,4 +1293,4 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db as _kb

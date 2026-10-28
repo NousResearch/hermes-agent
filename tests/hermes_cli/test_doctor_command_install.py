@@ -100,7 +100,7 @@ def test_pm_fix_publishes_a_generation_aware_launcher(tmp_path, monkeypatch, cap
 
     assert "Fixed 1 issue" in capsys.readouterr().out
     assert not command.is_symlink()
-    result = subprocess.run([str(command)], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run([str(command)], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "selected"
     assert stale.is_file()

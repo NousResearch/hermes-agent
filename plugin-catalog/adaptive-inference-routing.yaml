@@ -1,0 +1,26 @@
+name: adaptive-inference-routing
+repo: https://github.com/midhatn/adaptive-inference
+sha: "d6f4e201ba28602189872746922e527c58ed0cbd"
+subdir: plugins/hermes
+title: Adaptive Inference Routing
+description: >-
+  Opt-in background scheduling for host-known delegated sessions, supported cron
+  execution and explicit worker profiles using an existing Adaptive Inference
+  gateway. Interactive and explicitly classified requests retain their routing;
+  model, tools, prompts, output limits and credentials are unchanged.
+  Disclosure: adds only X-Adaptive-Class on an exactly configured chat-completions
+  endpoint. No network calls, file access, processes, telemetry or credential
+  handling in plugin code. Uses a bounded in-memory session index. Cron detection
+  requires the newer public execution-identity capability; auxiliary routing is
+  an explicit provider configuration, not an auxiliary middleware claim.
+maintainer: midhatn
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/midhatn/adaptive-inference/blob/d6f4e201ba28602189872746922e527c58ed0cbd/plugins/hermes/README.md
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: [subagent_start, subagent_stop, post_compaction]
+  provides_middleware: [llm_request]
+  requires_env: []

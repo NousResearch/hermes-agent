@@ -113,7 +113,7 @@ def isolated_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_wire_session_agent", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_session_services", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
-    import tui_gateway.prompt_turn as prompt_turn
+    from tui_gateway import prompt_turn
 
     for mod in (server, prompt_turn):
         if hasattr(mod, "_prepare_turn_input"):

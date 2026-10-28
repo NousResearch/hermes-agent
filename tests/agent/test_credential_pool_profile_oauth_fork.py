@@ -462,7 +462,7 @@ def test_auth_add_never_reports_added_for_a_row_the_store_did_not_keep(fleet, mo
     """"Added" is printed only for a credential the store holds afterwards."""
     from argparse import Namespace
 
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
     from hermes_cli.auth_commands import auth_add_command
 
     monkeypatch.setattr(credential_pool, "write_credential_pool", lambda *a, **kw: [])

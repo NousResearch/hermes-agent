@@ -79,6 +79,16 @@ _RESPONSE_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
 
 
+def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
+    """Common markdown header for the short-circuit run docs (no_agent / monitor)."""
+    return (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {now_iso}\n"
+        f"**Mode:** {mode}\n"
+    )
+
+
 def _archive_answer(archive: str) -> str | None:
     """The reusable answer of a stored run, using its length frame when available.
 
@@ -445,6 +455,6 @@ def _block_and_pause_job(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
-from cron import scheduler_delivery as _delivery  # noqa: E402
-from cron import scheduler_script as _script  # noqa: E402
+from cron import scheduler as _sched
+from cron import scheduler_delivery as _delivery
+from cron import scheduler_script as _script

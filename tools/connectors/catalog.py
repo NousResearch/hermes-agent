@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # The Advanced modal's own keys (CATALOG-ROW-CONTRACT.md); every other answer key is a credential.
 _OPTION_KEYS = frozenset({"target_profile", "agent_half", "desktop_half", "enable", "force", "ref"})
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
-_TIERS = frozenset({"official", "community"})
+_TIERS = frozenset({"official", "verified", "community"})
 
 
 def _flag(value: Optional[str], default: bool) -> bool:
@@ -85,18 +85,18 @@ class HostInstaller:
 
     def refuse(self, entry: Any) -> None:
         """Raise with the installer's own text when the catalog would refuse this entry here."""
-        from hermes_cli.plugins_cmd_catalog import _refuse_unsupported_catalog_platform, raise_if_removed
+        from hermes_cli.plugins_cmd_catalog import raise_if_removed, refuse_incompatible_catalog_entry
 
         raise_if_removed(entry.name, entry.repo)
-        _refuse_unsupported_catalog_platform(entry)
+        refuse_incompatible_catalog_entry(entry)
 
     def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str],
-                       on_step: Callable[[InstallPhase], None]) -> Dict[str, Any]:
+                       on_step: Callable[[InstallPhase], None]) -> dict[str, Any]:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
 
         return dashboard_install_plugin("", force=force, enable=enable, catalog_name=name, ref=ref, on_step=on_step)
 
-    def skill_meta(self, identifier: str) -> Optional[Dict[str, Any]]:
+    def skill_meta(self, identifier: str) -> Optional[dict[str, Any]]:
         """The first hub source that knows the identifier; metadata only, no bundle download."""
         from hermes_cli.skills_hub import _sources
         from tools.skills_hub import skills_hub_http_session
@@ -112,17 +112,19 @@ class HostInstaller:
                             "identifier": meta.identifier or identifier}
         return None
 
-    def install_skill(self, identifier: str, *, force: bool) -> Dict[str, Any]:
+    def install_skill(self, identifier: str, *, force: bool, source: Optional[str] = None) -> dict[str, Any]:
         """Install headless; ``{name, already_installed}``. ``do_install`` reports only by printing, so
         success is read from the hub lock file and failure from its last line. A skill that is already
-        installed (force off) is left as it is and reported so."""
+        installed (force off) is left as it is and reported so. ``source`` is the hub source that
+        resolved ``identifier``; the lock records a ClawHub skill as ``@owner/slug``, so a ClawHub
+        hit's bare slug is read back through its ``clawhub/<slug>`` card id."""
         from rich.console import Console
 
         from hermes_cli.skills_hub import do_install
-        from tools.skills_hub import HubLockFile
+        from tools.skills_hub import HubLockFile, installed_entry
 
-        def entry() -> Optional[Dict[str, Any]]:
-            return next((e for e in HubLockFile().list_installed() if e.get("identifier") == identifier), None)
+        def entry() -> Optional[dict[str, Any]]:
+            return installed_entry(HubLockFile().by_identifier(), identifier, source)
 
         before = entry()
         if before is not None and not force:
@@ -143,22 +145,22 @@ class HostInstaller:
 @dataclass
 class _Work:
     done: threading.Event = field(default_factory=threading.Event)
-    outcome: Dict[str, Any] = field(default_factory=dict)
+    outcome: dict[str, Any] = field(default_factory=dict)
     error: str = ""
 
 
 class _Runner:
     """Resolved catalog facts and install work for one operation's rows."""
 
-    def __init__(self, installer: HostInstaller, identifiers: Optional[Dict[str, str]] = None):
+    def __init__(self, installer: HostInstaller, identifiers: Optional[dict[str, str]] = None):
         self.installer = installer
         self.identifiers = identifiers or {}
         self.op_id: Optional[str] = None
-        self.facts: Dict[str, Any] = {}  # row name -> PluginCatalogEntry | skill meta; never on the wire
-        self.work: Dict[str, _Work] = {}
+        self.facts: dict[str, Any] = {}  # row name -> PluginCatalogEntry | skill meta; never on the wire
+        self.work: dict[str, _Work] = {}
         # The Advanced values the user approved per row; Try again (env null) reuses them. Values
         # are credentials in part, so they stay here, off the target.
-        self.approved_env: Dict[str, Dict[str, str]] = {}
+        self.approved_env: dict[str, dict[str, str]] = {}
         # Built on the tool call's thread: the calling chat's own home is the default install
         # target, and its profile name labels the row (None for a home that is no named profile).
         self.home: Path = get_hermes_home()
@@ -204,7 +206,7 @@ class _Runner:
 
     # -- the card's answer ------------------------------------------------------------------------
 
-    def approve(self, operation: ConnectionOperation, target: Target, env: Optional[Dict[str, str]]) -> None:
+    def approve(self, operation: ConnectionOperation, target: Target, env: Optional[dict[str, str]]) -> None:
         approved = {**self.approved_env.get(target.name, {}), **(env or {})}
         actor = Actor.user if target.state == TargetState.failed else Actor.backend_watcher
         if target.name not in self.facts:  # failed at prepare: Try again resolves once more
@@ -228,7 +230,7 @@ class _Runner:
             return
         self._spawn(operation, target, approved, options)
 
-    def _check_answer(self, target: Target, env: Dict[str, str]) -> str:
+    def _check_answer(self, target: Target, env: dict[str, str]) -> str:
         if target.kind == "plugin" and env.get("agent_half") == "0":
             return "only the desktop half was selected; install it from Settings, Plugins"
         ref = env.get("ref")
@@ -240,8 +242,8 @@ class _Runner:
             return f"'{self._id(target)}' does not declare {', '.join(undeclared)}"
         return ""
 
-    def _spawn(self, operation: ConnectionOperation, target: Target, env: Dict[str, str],
-               options: Dict[str, Any]) -> None:
+    def _spawn(self, operation: ConnectionOperation, target: Target, env: dict[str, str],
+               options: dict[str, Any]) -> None:
         work = _Work()
         self.work[target.name] = work
 
@@ -263,15 +265,16 @@ class _Runner:
         threading.Thread(target=contextvars.copy_context().run, args=(body,), daemon=True,
                          name=f"catalog-install-{target.name}").start()
 
-    def _install(self, target: Target, env: Dict[str, str], options: Dict[str, Any],
-                 step: Callable[[InstallPhase], None]) -> Dict[str, Any]:
+    def _install(self, target: Target, env: dict[str, str], options: dict[str, Any],
+                 step: Callable[[InstallPhase], None]) -> dict[str, Any]:
         named = (env.get("target_profile") or "").strip()
         with target_scope(_named_home(named) if named else self.home):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
             if target.kind == "skill":
-                identifier = str(self.facts[target.name].get("identifier") or self._id(target))
+                meta = self.facts[target.name]
+                identifier = str(meta.get("identifier") or self._id(target))
                 step(InstallPhase.downloading)
-                return self.installer.install_skill(identifier, force=options["force"])
+                return self.installer.install_skill(identifier, force=options["force"], source=meta.get("source"))
             result = self.installer.install_plugin(self._id(target), force=options["force"], enable=options["enable"],
                                                    ref=options["ref"], on_step=step)
         if not result.get("ok"):
@@ -307,15 +310,15 @@ class _Runner:
         return redact_sensitive_text(text, force=True) or "error"
 
 
-def target_declared_env(fact: Any) -> List[str]:
+def target_declared_env(fact: Any) -> list[str]:
     caps = getattr(fact, "capabilities", None)
     return list(getattr(caps, "requires_env", None) or ())
 
 
-def _plugin_row(entry: Any, label: Optional[str]) -> Dict[str, Any]:
+def _plugin_row(entry: Any, label: Optional[str]) -> dict[str, Any]:
     from hermes_cli.plugin_catalog_presence import presence
 
-    row: Dict[str, Any] = {
+    row: dict[str, Any] = {
         "display": getattr(entry, "title", "") or _display(entry.name),
         "description": _first_sentence(entry.description),
         "tier": entry.tier if entry.tier in _TIERS else "community",
@@ -333,7 +336,7 @@ def _plugin_row(entry: Any, label: Optional[str]) -> Dict[str, Any]:
     return row
 
 
-def _installed_row(target: Target, outcome: Dict[str, Any]) -> tuple:
+def _installed_row(target: Target, outcome: dict[str, Any]) -> tuple:
     """The connected row's fields (the drawn row plus what went live, as facts the card words) and
     the same notes in one English line for the model."""
     extra = dict(target.extra)
@@ -359,7 +362,7 @@ def _installed_row(target: Target, outcome: Dict[str, Any]) -> tuple:
     return {**extra, **facts}, "; ".join(notes)
 
 
-def _save_credentials(env: Dict[str, str]) -> None:
+def _save_credentials(env: dict[str, str]) -> None:
     from hermes_cli.config import save_env_value, validate_env_var_name_for_write
 
     for key, value in env.items():
@@ -368,7 +371,7 @@ def _save_credentials(env: Dict[str, str]) -> None:
 
 
 # op_id -> the runner driving it, so the card's answer (RPC thread) finds the work.
-_RUNNERS: Dict[str, _Runner] = {}
+_RUNNERS: dict[str, _Runner] = {}
 
 
 def owns(op_id: str) -> bool:
@@ -404,7 +407,7 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
         operation.settle(SettleReason.continue_)
 
 
-def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
+def retry(operation: ConnectionOperation, names: list[str]) -> Optional[str]:
     runner = _RUNNERS.get(operation.op_id)
     if runner is None or operation.settled:
         return "this operation has settled; its result is frozen"
@@ -416,8 +419,8 @@ def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
 
 
 def open_runner(installer: Optional[HostInstaller] = None,
-                identifiers: Optional[Dict[str, str]] = None) -> _Runner:
+                identifiers: Optional[dict[str, str]] = None) -> _Runner:
     return _Runner(installer or HostInstaller(), identifiers)
 
 
-Callback = Callable[[Dict[str, Any]], Optional[str]]
+Callback = Callable[[dict[str, Any]], Optional[str]]

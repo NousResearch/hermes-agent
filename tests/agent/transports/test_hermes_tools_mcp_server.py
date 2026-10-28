@@ -65,7 +65,7 @@ class TestSignatureFromSchema:
             },
             "required": ["s", "i", "n", "b", "a", "o"],
         }
-        sig, annots = _signature_from_schema(schema)
+        _sig, annots = _signature_from_schema(schema)
 
         assert annots["s"] == str
         assert annots["i"] == int
@@ -92,6 +92,15 @@ class TestModuleSurface:
             f"these tools must NOT be exposed via the codex callback "
             f"because codex has built-in equivalents: {leaked}"
         )
+
+
+    def test_every_exposed_tool_is_a_core_registered_tool(self):
+        """Each exposed name must dispatch through handle_function_call in a plain Hermes process:
+        a name only a plugin registers (the camofox plugin's browser_navigate & co.) is not core."""
+        import model_tools
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        missing = set(EXPOSED_TOOLS) - set(model_tools.get_all_tool_names())
+        assert not missing, f"EXPOSED_TOOLS names no core tool registers: {sorted(missing)}"
 
 
 class TestMain:

@@ -18,7 +18,7 @@ export const slashCmdOpsEn = {
       reloadedOther: (count: string) => `reloaded .env (${count} vars updated)`
     },
     browser: {
-      usage: 'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml',
+      usage: 'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml',
       checking: (url: string) => `checking Chromium-family browser remote debugging at ${url}...`,
       connected: (url: string) => `browser connected: ${url}`,
       urlUnavailable: '(url unavailable)',
@@ -26,12 +26,7 @@ export const slashCmdOpsEn = {
       disconnected: 'browser disconnected',
       connectedLive: 'Browser connected to live Chromium-family browser via CDP',
       endpoint: (url: string) => `Endpoint: ${url}`,
-      nextCallUsesEndpoint: 'next browser tool call will use this CDP endpoint',
-      useUsage: 'Usage: /browser use [off]',
-      useEnabled: 'Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0',
-      useDisabled: 'Browser Use mode disabled — built-in browser tools restored',
-      newSessionsOnly: 'applies to new sessions — this one keeps its current tools (/new to start one)',
-      modeBrowserUse: 'Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)'
+      nextCallUsesEndpoint: 'next browser tool call will use this CDP endpoint'
     },
     rollback: {
       noSession: 'no active session — nothing to rollback',
@@ -47,7 +42,13 @@ export const slashCmdOpsEn = {
       workspaceTarget: 'workspace',
       restoredDetail: 'restored',
       // {0}=target (file path or "workspace"), {1}=detail
-      restored: (target: string, detail: string) => `rollback restored ${target}: ${detail}`
+      restored: (target: string, detail: string) => `rollback restored ${target}: ${detail}`,
+      // {0}=summarized paths; main's CLI lines for what a safe whole-tree restore left alone
+      keptUserEdits: (files: string) => `↷ Kept your hand-edits: ${files}\nUse /rollback <N> --all to restore those too.`,
+      keptOversize: (files: string) => `↷ Kept (too large for checkpoints, no stored copy to revert to): ${files}`,
+      failedDeletes: (files: string) => `⚠️ Could not remove (left in place): ${files}`,
+      // {0}=count of paths not listed
+      morePaths: (count: number) => ` (+${count} more)`
     },
     agents: {
       paused: 'delegation · paused',

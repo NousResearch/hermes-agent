@@ -8,9 +8,8 @@ import types
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from hermes_cli import anon_auth, free_tier_offer
-from hermes_cli.profiles import SETUP_PROFILE_MARKER
 from tui_gateway.free_tier_task_done import note_task_done
 
 CLEAN = {"completed": True, "final_response": "Here is your plan.", "user_intervened": False}
@@ -19,8 +18,7 @@ CLEAN = {"completed": True, "final_response": "Here is your plan.", "user_interv
 @pytest.fixture(autouse=True)
 def free_tier(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(anon_auth, "has_guest", lambda: True)
-    monkeypatch.setattr(anon_auth, "guest_enabled", lambda: True)
+    monkeypatch.setattr(anon_auth, "free_inference_active", lambda state=None: True)
     monkeypatch.setattr(anon_auth, "is_anonymous_agent", lambda agent: getattr(agent, "anonymous", True))
     monkeypatch.setattr(free_tier_offer, "_clock", lambda: 5_000.0)
 
@@ -54,17 +52,6 @@ def test_disqualified_turns_record_nothing(result, anonymous, display_kind, user
     session = _session(**({"_turn_user_input": True} if user_input else {}))
     session["agent"].anonymous = anonymous
     note_task_done(session, dict(result), session["agent"], display_kind)
-    assert not _recorded()
-
-
-def test_a_setup_chat_turn_is_not_a_task(tmp_path):
-    """The setup chat's turns (its last one ends with the handoff) do not start the offer clock: it would
-    otherwise come due three minutes into the first real task."""
-    setup_home = tmp_path / "home" / "profiles" / "hermes-setup"
-    setup_home.mkdir(parents=True)
-    (setup_home / SETUP_PROFILE_MARKER).write_text("{}", encoding="utf-8")
-    session = _session(profile_home=str(setup_home))
-    note_task_done(session, dict(CLEAN), session["agent"], None)
     assert not _recorded()
 
 

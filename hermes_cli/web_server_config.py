@@ -14,6 +14,7 @@ from hermes_cli.config import (
     find_provider_entry,
     read_raw_config,
 )
+from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
@@ -29,7 +30,7 @@ _log = logging.getLogger("hermes_cli.web_server")
 # Config schema — auto-generated from DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
 
-def _memory_provider_options() -> List[str]:
+def _memory_provider_options() -> list[str]:
     """Discovered memory providers for the ``memory.provider`` select.
 
     Directory-scan only (no provider imports), so safe at module import time. ``""``
@@ -49,7 +50,7 @@ def _memory_provider_options() -> List[str]:
     return list(dict.fromkeys(options))
 
 
-def _timezone_options() -> List[str]:
+def _timezone_options() -> list[str]:
     """Return sorted IANA timezone identifiers, cached at import time."""
     try:
         import zoneinfo
@@ -58,12 +59,12 @@ def _timezone_options() -> List[str]:
         return ["UTC"]
 
 
-def _select(description: str, *options: str, **extra: Any) -> Dict[str, Any]:
+def _select(description: str, *options: str, **extra: Any) -> dict[str, Any]:
     return {"type": "select", "description": description, "options": list(options), **extra}
 
 
 # Manual overrides for fields that need select options or custom types.
-_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+_SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "timezone": _select(
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,
@@ -81,7 +82,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "terminal.backend": _select(
         "Terminal execution backend",
-        "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
+        "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox",
     ),
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_image": {
@@ -194,7 +195,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
 # Small categories fold into a bigger tab to avoid one-field orphan tabs. Several sources
 # (models_dev, onboarding, mcp, computer_use, telemetry, plugins, doctor, runtime, session,
 # nous, telegram) currently surface a single schema field each.
-_CATEGORY_MERGE: Dict[str, str] = {
+_CATEGORY_MERGE: dict[str, str] = {
     "privacy": "security",
     "context": "agent",
     "skills": "agent",
@@ -237,9 +238,9 @@ def _infer_type(value: Any) -> str:
     return next((ui for py, ui in _UI_TYPES if isinstance(value, py)), "string")
 
 
-def _build_schema_from_config(config: Dict[str, Any], prefix: str = "") -> Dict[str, Dict[str, Any]]:
+def _build_schema_from_config(config: dict[str, Any], prefix: str = "") -> dict[str, dict[str, Any]]:
     """Walk DEFAULT_CONFIG and produce a flat dot-path → field schema dict."""
-    schema: Dict[str, Dict[str, Any]] = {}
+    schema: dict[str, dict[str, Any]] = {}
     for key, value in config.items():
         full_key = f"{prefix}.{key}" if prefix else key
         if full_key == "_config_version":
@@ -248,7 +249,7 @@ def _build_schema_from_config(config: Dict[str, Any], prefix: str = "") -> Dict[
             schema.update(_build_schema_from_config(value, full_key))
             continue
         # Category: first path component for nested keys, "general" for top-level scalars.
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "type": _infer_type(value),
             "description": full_key.replace(".", " → ").replace("_", " ").title(),
             "category": prefix.split(".")[0] if prefix else "general",
@@ -259,10 +260,10 @@ def _build_schema_from_config(config: Dict[str, Any], prefix: str = "") -> Dict[
     return schema
 
 
-def _config_schema_with_virtual_fields() -> Dict[str, Dict[str, Any]]:
+def _config_schema_with_virtual_fields() -> dict[str, dict[str, Any]]:
     """DEFAULT_CONFIG schema plus the virtual ``model_context_length`` field, inserted right
     after ``model`` so it renders adjacent in the frontend."""
-    ordered: Dict[str, Dict[str, Any]] = {}
+    ordered: dict[str, dict[str, Any]] = {}
     for key, entry in _build_schema_from_config(DEFAULT_CONFIG).items():
         ordered[key] = entry
         if key == "model":
@@ -290,7 +291,7 @@ def _is_command_provider_block(value: Any) -> bool:
     return isinstance(command, str) and bool(command.strip())
 
 
-def _custom_provider_options(kind: str, builtin_names: List[str], cfg: Dict[str, Any]) -> List[str]:
+def _custom_provider_options(kind: str, builtin_names: list[str], cfg: dict[str, Any]) -> list[str]:
     """Merged ``tts``/``stt`` provider options without hard-coding vendor names.
 
     Built-in display names first (original order), then, deduped case-insensitively:
@@ -320,7 +321,7 @@ def _custom_provider_options(kind: str, builtin_names: List[str], cfg: Dict[str,
     if not isinstance(section, dict):
         section = {}
     providers_map = section.get("providers")
-    candidate_blocks: List[Any] = [providers_map] if isinstance(providers_map, dict) else []
+    candidate_blocks: list[Any] = [providers_map] if isinstance(providers_map, dict) else []
     candidate_blocks.append({k: v for k, v in section.items() if k != "providers"})
     for block in candidate_blocks:
         for name, value in block.items():
@@ -346,7 +347,7 @@ def _custom_provider_options(kind: str, builtin_names: List[str], cfg: Dict[str,
     return names
 
 
-def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
+def _memory_provider_schema_options(cfg: dict[str, Any]) -> list[str]:
     """Discovered memory providers plus the currently-configured one, so a value that is no
     longer discoverable (e.g. plugin removed from disk) never vanishes from the dropdown."""
     options = _memory_provider_options()
@@ -357,13 +358,13 @@ def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
     return options
 
 
-def _schema_select_options(key: str) -> Optional[List[str]]:
+def _schema_select_options(key: str) -> Optional[list[str]]:
     entry = CONFIG_SCHEMA.get(key)
     options = entry.get("options") if isinstance(entry, dict) else None
     return options if isinstance(options, list) else None
 
 
-def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
+def _schema_with_dynamic_provider_options() -> dict[str, dict[str, Any]]:
     """CONFIG_SCHEMA with per-request discovery-driven ``*.provider`` options merged.
 
     ``_SCHEMA_OVERRIDES`` freezes option lists at import time, so a provider installed after
@@ -379,9 +380,9 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
     except Exception:  # pragma: no cover - schema must survive config errors
         return CONFIG_SCHEMA
 
-    overlay: Dict[str, Dict[str, Any]] = {}
+    overlay: dict[str, dict[str, Any]] = {}
 
-    def merge(key: str, options: List[str]) -> None:
+    def merge(key: str, options: list[str]) -> None:
         if _schema_select_options(key) is not None and options != CONFIG_SCHEMA[key]["options"]:
             overlay[key] = {**CONFIG_SCHEMA[key], "options": options}
 
@@ -510,23 +511,43 @@ def _validated_main_model_selection(
     return result
 
 
-def _apply_main_model_assignment(model_cfg: "Any", result: "ModelSwitchResult", api_key: str = "") -> dict:
+def _apply_main_model_assignment(model_cfg: Any, result: "ModelSwitchResult", api_key: str = "") -> dict:
     """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
     (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
     the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
     dropped so a stale secret cannot shadow it.
 
     Returns a new dict."""
-    from hermes_cli.model_switch import apply_model_selection
+    from hermes_cli.config_backend import supports_file_tooling
+    from hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
 
-    model_cfg = apply_model_selection(model_cfg, result)
+    before = model_cfg
+    # Remote Config: the caller saves the effective block as a whole document, so a cleared
+    # inherited key must be masked (null), and a locked route key refuses the whole assignment.
+    model_cfg = apply_model_selection(model_cfg, result, mask_cleared=not supports_file_tooling())
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
-        model_cfg.pop("api", None)
+        drop_model_key(model_cfg, "api")
+    remote_model_selection_guard(before, model_cfg)
     return model_cfg
 
 
-def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
+def drop_model_key(model_cfg: dict, key: str) -> None:
+    """Remove *key* from a ``model`` block an assignment is building. Under Remote Config the block
+    is the EFFECTIVE one, so a key it holds may be inherited from an upper level that a profile
+    removal cannot reach (contract §5.4); store null ("no value") instead, the same mask
+    :func:`hermes_cli.model_switch.apply_model_selection` applies. A key the block lacks stays
+    absent. File backend: a plain removal."""
+    from hermes_cli.config_backend import supports_file_tooling
+    if key not in model_cfg:
+        return
+    if supports_file_tooling():
+        model_cfg.pop(key, None)
+    else:
+        model_cfg[key] = None
+
+
+def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
     DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
     as a top-level field (0 = auto-detect)."""
@@ -548,13 +569,13 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
 # Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
 # in hermes_cli/config.py — listed here for deterministic ordering in the UI.
-_AUX_TASK_SLOTS: Tuple[str, ...] = (
+_AUX_TASK_SLOTS: tuple[str, ...] = (
     "vision", "compression", "skills_hub", "approval", "mcp", "title_generation", "review", "voice_chat",
     "triage_specifier", "kanban_decomposer", "profile_describer", "curator",
 )
 
 
-def _plugin_aux_tasks() -> List[Dict[str, Any]]:
+def _plugin_aux_tasks() -> list[dict[str, Any]]:
     """Auxiliary tasks registered by plugins (``PluginContext.register_auxiliary_task``) for the
     Hermes home active in this context.
 
@@ -572,7 +593,7 @@ def _plugin_aux_tasks() -> List[Dict[str, Any]]:
         return []
 
 
-def _aux_task_slots() -> Tuple[str, ...]:
+def _aux_task_slots() -> tuple[str, ...]:
     """Every auxiliary slot the dashboard may read or assign: built-ins first (UI order), then
     plugin-registered keys. The picker in ``hermes model`` (``main_provider_setup._all_aux_tasks``)
     folds plugin tasks in the same way; the dashboard must not disagree with it."""
@@ -639,8 +660,9 @@ def _resolve_assignment_credentials(model_cfg: dict, provider: str, provider_ent
     key_env = str(raw_entry.get("key_env") or "").strip()
     if key_env:
         model_cfg["key_env"] = key_env
-        # #88990: carry the credential POINTER, never a resolved secret.
-        model_cfg.pop("api_key", None)
+        # #88990: carry the credential POINTER, never a resolved secret. Masked, not dropped, under
+        # Remote Config: an inherited inline key outranks key_env at runtime.
+        drop_model_key(model_cfg, "api_key")
     elif isinstance(provider_entry, dict) and provider_entry.get("api_key"):
         raw_key = str(raw_entry.get("api_key") or "").strip()
         model_cfg["api_key"] = raw_key if raw_key.startswith("${") and raw_key.endswith("}") else provider_entry["api_key"]
@@ -772,7 +794,10 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []
-    save_config(cfg)
+    # One route: a model.* key locked by the time the save runs (even after the preflight guard
+    # above, or on its CAS retry) refuses the whole save instead of being omitted from it.
+    with refusing_locked_omissions("model"):
+        save_config(cfg)
     if new_provider in {"custom", "local"} and base_url and not endpoint_already_known:
         _register_custom_endpoint(base_url, api_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
@@ -786,6 +811,8 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
         "base_url": model_cfg.get("base_url", ""),
         "gateway_tools": gateway_tools,
         "stale_aux": _stale_aux_pins(cfg, new_provider),
+        # Window plans, Large model: the warning (never a confirm). Absent for everyone else.
+        **({"notice": result.usage_notice} if getattr(result, "usage_notice", "") else {}),
     }
 
 
@@ -941,7 +968,7 @@ def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple
     return "", name
 
 
-def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
+def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
     """Reverse ``_normalize_config_for_web`` before saving.
 
     Reconstructs ``model`` as a dict from the on-disk config to recover subkeys (provider,

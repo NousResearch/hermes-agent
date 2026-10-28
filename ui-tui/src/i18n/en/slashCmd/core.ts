@@ -6,6 +6,7 @@ export const slashCmdCoreEn = {
   core: {
     help: {
       skillCommandsAvailable: (count: string) => `${count} skill commands available — /skills to browse`,
+      connectors: 'manage connector accounts (rename, add another, reconnect, remove)',
       detailsGlobal: 'set global agent detail visibility mode',
       detailsSection: 'override one section (thinking/tools/subagents/activity)',
       fortune: 'show a random or daily local fortune',
@@ -146,6 +147,12 @@ export const slashCmdCoreEn = {
     },
     retry: {
       nothing: 'nothing to retry'
+    },
+    // A refused /undo or /retry: main's busy text (tui_gateway/user_messages.py::busy_message).
+    busy: {
+      replying: (command: string) =>
+        `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
+      compressing: (command: string) => `session busy — a /compress is running; run /${command} when it finishes.`
     }
   },
   debug: {

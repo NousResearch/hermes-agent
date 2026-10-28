@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import hermes_cli.mem_trim as mem_trim
+from hermes_cli import mem_trim
 
 
 @pytest.fixture(autouse=True)
@@ -13,14 +13,6 @@ def _reset_trim_state(monkeypatch):
     monkeypatch.setattr(mem_trim, "_probe_done", True)
     monkeypatch.setattr(mem_trim, "_malloc_trim", None)
     monkeypatch.setattr(mem_trim, "_trim_call_count", 0)
-
-
-def test_unsupported_allocator_is_noop_without_gc(monkeypatch):
-    collect = Mock()
-    monkeypatch.setattr(mem_trim.gc, "collect", collect)
-
-    assert mem_trim.trim_memory(force=True, reason="test") is False
-    collect.assert_not_called()
 
 
 def test_config_kill_switch_overrides_force_from_config_file(monkeypatch, tmp_path):
@@ -43,6 +35,16 @@ def test_config_kill_switch_overrides_force_from_config_file(monkeypatch, tmp_pa
         reset_hermes_home_override(token)
 
 
+
+
+def test_gc_collect_runs_even_without_platform_primitive(monkeypatch):
+    # No page-release primitive (macOS, musl): the rate-limited gc.collect() still runs;
+    # only the success flag stays False.
+    collect = Mock()
+    monkeypatch.setattr(mem_trim.gc, "collect", collect)
+
+    assert mem_trim.trim_memory(force=True, reason="test") is False
+    collect.assert_called_once()
 
 
 def test_collect_memory_snapshot_parses_linux_proc_status(monkeypatch):

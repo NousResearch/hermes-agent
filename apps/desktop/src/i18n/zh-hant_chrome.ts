@@ -249,6 +249,7 @@ export const zhHantChrome = {
     paneControls: '窗格控制項',
     appControls: '應用程式控制項',
     modelMenu: {
+      pickDeferred: (model: string) => `${model} 將從你的下一則訊息開始生效`,
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',
@@ -420,6 +421,7 @@ export const zhHantChrome = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `無法在 ${shell} 中安全地輸入這些名稱：${paths}`,
     terminalReadOnly: '唯讀輸出',
     terminalReadOnlyHelp:
       '如需回應提示，請停止背景命令，再於新終端機中執行。新終端機會開啟獨立的 shell，不會連線至此程序。',

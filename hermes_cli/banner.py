@@ -493,8 +493,12 @@ def compute_toolset_availability(enabled_toolsets: list[str] | None = None) -> d
             "disabled_tools": sorted(disabled_tools)}
 
 
-def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
-    """One banner line for an MCP server status entry."""
+def _mcp_server_line(srv: dict, *, dim: str, text: str, warn: str = "yellow", error: str = "red") -> str:
+    """One banner line for an MCP server status entry.
+
+    ``warn``/``error`` are the active skin's warning and error colours, so a
+    theme can carry them; they default to the ANSI names this used to hardcode.
+    """
     name, transport = srv["name"], srv["transport"]
     if srv["connected"]:
         return f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
@@ -504,21 +508,21 @@ def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
         return (f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] "
                 f"[{text}]{srv['tools']} tool(s)[/] [dim {dim}](lazy, starts on first use)[/]")
     status = "disabled" if srv.get("disabled") else srv.get("status")
-    suffix = {"disabled": f"[dim {dim}]— disabled[/]", "connecting": "[yellow]— connecting[/]",
+    suffix = {"disabled": f"[dim {dim}]— disabled[/]", "connecting": f"[{warn}]— connecting[/]",
               "configured": f"[dim {dim}]— configured[/]"}.get(status)
     if suffix is not None:
         return f"[dim {dim}]{name}[/] [dim]({transport})[/] {suffix}"
-    return _mcp_failed_line(name, transport, srv.get("error"))
+    return _mcp_failed_line(name, transport, srv.get("error"), color=error)
 
 
-def _mcp_failed_line(name: str, transport: str, error: Optional[str]) -> str:
+def _mcp_failed_line(name: str, transport: str, error: Optional[str], *, color: str = "red") -> str:
     """Failed MCP connect: the short reason (already humanised by ``_format_connect_error``) and the
     exact next command, so 'failed' is never the whole story."""
     from rich.markup import escape
     reason = escape(" ".join(str(error or "").split())[:120]) or "no details recorded"
     next_cmd = (f"hermes mcp login {name}" if re.search(r"\b401\b|unauthori[sz]ed", reason, re.IGNORECASE)
                 else f"hermes mcp test {name}")
-    return (f"[red]{name}[/] [dim]({transport})[/] [red]— could not connect:[/] {reason} "
+    return (f"[{color}]{name}[/] [dim]({transport})[/] [{color}]— could not connect:[/] {reason} "
             f"[dim]— run `{next_cmd}`[/]")
 
 
@@ -627,7 +631,8 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
 
 def _banner_tool_lines(
     tools: list, unavailable_toolsets: list, get_toolset_for_tool, *,
-    lazy_tools: set, disabled_tools: set, accent: str, dim: str, text: str) -> list:
+    lazy_tools: set, disabled_tools: set, accent: str, dim: str, text: str,
+    warn: str = "yellow", error: str = "red") -> list:
     """"Available Tools" section: up to 8 toolsets, each truncated to ~42 columns."""
     lines = [f"[bold {accent}]Available Tools[/]"]
     toolsets_dict: dict[str, list] = {}
@@ -644,7 +649,9 @@ def _banner_tool_lines(
     def _color_tool(name: Optional[str]) -> str:
         if name is None:  # truncation marker
             return "[dim]...[/]"
-        color = "red" if name in disabled_tools else "yellow" if name in lazy_tools else text
+        # Deferred and disabled tools used to be ANSI "yellow"/"red", which no skin can
+        # override; take the active theme's warning and error colours instead.
+        color = error if name in disabled_tools else warn if name in lazy_tools else text
         return f"[{color}]{name}[/]"
     sorted_toolsets = sorted(toolsets_dict.keys())
     for toolset in sorted_toolsets[:8]:
@@ -695,6 +702,11 @@ def build_welcome_banner(
     accent = _skin_color("banner_accent", "#FFBF00")
     dim = _skin_color("banner_dim", "#B8860B")
     text = _skin_color("banner_text", "#FFF8DC")
+    # Semantic colours for state, not decoration: lazy tools and MCP "connecting" read as
+    # warnings, disabled tools and failed connects as errors. Skins that define ui_warn /
+    # ui_error now carry them into the banner; without them the ANSI names still apply.
+    warn = _skin_color("ui_warn", "yellow")
+    error = _skin_color("ui_error", "red")
     # Use skin's custom caduceus art if provided
     _bskin = _quiet(_active_skin)
     left_lines = ["", getattr(_bskin, "banner_hero", None) or HERMES_CADUCEUS, ""]
@@ -703,12 +715,13 @@ def build_welcome_banner(
     right_lines = _banner_tool_lines(
         tools, availability.get("unavailable_toolsets", []), get_toolset_for_tool,
         lazy_tools=set(availability.get("lazy_tools", [])), disabled_tools=set(availability.get("disabled_tools", [])),
-        accent=accent, dim=dim, text=text)
+        accent=accent, dim=dim, text=text, warn=warn, error=error)
     # MCP Servers section (only if configured) — see ``_mcp_configured`` for why the cheap probe.
     mcp_status = _quiet(_probe_mcp_status, []) if _mcp_configured() else []
     if mcp_status:
         right_lines += ["", f"[bold {accent}]MCP Servers[/]"]
-        right_lines.extend(_mcp_server_line(srv, dim=dim, text=text) for srv in mcp_status)
+        right_lines.extend(_mcp_server_line(srv, dim=dim, text=text, warn=warn, error=error)
+                           for srv in mcp_status)
     right_lines += ["", f"[bold {accent}]Available Skills[/]"]
     # The skills catalog is only reachable when the `skills` toolset is enabled (skill_view /
     # skill_manage). When disabled (Blank Slate) the agent cannot load any skill, so advertising

@@ -25,9 +25,21 @@ Adapted from Anthropic's `xlsx-author` and `audit-xls` skills in the [anthropics
 
 ## Setup
 
+Use `python` when it already imports `openpyxl` (the Hermes Docker image
+ships it). Otherwise install into a persistent side environment under the
+Hermes home, never into the interpreter that runs Hermes:
+
 ```bash
-pip install "openpyxl>=3.0"
+export PY=python
+if ! "$PY" -c "import openpyxl" 2>/dev/null; then
+  DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
+  PY="$DOCS_ENV/bin/python"
+  "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"
+  "$PY" -c "import openpyxl" 2>/dev/null || "$PY" -m pip install -q "openpyxl>=3.0"
+fi
 ```
+
+Run the model-building Python with `"$PY"`.
 
 ## Core conventions (non-negotiable)
 

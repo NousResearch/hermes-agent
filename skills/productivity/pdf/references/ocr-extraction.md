@@ -51,8 +51,12 @@ If the user needs marker capabilities but the system lacks ~5GB free disk:
 
 ## pymupdf (lightweight)
 
+Install into the persistent documents environment from the pdf skill's
+Prerequisites (`$DOCS_ENV`, ~110 MB with its deps; never into Hermes's own
+interpreter), then run the helper with `"$PY"`:
+
 ```bash
-pip install pymupdf pymupdf4llm
+"$DOCS_ENV/bin/python" -m pip install -q pymupdf pymupdf4llm && PY="$DOCS_ENV/bin/python"
 ```
 
 **Via helper script**:
@@ -83,7 +87,7 @@ for page in doc:
 # Check disk space first
 python scripts/extract_marker.py --check
 
-pip install marker-pdf
+"$DOCS_ENV/bin/python" -m pip install marker-pdf   # same side environment as pymupdf
 ```
 
 **Via helper script**:

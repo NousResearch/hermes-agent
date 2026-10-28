@@ -36,8 +36,26 @@ fields, and package health checks. It does not render documents itself
 
 ## Prerequisites
 
-- Python 3.10+ with `python-docx` installed:
-  `pip install python-docx` (import name is `docx`; lxml comes with it).
+- Python 3.10+ with `python-docx` (import name `docx`; lxml comes with it).
+- Pick the interpreter with `terminal`. Use `python` when it already imports
+  the libraries (the Hermes Docker image ships them); otherwise use a
+  persistent side environment under the Hermes home, which survives container
+  restarts and never touches the Hermes install itself:
+
+  ```bash
+  export PY=python
+  if ! "$PY" -c "import docx" 2>/dev/null; then
+    DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
+    PY="$DOCS_ENV/bin/python"
+    "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"  # new, or broken by a Python upgrade
+    "$PY" -c "import docx" 2>/dev/null || "$PY" -m pip install -q python-docx
+  fi
+  "$PY" scripts/docx_create.py --help
+  ```
+
+  Run every helper below with `"$PY"`. On Windows the side interpreter is
+  `%HERMES_HOME%\environments\documents\Scripts\python.exe`. Never
+  `pip install` into the interpreter that runs Hermes.
 - Comments `add` uses the native API on python-docx >= 1.2 and an XML
   fallback on older versions — both are automatic.
 - For image blocks: the image files must exist locally (PNG/JPEG).

@@ -59,6 +59,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "acp": "acp",
     "web": "fastapi",
     "doc-extract": "anydoc",
+    "documents": ("docx", "openpyxl", "pptx", "reportlab", "pypdf"),
     "computer-use": "mcp",
     "trace-upload": "huggingface_hub",
     # Pillow resize recovery for vision tools (the `vision` extra is a no-op

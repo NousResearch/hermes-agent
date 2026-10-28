@@ -578,6 +578,7 @@ def _resolve_rpc_session_id(session_id: Optional[str]) -> str:
         from gateway.session_context import get_session_env
         return get_session_env("HERMES_SESSION_ID", "")
     except Exception:
+        logger.warning("Could not resolve the RPC session context", exc_info=True)
         return ""
 
 

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
+import type { ProfileScope } from '@/hermes'
 import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import type { GatewayRequest } from '@/store/agent-plugins'
 import {
@@ -55,7 +56,12 @@ export function useAdvancedDelegationPlugin(
 }
 
 /** Open the reviewed catalog install dialog for the owner; a catalog without the entry says so. */
-export async function installAdvancedDelegation(owner: null | string, unavailableMessage: string) {
+export async function installAdvancedDelegation(
+  owner: null | string,
+  ownerScope: ProfileScope,
+  ownerIdentity: string | undefined,
+  unavailableMessage: string
+) {
   const result = await lookupPluginCatalogEntry(ADVANCED_DELEGATION_PLUGIN)
 
   if (!result.ok) {
@@ -64,7 +70,7 @@ export async function installAdvancedDelegation(owner: null | string, unavailabl
     return
   }
 
-  openCatalogPluginInstall(result.entry, owner)
+  openCatalogPluginInstall(result.entry, owner, { owner: ownerScope, ownerIdentity })
 }
 
 export function enableAdvancedDelegation(

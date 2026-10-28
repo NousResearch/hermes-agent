@@ -731,8 +731,16 @@ def test_shutdown_cancels_overlapping_flushes_for_same_route():
         second = asyncio.create_task(
             runner._enqueue_process_completion_notification("second", second_event)
         )
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # The completion scope loads the session index off the event loop
+        # (asyncio.to_thread), so the second flush is registered a few
+        # event-loop ticks later than a fixed number of sleep(0) calls
+        # assumes.  Wait for the registration instead of guessing the tick
+        # count, bounded so a regression fails the test instead of hanging it.
+        async def _await_two_flush_tasks():
+            while len(runner._completion_notification_batch_flush_tasks) < 2:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_await_two_flush_tasks(), timeout=5.0)
         flush_tasks = set(runner._completion_notification_batch_flush_tasks)
         assert len(flush_tasks) == 2
 

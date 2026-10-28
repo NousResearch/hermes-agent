@@ -926,3 +926,77 @@ def test_decode_schtasks_output_honours_a_utf16_bom():
     text = "Herm\u00e9s"
     assert gateway_windows._decode_schtasks_output(text.encode("utf-16")) == text
     assert gateway_windows._decode_schtasks_output(b"\xff\xfe<\x00?")
+
+
+# The respawn-storm brake bounds the Scheduled Task's relaunch count. A task registered by a build
+# BEFORE the brake carries the unbounded count, and the count is the ONLY leaf the hardened template
+# changed -- so watching only the (unchanged) interval left that unbounded loop invisible to the
+# drift check, and ``reconcile_scheduled_task`` never re-registered the install.
+def _registration_with_unbounded_restart_count(template: str) -> str:
+    """The template as a build BEFORE the brake wrote it: identical but for the relaunch count.
+
+    Derived from the template so the count is the ONLY difference -- a hand-written copy would
+    drift on some other leaf too and hide the very defect under test.
+    """
+    return template.replace(
+        f"<Count>{gateway_windows._TASK_RESTART_COUNT}</Count>",
+        "<Count>999</Count>",
+    )
+
+
+def test_scheduled_task_drift_reports_an_unbounded_restart_count():
+    """A registration carrying the pre-brake relaunch count is drift, and the report names the count.
+
+    Without this the brake reached only fresh installs: the count is the sole leaf the hardened
+    template changed, so an existing install stayed on the unbounded relaunch loop and the drift
+    check (the only thing that re-registers an existing task) reported it as aligned.
+    """
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    pre_brake = _registration_with_unbounded_restart_count(template)
+    # The count is the only leaf that differs, so the drift report is about the count alone.
+    assert gateway_windows.compare_scheduled_task_drift(pre_brake, template) == [
+        "RestartOnFailure count differs",
+    ]
+
+
+def test_reconcile_scheduled_task_bounds_an_existing_installs_restart_count(monkeypatch, tmp_path):
+    """An existing install's unbounded relaunch count is re-registered from the current template.
+
+    This is the whole point of the reconcile path: the brake is a template change, and a template
+    change only reaches an already-installed task when the drift check notices it.
+    """
+    script_path = tmp_path / "gateway.cmd"
+    launcher = script_path.with_suffix(".vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    calls: list[list[str]] = []
+    registered = {"xml": _registration_with_unbounded_restart_count(template)}
+
+    def fake_schtasks(args):
+        calls.append(list(args))
+        if "/XML" in args and "/Query" in args:
+            return (0, registered["xml"], "")
+        if "/Create" in args:
+            registered["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
+    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+    # The re-registered task carries the BOUNDED count, so the unbounded loop is gone.
+    assert f"<Count>{gateway_windows._TASK_RESTART_COUNT}</Count>" in registered["xml"]
+    assert gateway_windows.compare_scheduled_task_drift(registered["xml"], template) == []
+
+
+def test_scheduled_task_drift_is_silent_for_a_bounded_registration():
+    """A task registered by the current template is aligned: the added leaf must not make every
+    healthy install look stale, or ``hermes gateway status`` would nag a correct registration."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    exported = template.replace(r"<UserId>PC\me</UserId>", "<UserId>S-1-5-21-1-2-3-1001</UserId>")
+    assert gateway_windows.compare_scheduled_task_drift(exported, template) == []

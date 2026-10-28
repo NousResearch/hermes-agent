@@ -1447,13 +1447,24 @@ def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
     return values
 
 
-# Allowlist of template leaves whose absence/mismatch on the live task means it predates the current
+# Watched template leaves whose absence/mismatch on the live task means it predates the current
 # template (#113670). Never a full-leaf compare: schtasks exports <UserId> as a SID while the template
 # writes DOMAIN\user, so equality would flag every healthy registration.
+#
+# Each leaf maps to (absent label, stale label): the ABSENT label names the setting BLOCK (so a
+# wholly-absent <RestartOnFailure> is reported once, not once per leaf), while the STALE label names
+# the leaf (so the operator sees which bound is wrong).
+#
+# ``RestartOnFailure/Count`` is watched for the respawn-storm brake: ``Count`` is the UNBOUNDED
+# relaunch count (999) that makes the Scheduled Task re-launch the gateway forever. A registration
+# written before the brake keeps that count, and ``Count`` is the ONLY leaf the hardened template
+# changed -- watching only ``Interval`` (unchanged) left an existing install's unbounded loop
+# invisible to the drift check, so ``reconcile_scheduled_task`` never re-registered it.
 _TASK_DRIFT_LEAVES = {
-    "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
-    "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
-    "Task/Actions/Exec/Arguments": "launcher arguments",
+    "Task/Settings/RestartOnFailure/Interval": ("RestartOnFailure", "RestartOnFailure"),
+    "Task/Settings/RestartOnFailure/Count": ("RestartOnFailure", "RestartOnFailure count"),
+    "Task/Triggers/LogonTrigger/Delay": ("LogonTrigger Delay", "LogonTrigger Delay"),
+    "Task/Actions/Exec/Arguments": ("launcher arguments", "launcher arguments"),
 }
 
 
@@ -1465,8 +1476,16 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
     want = _task_xml_leaf_values(template_xml)
     if live is None or want is None:
         return []
-    missing = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path not in live]
-    differs = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path in live and live[path] != want[path]]
+    missing: list[str] = []
+    differs: list[str] = []
+    for path, (absent_label, stale_label) in _TASK_DRIFT_LEAVES.items():
+        if path not in want:
+            continue
+        if path not in live:
+            if absent_label not in missing:
+                missing.append(absent_label)
+        elif live[path] != want[path]:
+            differs.append(stale_label)
     drift = []
     if missing:
         drift.append(f"missing: {', '.join(missing)}")

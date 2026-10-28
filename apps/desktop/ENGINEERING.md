@@ -152,19 +152,42 @@ reopens the gesture-less forced-navigation class the advisory closed.
 
 - Live transcript navigation reads the session store; the shared navigation
   context carries only the selected historical page, not every streamed delta.
-- Unchanged retained snapshots must not republish the terminal store. Closing
-  the last mounted writer must enforce the cold agent-terminal retention budget
-  even when no later output arrives.
 - Hidden terminals stay mounted and keep parsing output. Suppress only their
   DOM rows, not the measurable host/helpers or terminal state. Do not reduce
-  scrollback or replace parser state to save painting work. WebGL surfaces remain
-  unchanged; hidden DOM-row suppression must leave fitting and font helpers measurable.
+  scrollback or replace parser state to save painting work. Unchanged retained
+  snapshots must not republish the terminal store.
   Register an agent-terminal writer before recovering its matching process
   snapshot. A quiet tab can reopen after cold eviction without any new registry
   notification; recovery must not duplicate live output or exempt cold entries
   from the retention budget.
 - Root geometry variables are not theme changes. Authored custom CSS can depend
   on those variables, so it must retain full repaint notifications.
+- Idle preview guests use Chromium's background throttling. Owned activity
+  leases wake the guest and its embedding window; the window controller still
+  arbitrates streaming and Wayland fullscreen policy. One operation finishing
+  must not suspend overlapping work.
+  Registration belongs in `electron/preview-guest-ipc.ts`; `main.ts` only binds
+  the owner-window wake callback. Keep validation and ownership checks at that IPC boundary.
+- Main owns script readiness, dispatch and document cancellation. Work queued
+  during navigation belongs to the incoming page; a promise abandoned in the
+  old document must release its lease. Reapply the guest wake after loading:
+  Electron's stored throttling flag does not prove a replacement widget is awake.
+  Preserve the existing script completion-value contract and plugin consent.
+- Capture leases cover paint waits and image capture, not waiting for a user's
+  next annotation. Keep action acquisition cancellable and bounded without
+  imposing an arbitrary deadline on approved plugin scripts or long typing.
+  Annotation capture shares one eight-second deadline across acquisition, paint,
+  viewport lookup, native capture and cleanup. Stop, conversation changes and
+  committed document navigation abort that lifetime and fence late drafts.
+  A cancelled load or download keeps the existing document's annotation session.
+
+Verify scheduling changes with native hidden/minimized windows and real preview
+navigation, typing and capture. Browser automation's focus emulation can keep
+hidden frames awake and conceal regressions; disable it for these checks.
+Software-rendered VM timings are not hardware GPU or battery measurements.
+With a graphical session (or Xvfb), `npm run test:preview-activity-native
+--workspace apps/desktop` exercises real hidden-frame navigation, overlapping
+operations, cancellation and plugin completion values in a disposable profile.
 
 ## Nous free tier: state is pulled, never latched in the renderer
 

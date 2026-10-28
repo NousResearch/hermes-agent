@@ -60,7 +60,8 @@ def transition(tmp_path):
         "        f.write(json.dumps(dict(name=name, pid=os.getpid(), python=sys.executable, **values)) + '\\n')\n"
     )
     selected = tmp_path / "selected-python"
-    venv.EnvBuilder(with_pip=False).create(selected)
+    # Retained fixtures need isolated prefixes, not four private interpreter copies.
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(selected)
     selected_python = selected / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     (pm_package / "environments.py").write_text(
         "import os, sys\n"
@@ -566,7 +567,7 @@ def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, m
     root, _git, _old, _new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
     obsolete = tmp_path / "obsolete-python"
-    venv.EnvBuilder(with_pip=False).create(obsolete)
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(obsolete)
     site = obsolete / ("Lib/site-packages" if os.name == "nt" else
                        f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
     trap = tmp_path / "old-site-loaded"

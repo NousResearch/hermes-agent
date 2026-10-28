@@ -1,6 +1,7 @@
 """Telegram inbound album and photo-burst event merging."""
 
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.base_media_flags import pad_inline_flags
 
 
 def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_caption) -> None:
@@ -9,12 +10,7 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
     if existing is None:
         pending[key] = event
         return
-    # An empty list means legacy semantics, represented by None for each attachment.
-    existing.media_text_inlined = (
-        (existing.media_text_inlined or [None] * len(existing.media_urls))
-        + (event.media_text_inlined or [None] * len(event.media_urls))
-    )
-    existing.media_urls.extend(event.media_urls)
-    existing.media_types.extend(event.media_types)
+    existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
+    existing.extend_media(event)
     if event.text:
         existing.text = merge_caption(existing.text, event.text)

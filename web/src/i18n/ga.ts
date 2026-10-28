@@ -96,8 +96,8 @@ export const ga: Translations = {
   systemMemory: {
     activeProvider: "Soláthraí cuimhne gníomhach",
     noProvider: "dada — ionsuite amháin",
-    builtinLayer: "Ciseal ionsuite — ar siúl i gcónaí",
-    builtinNote: "Luchtaítear MEMORY.md agus USER.md i ngach seisiún. Cuireann soláthraí seachtrach leo; ní chuireann sé ina n-áit riamh.",
+    builtinLayer: "Ciseal ionsuite",
+    builtinNote: "Is iad MEMORY.md agus USER.md cuimhne Hermes féin, ar leith ó aon soláthraí seachtrach. Luchtaítear an dá cheann i seisiúin de réir réamhshocraithe; múchann na lasca cumraíochta (memory.memory_enabled / memory.user_profile_enabled) gach ceann acu. Cuireann soláthraí leo; ní chuireann sé ina n-áit riamh.",
   },
 
   status: {

@@ -96,8 +96,8 @@ export const ja: Translations = {
   systemMemory: {
     activeProvider: "有効なメモリプロバイダー",
     noProvider: "なし — 組み込みのみ",
-    builtinLayer: "組み込みレイヤー — 常に有効",
-    builtinNote: "MEMORY.md と USER.md は毎セッション読み込まれます。外部プロバイダーはこれに追加されるもので、置き換えることはありません。",
+    builtinLayer: "組み込みレイヤー",
+    builtinNote: "MEMORY.md と USER.md は外部プロバイダーとは別の Hermes 自身のメモリです。どちらも既定でセッションに読み込まれ、設定の切り替え (memory.memory_enabled / memory.user_profile_enabled) でそれぞれオフにできます。外部プロバイダーはこれに追加されるもので、置き換えることはありません。",
   },
 
   status: {

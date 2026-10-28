@@ -96,8 +96,8 @@ export const hu: Translations = {
   systemMemory: {
     activeProvider: "Aktív memóriaszolgáltató",
     noProvider: "nincs — csak beépített",
-    builtinLayer: "Beépített réteg — mindig aktív",
-    builtinNote: "A MEMORY.md és a USER.md minden munkamenetbe betöltődik. A külső szolgáltató kiegészíti őket, de sosem helyettesíti.",
+    builtinLayer: "Beépített réteg",
+    builtinNote: "A MEMORY.md és a USER.md a Hermes saját memóriája, független minden külső szolgáltatótól. Alapértelmezés szerint mindkettő betöltődik a munkamenetekbe; a (memory.memory_enabled / memory.user_profile_enabled) beállítások külön-külön kikapcsolják őket. A szolgáltató kiegészíti őket, de sosem helyettesíti.",
   },
 
   status: {

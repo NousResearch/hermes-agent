@@ -96,8 +96,8 @@ export const de: Translations = {
   systemMemory: {
     activeProvider: "Aktiver Speicheranbieter",
     noProvider: "keiner — nur integriert",
-    builtinLayer: "Integrierte Ebene — immer aktiv",
-    builtinNote: "MEMORY.md und USER.md werden in jede Sitzung geladen. Ein externer Anbieter ergänzt sie, er ersetzt sie nie.",
+    builtinLayer: "Integrierte Ebene",
+    builtinNote: "MEMORY.md und USER.md sind Hermes’ eigener Speicher, unabhängig von externen Anbietern. Beide werden standardmäßig in Sitzungen geladen; die Konfigurationsschalter (memory.memory_enabled / memory.user_profile_enabled) schalten sie einzeln ab. Ein Anbieter ergänzt sie, er ersetzt sie nie.",
   },
 
   status: {

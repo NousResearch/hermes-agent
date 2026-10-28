@@ -96,8 +96,8 @@ export const pt: Translations = {
   systemMemory: {
     activeProvider: "Provedor de memória ativo",
     noProvider: "nenhum — apenas integrada",
-    builtinLayer: "Camada integrada — sempre ativa",
-    builtinNote: "MEMORY.md e USER.md são carregados em todas as sessões. Um provedor externo se soma a eles; nunca os substitui.",
+    builtinLayer: "Camada integrada",
+    builtinNote: "MEMORY.md e USER.md são a memória própria do Hermes, independente de qualquer provedor externo. Ambos são carregados nas sessões por padrão; as opções de configuração (memory.memory_enabled / memory.user_profile_enabled) desativam cada um. Um provedor se soma a eles; nunca os substitui.",
   },
 
   status: {

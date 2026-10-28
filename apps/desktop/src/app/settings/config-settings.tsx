@@ -27,6 +27,7 @@ import { recordSettingsSaved } from '@/store/desktop-metrics'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
 import { $keepAwakeMode, type KeepAwakeMode, setKeepAwakeMode } from '@/store/keep-awake'
+import { refreshMemoryStatus } from '@/store/memory-status'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
@@ -252,6 +253,11 @@ function ConfigSettingsInner({
           const savedScope = writeScope ?? scopeProfile
 
           recordSettingsSaved(patch, schema ?? {}, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
+
+          // The Memory summary's "active" provider is the saved one; reread it.
+          if ('memory' in patch) {
+            refreshMemoryStatus()
+          }
 
           if (saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace
@@ -507,6 +513,10 @@ function ConfigSettingsInner({
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
       <MemoryLayersSlot
+        builtin={{
+          memory: getNested(config, 'memory.memory_enabled') !== false,
+          user: getNested(config, 'memory.user_profile_enabled') !== false
+        }}
         profile={scopeProfile}
         provider={asText(getNested(config, 'memory.provider'))}
         sectionId={activeSectionId}

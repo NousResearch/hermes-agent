@@ -96,8 +96,8 @@ export const ru: Translations = {
   systemMemory: {
     activeProvider: "Активный провайдер памяти",
     noProvider: "нет — только встроенная",
-    builtinLayer: "Встроенный слой — всегда включён",
-    builtinNote: "MEMORY.md и USER.md загружаются в каждую сессию. Внешний провайдер дополняет их, но никогда не заменяет.",
+    builtinLayer: "Встроенный слой",
+    builtinNote: "MEMORY.md и USER.md — собственная память Hermes, независимая от внешних провайдеров. По умолчанию оба файла загружаются в сессии; переключатели конфигурации (memory.memory_enabled / memory.user_profile_enabled) отключают каждый из них. Внешний провайдер дополняет их, но никогда не заменяет.",
   },
 
   status: {

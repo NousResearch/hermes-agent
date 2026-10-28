@@ -96,8 +96,8 @@ export const ko: Translations = {
   systemMemory: {
     activeProvider: "활성 메모리 제공자",
     noProvider: "없음 — 내장 메모리만",
-    builtinLayer: "내장 레이어 — 항상 켜짐",
-    builtinNote: "MEMORY.md와 USER.md는 모든 세션에 로드됩니다. 외부 제공자는 여기에 더해질 뿐, 이를 대체하지 않습니다.",
+    builtinLayer: "내장 레이어",
+    builtinNote: "MEMORY.md와 USER.md는 외부 제공자와 별개인 Hermes 자체 메모리입니다. 기본적으로 둘 다 세션에 로드되며, 설정 토글 (memory.memory_enabled / memory.user_profile_enabled)로 각각 끌 수 있습니다. 외부 제공자는 여기에 더해질 뿐, 이를 대체하지 않습니다.",
   },
 
   status: {

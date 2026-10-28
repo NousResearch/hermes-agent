@@ -96,8 +96,8 @@ export const ar = defineLocale({
   systemMemory: {
     activeProvider: "مزوّد الذاكرة النشط",
     noProvider: "لا يوجد — المدمجة فقط",
-    builtinLayer: "الطبقة المدمجة — مفعّلة دائمًا",
-    builtinNote: "يُحمَّل MEMORY.md وUSER.md في كل جلسة. يضيف المزوّد الخارجي إليهما ولا يستبدلهما أبدًا.",
+    builtinLayer: "الطبقة المدمجة",
+    builtinNote: "MEMORY.md وUSER.md هما ذاكرة Hermes الخاصة، مستقلتان عن أي مزوّد خارجي. يُحمَّل كلاهما في الجلسات افتراضيًا؛ ويعطّل مفتاحا الإعداد (memory.memory_enabled / memory.user_profile_enabled) كلًّا منهما. يضيف المزوّد إليهما ولا يستبدلهما أبدًا.",
   },
 
   status: {

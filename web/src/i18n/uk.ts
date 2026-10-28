@@ -96,8 +96,8 @@ export const uk: Translations = {
   systemMemory: {
     activeProvider: "Активний провайдер пам'яті",
     noProvider: "немає — лише вбудована",
-    builtinLayer: "Вбудований шар — завжди ввімкнений",
-    builtinNote: "MEMORY.md і USER.md завантажуються в кожну сесію. Зовнішній провайдер доповнює їх, але ніколи не замінює.",
+    builtinLayer: "Вбудований шар",
+    builtinNote: "MEMORY.md і USER.md — власна пам'ять Hermes, незалежна від зовнішніх провайдерів. Типово обидва файли завантажуються в сесії; перемикачі конфігурації (memory.memory_enabled / memory.user_profile_enabled) вимикають кожен із них. Зовнішній провайдер доповнює їх, але ніколи не замінює.",
   },
 
   status: {

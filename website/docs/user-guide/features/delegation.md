@@ -291,7 +291,51 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+Note that the pin is global: with the default strategy `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session, use a delegation strategy plugin (below), or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+
+### Delegation strategies (`delegation.backend`)
+
+`delegation.backend` selects how each task becomes a subagent. `default` (the default) is everything above. Strategy plugins can let the model choose per task, from options you define:
+
+- a **profile per subagent** (`profile_routes`): each child runs as one of your Hermes profiles, with that profile's model, credentials, skills and persona;
+- a **named model map** (`model_map`): you list titled options (`fast`, `deep`, ...) with a description and a provider/model each, and the model picks one per task.
+
+Both come from the official `advanced-delegation` plugin, which also adds `hermes delegation config` (create, edit and delete model routes, pick profiles) and the `/delegation` slash command. While `model_map` or `profile_routes` is active, `delegation.model` / `delegation.provider` are inactive: the routes decide.
+
+Each strategy's settings live under `delegation.backends.<backend name>`:
+
+```yaml
+delegation:
+  backend: model_map
+  backends:
+    model_map:
+      options:
+        - name: fast
+          description: Cheap and quick; lookups, summaries, simple edits.
+          provider: openrouter
+          model: google/gemini-3-flash-preview
+        - name: deep
+          description: Slow and careful; hard debugging and design work.
+          provider: anthropic
+          model: claude-opus-5
+          reasoning_effort: high
+          service_tier: fast            # optional; refused at spawn if this route has no fast tier
+      default: fast                     # optional: option for tasks that set none
+    profile_routes:                     # read when backend: profile_routes
+      profiles:
+        - name: coder
+          description: Writes and refactors code; runs tests.
+```
+
+The model only ever sees the names and descriptions you configured, never raw provider, model or key fields. Each result of a backend-routed task carries `route`: the backend, the option or profile name, and the provider, model, reasoning effort and speed tier the child actually ran on (`fallback_activated: true` when a fallback provider took over). Writing your own: [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md).
+
+**Failures are explicit, never a silent switch.** If the selected backend is missing (plugin not installed or disabled) or reports it cannot run, `delegate_task` returns a tool error naming the backend and the fix, and no subagent starts; it never quietly runs the children on the default route. Within a batch, a task its backend cannot route (an unknown option, a parameter the selected backend does not take, a profile that does not exist, a `service_tier` the route does not offer, an unknown `reasoning_effort`, missing credentials) is refused alone: its result entry has `status: "error"`, the reason, and `route.refused: true`, while the other tasks run. A model route without its own `fallback_providers` uses `delegation.fallback_providers`; `fallback_providers: []` on the route disables fallback for it. A profile route uses that profile's own fallback chain.
+
+**Switching back.** `/delegation default` (from the `advanced-delegation` plugin) switches the current session to the default backend, and `/delegation <backend> --global` writes `delegation.backend` to `config.yaml`, following the `/model` convention. A session switch changes routing from the next `delegate_task` call and lasts until the conversation ends (`/new`, `/resume`, an automatic reset); the per-task parameters the model sees (option or profile names) follow `config.yaml` and change at the next session, because the tool list is part of the cached prompt. Until then, a task that sends the previous backend's parameter (an `option` after switching to `profile_routes`) is refused with a message naming the session's backend, the parameter and the fix (`/delegation <backend> --global` then `/new`, because `/new` starts on the saved backend, or `/delegation <saved backend>` back); it never runs on the new backend's default route. Without the plugin, `hermes config set delegation.backend default` restores the default.
+
+:::note Profile routes share credentials
+Listing a profile in `delegation.backends.profile_routes` lets this profile's subagents use that profile's credentials, credential pool, `SOUL.md` and terminal policy. Only list profiles whose keys and terminal access you are happy for this profile's agent to use.
+:::
 
 ## The `/review` Command
 

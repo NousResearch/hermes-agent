@@ -39,7 +39,8 @@ NOT_A_LOCAL_READ = {
 # The read-only argument forms of a read whose other subcommands write.
 READ_FORMS = {"usage": "bare only (`reset` refused)", "memory": "bare / `pending`",
               "skills": "bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused",
-              "suggestions": "bare only", "kanban": "list/show/stats/assignees/context/runs/log/diagnostics"}
+              "suggestions": "bare only", "kanban": "list/show/stats/assignees/context/runs/log/diagnostics",
+              "cron": "bare / `list`; add/edit/pause/resume/run/remove control, from the classic CLI's own command socket only"}
 
 
 def _served_methods():
@@ -63,8 +64,7 @@ def gateway_cell(name):
 
 # Reads a TUI session gets as main's TUI sidecar rendered them (gateway/session_tui_reads.py).
 TUI_READS = {"status": "TUI session: main's `Hermes TUI Status`",
-             "context": "TUI session: main's live /context with the category table",
-             "cron": "TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs"}
+             "context": "TUI session: main's live /context with the category table"}
 
 
 def port_note(cmd):

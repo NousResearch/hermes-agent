@@ -22,6 +22,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
+from agent.message_metadata import DATA_USE
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
@@ -795,6 +796,9 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
                 rendered.append({"role": "assistant", "content": block})
+            # The preview is still the raw result, so the folded turn keeps its data-use requirement.
+            if msg.get(DATA_USE):
+                rendered[-1][DATA_USE] = sorted({*rendered[-1].get(DATA_USE, ()), *msg[DATA_USE]})
         # system and any other role are ignored.
 
     # Anthropic rejects trailing assistant prefill: end on a synthetic user request.

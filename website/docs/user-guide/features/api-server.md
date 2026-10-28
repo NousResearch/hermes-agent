@@ -68,6 +68,11 @@ structured through execution; it is not interpreted as a gateway slash command.
   terminal status and `response.cancelled` / `response.failed` events, including when
   diagnostic text is present. Chat Completions reports `finish_reason: "cancelled"`
   for interrupted turns and `"error"` for failures, not a successful `"stop"`.
+- A turn that runs out of its iteration budget (`agent.max_turns`) still answers with the
+  agent's wrap-up of what it found. Chat Completions delivers that text with
+  `finish_reason: "length"` and `hermes.error_code: "iteration_budget_exhausted"`;
+  Responses reports `status: "incomplete"`. Treat the content as a usable answer to a task
+  that stopped short, not as a cancellation.
 - Session-chat replies include `status`; their streams report matching terminal run
   events. An assistant finalization frame is not itself proof of successful execution.
 

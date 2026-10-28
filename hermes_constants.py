@@ -63,6 +63,33 @@ def _get_platform_default_hermes_home() -> Path:
     return _platform_default_hermes_home(os.environ, Path.home)
 
 
+def _account_home() -> Path:
+    """The OS account's home from the password database, never ``$HOME``: harnesses and profile isolation
+    repoint HOME (root under ``sudo`` has uid 0 too, which keeps the #108674 remap). Falls back to the
+    shared real-home resolver where pwd cannot answer."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX-only module inside try/except
+    except (ImportError, KeyError, OSError, AttributeError):
+        return Path(get_real_home())
+
+
+def account_default_hermes_home() -> Path:
+    """The platform default of the OS ACCOUNT, never of a foreign process ``HOME``.
+
+    Host service identities (``systemctl --user`` units, LaunchAgents) belong to the account, and their
+    definitions are found under the account home. A process started with ``HOME=<scratch>`` used to call
+    ``<scratch>/.hermes`` native, name the bare ``hermes-gateway`` unit, and stop the account's real
+    gateway through it. When the process HOME is the account home the two answers are the same home.
+    """
+    account = _account_home()
+    try:
+        same = Path.home().resolve() == account.resolve()
+    except (OSError, RuntimeError):
+        same = False
+    return _get_platform_default_hermes_home() if same else _platform_default_hermes_home(os.environ, lambda: account)
+
+
 def _hermes_root_of(native_home: Path, env_path: Path | None) -> Path:
     """The root that holds *env_path*: the native home, a custom root, or *env_path* itself."""
     if env_path is None:

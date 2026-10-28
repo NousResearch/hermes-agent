@@ -23,7 +23,6 @@ export const deNotices = {
       'Dieser Server konnte das frühere Senden dieser Nachricht nicht bestätigen; sie wurde möglicherweise bereits ausgeführt. Prüfe die Unterhaltung, bevor du sie erneut sendest.',
     mcpReloadDeferred:
       'Dieser Chat ist beschäftigt: Die MCP-Änderung gilt, sobald sein Durchlauf endet und MCP erneut geladen wird, oder wenn du den Chat wieder öffnest',
-    mcpReloadNotInChat: server => `${server} ist in diesem Chat nicht aktiviert`,
     mcpReloadUnavailable: servers => `Keine Verbindung: ${servers}`,
     compactedTurnUnavailable:
       'Diese Nachricht wurde beim Komprimieren des Chats zusammengefasst und kann nicht mehr wiederhergestellt oder bearbeitet werden.',
@@ -36,5 +35,16 @@ export const deNotices = {
     message:
       'Hermes kann den Computer wach halten, solange eine Aufgabe läuft. Der Bildschirm schaltet sich weiterhin aus, und im Akkubetrieb kann der Computer trotzdem einschlafen.',
     action: 'Während der Arbeit wach halten'
+  },
+  billingBlock: {
+    titleNous: 'Keine Nous-Credits mehr',
+    titleProvider: provider => `Keine Credits mehr — ${provider}`,
+    fallbackMessage: 'Auf Ihrem Konto sind keine Credits mehr übrig. Fügen Sie Credits hinzu, um fortzufahren.',
+    openBilling: 'Billing öffnen',
+    addCredits: 'Credits hinzufügen',
+    dismiss: 'Schließen'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

@@ -33,6 +33,16 @@ def _authorize(connection, ref, params):
     return None
 
 
+def mcp_revision(policy, cfg) -> str:
+    """``mcp_rev``: the MCP-relevant sections a client polls (``config.get mtime``) and names back on
+    ``reload.mcp``. Read from the session's frozen policy when it has one — a live config edit is not an
+    MCP reload request, it reaches a chat as a committed generation — so the value a client is told to load
+    is the value the session already holds."""
+    return hashlib.sha256(json.dumps({k: (policy.config() if policy else cfg).get(k)
+                                      for k in ('mcp', 'mcp_servers', 'tools')},
+                                     sort_keys=True).encode()).hexdigest()[:12]
+
+
 def _client_config(cfg):
     # Native full-config consumers are presentation-only. Do not export provider,
     # MCP, plugin or terminal configuration (which can contain arbitrary secrets).
@@ -85,10 +95,7 @@ async def config_get(connection, ref, params):
                 'mtime': lambda: {'mtime': (home / 'config.yaml').stat().st_mtime
                                  if (home / 'config.yaml').exists() else 0,
                                  # Frozen tool policy is not a live MCP reload request.
-                                 'mcp_rev': hashlib.sha256(json.dumps({
-                                     k: (policy.config() if policy else cfg).get(k)
-                                     for k in ('mcp', 'mcp_servers', 'tools')},
-                                     sort_keys=True).encode()).hexdigest()[:12]},
+                                 'mcp_rev': mcp_revision(policy, cfg)},
                 'reasoning': lambda: _reasoning(agent, policy, cfg, connection, ref),
                 'fast': lambda: _fast(connection, ref, policy, agent, cfg),
                 'skin': lambda: {'value': display.get('skin', 'default')},

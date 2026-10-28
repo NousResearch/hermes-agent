@@ -48,12 +48,3 @@ class TestImportTimeEnvParsing:
                 assert mod.FOREGROUND_MAX_TIMEOUT == default
         finally:
             importlib.reload(_tt_mod)
-
-    def test_invalid_disk_warning_threshold_falls_back_to_default(self):
-        default = importlib.reload(_tt_mod).DISK_USAGE_WARNING_THRESHOLD_GB
-        try:
-            with patch.dict("os.environ", {"TERMINAL_DISK_WARNING_GB": "huge"}, clear=False):
-                mod = importlib.reload(_tt_mod)
-                assert mod.DISK_USAGE_WARNING_THRESHOLD_GB == default
-        finally:
-            importlib.reload(_tt_mod)

@@ -1624,8 +1624,9 @@ class _CronJobConfig:
 
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
-    the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
-    ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
+    the main agent model (config ``model:``, then HERMES_MODEL) > the claimed welcome trial's. Re-read
+    every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
+    from hermes_cli.anon_auth import trial_model
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1653,10 +1654,9 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                     model = str(_main or "").strip() or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
-
-    # Fail fast: an empty model otherwise reaches the provider as an opaque 400.
-    # See #23979.
-    if not (isinstance(model, str) and model.strip()):
+    model = (model if isinstance(model, str) else "").strip() or trial_model()
+    # Fail fast: an empty model otherwise reaches the provider as an opaque 400 (#23979).
+    if not model:
         raise RuntimeError(
             f"Cron job '{job_name}' has no model configured "
             f"(job.model={job.get('model')!r}, "
@@ -2390,6 +2390,7 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
+        self._spend_token = None
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -2400,6 +2401,9 @@ class _CronRunScope:
         # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
         # concurrent jobs); copy_context() carries it into the agent thread.
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
+        # Each run is its own MCP spend "chat" (its approval session key is "" for every job).
+        from tools.mcp_tool_costs import bind_run
+        self._spend_token = bind_run(self.task_id)
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
@@ -2411,6 +2415,9 @@ class _CronRunScope:
             self._cron_session_var.reset(self._cron_session_token)
         if self._non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
+        if self._spend_token is not None:
+            from tools.mcp_tool_costs import unbind_run
+            unbind_run(self._spend_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
 
@@ -3219,14 +3226,14 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     here rather than at the tick means no read is ever fail-closed without a scope to read — the
     restart-safe handoff in ``run_one_job`` runs before this and keeps today's semantics (#107692).
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope, set_multiplex_context, set_secret_scope)
+    from agent.secret_scope import set_multiplex_context, set_secret_scope
     from cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     home = Path(_get_hermes_home())
     hydrate_profile_secret_sources(home)
-    scope_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    scope_token = set_secret_scope(owner_secret_scope(home), profile_home=str(home))
     context_token = set_multiplex_context(True) if routed_profile_fire() else None
     return scope_token, context_token
 

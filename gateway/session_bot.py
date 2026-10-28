@@ -204,22 +204,20 @@ async def _target(authority, actor):
 
 def displaceable_bot_chat(authority, row):
     """The id holding the canonical title when the Bot Chat is a conversation no FIFO can own (an
-    ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row), else
-    None. Such a row can never be adopted (``validate_legacy_row``), renamed (the canonical title
-    is its identity) or renamed over the API, so it would refuse every delivery for good. A bound
-    local chat and old local history (CLI, TUI, Desktop rows a native open adopts) are never moved."""
+    ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row, an
+    unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
+    adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
+    over the API, so it would refuse every delivery for good. A bound local chat, old local history
+    a native open adopts and a local row a login stamped as its own are never moved."""
     from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX
+    from hermes_state_local_migration import LEGACY_PREFIX
 
-    def owned(candidate):
-        return (str(candidate.get('chat_id') or '').startswith('local-')
-                or candidate.get('source') in LEGACY_LOCAL_SOURCES)
-    if owned(row):  # every delivery asks: a bound local chat answers from its own row, with no read
-        return None
+    if str(row.get('chat_id') or '').startswith('local-'):
+        return None  # every delivery asks: a bound local chat answers from its own row, with no read
     db = authority.db
     tip = db.get_session(db.get_compression_tip(row['id']) or row['id'])
     for candidate in (row, tip):
-        if candidate is None or owned(candidate):
+        if candidate is None or str(candidate.get('chat_id') or '').startswith('local-'):
             return None
         chat_id = str(candidate.get('chat_id') or '')
         with db._read_ctx() as conn:
@@ -227,7 +225,39 @@ def displaceable_bot_chat(authority, row):
                             (POLICY_PREFIX + (chat_id or candidate['id']),
                              LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
                 return None
+        if _kept_local_history(db, candidate):
+            return None
     return row['id']
+
+
+def _kept_local_history(db, row):
+    """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
+    or Desktop row a native open adopts, or one a login stamped as its owner. A local-source row
+    no open can ever adopt (a route column left by a crash or reconnect, another profile's stamp)
+    is not: it held the title and refused every delivery for good (#141243)."""
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
+    if row.get('source') not in LEGACY_LOCAL_SOURCES:
+        return False
+    if row.get('user_id') and not legacy_account_label(row):
+        return True
+    try:
+        validate_legacy_row(db, row)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
+def _moved_aside_by_this_door(authority, holder, pinned):
+    """Whether *pinned*, the Bot Chat the producer discovered, is the title holder this delivery's
+    ``_target`` just moved aside. The producer pins the id it read before asking, so the first
+    delivery after a move would otherwise be refused ``admission_conflict`` for the chat the door
+    itself replaced, and land only on the next beat."""
+    if holder is None:
+        return False
+    db = authority.db
+    if pinned not in (holder['id'], db.get_compression_tip(holder['id'])):
+        return False
+    return str((db.get_session(holder['id']) or {}).get('title') or '').startswith('Bot Chat (')
 
 
 def _displace_bot_chat(db, sid):
@@ -747,8 +777,10 @@ async def _deliver(connection, params):
                 return answer
             if record is not None:
                 raise RuntimeStoreError('unknown_execution')
+            holder = authority.db.get_session_by_title('Bot Chat')
             ref, live, entry = await _target(authority, actor)
-            if params.get('session_id', entry.session_id) != entry.session_id:
+            pinned = params.get('session_id', entry.session_id)
+            if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
                 raise RuntimeStoreError('admission_conflict')
             return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
                                 notification_category=category)

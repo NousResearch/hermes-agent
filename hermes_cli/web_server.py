@@ -177,19 +177,6 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
-def _probe_install_before_state_db() -> None:
-    from hermes_cli.anon_auth import on_local_desktop_backend
-
-    if not on_local_desktop_backend():
-        return
-    try:
-        from hermes_cli.install_state import probe
-
-        probe()
-    except (OSError, ValueError):  # what the probe's own guards leave; onboarding.state probes again
-        _log.warning("first-install check at boot failed", exc_info=True)
-
-
 from hermes_cli.web_server_app import app_lifespan
 
 
@@ -686,7 +673,7 @@ GATEWAY_RESTART_COOLDOWN_SECONDS = 10.0
 _LAST_GATEWAY_RESTART: Optional[tuple[float, subprocess.Popen, tuple[str, ...]]] = None
 
 
-def _spawn_gateway_restart(profile: Optional[str] = None) -> tuple[subprocess.Popen, bool]:
+def _spawn_gateway_restart(profile: Optional[str] = None, *, interrupt: bool = False) -> tuple[subprocess.Popen, bool]:
     """Spawn ``hermes gateway restart``, reusing an in-flight or recent restart.
 
     Concurrent children race each other on the kill-and-start path, so a live
@@ -699,7 +686,10 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> tuple[subprocess.Po
     """
     global _LAST_GATEWAY_RESTART
 
-    subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
+    # ``interrupt``: ``POST /api/gateway/restart`` is the user-commanded force path that supersedes a
+    # drain (D6 of the safe-shutdown plan, 19b26244046); a config-save auto-restart is not, and its
+    # child refuses while sessions are live.
+    subcommand = _gateway_mod._gateway_subcommand(profile, "restart") + ["--interrupt"] * interrupt
     existing = _gateway_mod._ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
         existing_command = _gateway_mod._ACTION_COMMANDS.get("gateway-restart")
@@ -792,6 +782,7 @@ from hermes_cli.web_routers import (
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
     shared_metrics as _shared_metrics_routes,
+    delegation as _delegation_routes,
 )
 
 app.include_router(_files_routes.router)
@@ -825,6 +816,7 @@ app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_shared_metrics_routes.router)
+app.include_router(_delegation_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth

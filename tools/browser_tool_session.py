@@ -606,7 +606,8 @@ def _sandbox_close_daemon(session_name: str) -> None:
 
 
 def _sandbox_socket_dir(env) -> str:
-    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/agent-browser"
+    from tools.environments import streams
+    return f"{streams.sandbox_temp_dir(env).rstrip('/')}/hermes-bot-desktop/agent-browser"
 
 
 def sandbox_screenshot_path(host_path: Path) -> Optional[str]:
@@ -617,7 +618,8 @@ def sandbox_screenshot_path(host_path: Path) -> Optional[str]:
     env = _bd_runtime._sandbox_env(create=False)
     if env is None:
         return None
-    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/shots/{host_path.name}"
+    from tools.environments import streams
+    return f"{streams.sandbox_temp_dir(env).rstrip('/')}/hermes-bot-desktop/shots/{host_path.name}"
 
 
 def fetch_sandbox_file(remote_path: str, local_dest: Path, *, max_bytes: int = 16 * 1024 * 1024) -> bool:
@@ -723,9 +725,9 @@ def _sandbox_wrap(cmd_parts: list[str], browser_env: dict[str, str], task_socket
     remote_env["AGENT_BROWSER_SOCKET_DIR"] = _sandbox_socket_dir(env)
     remote_env.pop("AGENT_BROWSER_EXECUTABLE_PATH", None)  # the sandbox image's Playwright Chromium, not a host path
     remote_env["AGENT_BROWSER_PROFILE"] = sandbox_host.browser_profile_dir(env)  # persists with the container, not its tmpfs
-    remote_env["TMPDIR"] = env.get_temp_dir()
+    remote_env["TMPDIR"] = streams.sandbox_temp_dir(env)
     if not getattr(env, "_bd_browser_dirs_ready", False):
-        streams.run_in(env, ["mkdir", "-p", _sandbox_socket_dir(env), f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/shots",
+        streams.run_in(env, ["mkdir", "-p", _sandbox_socket_dir(env), f"{remote_env['TMPDIR'].rstrip('/')}/hermes-bot-desktop/shots",
                              remote_env["AGENT_BROWSER_PROFILE"]], user=sandbox_host._user_for(env), timeout=15)
         env._bd_browser_dirs_ready = True
     remote_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)  # container: no userns for Chromium's own sandbox

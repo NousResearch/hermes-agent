@@ -108,6 +108,10 @@ def _create(authority, actor, params):
             'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}, request_id
 
 
+# What a message typed into a scheduled job's session settles with (see ``execute``); its text is
+# ``gateway.errors.cron_session_read_only``, rendered in the owning profile's language.
+CRON_SESSION_READ_ONLY_SURFACE = {'layer': 'gateway', 'code': 'cron_session_read_only', 'retryable': False}
+
 # Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
 # (cron/quota_hold.py parks past a closed usage window; cron/unreachable_retry.py re-runs a
 # never-reached model). They cross the authority boundary inside the cron result.
@@ -234,7 +238,15 @@ async def execute(authority, ref, row, policy):
     if (row['payload'] != {'text': data['extra_prompt'] or ''}
             or row['request_id'] != data['request_id']
             or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
-        raise RuntimeStoreError('admission_conflict')
+        # A cron session only runs its own frozen fire; anything else typed into it fails with a
+        # descriptor the viewer can render (and offer a new chat for), never a generic failure.
+        from agent.i18n import t
+        text = t('gateway.errors.cron_session_read_only')
+        authority.pending_results[row['admission_id']] = {'result': {
+            'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+            'error': text, 'error_surface': dict(CRON_SESSION_READ_ONLY_SURFACE)},
+            'usage': {}}
+        return text
     cancellations = _cancellations(authority)
     cancel = cancellations.setdefault(row['admission_id'], threading.Event())
     execution_id = scheduler_execution_id(data['cron_job']['id'], row['request_id'])

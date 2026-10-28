@@ -186,6 +186,7 @@ class CLITuiRuntimeMixin:
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
+        self.__dict__.pop("_running_tool_labels", None)
         self._pet_react_turn_end()
         self._turn_summary_emit()
         self._interactive_turn = False

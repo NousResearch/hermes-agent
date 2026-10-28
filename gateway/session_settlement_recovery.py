@@ -61,6 +61,16 @@ def completion_payload(row, settled, response, captured):
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
     captured_result = (captured or {}).get('result') or {}
+    # A gateway-owned refusal brings its own descriptor (``session_cron.execute``); every other failed
+    # turn gets the one the TUI path builds from the same result, so the viewer shows the right card.
+    surface = captured_result.get('error_surface')
+    if not isinstance(surface, dict) and complete['status'] == 'error':
+        from agent.error_surface import build_error_surface_from_result
+        surface = build_error_surface_from_result(
+            captured_result, provider=str(captured_result.get('provider') or ''),
+            model=str(captured_result.get('model') or ''))
+    if isinstance(surface, dict):
+        complete['error_surface'] = surface
     if response and captured_result.get('response_reused'):
         complete['response_reused'] = True
     if captured_result.get('local_viewer'):
@@ -132,6 +142,16 @@ def owner_stop_notice(captured, outcome, row=None):
             from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
             return AUTOMATION_INTERRUPTED_NOTICE
     return notice
+
+
+def gateway_refusal_boundary(captured, outcome):
+    """``(notice, display_metadata)`` for a failed turn the gateway itself refused with a renderable
+    descriptor (``session_cron.execute``: the only producer of ``result.error_surface``), else None."""
+    value = (captured or {}).get('result') or {}
+    surface, error = value.get('error_surface'), value.get('error')
+    if outcome != 'failed' or not isinstance(surface, dict) or not isinstance(error, str) or not error:
+        return None
+    return error, {'error': error, 'error_surface': dict(surface)}
 
 
 def _release_media(authority, row):

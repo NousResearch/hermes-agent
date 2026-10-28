@@ -42,7 +42,8 @@ def _read() -> dict:
 
 
 def record_tui_worktree(wt_info: dict) -> None:
-    """Remember a tree the ``--tui -w`` launcher created. Never raises."""
+    """Remember a tree the ``-w`` / ``--tui -w`` launcher created, or a classic ``/worktree new``
+    moved its gateway session into. Never raises."""
     try:
         from hermes_cli.auth import _file_lock
         from utils import atomic_json_write

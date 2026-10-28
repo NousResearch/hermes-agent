@@ -899,6 +899,9 @@ export interface DesktopUpdateStatus {
   aheadOfRelease?: boolean
   /** Source stable: the checkout already contains the release, so installing it moves back. */
   rollback?: boolean
+  /** Source stable: `hermes update` would refuse the release (it predates the gateway runtime these
+   *  session stores use), so it is held instead of offered. */
+  held?: 'downgrade'
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

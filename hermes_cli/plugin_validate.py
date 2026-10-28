@@ -667,6 +667,12 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         if config.get("trust") == "untrusted":
             report.add(f"server trust: {server_name}", True,
                        "untrusted (Hermes asks before every write-capable tool call)")
+        if config.get("tool_costs"):
+            limit = config.get("spend_limit") or 0
+            report.add(f"server costs: {server_name}", True,
+                       f"{len(config['tool_costs'])} costed tool(s), "
+                       + (f"spend limit {limit} {config.get('cost_unit') or 'credits'} per chat" if limit
+                          else "no spend limit"))
     for server_name, server_decl in package.server_declarations.items():
         result = availability(server_decl.declaration)
         detail = result.state

@@ -40,12 +40,15 @@
     "serialize-javascript": "7.0.7",
     "uuid": "14.0.1",
     "minimatch": "10.2.6",
-    "nanoid": "3.3.17",
-    "js-yaml": "4.3.1",
+    "nanoid": "3.3.20",
+    "js-yaml": "4.3.2",
     "dompurify": "3.4.17",
+    "katex": "0.18.4",
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "tinypool": "2.2.0",
+    "postcss-selector-parser": "7.1.6"
   },
   "browserslist": {
     "production": [

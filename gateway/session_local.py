@@ -236,16 +236,18 @@ def staged_creation_follows(authority, actor, request_id):
 
 
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
-                        client_local=False):
+                        client_local=False, desktop_local=False):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
     receipt ``commit_local_session`` writes (the async RPC commits it off the owner loop).
     ``client_local``: the gateway's own proof that the client is on this host (its connection redeemed a
-    ticket minted over the private control socket), never a value the client sends."""
+    ticket minted over the private control socket), never a value the client sends. ``desktop_local``:
+    that client is also the Desktop app (``process_identity.local_desktop_client``); a Desktop chat
+    records it so its turns run as work for the local Desktop (``session_policy.local_desktop_turn``)."""
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.session_policy import build_policy, BYPASS_FIELDS
+    from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
     from gateway.run import _resolve_gateway_model
     from dataclasses import replace
     private_secrets = dict(trusted_secrets or {})
@@ -272,8 +274,16 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             policy = replace(policy, request_json=json.dumps(
                 {**json.loads(policy.request_json), 'model_requested': raw_model, 'route_derived': derived},
                 sort_keys=True))
+        marks = {LOCAL_DESKTOP_CHAT: True} if desktop_local and policy.source == 'gui' else {}
         if policy.model is None:
-            policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+            from hermes_cli.anon_auth import GUEST_MODEL
+            policy = replace(policy, model=_resolve_gateway_model(policy.config()) or None)
+            if policy.model == GUEST_MODEL:
+                # Follows its profile, so the provider the user connects later replaces the trial model.
+                marks[FOLLOW_ADOPTED] = True
+        if marks:
+            import json
+            policy = replace(policy, config_json=json.dumps({**json.loads(policy.config_json), **marks}))
     request_id = params.get('request_id', uuid.uuid4().hex)
     if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
         raise RuntimeStoreError('invalid_params', field='request_id',
@@ -365,10 +375,8 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
     """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
     resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
     pending until ``reasoning_effort`` arrives."""
-    from agent.fast_mode import STATIC_TIERS, parse_service_tier
-    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from agent.fast_mode import parse_service_tier
     from agent.voice_turn_route import session_runtime_view
-    from hermes_cli.models import resolve_fast_mode_overrides
     if agent is None and policy is None:
         return {}
     view = session_runtime_view(agent) if agent is not None else None
@@ -382,13 +390,21 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
             else parse_service_tier((effective.get('agent') or {}).get('service_tier'))) or ''
     provider = getattr(view, 'provider', None) if view is not None else route.get('provider')
     base_url = getattr(view, 'base_url', None) if view is not None else route.get('base_url')
+    return effort_fields(config, tier, model, provider, base_url, getattr(view, 'api_mode', None))
+
+
+def effort_fields(config, tier, model, provider, base_url, api_mode=None):
+    """Session-info ``reasoning_effort`` / ``_wire`` / ``service_tier`` / ``fast`` for one resolved route."""
+    from agent.fast_mode import STATIC_TIERS
+    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from hermes_cli.models import resolve_fast_mode_overrides
+    tier = tier or ''
     effort = ''
     if isinstance(config, dict):
         effort = 'none' if config.get('enabled') is False else str(config.get('effort') or '')
     wire = ''
     if effort and effort != 'none':
-        wire = str(clamp_effort(effort, route_supported_efforts(
-            provider, model, getattr(view, 'api_mode', None))) or '')
+        wire = str(clamp_effort(effort, route_supported_efforts(provider, model, api_mode)) or '')
     try:
         fast = tier in STATIC_TIERS and resolve_fast_mode_overrides(
             model, provider=provider or None, base_url=base_url or None, tier=tier) is not None
@@ -416,7 +432,13 @@ def local_session_info(authority, ref):
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
     override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
-    info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
+    if agent is None and policy is None and live.source.platform != Platform.LOCAL:
+        # A messaging chat not built yet: what its next turn resolves (its /model and /reasoning picks
+        # included), so a viewer's model and reasoning pill never wait on a field that never comes.
+        from gateway.session_messaging_picks import messaging_route_info
+        info.update(messaging_route_info(authority.runner, live))
+    else:
+        info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.

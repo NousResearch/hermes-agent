@@ -234,10 +234,10 @@ async def execute_admission(authority, ref, row):
         from gateway.session_cron import execute
         return await execute(authority, ref, row, policy)
     local_policy = policy
-    from gateway.session_managed_worker import managed_policy, execute_managed
+    from gateway.session_managed_worker import managed_policy, admit_managed
     policy = managed_policy(authority, ref)
     if policy is not None:
-        return await execute_managed(authority, ref, row, policy)
+        return await admit_managed(authority, ref, row, policy)
     live = authority.sessions[ref.session_id]
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
@@ -335,6 +335,19 @@ async def execute_admission(authority, ref, row):
         viewer_turn.reset(viewer_token)
 
 
+def _launch_body_if_launch_owner(authority):
+    """A standalone owner's turn binds nothing, but the launch profile's is marked at entry: a second
+    profile switching this gateway to multiplexing mid-turn must not fail its later credential reads
+    closed. Any other owner (a hosted named profile) stays unmarked, never reading the launch env."""
+    from pathlib import Path
+    from agent.secret_scope import _is_process_home
+    owner = Path(str(authority.profile_id))
+    if not owner.is_absolute() or not _is_process_home(owner):
+        return nullcontext()
+    from tui_gateway.launch_profile_policy import launch_body
+    return launch_body()
+
+
 async def _execution_scope(authority, home):
     """Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
     config, secrets, state.db), never the launch profile's ambient scope; native provenance
@@ -342,7 +355,7 @@ async def _execution_scope(authority, home):
     Secret sources (external CLIs) hydrate off the loop, as main's per-message scope does (#99519)."""
     multiplex = getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False)
     if home is None and not multiplex:
-        return nullcontext()
+        return _launch_body_if_launch_owner(authority)
     from gateway.run import _load_profile_secret_scope, _profile_runtime_scope
 
     def load():

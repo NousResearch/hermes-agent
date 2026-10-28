@@ -421,8 +421,10 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
 
     *sync_base* branches from the fetched remote tip (``_resolve_worktree_base``), else local
     HEAD. *name* replaces the random ``hermes-<id>``; named trees lack the ``hermes-`` prefix so
-    the pruner ages them on its slower schedule. *retain_db* (``--tui -w``) names the profile
-    store in the lock: the tree outlives its launcher while a session there can resume in it.
+    the pruner ages them on its slower schedule. *retain_db* (``-w``, ``--tui -w``) records the tree
+    for resume and names the profile store in the lock. A ``--tui -w`` tree outlives its launcher
+    while a session there can resume in it; a classic ``-w`` row's cwd is the repo root, so its
+    reaped clean tree is recreated on resume instead.
 
     Set ``worktree_sync: false`` in config to branch from local ``HEAD`` (the pre-#10760-followup behavior).
     """
@@ -468,7 +470,7 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
 
     from hermes_cli.worktree_registry import record_worktree_repo
     record_worktree_repo(repo_root)
-    if retain_db is not None:  # a --tui -w tree: a resume may recreate it once quit removed it (N8)
+    if retain_db is not None:  # a -w tree: a resume may recreate it once quit removed it (N8)
         from hermes_cli.tui_worktree_resume import record_tui_worktree
         record_tui_worktree({"path": str(wt_path), "branch": branch_name, "repo_root": repo_root})
     _cprint(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
@@ -798,7 +800,7 @@ def _worktree_branch_pushed_exact(
         return False
 
 
-# ``hermes pid=<pid>`` (classic launch), ``hermes pid=<pid> db=<state.db>`` (``--tui -w`` launch)
+# ``hermes pid=<pid>`` (``/worktree new``), ``hermes pid=<pid> db=<state.db>`` (``-w`` / ``--tui -w`` launch)
 # and ``hermes session=<id> db=<state.db>`` (re-lock when the TUI exits). Read raw from the admin
 # dir: plain ``list --porcelain`` C-quotes a reason holding a backslash, a quote, a control or a
 # non-ASCII byte (every Windows path), and the ``db=`` path would never parse.
@@ -956,11 +958,13 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
     """Lock state: ``"live"`` (owning pid runs / a resumable session works in the tree),
     ``"dead"`` (pid and sessions gone / non-hermes reason), None (unlocked).
 
-    ``hermes -w`` locks with reason ``hermes pid=<pid>``; ``worktree remove --force`` refuses
-    locked trees, so a crashed session's lock would keep its tree forever. A ``--tui -w`` tree
-    also names its profile's ``state.db`` from creation, so a launcher killed with its terminal
-    (SIGHUP skips the exit re-lock) still keeps the tree. Fails SAFE toward "live", including
-    a ``hermes`` reason this version cannot parse.
+    A Hermes tree locks with reason ``hermes pid=<pid>``; ``worktree remove --force`` refuses
+    locked trees, so a crashed session's lock would keep its tree forever. A ``-w`` tree
+    also names its profile's ``state.db`` from creation, so a ``--tui -w`` launcher killed with
+    its terminal (SIGHUP skips the exit re-lock) still keeps the tree while a resumable session's
+    row cwd is inside it. A classic ``-w`` row's cwd is the repo root: its tree is only recorded,
+    and a reaped clean one is recreated on resume. Fails SAFE toward "live", including a
+    ``hermes`` reason this version cannot parse.
     """
     try:
         found, reason = _worktree_lock_reason(repo_root, worktree_path, timeout)

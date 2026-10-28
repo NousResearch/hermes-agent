@@ -198,6 +198,10 @@ gateway:
     denied_plural: "❌ Commandes refusées ({count} commandes)."
     denied_reason_singular: "❌ Commande refusée. Raison transmise à l'agent: \"{reason}\""
     denied_reason_plural: "❌ Commandes refusées ({count} commandes). Raison transmise à l'agent: \"{reason}\""
+
+  usage_limit:
+    picker_title: "Continuer avec un autre modèle :"
+    switch_choice: "Passer à {model} ({note})"
   fast:
     not_supported: "⚡ /fast n'est disponible que pour les modèles OpenAI qui prennent en charge Priority Processing."
     status: "⚡ Priority Processing\n\nMode actuel : `{mode}`\n\n_Usage :_ `/fast <normal|fast|status>`"
@@ -802,6 +806,8 @@ gateway:
       Utilisez /retry pour réessayer, ou /new pour démarrer une nouvelle conversation. Les détails techniques sont dans le journal du gateway (`hermes logs`).
     history_unavailable: "⚠️ L'historique de cette session est temporairement indisponible ; ce message n'a donc pas été traité. Demandez à l'opérateur d'inspecter state.db, puis renvoyez-le une fois le problème réglé. N'utilisez /reset que si vous voulez vraiment démarrer une nouvelle conversation."
     no_credentials: "⚠️ Je n'ai pas pu me connecter au service de modèle IA ; ce message n'a donc pas été traité. Utilisez /login pour vous reconnecter, ou /model pour choisir un autre modèle. Si l'échec persiste, lancez `hermes doctor` sur l'hôte."
+    cron_session_read_only: "⚠️ Cette conversation appartient à une tâche planifiée et n'exécute que cette tâche ; votre message n'a donc pas été exécuté. Démarrez une nouvelle conversation pour l'envoyer."
+    workspace_unavailable: "⚠️ Le dossier de travail de cette conversation n'existe plus ({path}) ; votre message n'a donc pas été exécuté. Recréez le dossier ou déplacez la conversation vers un autre (`/worktree new` dans la CLI, « Déplacer vers un projet » dans l'application de bureau), puis renvoyez votre message."
   skills:
     disabled: |-
       La skill **{name}** est installée mais désactivée.
@@ -2019,6 +2025,21 @@ cli:
     desc_auto_reload: "recharger automatiquement quand votre solde est bas"
     choice_monthly_limit: "Limite mensuelle"
     desc_monthly_limit: "afficher le plafond de dépenses mensuel (lecture seule)"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "Continuer avec les crédits"
+    keep_going_desc: "utilise vos crédits quand l’usage inclus est épuisé"
+    keep_going_on_line: "Continuer avec les crédits : activé (utilise vos crédits quand l’usage inclus est épuisé)"
+    keep_going_off_line: "Continuer avec les crédits : désactivé (Hermes attend la réinitialisation)"
+    keep_going_confirm_title: "Continuer avec les crédits ?"
+    keep_going_confirm_body: "Utiliser vos crédits quand l’usage inclus est épuisé. Désactivé : Hermes attend la réinitialisation."
+    keep_going_turn_on: "Activer"
+    keep_going_keep_off_desc: "le laisser désactivé : Hermes attend la réinitialisation"
+    keep_going_is_on_title: "Continuer avec les crédits est activé"
+    keep_going_turn_off: "Le désactiver"
+    keep_going_turn_off_desc: "Hermes attend la réinitialisation"
+    keep_going_leave_on: "Le laisser activé"
+    keep_going_turned_on: "✅ Continuer avec les crédits : activé. Utiliser vos crédits quand l’usage inclus est épuisé."
+    keep_going_turned_off: "✅ Continuer avec les crédits : désactivé. Hermes attend la réinitialisation."
     cancelled: "Annulé."
     cancelled_yellow: "🟡 Annulé."
     cancelled_no_funds: "Annulé. Aucun fonds ajouté."
@@ -3928,7 +3949,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo ajoute une source de skills GitHub personnalisée."
   t070: "hermes skills snapshot export setup.json exporte votre configuration de skills pour sauvegarde ou partage."
   t071: "hermes mcp add github --command npx ajoute des serveurs MCP depuis la ligne de commande."
-  t072: "hermes mcp serve fait tourner Hermes lui-même comme serveur MCP pour d'autres agents."
+  t072: "hermes mcp-serve fait tourner Hermes lui-même comme serveur MCP pour d'autres agents."
   t073: "hermes auth add permet d'ajouter plusieurs clés API pour la rotation d'un pool d'identifiants."
   t074: "hermes completion bash >> ~/.bashrc active la complétion par Tab pour toutes les commandes et tous les profils."
   t075: "hermes logs -f suit agent.log en temps réel. --level WARNING --since 1h filtre la sortie."
@@ -4131,7 +4152,7 @@ tips:
   t272: "GPT-5 et Codex utilisent le rôle 'developer' au lieu de 'system' dans le format des messages."
   t273: "Surcharges auxiliaires par tâche : auxiliary.vision.provider, auxiliary.compression.model, etc. dans config.yaml."
   t274: "Le client auxiliaire traite 'main' comme un alias de fournisseur — il correspond à votre fournisseur et modèle principaux réels."
-  t275: "hermes claw migrate --dry-run prévisualise la migration OpenClaw sans rien écrire."
+  t275: "hermes import-agent openclaw --dry-run prévisualise la migration OpenClaw sans rien écrire."
   t276: "Les chemins de fichiers collés avec des guillemets ou des espaces échappés sont gérés automatiquement — aucun nettoyage manuel nécessaire."
   t277: "Les commandes slash ne déclenchent jamais le repli des gros collages — /command avec de gros arguments fonctionne correctement."
   t278: "En mode interruption, les commandes slash saisies pendant l'exécution de l'agent contournent la logique d'interruption et s'exécutent immédiatement."
@@ -4246,3 +4267,24 @@ tips:
     p09: "Explique cette erreur et comment la corriger"
     p10: "Définis un rappel ou planifie une tâche récurrente"
     p11: "Tapez / pour parcourir les commandes, ou Ctrl+P pour la palette"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "Gratuit"
+  level_top_tier: "Grand"
+  resets_in: "réinitialisation dans {duration}"
+  resets_soon: "réinitialisation bientôt"
+  limit_reached: "Limite {name} atteinte · {resets}"
+  limit_day: "quotidienne"
+  limit_week: "hebdomadaire"
+  limit_month: "mensuelle"
+  limit_top_tier: "mensuelle des grands modèles"
+  then_credits: "les modèles payants utilisent maintenant vos crédits (paiement à l'usage)"
+  then_credits_large: "les grands modèles utilisent maintenant vos crédits (paiement à l'usage)"
+  then_wait: "uniquement les modèles gratuits d'ici là"
+  then_wait_large: "grands modèles en pause d'ici là"
+  large_notice: "Grand modèle : consomme davantage de votre forfait par message."
+  large_notice_credits: "Grand modèle : consomme davantage de crédits par message (paiement à l'usage)."
+  large_notice_limit: "Grand modèle : votre limite {name} est atteinte ({resets})."
+  large_notice_limit_stops: "Grand modèle : votre limite {name} est atteinte ({resets}), il ne fonctionnera pas d'ici là."
+  large_notice_percent: "Grand modèle : consomme davantage de votre forfait par message. Limite mensuelle des grands modèles : {percent} utilisé."

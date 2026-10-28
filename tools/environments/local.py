@@ -1009,7 +1009,7 @@ class LocalEnvironment(BaseEnvironment):
     the session snapshot preserves exported env vars across calls (unless
     ``persistent=False``); CWD persists via the stdout marker."""
 
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
     _profile_scoped_passthrough = True
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.

@@ -502,6 +502,9 @@ class TestLoginNousSkipKeepsCurrent:
             lambda ids, p, free_tier=False: (ids, []),
         )
         monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
+        # Not a usage-window account, and no live portal read of the fake token.
+        import hermes_cli.model_picker_usage as mpu
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
         return free_tier_calls
 
     def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):

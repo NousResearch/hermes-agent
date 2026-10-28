@@ -843,6 +843,16 @@ class ToolRegistry:
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
+    def move_to_scope(self, names, scope: str) -> None:
+        """Move process-global registrations into *scope*'s overlay (a single-profile process that
+        starts multiplexing hands its launch profile's MCP tools to that profile's own scope)."""
+        scope = normalize_scope(scope)
+        with self._lock:
+            moved = {name: self._tools.pop(name) for name in names if name in self._tools}
+            if moved:
+                self._slot(scope, create=True).update(moved)
+                self._generation += 1
+
     def restore_registration(
         self, name: str, current: ToolEntry, previous: Optional[ToolEntry], *,
         scope: Optional[str] = None) -> bool:

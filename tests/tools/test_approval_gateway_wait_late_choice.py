@@ -37,6 +37,26 @@ def test_choice_landing_after_the_deadline_check_is_resolved(monkeypatch):
     assert SESSION_KEY not in mod._gateway_queues
 
 
+def test_choice_landing_after_the_deadline_check_settles_the_prompt_as_resolved(monkeypatch):
+    """The surface hears the same verdict the agent acts on: a late choice runs the command, so the
+    prompt must not be withdrawn as ``timeout`` (the gateway posts "the command was NOT run" for that)."""
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    reasons: list[str] = []
+
+    def deadline_passed_then_user_answered(event, session_key, *, interrupt_log):
+        request_id = mod._gateway_queues[session_key][0].data["request_id"]
+        assert mod.register_gateway_settle(session_key, request_id, reasons.append)
+        assert mod.resolve_gateway_approval(session_key, "once") == 1
+        return "timeout"
+
+    monkeypatch.setattr(wait_mod, "_poll_event", deadline_passed_then_user_answered)
+    decision = wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, APPROVAL)
+
+    assert decision["choice"] == "once"
+    assert reasons == ["resolved"]
+
+
 def test_plain_timeout_still_reports_unresolved(monkeypatch):
     _clear()
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)

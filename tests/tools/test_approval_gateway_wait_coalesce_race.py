@@ -203,3 +203,48 @@ def test_followers_released_by_once_share_one_fresh_prompt(monkeypatch):
             thread.join(0.05)
     assert (prompts, queued) == (2, 1)
     assert [r["choice"] for r in results] == ["once"] * 3
+
+
+def test_follower_waits_out_its_earlier_deadline_and_adopts_the_leaders_answer(monkeypatch):
+    """The follower's wait starts before the leader's (the leader's clock starts after the chat send), so
+    an answer can land after the follower's deadline but before the leader's. The follower must adopt it,
+    not report a timeout for the command the leader runs."""
+    import types
+
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    leader = types.SimpleNamespace(event=threading.Event(), result=None, expired=False, cancelled=None, reason=None)
+    polls = []
+
+    def poll(event, session_key, *, interrupt_log):
+        polls.append(event)
+        if len(polls) == 1:
+            return "timeout"  # the follower's own deadline passes while the leader still waits
+        leader.result = "session"  # the user answers inside the leader's remaining window
+        event.set()
+        return "set"
+
+    monkeypatch.setattr(wait_mod, "_poll_event", poll)
+    decision = wait_mod._await_coalesced_leader(SESSION_KEY, leader, dict(APPROVAL))
+
+    assert decision["resolved"] is True
+    assert decision["choice"] == "session"
+    assert polls == [leader.event, leader.event]
+
+
+def test_follower_does_not_wait_again_once_the_leader_has_settled(monkeypatch):
+    import types
+
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    leader = types.SimpleNamespace(event=threading.Event(), result=None, expired=True, cancelled=None, reason=None)
+    polls = []
+
+    def poll(event, session_key, *, interrupt_log):
+        polls.append(event)
+        event.set()  # the leader timed out at the same moment
+        return "timeout"
+
+    monkeypatch.setattr(wait_mod, "_poll_event", poll)
+    decision = wait_mod._await_coalesced_leader(SESSION_KEY, leader, dict(APPROVAL))
+
+    assert decision["resolved"] is False
+    assert len(polls) == 1

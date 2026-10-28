@@ -116,6 +116,13 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     state = _poll_event(leader.event, session_key,
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
+    if state == "timeout" and not leader.event.is_set():
+        # Our deadline started before the leader's (its clock starts after the chat send), so the leader can
+        # still be waiting on the answer. Follow it to its own outcome, which its deadline bounds, instead of
+        # returning a timeout for a command the leader may run on that same answer.
+        state = _poll_event(leader.event, session_key,
+                            interrupt_log="Coalesced approval wait interrupted — "
+                                          "returning deny for session %s")
     if state == "set" and leader.result is None and leader.expired:
         state = "timeout"
     cancelled = _cancel_cause(state, leader)
@@ -209,8 +216,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         if settle is not None:
             # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
             # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
-            # cannot answer) is ``session_closed``; never the raw poll-state token "set".
-            if state == "set":
+            # cannot answer) is ``session_closed``; never the raw poll-state token "set". A choice that
+            # landed after the deadline check is honoured below, so the surface must not be told "timeout"
+            # (the gateway would post "the command was NOT run" while it runs).
+            if state == "set" or (state == "timeout" and choice is not None):
                 reason = "resolved" if choice is not None else "session_closed"
             else:
                 reason = state

@@ -197,3 +197,17 @@ def test_pin_managed_skill_end_to_end(pin_env):
     assert "pinned" in status.lower(), (
         "managed+pinned skill missing from the pinned list in status output"
     )
+
+
+def test_pin_of_a_name_no_skill_has_fails_and_writes_nothing(pin_env):
+    """A mistyped name must not report a pin: the real skill stays unpinned and archivable."""
+    env = pin_env
+    _make_skill(env["skills"], "deploy-runbook")
+    env["usage"].mark_agent_created("deploy-runbook")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = env["cli"]._cmd_pin(_Args("deploy-runbok"))
+
+    assert rc != 0, buf.getvalue()
+    assert "deploy-runbok" not in env["usage"].load_usage()

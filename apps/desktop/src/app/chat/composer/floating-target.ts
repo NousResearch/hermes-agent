@@ -200,7 +200,9 @@ function trackKey(event: KeyboardEvent) {
 function trackFocus(event: FocusEvent) {
   const target = event.target instanceof Element ? event.target : null
 
-  if (!target) {
+  // Tab headers own roving focus even when the zone below them is a chat.
+  // Arrow-key focus is navigation, not a delayed request to enter its composer.
+  if (!target || target.closest('[role="tab"]')) {
     return
   }
 

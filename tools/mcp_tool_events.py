@@ -445,9 +445,6 @@ def _make_events_handler(op: str, label: str, rpc, *, needs_name: bool = True, n
         def _handler(args: dict, **kwargs) -> str:
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
             from tools import mcp_tool_handlers as _handlers
-            server = _discovery._get_connected_server_for_call(server_name)
-            if not server or not server.session:
-                return tool_error(f"MCP server '{server_name}' is not connected")
             if needs_name and not isinstance(args.get("name"), str):
                 return tool_error("Missing required parameter 'name'")
             if args.get("arguments") is not None and not isinstance(args["arguments"], dict):
@@ -457,6 +454,9 @@ def _make_events_handler(op: str, label: str, rpc, *, needs_name: bool = True, n
                     return tool_error(invalid)
                 if error := _consent_error(server_name, args):
                     return error
+            server = _discovery._get_connected_server_for_call(server_name)
+            if not server or not server.session:
+                return tool_error(f"MCP server '{server_name}' is not connected")
 
             async def _call():
                 async with server._rpc_lock:

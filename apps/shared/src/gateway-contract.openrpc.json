@@ -34015,7 +34015,7 @@
       },
       "RoomDriverStatus": {
         "additionalProperties": false,
-        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt\n(``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)\nor the driver's approval action (``kind: approval`` + run/session/approval context).\n``member_activity`` lists live tasks in admission order (absent from older gateways).",
+        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt\n(``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)\nor the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled\nroom preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken).\n``member_activity`` lists live tasks in admission order (absent from older gateways).\n``last_error`` is this room's last preparation failure, null once one succeeds.",
         "properties": {
           "running": {
             "title": "Running",
@@ -34050,6 +34050,18 @@
             },
             "title": "Member Activity",
             "type": "array"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Error"
           },
           "peer_routes": {
             "items": {

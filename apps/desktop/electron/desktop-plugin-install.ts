@@ -10,6 +10,8 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+import { parse as parseYaml } from 'yaml'
+
 import {
   PACKAGE_MARKER,
   publishDesktopTree,
@@ -199,13 +201,46 @@ export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourc
   return null
 }
 
-export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
-  const hasYaml =
-    pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) || pathExistsSync(path.join(pluginRoot, 'plugin.yml'))
+/** Files beside a `plugin.yaml` that the agent side loads: a `register(ctx)` package, or a dashboard
+ *  tab/backend (`dashboard/manifest.json`, often with a `plugin_api.py`) the gateway mounts. */
+const AGENT_PAYLOAD_FILES = ['__init__.py', path.join('dashboard', 'manifest.json')]
 
-  const hasInit = pathExistsSync(path.join(pluginRoot, '__init__.py'))
+/** Whether a `plugin.yaml` folder has something for the agent side to load. A manifest alone is not
+ *  enough: desktop-only plugins ship one beside `desktop/plugin.js` for metadata. Same rule as the
+ *  gateway's `_yaml_ships_agent_payload` (hermes_cli/plugins_cmd_inspect.py); the shared cases live in
+ *  tests/fixtures/plugin_component_detection.json. */
+async function yamlShipsAgentPayload(pluginRoot: string, yamlPath: string): Promise<boolean> {
+  if (AGENT_PAYLOAD_FILES.some(rel => pathExistsSync(path.join(pluginRoot, rel)))) {
+    return true
+  }
+
+  // The loader's manifest-only language pack: declared locales plus the folder that holds them.
+  if (!(await pathIsDirectory(path.join(pluginRoot, 'locales')))) {
+    return false
+  }
+
+  try {
+    const manifest: unknown = parseYaml(await fsp.readFile(yamlPath, 'utf8'))
+    const locales = (manifest as { provides_locales?: unknown } | null)?.provides_locales
+
+    // Python truthiness, as the gateway judges it: an empty list or mapping declares nothing.
+    return locales !== null && typeof locales === 'object' ? Object.keys(locales).length > 0 : Boolean(locales)
+  } catch {
+    return false
+  }
+}
+
+export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
+  const yamlPath = ['plugin.yaml', 'plugin.yml']
+    .map(name => path.join(pluginRoot, name))
+    .find(candidate => pathExistsSync(candidate))
+
+  const hasYaml = yamlPath !== undefined
   const hasPortable = pathExistsSync(path.join(pluginRoot, 'plugin.json'))
-  const agent = (hasYaml && hasInit) || hasPortable
+  // `__init__.py` is one agent payload, not a requirement: a manifest-only package with a
+  // `dashboard/plugin_api.py` backend must install its agent half, or its desktop half lands alone and
+  // every `ctx.rest` call 404s.
+  const agent = (hasYaml && (await yamlShipsAgentPayload(pluginRoot, yamlPath))) || hasPortable
 
   const desktopEntry = findDesktopEntry(pluginRoot)
   const desktop = desktopEntry !== null
@@ -217,10 +252,6 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
 
     if (hasYaml) {
       try {
-        const yamlPath = pathExistsSync(path.join(pluginRoot, 'plugin.yaml'))
-          ? path.join(pluginRoot, 'plugin.yaml')
-          : path.join(pluginRoot, 'plugin.yml')
-
         const text = await fsp.readFile(yamlPath, 'utf8')
         const match = text.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m)
 

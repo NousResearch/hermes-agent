@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode, isReadFileErrorResult } from '@/lib/desktop-fs'
@@ -1542,7 +1543,7 @@ export function PreviewPane({
             ref={hostRef}
           />
           {isRemoteHtml && (
-            <iframe
+            <PreviewDocumentFrame
               className="absolute inset-0 size-full border-0 bg-white"
               referrerPolicy="no-referrer"
               sandbox=""

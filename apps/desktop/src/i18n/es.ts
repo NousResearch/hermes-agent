@@ -11,6 +11,7 @@ import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esGatewayHost } from './es_gateway_host'
 import { esLocalModels } from './es_local_models'
+import { esMemoryLayers } from './es_memory_layers'
 import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
@@ -684,6 +685,7 @@ export const esOverrides = {
     noResults: 'No se encontraron idiomas'
   },
   settings: {
+    memoryLayers: esMemoryLayers,
     subpages: {
       appearanceTheme: 'Tema',
       appearanceTypography: 'Tipografía',
@@ -2850,9 +2852,6 @@ export const esOverrides = {
       resume: 'Reanudar',
       runNow: 'Ejecutar ahora',
       memoryData: 'Datos de memoria',
-      memoryDataDesc: 'Archivos de memoria integrados que se incluyen en cada sesión',
-      memoryProvider: name => `Proveedor activo: ${name}`,
-      builtinMemory: 'integrada',
       memoryFile: 'Memoria del agente (MEMORY.md)',
       userFile: 'Perfil de usuario (USER.md)',
       bytes: size => size,

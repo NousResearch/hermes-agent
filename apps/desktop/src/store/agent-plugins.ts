@@ -1,4 +1,4 @@
-import type { PluginsManageParams } from '@hermes/shared'
+import { JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -361,6 +361,78 @@ export async function installAgentPlugin(
       error: message,
       live: NO_LIVE,
       nextChat: false
+    }
+  }
+}
+
+/** What a repository holds, the shape native Desktop's `probePluginRepo` answers. `unavailable`: the
+ *  backend cannot inspect at all (it predates `plugins.manage inspect`), which no retry changes. */
+export interface AgentPluginInspection {
+  ok: boolean
+  agent: boolean
+  desktop: boolean
+  agentName?: string | null
+  desktopName?: string | null
+  warnings: string[]
+  insecure?: boolean
+  unavailable?: boolean
+  error?: string
+}
+
+// `_run_action`'s unknown action, and JSON-RPC's unknown method.
+const INSPECT_UNSUPPORTED_CODES = new Set([4017, -32601])
+
+/** Inspect a source through the backend (`plugins.manage inspect`): it clones into a temp folder and
+ *  reports which halves ship, installing and running nothing. For a renderer with no Git of its own
+ *  (the browser-hosted app); native Desktop inspects in Electron. Never rejects. */
+export async function inspectAgentPlugin(
+  request: GatewayRequest,
+  opts: { identifier: string; catalogName?: string; profile?: string | null }
+): Promise<AgentPluginInspection> {
+  try {
+    const result = await request<{
+      ok?: boolean
+      agent?: boolean
+      desktop?: boolean
+      agent_name?: string | null
+      desktop_name?: string | null
+      warnings?: string[]
+      insecure?: boolean
+      error?: string
+    }>(
+      'plugins.manage',
+      withProfile(
+        {
+          action: 'inspect',
+          identifier: opts.identifier,
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {})
+        },
+        opts.profile
+      ),
+      // A clone runs on the backend, as an install's does.
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
+    )
+
+    const ok = Boolean(result?.ok)
+
+    return {
+      ok,
+      agent: ok && Boolean(result.agent),
+      desktop: ok && Boolean(result.desktop),
+      agentName: result?.agent_name ?? null,
+      desktopName: result?.desktop_name ?? null,
+      warnings: result?.warnings ?? [],
+      insecure: Boolean(result?.insecure),
+      ...(ok ? {} : { error: result?.error || 'Inspection failed' })
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      agent: false,
+      desktop: false,
+      warnings: [],
+      unavailable: e instanceof JsonRpcGatewayError && INSPECT_UNSUPPORTED_CODES.has(e.code ?? 0),
+      error: e instanceof Error ? e.message : String(e)
     }
   }
 }

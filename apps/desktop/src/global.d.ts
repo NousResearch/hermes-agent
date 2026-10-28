@@ -656,6 +656,8 @@ declare global {
         desktopName?: string | null
         warnings?: string[]
         insecure?: boolean
+        /** Inspection itself is missing here (not a failed read): Retry cannot help. */
+        unavailable?: boolean
         error?: string
       }>
       installDesktopPlugin?: (payload: {

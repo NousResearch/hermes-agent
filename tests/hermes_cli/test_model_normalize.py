@@ -201,3 +201,134 @@ class TestColonProviderPrefixIsStrippedLikeSlash:
     ])
     def test_non_matching_colon_untouched(self, model, provider):
         assert normalize_model_for_provider(model, provider) == model
+
+
+# ── Named custom providers: foreign vendor/ prefix dropped by catalogue lookup ──
+#
+# #93980 / #93983 fix the ollama-cloud case with a static provider set. A *named* custom
+# provider cannot live in a static set — it is user-defined — so the repair there has to be a
+# lookup against the provider's own declared ``models:`` catalogue. That makes it the mirror of
+# ``_repair_prefix_from_catalogue``, which restores a *dropped* prefix for providers that need
+# one; both rewrite only an id the provider itself declares.
+
+_QWEN_CLOUD_MODELS_YAML = """\
+    models:
+      deepseek-v4.1-flash: {}
+      qwen3.8-max: {}
+      glm-5.3: {}
+"""
+
+# The two shapes ``get_compatible_custom_providers`` merges: the legacy list and the v12+ dict.
+# Written as literal YAML ("yaml" is not importable under scripts/run_tests.sh).
+_NAMED_CUSTOM_LEGACY = """\
+custom_providers:
+  - name: qwencloud-individual
+    base_url: https://token-plan.example.com/compatible-mode/v1
+    key_env: QWENCLOUD_INDIVIDUAL_API_KEY
+    api_mode: chat_completions
+    models_discovered: true
+""" + _QWEN_CLOUD_MODELS_YAML
+
+_NAMED_CUSTOM_V12 = """\
+providers:
+  qwencloud-individual:
+    name: qwencloud-individual
+    api: https://token-plan.example.com/compatible-mode/v1
+    key_env: QWENCLOUD_INDIVIDUAL_API_KEY
+    transport: chat_completions
+""" + _QWEN_CLOUD_MODELS_YAML
+
+# A provider whose catalogue declares the *prefixed* form — the LiteLLM-style routing prefix that
+# makes bare ``custom`` pass-through correct, and that the lookup must therefore preserve.
+_RELAY_DECLARES_PREFIXED = """\
+custom_providers:
+  - name: relay
+    base_url: https://relay.example.com/v1
+    key_env: RELAY_KEY
+    models:
+      ollama/glm-5.2: {}
+"""
+
+
+def _home_with_custom_provider(tmp_path, monkeypatch, config_yaml):
+    """Bind *config_yaml* as the active profile's config.yaml under HERMES_HOME."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    return tmp_path
+
+
+class TestNamedCustomProviderForeignVendorPrefix:
+    """``custom:<name>`` sheds an aggregator-style ``vendor/`` prefix when — and only when — its
+    own catalogue declares the bare id, so switching between an aggregator and a flat-namespace
+    custom endpoint stops 404ing on every turn (#93980)."""
+
+    @pytest.mark.parametrize(
+        "config_yaml",
+        [_NAMED_CUSTOM_LEGACY, _NAMED_CUSTOM_V12],
+        ids=["legacy-custom_providers", "providers-dict"],
+    )
+    def test_drops_the_prefix_end_to_end(self, tmp_path, monkeypatch, config_yaml):
+        """The repair on the real resolution chain: config.yaml → custom provider entry → AIAgent
+        init normalization (agent/agent_init.py), the path a session actually takes."""
+        _home_with_custom_provider(tmp_path, monkeypatch, config_yaml)
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="deepseek/deepseek-v4.1-flash",
+            provider="custom:qwencloud-individual",
+            api_key="sk-dummy",
+            base_url="https://token-plan.example.com/compatible-mode/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            platform="cli",
+        )
+        assert agent.model == "deepseek-v4.1-flash"
+
+    @pytest.mark.parametrize(
+        "config_yaml,model,provider,expected",
+        [
+            # The declared bare id is already right where it is.
+            (_NAMED_CUSTOM_LEGACY, "deepseek-v4.1-flash",
+             "custom:qwencloud-individual", "deepseek-v4.1-flash"),
+            # An id the provider does not declare keeps its spelling: the repair must never invent
+            # one, so a genuine endpoint problem keeps its own classification.
+            (_NAMED_CUSTOM_LEGACY, "z-ai/glm-5.2",
+             "custom:qwencloud-individual", "z-ai/glm-5.2"),
+            # A provider that declares the *prefixed* form (a LiteLLM-style routing prefix) keeps
+            # it: an explicitly declared full id outranks stripping to its bare tail.
+            (_RELAY_DECLARES_PREFIXED, "ollama/glm-5.2", "custom:relay", "ollama/glm-5.2"),
+            # The catch-all ``custom`` bucket declares no catalogue — #93983's pass-through.
+            (_NAMED_CUSTOM_LEGACY, "ollama/glm-5.2", "custom", "ollama/glm-5.2"),
+            # No entry of that name; and nothing to strip on either empty side.
+            (_NAMED_CUSTOM_LEGACY, "deepseek/deepseek-v4.1-flash",
+             "custom:not-configured", "deepseek/deepseek-v4.1-flash"),
+            (_NAMED_CUSTOM_LEGACY, "/deepseek-v4.1-flash",
+             "custom:qwencloud-individual", "/deepseek-v4.1-flash"),
+            (_NAMED_CUSTOM_LEGACY, "deepseek/", "custom:qwencloud-individual", "deepseek/"),
+            # And the case that moves, through the same chokepoint, in both config shapes.
+            (_NAMED_CUSTOM_LEGACY, "deepseek/deepseek-v4.1-flash",
+             "custom:qwencloud-individual", "deepseek-v4.1-flash"),
+            (_NAMED_CUSTOM_V12, "deepseek/deepseek-v4.1-flash",
+             "custom:qwencloud-individual", "deepseek-v4.1-flash"),
+        ],
+        ids=[
+            "declared-bare-id-kept",
+            "undeclared-id-kept",
+            "declared-prefixed-id-wins",
+            "custom-bucket-untouched",
+            "unconfigured-provider-untouched",
+            "empty-prefix-untouched",
+            "empty-remainder-untouched",
+            "repair-legacy-custom_providers",
+            "repair-providers-dict",
+        ],
+    )
+    def test_repairs_exactly_what_the_catalogue_declares(
+        self, tmp_path, monkeypatch, config_yaml, model, provider, expected
+    ):
+        """A lookup, never a shape rule: the bare id comes back only when the provider's own
+        catalogue declares it and not the prefixed form."""
+        _home_with_custom_provider(tmp_path, monkeypatch, config_yaml)
+        assert normalize_model_for_provider(model, provider) == expected

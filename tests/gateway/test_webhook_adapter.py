@@ -901,6 +901,26 @@ class TestDeliverCrossPlatformThreadId:
             "12345", "hello", metadata={"thread_id": "999"}
         )
 
+    @pytest.mark.asyncio
+    async def test_home_channel_topic_is_used_when_no_chat_id_is_given(self):
+        """A bare ``deliver: telegram`` lands in the home channel's topic (``<ENV>_THREAD_ID`` or
+        where /sethome ran), not in the chat's root — in topic mode a lobby nobody can reply in."""
+        from gateway.config import HomeChannel
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        adapter.gateway_runner.config.get_home_channel.return_value = HomeChannel(
+            platform=Platform("telegram"), chat_id="777", name="Inbox", thread_id="42")
+        await adapter._deliver_cross_platform("telegram", "hello", {"deliver_extra": {}})
+        mock_target.send.assert_awaited_once_with("777", "hello", metadata={"thread_id": "42"})
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_chat_id_never_inherits_the_home_topic(self):
+        from gateway.config import HomeChannel
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        adapter.gateway_runner.config.get_home_channel.return_value = HomeChannel(
+            platform=Platform("telegram"), chat_id="777", name="Inbox", thread_id="42")
+        await adapter._deliver_cross_platform("telegram", "hello", {"deliver_extra": {"chat_id": "12345"}})
+        mock_target.send.assert_awaited_once_with("12345", "hello", metadata=None)
+
 
 class TestCrossPlatformDeliveryMirror:
     """An opted-in route's delivered response is appended to the TARGET chat's session (real state.db),

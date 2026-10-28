@@ -264,7 +264,7 @@ webhooks:
         message_thread_id: "42"
 ```
 
-If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform.
+If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform. When that home channel is a topic or thread (set with `/sethome` inside it, or `<PLATFORM>_HOME_CHANNEL_THREAD_ID`), the delivery goes to that topic.
 
 ---
 

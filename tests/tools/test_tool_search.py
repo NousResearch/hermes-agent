@@ -207,7 +207,7 @@ class TestThresholdGate:
 
 
 # ---------------------------------------------------------------------------
-# Retrieval (BM25, rarest-token admission)
+# Retrieval (BM25, answerable-term admission)
 # ---------------------------------------------------------------------------
 
 
@@ -249,13 +249,42 @@ class TestRetrieval:
         hits = search_catalog(self._fake_catalog(), "github", limit=1)
         assert len(hits) <= 1
 
+    def test_unrelated_rare_token_does_not_hide_matching_tool(self):
+        """Regression for #145816: a rare description-only word must not erase name matches."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        defs = [
+            _td("get_premarket_plan", "Get the current premarket plan"),
+            _td("get_premarket_plan_status", "Get premarket plan status"),
+            _td("get_premarket_plan_history", "Get premarket plan history"),
+            _td("get_premarket_plan_options", "Get premarket plan options"),
+            _td("get_premarket_plan_schema", "Get premarket plan schema"),
+            _td("get_market_state", "Check market calibration"),
+            _td("submit_hypothesis", "Check a hypothesis"),
+            _td("query_experience", "Check experience"),
+        ]
+        hits = search_catalog(build_catalog(defs), "premarket plan get check", limit=5)
+
+        assert hits and hits[0].name == "get_premarket_plan"
+
+    def test_unseen_paraphrase_token_does_not_empty_results(self):
+        """A df=0 word such as 'find' must not hide a tool matching another query term."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog([
+            _td("get_positions", "Current positions"),
+            _td("get_account", "Account details"),
+        ])
+
+        hits = search_catalog(catalog, "find my positions", limit=5)
+        assert [hit.name for hit in hits] == ["get_positions"]
+
 
 class TestRelevanceFloor:
-    """Coverage floor layered on the rarest-token gate.
+    """Coverage floor for long queries.
 
-    The gate stops a query whose intent word no tool carries. It does not stop a long
-    hunt whose every word exists SOMEWHERE in the catalog while no single tool carries
-    more than one of them; those must return nothing rather than a plausible-looking
+    A long hunt whose every word exists SOMEWHERE in the catalog while no single tool
+    carries more than one of them must return nothing rather than a plausible-looking
     list the model rephrases against forever.
     """
 
@@ -281,8 +310,8 @@ class TestRelevanceFloor:
         return build_catalog(defs)
 
     def test_incidental_single_term_match_is_filtered(self):
-        # Every term answerable (each in exactly one document), so the rarest-token
-        # gate admits the tool sharing that one word; the floor must not.
+        # Every term is answerable (each in exactly one document), so without the
+        # floor each tool sharing one word would be admitted.
         from tools.tool_search import search_catalog
         hits = search_catalog(self._catalog(), "run shell command execute code", limit=5)
         assert hits == []

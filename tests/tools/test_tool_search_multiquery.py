@@ -78,24 +78,25 @@ class TestStemming:
         assert "mq_linear_create_issue" in names
         assert "mq_linear_list_issues" in names
 
-    def test_rarest_query_token_gates_admission(self, issue_defs):
-        """A document that lacks the query's rarest token is not a result, however many
-        common tokens it shares. In this catalog 'issue' and 'linear' are each in two tools
-        and 'slack' in one, so 'slack' gates: the two linear tools share two of the three
-        query tokens and still do not come back."""
+    def test_rare_query_token_does_not_gate_admission(self, issue_defs):
+        """A rare token is a ranking signal, not a reason to hide other matching tools."""
         from tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog(issue_defs)
         names = [h.name for h in search_catalog(catalog, "linear issue slack", limit=5)]
-        assert names == ["mq_slack_post_message"]
+        assert set(names) == {
+            "mq_linear_create_issue",
+            "mq_linear_list_issues",
+            "mq_slack_post_message",
+        }
 
-    def test_token_no_document_carries_admits_nothing(self, issue_defs):
-        """'send gmail email' against a catalog with no gmail tool returns nothing rather
-        than five tools that merely share 'message' or 'email'."""
+    def test_unseen_token_does_not_hide_other_matches(self, issue_defs):
+        """An absent vocabulary word must not erase tools matching the remaining terms."""
         from tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog(issue_defs)
-        assert search_catalog(catalog, "post gmail message", limit=5) == []
+        names = [h.name for h in search_catalog(catalog, "post gmail message", limit=5)]
+        assert names == ["mq_slack_post_message"]
 
 
     def test_parallel_tokenize_search_and_dispatch_are_deterministic(self, issue_defs):

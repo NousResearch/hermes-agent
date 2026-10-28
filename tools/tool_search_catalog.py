@@ -142,25 +142,14 @@ def _corpus_stats(catalog: list[CatalogEntry]) -> _CorpusStats:
     return doc_lengths, avg_dl, dict(doc_freq), len(catalog)
 
 
-def _gate_token(query_tokens: list[str], doc_freq: dict[str, int], n_docs: int) -> str:
-    """The query token with the highest IDF: the word that names the intent. ``send``,
-    ``read``, ``create`` sit in dozens of tool documents and separate nothing; ``gmail``,
-    ``github``, ``incident`` sit in a few and separate everything. A document without this
-    token answered a different question, however many common tokens it shares."""
-    def _idf(token: str) -> float:
-        df = doc_freq.get(token, 0)
-        return math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
-    return max(query_tokens, key=_idf)
-
-
-# Relevance floor. The rarest-token gate stops queries whose intent word no tool carries; it
-# does not stop a long hunt whose every word exists SOMEWHERE in the catalog while no single
-# tool carries more than one of them (observed: "run shell command execute code python" -> a
-# workflow-rerun tool sharing only "run"; the model read "results exist" as "it is in here"
-# and re-searched 216 times). A document must also match MIN_QUERY_TERM_COVERAGE of the
-# query's ANSWERABLE terms (present in at least one document) before it is offered. Coverage
-# only engages from MIN_ANSWERABLE_TERMS_FOR_COVERAGE terms up: short queries ("list issues")
-# legitimately differ from a tool by a word, and are where a coverage rule costs real recall.
+# Relevance floor. BM25 alone would admit a long hunt whose every word exists SOMEWHERE in
+# the catalog while no single tool carries more than one of them (observed: "run shell command
+# execute code python" -> a workflow-rerun tool sharing only "run"; the model read "results
+# exist" as "it is in here" and re-searched 216 times). A document must match
+# MIN_QUERY_TERM_COVERAGE of the query's ANSWERABLE terms (present in at least one document)
+# before it is offered. Coverage only engages from MIN_ANSWERABLE_TERMS_FOR_COVERAGE terms up:
+# short queries ("list issues") legitimately differ from a tool by a word, and are where a
+# coverage rule costs real recall.
 MIN_QUERY_TERM_COVERAGE = 0.5
 MIN_ANSWERABLE_TERMS_FOR_COVERAGE = 4
 
@@ -177,28 +166,24 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
                    corpus_stats: Optional[_CorpusStats] = None) -> list[CatalogEntry]:
     """Top-``limit`` catalog entries for ``query`` by BM25 (exact name match ranks first).
 
-    Admission is by the query's rarest token (:func:`_gate_token`), not by ``score > 0``:
-    BM25 is additive over the tokens a document shares with the query, so on a large catalog
-    ``score > 0`` admits one-token matches and fills every slot with them (measured: "send
-    gmail email" returned 5 incident tools that only shared ``email``). A token no document
-    carries admits nothing; the caller's empty-group hint tells the model to retry without it.
+    Any shared answerable term makes a document eligible; no single query token is a hard
+    filter, so an unrelated rare word or an absent paraphrase cannot erase valid matches.
     Long queries additionally need :func:`_required_term_coverage` of their answerable terms."""
     query_tokens = _tokenize(query) if catalog and limit > 0 else []
     if not query_tokens:
         return []
     corpus_stats = corpus_stats or _corpus_stats(catalog)
     doc_freq = corpus_stats[2]
-    gate = _gate_token(query_tokens, doc_freq, corpus_stats[3])
     answerable = {t for t in query_tokens if doc_freq.get(t, 0) > 0}
     required_terms = _required_term_coverage(len(answerable))
     exact_name = query.strip().lower()
 
     def _admitted(entry: CatalogEntry) -> bool:
-        """Carries the intent word AND enough of the answerable terms (exact name is exempt)."""
+        """Carries enough answerable terms (exact name is exempt)."""
         if entry.name.lower() == exact_name:
             return True
         tokens = set(entry._tokens)
-        return gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms
+        return sum(1 for t in answerable if t in tokens) >= required_terms
 
     scored = [
         (float("inf") if entry.name.lower() == exact_name

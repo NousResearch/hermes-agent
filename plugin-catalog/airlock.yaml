@@ -1,9 +1,9 @@
 name: airlock
 title: airlock
 repo: https://github.com/otsoa-dubief/airlock
-sha: 50855556344ac5c05646ed8bdd808b563b8c1d49
+sha: 9252291d28135f40c718e7dbe0abe33ed2515927
 subdir: airlock
-version: "0.2.2"
+version: "0.2.3"
 description: >-
   Guardrails that follow what a conversation has read. Once a session reads untrusted content (a web page, a
   browser snapshot, an MCP or third-party plugin's output, a customer's message), airlock seals it: messages to
@@ -28,8 +28,11 @@ description: >-
   to see exactly what a message would attach, with its own reader as a fallback.
   Writes under plugin-data/airlock: a journal of decisions, taints and
   approvals that includes tool arguments, truncated (journal.args: none leaves them out), the taint state and the
-  stop switch. When nobody can approve (--yolo, approvals.mode: off, cron set to approve) it blocks instead of
-  letting Hermes auto-approve (policy approvals_off: follow restores Hermes's behaviour). Install scan: caution,
+  stop switch. When nobody can approve (--yolo, /yolo, hermes -z, approvals.mode: off, cron, -q or webhook set to
+  approve, a subagent under delegation.subagent_auto_approve) it blocks instead of letting Hermes auto-approve;
+  to know it, it imports gateway.session_finite.unattended_turn and reads tools.approval (_yolo_active,
+  _unattended_contexts, approval_context._get_approval_mode), each guarded, config.yaml as fallback (policy
+  approvals_off: follow restores Hermes's behaviour). Install scan: caution,
   because the default policy and the shell reader name the patterns airlock guards against (startup files,
   crontab, credential commands, exfiltration shapes).
 maintainer: otsoa-dubief
@@ -37,11 +40,11 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/otsoa-dubief/airlock#readme
-image: https://raw.githubusercontent.com/otsoa-dubief/airlock/50855556344ac5c05646ed8bdd808b563b8c1d49/docs/images/social-preview.png
+image: https://raw.githubusercontent.com/otsoa-dubief/airlock/9252291d28135f40c718e7dbe0abe33ed2515927/docs/images/social-preview.png
 screenshots:
-  - https://raw.githubusercontent.com/otsoa-dubief/airlock/50855556344ac5c05646ed8bdd808b563b8c1d49/docs/images/live-session.gif
-  - https://raw.githubusercontent.com/otsoa-dubief/airlock/50855556344ac5c05646ed8bdd808b563b8c1d49/docs/images/how-it-works.png
-  - https://raw.githubusercontent.com/otsoa-dubief/airlock/50855556344ac5c05646ed8bdd808b563b8c1d49/docs/images/check.png
+  - https://raw.githubusercontent.com/otsoa-dubief/airlock/9252291d28135f40c718e7dbe0abe33ed2515927/docs/images/live-session.gif
+  - https://raw.githubusercontent.com/otsoa-dubief/airlock/9252291d28135f40c718e7dbe0abe33ed2515927/docs/images/how-it-works.png
+  - https://raw.githubusercontent.com/otsoa-dubief/airlock/9252291d28135f40c718e7dbe0abe33ed2515927/docs/images/check.png
 platforms: []
 known_issues:
   - "Built for in-process plugins (Hermes's default): under plugins.isolation: host it cannot tell third-party plugin tools from Hermes's own."

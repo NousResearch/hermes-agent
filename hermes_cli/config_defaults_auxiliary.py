@@ -1,4 +1,5 @@
-"""Construct the declared auxiliary model configuration blocks."""
+"""Pure-data factory for auxiliary model configuration defaults."""
+
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
@@ -11,4 +12,3 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
         d["reasoning_effort"] = ""
     d.update(extra)
     return d
-

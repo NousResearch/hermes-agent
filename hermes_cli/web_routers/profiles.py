@@ -139,13 +139,15 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     ``base_url`` is the endpoint a bare ``custom``/``local`` pick binds to (a fresh profile's config
     names none); other providers ignore it."""
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.config_backend import refusing_locked_omissions
     with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model, base_url)
     with _config_profile_scope(_scope_profile_name(profile_dir)), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
-        save_config(cfg)
+        with refusing_locked_omissions("model"):
+            save_config(cfg)
 
 
 def _disable_unselected_skills(profile_dir: Path, keep: list[str]) -> int:

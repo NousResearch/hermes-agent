@@ -4,8 +4,8 @@ import { capabilityScoped, hermesApi, type OwnerScope, sessionFileOwnerScope } f
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { hostHas } from '@/lib/host-capabilities'
 import { LruCache } from '@/lib/lru-cache'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -122,7 +122,7 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   // profile; it takes the owner-pinned read below.
   if (
     owner?.connectionId === LOCAL_CONNECTION_ID &&
-    !isBrowserHostedDesktop() &&
+    hostHas('nativeHostFiles') &&
     window.hermesDesktop?.readFileDataUrl
   ) {
     const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
@@ -271,15 +271,19 @@ export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope, 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
+// The browser-hosted Desktop's token grants host shells and never enters a
+// URL: its gateway files save through the ticketed bridge
+// (downloadGatewayMediaFile) instead. A data: or blob: URL is no gateway
+// path: it stays as it is, on every host.
 export function mediaExternalUrl(path: string): string {
-  if (/^https?:/i.test(path)) {
+  if (/^(?:https?|data|blob):/i.test(path)) {
     return path
   }
 
   if (isRemoteGateway()) {
     const conn = $connection.get()
 
-    if (conn?.baseUrl && conn.token) {
+    if (conn?.baseUrl && conn.token && hostHas('urlTokenAuth')) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
 
       return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`

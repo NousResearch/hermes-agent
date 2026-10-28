@@ -14,7 +14,8 @@ import {
   desktopHalfFromPackage,
   installComponents,
   type InstallModalCopy,
-  type ProbeResult
+  type ProbeResult,
+  skipsDesktopHalf
 } from './plugin-install-run'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)]'
@@ -130,6 +131,10 @@ function ContentsRow({
     components.desktop && {
       title: [copy.desktopLabel, fromPackage ? null : probe.desktopName].filter(Boolean).join(' · '),
       hint: fromPackage ? copy.desktopTargetFromPackage : copy.desktopTarget
+    },
+    skipsDesktopHalf(request, probe) && {
+      title: [copy.desktopLabel, probe.desktopName].filter(Boolean).join(' · '),
+      hint: copy.desktopUnavailable
     }
   ].filter(line => line !== false)
 

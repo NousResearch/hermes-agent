@@ -28,10 +28,12 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants
+from cron.jobs_model_pin import _main_model_pin
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -258,15 +260,14 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
     EVERY cron function forever, so poll LOCK_NB against a deadline; the caller picks the
     degraded mode."""
     if fcntl is not None:
-        deadline = time.monotonic() + timeout
-        while True:
+        def _try_flock() -> bool:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return True
             except OSError:
-                if time.monotonic() >= deadline:
-                    return False
-                time.sleep(0.1)
+                return False
+
+        return poll_until(_try_flock, timeout, 0.1)
     if msvcrt is not None:
         msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
         return True
@@ -1650,27 +1651,6 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     if not resolved.is_dir():
         raise ValueError(f"Cron workdir is not a directory: {resolved}")
     return str(resolved)
-
-
-def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
-    """``(provider, model)`` the main agent runs on right now (``model.default`` + the provider it
-    resolves to), for ``pinned=True`` jobs: the lock is a plain per-job pin, so the scheduler needs
-    no second precedence axis. ``(None, None)`` when nothing is configured (the job stays unpinned)."""
-    from hermes_cli.config_backend import config_exists
-    from hermes_cli.config_effective import load_user_config_effective
-
-    cfg_path = get_hermes_home() / "config.yaml"
-    cfg = load_user_config_effective(cfg_path) if config_exists(cfg_path) else {}
-    model_cfg = cfg.get("model") or {}
-    model = model_cfg.get("default") or model_cfg.get("model") if isinstance(model_cfg, dict) else model_cfg
-    model = _normalize_job_optional_text(model)
-    if not model:
-        return None, None
-    provider = None
-    with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
-    return (provider.lower() if provider else None), model
 
 
 def _normalize_job_optional_text(

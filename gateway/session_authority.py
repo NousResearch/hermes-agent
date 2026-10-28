@@ -72,28 +72,26 @@ class LiveSession:
     # (principal, effort) of a ``/reasoning`` command that arrived while a turn ran: applied in memory at
     # once, committed to the policy at the next boundary (gateway/session_setting_commands.py).
     pending_reasoning: tuple | None = None
-    # A historic messaging row mounted for reading after its lane moved on (``/new``): ``route`` is
-    # the lane's CURRENT key, which names another conversation, so nothing route-keyed (agent, Stop,
-    # turns, eviction) may act through it (gateway/session_route_recovery.py). The lane publishing
-    # this row again clears it.
-    superseded: bool = False
-    # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
-    # on the same route later supersedes it too.
-    history_mount: bool = False
-    # A local conversation a messaging lane took over (``/handoff``, a platform ``/resume``): its
-    # viewers follow it onto the lane, and once that lane publishes another conversation (``/new``,
-    # another handoff) it is superseded like a history mount, whatever the lane published since.
-    # Set from the row (``moved_local``) on every mount of it, however constructed (#143286).
-    handed_off: bool = False
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
     # Revision of the last ``session.control.update`` (gateway/session_control_actions.publish): a tool
     # completion republishes only when a tool actually moved the goal/loop/heartbeat state.
     control_revision: str = ""
+    # Tickets ordering control publishes whose snapshot is read off the loop: the last one scheduled
+    # wins, so a slow read cannot land over a newer state (gateway/session_control_actions.publish).
+    control_seq: int = 0
+    control_published_seq: int = 0
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
+
+    @property
+    def detached(self):
+        """A messaging conversation its chat moved past (``name_lane``): its turns and Stop act on
+        it alone, on its own key, and reach its app viewers only (gateway/session_detached.py)."""
+        from gateway.session_detached import detached_route_of
+        return detached_route_of(self.source) is not None
 
 
 def _log_drain_failure(task):
@@ -216,14 +214,10 @@ class SessionAuthority:
         if is_history_mount(self.sessions[ref.session_id]):
             require_history_access(self, actor, ref.session_id, capability)
         from gateway.config import Platform
-        if self.sessions[ref.session_id].superseded and capability != 'session:read':
-            # One gateway owns every session and never crosses them: the lane's route now belongs to
-            # its newer conversation, so a write here would land there. Named, so a viewer can say so.
-            raise RuntimeStoreError('session_superseded', field='session_id',
-                                    detail='this conversation\'s chat has moved on to a newer session; it is read-only')
         source = self.sessions[ref.session_id].source
+        from gateway.owner_identity import same_owner
         if (source is not None and source.platform == Platform.LOCAL
-                and source.user_id != actor.subject and 'session:operator' not in actor.capabilities):
+                and not same_owner(source.user_id, actor.subject) and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
 
     def _require_admission_open(self, *, queue_only=False):
@@ -273,41 +267,35 @@ class SessionAuthority:
         return sid, entry.session_key
 
     def _publish_route(self, source, sid, route):
-        from gateway.config import Platform
         self._require_admission_open()
-        live = self.sessions.get(sid)
-        # *sid* takes the route over: new here, moved onto it, or back after another conversation had it.
-        took_over = live is None or live.route != route or live.superseded
-        if live is None:
-            from gateway.session_route_recovery import mount
-            live = self.sessions[sid] = mount(self, sid, source, route)
-        elif live.route != route:
-            # *sid* moved lanes: ``/handoff`` or a platform ``/resume`` took a local conversation over
-            # (its repoint retired the local receipt), or a ``/resume`` moved it on to another chat.
-            # Its open viewers follow it, so a turn or a Stop through this mount reaches the lane that
-            # holds it now, never the conversation that replaced it on the old one (#143286).
-            from gateway.session_route_recovery import moved_local
-            left_local = live.source is not None and live.source.platform == Platform.LOCAL
-            live.handed_off = (live.handed_off or (left_local and source.platform != Platform.LOCAL)
-                               or moved_local(self, sid, source))
-            live.source, live.route = source, route
-        if took_over:
-            # The lane moved on to *sid*: a cold history mount or a chat handed off earlier that is
-            # still on its route is now another conversation's, so it goes read-only
-            # (gateway/session_route_recovery.py): a Stop or turn through it would act on *sid*.
-            for other in self.sessions.values():
-                if (other.history_mount or other.handed_off) and other.route == route and other is not live:
-                    other.superseded = True
-        # The lane itself names *sid* (again): a historic mount becomes its live session.
-        live.superseded = live.history_mount = False
+        if sid not in self.sessions:
+            self.sessions[sid] = LiveSession(source, route)
+        self.name_lane(route, sid, source)
         return SessionRef(self.profile_id, sid)
 
+    def name_lane(self, route, sid, source):
+        """The messaging chat on *route* (*source*) now names conversation *sid* (its next inbound,
+        ``/new``, ``/resume``, ``/branch``, ``/handoff``). Every other live session on the route (a
+        view kept open, a cold mount, a local chat handed off earlier) detaches onto its own key: its
+        app viewers keep using it, and nothing of it reaches the chat (gateway/session_detached.py).
+        *sid*'s own mount moves onto the route: a detached one comes back, a local one ``/handoff``
+        took over or one another chat held (a cross-chat ``/resume``) follows it, so its open viewers'
+        turns and Stops reach the chat that holds it now (#143286)."""
+        from gateway.session_detached import detach, forget_detached
+        for other_sid, other in self.sessions.items():
+            if other.route == route and other_sid != sid:
+                detach(self, other, other_sid)
+        if (live := self.sessions.get(sid)) is not None and live.route != route:
+            left = live.route if live.detached else None
+            live.source, live.route = source, route
+            if left is not None:
+                forget_detached(self, left)
+
     def agent(self, ref):
+        from gateway.session_detached import running_key
         live = self.sessions[ref.session_id]
-        if live.superseded:
-            return None  # the route's agent is the newer conversation's
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
-        return lookup(live.route)
+        return lookup(running_key(self.runner, live.route, ref.session_id))
 
     def _pending_rows(self, ref):
         """Pending admissions as the event stream presents them: a settlement committed but not yet
@@ -347,10 +335,15 @@ class SessionAuthority:
                 raise RuntimeStoreError('not_found') from None
             raise
 
-    async def attach(self, actor, ref):
+    async def attach(self, actor, ref, *, history=True, replay_from=None):
+        """Join *ref*'s event stream and snapshot it. ``history=False``: the snapshot carries no transcript
+        (``history == ()``), only the physical ``transcript_target``, so the display-row lineage read is
+        skipped; for a viewer that pages the transcript itself (Desktop over REST).
+        *replay_from*: ``(epoch, sequence)`` this connection's reconnect replay answered (SessionEvents.catch_up)."""
         self.authorize(actor, ref, 'session:read')
-        from gateway.session_local_recovery import local_history, prepare_history
-        prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
+        from gateway.session_local_recovery import local_history, prepare_history, transcript_target
+        # The lineage read stays off the loop and the lock; without history the target is resolved under it.
+        prepared = await prepare_history(self, ref) if history else None
         from gateway.session_onboarding import keep_from_discard
         # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
         # before the join, and a delete already past it answers not_found below.
@@ -371,14 +364,20 @@ class SessionAuthority:
             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
             transport = self.events.get(actor.transport_id)
             if transport is not None:
+                if replay_from is not None and not live.event_stream.fanout.contains(transport):
+                    live.event_stream.catch_up(transport, *replay_from)
                 live.event_stream.fanout.attach(transport)
                 live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
-            history = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared)))
+            if history:
+                history, target = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared))), None
+            else:
+                history, target = (), self.unless_deleted(ref, lambda: transcript_target(self, ref))
             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
-                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
+                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
+                                        transcript_target=target)
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
@@ -656,9 +655,7 @@ class SessionAuthority:
                         check_local_input(
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
-                if sid not in self.sessions:  # ``mount``: a moved local chat keeps ``handed_off`` here too
-                    from gateway.session_route_recovery import mount
-                    self.sessions[sid] = mount(self, sid, source, route)
+                self.sessions.setdefault(sid, LiveSession(source, route))
                 if any(row['status'] == 'unknown' for row in rows):
                     raise RuntimeStoreError('unknown_execution')
                 self._schedule(SessionRef(self.profile_id, sid))
@@ -713,7 +710,8 @@ class SessionAuthority:
         if _kanban_card is not None:
             payload['kanban_card_v1'] = _kanban_card
         source = self.sessions[request.ref.session_id].source
-        if source is not None and source.user_id != actor.subject:
+        from gateway.owner_identity import same_owner
+        if source is not None and not same_owner(source.user_id, actor.subject):
             # Durable server authorization, not a client payload field. The original
             # principal remains the admission/retry identity across owner restarts.
             # Operator provenance is about who was authorized at this boundary, not
@@ -758,7 +756,8 @@ class SessionAuthority:
         row = get_session_admission(self.db, admission_id=admission_id)
         if row is None or row['target_session_id'] != ref.session_id:
             raise RuntimeStoreError('not_found')
-        if row['principal_id'] != actor.subject and 'session:control' not in actor.capabilities:
+        from gateway.owner_identity import same_owner
+        if not same_owner(row['principal_id'], actor.subject) and 'session:control' not in actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         live = self.sessions[ref.session_id]
         with live.event_stream.lock:
@@ -947,11 +946,10 @@ class SessionAuthority:
         """The route's running slot holds a real agent (not the claim's pending sentinel), so the
         Stop above reached the turn's own agent, not a cached one it may still replace."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.session_detached import running_key
         live = self.sessions[ref.session_id]
-        if live.superseded:
-            return False
         running = getattr(self.runner, '_running_agents', None) or {}
-        agent = running.get(live.route)
+        agent = running.get(running_key(self.runner, live.route, ref.session_id))
         return agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
     def steer_agent(self, ref, generation, text):
@@ -1101,6 +1099,12 @@ class SessionAuthority:
                 from gateway.session_runtime_workers import tracked_write
                 check_api_turn(self, ref, first['payload'])
                 await tracked_write(self, partial(reopen_api_session, self, ref))
+            elif first is not None and live.detached:
+                # The chat's /new ended its row; the app's turn makes it live again, as an API row's
+                # does. A note leaves it closed, as a local one's does (session_completion_notes).
+                from gateway.session_completion_notes import noted_completion, reopen_for_turn
+                if not noted_completion(first):
+                    await reopen_for_turn(self, ref)
             if first is not None and self._classic_turn_holds(live.route):
                 # A classic turn (fallback wake, CLI handoff, legacy resume) holds the route's slot:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
@@ -1498,6 +1502,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     if epochs is None:
         epochs = store._local_authority_epochs = {}
     epochs[db_key] = epoch
+    from gateway.session_detached import watch_routes
+    watch_routes(runner, store)
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
     return authority

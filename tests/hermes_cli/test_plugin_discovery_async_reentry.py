@@ -30,6 +30,7 @@ def test_register_can_invoke_an_async_hook(tmp_path, load_timeout):
     '''), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, "-c", "from hermes_cli.plugins import discover_plugins; discover_plugins()"],
+        check=False,
         cwd=Path(__file__).resolve().parents[2],
         env={**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(home)},
         capture_output=True, text=True, timeout=10,

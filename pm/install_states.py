@@ -100,17 +100,17 @@ def orphan_install_states(installs: Path) -> list[Path]:
 def _install_lock(state: Path):
     """Hold the state's install lock (``runtime_lock``'s) without waiting: yields False while
     another process holds it, or when it cannot even be opened."""
-    from pm.filesystem import lock_fd
+    from pm.filesystem import lock_path
 
     try:
-        fd = os.open(state / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fd = lock_path(state / ".install.lock", timeout=0)
     except OSError:
         fd = None
     if fd is None:
         yield False
         return
     try:
-        yield lock_fd(fd, wait=False)
+        yield True
     finally:
         os.close(fd)
 
@@ -165,13 +165,20 @@ def collect_orphan_install_states(installs: Path) -> list[Path]:
             emptied = _remove_contents(state)
             if emptied:  # still under the lock: only the record is left, so it goes last
                 shutil.rmtree(state / "inputs", ignore_errors=True)
+                # POSIX: unlink while still holding it. A launcher already waiting on this file
+                # then sees it gone once it gets the lock and retries on a fresh one (lock_path);
+                # unlinked after release, the path could be a file that launcher just made.
+                if os.name != "nt":
+                    with contextlib.suppress(OSError):
+                        (state / ".install.lock").unlink()
         if not emptied:
             logger.debug("orphan install state %s only partly removed; retried next pass", state.name)
             continue
         # Non-recursive: a launch from a checkout recreated at the same path may have taken the
         # lock the moment it was released and written here; its files make rmdir fail, not vanish.
         with contextlib.suppress(OSError):
-            (state / ".install.lock").unlink()
+            if os.name == "nt":  # an open file cannot be unlinked: a waiting launcher keeps it
+                (state / ".install.lock").unlink()
             state.rmdir()
         if not state.exists():
             removed.append(state)

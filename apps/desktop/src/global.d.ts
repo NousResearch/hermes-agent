@@ -656,6 +656,10 @@ declare global {
         desktopName?: string | null
         warnings?: string[]
         insecure?: boolean
+        /** The commit that was inspected; an install of this source is held to it. */
+        sha?: string
+        /** Inspection itself is missing here (not a failed read): Retry cannot help. */
+        unavailable?: boolean
         error?: string
       }>
       installDesktopPlugin?: (payload: {

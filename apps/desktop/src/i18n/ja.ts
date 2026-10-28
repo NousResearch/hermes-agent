@@ -12,6 +12,7 @@ import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
 import { jaGatewayHost } from './ja_gateway_host'
 import { jaLocalModels } from './ja_local_models'
+import { jaMemoryLayers } from './ja_memory_layers'
 import { jaModelMenu } from './ja_model_menu'
 import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
@@ -243,6 +244,7 @@ export const jaOverrides = {
   },
 
   settings: {
+    memoryLayers: jaMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -1203,7 +1205,7 @@ export const jaOverrides = {
       defaultDirTitle: 'デフォルトのプロジェクトディレクトリ',
       defaultDirDesc:
         '別のフォルダーを選択しない限り、新しいセッションはこのフォルダーで開始します。未設定の場合はホームディレクトリが使用されます。',
-      defaultDirUpdated: 'デフォルトのプロジェクトディレクトリを更新しました',
+      defaultDirUpdated: () => 'デフォルトのプロジェクトディレクトリを更新しました',
       defaultsTo: label => `デフォルト: ${label}。`,
       change: '変更',
       choose: '選択',

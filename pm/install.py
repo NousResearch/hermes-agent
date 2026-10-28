@@ -68,12 +68,15 @@ def _store() -> Store:
     return Store(paths.store_root())
 
 
-def _heal_exec_bit(binary: Path) -> bool:
+def _heal_exec_bit(binary: Path, *, heal: bool = True) -> bool:
     """Store entries staged from archives that drop the exec bit sit at 0644 and fail every
     launch with PermissionError. Modes are not part of the pinned digest, so restore it in place;
-    an entry we cannot chmod (sealed store) is treated as not installed."""
+    an entry we cannot chmod (sealed store), or may not (``heal=False``), is treated as not
+    installed."""
     if os.name == "nt" or os.access(binary, os.X_OK):
         return True
+    if not heal:
+        return False
     try:
         binary.chmod(binary.stat().st_mode | 0o111)
     except OSError:
@@ -83,8 +86,9 @@ def _heal_exec_bit(binary: Path) -> bool:
 
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
-                        roots: tuple[Path, ...] | None = None):
-    """Prefer the current pin. An explicit read may retain a prior PM install."""
+                        roots: tuple[Path, ...] | None = None, heal: bool = True):
+    """Prefer the current pin. An explicit read may retain a prior PM install. ``heal=False``
+    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch)."""
     search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
     fallback = None
     for root in search_roots:
@@ -96,7 +100,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
         binary = package.binary(store.entry(fact["entry"]), target)
         if binary is not None and not binary.is_file():
             continue
-        if binary is not None and target == current_target() and not _heal_exec_bit(binary):
+        if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
             continue
         if verify and not _entry_verified(package, fact, store, target):
             continue

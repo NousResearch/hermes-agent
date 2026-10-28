@@ -718,7 +718,8 @@ The [Webapp](#use-the-desktop-workspace-from-a-browser) loads the desktop plugin
 host that serves it, from the `desktop-plugins` folder of that host's Hermes root, whichever profile
 the tab is on. A new or removed plugin folder shows up within seconds; an edited `plugin.js` loads on
 **⌘K → Reload desktop plugins**, since a browser cannot watch the host's files. The desktop half of
-an agent+desktop package appears once native Desktop on that host has copied it into the folder.
+an agent+desktop package is copied into the folder by the host itself, so it also appears on a
+headless host that native Desktop never runs on.
 Install and remove desktop plugins from native Desktop or in the folder itself; a plugin's folder
 access (`ctx.files`) is not available in a browser.
 

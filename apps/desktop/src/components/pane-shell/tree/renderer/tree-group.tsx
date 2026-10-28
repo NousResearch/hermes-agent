@@ -934,7 +934,7 @@ export function TreeGroup({
           wrap={
             !isEmpty
               ? body => (
-                  <ZoneBodyMenu {...zoneMenu} label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}>
+                  <ZoneBodyMenu {...zoneMenu} label={t.zones.zoneMenuLabel(tabText(activeId))}>
                     {body}
                   </ZoneBodyMenu>
                 )

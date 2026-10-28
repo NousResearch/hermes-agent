@@ -1770,6 +1770,17 @@ def _plugins_install(rid, params):
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
 
 
+def _plugins_inspect(rid, params):
+    """Read-only pre-install check of ``identifier``/``repo`` (or ``catalog_name`` at its pin): which halves it
+    ships. Nothing is installed or run; a source that cannot be read answers ``ok: false`` + ``error``."""
+    ident = (params.get("identifier") or params.get("repo") or "").strip()
+    catalog_name = str(params.get("catalog_name") or "").strip()
+    if not ident and not catalog_name:
+        return _err(rid, 4019, "plugins.inspect requires 'identifier', 'repo', or 'catalog_name'")
+    inspect = _tools_mod("hermes_cli.plugins_cmd_inspect").inspect_plugin_source
+    return _ok(rid, inspect(ident, catalog_name=catalog_name or None))
+
+
 def _plugins_update(rid, params):
     """The same update as the dashboard and ``hermes plugins update``: a catalog install re-pins to the
     current catalog SHA, a git install pulls. Every update is scanned. A refusal changes nothing and
@@ -1858,7 +1869,7 @@ def _plugins_presence(rid, params):
 
 
 _PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "presence": _plugins_presence,
-                    "toggle": _plugins_toggle, "install": _plugins_install,
+                    "toggle": _plugins_toggle, "install": _plugins_install, "inspect": _plugins_inspect,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 
@@ -1867,7 +1878,7 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
+    default True); ``inspect`` reports which halves that source ships, installing nothing; ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
     a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 

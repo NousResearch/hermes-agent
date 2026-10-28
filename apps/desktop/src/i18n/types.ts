@@ -20,6 +20,7 @@ import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
 import type { GatewayHostTranslations } from './types_gateway_host'
+import type { MemoryLayersTranslations } from './types_memory_layers'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
@@ -915,6 +916,7 @@ catalog: CatalogTranslations
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
+    memoryLayers: MemoryLayersTranslations
     customEndpoints: {
       active: string
       apiKeySet: string
@@ -1716,7 +1718,7 @@ catalog: CatalogTranslations
       autoArchiveFailed: string
       defaultDirTitle: string
       defaultDirDesc: string
-      defaultDirUpdated: string
+      defaultDirUpdated: (shortcut: null | string) => string
       defaultsTo: (label: string) => string
       change: string
       choose: string
@@ -2243,9 +2245,6 @@ catalog: CatalogTranslations
       resume: string
       runNow: string
       memoryData: string
-      memoryDataDesc: string
-      memoryProvider: (name: string) => string
-      builtinMemory: string
       memoryFile: string
       userFile: string
       bytes: (size: string) => string

@@ -1072,8 +1072,25 @@ attribute is fully privileged. `loading="lazy"` and
 containment: guest content cannot reach the app, its storage, or the preload
 bridge.
 
+*Webapp (browser tab):* the page's Content-Security-Policy would also bind a
+`data:` document, so a `data:text/html` src is rendered through the gateway's
+guest shell (`/assets/webapp-guest.html`, its own policy, same opaque origin
+and sandbox tokens) instead of being navigated to directly. Scripts run as on
+native Desktop; messages the guest posts to `parent` arrive with
+`event.source === ref.current.contentWindow`, messages posted to that window
+reach the guest, and `onLoad` fires when the guest document has loaded (the
+shell announces that with one `{type: 'hermes-guest-loaded'}` message from the
+same window, so filter guest messages by type). Post
+to `parent`, not `top`: the shell sits between them. Changing `sandbox` after
+mount gives the Webapp a fresh frame (a new `ref.current`, the guest restarts
+with the new tokens, `onLoad` fires again), so read `ref.current` when you need
+the frame rather than keeping the first one. A direct frame on native Desktop
+keeps the element and its current document, and the new tokens apply from its
+next navigation.
+
 *Teardown:* it is a plain React element — unmounting your pane/page removes the
-frame and its realm; nothing is registered app-side.
+frame and its realm; nothing is registered app-side for it (the Webapp routes
+guest shells through one shared listener that holds frames only weakly).
 
 Migration for **rss-reader** (#115972): replace the stubbed `/preview` → 501 →
 `host.openWorkspace('rss-browser')` → empty `RssBrowserFrame` → `ctx.os.openExternal`

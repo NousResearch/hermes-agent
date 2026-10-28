@@ -503,9 +503,40 @@ def _background_session_key(session_id: Optional[str]) -> str:
     return session_key or (str(session_id) if session_id else "")
 
 
+def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, Any]:
+    """``{"model", "api_calls"}`` the fire's run session recorded in state.db (summed over its
+    compression chain), or ``{}`` when no run session exists (no_agent job, refused fire)."""
+    if not execution_id:
+        return {}
+    import sqlite3
+
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    # A missing or locked state.db costs the notice its usage line, never the completion.
+    try:
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+    except (sqlite3.Error, OSError):
+        return {}
+    try:
+        run = next((r for r in db.list_cron_job_runs(job_id, limit=50)
+                    if r.get("cron_execution_id") == execution_id), None)
+        if run is None:
+            return {}
+        rows = [db.get_session(sid) or {} for sid in db.get_compression_chain(run["id"])]
+    except sqlite3.Error as exc:
+        logger.debug("cronjob run: run-session usage lookup failed for %s: %s", job_id, exc)
+        return {}
+    finally:
+        db.close()
+    model = next((r["model"] for r in reversed(rows) if r.get("model")), None)
+    return {"api_calls": sum(int(r.get("api_call_count") or 0) for r in rows), **({"model": model} if model else {})}
+
+
 def _manual_run_completion(
-    res: dict[str, Any], job_id: str, job_name: str, deliver: str, started_at: float) -> dict[str, Any]:
-    """Async-delegation completion block for a finished background manual run."""
+    res: dict[str, Any], job_id: str, job_name: str, deliver: str, started_at: float,
+    execution_id: Optional[str] = None) -> dict[str, Any]:
+    """Async-delegation completion block for a finished background manual run. Model and API
+    calls come from the run's own session; without one they are omitted, never guessed."""
     duration = round(time.time() - started_at, 2)
     refreshed = get_job(job_id) or {}
     lines = [
@@ -521,7 +552,7 @@ def _manual_run_completion(
         lines += ["--- JOB OUTPUT ---", excerpt]
     return {
         "status": "completed" if res.get("success") else "error", "summary": "\n".join(lines),
-        "error": res.get("error"), "api_calls": 0, "duration_seconds": duration,
+        "error": res.get("error"), "duration_seconds": duration, **_run_session_usage(job_id, execution_id),
     }
 
 
@@ -604,13 +635,16 @@ def _try_dispatch_background_run(
 
     def _runner() -> dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
-        return _manual_run_completion(res, job_id, job_name, deliver, started_at)
+        # run_one_job stamps the fire's ledger id onto this claimed snapshot.
+        return _manual_run_completion(res, job_id, job_name, deliver, started_at,
+                                      (claimed_job or {}).get("execution_id"))
 
     dispatch = dispatch_async_delegation(
         goal=f"Manual run of cron job '{job_name}' ({job_id})",
         context=("Triggered via cronjob(action='run'). The job executed in its own "
                  "fresh cron session; this block reports its outcome."),
-        toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
+        # model=None: the run session (via _runner) is the only source; a pin a refused fire never ran is not.
+        toolsets=None, role="cron_run", model=None, session_key=session_key,
         parent_session_id=str(session_id) if session_id else None, runner=_runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         max_async_children=max_async)

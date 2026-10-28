@@ -272,6 +272,11 @@ FROM runtime_base AS python_deps
 # is baked so hosted/immutable images can enable the adapter without writing
 # the sealed venv.
 #
+# [fal] is baked because the image tool's availability check imports
+# fal_client whenever a FAL backend resolves, which the Nous-managed gateway
+# always does on hosted agents. Lazy-installing it at the gateway's first boot
+# builds a whole new venv generation on the volume (about 90s).
+#
 # --record-selection writes these extras to the store's facts.json as the venv
 # selection, as a bundle build does. Without it, the first opt-in extra a
 # container installs on use (FAL, a plugin's deps) records a selection of
@@ -291,7 +296,7 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --cache /opt/hermes/uv-cache \
     --out /opt/hermes/.venv --no-install-project --sealed --record-selection \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra matrix --extra google-chat
+    --extra azure-identity --extra matrix --extra google-chat --extra fal
 
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its

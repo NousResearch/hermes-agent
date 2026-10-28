@@ -10,6 +10,7 @@ import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
+import { deMemoryLayers } from './de_memory_layers'
 import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
@@ -681,6 +682,7 @@ export const deOverrides = {
     noResults: 'Keine Sprachen gefunden'
   },
   settings: {
+    memoryLayers: deMemoryLayers,
     subpages: {
       appearanceTheme: 'Design',
       appearanceTypography: 'Typografie',
@@ -2259,8 +2261,8 @@ export const deOverrides = {
       defaultDirTitle: 'Standard-Projektordner',
       defaultDirDesc:
         'Neue Sessions starten in diesem Ordner, sofern Sie keinen anderen wählen. Nicht festlegen, um Ihr Home-Verzeichnis zu verwenden.',
-      defaultDirUpdated:
-        'Standard-Projektordner aktualisiert – starten Sie einen neuen Chat (Strg/⌘+N), damit er wirksam wird',
+      defaultDirUpdated: shortcut =>
+        `Standard-Projektordner aktualisiert – starten Sie einen neuen Chat${shortcut ? ` (${shortcut})` : ''}, damit er wirksam wird`,
       defaultsTo: label => `Standardmäßig ${label}.`,
       change: 'Ändern',
       choose: 'Auswählen',
@@ -2858,9 +2860,6 @@ export const deOverrides = {
       resume: 'Fortsetzen',
       runNow: 'Jetzt ausführen',
       memoryData: 'Memory-Daten',
-      memoryDataDesc: 'Eingebaute Memory-Dateien, die in jede Session eingefügt werden',
-      memoryProvider: name => `Aktiver Provider: ${name}`,
-      builtinMemory: 'eingebaut',
       memoryFile: 'Agent-Memory (MEMORY.md)',
       userFile: 'Benutzerprofil (USER.md)',
       bytes: size => size,

@@ -11,6 +11,7 @@ import asyncio
 import time
 import urllib.parse
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from hermes_cli.web_routers._common import (
     REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
     redacted_credential_preview, scoped_to_thread,
@@ -46,8 +47,8 @@ save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
-# Simple rate limiter for the reveal endpoint
-_reveal_timestamps: list[float] = []
+# Per-principal sliding window; expired buckets are removed on each request.
+_reveal_timestamps: dict[str, list[float]] = {}
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
@@ -1102,17 +1103,30 @@ async def reveal_env_var(
     """
     _require_token(request)
 
-    now = time.time()
-    cutoff = now - _REVEAL_WINDOW_SECONDS
-    _reveal_timestamps[:] = [t for t in _reveal_timestamps if t > cutoff]
-    if len(_reveal_timestamps) >= _REVEAL_MAX_PER_WINDOW:
-        raise HTTPException(status_code=429, detail="Too many reveal requests. Try again shortly.")
-    _reveal_timestamps.append(now)
+    resolved_profile = body.profile or profile
+    config = await scoped_to_thread(resolved_profile, load_config)
+    if config.get("security", {}).get("dashboard_reveal_secrets", True) is False:
+        raise HTTPException(
+            status_code=403, detail="Secret reveal disabled by security.dashboard_reveal_secrets")
 
-    env_on_disk = await scoped_to_thread(body.profile or profile, load_env)
+    session = getattr(request.state, "session", None)
+    principal = session.user_id if session else (request.client.host if request.client else "unknown")
+    now = time.monotonic()
+    cutoff = now - _REVEAL_WINDOW_SECONDS
+    # Prune all callers, not just this one, so inactive principals do not accumulate.
+    for key, timestamps in list(_reveal_timestamps.items()):
+        timestamps[:] = [t for t in timestamps if t > cutoff]
+        if not timestamps:
+            del _reveal_timestamps[key]
+    timestamps = _reveal_timestamps.setdefault(principal, [])
+    if len(timestamps) >= _REVEAL_MAX_PER_WINDOW:
+        raise HTTPException(status_code=429, detail="Too many reveal requests. Try again shortly.")
+    timestamps.append(now)
+
+    env_on_disk = await scoped_to_thread(resolved_profile, load_env)
     value = env_on_disk.get(body.key)
     if value is None:
         raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
 
-    _log.info("env/reveal: %s", body.key)
-    return {"key": body.key, "value": value}
+    _log.info("env/reveal: %s profile=%s principal=%s", body.key, resolved_profile or "default", principal)
+    return JSONResponse({"key": body.key, "value": value}, headers={"Cache-Control": "no-store"})

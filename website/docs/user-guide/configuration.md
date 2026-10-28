@@ -2930,6 +2930,7 @@ Secret redaction and the website blocklist:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  dashboard_reveal_secrets: true # Allow authenticated dashboard users to reveal a secret
   website_blocklist:             # See Website Blocklist section below
     enabled: false
     domains: []
@@ -2937,6 +2938,8 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+
+- `dashboard_reveal_secrets` — allows authenticated users to request a secret's full plaintext through `POST /api/env/reveal`. **On by default** for local use. Remote/gated deployments should set it to `false` with `hermes config set security.dashboard_reveal_secrets false`; the endpoint then returns HTTP 403. The setting is read from the requested profile. Successful reveal responses carry `Cache-Control: no-store`; reveals are limited to five requests per 30 seconds per verified session user (or client host in loopback mode), and audit logs record the key name, profile and principal, never the secret value. This is a dashboard reveal control, not a boundary against an authorized agent or process that can otherwise read secrets.
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 

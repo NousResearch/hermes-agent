@@ -1767,11 +1767,11 @@ DEFAULT_CONFIG = {
     },
     "security": {  # Security: URL/private-network guards, redaction and approval presentation.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
-        # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
-        # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
-        # dials them instead of rejecting them as private. Empty = normal private-address verdict.
+        # TUN proxy fake-IP CIDRs (Mihomo/Clash, Surge): dial proxy sentinels, not private hosts; empty = normal guard.
         "fake_ip_ranges": [],
         "redact_secrets": True,
+        # Remote/gated deployments should set False to disable dashboard plaintext reveal.
+        "dashboard_reveal_secrets": True,
         # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
         # on prompts. The startup guard still warns every run; cost guards are unaffected.
         "allow_data_training_tiers_noninteractive": False,

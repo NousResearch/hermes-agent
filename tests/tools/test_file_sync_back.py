@@ -20,6 +20,7 @@ from tools.environments.file_sync import (
     _SYNC_BACK_MAX_RETRIES,
     _SYNC_BACK_STALE_SECONDS,
     _SYNC_BACK_TEMP_PREFIX,
+    _safe_tar_members,
 )
 
 
@@ -444,3 +445,68 @@ class TestSyncBackWindowsHost:
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert host_file.read_bytes() == b"v2"  # relpath key was 'root\\.hermes\\...' → skipped
         assert (tmp_path / "host" / "new.md").read_bytes() == b"new"  # _infer_host_path parent match
+
+
+def _tar_member(name: str, kind: bytes = tarfile.REGTYPE, data: bytes = b"x") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name=name)
+    info.type = kind
+    if kind == tarfile.REGTYPE:
+        info.size = len(data)
+    elif kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+        info.linkname = "root/.hermes/target.txt"
+    return info
+
+
+def _tar_with(members: list[tarfile.TarInfo], dest: Path) -> Path:
+    with tarfile.open(dest, "w") as tar:
+        for info in members:
+            tar.addfile(info, io.BytesIO(b"x") if info.isfile() else None)
+    return dest
+
+
+class TestSafeTarMembers:
+    """Sync-back extraction rejects escapes on every host, including the Windows spellings
+    that a ``/``-only check misses, and on Pythons without ``extractall(filter=...)``."""
+
+    @pytest.mark.parametrize("name", [
+        "../escape.txt",
+        "root/../../escape.txt",
+        "..\\escape.txt",
+        "root\\..\\..\\escape.txt",
+        "/abs.txt",
+        "\\abs.txt",
+        "\\\\server\\share\\x.txt",
+        "C:\\escape.txt",
+        "C:escape.txt",
+        "C:/escape.txt",
+    ])
+    def test_rejects_traversal_and_absolute_names(self, name, tmp_path, caplog):
+        tar_path = _tar_with([_tar_member(name), _tar_member("root/.hermes/ok.txt")], tmp_path / "t.tar")
+        with tarfile.open(tar_path) as tar, caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            kept = [m.name for m in _safe_tar_members(tar, str(tmp_path / "staging"))]
+        assert kept == ["root/.hermes/ok.txt"]
+        assert any("unsafe tar member" in r.message for r in caplog.records)
+
+    @pytest.mark.parametrize("kind", [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE, tarfile.FIFOTYPE])
+    def test_rejects_links_and_special_files(self, kind, tmp_path):
+        tar_path = _tar_with([_tar_member("root/.hermes/special", kind)], tmp_path / "t.tar")
+        with tarfile.open(tar_path) as tar:
+            assert _safe_tar_members(tar, str(tmp_path / "staging")) == []
+
+    def test_keeps_files_and_dirs(self, tmp_path):
+        tar_path = _tar_with([_tar_member("root/.hermes", tarfile.DIRTYPE), _tar_member("root/.hermes/./a.txt")], tmp_path / "t.tar")
+        with tarfile.open(tar_path) as tar:
+            assert [m.name for m in _safe_tar_members(tar, str(tmp_path / "staging"))] == ["root/.hermes", "root/.hermes/./a.txt"]
+
+    def test_sync_back_skips_unsafe_member_without_extract_filter(self, tmp_path, monkeypatch):
+        """Python 3.11.0-3.11.3 has no ``filter=``: the member list alone must keep escapes out."""
+        monkeypatch.delattr(tarfile, "data_filter", raising=False)
+        host_file = _write_file(tmp_path / "host_skill.md", b"original")
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=[(host_file, "/root/.hermes/skill.md")],
+            bulk_download_fn=lambda dest: _tar_with([_tar_member("../escape.txt", data=b"escaped")], dest),
+        )
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert not (tmp_path / "escape.txt").exists()
+        assert Path(host_file).read_bytes() == b"original"

@@ -1036,6 +1036,56 @@ _AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
 _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
 
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _refuse_basetemp_inside_the_checkout(config) -> None:
+    """Refuse a pytest basetemp that lives inside this checkout.
+
+    `_relocate_basetemp_outside_operator_home` only fires when the candidate sits under
+    the operator's Hermes home, so an explicit `--basetemp tmp/<task>/<attempt>` was
+    accepted: inside the repo, inside `.gitignore` (`tmp/`), and outside every retention
+    policy. Measured 2026-10-28: `tmp/update-reliability-20261028` held 579 such
+    directories, 1,016,073 files, 76.2 GB in one day, because each attempt allocated a
+    fresh one and pytest never prunes a basetemp it was handed.
+
+    The rule is the same one that governs the Hermes home: the sandbox root must not live
+    inside a source tree that a run can dirty, and it must be a root this suite manages
+    rather than one an invoking command names. Use the default, or `--basetemp` outside
+    the checkout.
+    """
+    factory = getattr(config, "_tmp_path_factory", None)
+    given = getattr(factory, "_given_basetemp", None)
+    if given is None:
+        return
+    resolved = Path(given).resolve()
+    if resolved == _CHECKOUT_ROOT or resolved.is_relative_to(_CHECKOUT_ROOT):
+        raise pytest.UsageError(
+            "refusing an in-checkout pytest basetemp %s: it lands in the ignored tmp/ tree, "
+            "pytest never prunes a basetemp it was given, and repeated attempts accumulate "
+            "a full workspace copy each (76.2 GB measured in one day). Pass no --basetemp, "
+            "or one outside %s." % (resolved, _CHECKOUT_ROOT))
+
+
+def _require_disk_reserve(config) -> None:
+    """Refuse to start a suite run that cannot finish without filling the volume.
+
+    Measured on this host on 2026-10-28: the volume reached 10.1 GB free twice while a
+    suite run was in progress. A run that fills the disk corrupts retained evidence
+    instead of merely failing, so admission is cheaper than recovery. The reserve is
+    declarable (HERMES_TEST_DISK_RESERVE_MB) and defaults to 20 GB.
+    """
+    reserve_mb = int(os.environ.get("HERMES_TEST_DISK_RESERVE_MB", "20000"))
+    probe = _CHECKOUT_ROOT if _CHECKOUT_ROOT.exists() else Path(tempfile.gettempdir())
+    free = shutil.disk_usage(str(probe)).free
+    if free < reserve_mb * 1000 * 1000:
+        raise pytest.UsageError(
+            "refusing to run the suite: %.1f GB free on %s, below the %d MB reserve "
+            "(HERMES_TEST_DISK_RESERVE_MB). Free space first; a run that exhausts the "
+            "volume damages retained evidence rather than failing cleanly."
+            % (free / 1e9, probe, reserve_mb))
+
+
 def _relocate_basetemp_outside_operator_home(config) -> None:
     """Move pytest's basetemp out of the operator's platform-native Hermes home.
 
@@ -1189,6 +1239,15 @@ def pytest_unconfigure(config):
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):
     """Register markers used by hermetic conftest."""
+    _refuse_basetemp_inside_the_checkout(config)
+    _require_disk_reserve(config)
+    # Keep a failed test's sandbox (its diagnostics are unique) and prune the rest, so a
+    # successful run leaves nothing and a failing one leaves exactly the evidence.
+    try:
+        config.option.tmp_path_retention_count = 3
+        config.option.tmp_path_retention_policy = "failed"
+    except AttributeError:  # older pytest: keep the default rather than fail the run
+        pass
     _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",

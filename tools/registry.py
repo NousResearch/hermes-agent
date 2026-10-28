@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
@@ -260,6 +260,19 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _CHECK_FN_CACHE_MAX = 512
+# A probe that never answers used to hang its caller forever: the boot warm-up
+# never completed, and the first inbound turn then stopped dead before its
+# provider request - nothing logged, ``active_agents`` pinned at 1, the
+# messaging platform left in its "typing" state until a gateway restart
+# (#131145). A probe that cannot answer within its budget counts as "not
+# available" instead of hanging the turn. The budget follows the environment
+# probe's (10 s, healthy runtime ~0.5 s): a cold probe that misses it loses
+# the tool for one TTL window, a wedged one loses it until the probe answers.
+_CHECK_FN_PROBE_TIMEOUT_SECONDS = 10.0
+# Probes that failed to answer within one tool-schema build. Past this the
+# build stops probing: an environment where several probes never answer is
+# broken, and waiting once per probe would cost the whole build.
+_CHECK_FN_MAX_UNANSWERED_PROBES = 3
 _check_fn_cache: dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: dict[tuple[Callable, Optional[str]], float] = {}
 _check_fn_ever_good: set[tuple[Callable, Optional[str]]] = set()  # probes that admitted tools this process
@@ -308,11 +321,200 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
-def _run_check_fn_uncached(fn: Callable) -> bool:
+class _ProbeSweep:
+    """The availability probes of one tool-schema build.
+
+    Counts the probes that failed to answer, so a build whose environment is
+    broken stops probing instead of waiting once per probe. One wedged probe
+    costs its own budget and nothing else.
+    """
+
+    __slots__ = ("unanswered",)
+
+    def __init__(self) -> None:
+        self.unanswered = 0
+
+    def exhausted(self) -> bool:
+        return self.unanswered >= _CHECK_FN_MAX_UNANSWERED_PROBES
+
+
+class _CheckFnProbe:
+    """One running availability probe for a check_fn, shared by every waiter.
+
+    A probe that never answers stays parked in its daemon thread. Sharing the
+    parked probe (instead of starting a fresh one every TTL window) is what
+    keeps a wedged probe from leaking one more thread per probe interval.
+    """
+
+    __slots__ = ("available", "done", "error", "snapshot", "timed_out", "timeout_exceeded")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.available = False
+        self.error: Optional[BaseException] = None
+        self.snapshot = None
+        self.timed_out = False
+        self.timeout_exceeded = 0.0
+
+    def run(self, fn: Callable) -> None:
+        try:
+            self.available = bool(fn())
+        except Exception as exc:  # health: allow BLE001 -- worker boundary: the verdict is re-raised on the calling thread
+            self.error = exc
+        finally:
+            # The probe's own context, after its writes: the caller publishes
+            # them back so a check_fn that snapshots into a contextvar still
+            # reaches the schema build that follows it.
+            self.snapshot = copy_context()
+            self.done.set()
+
+
+_check_fn_probe_lock = threading.Lock()
+_check_fn_probes: dict[tuple, "_CheckFnProbe"] = {}
+# (fn, profile) -> monotonic when a probe of it last went silent. Kept after the parked probe
+# entry is gone so another session does not pay the same budget again; it expires so a probe that
+# recovers is retried (#142062).
+_check_fn_wedged_probes: dict[tuple, float] = {}
+_CHECK_FN_WEDGED_TTL_SECONDS = 60.0
+
+
+def _publish_probe_context(probe_context) -> None:
+    """Carry the probe's contextvar writes back to the caller.
+
+    A check_fn may publish into a contextvar for the schema build that follows
+    it (the memory tool's availability snapshot: "one definition pass must use
+    ONE config decision"). The probe runs on a worker thread, so its writes
+    land in the worker's copy of the caller's context; publishing the changed
+    values back keeps the caller's view the same as if the probe had run
+    inline.
+    """
+    if probe_context is None:
+        return
+    caller_context = copy_context()
+    for var, value in probe_context.items():
+        try:
+            previous = caller_context[var]
+        except KeyError:
+            previous = None
+        if previous is not value:
+            var.set(value)
+
+
+def _probe_identity() -> str:
+    """The request-scoped browser identity, empty outside a bound browser request."""
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:
+        return ""
+    return "|".join(str(get_session_env(k, "") or "") for k in _BROWSER_IDENTITY_KEYS)
+
+
+def _probe_share_key(fn: Callable) -> tuple[tuple, tuple]:
+    """``(share key, wedged key)`` for a running probe.
+
+    The share key is the identity whose verdict the probe answers for. Availability is
+    profile-scoped (each profile has its own browser backend and its own credentials) and, for a
+    bound browser request, principal-scoped: one probe's verdict must never be handed to another
+    profile or another principal. Computed independently of ``check_fn_cache_scope`` so the
+    uncached probes share the same boundary.
+
+    The wedged key drops the request identity: a probe that has already gone silent will not
+    answer for another session either, so it is not restarted (and waited on) per principal
+    (#142062). Only the share key is used for handing a verdict around.
+    """
+    profile: Optional[str] = None
+    try:
+        from agent.secret_scope import serves_routed_profile
+        from hermes_constants import get_hermes_home_override
+        if serves_routed_profile():
+            override = get_hermes_home_override()
+            profile = str(Path(override).expanduser().resolve()) if override else "?"
+    except (ImportError, OSError):
+        profile = "?"
+    return (fn, profile, _probe_identity()), (fn, profile)
+
+
+def _probe_timeout(sweep: Optional["_ProbeSweep"]) -> Optional[float]:
+    """Seconds the next probe may take, or None when the sweep gave up.
+
+    A single wedged probe costs its own budget and nothing else; only a sweep
+    that has already lost several probes to the same failure stops probing.
+    """
+    if sweep is not None and sweep.exhausted():
+        return None
+    return _CHECK_FN_PROBE_TIMEOUT_SECONDS
+
+
+def _run_check_fn_bounded(fn: Callable, timeout: Optional[float]) -> tuple[bool, bool, str, bool]:
+    """Run *fn* on a worker thread and wait at most *timeout* seconds for a verdict.
+
+    Returns ``(answered, available, outcome, unanswered)``. ``answered`` is False
+    when the probe did not finish in time, or when the surrounding sweep gave
+    up and the probe was skipped; ``unanswered`` marks the first case only, so
+    the sweep counts the probes that really went silent. The worker is a
+    daemon, so a wedged probe cannot keep the process alive, and its late
+    verdict is discarded. The probe runs under the caller's contextvars, so the
+    profile secret scope and the Hermes-home override still resolve inside it.
+    """
+    if timeout is None:
+        return False, False, "skipped: too many availability probes went unanswered", False
+    key, wedged_key = _probe_share_key(fn)
+    with _check_fn_probe_lock:
+        wedged_at = _check_fn_wedged_probes.get(wedged_key)
+        if wedged_at is not None:
+            if time.monotonic() - wedged_at < _CHECK_FN_WEDGED_TTL_SECONDS:
+                return False, False, f"is not answering (a probe of it went silent {time.monotonic() - wedged_at:.0f}s ago)", True
+            del _check_fn_wedged_probes[wedged_key]
+        probe = _check_fn_probes.get(key)
+        if probe is None:
+            from agent.memory_provider import spawn_context_thread
+            probe = _CheckFnProbe()
+            _check_fn_probes[key] = probe
+            # The worker runs under the CALLER's contextvars (the profile
+            # secret scope and the Hermes-home override must resolve inside
+            # the probe), and its writes are published back to the caller.
+            spawn_context_thread(
+                probe.run, name="check-fn-probe", daemon=True, args=(fn,)
+            ).start()
+        elif probe.timed_out and not probe.done.is_set():
+            # The probe is already known to be wedged: wait no further, and do
+            # not start a second thread for it.
+            return False, False, f"did not answer within {probe.timeout_exceeded:.1f}s", True
+    if not probe.done.wait(timeout):
+        # The probe may have finished right at the deadline. A late answer is
+        # still an answer, and dropping the tool for a TTL window over a
+        # microsecond would be wrong.
+        if not probe.done.is_set():
+            probe.timed_out = True
+            probe.timeout_exceeded = timeout
+            with _check_fn_probe_lock:
+                _check_fn_wedged_probes[wedged_key] = time.monotonic()
+            return False, False, f"did not answer within {timeout:.1f}s", True
+    with _check_fn_probe_lock:
+        if _check_fn_probes.get(key) is probe:
+            del _check_fn_probes[key]
+    _publish_probe_context(probe.snapshot)
+    with _check_fn_probe_lock:
+        _check_fn_wedged_probes.pop(wedged_key, None)  # it answered: it is not wedged
+    if probe.error is not None:
+        raise probe.error
+    return True, probe.available, "returned %s" % ("True" if probe.available else "False"), False
+
+
+def _run_check_fn_uncached(fn: Callable, sweep: Optional[_ProbeSweep] = None) -> bool:
     """Run an availability check without cache/grace handling."""
     from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
-        return bool(fn())
+        answered, available, outcome, unanswered = _run_check_fn_bounded(
+            fn, _probe_timeout(sweep))
+        if not answered:
+            if sweep is not None and unanswered:
+                sweep.unanswered += 1
+            logger.warning(
+                "check_fn %s %s; dependent tools will be unavailable this turn",
+                _fn_label(fn), outcome)
+            return False
+        return available
     except UnscopedSecretError:
         # The verdict comes from the LIVE scope at the catch site, not from which registry branch
         # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
@@ -339,14 +541,19 @@ def _run_check_fn_uncached(fn: Callable) -> bool:
     return False
 
 
-def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls."""
+def _check_fn_cached(fn: Callable, sweep: Optional[_ProbeSweep] = None) -> bool:
+    """Return bool(fn()), TTL-cached across calls.
+
+    *sweep* is the availability round this call belongs to; it counts the
+    probes that failed to answer so a build with a broken environment stops
+    probing instead of waiting once per probe.
+    """
     now = time.monotonic()
     if fn in _NO_CACHE_CHECK_FNS:
-        return _run_check_fn_uncached(fn)
+        return _run_check_fn_uncached(fn, sweep)
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
-        return _run_check_fn_uncached(fn)
+        return _run_check_fn_uncached(fn, sweep)
     cache_key = (fn, scope)
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
@@ -354,13 +561,24 @@ def _check_fn_cached(fn: Callable) -> bool:
         if cached is not None:
             return cached[1]
     exc_info = None
+    timed_out = False
+    skipped = False
+    value, outcome = False, "returned False"
     try:
-        value, outcome = bool(fn()), "returned False"
+        answered, probed, outcome, unanswered = _run_check_fn_bounded(
+            fn, _probe_timeout(sweep))
+        value = probed
+        timed_out = unanswered
+        # Never probed (the sweep gave up first): the verdict says nothing about this tool, so it
+        # must not be cached for the TTL (#142062).
+        skipped = not answered and not unanswered
     except Exception as exc:
         # Keep the exception for the verdict log below (emitted outside this block, where
         # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
         # or its resolver, and a bare "raised" verdict reads as "nothing configured" (#87950).
         value, outcome, exc_info = False, "raised", exc
+    if timed_out and sweep is not None:
+        sweep.unanswered += 1
     # Resolved outside the cache lock: the registry snapshot takes its own lock.
     core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
     with _check_fn_cache_lock:
@@ -394,11 +612,14 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "so not searchable either); dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
-            log = logger.warning if exc_info else logger.info
+            # A probe that never answered is a bug in the probe, not a missing backend:
+            # it is actionable, so it keeps the WARNING verdict.
+            log = logger.warning if (exc_info or timed_out) else logger.debug if skipped else logger.info
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
-        _check_fn_cache[cache_key] = (now, False)
+        if not skipped:
+            _check_fn_cache[cache_key] = (now, False)
         return False
 
 
@@ -412,10 +633,10 @@ def _core_tools_gated_by(fn: Callable) -> set[str]:
     return {e.name for e in registry._snapshot_entries() if e.check_fn is fn and e.name in core}
 
 
-def _memo_check(fn: Callable, memo: dict[Callable, bool]) -> bool:
+def _memo_check(fn: Callable, memo: dict[Callable, bool], sweep: Optional[_ProbeSweep] = None) -> bool:
     """Per-pass memo on top of the TTL cache: one probe per distinct check_fn."""
     if fn not in memo:
-        memo[fn] = _check_fn_cached(fn)
+        memo[fn] = _check_fn_cached(fn, sweep)
     return memo[fn]
 
 
@@ -513,8 +734,9 @@ class ToolRegistry:
         mixed toolsets (``terminal`` + desktop-only ``read_terminal``) must not be gated
         by the first ``check_fn``."""
         memo: dict[Callable, bool] = {}
+        sweep = _ProbeSweep()
         members = (e for e in entries if e.toolset == toolset)
-        return any(not e.check_fn or _memo_check(e.check_fn, memo) for e in members)
+        return any(not e.check_fn or _memo_check(e.check_fn, memo, sweep) for e in members)
 
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
@@ -877,15 +1099,18 @@ class ToolRegistry:
 
     def get_definitions(self, tool_names: set[str], quiet: bool = False) -> list[dict]:
         """OpenAI-format schemas for the requested tools whose ``check_fn`` passes (or is
-        absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
+        absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly.
+        A probe that never answers is bounded, so it cannot hold this build (and the turn
+        waiting for it) open."""
         result = []
         check_results: dict[Callable, bool] = {}
+        sweep = _ProbeSweep()
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
                 continue
-            if entry.check_fn and not _memo_check(entry.check_fn, check_results):
+            if entry.check_fn and not _memo_check(entry.check_fn, check_results, sweep):
                 if not quiet:
                     logger.debug("Tool %s unavailable (check failed)", name)
                 continue

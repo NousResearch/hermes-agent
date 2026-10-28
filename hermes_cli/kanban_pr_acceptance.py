@@ -40,6 +40,13 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
     except subprocess.CalledProcessError as exc:
+        if (endpoint.startswith("repos/") and "/rules/branches/" in endpoint
+                and "HTTP 403" in (exc.stderr or "")
+                and "Upgrade to GitHub Pro or make this repository public to enable this feature."
+                in (exc.stderr or "")):
+            # A private free-tier repository cannot have rulesets. GitHub returns
+            # 403 for that product boundary even though this login can read the repo.
+            raise _RulesUnavailable from None
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
@@ -59,6 +66,10 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _RulesUnavailable(RuntimeError):
+    """GitHub confirms that this repository cannot use repository rulesets."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -133,17 +144,17 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _RulesUnavailable:
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
-            return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)
         runs = [run for page in pages for run in page["check_runs"]]
@@ -152,6 +163,16 @@ def collect_acceptance(contract: str, published_pr: str | None,
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
+        if not required:
+            for name, check, is_run in (
+                [(r["name"], r, True) for r in runs]
+                + [(s["context"], s, False) for s in statuses]
+            ):
+                outcome = check.get("conclusion") if is_run else check["state"]
+                receipt["checks"].append({"name": name, "id": check["id"],
+                    "url": check.get("html_url") or check.get("target_url"),
+                    "head_sha": check.get("head_sha", check.get("sha")),
+                    "classification": _classify(check, sha, outcome, is_run), "conclusion": outcome})
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
@@ -174,6 +195,9 @@ def collect_acceptance(contract: str, published_pr: str | None,
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
+            return receipt
+        if not required:
+            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"

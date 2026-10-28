@@ -883,6 +883,16 @@ def _handle_request_review(args: dict, **kw) -> str:
         metadata = _redact_metadata(metadata)
         _check(metadata is not None, "metadata could not be safely serialized")
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
+    # A handoff may name deliverables in the top-level ``artifacts`` param or inside
+    # ``metadata.artifacts`` (the DB layer stages either). Check existence over the
+    # union of both, so neither path can park the card in review naming a missing file.
+    declared = list(artifacts or ())
+    declared += _coerce_str_list(
+        metadata.get("artifacts") if isinstance(metadata, dict) else None,
+        "metadata.artifacts", "file paths", strip=True) or []
+    missing = [a for a in declared if not os.path.exists(os.path.expanduser(a))]
+    _check(not missing, f"kanban_request_review artifacts do not exist: {', '.join(missing)}. "
+                        f"Your task is still in-flight (no state change); fix the paths and retry.")
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)
     metadata = _stamp_worker_session_metadata(tid, metadata)

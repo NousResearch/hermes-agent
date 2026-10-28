@@ -1,12 +1,12 @@
 name: muse-harness
 repo: https://github.com/SnoobieJunes/hermes-muse-harness
-sha: 90150d9878fdd731052ea8e8f8f4bf24876ed5ea
+sha: 3ed321a1b496f3122a6dce7b133cc6dd911a47d7
 description: Drive local Muse Code over MSP so Wonder Full can call MCP tools.
 maintainer: SnoobieJunes
 tier: community
 category: tools
 requires_hermes: ">=0.21.0"
-version: "0.1.2"
+version: "0.1.3"
 docs_url: https://github.com/SnoobieJunes/hermes-muse-harness
 platforms: []
 capabilities:

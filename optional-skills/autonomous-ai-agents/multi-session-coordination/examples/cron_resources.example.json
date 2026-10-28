@@ -1,0 +1,36 @@
+{
+  "_doc": [
+    "Cron resource manifest for session-coord. Copy to the path your deployment",
+    "uses (default: ~/.hermes/state/cron_resources.json, overridable via the",
+    "HERMES_COORD_CRON_MANIFEST env var).",
+    "",
+    "Each key is a cron job id from your scheduler's job store. Fields:",
+    "  resources : list of coordination resource keys the job touches",
+    "  name      : human-readable job name (shown in advisories and notes)",
+    "  policy    : 'wait' (bounded wait for holders, then proceed — backups) or",
+    "              'skip' (skip the tick instantly — watchdogs and pollers)",
+    "  critical  : true = sessions must never let this job defer silently;",
+    "              claim-time advisories switch to an explicit decision brief",
+    "",
+    "This file is OPTIONAL. Missing or malformed -> all cron features are inert",
+    "and jobs run exactly as they always did (fail-open)."
+  ],
+  "nightly-backup-example": {
+    "resources": ["file:~/projects", "file:~/.config/myapp"],
+    "name": "Nightly projects backup",
+    "policy": "wait",
+    "critical": true
+  },
+  "fleet-watchdog-example": {
+    "resources": ["gpu-fleet"],
+    "name": "GPU fleet cost watchdog",
+    "policy": "skip",
+    "critical": false
+  },
+  "docs-refresh-example": {
+    "resources": ["skill:my-docs-skill"],
+    "name": "Weekly docs refresh",
+    "policy": "skip",
+    "critical": false
+  }
+}

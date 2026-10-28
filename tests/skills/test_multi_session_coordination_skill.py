@@ -1,0 +1,307 @@
+"""Tests for the multi-session-coordination optional skill.
+
+Covers the skill contract (frontmatter hardline, body structure, referenced
+support files) plus a compile check for the shipped CLI. No live network;
+the CLI's own selftest suites use scratch databases and are documented in the
+skill's Verification section. Cross-platform CI results must be verified per revision.
+"""
+import json
+import os
+import py_compile
+import re
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+import hermes_yaml as yaml
+import pytest
+
+SKILL_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "optional-skills"
+    / "autonomous-ai-agents"
+    / "multi-session-coordination"
+)
+SKILL_PATH = SKILL_DIR / "SKILL.md"
+
+
+def _frontmatter_and_body():
+    content = SKILL_PATH.read_text(encoding="utf-8")
+    assert content.startswith("---")
+    m = re.search(r"\n---\s*\n", content[3:])
+    assert m, "frontmatter must close with ---"
+    fm = yaml.safe_load(content[3 : m.start() + 3])
+    body = content[m.end() + 3 :]
+    return fm, body
+
+
+def test_skill_file_exists():
+    assert SKILL_PATH.is_file()
+
+
+def test_frontmatter_required_fields():
+    fm, _ = _frontmatter_and_body()
+    for field in ("name", "description", "version", "author", "license", "platforms"):
+        assert field in fm, f"missing frontmatter field: {field}"
+    assert fm["name"] == "multi-session-coordination"
+    assert fm["metadata"]["hermes"]["tags"]
+    assert fm["metadata"]["hermes"]["category"] == "autonomous-ai-agents"
+
+
+def test_description_hardline():
+    fm, _ = _frontmatter_and_body()
+    desc = fm["description"]
+    assert len(desc) <= 60, f"description is {len(desc)} chars; hardline is 60"
+    assert desc.endswith(".")
+
+
+def test_author_credits_human_first():
+    fm, _ = _frontmatter_and_body()
+    assert not fm["author"].startswith("Hermes Agent"), "human contributor must be credited first"
+    assert "Tobias Musser" in fm["author"]
+
+
+def test_platforms_audited():
+    fm, _ = _frontmatter_and_body()
+    assert set(fm["platforms"]) <= {"linux", "macos", "windows"}
+    assert "linux" in fm["platforms"] or "macos" in fm["platforms"]
+
+
+def test_body_structure():
+    _, body = _frontmatter_and_body()
+    for section in (
+        "## When to Use",
+        "## Prerequisites",
+        "## How to Run",
+        "## Quick Reference",
+        "## Procedure",
+        "## Pitfalls",
+        "## Verification",
+    ):
+        assert section in body, f"missing section: {section}"
+    assert len(SKILL_PATH.read_text(encoding="utf-8")) <= 100_000
+
+
+def test_procedure_has_numbered_steps_with_completion_criteria():
+    _, body = _frontmatter_and_body()
+    procedure = body.split("## Procedure", 1)[1].split("\n## ", 1)[0]
+    steps = re.findall(r"^### (\d+)\. (.+)$", procedure, re.M)
+    assert steps, "Procedure must expose ordered, actionable sections"
+    assert [int(n) for n, _ in steps] == list(range(1, len(steps) + 1))
+    assert "completion criterion" in procedure.lower()
+    assert "CLAIMED" in procedure and "Exit 75" in procedure
+
+
+def test_referenced_support_files_exist():
+    _, body = _frontmatter_and_body()
+    for ref in re.findall(r"`(?:<scripts-dir>|scripts|templates|examples)/[^`]+`", body):
+        rel = ref.strip("`")
+        if rel.startswith("<scripts-dir>/"):
+            rel = "scripts/" + rel[len("<scripts-dir>/"):]
+        assert (SKILL_DIR / rel).exists(), f"SKILL.md references missing file: {rel}"
+    for sub in ("scripts", "templates", "examples"):
+        assert (SKILL_DIR / sub).is_dir(), f"missing bundle subdir: {sub}"
+
+
+def test_cli_compiles():
+    py_compile.compile(str(SKILL_DIR / "scripts" / "session_coord.py"), doraise=True)
+
+
+def _git_index_mode(path: Path) -> str | None:
+    """Return the git index mode (e.g. ``100755``) for ``path``, or None outside a checkout."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-s", "--", str(path)],
+            cwd=str(path.parent),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.split(" ", 1)[0] if out.startswith("100") else None
+
+
+def test_selftests_present_and_runnable():
+    """The documented invocation is ``bash <suite>`` (SKILL.md Verification), so the
+    portable contract is a bash shebang plus, on POSIX, an exec bit. NTFS has no mode
+    bits, so on Windows the committed git mode is checked when a checkout is present,
+    and the shebang alone is accepted for archive/sdist installs (no ``.git``)."""
+    for suite in (
+        "selftest.sh",
+        "selftest_priority.sh",
+        "selftest_cron.sh",
+        "selftest_toggle.sh",
+    ):
+        p = SKILL_DIR / "scripts" / suite
+        assert p.is_file(), f"missing selftest suite: {suite}"
+        with p.open("rb") as fh:
+            first = fh.readline()
+        assert first.startswith(b"#!/bin/bash"), f"selftest lacks a bash shebang: {suite}"
+        if os.name == "nt":
+            mode = _git_index_mode(p)
+            if mode is not None:
+                assert mode == "100755", f"selftest not committed executable ({mode}): {suite}"
+            continue
+        assert p.stat().st_mode & 0o111, f"selftest not executable: {suite}"
+
+
+def test_no_machine_local_paths():
+    content = SKILL_PATH.read_text(encoding="utf-8")
+    assert "/home/" not in content
+    assert not re.search(r"[A-Z]:\\\\Users", content)
+    for p in SKILL_DIR.rglob("*"):
+        if p.is_file() and p.suffix in (".md", ".sh", ".py", ".json"):
+            text = p.read_text(encoding="utf-8", errors="replace")
+            assert "/Users" + "/" not in text, f"machine-local path in {p.name}"
+
+
+def test_complete_claim_is_revalidated_after_release(tmp_path, monkeypatch):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_COORD_DB", str(tmp_path / "board.db"))
+    script = SKILL_DIR / "scripts/session_coord.py"
+
+    def run(*args):
+        return subprocess.run([sys.executable, str(script), *args], env=os.environ.copy(),
+                              capture_output=True, text=True, timeout=15, check=False)
+
+    for actor in ("holder", "waiter"):
+        assert run("register", "--id", actor, "--task", "contract test").returncode == 0
+    assert run("claim", "--id", "holder", "--res", "res:second").returncode == 0
+    assert run("claim", "--id", "waiter", "--res", "res:first", "--res", "res:second").returncode == 75
+    state = json.loads(run("status", "--json").stdout)
+    assert not any(row["session_full"] == "waiter" for row in state["held_claims"])
+    assert run("done", "--id", "holder").returncode == 0
+    assert run("claim", "--id", "waiter", "--res", "res:first", "--res", "res:second").returncode == 0
+    state = json.loads(run("status", "--json").stdout)
+    assert {row["resource"] for row in state["held_claims"] if row["session_full"] == "waiter"} == {"res:first", "res:second"}
+
+
+def _coord_env(tmp_path):
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["HERMES_HOME"] = str(tmp_path / "home")
+    env["HERMES_COORD_DB"] = str(tmp_path / "board.db")
+    return env
+
+
+def _run_coord(env, *args, expected=0):
+    script = SKILL_DIR / "scripts/session_coord.py"
+    completed = subprocess.run(
+        [sys.executable, str(script), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == expected, completed.stderr or completed.stdout
+    return completed
+
+
+def test_stale_holder_is_reaped_and_waiter_can_claim(tmp_path):
+    env = _coord_env(tmp_path)
+    db_path = Path(env["HERMES_COORD_DB"])
+    for actor in ("holder", "waiter"):
+        _run_coord(env, "register", "--id", actor, "--task", "stale recovery")
+    _run_coord(env, "claim", "--id", "holder", "--res", "res:shared")
+    _run_coord(
+        env,
+        "claim",
+        "--id",
+        "waiter",
+        "--res",
+        "res:shared",
+        "--wait",
+        "--timeout",
+        "0",
+        expected=75,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE sessions SET last_seen=0 WHERE id='holder'")
+
+    status_result = json.loads(_run_coord(env, "status", "--id", "waiter", "--json").stdout)
+    with sqlite3.connect(db_path) as conn:
+        status = conn.execute(
+            "SELECT status FROM claims WHERE session_id='holder' AND resource='res:shared'"
+        ).fetchone()[0]
+    assert status == "reaped"
+    assert any(
+        row["resource"] == "res:shared" and row["status"] == "reaped"
+        for row in status_result["recent_expired_or_stolen"]
+    )
+    notice = _run_coord(env, "inbox", "--id", "waiter").stdout
+    assert "REAPED" in notice and "VERIFY" in notice
+    _run_coord(env, "claim", "--id", "waiter", "--res", "res:shared")
+
+
+def test_heartbeat_prevents_stale_reap(tmp_path):
+    env = _coord_env(tmp_path)
+    db_path = Path(env["HERMES_COORD_DB"])
+    _run_coord(env, "register", "--id", "holder", "--task", "long work")
+    _run_coord(env, "claim", "--id", "holder", "--res", "res:shared")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE sessions SET last_seen=0 WHERE id='holder'")
+
+    heartbeat = json.loads(_run_coord(env, "heartbeat", "--id", "holder", "--json").stdout)
+    assert heartbeat["ok"] is True
+    _run_coord(env, "status", "--id", "holder", "--json")
+    with sqlite3.connect(db_path) as conn:
+        status = conn.execute(
+            "SELECT status FROM claims WHERE session_id='holder' AND resource='res:shared'"
+        ).fetchone()[0]
+    assert status == "held"
+
+
+def test_claim_rejects_malformed_id_before_creating_session(tmp_path):
+    env = _coord_env(tmp_path)
+    result = _run_coord(
+        env,
+        "claim",
+        "--id",
+        "bad-id\n# advisory",
+        "--res",
+        "res:shared",
+        expected=1,
+    )
+    assert "malformed" in result.stderr
+    with sqlite3.connect(env["HERMES_COORD_DB"]) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    assert count == 0
+
+
+@pytest.mark.platforms("posix")
+def test_coord_run_releases_claim_after_command_failure(tmp_path):
+    env = _coord_env(tmp_path)
+    wrapper = SKILL_DIR / "scripts/coord_run.sh"
+    completed = subprocess.run(
+        [
+            "bash",
+            str(wrapper),
+            "--task",
+            "failing command",
+            "--res",
+            "res:wrapped",
+            "--",
+            sys.executable,
+            "-c",
+            "raise SystemExit(7)",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 7, completed.stderr or completed.stdout
+    state = json.loads(_run_coord(env, "status", "--json").stdout)
+    assert not any(row["resource"] == "res:wrapped" for row in state["held_claims"])

@@ -1,0 +1,24 @@
+name: search-sources
+title: Search Sources
+repo: https://github.com/ShowUNow/hermes-search-sources
+sha: 27e9502ae095ba0979ca23270f33b9bfa698b0e2
+description: "Shows the pages a turn searched or fetched as a 'Searched N pages' capsule under the reply and a Sources side panel in Hermes Desktop; cited pages first. Reads web search / fetch tools of Hermes, the plugin catalog and common MCP servers, JSON or Markdown output. Disclosure — stores page URLs/titles/summaries under plugin-data/search-sources; appends one ::search-sources paragraph to Desktop replies; the Desktop half looks up site icons (the app's resolver, then Google and DuckDuckGo icon services and the site itself unless set to App only / Off); no telemetry."
+maintainer: ShowUNow
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/ShowUNow/hermes-search-sources#readme
+version: "0.2.0"
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

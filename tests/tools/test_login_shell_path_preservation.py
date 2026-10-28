@@ -136,12 +136,12 @@ def test_dropped_spawn_path_dirs_return_after_the_login_path(tmp_path, monkeypat
 
 @pytest.mark.platforms("posix")
 def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_path, monkeypatch):
-    """Background commands run ``bash -lic`` with no snapshot, so a ``~/.profile`` that
-    resets PATH Debian-style dropped every parent-only dir: the terminal tool's background
-    spawn re-appends them through the same helper as the foreground, profile dirs first."""
-    import time
+    """Background commands run ``bash -lic`` with no snapshot, so a login profile that resets
+    PATH Debian-style dropped every parent-only dir: the terminal tool's background spawn
+    re-appends them through the same helper as the foreground, profile dirs first."""
     from types import SimpleNamespace
 
+    from tests.waiting import wait_until
     from tools.process_registry import ProcessRegistry
     from tools.terminal_tool_background import _spawn
 
@@ -149,25 +149,21 @@ def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_pat
     for d in (profile_bin, parent_bin):
         d.mkdir()
     _exe(parent_bin, "only-in-parent")
-    # Spawns re-derive HOME (a host keeps the real one), so pin the profile-home mode: the
-    # login shell then reads {HERMES_HOME}/home/.profile on every runner.
-    from hermes_constants import get_hermes_home
-
-    login_home = get_hermes_home() / "home"
-    login_home.mkdir(parents=True, exist_ok=True)
-    (login_home / ".profile").write_text(f'PATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n')
-    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+    # Stand-in login shell whose profile resets PATH. Runner login shells pick their own
+    # HOME and startup files (a CI runner's never read a test's ~/.profile), so the reset
+    # is pinned here; the spawn env, argv and restore helper are the production ones.
+    login_shell = tmp_path / "login-shell"
+    login_shell.write_text(f'#!/bin/bash\nPATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n'
+                           'exec /bin/bash --noprofile --norc -c "$2"\n')
+    login_shell.chmod(0o755)
+    monkeypatch.setattr("tools.process_registry._find_shell", lambda: str(login_shell))
     registry = ProcessRegistry()
     session = _spawn(registry, env=SimpleNamespace(env={"PATH": f"{parent_bin}:/usr/bin:/bin"}),
-                     env_type="local", command='only-in-parent; printf "HOME=%s\\nPATH=%s\\n" "$HOME" "$PATH"',
+                     env_type="local", command='only-in-parent; printf "PATH=%s\\n" "$PATH"',
                      cwd=str(tmp_path), effective_task_id="t", task_id="t", session_key="",
                      effective_pty=False)
-    deadline = time.monotonic() + 30
-    while not session.exited and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert session.exited, session.output_buffer
+    assert wait_until(lambda: session.exited, timeout=30), session.output_buffer
     assert "parent-bin" in session.output_buffer.split(), session.output_buffer
-    assert f"HOME={login_home}" in session.output_buffer.splitlines(), session.output_buffer
     path_line = next(ln for ln in session.output_buffer.splitlines() if ln.startswith("PATH="))
     entries = path_line.removeprefix("PATH=").split(":")
     assert entries[0] == str(profile_bin)

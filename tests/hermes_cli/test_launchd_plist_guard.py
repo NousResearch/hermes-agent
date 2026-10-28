@@ -7,6 +7,7 @@ XML that is not well-formed, so one hand-edited LaunchAgent plist aborted the
 whole ``hermes update`` post-pull cleanup instead of being skipped.
 """
 import os
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -37,6 +38,33 @@ GOOD_PLIST = (
     "    <string>--port</string>\n    <string>9119</string>\n"
     "  </array>\n</dict>\n</plist>\n"
 )
+
+
+SYSTEM_HERMES_PLIST = GOOD_PLIST.replace(
+    "ai.hermes.dashboard.test", "com.nousresearch.hermes-dashboard"
+)
+
+
+def test_system_launchagent_scan_does_not_open_non_hermes_plists(tmp_path):
+    crowdstrike = tmp_path / "com.crowdstrike.falcon.UserAgent.plist"
+    crowdstrike.write_text(MALFORMED_PLIST, encoding="utf-8")
+    hermes = tmp_path / "com.nousresearch.hermes-dashboard.plist"
+    hermes.write_text(SYSTEM_HERMES_PLIST, encoding="utf-8")
+    opened: list[str] = []
+    real_open = open
+
+    def track_open(path, *args, **kwargs):
+        if Path(path).parent == tmp_path:
+            opened.append(Path(path).name)
+        return real_open(path, *args, **kwargs)
+
+    with mock.patch("builtins.open", side_effect=track_open), mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)
+    ):
+        jobs = main_dashboard._loaded_launchd_backend_jobs([("system-agent", tmp_path)])
+
+    assert [job[1] for job in jobs] == ["com.nousresearch.hermes-dashboard"]
+    assert opened == [hermes.name]
 
 
 def test_malformed_plist_is_skipped_not_fatal(tmp_path):

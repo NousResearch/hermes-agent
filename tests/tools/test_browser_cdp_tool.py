@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 from typing import Any, Dict, List
 
@@ -197,7 +198,7 @@ def test_browser_level_redacts_secret_result(cdp_server):
     assert result["success"] is True
     serialized = json.dumps(result)
     assert "CDPSECRETRESULT" not in serialized
-    assert result["result"]["result"]["value"].startswith("sk-")
+    assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", result["result"]["result"]["value"])
 
 
 def test_screenshot_base64_passes_through_unredacted(cdp_server):
@@ -269,7 +270,7 @@ def test_binary_payload_field_sibling_string_still_redacted(cdp_server):
     assert result["success"] is True
     assert result["result"]["data"] == shot_b64
     assert "CDPSECRETSIBLING" not in json.dumps(result)
-    assert result["result"]["note"].startswith("sk-")
+    assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", result["result"]["note"])
 
 
 def test_get_response_body_base64_discriminator_passes_through(cdp_server):

@@ -1,6 +1,7 @@
 """Tests for secret exfiltration prevention in browser and web tools."""
 
 import json
+import re
 import socket
 from unittest.mock import patch
 import pytest
@@ -173,6 +174,6 @@ class TestBrowserSupervisorRedaction:
         result = snapshot.to_dict()
         serialized = str(result)
         assert "SUPERVISORDIALOGSECRET" not in serialized
-        assert result["pending_dialogs"][0]["message"].startswith("Enter API key sk-")
-        assert result["pending_dialogs"][0]["default_prompt"].startswith("sk-")
-        assert result["recent_dialogs"][0]["message"].startswith("Recent key sk-")
+        assert re.fullmatch(r"Enter API key \*\*\*#[0-9a-f]{6}", result["pending_dialogs"][0]["message"])
+        assert re.fullmatch(r"\*\*\*#[0-9a-f]{6}", result["pending_dialogs"][0]["default_prompt"])
+        assert re.fullmatch(r"Recent key \*\*\*#[0-9a-f]{6}", result["recent_dialogs"][0]["message"])

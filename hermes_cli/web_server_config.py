@@ -479,6 +479,17 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
 _BARE_CUSTOM_SELECTORS = frozenset({"custom", "local"})
 
 
+def _same_endpoint(a: Any, b: Any) -> bool:
+    """Trailing-slash and case insensitive URL equality (``_save_custom_provider`` dedups the same way)."""
+    return str(a or "").strip().rstrip("/").lower() == str(b or "").strip().rstrip("/").lower()
+
+
+def _entry_points_elsewhere(entry: Any, base_url: str) -> bool:
+    """A configured provider block that names a DIFFERENT host than the submitted endpoint. Its
+    credentials belong to that host; a block for the same host (e.g. its ``key_env``) still applies."""
+    return isinstance(entry, dict) and not _same_endpoint(entry.get("base_url"), base_url)
+
+
 def _is_explicit_custom_endpoint(provider: str, base_url: str) -> bool:
     """A bare ``custom`` / ``local`` pick that carries its own endpoint URL defines a route; it is
     never a reference to an already-configured provider."""
@@ -508,7 +519,8 @@ def _validated_main_model_selection(
     user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
     if explicit_endpoint:
         user_providers = {k: v for k, v in user_providers.items()
-                          if str(k).strip().lower() not in _BARE_CUSTOM_SELECTORS}
+                          if not (str(k).strip().lower() in _BARE_CUSTOM_SELECTORS
+                                  and _entry_points_elsewhere(v, base_url))}
     # The submitted endpoint is seeded as a current bare-``custom`` route so the credential step
     # keeps it: arriving from another provider it re-resolves ``custom`` from config and would
     # validate the saved ``model.base_url`` (and its key) instead of the endpoint being saved.
@@ -823,9 +835,10 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     endpoint_already_known = (
         provider_lc in {"custom", "local"} and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
     model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
-    if not explicit_endpoint:
-        # A submitted endpoint carries its own key (or none); a ``providers.custom`` block shares
-        # the selector's name, and hydrating from it would pair the new URL with the old host's key.
+    if not (explicit_endpoint and _entry_points_elsewhere(provider_entry, base_url)):
+        # A submitted endpoint carries its own key (or none); a ``providers.custom`` block for
+        # ANOTHER host shares the selector's name, and hydrating from it would pair the new URL with
+        # that host's key. A block for the same host (its ``key_env``) still supplies the credential.
         _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
 

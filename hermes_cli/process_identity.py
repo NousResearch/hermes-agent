@@ -9,6 +9,7 @@ root — no launcher→worker chains left holding ``.pyd`` locks.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -17,9 +18,11 @@ import platform
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterator, Optional, Sequence
 
 from utils import atomic_json_write
 
@@ -84,6 +87,36 @@ def process_birth(proc) -> float:
     return float(proc.create_time())
 
 
+def worker_birth(proc) -> float:
+    """The birth a managed worker's identity fences compare: its hello, its scope and the Kanban
+    owner receipt. :func:`process_birth`, except on Linux, where psutil's ``create_time()`` adds the
+    ``/proc/stat`` btime it re-reads on every call. WSL2 re-anchors btime after host sleep, so the
+    owner read a live worker's birth shifted from the one it reported and refused it (KB-12). The
+    kernel's start ticks since boot (``monotonic=True``) never move. The spawn ledger keeps
+    :func:`process_birth`: its persisted epoch births must keep matching across an update.
+    Raises ``psutil.Error`` like ``create_time()``.
+    """
+    import psutil
+    if getattr(psutil, "LINUX", False):
+        return float(proc._proc.create_time(monotonic=True))
+    return process_birth(proc)
+
+
+def boot_start(proc) -> Optional[float]:
+    """Seconds from boot to the start of the ``psutil.Process`` *proc* on Linux; ``None`` elsewhere.
+
+    The ledger's epoch ``create_time`` is :func:`process_birth`, which on Linux is the kernel's
+    start ticks plus the ``/proc/stat`` btime psutil re-reads on every call, so an NTP or VM-resume
+    clock step moves it by whole seconds and a live process stops matching its entry. Ledger
+    entries carry this alongside it (``boot_start`` / ``spawner_boot``) and compare it exactly.
+    Raises ``psutil.Error`` like ``create_time()``.
+    """
+    import psutil
+    if getattr(psutil, "LINUX", False):
+        return float(proc._proc.create_time(monotonic=True))
+    return None
+
+
 def _process_create_time(pid: Optional[int] = None) -> Optional[float]:
     """:func:`process_birth` of ``pid`` (default: this process); ``None`` when psutil can't say."""
     try:
@@ -91,6 +124,47 @@ def _process_create_time(pid: Optional[int] = None) -> Optional[float]:
 
         return process_birth(psutil.Process(os.getpid() if pid is None else pid))
     except Exception:
+        return None
+
+
+@functools.lru_cache(maxsize=1)
+def _live_boot_id() -> Optional[str]:
+    """The kernel's id for the running boot (Linux); ``None`` elsewhere or when unreadable."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+# No live process has a negative boot_start, so an entry from an earlier boot never matches.
+_EARLIER_BOOT = -1.0
+
+
+def _entry_boot(entry: dict, key: str) -> Optional[float]:
+    """The entry's boot-relative birth ``key`` (``boot_start``/``spawner_boot``) as exact proof.
+
+    Boot ticks restart at every boot while the ledger survives reboots (and early-boot services
+    get the same pid at the same tick), so they identify a process only within the boot that
+    recorded them: an entry from another boot is :data:`_EARLIER_BOOT`, matching nothing alive.
+    ``None`` (epoch match) when either boot id is unknown.
+    """
+    recorded, live = entry.get("boot_id"), _live_boot_id()
+    if not isinstance(recorded, str) or live is None:
+        return None
+    return entry.get(key) if recorded == live else _EARLIER_BOOT
+
+
+def _verified_boot_start(pid: Optional[int], create_time: Optional[float]) -> Optional[float]:
+    """:func:`boot_start` of ``pid`` while it still matches ``create_time``; ``None`` when unproven
+    or when the boot is unidentifiable (ticks alone repeat across reboots)."""
+    if not isinstance(pid, int) or pid <= 0 or create_time is None or _live_boot_id() is None:
+        return None
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        return boot_start(proc) if _same_incarnation(proc, create_time) else None
+    except Exception:  # health: allow BLE001 -- best-effort probe like _process_create_time: any failure is "unproven"
         return None
 
 
@@ -155,6 +229,12 @@ class LedgerEntry:
     # `serve --isolated`: opted out of the host singleton (Desktop's SSH backend for another
     # machine). Attach-first readers must never adopt it; argv is truncated, so this is canonical.
     isolated: bool = False
+    # Linux boot-relative births (:func:`boot_start`) of the process and its spawner: exact
+    # identity across clock steps, within the boot named by ``boot_id`` (:func:`_entry_boot`).
+    # ``None`` elsewhere and in older entries (epoch match only).
+    boot_start: Optional[float] = None
+    spawner_boot: Optional[float] = None
+    boot_id: Optional[str] = None
 
 
 def _ledger_path() -> Path:
@@ -203,12 +283,18 @@ def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
     return entries
 
 
-def _same_incarnation(proc, create_time: Optional[float]) -> bool:
-    """Does the live ``proc`` match a recorded ``create_time`` (2 s tolerance; ``None`` matches)?"""
+def _same_incarnation(proc, create_time: Optional[float], boot: Optional[float] = None) -> bool:
+    """Does the live ``proc`` match a recorded birth? A recorded ``boot`` (:func:`boot_start`)
+    compares exactly where the live one is readable; otherwise ``create_time`` (2 s tolerance;
+    ``None`` matches)."""
+    if boot is not None and (live_boot := boot_start(proc)) is not None:
+        return live_boot == float(boot)
     return create_time is None or abs(process_birth(proc) - float(create_time)) < 2.0
 
 
-def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool = False) -> Optional[bool]:
+def _pid_alive_matches(
+    pid: int, create_time: Optional[float], *, strict: bool = False, boot: Optional[float] = None,
+) -> Optional[bool]:
     """True/False when provable; ``None`` when psutil can't say."""
     try:
         import psutil
@@ -216,13 +302,22 @@ def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool =
         return None
     try:
         proc = psutil.Process(int(pid))
+        # ``strict`` is positive proof (an exact epoch birth); a clock step only withholds it.
         if strict:
+            # Windows: skip the status() read entirely. psutil's Windows status path
+            # (NtQuerySystemInformation) does not release the GIL, so under load it freezes every
+            # other Python thread in the process for minutes (#142085) — and Windows has no POSIX
+            # zombies, so the STATUS_ZOMBIE comparison had nothing to contribute there anyway. The
+            # non-strict branch right below already makes this exact skip.
+            if os.name == "nt":
+                return (create_time is not None and process_birth(proc) == create_time
+                        and proc.is_running())
             return (create_time is not None and process_birth(proc) == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
         # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
         # not report it as a live pre-update survivor. Windows has no zombies (and status() is slow there).
-        return _same_incarnation(proc, create_time) and (
+        return _same_incarnation(proc, create_time, boot) and (
             os.name == "nt" or proc.status() != getattr(psutil, "STATUS_ZOMBIE", "zombie"))
     except psutil.NoSuchProcess:
         return False
@@ -243,6 +338,7 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     tag = parse_spawn_tag(os.environ.get(SPAWN_ENV_VAR))
     spawner_pid, spawner_create = (tag.spawner_pid, tag.spawner_create) if tag else _desktop_spawner_identity()
     entry = _new_entry(os.getpid(), _process_create_time(), purpose, project_root, spawner_pid, spawner_create)
+    entry.spawner_boot = _verified_boot_start(spawner_pid, spawner_create)
     entry.hermes_home = hermes_home_key()
     if detail:
         try:
@@ -282,10 +378,33 @@ def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
     return is_desktop_ssh_backend_argv(list(sys.argv[1:] if argv is None else argv))
 
 
-def is_local_desktop_backend() -> bool:
-    """The backend Desktop spawned on this machine: the local pool spawn's credential, never the
-    SSH spawn (its token arrives as a file on argv, and that host is another computer)."""
-    return os.environ.get("HERMES_DESKTOP") == "1" and os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN", "") != ""
+# Set while this process works for the Desktop app on its own machine: one request from, or one turn of
+# a chat created by, a client ``local_desktop_client`` accepted. The gateway serves the Desktop, the CLI,
+# the TUI and bots from one process, so this is a property of the activity, never of the process.
+_SERVING_LOCAL_DESKTOP: ContextVar[bool] = ContextVar("hermes_serving_local_desktop", default=False)
+
+
+@contextmanager
+def serving_local_desktop(active: bool) -> Iterator[None]:
+    """Mark the enclosed activity (and threads it hands its context to) as work for the local Desktop."""
+    token = _SERVING_LOCAL_DESKTOP.set(bool(active) or _SERVING_LOCAL_DESKTOP.get())
+    try:
+        yield
+    finally:
+        _SERVING_LOCAL_DESKTOP.reset(token)
+
+
+def serves_local_desktop_now() -> bool:
+    return _SERVING_LOCAL_DESKTOP.get()
+
+
+def local_desktop_client(identity: Optional[dict], declared: object) -> bool:
+    """A connected client is the Desktop app on this machine when it says so (it knows its connection
+    mode) AND it redeemed a native ticket, which only this machine's private control socket mints, for
+    this OS user. Neither alone: the CLI and TUI hold native tickets too, and the claim is the client's
+    word. A remote Desktop reaches a backend through SSH, URL or Cloud credentials, never a native ticket."""
+    return (declared is True and isinstance(identity, dict) and identity.get("provider") == "local"
+            and identity.get("native_bootstrap") is True)
 
 
 def _desktop_spawner_identity() -> tuple[Optional[int], Optional[float]]:
@@ -312,7 +431,8 @@ def _new_entry(
     spawner_pid: Optional[int], spawner_create: Optional[float],
 ) -> LedgerEntry:
     return LedgerEntry(
-        pid, create_time, purpose, install_id(project_root), spawner_pid, spawner_create, time.time(), argv=""
+        pid, create_time, purpose, install_id(project_root), spawner_pid, spawner_create, time.time(), argv="",
+        boot_start=_verified_boot_start(pid, create_time), boot_id=_live_boot_id(),
     )
 
 
@@ -332,7 +452,7 @@ def _append_entry(entry: LedgerEntry) -> bool:
             e for e in entries
             if isinstance(e.get("pid"), int)
             and e["pid"] != entry.pid
-            and _pid_alive_matches(e["pid"], e.get("create_time")) is not False
+            and entry_still_running(e)
         ]
         pruned.append(asdict(entry))
         try:
@@ -363,6 +483,7 @@ def register_child(pid: int, purpose: str, *, project_root: Optional[Path] = Non
     if child_create is None:
         return False
     entry = _new_entry(pid, child_create, purpose, project_root, os.getpid(), _process_create_time())
+    entry.spawner_boot = _verified_boot_start(os.getpid(), entry.spawner_create)
     try:
         import psutil
 
@@ -395,8 +516,18 @@ def ledger_entries(
         if (all_installs or e.get("install") == want_install)
         and isinstance(e.get("pid"), int)
         and (_pid_alive_matches(e["pid"], e.get("create_time"), strict=True) is True
-             if verified_only else _pid_alive_matches(e["pid"], e.get("create_time")) is not False)
+             if verified_only else _pid_alive_matches(e["pid"], e.get("create_time"), boot=_entry_boot(e, "boot_start")) is not False)
     ]
+
+
+def entry_still_running(entry: dict) -> bool:
+    """Is the ledger *entry*'s process still the recorded incarnation (``None`` from psutil
+    counts as running)? Exact boot ticks within their boot survive a clock step; an entry
+    without them keeps the 2 s epoch match, so a step reads it as a reused pid."""
+    pid = entry.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    return _pid_alive_matches(pid, entry.get("create_time"), boot=_entry_boot(entry, "boot_start")) is not False
 
 
 def spawner_is_dead(entry: dict) -> Optional[bool]:
@@ -404,17 +535,19 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
     spawner_pid = entry.get("spawner_pid")
     if not isinstance(spawner_pid, int) or spawner_pid <= 0:
         return None
-    alive = _pid_alive_matches(spawner_pid, entry.get("spawner_create"))
+    # A spawner recorded in an earlier boot is dead (:func:`_entry_boot`), as the epoch match says.
+    boot = _entry_boot(entry, "spawner_boot")
+    alive = _pid_alive_matches(spawner_pid, entry.get("spawner_create"), boot=boot)
     return None if alive is None else not alive
 
 
-def _terminate_then_kill(pid: int, create_time: Optional[float]) -> bool:
+def _terminate_then_kill(pid: int, create_time: Optional[float], boot: Optional[float] = None) -> bool:
     """SIGTERM, 2 s grace, then SIGKILL. False when the incarnation moved on or is already gone."""
     try:
         import psutil
 
         proc = psutil.Process(pid)
-        if not _same_incarnation(proc, create_time):
+        if not _same_incarnation(proc, create_time, boot):
             return False  # PID reused since registration — never signal a stranger
         proc.terminate()
         try:
@@ -489,7 +622,7 @@ def reap_orphaned_backend_owner(
     try:
         if kill_fn is not None:
             kill_fn(pid)
-        elif not _terminate_then_kill(pid, entry.get("create_time")):
+        elif not _terminate_then_kill(pid, entry.get("create_time"), _entry_boot(entry, "boot_start")):
             return None
     except Exception:
         logger.debug("backend owner reap failed for %s", entry, exc_info=True)
@@ -524,7 +657,7 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
                 import psutil
 
                 proc = psutil.Process(pid)
-                if not _same_incarnation(proc, entry.get("create_time")):
+                if not _same_incarnation(proc, entry.get("create_time"), _entry_boot(entry, "boot_start")):
                     continue  # PID reused since registration
                 # Windows: descendants (npx.cmd → node.exe) have no pgid to group-kill and
                 # reparent with ParentId=null when the direct child exits first (#61059), so

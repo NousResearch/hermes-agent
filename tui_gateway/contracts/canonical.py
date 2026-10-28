@@ -12,11 +12,11 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, ProjectRef
+from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
-from .registry import canonical_method
+from .registry import canonical_method, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ class PromptCancelParams(Params):
 
 
 canonical_method("prompt.cancel", params=PromptCancelParams, result=AdmissionStatus,
-                 doc="Retire a still-queued admission; a started one is unaffected.")
+                 doc="Retire a queued admission; a started one is interrupted in the same call.")
 
 
 class PromptResolveUnknownParams(Params):
@@ -169,7 +169,6 @@ class SessionInventoryFields(Result):
     tool_availability: dict[str, JsonValue] | None = None
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
-    browser_backend_notice: str | None = None
     unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
 
 
@@ -237,6 +236,7 @@ class SessionStats(Result):
     model: str
     provider: str
     fallback_model: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
@@ -510,7 +510,7 @@ canonical_method("worker.persist", params=WorkerPersistParams, result=WorkerPers
                  doc="Sequence-fenced typed persistence write from an adopted worker.")
 
 
-# ── hosted rooms (canonical-only verbs) ───────────────────────────────────────────────────────
+# ── hosted rooms ─────────────────────────────────────────────────────────────────────────────────
 
 
 class GroupsAttachmentUploadParams(RoomParams):
@@ -534,8 +534,12 @@ class RoomAttachment(OpenModel):
     event_id: str | None = None
 
 
+_UPLOAD_DOC = "Store one attachment for a later groups.send manifest (idempotent per upload_id)."
+# Both routes serve the room byte verbs with one wire, so a group composer attaches files the same
+# way whichever backend owns the room; the canonical table keeps its closed-set key check.
 canonical_method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment,
-                 doc="Store one attachment for a later groups.send manifest (idempotent per upload_id).")
+                 doc=_UPLOAD_DOC)
+method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment, doc=_UPLOAD_DOC)
 
 
 class GroupsAttachmentDownloadParams(RoomParams):
@@ -547,8 +551,11 @@ class RoomAttachmentBytes(RoomAttachment):
     data_base64: str
 
 
+_DOWNLOAD_DOC = "Read one committed attachment for a live room viewer."
 canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams,
-                 result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer.")
+                 result=RoomAttachmentBytes, doc=_DOWNLOAD_DOC)
+method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=RoomAttachmentBytes,
+       doc=_DOWNLOAD_DOC)
 
 
 class GroupsDiscardParams(RoomParams):

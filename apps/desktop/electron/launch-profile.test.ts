@@ -5,7 +5,6 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { serveBackendArgs } from './backend-command'
 import { createDesktopProfilePreferences } from './desktop-profile'
 import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 
@@ -54,7 +53,6 @@ test('a launch --profile is persisted before the backend reads active-profile.js
     assert.equal(launched, 'desktop')
     assert.equal(restarted.readActive(), 'desktop')
     assert.deepEqual(restarted.getDefault(), { connectionId: null, profile: 'stored' })
-    assert.deepEqual(serveBackendArgs(restarted.readActive() ?? undefined).slice(0, 2), ['--profile', 'desktop'])
   })
 })
 

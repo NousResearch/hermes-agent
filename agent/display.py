@@ -18,7 +18,8 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import (
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
 logger = logging.getLogger(__name__)
 
@@ -323,28 +324,6 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}" if isinstance(limit, int) and limit > 1 else f"L{offset}"
 
 
-def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
-    """Replace every occurrence of a secret-looking browser_type value with its redacted form.
-
-    Backends echo the attempted input in error strings/metadata, so it is swapped before
-    reaching logs, callbacks, the model, or chat history. Forced regardless of
-    ``security.redact_secrets``: a leaked typed credential is a security boundary.
-    """
-    needle = "" if typed_text is None else str(typed_text)
-    redacted = redact_sensitive_text(needle, force=True) if needle else needle
-    if redacted == needle:
-        return value
-    if isinstance(value, str):
-        return value.replace(needle, redacted)
-    if isinstance(value, dict):
-        return {key: redact_browser_typed_text_for_display(item, typed_text) for key, item in value.items()}
-    if isinstance(value, list):
-        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
-    if isinstance(value, tuple):
-        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
-    return value
-
-
 def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
     """Return a copy of tool args safe for logs/progress UI (masks ``browser_type`` secrets)."""
     if not isinstance(args, dict):
@@ -437,13 +416,24 @@ def _preview_read_file(args: dict, max_len: int) -> str | None:
     return None if label is None else _tail_trunc(f"{label} {_read_file_line_label(args)}".strip(), max_len) or None
 
 
+def _memory_first_op(args: dict) -> tuple[dict, str]:
+    """The op a memory progress line shows and a ``" (N more)"`` suffix for the rest of an
+    ``operations[]`` batch (the advertised shape); legacy top-level single-op args are their own op."""
+    ops = args.get("operations")
+    if not isinstance(ops, list) or not ops:
+        return args, ""
+    first = ops[0] if isinstance(ops[0], dict) else {}
+    return first, (f" ({t('cli.shared.n_more', count=len(ops) - 1)})" if len(ops) > 1 else "")
+
+
 def _preview_memory(args: dict, _max_len: int) -> str:
-    action, target = args.get("action", ""), args.get("target", "")
+    op, more = _memory_first_op(args)
+    action, target = op.get("action", ""), args.get("target", "")
     if action == "add":
-        return f"+{target}: \"{_clip(_oneline(args.get('content', '')), 25)}\""
+        return f"+{target}: \"{_clip(_oneline(op.get('content') or op.get('new_text') or ''), 25)}\"{more}"
     if action in ("replace", "patch", "remove"):
-        old = _oneline(args.get("old_text") or "") or t("display.preview.missing_old_text")
-        return f"{'-' if action == 'remove' else '~'}{target}: \"{old[:20]}\""
+        old = _oneline(op.get("old_text") or "") or t("display.preview.missing_old_text")
+        return f"{'-' if action == 'remove' else '~'}{target}: \"{old[:20]}\"{more}"
     return action
 
 
@@ -1014,6 +1004,27 @@ def _degraded_suffix(data: dict) -> str:
     return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
 
 
+# Tools whose refused calls are the agent's own retry loop, not something the user must act on: a
+# skill_manage write refused by the size cap, a stale old_string or a guard is re-planned by the
+# agent. Renderers show these rows neutrally; the failure still reaches the model and the loop
+# guardrail unchanged (display-only).
+NEUTRAL_FAILURE_TOOLS = frozenset({"skill_manage"})
+# Except a batch whose rollback failed (tools/skill_manager_batch.py::_rollback): partial changes
+# are left on disk, which the user does have to see.
+_UNSAFE_FAILURE_MARKER = "ROLLBACK FAILED"
+
+
+def is_neutral_failure(tool_name: str, result: Any) -> bool:
+    """True when a failed call of ``tool_name`` should render neutrally (see NEUTRAL_FAILURE_TOOLS)."""
+    if tool_name not in NEUTRAL_FAILURE_TOOLS:
+        return False
+    # Only the error text: a refused patch also returns a file_preview of the skill, whose own
+    # prose may mention the marker.
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    error = data.get("error") if isinstance(data, dict) else result
+    return _UNSAFE_FAILURE_MARKER not in str(error or "")
+
+
 def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
@@ -1048,10 +1059,14 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         err = data.get("error") or data.get("message")
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+        if shape_err := shape_failure_error(data):
+            return True, f" [{_trim_error(shape_err)}]"
+        # A JSON object is judged by its top-level shape only. An ``error`` key nested
+        # inside a success payload is data the tool read (a page's own validation
+        # message inside browser_cdp's ``result``), not a failure of the call.
+        return False, ""
     # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
-    if isinstance(result, str) and (
-        '"error"' in result[:500].lower() or '"failed"' in result[:500].lower() or result.startswith("Error")
-    ):
+    if isinstance(result, str) and has_failure_marker(result):
         return True, t("display.failure.generic")
     return False, ""
 
@@ -1074,9 +1089,60 @@ def _cute_path(p) -> str:
     return "." * limit if limit <= 3 else "..." + p[-(limit - 3):]
 
 
+class _CuteRow(str):
+    """A rendered completion row that also keeps its emoji, verb and detail, so the CLI's glyph
+    layout can rebuild the row without re-parsing the padded ``┊ emoji verb`` string."""
+
+    emoji: str
+    verb: str
+    detail: str
+
+    def __new__(cls, text: str, emoji: str, verb: str, detail: str):
+        row = super().__new__(cls, text)
+        row.emoji, row.verb, row.detail = emoji.strip(), verb, detail
+        return row
+
+    def __reduce__(self):  # copy/pickle as a plain str; the custom __new__ can't be re-called bare
+        return (str, (str(self),))
+
+
 def _cute_row(emoji: str, verb: str, detail: str = "") -> str:
     """``┊ {emoji} {verb:9} {detail}`` -- verb column from ``display.cute.verb.<verb>`` (9 cells wide)."""
-    return f"┊ {emoji} {t(f'display.cute.verb.{verb}'):9} {detail}"
+    label = t(f'display.cute.verb.{verb}')
+    return _CuteRow(f"┊ {emoji} {label:9} {detail}", emoji, label, detail)
+
+
+def _cute_fallback_row(tool_name: str, args: dict) -> _CuteRow:
+    """The row for a tool with no dedicated renderer: its registered (or skin) emoji, its name, and
+    its preview. One source for both layouts, so their icons can't drift."""
+    detail = _cute_trunc(build_tool_preview(tool_name, args) or "")
+    emoji = get_tool_emoji(tool_name)
+    return _CuteRow(f"┊ {emoji} {tool_name[:9]:9} {detail}", emoji, tool_name, detail)
+
+
+def get_tool_row_parts(tool_name: str, args: dict | None, result: str | None = None, *, is_error: bool = False):
+    """``[(emoji, verb, detail, failure), ...]`` for one completed call: the parts the ``┊`` line
+    uses, without its padding. ``failure`` is None for a row that succeeded, else that row's
+    suffix (``" [exit 1]"``, possibly ``""``); batch calls mark the entry that failed."""
+    try:
+        args = redact_tool_args_for_display(tool_name, args) or args or {}
+        is_failure, suffix = _detect_tool_failure(tool_name, result)
+        call_failure = suffix if is_failure else ("" if is_error else None)
+        labels = bridge_tool_labels(tool_name, args)
+        if labels:
+            suffixes = _bridge_row_suffixes(len(labels), result, suffix if is_failure else "")
+            marks = [s or None for s in suffixes]
+            if call_failure is not None and not any(suffixes):
+                marks[-1] = call_failure  # the call failed without naming an entry
+            return [(lb.emoji, _cute_trunc(lb.text), _cute_trunc(lb.preview) if lb.preview else "", mark)
+                    for lb, mark in zip(labels, marks)]
+        render = _CUTE_LINES.get(tool_name)
+        row = render(args, result) if render else None
+        row = row if isinstance(row, _CuteRow) else _cute_fallback_row(tool_name, args)
+        return [(row.emoji, row.verb, row.detail, call_failure)]
+    except Exception:
+        logger.debug("Tool row parts failed for %s", tool_name, exc_info=True)
+        return [("⚡", str(tool_name), "", None)]
 
 
 def _cute_web_extract(a: dict, _r) -> str:
@@ -1108,12 +1174,14 @@ def _cute_todo_list(a: dict, result) -> str:
 
 
 def _cute_memory(a: dict, _r) -> str:
-    action, target = a.get("action", "?"), a.get("target", "")
+    op, more = _memory_first_op(a)
+    action, target = op.get("action", "?"), a.get("target", "")
     if action == "add":
-        return _cute_row("🧠", "memory", f"+{target}: \"{_cute_trunc(a.get('content', ''))}\"")
+        content = op.get("content") or op.get("new_text") or ""
+        return _cute_row("🧠", "memory", f"+{target}: \"{_cute_trunc(content)}\"{more}")
     if action in ("replace", "patch", "remove"):
-        old = a.get("old_text") or t("display.preview.missing_old_text")
-        return _cute_row("🧠", "memory", f"{'-' if action == 'remove' else '~'}{target}: \"{_cute_trunc(old)}\"")
+        old = op.get("old_text") or t("display.preview.missing_old_text")
+        return _cute_row("🧠", "memory", f"{'-' if action == 'remove' else '~'}{target}: \"{_cute_trunc(old)}\"{more}")
     return _cute_row("🧠", "memory", str(action))
 
 
@@ -1196,7 +1264,10 @@ _CUTE_LINES = {
     "skills_list": lambda a, r: _cute_row("📚", "skills", t("display.cute.skills_list", category=a.get("category") or t("display.cute.skills_all"))),
     "skill_view": _cute_skill_view,
     "image_generate": lambda a, r: _cute_row("🎨", "create", _cute_trunc(a.get("prompt", ""))),
-    "text_to_speech": lambda a, r: _cute_row("🔊", "speak", _cute_trunc(a.get("text", ""))),
+    "text_to_speech": lambda a, r: (
+        _cute_row("🗣️ ", "voices", _cute_trunc((a.get("find_voices") or {}).get("query") or "browse"))
+        if isinstance(a.get("find_voices"), dict)
+        else _cute_row("🔊", "speak", _cute_trunc(a.get("text", "")))),
     "vision_analyze": lambda a, r: _cute_row("👁️ ", "vision", _cute_trunc(a.get("question", ""))),
     "send_message": lambda a, r: _cute_row("📨", "send", f"{a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\""),
     "cronjob_manage": _cute_cronjob,
@@ -1252,7 +1323,7 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
     render = _CUTE_LINES.get(tool_name)
     rows = _cute_bridge_rows(tool_name, args)
     if rows is None:
-        body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
+        body = render(args, result) if render else _cute_fallback_row(tool_name, args)
         rows, suffixes = [body], [failure_suffix if is_failure else ""]
     else:
         suffixes = _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else "")

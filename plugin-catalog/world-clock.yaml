@@ -1,0 +1,20 @@
+name: world-clock
+repo: https://github.com/cygnostik/hermes-world-clock
+sha: 84b9579ce6790383227aa1b51c5476ccb54ca8f5
+title: World Clock
+description: 'One time zone in your Hermes Desktop status bar, every other zone you work with a click away. Click the time for a drop-up of your enabled zones; Edit zones lists standard IANA zones with live UTC offsets. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no network, agent tools, hooks, middleware or env vars.'
+maintainer: cygnostik
+tier: community
+category: desktop
+docs_url: https://github.com/cygnostik/hermes-world-clock#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/cygnostik/hermes-world-clock/84b9579ce6790383227aa1b51c5476ccb54ca8f5/docs/media/catalog-banner.png
+screenshots:
+- https://raw.githubusercontent.com/cygnostik/hermes-world-clock/84b9579ce6790383227aa1b51c5476ccb54ca8f5/docs/media/menu.png
+- https://raw.githubusercontent.com/cygnostik/hermes-world-clock/84b9579ce6790383227aa1b51c5476ccb54ca8f5/docs/media/readme-hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

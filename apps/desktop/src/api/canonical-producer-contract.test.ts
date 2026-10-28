@@ -233,6 +233,7 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
+      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
       sent.push(frame)
       const fields = problems(frame.method, frame.params)
       const error = { code: 4001, message: 'invalid_params', data: { reason: 'invalid_params', fields } }

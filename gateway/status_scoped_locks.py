@@ -1,13 +1,37 @@
-"""Scoped-lock release, split from :mod:`gateway.status` (acquire stays there). One-way: this
-module reads the status helpers through the module at call time (so tests that patch
-``gateway.status`` keep steering them); :mod:`gateway.status` never imports it."""
+"""Scoped-lock ownership and release, split from :mod:`gateway.status` (acquire stays there).
+
+Helpers read status through the module at call time, preserving its patch seams.
+The acquire path imports the ownership check lazily to avoid an import cycle.
+"""
 from __future__ import annotations
 
 import contextlib
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from gateway import status as _status
+
+
+def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optional[int]) -> bool:
+    """Recover dead/reused/stopped owners. Gateway locks also validate gateway argv.
+
+    An explicitly process-owned reservation can belong to a dashboard or setup
+    worker. Unknown identity stays reserved instead of guessing that it is dead.
+    """
+    if existing_pid is None or not _status._pid_exists(existing_pid):
+        return True
+    recorded_start = existing.get("start_time")
+    current_start = _status._get_process_start_time(existing_pid)
+    if _status._start_times_conflict(recorded_start, current_start):
+        return True
+    metadata = existing.get("metadata")
+    process_owner = isinstance(metadata, dict) and metadata.get("owner_kind") == "process"
+    if not process_owner and not _status._looks_like_gateway_process(existing_pid):
+        if _status._read_process_cmdline(existing_pid) is not None:
+            return True
+        if None in (recorded_start, current_start) and not _status._record_looks_like_gateway(existing):
+            return True
+    return _status._process_is_stopped(existing_pid)
 
 
 def release_scoped_lock(scope: str, identity: str) -> None:

@@ -6,6 +6,10 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
+import {
+  isSessionRecentlyInterrupted,
+  recentInterruptRemainingMs
+} from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
@@ -19,15 +23,16 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
-import { pendingSessionReplay } from '@/store/gateway'
+import { pendingSessionReplay, sharedPrimaryRoute } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
-import { refreshActiveProfile } from '@/store/profile'
+import { normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
+  $connection,
   $currentCwd,
   $messagingSessions,
   $selectedStoredSessionId,
@@ -37,6 +42,7 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -48,6 +54,7 @@ import {
   setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
+import { noteLiveSessionSource } from '@/store/session-unread'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 import {
   clearActiveSessionTodos,
@@ -132,10 +139,36 @@ export interface ActiveTranscriptRefreshDeps {
   ) => ClientSessionState
 }
 
+/**
+ * Stop idles the view at the click, but the stopped turn's rows stay unstored
+ * until its interrupted `message.complete` binds the receipt. A page read in
+ * that gap already holds the stored turn, so the merge drew it twice until the
+ * completion landed (#144899 N2). The hold ends with the binding, or with the
+ * Stop cooldown when no receipt ever comes.
+ */
+export function stopAwaitsItsReceipt(state: ClientSessionState, runtimeId: string): boolean {
+  if (!state.interrupted || !isSessionRecentlyInterrupted(runtimeId)) {
+    return false
+  }
+
+  const messages = state.messages
+  const lastUser = messages.findLastIndex(message => message.role === 'user')
+  const lastReply = messages.findLastIndex(message => message.role === 'assistant' && !message.hidden)
+
+  if (lastReply > lastUser) {
+    return !messages[lastReply].persistedTurn
+  }
+
+  return lastUser >= 0 && messages[lastUser].rowId === undefined
+}
+
 function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   const state = $sessionStates.get()[runtimeId]
 
-  return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
+  return Boolean(
+    state &&
+      (state.busy || state.awaitingResponse || state.needsInput || state.turnLive || stopAwaitsItsReceipt(state, runtimeId))
+  )
 }
 
 /** Backfill/retention may prepend or release a prefix without changing the tail. */
@@ -716,6 +749,7 @@ interface LiveSessionStatusItem {
   id?: string
   last_active?: number
   session_key?: string
+  source?: null | string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 
@@ -788,6 +822,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
+    noteLiveSessionSource(storedSessionId, session.source, profileKey)
 
     if (working) {
       workingStoredIds.add(storedSessionId)
@@ -902,6 +937,38 @@ export function rehydrateLiveSessionStatuses(
   // over, whether or not an earlier poll ever saw its runtime (a turn that
   // started just before the drop was never polled).
   confirmReconnectSettlesExcept(workingStoredIds)
+}
+
+/** Params for the live-status poll. With a session open the session RPC
+ *  dispatcher routes it to that session's owner, so it names nothing. With none
+ *  open it rides the active socket, and a profile that shares the primary socket
+ *  (a Webapp tab's live pick, a native local profile, a global remote) is only
+ *  reached by naming it: the socket answers an unnamed request for its own
+ *  profile, and the sidebar would paint that profile's turns instead of the
+ *  selected one's.
+ *
+ *  The published descriptor is not enough on its own: a reconnect republishes
+ *  the primary's own descriptor (sharedPrimary false, local or remote) while the
+ *  picked profile stays selected. So a descriptor that isn't the selected
+ *  profile's own asks main for the selected profile's route, the check
+ *  requestGatewayForProfile routes by. The selected profile's own descriptor
+ *  asks nothing. */
+async function liveStatusParams(activeGatewayProfile: string): Promise<Record<string, unknown>> {
+  const connection = $connection.get()
+
+  if ($focusedStoredSessionId.get() || !connection) {
+    return {}
+  }
+
+  if (connection.sharedPrimary === true) {
+    return { profile: activeGatewayProfile }
+  }
+
+  const ownSocket =
+    Boolean(connection.profile?.trim()) &&
+    normalizeProfileKey(connection.profile) === normalizeProfileKey(activeGatewayProfile)
+
+  return !ownSocket && (await sharedPrimaryRoute(activeGatewayProfile)) ? { profile: activeGatewayProfile } : {}
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
@@ -1060,6 +1127,20 @@ export function useBackgroundSync({
       $activeSessionId.get() === activeSessionId && $selectedStoredSessionId.get() === activeStoredSessionId
 
     const isLive = () => $busy.get() || tileRuntimeOwnsLiveState(activeSessionId)
+    let stopHoldTimer: null | ReturnType<typeof setTimeout> = null
+
+    // A Stop hold whose receipt never comes ends on the clock, not on a store
+    // write, so wake the observer once the cooldown runs out.
+    const observeWhenStopHoldExpires = () => {
+      const state = $sessionStates.get()[activeSessionId]
+
+      if (stopHoldTimer === null && state && stopAwaitsItsReceipt(state, activeSessionId)) {
+        stopHoldTimer = setTimeout(() => {
+          stopHoldTimer = null
+          observe()
+        }, recentInterruptRemainingMs(activeSessionId) + 1)
+      }
+    }
 
     const observe = () => {
       if (!isCurrent()) {
@@ -1067,6 +1148,8 @@ export function useBackgroundSync({
       }
 
       if (isLive()) {
+        observeWhenStopHoldExpires()
+
         const read = activeTranscriptReadRef.current
 
         if (read?.sessionKey === sessionKey) {
@@ -1105,6 +1188,11 @@ export function useBackgroundSync({
       disposed = true
       unsubscribeState()
       unsubscribeBusy()
+
+      if (stopHoldTimer !== null) {
+        clearTimeout(stopHoldTimer)
+      }
+
       activeTranscriptReadRef.current = null
       activeTranscriptRefreshPendingRef.current = null
     }
@@ -1275,7 +1363,10 @@ export function useBackgroundSync({
       const stateAtRequest = $sessionStates.get()
 
       try {
-        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
+        const response = await requestGateway<LiveSessionStatusResponse>(
+          'session.active_list',
+          await liveStatusParams(activeGatewayProfile)
+        )
 
         if (!cancelled) {
           rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)

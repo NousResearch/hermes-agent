@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from tools.bot_desktop import placement
 
@@ -141,7 +142,7 @@ class DesktopStatus:
     socket: Optional[str]
     geometry: str
     install_command: Optional[str]
-    browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
+    browser: Optional[str]  # headed Chromium the dock's Browser icon and the agent's browser share; None = no headed browser
     blocker: Optional[str] = None  # why start() would refuse right now (memory); None = may start
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
@@ -294,13 +295,13 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
         with contextlib.suppress(ChildProcessError, OSError):
             os.waitpid(pid, os.WNOHANG)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
 
-    _signal(signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
+    def _gone() -> bool:
         _reap_if_ours()
-        if not _anything_left():
-            return
-        time.sleep(0.05)
+        return not _anything_left()
+
+    _signal(signal.SIGTERM)
+    if poll_until(_gone, grace, 0.05):
+        return
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
     time.sleep(0.1)
     _reap_if_ours()
@@ -351,8 +352,6 @@ def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-        from tools.bot_desktop.browser import env_for_agent
-        env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env
 
 
@@ -602,9 +601,11 @@ def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     blocker = None
     image_switch = None
     if missing:
-        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. Use "
-                   f"{sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
-                   f"plus the desktop stack), or set bot_desktop.placement: gateway.")
+        advice = sandbox_host.plugin_image_advice(where.backend) or (
+            f"use {sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
+            f"plus the desktop stack)")
+        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. {advice[0].upper()}{advice[1:]}, "
+                   f"or set bot_desktop.placement: gateway.")
         if where.backend == "docker":
             # The usual reason on an upgraded install: the persisted container predates the default
             # flip and was kept on purpose. The pane offers the switch instead of a config hint.
@@ -654,7 +655,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
 
-    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/singularity;
+    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/a streaming plugin backend;
     ``sandbox_host``), or on the gateway host (the rest of this function). A sandbox backend that cannot host
     a screen refuses rather than silently falling back to the host beside it.
 
@@ -787,7 +788,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
     sd.mkdir(parents=True, exist_ok=True)
     os.chmod(sd, 0o700)
     with _flocked(sd / "start.lock"):
-        # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile agent-browser
+        # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile the agent's browser
         # uses there: the human's browser is the bot's browser, as on the host.
         from tools.bot_desktop.browser import dock_exec_line
         exe = sandbox_host.chromium_executable(env)

@@ -24,6 +24,7 @@ from gateway.status import get_process_start_time
 from hermes_cli import dashboard_procs, gateway, process_identity, update_cmd_windows
 from hermes_cli import update_pause_record as pause_record
 from hermes_cli.update_cmd_windows import _pause_windows_gateways_for_update, _unmapped_ready_filter
+from tests.waiting import wait_until
 
 
 @pytest.fixture
@@ -41,6 +42,9 @@ def homes_and_spawn(tmp_path):
     def spawn(home) -> subprocess.Popen:
         proc = subprocess.Popen(argv, env={**os.environ, "HERMES_HOME": str(home)})
         procs.append(proc)
+        # Popen returns once exec has begun, before the kernel publishes the new image's argv and
+        # environment: /proc/<pid>/cmdline reads empty for that instant. A gateway is running.
+        wait_until(psutil.Process(proc.pid).cmdline, interval=0.001, what="the spawned gateway's argv")
         return proc
 
     yield home_a, home_b, spawn

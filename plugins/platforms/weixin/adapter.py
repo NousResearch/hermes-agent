@@ -528,20 +528,26 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
 
 
+def _quoted_prefix(item: dict[str, Any]) -> str:
+    """``[引用: ...]`` prefix for an item's ``ref_msg``. The title survives even when
+    ``message_item`` is absent — iLink quotes sometimes carry only the summary, and
+    dropping it left the agent blind to what the user replied to (silent regression:
+    worked 2026-06, gone 2026-07 with no hermes-side change and no log line)."""
+    ref = item.get("ref_msg") or {}
+    ref_item = ref.get("message_item") or {}
+    if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
+        title = ref.get("title") or ""
+        return f"[引用媒体: {title}]" if title else "[引用媒体]"
+    parts = [p for p in (str(ref.get("title") or ""), _extract_text([ref_item]) if ref_item else "") if p]
+    return f"[引用: {' | '.join(parts)}]" if parts else ""
+
+
 def _extract_text(item_list: list[dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
-            ref = item.get("ref_msg") or {}
-            ref_item = ref.get("message_item") or {}
-            if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
-                title = ref.get("title") or ""
-                return f"[引用媒体: {title}]\n{text}".strip() if title else f"[引用媒体]\n{text}".strip()
-            if ref_item:
-                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item])) if p]
-                if parts:
-                    return f"[引用: {' | '.join(parts)}]\n{text}".strip()
-            return text
+            quoted = _quoted_prefix(item)
+            return f"{quoted}\n{text}".strip() if quoted else text
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
             # Tencent's ``voice_item.text`` is their STT output and is wrong for non-Chinese audio.
@@ -884,6 +890,16 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
+        # Quote forensics: iLink changed its ref_msg delivery around 2026-07 with no
+        # hermes-side change, and quotes vanished silently. Log the raw ref_msg so the
+        # next quoted reply leaves evidence of what the wire actually carries.
+        for _item in item_list:
+            if isinstance(_item, dict) and _item.get("ref_msg"):
+                logger.info(
+                    "[%s] quoted reply payload from=%s ref_msg=%s",
+                    self.name, _safe_id(sender_id),
+                    json.dumps(_item.get("ref_msg"), ensure_ascii=False, default=str)[:400],
+                )
         text = _extract_text(item_list)
         if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
             logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)

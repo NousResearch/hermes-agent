@@ -563,6 +563,12 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
 
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
+    # `filled` now counts only writes verified in the DOM after the page had a chance to re-render;
+    # anything a controlled component discarded is reported here instead of being counted as success.
+    reverted = parsed.get("reverted") if isinstance(parsed, dict) else None
+    if reverted:
+        out["verified"] = False
+        out["reverted_fields"] = sorted({str(t) for t in reverted})
     if meta.kind == "login":
         out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
                        + (" (a code will be generated automatically)." if meta.has_otp else "."))

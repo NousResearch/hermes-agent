@@ -308,13 +308,28 @@ export const MessageLine = memo(function MessageLine({
       )}
 
       <Box>
+        {msg.role === 'user' ? (
+          <NoSelect flexShrink={0} fromLeftEdge width={1}>
+            <Text bold color={t.color.accent}>
+              ▌
+            </Text>
+          </NoSelect>
+        ) : null}
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
-            {msg.role === 'user' ? '▌' : glyph}{' '}
+            {glyph}{' '}
           </Text>
         </NoSelect>
 
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
+        <Box
+          width={
+            msg.role === 'user'
+              ? Math.max(1, transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE) - 1)
+              : transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
+          }
+        >
+          {content}
+        </Box>
       </Box>
     </Box>
   )

@@ -42,6 +42,7 @@ export const chromeEn = {
     discardDraft: 'discard draft (recall with ↑)',
     applyCompletion: 'apply completion',
     arrows: 'completions / queue edit / history',
+    turnJump: 'jump to previous / next user turn (] on last returns to live)',
     sessionSwitcher: 'open live session switcher (deletes queued message while editing)',
     expandAgents: 'expand live agents (keeps your draft)',
     collapseAgents: 'collapse / restore live agent preview',

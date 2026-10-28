@@ -342,6 +342,7 @@
   "hints.redraw",
   "hints.sessionSwitcher",
   "hints.shell",
+  "hints.turnJump",
   "hints.undoRedo",
   "hubs.agentControls.loadingTranscript",
   "hubs.agentControls.notQueued",

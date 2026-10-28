@@ -809,7 +809,11 @@ not stop every route to a private host. With it `false`:
 | `terminal` (`curl http://localhost`, ...) | **Opens**: no URL guard |
 
 Cloud-metadata endpoints are refused on every row except `terminal`, sidecar and
-local Chromium included. To keep the agent's browser off private hosts while a cloud provider is
+local Chromium included: a metadata URL written in `browser_exec` code, in a raw CDP call's
+params, or in a script it injects is refused before the browser sees it. The check reads the URLs
+the agent writes; it does not watch the browser afterwards, so a public page that redirects to, or
+fetches from, a metadata address is not stopped by it. On a cloud VM, block the metadata service at
+the network too (IMDSv2 with hop limit 1, a firewall rule). To keep the agent's browser off private hosts while a cloud provider is
 configured, set `browser.auto_local_for_private_urls: false`; that matters most on
 hosted installs (Docker, a VPS), where the sidecar sees the host's own loopback
 services and its LAN.

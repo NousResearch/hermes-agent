@@ -136,7 +136,11 @@ def url_blocked(url: str) -> bool:
     return is_always_blocked_url(url) or not is_safe_url(url)
 
 
+def url_literals(text: str) -> list[str]:
+    """Every ``http(s)://`` literal in free text (a JS expression, an HTML snippet, a CDP param)."""
+    return [m.rstrip(".,;") for m in _JS_URL_LITERAL_RE.findall(text)] if isinstance(text, str) else []
+
+
 def expression_targets_private_url(expression: str, *, blocked: Callable[[str], bool] = url_blocked) -> Optional[str]:
     """The first ``http(s)://`` literal in a JS expression that ``blocked`` refuses (best-effort), else None."""
-    literals = _JS_URL_LITERAL_RE.findall(expression) if isinstance(expression, str) else []
-    return next((c for c in (m.rstrip(".,;") for m in literals) if blocked(c)), None)
+    return next((c for c in url_literals(expression) if blocked(c)), None)

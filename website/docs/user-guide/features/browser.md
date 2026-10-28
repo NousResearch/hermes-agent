@@ -113,7 +113,8 @@ and it works on headless servers with no desktop browser at all.
   `security.allow_private_urls` says: it reaches nothing the terminal can't.
   The private-address guard applies when the browser can reach networks the
   terminal can't (a cloud provider, a `/browser connect` endpoint, or a
-  Docker/SSH/Modal terminal backend). Cloud-metadata endpoints are always refused.
+  Docker/SSH/Modal terminal backend). Cloud-metadata URLs the agent writes are
+  always refused.
 
 **Which Chromium.** Hermes picks the first that exists:
 
@@ -282,8 +283,10 @@ With auto-routing disabled, private URLs are rejected with
 `"Blocked: URL targets a private or internal address"` unless you also set
 `security.allow_private_urls: true` (or the legacy `browser.allow_private_urls: true`),
 which hands them to the cloud provider — usually useless, since Browserbase etc.
-can't reach your LAN. Cloud-metadata endpoints (`169.254.169.254`,
-`metadata.google.internal`) are refused on every route, sidecar included.
+can't reach your LAN. Cloud-metadata URLs (`169.254.169.254`,
+`metadata.google.internal`) written in `browser_exec` code or raw CDP params are refused on
+every route, sidecar included; a page that redirects there on its own is not (see
+[Security](../security.md#what-allow_private_urls-covers-and-what-it-doesnt)).
 
 The sidecar is the same local Chromium described [above](#local-chromium-default),
 so it needs that Chromium installed. Routing is decided from the URLs written in

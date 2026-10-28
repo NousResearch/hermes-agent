@@ -300,6 +300,8 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
+            from gateway.session_bot import release_superseded_bot_chat
+            release_superseded_bot_chat(db, self, session_key, session_id)
             # Stop the departed conversation's schedule in its owning profile, even when
             # the in-memory watch still holds a pre-reset session id.
             heartbeat_key = f"heartbeat:{session_id}"
@@ -409,6 +411,19 @@ class SessionRecoveryMixin:
                     "self-healing peer refresh on the next turn",
                     create_kwargs.get("session_id"), session_key, during, e),
             )
+
+    def _announce_route(self, session_key: str, entry) -> None:
+        """*session_key* now names *entry*'s conversation: tell the owner (``route_named``), so a
+        live conversation still on that route leaves it before anything else can run there."""
+        listener = getattr(self, "route_named", None)
+        if listener is not None and entry is not None:
+            listener(session_key, entry.session_id, entry.origin)
+
+    def _row_settled(self, session_id: str) -> None:
+        """The route transition that published *session_id* returned (its state.db half done or
+        failed): from here a missing or ended row is real again (see ``_is_session_ended_in_db``)."""
+        with self._lock:
+            self._rows_pending.discard(session_id)
 
     @staticmethod
     def _session_create_kwargs(

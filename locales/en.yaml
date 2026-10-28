@@ -705,6 +705,7 @@ gateway:
     no_credentials: "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. Use /login to sign in again, or /model to pick a different model. If it keeps failing, run `hermes doctor` on the host."
     cron_session_read_only: "⚠️ This chat belongs to a scheduled job and only runs that job, so your message was not run. Start a new chat to send it."
     workspace_unavailable: "⚠️ This chat's working folder no longer exists ({path}), so your message was not run. Recreate the folder, or move the chat to another one (`/worktree new` in the CLI, Move to project in the desktop app), then send your message again."
+    launch_credentials_unavailable: "⚠️ This chat can't use the API key it was started with any more{detail}, so nothing can run in it. An open chat never switches to a different key on its own, so /retry fails the same way. Use /new to start a new chat on your current key."
 
   skills:
     disabled: "The **{name}** skill is installed but disabled.\nEnable it with: `hermes skills config`"
@@ -1050,6 +1051,8 @@ platform:
       confirm_title: "Confirm"
       already_resolved: "This approval has already been resolved~"
       expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
+      no_longer_pending: "⌛ This approval is no longer pending (it timed out or was answered elsewhere)"
+      click_failed: "⚠️ Couldn't record your choice. Click again, or answer with /approve or /deny."
       by_user: "{label} by {user}"
       resolved_once: "Approved once"
       resolved_session: "Approved for session"
@@ -2111,7 +2114,6 @@ cli:
     moa_one_shot_queued: "MoA one-shot queued with preset {preset}; previous model will be restored after this turn."
     # model-id normalization notices (yellow)
     normalized_model: "Normalized model '{old}' to '{new}' for {provider}."
-    normalized_copilot_model: "Normalized Copilot model '{old}' to '{new}'."
     stripped_provider_prefix: "Stripped provider prefix from '{old}'; using '{new}' for {provider}."
     restored_from_session: "Model restored from session: {model}"
     # openai_runtime sub-command

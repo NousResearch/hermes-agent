@@ -455,7 +455,7 @@ def _(rid, params: dict) -> dict:
     # Hermes-owned strip (no-boot-through-venv).
     _compat = _tools_mod("hermes_cli._subprocess_compat")
     return _captured_exec(
-        rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
+        rid, [sys.executable, "-P", "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {
             "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
@@ -1669,6 +1669,7 @@ def _plugin_rows() -> list[dict]:
     git_updates = _tools_mod("hermes_cli.plugins_cadence").cached_git_updates(ref_pins)
     out = []
     active = pc._category_active_names()
+    owned_tools = _plugin_tool_ownership()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
         # Bundled backends/platforms/providers and the live memory provider run without an explicit
         # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
@@ -1686,6 +1687,8 @@ def _plugin_rows() -> list[dict]:
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
+            # Tools this package's own code registered: Desktop's tool-media renderer ownership check.
+            "tools": owned_tools.get(key, []),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"update_available": True, "update_target": target}
                if _dir_path and (target := git_updates.get(_dir_path.name)) else {}),
@@ -1765,6 +1768,17 @@ def _plugins_install(rid, params):
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "install failed")
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
+
+
+def _plugins_inspect(rid, params):
+    """Read-only pre-install check of ``identifier``/``repo`` (or ``catalog_name`` at its pin): which halves it
+    ships. Nothing is installed or run; a source that cannot be read answers ``ok: false`` + ``error``."""
+    ident = (params.get("identifier") or params.get("repo") or "").strip()
+    catalog_name = str(params.get("catalog_name") or "").strip()
+    if not ident and not catalog_name:
+        return _err(rid, 4019, "plugins.inspect requires 'identifier', 'repo', or 'catalog_name'")
+    inspect = _tools_mod("hermes_cli.plugins_cmd_inspect").inspect_plugin_source
+    return _ok(rid, inspect(ident, catalog_name=catalog_name or None))
 
 
 def _plugins_update(rid, params):
@@ -1855,7 +1869,7 @@ def _plugins_presence(rid, params):
 
 
 _PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "presence": _plugins_presence,
-                    "toggle": _plugins_toggle, "install": _plugins_install,
+                    "toggle": _plugins_toggle, "install": _plugins_install, "inspect": _plugins_inspect,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 
@@ -1864,7 +1878,7 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
+    default True); ``inspect`` reports which halves that source ships, installing nothing; ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
     a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 

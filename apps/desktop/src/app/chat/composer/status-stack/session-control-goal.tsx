@@ -34,6 +34,7 @@ import {
 import { Tip } from '@/components/ui/tooltip'
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { formatDuration } from '@/lib/statusbar'
 import {
   runSessionControlAction,
@@ -171,7 +172,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
   const copyCriterionText = useCallback(
     async (text: string) => {
       try {
-        await navigator.clipboard.writeText(text)
+        await writeClipboardText(text)
         onFeedback(null, ctrl.copySuccess)
       } catch {
         onFeedback(ctrl.copyFailure, null)

@@ -1332,7 +1332,8 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     if _m_ctx_tok and _m_vllm_input:
         _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
         _m_requested_out = re.search(r'requested (\d+)\s*output tokens', error_lower)
-        if 'at least' in error_lower and _m_requested_out:
+        # Input lower bound >= window ("requested 0/1 output tokens") is a genuine input overflow: compress.
+        if 'at least' in error_lower and _m_requested_out and _available >= 1:
             _requested_out = int(_m_requested_out.group(1))
             if _available >= _requested_out - 1:
                 # The budget is derived from the constraint, not measured.

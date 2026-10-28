@@ -163,6 +163,19 @@ class TestParseVllmTokenBasedOutputCap:
         # Halve the requested cap instead so the retry actually converges.
         assert parse_available_output_tokens_from_error(self._VLLM_MSG) == 32768
 
+    def test_vllm_input_alone_overflows_is_not_output_cap(self):
+        # "requested 0/1 output tokens" with input >= window: clamping max_tokens can never
+        # fit, so it must route to compression (was clamped to 1 forever).
+        for out, inp in ((0, 65537), (1, 65536)):
+            msg = (
+                f"This model's maximum context length is 65536 tokens. However, you requested "
+                f"{out} output tokens and your prompt contains at least {inp} input tokens, for "
+                f"a total of at least 65537 tokens. Please reduce the length of the input prompt "
+                f"or the number of requested output tokens."
+            )
+            assert parse_available_output_tokens_from_error(msg) is None
+            assert not is_output_cap_error(msg)
+
     def test_vllm_measured_input_is_trusted(self):
         # When the input is measured rather than derived, use it as-is.
         # available output = 131072 - 100000 = 31072

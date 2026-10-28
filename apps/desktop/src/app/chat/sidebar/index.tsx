@@ -64,11 +64,13 @@ import {
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
   setSidebarCronOpen,
+  setSidebarGrouping,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
   setSidebarSessionOrderIds,
   setSidebarSessionOrderManual,
+  setSidebarShowArchived,
   setSidebarWorkspaceOrderIds,
   setSidebarWorkspaceParentOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
@@ -144,6 +146,7 @@ import {
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  NEW_CHAT_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution
 } from '../../routes'
@@ -162,6 +165,8 @@ import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
+  HomeOverviewRow,
+  NO_PROJECT_ID,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -247,6 +252,13 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     tier: 'advanced'
   }
 ]
+
+const HOME_NAV_ITEM: SidebarNavItem = {
+  id: 'home',
+  label: 'Home',
+  icon: () => null,
+  route: NEW_CHAT_ROUTE
+}
 
 // Two modes via the `compact` height variant (styles.css):
 //   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
@@ -984,9 +996,32 @@ export function ChatSidebar({
   // linked worktrees under their main repo. The desktop only layers local view
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
   // overview sort. Membership is the backend tree's — never re-derived here.
+  const homeProject = useMemo<SidebarProjectTree>(() => {
+    const backendHome = projectTree.find(project => project.id === NO_PROJECT_ID)
+
+    const home =
+      backendHome ??
+      ({
+        id: NO_PROJECT_ID,
+        isNoProject: true,
+        label: s.projects.home,
+        path: null,
+        previewSessions: [],
+        repos: [],
+        sessionCount: 0
+      } satisfies SidebarProjectTree)
+
+    return excludeProjectSessions(
+      { ...home, id: NO_PROJECT_ID, isNoProject: true, label: s.projects.home, repos: orderRepos(home.repos) },
+      isHiddenFromProjects
+    )
+  }, [projectTree, s, orderRepos, isHiddenFromProjects])
+
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
-      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
+      filterToSessionBearingProjects(
+        filterVisibleProjects(projectTree, dismissedAutoProjects).filter(project => project.id !== NO_PROJECT_ID)
+      )
         // A filtered-out project drops its whole lane, header included — hiding
         // only its rows would leave a row of empty folders behind.
         .filter(project => !projectFilter.length || projectFilter.includes(project.id))
@@ -994,9 +1029,6 @@ export function ChatSidebar({
           excludeProjectSessions(
             {
               ...project,
-              // Home is synthetic, so its name is ours to translate — every
-              // other label is a repo basename or a name the user typed.
-              label: project.isNoProject ? s.projects.home : project.label,
               repos: orderRepos(project.repos)
             },
             isHiddenFromProjects
@@ -1022,7 +1054,7 @@ export function ChatSidebar({
       return true
     })
 
-    return orderProjectsByIds(deduped, projectOrderIds)
+    return [homeProject, ...orderProjectsByIds(deduped, projectOrderIds)]
   }, [
     projectTree,
     dismissedAutoProjects,
@@ -1031,12 +1063,13 @@ export function ChatSidebar({
     projectFilter,
     projectOrderIds,
     isHiddenFromProjects,
-    s
+    homeProject
   ])
 
   // The overview only renders in grouped mode; the model stays live regardless
   // so scoping is consistent across views.
   const agentProjectTree = worktreeGroupingActive ? projectModel : undefined
+  const hasProjectRows = projectModel.some(node => !node.isNoProject)
 
   // ── Project switcher (drill-in) ────────────────────────────────────────────
   // Grouped, single-profile view is a project switcher: ALL_PROJECTS shows the
@@ -1196,7 +1229,7 @@ export function ChatSidebar({
   }, [projectScope, projectsActive, enteredProject])
 
   // The project overview (drill-in list) vs. the entered project's content.
-  const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
+  const projectOverview = projectsActive && !inProject && hasProjectRows ? agentProjectTree : undefined
 
   // Preview rows come from the backend tree (each project carries its
   // most-recent sessions), overlaid with live $sessions so a just-created
@@ -1253,6 +1286,17 @@ export function ChatSidebar({
     [projectModel, syncProjectCwd]
   )
 
+  const onEnterHome = useCallback(() => {
+    setSearchQuery('')
+    setSidebarShowArchived(false)
+    setSidebarGrouping('project')
+    onEnterProject(homeProject.id)
+    onNavigate(HOME_NAV_ITEM)
+  }, [homeProject.id, onEnterProject, onNavigate])
+
+  const homeIsCurrent =
+    !focusedSessionIsTile && routeView === 'chat' && !showArchived && projectScope === homeProject.id
+
   // The section header must name what the section is showing. Grouped mode
   // reads "Projects" only while there IS a project switcher to show: a real
   // project row, or a tree still resolving (the loading state keeps the label
@@ -1260,8 +1304,6 @@ export function ChatSidebar({
   // bucket alone is just the flat session list wearing a project costume —
   // with no real projects the section lists plain chat sessions, so it keeps
   // the "Sessions" label (#62537).
-  const hasProjectRows = projectModel.some(node => !node.isNoProject)
-
   const sessionsLabel =
     inProject && enteredProject
       ? enteredProject.label
@@ -1519,7 +1561,7 @@ export function ChatSidebar({
     sessionsLoadError ||
     filtersActive ||
     sortedSessions.length > 0 ||
-    projectModel.length > 0 ||
+    projectModel.some(project => !project.isNoProject) ||
     messagingGroups.length > 0 ||
     (showsAdvancedChrome && cronJobs.length > 0)
 
@@ -1706,6 +1748,18 @@ export function ChatSidebar({
                 )
               })}
             </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup className="shrink-0 p-0 pb-1">
+          <SidebarGroupContent>
+            <HomeOverviewRow
+              current={homeIsCurrent}
+              home={homeProject}
+              onEnter={onEnterHome}
+              onNewSession={onNewSessionInWorkspace}
+              onNewSessionSplit={onNewSessionSplit}
+            />
           </SidebarGroupContent>
         </SidebarGroup>
 

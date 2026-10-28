@@ -48,6 +48,63 @@ Related keys that must change together (a model switch's `model.*` keys, the TUI
 toggle) go through `write_config_keys(path, {key: value, ...})`. A remote backend sends them
 as one CAS write, so a lock on any of them refuses all of them.
 
+## Public read/modify/write API for editors and plugins
+
+`hermes_cli.config.update_user_config(mutate)` is the supported entry point for
+additive user-layer edits that need the current document (for example the
+Advanced Delegation plugin's named preset registry). It is a mutation operation,
+not a public lock: core owns the guarded read, callback and backend commit.
+
+```python
+from hermes_cli.config import update_user_config
+
+
+def select_backend(document):
+    delegation = document.setdefault("delegation", {})
+    delegation["backend"] = "model_map"
+
+
+update_user_config(select_backend)
+```
+
+The active profile is resolved at invocation from `get_hermes_home()`, including
+host-bound profile context. No home/path argument or process environment rewrite
+is needed. The callback receives the **raw user layer**, without defaults, managed
+overlays or environment expansion; use an effective loader separately for runtime
+reads. It runs once and mutates the document in place; its return value is ignored.
+Do not retain the document, change profile scope, or perform nested config writes
+inside the callback. An exception aborts the commit and propagates to the caller.
+
+Core refuses package-manager-managed edits before invoking the callback, reads
+through the selected config backend, and commits through `atomic_config_write`.
+Missing layers begin as `{}`; unreadable, malformed and non-mapping existing layers
+fail closed. Existing mapping paths cannot be removed by omission. File writes
+preserve YAML comments; remote writes retain backend locks, validation and conflict
+errors (`ConfigWriteError`). `ConfigBackendUnavailable` is a `SystemExit`, not an
+`Exception`; daemon callers must handle it explicitly when needed.
+
+**Concurrency boundary:** the read/callback/commit is serialized against cooperating
+writers using core's config lock **within the calling process only**. Dashboard
+config mutation scopes use that same reentrant lock across their full read/modify/
+write interval; individual core reads and saves can safely re-enter it. Dashboard
+write scopes acquire profile scope before the config lock. Mutation callbacks must
+not enter profile scopes or perform nested writes, which would violate that order.
+File-backend publication is atomic, but this is not file-backend cross-process CAS
+or a gateway RPC. Hosted plugin callbacks may run in a different process from the
+gateway or other editors; this API does not serialize those processes or other
+non-cooperating writers. Do not use it to promise multi-process isolation. Use a
+backend with conflict detection when that guarantee is required, and surface
+conflicts rather than automatically replaying a callback with side effects.
+
+This API is introduced by this change, with no released minimum version assigned.
+Plugins supporting older core builds should feature-detect the callable. Existing
+editors may retain their already-supported guarded read plus `atomic_config_write`
+path, without claiming whole-operation serialization on those builds; new workflows
+that require that guarantee should refuse with an actionable upgrade message.
+Do not fall back to private locks, private dashboard write scopes, direct YAML
+writes, or persisting merged defaults. Never retry through a fallback after this
+API's callback or commit raises: the error must reach the caller.
+
 ## Lints
 
 - `scripts/check_config_yaml_writers.py` rejects a direct YAML dump of a config path.

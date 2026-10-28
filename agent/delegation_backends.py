@@ -115,12 +115,6 @@ def saved_backend_snapshot() -> DelegationConfigSnapshot:
     return DelegationConfigSnapshot(json.dumps({**config, **runtime}))
 
 
-def capture_backend(agent: Any) -> str:
-    """Capture one profile's runtime settings and return their selected backend."""
-    agent._delegation_backend_config = saved_backend_config()
-    return configured_backend(agent._delegation_backend_config)
-
-
 def _request_key(session_key: str) -> tuple[str, str]:
     from hermes_constants import get_hermes_home, hermes_home_key
     return hermes_home_key(get_hermes_home()), session_key

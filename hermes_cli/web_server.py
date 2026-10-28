@@ -668,11 +668,12 @@ def get_install_id() -> Optional[str]:
     return _shared_get_install_id(cache=_INSTALL_ID_CACHE)
 
 
-# Serializes config.yaml read-modify-write cycles for handlers on worker threads
-# (asyncio.to_thread): config.py's _CONFIG_LOCK covers each load/save call, not
-# the span between them, so two off-loop updates could drop each other's writes.
-# RLock so nested helpers that also take it can't self-deadlock.
-_CONFIG_MUTATION_LOCK = threading.RLock()
+# Hold core's SAME lock across dashboard read-modify-write cycles, including
+# the span between load/save, so public update_user_config() cannot interleave
+# and be clobbered by a stale dashboard save. Core load/save re-enter this RLock.
+# Write scopes acquire the profile lock first, then this lock; mutation callbacks
+# must not enter profile scopes (or perform nested writes).
+from hermes_cli.config import _CONFIG_LOCK as _CONFIG_MUTATION_LOCK
 
 # A finished ``gateway-restart`` child does not mean the gateway is back (it
 # exits once the restart is handed off), so in-flight reuse stops coalescing

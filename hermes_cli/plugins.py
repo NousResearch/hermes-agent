@@ -809,25 +809,6 @@ class PluginContext(PluginCapabilityCtxMixin):
         logger.debug("Plugin %s registered platform: %s", self.manifest.name, name)
         return handle
 
-    def register_slack_action_handler(
-        self, action_id: Any, callback: Callable,
-    ) -> PluginRegistration:
-        """Register a Slack Block Kit action handler, wired into ``slack_bolt.AsyncApp`` at connect.
-        ``action_id`` is anything ``slack_bolt.App.action()`` accepts; ``callback`` is
-        ``async def handler(ack, body, action)`` (``await ack()`` within 3s). Raises ``ValueError`` for
-        a non-callable callback or empty ``action_id``."""
-        if not callable(callback):
-            raise self._refuse("a Slack action handler with a non-callable callback")
-        if action_id is None or (isinstance(action_id, str) and not action_id.strip()):
-            raise self._refuse("a Slack action handler with an empty action_id")
-        entry = (action_id, callback, self.manifest.name)
-        handlers = self._manager._slack_action_handlers
-        handlers.append(entry)
-        handle = self._track("slack_action_handler", repr(action_id),
-                             lambda: self._manager._remove_identity(handlers, entry))
-        logger.debug("Plugin %s registered Slack action handler: %s", self.manifest.name, action_id)
-        return handle
-
     def register_platform_handler(self, platform: str, factory: Callable) -> None:
         """Register ``factory(native, adapter)``, invoked at ``connect()`` before/as the core handlers
         register (``adapter`` read-only). ``native``: telegram PTB ``Application``, discord
@@ -1013,6 +994,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
+    from hermes_cli.plugins_actions import register_card_action_handler, register_slack_action_handler
 
 # -- scoped provider registrars ------------------------------------------------------------------
 # One generated ``register_<category>_provider`` method per row of plugins_registrars.py's table.
@@ -1099,7 +1081,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
-        # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
+        # (matcher, callback, plugin_name), card action handlers (namespace -> {callback, plugin,
+        # plugin_key}), platform handler factories (lowercase platform -> list).
         self._plugins: dict[str, LoadedPlugin] = {}
         self._hooks: dict[str, list[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
@@ -1117,6 +1100,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._aux_tasks: dict[str, dict[str, Any]] = {}
         self._approval_transports: dict[str, Any] = {}
         self._slack_action_handlers: list[tuple] = []
+        self._card_action_handlers: dict[str, dict] = {}
         self._platform_handler_factories: dict[str, list[tuple]] = {}
         # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().
         self._plugin_loaded_listeners: list[Callable] = []

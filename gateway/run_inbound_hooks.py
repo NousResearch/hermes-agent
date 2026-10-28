@@ -254,33 +254,41 @@ class GatewayInboundHooksMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
+                    from gateway.plugin_card_actions import deliver_card_reply
+                    reply = await self._hm_run_plugin_handler(plugin_handler, event, source)
+                    return True, await deliver_card_reply(self, source, reply, command=command), command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
         return False, None, command
 
-    async def _hm_run_plugin_handler(
-        self, plugin_handler, event: MessageEvent, source: SessionSource, session_entry=None, args=None
-    ) -> Optional[str]:
-        """Run a resolved plugin command handler for *source* → its reply text or None; raises what
-        the handler raises (``gateway/session_commands.py`` resolves the exact registered name).
-        *args* is the argument as typed (a local session's command); otherwise the message's
-        command arguments, with the messaging dash repair of ``get_command_args``."""
-        # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
-        # sits before it, so a handler reading get_session_env() would see an empty or a
-        # foreign (cron agent's os.environ) session (#108698). A local session's command
-        # passes its live *session_entry* (key and id, as its turns bind them); a messaging
-        # message has none yet, so session_key is derived from source. Sync handlers run on the
-        # gateway pool (contextvars carried), never the loop thread: blocking I/O there starves
-        # the liveness watchdog and the process exits 75 mid-handler (#105279).
+    async def _hm_plugin_session_context(self, source: SessionSource, session_entry=None):
+        """The session context a plugin callback outside a turn runs under (a slash command, a card
+        click). The agent-turn path binds HERMES_SESSION_* via _set_session_env; these sit before or
+        beside it, so a handler reading get_session_env() would see an empty or a foreign (cron
+        agent's os.environ) session (#108698). A local session's command passes its live
+        *session_entry* (key and id, as its turns bind them); a messaging chat has none yet, so
+        session_key is derived from source."""
         if session_entry is None and getattr(self, "session_store", None) is not None:
             # The chat's current session, if it has one (lookup only: a command never creates one), so
             # HERMES_SESSION_ID / session_id name what a later /new reports as old_session_id (#123245).
             session_entry = await self.async_session_store.lookup_by_session_key(
                 self._session_key_for_source(source))
-        _plugin_context = build_session_context(source, self.config, session_entry)
+        context = build_session_context(source, self.config, session_entry)
         if session_entry is None:
-            _plugin_context.session_key = self._session_key_for_source(source)
+            context.session_key = self._session_key_for_source(source)
+        return context
+
+    async def _hm_run_plugin_handler(
+        self, plugin_handler, event: MessageEvent, source: SessionSource, session_entry=None, args=None
+    ):
+        """Run a resolved plugin command handler for *source* → its reply (text, a
+        ``gateway.plugin_card_actions.CardReply``, or None); raises what the handler raises
+        (``gateway/session_commands.py`` resolves the exact registered name). *args* is the argument
+        as typed (a local session's command); otherwise the message's command arguments, with the
+        messaging dash repair of ``get_command_args``."""
+        # Sync handlers run on the gateway pool (contextvars carried), never the loop thread: blocking
+        # I/O there starves the liveness watchdog and the process exits 75 mid-handler (#105279).
+        _plugin_context = await self._hm_plugin_session_context(source, session_entry)
         user_args = event.get_command_args().strip() if args is None else args
         from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         from gateway.plugin_messages import bind_live_source
@@ -299,4 +307,5 @@ class GatewayInboundHooksMixin:
                 result = await self._run_in_executor_with_context(call)
                 if inspect.isawaitable(result):
                     result = await result
-        return str(result) if result else None
+        from gateway.plugin_card_actions import plugin_command_reply
+        return plugin_command_reply(result)

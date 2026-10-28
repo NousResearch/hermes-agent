@@ -804,6 +804,9 @@ gateway:
     no_command: "Für den Schnellbefehl '/{command}' ist kein Befehl definiert."
     unsupported_type: "Der Schnellbefehl '/{command}' hat einen nicht unterstützten Typ (unterstützt: 'exec', 'alias')."
     no_target: "Für den Schnellbefehl '/{command}' ist kein Ziel definiert."
+  plugin_card:
+    action_failed: "Diese Aktion ist fehlgeschlagen; versuchen Sie es erneut oder verwenden Sie den getippten Befehl."
+    card_too_large: "Die aktualisierte Karte war zu groß für die Anzeige ({size} Bytes; das Limit ist {limit})."
   unknown_command: "Unbekannter Befehl `/{command}`. Geben Sie /commands ein, um die verfügbaren Befehle zu sehen, oder senden Sie die Nachricht ohne führenden Schrägstrich erneut, um sie als normale Nachricht zu senden."
   session:
     auto_reset_notice: "◐ Sitzung nach dem Stopp zurückgesetzt. Konversationsverlauf gelöscht.\nVerwenden Sie /resume, um eine frühere Sitzung zu durchsuchen und wiederherzustellen.\n"

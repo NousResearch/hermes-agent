@@ -825,6 +825,9 @@ gateway:
     no_command: "Quick command '/{command}' has no command defined."
     unsupported_type: "Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
     no_target: "Quick command '/{command}' has no target defined."
+  plugin_card:
+    action_failed: "That action failed; try again or use the typed command."
+    card_too_large: "The updated card was too large to show ({size} bytes; the limit is {limit})."
   unknown_command: "Unknown command `/{command}`. Type /commands to see what's available, or resend without the leading slash to send as a regular message."
   session:
     auto_reset_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"

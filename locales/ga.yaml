@@ -804,6 +804,9 @@ gateway:
     no_command: "Níl aon ordú sainithe don mhear-ordú '/{command}'."
     unsupported_type: "Tá cineál nach dtacaítear leis ag an mear-ordú '/{command}' (tacaítear le: 'exec', 'alias')."
     no_target: "Níl aon sprioc sainithe don mhear-ordú '/{command}'."
+  plugin_card:
+    action_failed: "Theip ar an ngníomh sin; bain triail eile as nó úsáid an t-ordú clóscríofa."
+    card_too_large: "Bhí an cárta nuashonraithe rómhór le taispeáint ({size} beart; is é {limit} an teorainn)."
   unknown_command: "Ordú anaithnid `/{command}`. Clóscríobh /commands chun a fheiceáil cad atá ar fáil, nó seol arís gan an slais tosaigh chun é a sheoladh mar ghnáth-theachtaireacht."
   session:
     auto_reset_notice: "◐ Athshocraíodh an seisiún tar éis é a stopadh. Glanadh stair an chomhrá.\nÚsáid /resume chun seisiún roimhe seo a bhrabhsáil agus a athchóiriú.\n"

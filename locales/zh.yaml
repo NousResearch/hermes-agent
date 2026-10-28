@@ -804,6 +804,9 @@ gateway:
     no_command: "快捷命令 '/{command}' 未定义要执行的命令。"
     unsupported_type: "快捷命令 '/{command}' 的类型不受支持（支持：'exec'、'alias'）。"
     no_target: "快捷命令 '/{command}' 未定义目标。"
+  plugin_card:
+    action_failed: "该操作失败；请重试，或改用输入命令。"
+    card_too_large: "更新后的卡片太大，无法显示（{size} 字节；上限为 {limit}）。"
   unknown_command: "未知命令 `/{command}`。输入 /commands 查看可用命令，或去掉开头的斜杠重新发送，以作为普通消息处理。"
   session:
     auto_reset_notice: "◐ 会话在停止后已重置。对话历史已清空。\n用 /resume 浏览并恢复之前的会话。\n"

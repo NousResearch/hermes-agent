@@ -37,7 +37,7 @@ PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 
-_SYNC_LOCK = threading.RLock()
+_SYNCING = threading.local()  # .active: this thread runs the pending mirror
 
 
 class HomeScopedRegistry(dict):
@@ -74,17 +74,21 @@ class HomeScopedRegistry(dict):
         self._sync_pending = True
 
     def _ready(self) -> None:
-        if not self._sync_pending:
+        """Run the pending mirror on this read. No lock is held across it (it lists providers,
+        which reads config): concurrent first readers each run the idempotent sync. Never while
+        ``providers`` is mid-discovery: a partial profile list would mirror a provider that a
+        later, higher-priority registration replaces (discovery's completion sync runs then)."""
+        if not self._sync_pending or getattr(_SYNCING, "active", False):
             return
-        with _SYNC_LOCK:  # re-entrant: the sync reads the registry
-            if not self._sync_pending:
-                return
-            self._sync_pending = False
-            try:
-                sync_plugin_provider_registry()
-            except BaseException:
-                self._sync_pending = True
-                raise
+        import providers
+        if getattr(providers, "_discovering", False):
+            return
+        _SYNCING.active = True  # the sync reads the registry
+        try:
+            sync_plugin_provider_registry()
+        finally:
+            _SYNCING.active = False
+        self._sync_pending = False
 
     def __getitem__(self, key: str) -> Any:
         self._ready()

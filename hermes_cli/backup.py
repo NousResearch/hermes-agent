@@ -126,8 +126,8 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
 _SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", *_SQLITE_SIDECAR_SUFFIXES)
 
-# File names to skip (runtime state that's meaningless on another machine)
-_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+# File names to skip (runtime state that's meaningless on another machine; secret_fingerprint.key is per-install)
+_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "secret_fingerprint.key"}
 
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
@@ -164,7 +164,7 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[BaseException], ...] = (
 # vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
 # IS included in backups (user-entered secrets, not regenerable — unlike the
 # excluded browser-profile/ snapshot) but must come back owner-only.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}  # never secret_fingerprint.key: excluded
 
 # Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
 # MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not

@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -986,8 +987,8 @@ class TestConfigGetRedaction:
         get_config_value(key)
         out = capsys.readouterr().out
         assert self.SECRET not in out
-        # Still identifies the key (mask keeps head/tail) and non-secret siblings stay readable.
-        assert self.SECRET[:4] in out
+        # Still identifies the key (keyed ***#xxxxxx fingerprint, no characters) and non-secret siblings stay readable.
+        assert re.search(r"\*\*\*#[0-9a-f]{6}", out) and self.SECRET[:4] not in out
         if key == "providers":
             assert "gemini" in out
 
@@ -1022,7 +1023,7 @@ class TestConfigGetRedaction:
         get_config_value(key)
         out = capsys.readouterr().out.strip()
         if masked:
-            assert self.SECRET not in out and self.SECRET[:4] in out
+            assert self.SECRET[:4] not in out and re.fullmatch(r"\*\*\*#[0-9a-f]{6}", out), out
         else:
             assert out == {"TERMINAL_SSH_HOST": self.SECRET, "mcp_servers.s.auth": "oauth"}.get(
                 key, "${UNSET_THING_API_KEY}")

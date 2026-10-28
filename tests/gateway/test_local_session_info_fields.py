@@ -3,6 +3,7 @@ exit summary (wave A2): title, started/last-active times, yolo, api_mode, tool_c
 credential hint (never the key); re-published when the auto-title lands."""
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -27,7 +28,7 @@ async def test_session_info_carries_the_classic_cli_fields(tmp_path, monkeypatch
     assert info['title'] == 'Some Title'
     assert isinstance(info['started_at'], float) and isinstance(info['last_active_at'], float)
     assert info['yolo'] is False and info['api_mode'] == 'chat_completions' and info['tool_count'] == 3
-    assert info['credential_hint'] == 'sk-a...1234' and 'abcdefgh' not in str(info)
+    assert re.fullmatch(r'\*\*\*#[0-9a-f]{6}', info['credential_hint']) and 'abcdefgh' not in str(info)
     from tui_gateway.contracts.registry import CANONICAL_METHODS
     CANONICAL_METHODS['session.info'].result.model_validate(
         {**info, 'profile_name': 'default', 'desktop_protocol': 'hermes-gateway-v1', 'lazy': False})

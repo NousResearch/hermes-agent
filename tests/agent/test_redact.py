@@ -1558,21 +1558,17 @@ class TestKeywordWordBoundary:
 
 
 class TestMaskSecretControlStripping:
-    """Issue #55319/#55321: mask_secret() must not emit control bytes
-    (newline, NUL, DEL, C1) in the visible head/tail of a masked secret —
-    they corrupt config/status/dump display output."""
+    """Issue #55319/#55321: mask_secret() ignores control bytes (newline, NUL, DEL, C1,
+    zero-width) — they must not change the fingerprint or reach display output."""
 
-    def test_newline_stripped_from_mask(self):
-        # The #55319 probe: a newline inside the preserved head.
-        assert mask_secret("ab\ncd0123456789zzzz") == "abcd...zzzz"
+    def test_newline_ignored(self, fp_home):
+        # The #55319 probe: a newline inside the secret.
+        assert mask_secret("ab\ncd0123456789zzzz") == mask_secret("abcd0123456789zzzz")
 
-    def test_c1_control_stripped_from_mask(self):
-        assert mask_secret("abcd0123456789zz\x85q") == "abcd...9zzq"
+    def test_c1_control_ignored(self, fp_home):
+        assert mask_secret("abcd0123456789zz\x85q") == mask_secret("abcd0123456789zzq")
 
-    def test_printable_mask_unchanged(self):
-        assert mask_secret("abcdef0123456789zzzz") == "abcd...zzzz"
-
-    def test_all_control_value_returns_empty_fallback(self):
+    def test_all_control_value_returns_empty_fallback(self, fp_home):
         assert mask_secret("\n\x85\u200b") == ""
         assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"
 
@@ -1694,3 +1690,120 @@ class TestWebappLaunchLinks:
     def test_code_that_builds_such_a_link_is_left_alone(self):
         source = "target.hash = `hermes-session=${token}`\nconst FRAGMENT_KEY = 'hermes-session'\n"
         assert redact_sensitive_text(source, code_file=True) == source
+
+
+
+# ── Keyed fingerprint previews (mask_secret never reveals a secret character) ──
+
+import hashlib
+import hmac
+import os
+import re
+import stat
+
+from agent import redact as _redact_mod
+
+_FP = re.compile(r"\*\*\*#[0-9a-f]{6}")
+
+
+@pytest.fixture
+def fp_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    getattr(_redact_mod, "_fingerprint_keys", {}).clear()
+    yield tmp_path
+    getattr(_redact_mod, "_fingerprint_keys", {}).clear()
+
+
+class TestMaskSecretFingerprint:
+    """mask_secret must never reveal any character of the secret (repeat-paste exploit)."""
+
+    @pytest.mark.parametrize("length", range(1, 17))
+    @pytest.mark.parametrize("reps", [1, 2, 3, 4])
+    def test_no_plaintext_for_repeated_pastes(self, fp_home, length, reps):
+        pw = "Pa5$wXyZqRtUvBnM"[:length]
+        out = _redact_mod.mask_secret(pw * reps)
+        assert _FP.fullmatch(out), out
+
+    def test_password_password_not_shown(self, fp_home):
+        out = _redact_mod.mask_secret("Password" * 2)
+        assert "Pass" not in out and "word" not in out
+
+    def test_stable_and_changes_with_value(self, fp_home):
+        value = "sk-" + "test-0123456789abcdef"
+        a = _redact_mod.mask_secret(value)
+        assert a == _redact_mod.mask_secret(value)
+        assert a != _redact_mod.mask_secret(value[:-1] + "g")
+
+    def test_hmac_is_domain_separated_over_value_only(self, fp_home):
+        value = "same-secret-value"
+        out = _redact_mod.mask_secret(value)
+        key = bytes.fromhex((fp_home / "secret_fingerprint.key").read_text())
+        expected = hmac.new(key, b"hermes-secret-fingerprint-v1\0" + value.encode(), hashlib.sha256)
+        assert out == "***#" + expected.hexdigest()[:6]
+
+    def test_key_file_created_private(self, fp_home):
+        _redact_mod.mask_secret("anything-at-all")
+        key = fp_home / "secret_fingerprint.key"
+        assert len(bytes.fromhex(key.read_text())) == 32
+        if os.name == "posix":
+            assert stat.S_IMODE(key.stat().st_mode) == 0o600
+
+    def test_different_install_key_different_fingerprint(self, fp_home):
+        a = _redact_mod.mask_secret("same-secret-value")
+        key = fp_home / "secret_fingerprint.key"
+        key.unlink()
+        key.write_text(os.urandom(32).hex())
+        key.chmod(0o600)
+        _redact_mod._fingerprint_keys.clear()
+        assert a != _redact_mod.mask_secret("same-secret-value")
+
+    def test_profiles_share_the_install_root_key(self, fp_home, monkeypatch):
+        root_fp = _redact_mod.mask_secret("shared-secret-value")
+        profile = fp_home / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        assert _redact_mod.mask_secret("shared-secret-value") == root_fp
+        assert not (profile / "secret_fingerprint.key").exists()
+
+    def test_home_override_resolves_its_own_root(self, fp_home, tmp_path_factory):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        other = tmp_path_factory.mktemp("other-root")
+        here = _redact_mod.mask_secret("shared-secret-value")
+        token = set_hermes_home_override(other)
+        try:
+            routed = _redact_mod.mask_secret("shared-secret-value")
+        finally:
+            reset_hermes_home_override(token)
+        assert (other / "secret_fingerprint.key").exists()
+        assert routed != here
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink/mode semantics")
+    def test_symlinked_key_file_refused(self, fp_home, tmp_path_factory):
+        target = tmp_path_factory.mktemp("elsewhere") / "planted.key"
+        target.write_text(os.urandom(32).hex())
+        target.chmod(0o600)
+        (fp_home / "secret_fingerprint.key").symlink_to(target)
+        assert _redact_mod.mask_secret("PasswordPassword") == "***"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX mode semantics")
+    def test_world_readable_key_file_refused(self, fp_home):
+        key = fp_home / "secret_fingerprint.key"
+        key.write_text(os.urandom(32).hex())
+        key.chmod(0o644)
+        assert _redact_mod.mask_secret("PasswordPassword") == "***"
+
+    def test_truncated_key_file_refused(self, fp_home):
+        key = fp_home / "secret_fingerprint.key"
+        key.write_text(os.urandom(16).hex())
+        if os.name == "posix":
+            key.chmod(0o600)
+        assert _redact_mod.mask_secret("PasswordPassword") == "***"
+
+    def test_unusable_key_falls_back_to_stars(self, fp_home, monkeypatch):
+        monkeypatch.setattr(_redact_mod, "_fingerprint_key", lambda: None)
+        assert _redact_mod.mask_secret("PasswordPassword") == "***"
+
+    def test_empty(self, fp_home):
+        assert _redact_mod.mask_secret("") == ""
+        assert _redact_mod.mask_secret("", empty="(not set)") == "(not set)"

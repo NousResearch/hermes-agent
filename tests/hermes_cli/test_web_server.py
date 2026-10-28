@@ -177,22 +177,6 @@ class TestReloadEnv:
             assert count >= 1
 
 
-# ---------------------------------------------------------------------------
-# redact_key tests
-# ---------------------------------------------------------------------------
-
-
-class TestRedactKey:
-    def test_long_key_shows_prefix_suffix(self):
-        result = redact_key("sk-1234567890abcdef")
-        assert result.startswith("sk-1")
-        assert result.endswith("cdef")
-        assert "..." in result
-
-    def test_short_key_fully_masked(self):
-        assert redact_key("short") == "***"
-
-
 class TestSessionTokenInjection:
     """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
     /api + /api/ws calls with it. The backend must adopt that token, else every

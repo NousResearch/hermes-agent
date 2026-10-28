@@ -4,9 +4,12 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
+import hashlib
+import hmac
 import logging
 import os
 import re
+import secrets
 import shlex
 import threading
 from urllib.parse import unquote_plus
@@ -654,22 +657,126 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
 _DISPLAY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x80-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064]")
 
 
-def mask_secret(value: str, *, head: int = 4, tail: int = 4, floor: int = 12,
-                placeholder: str = "***", empty: str = "") -> str:
-    """Mask a secret for display (``hermes config`` / ``status`` / ``dump``):
-    ``sk-p...7890``; shorter than ``floor`` (after control-byte stripping) →
-    ``placeholder``; falsy → ``empty``."""
+# Display previews are keyed fingerprints, never characters of the secret: a short password
+# pasted 2-3x (``PasswordPassword``) passed the old length floor and showed in full as
+# ``Pass...word``. HMAC (not a plain hash) so a fingerprint in a screenshot or a shared
+# ``hermes dump`` cannot be brute-forced offline without this install's key. The key lives
+# at the install ROOT (shared by every profile) so the same secret fingerprints the same in
+# every profile on a machine — the reuse / rotation signal the preview exists for.
+_FINGERPRINT_KEY_FILE = "secret_fingerprint.key"
+_FINGERPRINT_DOMAIN = b"hermes-secret-fingerprint-v1\0"
+# O_NOFOLLOW is POSIX-only; elsewhere the lstat-free fstat checks below still apply.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+# {key path: key bytes}. Unlocked on purpose: a race only re-reads the same file bytes.
+_fingerprint_keys: dict[str, bytes] = {}
+
+
+def _fingerprint_key_path():
+    """``<install root>/secret_fingerprint.key`` for the ACTIVE home (honours a routed-profile
+    override the way ``_redact_enabled`` does); a bare ``HERMES_HOME`` is its own root."""
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    return get_default_hermes_root(home=get_hermes_home()) / _FINGERPRINT_KEY_FILE
+
+
+def _read_fingerprint_key(path) -> "bytes | None":
+    """Key bytes from a regular, owner-only file; None for a symlink, non-regular file, a mode
+    wider than 0600 or anything that is not exactly 32 hex-encoded bytes."""
+    import stat
+
+    fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW)  # a planted symlink raises ELOOP
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if os.name == "posix" and stat.S_IMODE(st.st_mode) & 0o077:
+            return None
+        raw = os.read(fd, 128)
+    finally:
+        os.close(fd)
+    try:
+        key = bytes.fromhex(raw.decode("ascii").strip())
+    except ValueError:
+        return None
+    return key if len(key) == 32 else None
+
+
+def _fingerprint_key() -> "bytes | None":
+    """Per-install random HMAC key (32 bytes, hex in a 0600 file). None when unusable."""
+    from tools.spill_safety import write_text_exclusive
+
+    path = _fingerprint_key_path()
+    cached = _fingerprint_keys.get(str(path))
+    if cached:
+        return cached
+    try:
+        try:
+            write_text_exclusive(path, secrets.token_hex(32) + "\n")
+        except FileExistsError:
+            pass  # created earlier or by a concurrent process (or a planted link: refused below)
+        key = _read_fingerprint_key(path)
+    except (OSError, UnicodeDecodeError):
+        return None
+    if key is None:
+        return None
+    _fingerprint_keys[str(path)] = key
+    return key
+
+
+def mask_secret(value: str, *, empty: str = "") -> str:
+    """Display form of a secret (``hermes config`` / ``status`` / ``dump``, dashboard previews):
+    ``***#a3f91c``, a keyed HMAC of the value that reveals no character of it.
+
+    Falsy (after control-byte stripping) → ``empty``; no usable key → ``***`` (never characters).
+    """
     value = _DISPLAY_CONTROL_RE.sub("", value) if value else value
     if not value:
         return empty
-    return placeholder if len(value) < floor else f"{value[:head]}...{value[-tail:]}"
+    key = _fingerprint_key()
+    if key is None:
+        return "***"
+    digest = hmac.new(key, _FINGERPRINT_DOMAIN + value.encode("utf-8", "surrogatepass"), hashlib.sha256)
+    return "***#" + digest.hexdigest()[:6]
 
 
 def _mask_token(token: str) -> str:
     """Mask a log token — 18-char floor, preserves 6 prefix / 4 suffix; empty → ``***``."""
-    if not token:
+    token = _DISPLAY_CONTROL_RE.sub("", token) if token else token
+    if not token or len(token) < 18:
         return "***"
-    return mask_secret(token, head=6, tail=4, floor=18)
+    return f"{token[:6]}...{token[-4:]}"
+
+
+REDACTED_CREDENTIAL_WRITE_DETAIL = (
+    "Refusing to save a redacted credential preview; re-enter the full secret to replace it."
+)
+
+# Bare preview shapes. The fingerprint is what ``mask_secret`` emits now; the legacy
+# ``xxxx...xxxx`` regex covers pre-fingerprint previews (older Desktop builds, stale tabs).
+# Recognised by producer shape — never by equality to the current secret, which would
+# authorise a stale preview after a rotation (#121002).
+_FINGERPRINT_MASK_RE = re.compile(r"\*\*\*#[0-9a-f]{6}")
+_LEGACY_MASK_RE = re.compile(r".{4}\.\.\..{4}")
+
+
+def is_redacted_credential_preview(submitted) -> bool:
+    """True when ``submitted`` is display-only preview output, never a real secret: any
+    ``«redacted…`` sentinel (``«redacted:…»``, ``«redacted-secret»``, the vault marker),
+    ``***``, a ``***#xxxxxx`` fingerprint, or the legacy ``xxxx...xxxx`` mask."""
+    value = str(submitted or "")
+    if value.startswith("«redacted"):
+        return True
+    return (value == "***" or _FINGERPRINT_MASK_RE.fullmatch(value) is not None
+            or _LEGACY_MASK_RE.fullmatch(value) is not None)
+
+
+def refuse_credential_preview(value: str) -> str:
+    """Return ``value``, or raise ``ValueError`` when it — or the ASCII-only form
+    ``save_env_value`` would store — is a display preview: a preview pasted or written
+    back (by a UI, a wizard or the agent itself) must never replace the real secret (#35519)."""
+    ascii_only = value.encode("ascii", "ignore").decode("ascii")
+    if is_redacted_credential_preview(value) or is_redacted_credential_preview(ascii_only):
+        raise ValueError(REDACTED_CREDENTIAL_WRITE_DETAIL)
+    return value
 
 
 def _is_python_repr_secret_key(key: str) -> bool:

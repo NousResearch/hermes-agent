@@ -2710,8 +2710,8 @@ def save_env_value(key: str, value: str):
     if _env_write_blocked(key, "set"):
         return
     validate_env_var_name_for_write(key)
-    value = value.replace("\n", "").replace("\r", "")
-    value = _check_non_ascii_credential(key, value)
+    from agent.redact import refuse_credential_preview  # every writer's chokepoint (#35519)
+    value = _check_non_ascii_credential(key, refuse_credential_preview(value.replace("\n", "").replace("\r", "")))
     ensure_hermes_home()
     env_path = get_env_path()
 

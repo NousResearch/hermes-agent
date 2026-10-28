@@ -76,3 +76,19 @@ def test_explicit_profile_that_does_not_resolve_is_refused_before_the_handler(ho
 
     assert reply["error"]["code"] == 4064, reply
     assert seen == []
+
+
+def test_a_secondary_socket_naming_the_launch_profile_runs_in_the_launch_scope(homes):
+    """Reverse direction: a profile-bound socket runs in that profile's scope, so a verb naming the
+    launch profile must not keep the secondary's secrets and home."""
+    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from tui_gateway.ws_legacy_fallback import dispatch_legacy
+    server, launch, bee, seen = homes
+    actor = types.SimpleNamespace(profile_id=str(bee), capabilities=frozenset(_PURPOSE_CAPABILITIES["interactive"]))
+    written, done = [], threading.Event()
+    transport = types.SimpleNamespace(write=lambda frame: written.append(frame) or done.set() or True)
+    with server._session_profile_runtime_scope({"profile_home": str(bee)}):
+        reply = dispatch_legacy(server, {"jsonrpc": "2.0", "id": 1, "method": "probe.portal",
+                                         "params": {"profile": "default"}}, transport, actor)
+    assert "result" in (reply if reply is not None else (done.wait(10) and written[0]))
+    assert seen == [(launch.resolve(), LAUNCH_PORTAL)]

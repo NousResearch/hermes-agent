@@ -165,8 +165,10 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict 
         req, target = _ticket_profile_request(server, req, home)
         if target is None:
             return req
-        if target:
-            scope = server._session_profile_runtime_scope({"profile_home": target})
+        # "" = an explicit ``profile`` naming the launch home: the socket runs in the ticket's
+        # scope (``chat_ws.gateway_ws``), so bind the launch scope or a handler that ignores
+        # ``profile`` would read and write the secondary profile's state.
+        scope = server._session_profile_runtime_scope({"profile_home": target or server._launch_home()})
     elif (req.get("method") not in _SESSION_FALLBACK_ALLOWED
           and (explicit := _explicit_profile_request(server, req)) is not None):
         # A launch-profile socket runs in the launch scope (``chat_ws.gateway_ws``), so a verb that

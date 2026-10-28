@@ -41,6 +41,15 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 # the loop it monitors) is fixed at the root by the off-loop heartbeat write + two-witness probe (#90502),
 # so the default stays tight for genuine wedges.
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# A loop that is BUSY (a slow disk, a long lock) answers the probe late; a loop that is WEDGED never
+# answers. The probe timeout is the soft threshold (the "busy" signal); only a non-answer that
+# outlasts the hard ceiling counts as a strike, so a slow-but-alive loop is not killed — and a kill
+# on a stalled disk costs a restart on that same stalled disk.
+DEFAULT_LOOP_WATCHDOG_HARD_TIMEOUT_S = 60.0
+# The self-destruct path (foreground cleanup, exit stamp, stack dump) writes to the disk the loop is
+# stuck on: bound it, or the process lingers for minutes after the watchdog fired (a 14-minute
+# outage once, while the supervisor waited for a process that was already dying).
+DEFAULT_WATCHDOG_FIRE_BUDGET_S = 5.0
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -89,11 +98,21 @@ def start_loop_liveness_watchdog(
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    hard_timeout: float = DEFAULT_LOOP_WATCHDOG_HARD_TIMEOUT_S,
+    fire_budget: float = DEFAULT_WATCHDOG_FIRE_BUDGET_S,
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes. The caller
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
-    opt-out."""
+    opt-out.
+
+    ``probe_timeout`` is the SOFT threshold: a loop that has not answered by then is busy, not
+    necessarily wedged. Only a non-answer that outlasts ``hard_timeout`` counts as a strike, so a
+    slow-but-alive loop (a stalled disk, a long-held lock) is not killed — a kill there costs a
+    restart on the same stalled disk, which is how one stall became a 14-minute outage.
+    """
     stop_event = threading.Event()
+    hard_timeout = max(float(hard_timeout), float(probe_timeout))
+    fire_budget = max(float(fire_budget), 0.0)
 
     def _watchdog() -> None:
         strikes = 0
@@ -116,6 +135,22 @@ def start_loop_liveness_watchdog(
             if probe_event.is_set():
                 strikes = 0
                 continue
+            # No answer within the soft threshold: the loop may be BUSY (a slow disk, a lock held
+            # by a slow writer), not wedged. Give it the hard ceiling before counting a strike.
+            busy_started = time.monotonic()
+            hard_deadline = busy_started + hard_timeout
+            while not stop_event.is_set():
+                remaining = hard_deadline - time.monotonic()
+                if remaining <= 0 or probe_event.wait(timeout=min(remaining, 0.05)):
+                    break
+            else:
+                return
+            if probe_event.is_set():
+                logger.warning(
+                    "Gateway event loop answered the liveness probe after %.1fs (busy, not wedged); "
+                    "no strike counted", probe_timeout + (time.monotonic() - busy_started))
+                strikes = 0
+                continue
             if stop_event.is_set():  # re-checked before each irreversible step: a late stop() wins
                 return
             strikes += 1
@@ -128,16 +163,22 @@ def start_loop_liveness_watchdog(
                     "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
                     "stacks and exiting with code %d so the service supervisor can restart it.",
                     strikes, exit_code)
-            # File + stderr: a console-less launcher (Windows .vbs login item) discards stderr, so a
-            # liveness death used to leave no stack anywhere (#120356, #91097).
-            _write_watchdog_dump(
-                get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
-                snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
-                event="loop_liveness_watchdog_fired")
-            if stop_event.is_set():
+            # stderr first: journald keeps the stacks even when the dump FILE write stalls on the
+            # very disk the loop is stuck on.
+            with contextlib.suppress(Exception):
+                faulthandler.dump_traceback(all_threads=True)
+            if stop_event.is_set():  # a late stop() wins: evidence is written, the process lives
                 return
-            _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
-            _hard_exit(exit_code)
+            # The self-destruct path writes to that same disk: bound it. The process leaves when
+            # the budget passes, whatever the diagnostics managed to write.
+            diagnostics = threading.Thread(
+                target=_fire_liveness_diagnostics, args=(exit_code,),
+                kwargs={"delay_s": probe_timeout * strikes,
+                        "snapshot": {"strikes": strikes, "probe_interval_s": probe_interval}},
+                daemon=True, name="gateway-watchdog-diagnostics")
+            diagnostics.start()
+            diagnostics.join(timeout=fire_budget)
+            os._exit(exit_code)
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
         thread.start()
@@ -145,6 +186,24 @@ def start_loop_liveness_watchdog(
         logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
         return None
     return _LoopLivenessWatchdogHandle(stop_event, thread)
+
+
+def _fire_liveness_diagnostics(exit_code: int, *, delay_s: float, snapshot: dict) -> None:
+    """The liveness death's side effects: the foreground cleanup, the exit stamp, the stack dump.
+
+    Best-effort and ordered by cost: the cleanup does not touch the disk, the stamp is a few small
+    writes (it keeps ``hermes gateway status`` from showing a dead process as running), and the dump
+    file — the biggest write, on the disk that may be the very thing that is stuck — goes last.
+    """
+    with contextlib.suppress(Exception):
+        from tools.environments.base import kill_live_foreground_processes
+        kill_live_foreground_processes(now=True)
+    with contextlib.suppress(Exception):
+        _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
+    with contextlib.suppress(Exception):
+        _write_watchdog_dump(
+            get_shutdown_watchdog_dump_path(), delay_s=delay_s, snapshot=snapshot,
+            event="loop_liveness_watchdog_fired")
 
 
 def _hard_exit(exit_code: int) -> None:

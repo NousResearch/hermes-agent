@@ -36,6 +36,15 @@ from typing import Any, Dict, Optional, Tuple
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# "boot" = one gateway process start. The startup drain and every later platform reconnect
+# enumerate resume-pending sessions, so only the FIRST enumeration in a process records a
+# boot: counting each enumeration makes one normal restart look like a restart loop.
+# "tripped" = this process already tripped the restart-loop breaker; after that, return None
+# for the rest of the process, so a later reconnect enumeration cannot walk around the
+# breaker (a real trip used to take effect exactly once, weakening the SIGTERM-loop guard).
+_boot_recorded = False
+_boot_tripped = False
+
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
     """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
@@ -593,10 +602,17 @@ class GatewayStartupMixin:
         # Restart-loop breaker: only boots WITH restart-interrupted sessions count; when tripped, skip
         # auto-resume for THIS boot only (inbound still served; sessions stay resume_pending).
         if candidates:
+            global _boot_recorded, _boot_tripped
+            if _boot_tripped:
+                return None
+            if _boot_recorded:
+                return candidates
+            _boot_recorded = True
             try:
                 from gateway import restart_loop_guard as _rlg
                 _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
                 if _rlg.check_and_record(_max_restarts, _window, max_gap_seconds=_max_gap):
+                    _boot_tripped = True
                     return None
             except Exception as exc:
                 logger.debug("Restart-loop guard check skipped: %s", exc)
@@ -783,14 +799,10 @@ class GatewayStartupMixin:
         from gateway.delivery_ledger import compute_obligation_id, ledger_enabled, record_crash_left_reply
         ledger_on = await asyncio.to_thread(ledger_enabled)
         cutoff = time.time() - max_age_seconds  # older markers are cleared, never acted on
-        with self.session_store._lock:
-            self.session_store._ensure_loaded_locked()
-            marked = [
-                (e.session_key, e.session_id, e.active_turn_token, e.active_turn_started_at, e.origin,
-                 e.transport_profile)
-                for e in self.session_store._entries.values()
-                if e.active_turn_token and e.active_turn_started_at and e.origin and not e.suspended
-            ]
+        # The session-index load is disk I/O under a lock a writer can hold for minutes on a
+        # stalled disk; on the event loop it froze the whole gateway during startup recovery.
+        # The snapshot runs on a worker thread now.
+        marked = await asyncio.to_thread(self._marked_crash_left_turns)
         ledgered = 0
         for key, session_id, token, started_at, origin, profile in marked:
             started = started_at.timestamp()  # aware UTC marker; a pre-upgrade naive one reads as local
@@ -809,6 +821,17 @@ class GatewayStartupMixin:
             if await self.async_session_store.clear_turn_active(key, token) and text:
                 ledgered += 1
         return ledgered
+
+    def _marked_crash_left_turns(self) -> list:
+        """The turns still marked active, snapshotted under the store lock (off the event loop)."""
+        with self.session_store._lock:
+            self.session_store._ensure_loaded_locked()
+            return [
+                (e.session_key, e.session_id, e.active_turn_token, e.active_turn_started_at, e.origin,
+                 e.transport_profile)
+                for e in self.session_store._entries.values()
+                if e.active_turn_token and e.active_turn_started_at and e.origin and not e.suspended
+            ]
 
     def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never

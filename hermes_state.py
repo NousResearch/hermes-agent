@@ -1490,11 +1490,21 @@ class SessionDB(
         if self._quarantine_reason() is not None:
             return
         try:
+            # The lock guard scans every open descriptor of state.db (os.fstat over /proc/self/fd)
+            # — filesystem work that must not run while holding the write lock: one checkpoint on a
+            # stalled disk held the writer lock in its descriptor scan, convoying every writer
+            # (26-way lock convoy → liveness probe miss → exit 75). Take the guard first; hold
+            # ``self._lock`` only for the connection's own PRAGMA.
+            guard = None
             with self._lock:
+                guard = self._wal_lock_guard
                 if self._conn is None:
                     return  # closed underneath the timer: nothing to checkpoint, nothing to re-guard
-                if self._wal_lock_guard:
-                    _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
+            if guard:
+                _lockguard.hold(self.db_path, guard)
+            with self._lock:
+                if self._conn is None:
+                    return
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])

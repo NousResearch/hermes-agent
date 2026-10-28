@@ -1,6 +1,7 @@
 """Receipt-only adapter ingress: the authority, not an HTTP/WS task, owns execution."""
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
 
@@ -16,8 +17,18 @@ async def producer_scope(adapter, event):
         raise RuntimeStoreError('not_found')
     registered, profile = runner._owning_profile(adapter, adapter.platform)
     home = getattr(runner, '_native_transport_homes', {}).get(profile)
-    if not registered or home is None:
+    if not registered:
+        # This adapter is not one of ours: this gateway does not serve this delivery at all.
         raise RuntimeStoreError('profile_mismatch')
+    if home is None:
+        # The runner publishes a transport home when it wires a profile's handlers, and that
+        # happens AFTER the webhook port starts serving: a delivery landing in that startup
+        # window is ours, and refusing it for good loses it (the provider does not redeliver
+        # the 503 — the delivery id never came back). Derive the home the wiring would register.
+        home = _derive_transport_home(runner, profile, event)
+        if home is None:
+            # Unresolvable named profile (deleted mid-run): permanent, like the wired path.
+            raise RuntimeStoreError('profile_mismatch')
     source = event.source
     # Identity is pinned through the runner's single canonicalization seam (a secondary's own
     # bot, or the primary's routed profile); a rejected primary route is refused downstream.
@@ -37,7 +48,9 @@ async def producer_scope(adapter, event):
     if authority is None or getattr(authority, 'retiring', False):
         _refuse_parked(runner, getattr(source, 'profile', None) or profile)
     if authority is None:
-        raise RuntimeStoreError('profile_mismatch')
+        # The authority for this home is not published yet (the startup window): retryable, not a
+        # permanent refusal — a permanent one drops the delivery (the provider does not redeliver).
+        raise RuntimeStoreError('runtime_draining')
     with native_callback(runner, event, home, profile):
         async with _async_profile_runtime_scope(runtime_home):
             yield authority
@@ -54,30 +67,63 @@ def _refuse_parked(runner, profile):
         raise ParkedProfileRefusal(profile)
 
 
+def _derive_transport_home(runner, profile, event):
+    """The transport home the runner's wiring registers for *profile*: the launch home for the
+    primary, the routed profile's home for a served secondary. ``None`` when this gateway does not
+    serve the profile at all — that stays a permanent refusal.
+
+    A parked profile is refused retryably (a rescan serves it again), the same answer the wired
+    path gives: a delivery that arrives while the profile is parked is not lost.
+    """
+    from gateway.run_runtime import profile_parked
+    name = profile or getattr(getattr(event, 'source', None), 'profile', None)
+    if profile_parked(runner, name):
+        _refuse_parked(runner, name)  # raises ParkedProfileRefusal (retryable)
+    if not name:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    resolver = getattr(runner, '_routed_profile_home', None)
+    if resolver is None:
+        return None
+    home = resolver(name)
+    return home if isinstance(home, Path) else None  # UNRESOLVED_PROFILE_HOME: not served here
+
+
 def parked_profile_refusal(runner, profile, route_config, admission_source):
-    """A 503 for a webhook whose profile is not served right now, else None: a ``/p/<profile>/``
+    """A refusal for a webhook whose profile is not served right now, else None: a ``/p/<profile>/``
     prefix that is parked or has no serving authority here, or a coalesced route that
     ``profile_routes`` sends to a profile admission would refuse (a coalesced delivery is acknowledged
-    before admission applies that route). A parked target is retryable (``Retry-After``); any other
-    rejected target gets the answer the immediate route gives when admission refuses it.
+    before admission applies that route). A parked target is retryable (``503 + Retry-After``): a
+    rescan serves it again. Any other rejected target (this gateway does not serve the profile at
+    all) is permanent: answer ``404`` so the provider stops redelivering a delivery that can never
+    be admitted, instead of retrying it forever.
+
     ``admission_source`` returns the ``SessionSource`` admission builds for this delivery
     (``WebhookAdapter._admission_source``), so ``profile_routes`` match here exactly as there. Answered
     before the delivery id is recorded: coalesced, ``deliver_only`` and ``cron_job`` routes act before
     (or without) an admission, so the in-memory id is their only replay guard, and a recorded id would
     answer the provider's retry as a duplicate once the profile is served again."""
     from aiohttp import web
-    if _prefix_not_served(runner, profile):
-        error = f'Profile {profile} is not being served; retry this delivery'
-    else:
-        refusal = _coalesced_route_refusal(runner, profile, route_config, admission_source)
-        if refusal is None:
-            return None
-        if refusal == 'refused':
-            # ``WebhookAdapter._dispatch_agent_run``'s answer when admission refuses the delivery.
-            return web.json_response({'error': 'Admission unavailable; retry this delivery'}, status=503)
-        error = 'The routed profile is not being served right now; retry this delivery'
     from gateway.parked_route_refusal import ParkedRouteRefused
-    return web.json_response({'error': error}, status=ParkedRouteRefused.status, headers=ParkedRouteRefused.headers)
+    from gateway.run_runtime import profile_parked
+    if _prefix_not_served(runner, profile):
+        if profile_parked(runner, profile):
+            # Parked: a rescan serves it again — retryable (503 + Retry-After).
+            return web.json_response(
+                {'error': f'Profile {profile} is parked; retry this delivery'},
+                status=ParkedRouteRefused.status, headers=ParkedRouteRefused.headers)
+        # Not served here at all: permanent, answer 404 so the provider stops redelivering.
+        return web.json_response({'error': f'Profile {profile} is not being served'}, status=404)
+    refusal = _coalesced_route_refusal(runner, profile, route_config, admission_source)
+    if refusal is None:
+        return None
+    if refusal == 'refused':
+        # ``WebhookAdapter._dispatch_agent_run``'s answer when admission refuses the delivery.
+        return web.json_response({'error': 'Unknown or unconfigured profile'}, status=404)
+    # A coalesced route to a parked profile: retryable.
+    return web.json_response(
+        {'error': 'The routed profile is not being served right now; retry this delivery'},
+        status=ParkedRouteRefused.status, headers=ParkedRouteRefused.headers)
 
 
 def _prefix_not_served(runner, profile):
@@ -256,12 +302,17 @@ async def _webhook_retry(authority, event, payload, rows):
         raise RuntimeStoreError('admission_conflict')
     event._webhook_duplicate = True
     receipt = authority._receipt(row)
-    finalize_webhook(authority, receipt)
+    await finalize_webhook(authority, receipt)
     return receipt
 
 
-def finalize_webhook(authority, receipt):
-    """End only the settled admitted generation, atomically with the epoch fence."""
+async def finalize_webhook(authority, receipt):
+    """End only the settled admitted generation, atomically with the epoch fence.
+
+    The state.db write runs in a worker thread: a held writer lock (a WAL checkpoint scanning
+    file descriptors on a stalled disk) freezes every session, timer, socket *and the gateway's
+    liveness probe* behind it, so it must never run on the event loop.
+    """
     import time
     if receipt.status != 'terminal' or receipt.execution_generation is None:
         return False
@@ -277,7 +328,7 @@ def finalize_webhook(authority, receipt):
             """, (time.time(), 'webhook_complete', sid, receipt.execution_generation,
                   authority.epoch, receipt.admission_id, sid, receipt.execution_generation,
                   receipt.authority_epoch, sid), sid, 'webhook_complete')
-    return bool(authority.db._execute_write(write))
+    return bool(await asyncio.to_thread(authority.db._execute_write, write))
 
 
 async def recover_webhook_finalizations(authority):
@@ -308,7 +359,7 @@ async def recover_webhook_finalizations(authority):
             adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
             target = authority.physical_target(SessionRef(authority.profile_id, sid))
             await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
-            results[sid] = 'finalized' if finalize_webhook(
+            results[sid] = 'finalized' if await finalize_webhook(
                 authority, authority._receipt(row)) else 'unchanged'
         except (KeyError, RuntimeStoreError):
             results[sid] = 'unavailable'

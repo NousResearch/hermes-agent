@@ -751,6 +751,17 @@ class WebhookAdapter(BasePlatformAdapter):
                     len(prompt), delivery_id)
         outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
                                               route_name=route_name, profile=profile, event_type=event_type)
+        if outcome == "retry":
+            # Retryable admission failure (profile not connected yet): answer 503 with Retry-After
+            # so the provider redelivers instead of dropping the event.
+            from gateway.parked_route_refusal import ParkedRouteRefused
+            return web.json_response({'error': 'Admission unavailable; retry this delivery'},
+                                      status=ParkedRouteRefused.status, headers=ParkedRouteRefused.headers)
+        if outcome == "refused":
+            # Permanent refusal (this gateway does not serve the delivery's profile): answer 404,
+            # like the edge's unknown-profile answer, so the provider stops redelivering a delivery
+            # that can never be admitted. A 503 here is an endless retry loop.
+            return _json_error("Unknown or unconfigured profile", 404)
         if outcome is None:
             return _json_error("Admission unavailable; retry this delivery", 503)
         if outcome == "duplicate":
@@ -767,7 +778,7 @@ class WebhookAdapter(BasePlatformAdapter):
         async def _admit_or_log():
             outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
                                                   route_name=route_name, profile=profile, event_type=event_type)
-            if outcome is None:
+            if outcome is None or outcome == "retry" or outcome == "refused":
                 logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
                 for released in (*superseded, delivery_id):
                     self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(profile, route_name, released), None)
@@ -812,8 +823,24 @@ class WebhookAdapter(BasePlatformAdapter):
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         from gateway.platforms.webhook_ingress import admit_producer
+        from hermes_state_runtime import RuntimeStoreError
         try:
             receipt = await admit_producer(self, event)
+        except RuntimeStoreError as exc:
+            if exc.reason == 'runtime_draining':
+                # Retryable: the profile's adapter is not connected yet (a restart window). Answer
+                # 503 with Retry-After so the provider redelivers instead of losing the event.
+                logger.warning("[webhook] Admission deferred for %s (reason=%s); retryable",
+                               delivery_id, exc.reason)
+                return "retry"
+            if exc.reason == 'profile_mismatch':
+                # Permanent: this gateway does not serve the delivery's profile. Never answered as
+                # a retryable 503 — the provider would redeliver it forever.
+                logger.warning("[webhook] Admission refused for %s (reason=%s); permanent",
+                               delivery_id, exc.reason)
+                return "refused"
+            logger.exception("[webhook] Durable admission failed for %s", delivery_id)
+            return None
         except Exception:
             logger.exception("[webhook] Durable admission failed for %s", delivery_id)
             return None
@@ -855,7 +882,7 @@ class WebhookAdapter(BasePlatformAdapter):
         binding = getattr(event, '_webhook_receipt', None)
         if binding is not None:
             authority, receipt = binding
-            finalize_webhook(authority, receipt)
+            await finalize_webhook(authority, receipt)
 
     # --- Signature validation ---
 

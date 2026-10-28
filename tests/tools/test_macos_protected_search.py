@@ -142,8 +142,8 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     command = commands[0]
     assert command.startswith("set -o pipefail; cd '/' && ")
     assert "--sortr=modified" in command
-    assert "'!Users/alice/Downloads/**'" in command
-    assert "'!repo/Downloads/**'" not in command
+    assert "'!/Users/alice/Downloads'" in command
+    assert "repo/Downloads'" not in command
     assert "'Users/alice' 'repo'" in command
     assert result.files == [
         "/repo/Downloads/visible.txt",
@@ -194,3 +194,95 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+def _locked_home(tmp_path):
+    """Fake home whose protected dirs are unreadable (a stand-in for a TCC prompt:
+    rg reports "Permission denied" exactly when it would have opened them), plus a
+    project folder that merely shares a protected name and must stay searchable."""
+    home = tmp_path / "Users" / "alice"
+    (home / "work" / "repo" / "Downloads").mkdir(parents=True)
+    (home / "work" / "repo" / "Downloads" / "keep.txt").write_text("needle\n")
+    (home / "notes.txt").write_text("needle\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    locked = []
+    for name in ("Downloads", "Music", "Pictures"):
+        d = home / name
+        d.mkdir()
+        (d / "secret.txt").write_text("needle\n")
+        d.chmod(0)
+        locked.append(d)
+    return home, elsewhere, locked
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", [True, False], ids=["native", "shell"])
+@pytest.mark.parametrize("target", ["content", "files"])
+@pytest.mark.parametrize("cwd_is_root", [True, False], ids=["cwd=home", "cwd=elsewhere"])
+def test_real_ripgrep_never_opens_protected_folder(tmp_path, monkeypatch, native, target, cwd_is_root):
+    """Regression: ``--glob '!Downloads/**'`` still made rg open ~/Downloads (the
+    TCC prompt), and rg matches globs against its cwd, so from any other cwd the
+    exclusion matched nothing and protected files were returned too."""
+    import shutil
+
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep not installed")
+    home, elsewhere, locked = _locked_home(tmp_path)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1" if native else "0")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home if cwd_is_root else elsewhere)))
+    calls = []
+    original = ShellFileOperations._run_rg_bounded
+
+    def spy(self, words, *args, **kwargs):
+        result = original(self, words, *args, **{**kwargs, "merge_stderr": True})
+        calls.append(result.stdout or "")
+        return result
+
+    monkeypatch.setattr(ShellFileOperations, "_run_rg_bounded", spy)
+    try:
+        if target == "content":
+            result = ops.search("needle", path=str(home), target="content", output_mode="files_only")
+            found = result.files or [m.path for m in (result.matches or [])]
+        else:
+            result = ops.search("*.txt", path=str(home), target="files")
+            found = result.files
+    finally:
+        for d in locked:
+            d.chmod(0o755)
+
+    assert calls, "rg was not used"
+    assert not any("Permission denied" in out for out in calls), calls
+    assert not any("secret.txt" in p for p in found), found
+    assert any("work/repo/Downloads/keep.txt" in p for p in found), found
+    assert any(p.endswith("notes.txt") for p in found), found
+
+
+@pytest.mark.platforms("macos")
+def test_zero_match_probes_prune_protected_folders(tmp_path, monkeypatch):
+    """The 0-match steering probes (--hidden --no-ignore, -i, -F) walk the same
+    tree and must not open protected folders either."""
+    import shutil
+
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep not installed")
+    home, elsewhere, locked = _locked_home(tmp_path)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(elsewhere)))
+    calls = []
+    original = ShellFileOperations._run_rg_bounded
+
+    def spy(self, words, *args, **kwargs):
+        result = original(self, words, *args, **{**kwargs, "merge_stderr": True})
+        calls.append(result.stdout or "")
+        return result
+
+    monkeypatch.setattr(ShellFileOperations, "_run_rg_bounded", spy)
+    try:
+        ops.search("no-such-token-xyzzy", path=str(home), target="content")
+    finally:
+        for d in locked:
+            d.chmod(0o755)
+    assert len(calls) > 1, "zero-match probes did not run"
+    assert not any("Permission denied" in out for out in calls), calls

@@ -355,7 +355,7 @@ class SearchMixin:
     # --- native rg transport (local POSIX) --------------------------------------
 
     def _run_rg_native(self, argv: list[str], fetch_limit: int, timeout: int,
-                       merge_stderr: bool = False) -> ExecuteResult:
+                       merge_stderr: bool = False, cwd: Optional[str] = None) -> ExecuteResult:
         """Run ``argv`` (shell-quoted rg words) natively and stop reading after
         ``fetch_limit`` lines — the ``| head -n`` of the shell pipeline without the
         two bash spawns. ``shlex.split`` undoes the escaping the builders apply for
@@ -367,7 +367,7 @@ class SearchMixin:
         search (diagnostics feed the error message), discarded (``2>/dev/null``) for
         file lists and probes."""
         from tools.environments.local import _kill_process_group_posix, _make_run_env
-        cwd = getattr(self.env, "cwd", None) or self.cwd
+        cwd = cwd or getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
         try:
             proc = subprocess.Popen(
@@ -419,15 +419,17 @@ class SearchMixin:
 
     def _run_rg_bounded(self, words: list[str], fetch_limit: int, timeout: int, *,
                         merge_stderr: bool = False, native_ok: bool = True,
-                        shell_prefix: str = "") -> ExecuteResult:
+                        shell_prefix: str = "", cwd: Optional[str] = None) -> ExecuteResult:
         """Run an rg command (shell-quoted words) and keep the first ``fetch_limit``
         lines: natively on a local POSIX host, else through the backend shell as
         ``<prefix><words> | head -n N``. ``native_ok=False`` keeps a form the native
  lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only."""
         if native_ok and self._native_read_enabled():
-            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
+            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr, cwd=cwd)
         stderr = "" if merge_stderr else " 2>/dev/null"
-        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+        cd_prefix = f"cd {self._escape_shell_arg(cwd)} && " if cwd else ""
+        return self._exec(f"{shell_prefix}{cd_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}",
+                          timeout=timeout)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
@@ -509,12 +511,34 @@ class SearchMixin:
         root = _normalized_filename_search_root(self.env, path or ".", self.cwd)
         return any(part.startswith(".") and part not in (".", "..") for part in root.replace("\\", "/").split("/"))
 
-    def _rg_exclusion_globs(self, path: str) -> list[str]:
-        """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
-        out: list[str] = []
-        for item in self._macos_search_exclusions(path):
-            out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
-        return out
+    @staticmethod
+    def _rg_protected_dir_glob(relative: str) -> str:
+        """rg glob pruning one protected dir WITHOUT opening it (no TCC prompt).
+
+        ripgrep matches ``-g`` globs against paths relative to its working directory,
+        so the run must start in the directory ``relative`` is relative to (see
+        ``_rg_protected_scope``). ``!<dir>/**`` only filters the files below and still
+        lets rg open ``<dir>`` (which is what triggers the macOS prompt); a bare
+        ``!<dir>`` matches at any depth and would also hide ``repo/Downloads``. The
+        leading ``/`` anchors it to that directory and matches the directory itself.
+        """
+        return f"!/{relative}"
+
+    def _rg_protected_scope(self, path: str) -> tuple[Optional[str], str, list[str]]:
+        """``(cwd, root_arg, glob_words)`` for a single-root rg run.
+
+        Without protected exclusions: ``(None, path, [])`` (rg runs as before). With
+        them, rg runs from the absolute search root so the anchored globs line up;
+        a relative ``path`` is passed as that absolute root."""
+        exclusions = self._macos_search_exclusions(path)
+        if not exclusions:
+            return None, path, []
+        env_cwd = getattr(self.env, "cwd", None) or self.cwd
+        root = posixpath.normpath(path if posixpath.isabs(path) else posixpath.join(env_cwd, path))
+        globs: list[str] = []
+        for item in exclusions:
+            globs.extend(["--glob", self._escape_shell_arg(self._rg_protected_dir_glob(item))])
+        return root, (path if posixpath.isabs(path) else root), globs
 
     def _path_exists_probe(self, path: str) -> ExecuteResult:
         """Existence probe; stdout contains "exists" or "not_found" (or the probe's
@@ -632,6 +656,10 @@ class SearchMixin:
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        # Probes walk the same tree, so they need the same protected-dir pruning.
+        scope_cwd, path, protected_globs = self._rg_protected_scope(path)
+        if protected_globs:
+            glob_expr += " " + " ".join(protected_globs)
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -643,7 +671,7 @@ class SearchMixin:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
                            self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
-            probe = self._run_rg_bounded(probe_words, 50, timeout=30)
+            probe = self._run_rg_bounded(probe_words, 50, timeout=30, cwd=scope_cwd)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
@@ -942,12 +970,18 @@ class SearchMixin:
             scoped_common = posixpath.commonpath(absolute_roots)
             command_roots = [posixpath.relpath(root, scoped_common) for root in absolute_roots]
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
+                "--glob " + self._escape_shell_arg(
+                    self._rg_protected_dir_glob(posixpath.relpath(absolute, scoped_common)))
                 for _r, _rel, absolute in effective_exclusions]
         else:
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
+                f"--glob {self._escape_shell_arg(self._rg_protected_dir_glob(relative))}"
                 for _r, relative, _abs in effective_exclusions]
+        scope_cwd = None
+        if effective_exclusions and not scoped_common:
+            # Single root: anchored globs are relative to rg's cwd, so run from the root.
+            scope_cwd, root_arg, _globs = self._rg_protected_scope(roots[0])
+            command_roots = [root_arg]
         exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
         rg_executable = rg_executable or self._resolve_command("rg")
@@ -965,7 +999,7 @@ class SearchMixin:
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
-                                      shell_prefix=f"set -o pipefail; {cd_prefix}")
+                                      shell_prefix=f"set -o pipefail; {cd_prefix}", cwd=scope_cwd)
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
         if scoped_common:
@@ -1027,7 +1061,7 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: list[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
+                             line_cap: bool = False, cwd: Optional[str] = None) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -1043,7 +1077,7 @@ class SearchMixin:
             result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
-                                          shell_prefix="set -o pipefail; ")
+                                          shell_prefix="set -o pipefail; ", cwd=cwd)
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
@@ -1067,7 +1101,8 @@ class SearchMixin:
             cmd_parts.append("--multiline")
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
-        cmd_parts.extend(self._rg_exclusion_globs(path))
+        scope_cwd, path, protected_globs = self._rg_protected_scope(path)
+        cmd_parts.extend(protected_globs)
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
@@ -1079,7 +1114,8 @@ class SearchMixin:
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note,
+                                         cwd=scope_cwd)
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> list[str]:

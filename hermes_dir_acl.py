@@ -28,11 +28,13 @@ either; the icacls fallback passes ``/L``. :func:`grant_tree_user_access` is the
 from __future__ import annotations
 
 import functools
+import importlib
 import logging
 import os
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -339,13 +341,23 @@ def iter_tree_without_reparse_points(root: str | Path, skipped: list[Path]) -> I
 
 
 def grant_tree_user_access(root: str | Path, *, pin_root: bool = False,
-                           elevated: bool | None = None) -> tuple[int, list[Path], list[tuple[Path, str]]]:
+                           elevated: bool | None = None,
+                           deadline: float | None = None, progress=None,
+                           ) -> tuple[int, list[Path], list[tuple[Path, str]]]:
     """Recursive :func:`grant_user_access` (the elevated post-update repair): grant the token's user
     full control on *root* and every directory and file under it, inheriting on directories.
 
     With *pin_root*, *root* is the operator's own choice (``HERMES_HOME``) and may itself be a link:
     it is resolved once and the walk runs below the real directory. A link BELOW it is still never
     entered or granted through.
+
+    *deadline* is an absolute :func:`time.monotonic` value for the whole repair. The walk is
+    consumed as it yields where the per-entry writer is available, so a large home never
+    materialises every entry first — a 562k-entry home cost ~1.6 GB and minutes of silence
+    before the first grant (#143124) — and the deadline can stop it between entries. Grants
+    already made stand (they are idempotent); the rest raises :class:`AclGrantDeferred`.
+    *progress*, when given, is called as ``(granted, skipped, failed)`` every
+    ``_TREE_GRANT_PROGRESS_EVERY`` grants so a long repair can say it is moving.
 
     Returns ``(granted, skipped, failed)``: *skipped* are the reparse points (and hard-linked files)
     that were neither granted nor entered, *failed* the ``(path, reason)`` grants that raised. A
@@ -354,12 +366,82 @@ def grant_tree_user_access(root: str | Path, *, pin_root: bool = False,
         return 0, [], []
     root = Path(os.path.realpath(root) if pin_root else os.path.abspath(root))
     skipped: list[Path] = []
-    entries = list(iter_tree_without_reparse_points(root, skipped))
-    granted, skipped, failed = _grant_entries(root, os.path.realpath(root), entries, skipped)
+    if _native_writer_importable():
+        granted, skipped, failed = _grant_entries_streaming(
+            root, os.path.realpath(root), skipped, deadline=deadline, progress=progress)
+    else:
+        # The icacls fallback writes with propagation and refuses a dir holding a link, so it
+        # still needs the whole-tree link map one materialised walk provides.
+        entries = list(iter_tree_without_reparse_points(root, skipped))
+        granted, skipped, failed = _grant_entries(root, os.path.realpath(root), entries, skipped)
     if skipped:
         log.warning("Elevated ACL repair skipped %d junction/symlink/hard-link entr%s under %s (never "
                     "granted through): %s", len(skipped), "y" if len(skipped) == 1 else "ies", root,
                     ", ".join(str(p) for p in skipped[:5]) + (" ..." if len(skipped) > 5 else ""))
+    return granted, skipped, failed
+
+
+#: Called with the running counts so a long repair can say it is moving (#143124: 30+ minutes
+#: of silence is indistinguishable from a hang).
+_TREE_GRANT_PROGRESS_EVERY = 10_000
+
+
+class AclGrantDeferred(RuntimeError):
+    """The elevated tree grant ran out of its time budget; what it granted stands.
+
+    Raised from the walk, not from a failed grant: the ACEs written so far are the same ones
+    a finished repair would have written, so resuming later repeats them harmlessly. The point
+    is that a home large enough to need half an hour can no longer hold the update tail — and
+    with it the next launch — hostage (#143124).
+    """
+
+    def __init__(self, granted: int, skipped: list[Path], failed: list[tuple[Path, str]]):
+        super().__init__(
+            f"ACL repair stopped at its time budget after granting {granted} "
+            f"entr{'y' if granted == 1 else 'ies'}"
+        )
+        self.granted = granted
+        self.skipped = skipped
+        self.failed = failed
+
+
+def _native_writer_importable() -> bool:
+    """Whether the per-entry writer is available: it does not propagate, so the walk can be
+    streamed without the whole-tree link map the icacls fallback needs.
+
+    Probed by importing rather than by looking for the file: a pywin32 whose extension fails to
+    load has to take the icacls fallback here too, exactly as ``_grant`` does per entry."""
+    try:
+        importlib.import_module("win32security")
+    except ImportError:
+        return False
+    return True
+
+
+def _grant_entries_streaming(root: Path, real_root: str, skipped: list[Path], *,
+                             deadline: float | None = None, progress=None,
+                             ) -> tuple[int, list[Path], list[tuple[Path, str]]]:
+    """Grant each entry as the walk yields it, never materialising the tree first.
+
+    Same contract as :func:`_grant_entries` for the non-propagating writer, minus the link map
+    it only needs for the icacls fallback. Stops between entries at *deadline* and raises
+    :class:`AclGrantDeferred` with the counts it reached.
+    """
+    granted, failed, seen = 0, [], 0
+    for path, is_dir in iter_tree_without_reparse_points(root, skipped):
+        seen += 1
+        if deadline is not None and time.monotonic() >= deadline:
+            raise AclGrantDeferred(granted, skipped, failed)
+        try:
+            _grant(path, is_dir, os.path.join(real_root, *path.relative_to(root).parts))
+        except ReparsePointRefused:
+            skipped.append(path)
+        except Exception as exc:  # health: allow BLE001 -- pywintypes.error is not an OSError; keep going like /C
+            failed.append((path, str(exc) or type(exc).__name__))
+        else:
+            granted += 1
+            if progress is not None and not granted % _TREE_GRANT_PROGRESS_EVERY:
+                progress(granted, skipped, failed)
     return granted, skipped, failed
 
 

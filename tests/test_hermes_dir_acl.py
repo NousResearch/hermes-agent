@@ -5,6 +5,7 @@ No test pretends to be on Windows: elevation is a host fact the functions take a
 process_is_elevated probe stands in for it on a production path), and only the native writer
 (``_grant_with_pywin32``) is replaced, to record what an elevated grant would have touched."""
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -198,6 +199,43 @@ def test_tree_grant_is_a_noop_unelevated(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda *_a, **_k: pytest.fail("granted"))
     assert hermes_dir_acl.grant_tree_user_access(tmp_path, elevated=False) == (0, [], [])
     assert hermes_dir_acl.grant_tree_user_access(tmp_path) == (0, [], [])  # the probe off an elevated Windows host
+
+
+def test_tree_grant_streams_the_walk_and_honours_its_deadline(tmp_path, monkeypatch):
+    """#143124: the walk was list()ed into ~1.6 GB before the first grant. Consumed as it yields, a
+    deadline can stop it between entries, and the grant it already wrote stands."""
+    seen = []
+
+    def walk(_root, _skipped):
+        for i in range(5000):
+            seen.append(i)
+            yield tmp_path / f"e{i}", False
+
+    monkeypatch.setattr(hermes_dir_acl, "iter_tree_without_reparse_points", walk)
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda *_a, **_k: False)
+
+    with pytest.raises(hermes_dir_acl.AclGrantDeferred) as deferred:
+        hermes_dir_acl.grant_tree_user_access(
+            tmp_path, elevated=True, deadline=time.monotonic() - 1)
+
+    assert len(seen) == 1  # one yielded entry, not the whole tree materialised first
+    assert deferred.value.granted == 0
+
+
+def test_tree_grant_reports_progress_while_it_grants(tmp_path, monkeypatch):
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda *_a, **_k: False)
+    monkeypatch.setattr(hermes_dir_acl, "_TREE_GRANT_PROGRESS_EVERY", 2)
+    home = tmp_path / "progress-home"
+    home.mkdir()
+    (home / "a").write_text("x")
+    calls = []
+
+    granted, _skipped, _failed = hermes_dir_acl.grant_tree_user_access(
+        home, elevated=True, progress=lambda g, _s, _f: calls.append(g))
+
+    assert granted == 2 and calls == [2]  # the dir and the file
 
 
 @pytest.mark.parametrize("shape", ["symlink-only", "symlink-before-a-file", "hardlink-only", "nested-hardlink"])

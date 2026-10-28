@@ -1,0 +1,25 @@
+# Dependencies
+/node_modules/
+
+# Next and Fumadocs output
+/.next/
+/.source/
+/out/
+*.tsbuildinfo
+
+# Pinned catalog README cache and generated public feeds
+/.cache/
+/public/llms.txt
+/public/llms-full.txt
+/public/api/skills.json
+/public/api/skills-meta.json
+/public/api/skills-index.json
+/public/api/plugins.json
+/public/api/plugins-meta.json
+/public/api/plugin-catalog.json
+/public/api/plugin-stars.json
+/public/api/automation-blueprints-index.json
+
+.DS_Store
+.env*.local
+npm-debug.log*

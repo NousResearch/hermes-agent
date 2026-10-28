@@ -1,12 +1,11 @@
-"""The provider-profile entries of ``OPTIONAL_ENV_VARS``, added on first read instead of at import.
+"""The provider-profile entries of ``OPTIONAL_ENV_VARS``: descriptive metadata that reads no config.
 
-Listing provider profiles runs provider discovery, and discovery reads config: ``plugins.enabled``
-gates pip-installed provider plugins, ``plugins.isolation`` decides how ``$HERMES_HOME`` ones load.
-Done while ``hermes_cli.config`` imports, that read is the launch profile's config in a process that
-serves several profiles, and a cycle with a config backend that imports this code while it loads the
-config (the remote backend's Nous credential imports ``hermes_cli.auth``, which imports
-``hermes_cli.config``). So importing ``hermes_cli.config`` reads no config; the first read of the
-table (or of ``CORE_DECLARED_ENV_NAMES``) adds the entries.
+They used to come from ``list_providers()`` while ``hermes_cli.config`` imported, and provider
+discovery reads config (``plugins.enabled``, ``plugins.isolation``): the launch profile's config in
+a process serving several profiles, and a deadlock with a config backend whose own load imports
+``hermes_cli.auth``. Now the bundled providers' entries are built from :func:`providers.bundled_profiles`
+(no config, no discovery) on the table's first read, and discovery's completion hook adds the
+process-wide plugin providers it registered.
 """
 from __future__ import annotations
 
@@ -21,22 +20,18 @@ def arm(table, static_names) -> None:
     table.arm(_provider_entries, _PROVIDER_NAMES.update)
 
 
-def _provider_entries() -> dict:
-    """The env vars of every ``auth_type="api_key"`` provider profile. A core entry wins; a
-    provider entry replaces one a platform plugin manifest added (it was added first only because
-    this runs late); the first profile to declare a name wins."""
-    try:
-        from providers import list_providers
-        profiles = list_providers()
-    except Exception:  # health: allow BLE001 -- as before: a broken provider layer must not break config readers
-        # (ConfigBackendUnavailable is a SystemExit: it propagates, and the table stays armed)
-        return {}
+_CATALOG: dict | None = None  # the bundled providers' entries: config-free, computed once
+
+
+def _entries_for(profiles, skip) -> dict:
+    """Entries for the ``auth_type="api_key"`` profiles' env vars, minus ``skip``; the first profile
+    to declare a name wins."""
     entries: dict = {}
     for pp in profiles:
         if pp.auth_type != "api_key":
             continue
         for var in pp.env_vars:
-            if var in _STATIC_NAMES or var in entries:
+            if var in skip or var in entries:
                 continue
             is_key = not var.endswith(("_BASE_URL", "_URL"))
             label = pp.display_name or pp.name
@@ -48,6 +43,35 @@ def _provider_entries() -> dict:
                 "category": "provider",
                 "advanced": True}
     return entries
+
+
+def _provider_entries() -> dict:
+    """The bundled provider profiles' entries. Reads no config and runs no discovery (so it has no
+    partial state and nothing to wait for): a plain idempotent cache, and concurrent first callers
+    just compute the same result. A core entry wins; a provider entry replaces one a platform plugin
+    manifest added (it was added first only because this runs late)."""
+    global _CATALOG
+    if _CATALOG is None:
+        try:
+            from providers import bundled_profiles
+            profiles = bundled_profiles()
+        except Exception:  # health: allow BLE001 -- as before: a broken provider layer must not break config readers
+            profiles = []
+        _CATALOG = _entries_for(profiles, _STATIC_NAMES)
+    return dict(_CATALOG)
+
+
+def sync_registered_providers() -> None:
+    """Provider discovery's completion hook: add the env vars of process-wide plugin providers it
+    registered (entry points enabled in config). Reads the registry as it stands, never config;
+    ``$HERMES_HOME`` plugins (per profile) are not process-wide and are left out."""
+    import providers
+    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+    profiles = [p for name, p in list(providers._REGISTRY.items()) if providers.provider_source(name) != "bundled"]
+    entries = _entries_for(profiles, _STATIC_NAMES | _PROVIDER_NAMES | set(_CATALOG or ()))
+    for var, entry in entries.items():
+        dict.__setitem__(OPTIONAL_ENV_VARS, var, entry)
+    _PROVIDER_NAMES.update(entries)
 
 
 def core_declared_env_names() -> frozenset[str]:

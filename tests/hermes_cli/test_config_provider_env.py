@@ -1,4 +1,4 @@
-"""Provider-profile entries of OPTIONAL_ENV_VARS: added on first read, same contents as before."""
+"""Provider-profile entries of OPTIONAL_ENV_VARS: config-free, same contents as before."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -25,10 +25,39 @@ def test_every_api_key_provider_var_is_declared_in_core():
     assert expected <= cfg.CORE_DECLARED_ENV_NAMES
 
 
+def test_bundled_profiles_match_discovery_and_leave_the_registry_alone():
+    import providers
+
+    before = dict(providers._REGISTRY)
+    bundled = {p.name: p for p in providers.bundled_profiles()}
+    assert dict(providers._REGISTRY) == before
+    discovered = {n for n in providers._REGISTRY if providers.provider_source(n) == "bundled"}
+    assert discovered and set(bundled) >= discovered
+    for name in discovered:
+        assert bundled[name].env_vars == providers._REGISTRY[name].env_vars
+
+
+def test_the_catalog_builds_under_a_backend_that_refuses_every_read(monkeypatch):
+    import hermes_cli.config_backend as cb
+
+    reads = []
+
+    def refuse(*a, **k):
+        reads.append(a)
+        raise ConfigBackendUnavailable("this test's backend refuses every read")
+
+    monkeypatch.setattr(cb, "_route", refuse)
+    monkeypatch.setattr(cpe, "_CATALOG", None)
+    entries = cpe._provider_entries()
+    assert "ANTHROPIC_API_KEY" in entries or len(entries) > 10
+    assert reads == []
+
+
 @pytest.fixture
 def table(monkeypatch):
     monkeypatch.setattr(cpe, "_STATIC_NAMES", frozenset({"CORE_KEY"}))
     monkeypatch.setattr(cpe, "_PROVIDER_NAMES", set())
+    monkeypatch.setattr(cpe, "_CATALOG", None)
     t = OptionalEnvVars({"CORE_KEY": {"description": "core"}, "PLUG_KEY": {"description": "platform"}})
     t.arm(cpe._provider_entries, cpe._PROVIDER_NAMES.update)
     return t
@@ -40,7 +69,7 @@ def test_fill_runs_on_first_read_core_wins_provider_replaces_platform_first_prov
     calls = []
     profiles = [_profile("alpha", "CORE_KEY", "PLUG_KEY", "ALPHA_API_KEY", "ALPHA_BASE_URL"),
                 _profile("beta", "ALPHA_API_KEY"), _profile("oauth", "OAUTH_TOKEN", auth_type="oauth")]
-    monkeypatch.setattr(providers, "list_providers", lambda: calls.append(1) or profiles)
+    monkeypatch.setattr(providers, "bundled_profiles", lambda: calls.append(1) or profiles)
     dict.__setitem__(table, "LATE", {})  # writes and raw dict access never fill
     assert calls == []
     assert table["CORE_KEY"] == {"description": "core"} and calls == [1]
@@ -51,32 +80,18 @@ def test_fill_runs_on_first_read_core_wins_provider_replaces_platform_first_prov
     assert calls == [1]  # once
 
 
-def test_unavailable_config_fails_the_read_loudly_and_the_next_read_retries(table, monkeypatch):
+def test_discovery_completion_adds_registered_plugin_providers(table, monkeypatch):
     import providers
 
-    answers = [ConfigBackendUnavailable("boot in flight"), [_profile("alpha", "ALPHA_API_KEY")]]
+    from hermes_cli import config_defaults
 
-    def list_providers():
-        answer = answers.pop(0)
-        if isinstance(answer, BaseException):
-            raise answer
-        return answer
-
-    monkeypatch.setattr(providers, "list_providers", list_providers)
-    with pytest.raises(ConfigBackendUnavailable):  # fail closed, never a silently partial table
-        table.get("ALPHA_API_KEY")
-    assert "ALPHA_API_KEY" in table and answers == []
-
-
-def test_a_broken_provider_layer_is_not_retried(table, monkeypatch):
-    import providers
-
-    calls = []
-
-    def boom():
-        calls.append(1)
-        raise RuntimeError("broken")
-
-    monkeypatch.setattr(providers, "list_providers", boom)
-    assert "CORE_KEY" in table and "CORE_KEY" in table
-    assert calls == [1]
+    monkeypatch.setattr(providers, "bundled_profiles", lambda: [_profile("alpha", "ALPHA_API_KEY")])
+    monkeypatch.setattr(config_defaults, "OPTIONAL_ENV_VARS", table)
+    monkeypatch.setattr(providers, "_REGISTRY", {"alpha": _profile("alpha", "ALPHA_API_KEY"),
+                                                 "plug": _profile("plug", "PLUG_API_KEY", "ALPHA_API_KEY")})
+    monkeypatch.setattr(providers, "provider_source", lambda n: "bundled" if n == "alpha" else "entry_point")
+    assert "ALPHA_API_KEY" in table
+    cpe.sync_registered_providers()
+    assert table["PLUG_API_KEY"]["description"] == "Plug API key"
+    assert table["ALPHA_API_KEY"]["description"] == "Alpha API key"  # an earlier entry is kept
+    assert "PLUG_API_KEY" in cpe._PROVIDER_NAMES

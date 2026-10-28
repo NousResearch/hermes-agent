@@ -64,6 +64,17 @@ const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
 
 describe('ProjectOverviewRow', () => {
+  it('bounds the project label with a single-line block inside its button', () => {
+    const onEnter = vi.fn()
+    render(<ProjectOverviewRow onEnter={onEnter} project={project} />)
+    const label = screen.getByText('Test D')
+    expect(label.className).toContain('block')
+    expect(label.className).toContain('truncate')
+    expect(label.className).toContain('leading-[1.35]')
+    fireEvent.click(label)
+    expect(onEnter).toHaveBeenCalledWith(project.id)
+  })
+
   afterEach(() => {
     workspaceOpen.value = false
     projectsStore.fetchProjectSessions.mockReset()

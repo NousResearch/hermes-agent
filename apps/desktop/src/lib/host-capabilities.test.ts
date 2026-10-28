@@ -74,6 +74,7 @@ const CALL_SITES: [site: string, old: (browser: boolean) => boolean, now: () => 
   ['lib/clipboard.ts:61', b => !b, () => hostHas('clipboardIpc')],
   ['lib/desktop-fs.ts:48', b => b, () => !hostHas('nativeHostFiles')],
   ['lib/external-link.tsx:272', b => b, () => !hostHas('inAppLinks')],
+  ['lib/keybinds/actions.ts:31', b => !b, () => !hostHas('browserShortcutDefaults')],
   ['lib/media.ts:125', b => !b, () => hostHas('nativeHostFiles')],
   ['lib/media.ts:286', b => !b, () => hostHas('urlTokenAuth')],
   ['store/browser-tab-title.ts:86', b => !b, () => !hostHas('tabTitleStatus')],

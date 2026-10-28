@@ -21,6 +21,8 @@ export const HOST_CAPABILITIES = Object.freeze({
   appMouseHistoryButtons: 'native',
   /** The browser opens its own context menu, which the app menu must cancel or let through. */
   browserContextMenu: 'browser',
+  /** Shortcuts whose native chord the browser takes first (new tab, close tab) default to another chord. */
+  browserShortcutDefaults: 'browser',
   /** Writes go through Electron's clipboard IPC before `navigator.clipboard`. */
   clipboardIpc: 'native',
   /** Gateway connection management (switch, connect, recover) lives on this host. */

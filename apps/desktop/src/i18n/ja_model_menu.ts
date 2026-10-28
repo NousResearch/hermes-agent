@@ -5,6 +5,7 @@ export const jaModelMenu = {
   editModels: 'モデルを編集…',
   followDefault: '設定のデフォルトを使用',
   refreshModels: 'モデルを更新',
+  portalCta: 'Nous Portal でさらに数百のモデルにアクセス',
   favorites: 'お気に入り',
   addFavorite: 'お気に入りに追加',
   removeFavorite: 'お気に入りから削除',

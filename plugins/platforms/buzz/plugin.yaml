@@ -34,6 +34,10 @@ optional_env:
     description: "Comma-separated channel UUIDs to watch (default: all joined channels)"
     prompt: "Channel UUIDs (comma-separated)"
     password: false
+  - name: BUZZ_FREE_RESPONSE_CHANNELS
+    description: "Comma-separated channel UUIDs where the agent responds without an @mention even when BUZZ_REQUIRE_MENTION is true"
+    prompt: "Free-response channel UUIDs (comma-separated, or empty)"
+    password: false
   - name: BUZZ_HOME_CHANNEL
     description: "Channel UUID for cron / notification delivery (defaults to the first watched channel)"
     prompt: "Home channel UUID (or empty)"

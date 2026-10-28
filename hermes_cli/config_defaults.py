@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the updates defaults table gains its `post_hooks` key for #115667; the entries are data, not logic, and the six lines are the key plus its inline documentation
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -2359,6 +2360,12 @@ DEFAULT_CONFIG = {
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset
         # --hard + clean -fd, so ignored paths like node_modules/venv are never touched).
         "non_interactive_local_changes": "stash",
+        # Operator site-packages overlays that must survive `hermes update` (#115667):
+        # list of {path, marker, command?} entries. After the dependency sync each file
+        # must still contain its marker; a missing marker re-runs `command` (re-patch
+        # script) when declared, else warns loudly. Relative paths resolve under the
+        # project venv's site-packages.
+        "post_hooks": [],
         # If the checkout is parked on a feature branch and the tree is clean, switch to the update
         # target (commits stay on the branch; a loud notice names it) so non-interactive updates
         # keep working. A DIRTY tree blocks the switch and the code update is SKIPPED with a loud

@@ -527,6 +527,8 @@ COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-di
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
 ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+# Login shells re-read /etc/profile, which resets PATH; this re-adds the dirs above.
+COPY --chmod=0644 docker/profile-hermes-path.sh /etc/profile.d/hermes.sh
 # PM's atomic writer creates private facts for source installs. In the
 # image these are shared, non-secret package metadata, read by UID 10000.
 # uv's environment locks are build-only and may be world-writable. Remove

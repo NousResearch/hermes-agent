@@ -17,7 +17,7 @@ import pytest
 
 from tools.environments.local import LocalEnvironment
 
-_PATH_LINE = re.compile(r'^(?:declare -x|export) PATH="(.*)"$', re.M)
+_PATH_LINE = re.compile(r'^(?:declare -x|export) PATH="(.*)"$', re.MULTILINE)
 
 
 def _managed_setup(tmp_path, monkeypatch, *, profile_body: str):
@@ -34,7 +34,7 @@ def _managed_setup(tmp_path, monkeypatch, *, profile_body: str):
         "tools.environments.local._resolve_hermes_bin_dir", lambda: str(managed)
     )
     monkeypatch.setattr(
-        "tools.environments.local._managed_runtime_path_entries", lambda: []
+        "tools.environments.local._managed_runtime_path_entries", list
     )
     return managed
 
@@ -101,3 +101,34 @@ class TestLoginShellPathPreservation:
             assert str(managed) in out.split(":")
         finally:
             env.cleanup()
+
+
+def _exe(directory, name: str):
+    tool = directory / name
+    tool.write_text(f"#!/bin/sh\necho {directory.name}\n")
+    tool.chmod(0o755)
+
+
+@pytest.mark.platforms("posix")
+def test_dropped_spawn_path_dirs_return_after_the_login_path(tmp_path, monkeypatch):
+    """Any spawn-env dir a resetting profile dropped (not only Hermes' own: the gateway's
+    pm runtime, a ``docker run -e PATH=`` addition) comes back in parent order AFTER the
+    login PATH, so a command the login PATH resolves keeps resolving to the same binary."""
+    user_bin, extra_a, extra_b = (tmp_path / n for n in ("user-bin", "extra-a", "extra-b"))
+    for d in (user_bin, extra_a, extra_b):
+        d.mkdir()
+    _exe(user_bin, "shared-tool")
+    _exe(extra_a, "shared-tool")
+    _exe(extra_b, "only-in-parent")
+    _managed_setup(tmp_path, monkeypatch,
+                   profile_body=f'PATH="/usr/local/bin:/usr/bin:/bin"\nPATH="{user_bin}:$PATH"\n')
+    env = LocalEnvironment(cwd=str(tmp_path), env={"PATH": f"{extra_a}:{extra_b}:/usr/bin:/bin"})
+    try:
+        entries = _snapshot_path_value(env)
+        assert entries.index(str(user_bin)) < entries.index("/usr/bin") < entries.index(str(extra_a)) \
+            < entries.index(str(extra_b))
+        assert entries.count("/usr/bin") == 1
+        out = env.execute("only-in-parent; shared-tool")["output"].split()
+        assert out == ["extra-b", "user-bin"]
+    finally:
+        env.cleanup()

@@ -6,6 +6,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -861,23 +862,25 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     return "\n".join(prelude) + "\n" + cmd_string
 
 
-def _prepend_managed_path_restore(cmd_string: str) -> str:
-    """Prepend idempotent PATH-restore lines for Hermes-managed dirs.
+def _append_dropped_path_entries(cmd_string: str, parent_path: str) -> str:
+    """Prepend a line that re-appends *parent_path* dirs the login profile dropped.
 
-    Login profiles can reset PATH outright — Debian's ``/etc/profile`` does so
-    for non-root shells, dropping the venv dir the process env put there
-    (#56634). Sits between the init-file prelude and the command (the env
-    snapshot's ``export -p``), so restored entries survive into the snapshot.
-    Each ``case`` guard re-adds its dir only when absent, keeping reruns and
-    profiles that kept the entries duplicate-free."""
+    A login profile can reset PATH outright (Debian's ``/etc/profile``, so every
+    Debian/Ubuntu image and host), and the snapshot's ``export -p`` then pins the reset
+    PATH over the spawn env for every later command: in the Docker image that loses
+    ``/opt/hermes/bin`` and bare ``hermes`` exits 127 (#56634). Dropped dirs go AFTER
+    the login PATH in parent order, so a command that resolved before still resolves
+    to the same binary (the user's nvm/pyenv keep precedence); only commands that had
+    no match gain one. Present entries are never duplicated; missing dirs are skipped."""
     if _IS_WINDOWS:
         return cmd_string  # native PATH stays ``;``-joined; bash sees a converted copy
-    entries = [d for d in (_resolve_hermes_bin_dir(), *_managed_runtime_path_entries())
-               if d and '"' not in d]
+    entries = [d for d in dict.fromkeys(parent_path.split(":")) if d and os.path.isdir(d)]
     if not entries:
         return cmd_string
-    lines = [f'case ":$PATH:" in *":{d}:"*) ;; *) PATH="{d}:$PATH" ;; esac' for d in entries]
-    return "\n".join(lines) + "\n" + cmd_string
+    restore = (f"for __hermes_p in {' '.join(shlex.quote(d) for d in entries)}; do "
+               'case ":$PATH:" in *":$__hermes_p:"*) ;; *) PATH="${PATH:+$PATH:}$__hermes_p" ;; esac; '
+               "done; unset __hermes_p; export PATH")
+    return restore + "\n" + cmd_string
 
 
 # --- Process-group teardown (POSIX) ---
@@ -1125,18 +1128,17 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env)
         # Login invocations (init_session's env snapshot) source the user's rc /
-        # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; the
-        # managed-dir restore runs after that prelude so a profile that resets
-        # PATH (Debian's /etc/profile) can't drop Hermes' own dirs from the
-        # snapshot (#56634).
+        # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
+        # spawn env's dirs a resetting profile dropped are re-appended (#56634).
         if login:
-            cmd_string = _prepend_managed_path_restore(cmd_string)
+            cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
         proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,

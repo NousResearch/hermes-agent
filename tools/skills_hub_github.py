@@ -22,7 +22,7 @@ from tools.skills_hub_models import (
 logger = logging.getLogger("tools.skills_hub")
 
 # GitHub tap repo (owner/repo) -> provider label used by the docs-site catalog
-# (website/scripts/extract-skills.py::GITHUB_TAP_LABELS). The runtime index collapses every tap into
+# (apps/docs/scripts/extract-skills.py::GITHUB_TAP_LABELS). The runtime index collapses every tap into
 # source="github"; ``extra.provider`` keeps per-tap identity searchable/filterable without disturbing
 # dedup / floor / index-skip logic keyed on the bare source id.
 GITHUB_TAP_PROVIDERS = {

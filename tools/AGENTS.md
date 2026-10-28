@@ -1,7 +1,7 @@
 # tools/ + toolsets.py + model_tools.py — model tools
 
 Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** before adding anything here.
-Most capabilities should NOT be core tools. Long-form: `website/docs/developer-guide/adding-tools.md`,
+Most capabilities should NOT be core tools. Long-form: `apps/docs/content/en/developer-guide/adding-tools.md`,
 `tools-runtime.md`.
 
 ## Registry and discovery
@@ -173,7 +173,7 @@ Esc, the Desktop/TUI Stop button, a message that interrupts, `session.interrupt`
 `async_delegation.interrupt_for_session`. Only the explicit `/stop` command (gateway busy AND idle paths, CLI
 and Desktop process stop) and session close/reset end them. Depth>0 delegations are always synchronous
 (`_model_background_value`), so a stop recurses through the child's own `_active_children` fan-out; an
-interrupted entry's `summary` is the child's last real assistant text (`_build_result_entry`). API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
+interrupted entry's `summary` is the child's last real assistant text (`_build_result_entry`). API: `apps/docs/content/en/developer-guide/subagent-lifecycle-api.md`.
 
 ## Tests
 

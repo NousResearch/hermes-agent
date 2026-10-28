@@ -1644,7 +1644,7 @@ Walkthrough:
      point at the topic, enable 1:1 + group, restrict visibility.
   8. Install the bot in a space (fires ADDED_TO_SPACE and resolves its user_id).
 
-Full guide: website/docs/user-guide/messaging/google_chat.md
+Full guide: apps/docs/content/en/user-guide/messaging/google_chat.md
 """
 
 

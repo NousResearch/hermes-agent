@@ -140,22 +140,22 @@ mini-swe-agent/
 .direnv/
 .nix-stamps/
 result
-website/static/api/skills-index.json
+apps/docs/public/api/skills-index.json
 # skills.json + skills-meta.json are build artifacts emitted by
-# website/scripts/extract-skills.py during prebuild — keep them out of
+# apps/docs/scripts/extract-skills.py during prebuild — keep them out of
 # git for the same reason as skills-index.json (large, generated, change
 # every build).
-website/static/api/skills.json
-website/static/api/skills-meta.json
+apps/docs/public/api/skills.json
+apps/docs/public/api/skills-meta.json
 # plugins.json + plugins-meta.json are build artifacts emitted by
-# website/scripts/extract-plugins.py during prebuild (Plugin Catalog page).
-website/static/api/plugins.json
-website/static/api/plugin-stars.json
-website/static/api/plugin-catalog.json
-website/static/api/plugins-meta.json
+# apps/docs/scripts/extract-plugins.py during prebuild (Plugin Catalog page).
+apps/docs/public/api/plugins.json
+apps/docs/public/api/plugin-stars.json
+apps/docs/public/api/plugin-catalog.json
+apps/docs/public/api/plugins-meta.json
 # automation-blueprints-index.json is a build artifact emitted by
-# website/scripts/extract-automation-blueprints.py during prebuild.
-website/static/api/automation-blueprints-index.json
+# apps/docs/scripts/extract-automation-blueprints.py during prebuild.
+apps/docs/public/api/automation-blueprints-index.json
 models-dev-upstream/
 
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)

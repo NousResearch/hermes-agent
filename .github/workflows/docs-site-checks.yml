@@ -24,13 +24,13 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          node-cache-dependency-path: website/package-lock.json
+          node-cache-dependency-path: apps/docs/package-lock.json
 
-      - name: Install website dependencies
+      - name: Install docs app dependencies
         uses: ./.github/actions/retry
         with:
           command: npm ci
-          working-directory: website
+          working-directory: apps/docs
 
       - name: Install ascii-guard
         uses: ./.github/actions/retry
@@ -38,31 +38,40 @@ jobs:
           command: python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17
 
       - name: Extract skill metadata for dashboard
-        run: python3 website/scripts/extract-skills.py
+        run: python3 apps/docs/scripts/extract-skills.py
 
       - name: Regenerate per-skill docs pages + catalogs
-        run: python3 website/scripts/generate-skill-docs.py
+        run: python3 apps/docs/scripts/generate-skill-docs.py
 
       - name: Committed skill docs match the generator
         # GitHub renders the committed copies, so a regeneration that changes anything
         # means the published catalogs/pages are stale. Fix: run the generator and commit.
         run: |
-          git add -N website/docs website/sidebars.ts
-          if ! git diff --exit-code --stat -- website/docs website/sidebars.ts website/i18n; then
-            echo "::error::website/scripts/generate-skill-docs.py output differs from the committed docs; run it and commit the result"
+          git add -N apps/docs/content apps/docs/src/lib/navigation-data.ts
+          if ! git diff --exit-code --stat -- apps/docs/content apps/docs/src/lib/navigation-data.ts; then
+            echo "::error::apps/docs/scripts/generate-skill-docs.py output differs from the committed docs; run it and commit the result"
             exit 1
           fi
 
       - name: Check cross-page links resolve on GitHub and on the site
-        run: python3 website/scripts/check_doc_links.py
+        run: python3 apps/docs/scripts/check_doc_links.py
 
       - name: Lint docs diagrams
         run: npm run lint:diagrams
-        working-directory: website
+        working-directory: apps/docs
 
-      - name: Build Docusaurus
-        # Build only the default (en) locale in CI — the full bilingual
-        # build runs in deploy-site.yml on push-to-main / release.
-        # Same pattern Docusaurus uses internally (build:fast --locale en).
-        run: npm run build:fast
-        working-directory: website
+      - name: Docs app tests
+        run: npm run test
+        working-directory: apps/docs
+
+      - name: Build docs app (Next static export, both locales)
+        # The full bilingual build runs here on every PR — an English-only
+        # fast path would let a zh-Hans break land green (deploy-site.yml
+        # builds both locales at deploy time).
+        run: npm run build
+        working-directory: apps/docs
+
+      - name: Validate static export output
+        # Fails when required routes/assets/JSON contracts are missing from
+        # the export — a build that silently drops pages must not pass CI.
+        run: node apps/docs/scripts/validate-output.mjs

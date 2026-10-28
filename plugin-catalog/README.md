@@ -10,7 +10,7 @@ Curated, Nous-approved Hermes plugins. Each YAML file in this directory
 Presence in this directory **is** the trust signal. The rules that keep it
 meaningful:
 
-<!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/website/test_catalog_rules_mirror.py keeps them identical) -->
+<!-- admission-rules:start (mirrored in apps/docs/content/en/developer-guide/plugins/catalog-submission.md; tests/docs_site/test_catalog_rules_mirror.py keeps them identical) -->
 1. **Human-merged gate.** Entries are added *only* via a PR to the
    `hermes-agent` repository, reviewed and merged by a maintainer. There is
    no self-serve registry, no automated ingestion.

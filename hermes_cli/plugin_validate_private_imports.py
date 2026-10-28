@@ -18,8 +18,8 @@ from pathlib import Path
 from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_files
 
 # WHY: "public" must mean what Hermes documents for plugin authors, not a reviewer's taste.
-# Derived from every Hermes-module ``import`` in website/docs/developer-guide/**/*.md and
-# website/docs/user-guide/features/plugins*.md code blocks (plus extending-the-dashboard.md, which
+# Derived from every Hermes-module ``import`` in apps/docs/content/en/developer-guide/**/*.md and
+# apps/docs/content/en/user-guide/features/plugins*.md code blocks (plus extending-the-dashboard.md, which
 # desktop-plugin-sdk.md names as the plugin backend reference), and what PluginContext hands out in
 # hermes_cli/plugins.py (property/return types, base classes its ``register_*`` methods check), and
 # the names those plugin pages tell authors to call, raise, return or subclass in prose. ``module`` entries allow the module (underscore names excepted);

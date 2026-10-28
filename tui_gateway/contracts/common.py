@@ -217,6 +217,9 @@ class PendingApproval(OpenModel):
     allow_permanent: bool | None = None
     allow_session: bool | None = None
     smart_denied: bool | None = None
+    # Set when the gate is asking a human and there is a reason worth naming. Announces
+    # a degraded state (with the reason) without changing the choice set or the decision.
+    smart_unavailable: str | None = None
     choices: list[str] | None = None
     tool_name: str | None = None
 

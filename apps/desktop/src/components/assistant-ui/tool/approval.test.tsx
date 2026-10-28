@@ -37,7 +37,7 @@ beforeAll(() => {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
+  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean; smartUnavailable?: string } = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
@@ -113,6 +113,31 @@ describe('PendingApprovalStack', () => {
     render(<PendingApprovalStack />)
 
     expect(screen.getByText('chmod -R 777 /tmp/x')).toBeTruthy()
+  })
+
+  it('says why a human is being asked when the gate fell back to one', () => {
+    // Announcement only: the prompt exists because the guardian was unavailable, not because a
+    // model judged the command - without this line the two are indistinguishable to the user.
+    setRequest('rm -rf /tmp/x', undefined, { smartUnavailable: 'RuntimeError: relay refused' })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText(/why you're being asked/i)).toBeTruthy()
+    expect(screen.getByText(/relay refused/i)).toBeTruthy()
+  })
+
+  it('announces no note when the guardian ran and returned a verdict on the expected route', () => {
+    setRequest('rm -rf /tmp/x')
+    render(<PendingApprovalStack />)
+
+    expect(screen.queryByText(/why you're being asked/i)).toBeNull()
+  })
+
+  it('announces no note on a smart-denied override', () => {
+    // A DENY verdict is a decision, not a failure; the card must not imply otherwise.
+    setRequest('rm -rf /tmp/x', undefined, { smartDenied: true })
+    render(<PendingApprovalStack />)
+
+    expect(screen.queryByText(/why you're being asked/i)).toBeNull()
   })
 
   it('falls back to the description when a request carries no command at all', () => {

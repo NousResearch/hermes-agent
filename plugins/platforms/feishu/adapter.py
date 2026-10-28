@@ -1788,6 +1788,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
+                request_id=prompt.request_id,
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -1796,6 +1797,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _send_interactive_card(
         self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]], failure_message: str, *,
         state_map: dict[int, dict[str, str]], state_id: int, session_key: str,
+        request_id: str = "",
     ) -> SendResult:
         """Send a button card and, on success, remember where it went so a click can be validated."""
         response = await self._feishu_send_with_retry(
@@ -1804,11 +1806,14 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         result = self._finalize_send_result(response, failure_message)
         if result.success:
-            state_map[state_id] = {
+            state = {
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
             }
+            if request_id:
+                state["request_id"] = request_id
+            state_map[state_id] = state
         return result
 
     @staticmethod
@@ -2380,8 +2385,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             return
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
+            from tools.approval import resolve_prompt_approval
+            count = resolve_prompt_approval(state["session_key"], choice, state.get("request_id") or "")
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,

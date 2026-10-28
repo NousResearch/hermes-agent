@@ -695,29 +695,76 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
         return response, answered
 
-    def _approval_notify_sync(self, approval_data: dict) -> None:
-        if self._approval_owner is not None:
-            authority, session_id, generation = self._approval_owner
+    def _subagent_approval_outlived_turn(self, approval_data: dict) -> bool:
+        """True when a delegated child's prompt is still worth posting after the parent turn.
+
+        ``check_approval_generation`` fails closed once the turn is no longer running, which
+        is correct for the parent session's own waits (a late callback must not publish a
+        card). A pinned sub-agent approval still has to reach that same chat, so only the
+        stale-generation error on a ``delegated_child`` prompt is swallowed here. The caller
+        skips ``register_approval``, which repeats the same generation check.
+        """
+        owner = self._approval_owner
+        if owner is None:
+            return False
+        from hermes_state_runtime import RuntimeStoreError
+        authority, session_id, generation = owner
+        try:
             authority.check_approval_generation(session_id, generation)
+        except RuntimeStoreError as exc:
+            if approval_data.get("delegated_child") and exc.reason == "stale_generation":
+                logger.info(
+                    "Posting sub-agent approval after the parent turn ended (session %s)",
+                    session_id,
+                )
+                return True
+            raise
+        return False
+
+    def _refuse_foreign_approval(self, approval_data: dict) -> None:
+        """The callback is this turn's chat. A prompt queued for another session must not render here."""
+        asked = approval_data.get("gateway_session_key")
+        bound = self._ctx.session_key or ""
+        if isinstance(asked, str) and asked and asked != bound:
+            raise RuntimeError(
+                f"refusing approval prompt queued for {asked}; this turn is bound to {bound or '<none>'}"
+            )
+
+    def _approval_notify_sync(self, approval_data: dict) -> None:
+        self._refuse_foreign_approval(approval_data)
+        past_turn = self._subagent_approval_outlived_turn(approval_data)
         # A native decline must finish before any observer can authorize work.
-        self._render_approval_sync(approval_data)
-        if self._approval_owner is not None:
-            from gateway import local_viewer_events
-            authority.register_approval(session_id, generation, self._ctx.session_key, approval_data,
-                                        timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
+        # The flag is read inside the render. Callers that replace the method (local-viewer
+        # tests) keep the old signature and never touch the adapter.
+        self._approval_live_turn = not past_turn
+        try:
+            self._render_approval_sync(approval_data)
+        finally:
+            self._approval_live_turn = True
+        if past_turn or self._approval_owner is None:
+            return
+        from gateway import local_viewer_events
+        authority, session_id, generation = self._approval_owner
+        authority.register_approval(session_id, generation, self._ctx.session_key, approval_data,
+                                    timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
 
     def _render_approval_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
-        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
+        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps.
+
+        ``_approval_live_turn`` is false when a delegated child's prompt outlived the parent
+        turn. Pausing typing then sticks on the shared adapter and suppresses the next turn's
+        indicator, and the old stream is already closed.
+        """
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
-        # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
-        # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
-        # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
-        self._close_native_stream_boundary("Approval")
+        if getattr(self, "_approval_live_turn", True):
+            # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
+            # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it.
+            adapter.pause_typing_for_chat(ctx._status_chat_id)
+            self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()
@@ -725,11 +772,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
+                send_kwargs = dict(
+                    chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
+                    description=desc, metadata=ctx._status_thread_metadata, **flags,
+                )
+                request_id = approval_data.get("request_id") or ""
+                if request_id and _accepts_keyword(adapter.send_exec_approval, "request_id"):
+                    send_kwargs["request_id"] = request_id
                 fut = self._schedule(
-                    adapter.send_exec_approval(
-                        chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
-                    ),
+                    adapter.send_exec_approval(**send_kwargs),
                     "send_exec_approval scheduling error",
                 )
                 if fut is None:

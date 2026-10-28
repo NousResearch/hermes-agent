@@ -29,7 +29,8 @@ def register_timeout_notice(
     (which also drops its buttons). The plain-text prompt passes ``None``: it has no buttons to
     drop and rewriting it would erase the record of what was asked. ``command`` is the
     already-redacted command shown to the user. The notice is skipped when the run is no longer
-    current (``ctx._run_still_current``).
+    current, except a delegated child's button card: that card is edited in place and never
+    re-sent as a new message.
     """
     from tools.approval import register_gateway_settle
 
@@ -43,18 +44,26 @@ def register_timeout_notice(
         if reason != "timeout":
             return  # answered / interrupted / notify_failed already produced their own feedback
         # Same guard as every other late notice in TurnRunner: after /stop, /new or a restart the
-        # turn is over and this chat belongs to a newer run — do not edit or post into it.
+        # turn is over and this chat belongs to a newer run — do not post a new message into it.
+        # A delegated child's card is posted on purpose after that turn. Edit that card in place
+        # so a later click cannot resolve a different command still queued on the session; never
+        # fall back to a fresh send once the run has moved on.
         still_current = getattr(runner._ctx, "_run_still_current", None)
-        if callable(still_current) and not still_current():
+        current = True if not callable(still_current) else bool(still_current())
+        delegated = bool(approval_data.get("delegated_child"))
+        if not current and not (delegated and card_message_id):
             return
         runner._schedule(
-            _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s),
+            _post_timeout_notice(
+                runner._ctx, command, card_message_id, timeout_s, send_fallback=current),
             "Approval timeout notice scheduling error")
 
     register_gateway_settle(session_key, request_id, settle)
 
 
-async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str], timeout_s: int) -> None:
+async def _post_timeout_notice(
+    ctx, command: str, card_message_id: Optional[str], timeout_s: int, *, send_fallback: bool = True,
+) -> None:
     from gateway.run import _interim_metadata
 
     adapter = ctx._status_adapter
@@ -65,6 +74,8 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
         if card_message_id and await _edit_card(
                 adapter, ctx._status_chat_id, card_message_id,
                 t("gateway.exec_approval.timed_out_card_body", notice=notice, command=command)):
+            return
+        if not send_fallback:
             return
         await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
     except Exception:

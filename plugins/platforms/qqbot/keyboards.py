@@ -13,8 +13,10 @@ from typing import Any, Dict, List, Optional
 APPROVAL_BUTTON_PREFIX = "approve:"
 UPDATE_PROMPT_PREFIX = "update_prompt:"
 
-# session_key may itself contain colons (agent:main:qqbot:c2c:OPENID): greedy group, decision trails.
-_APPROVAL_DATA_RE = re.compile(r"^approve:(.+):(allow-once|allow-always|deny)$")
+# session_key may itself contain colons (agent:main:qqbot:c2c:OPENID): the decision is a fixed
+# token, and an optional hex request id trails it so a click names one prompt.
+_APPROVAL_DATA_RE = re.compile(
+    r"^approve:(.+):(allow-once|allow-always|deny)(?::([0-9a-fA-F]+))?$")
 _UPDATE_PROMPT_RE = re.compile(r"^update_prompt:(y|n)$")
 
 def _to_dict(value: Any) -> Any:
@@ -77,9 +79,16 @@ class InlineKeyboard(_Serializable):
     content: KeyboardContent = field(default_factory=KeyboardContent)
 
 
-def parse_approval_button_data(button_data: str) -> Optional[tuple[str, str]]:
-    """Parse approval ``button_data`` into ``(session_key, decision)`` or ``None``."""
-    return m.groups() if (m := _APPROVAL_DATA_RE.match(button_data or "")) else None
+def parse_approval_button_data(button_data: str) -> Optional[tuple[str, str, str]]:
+    """Parse approval ``button_data`` into ``(session_key, decision, request_id)`` or ``None``.
+
+    ``request_id`` is empty when the button was minted without one (older cards, text path).
+    """
+    m = _APPROVAL_DATA_RE.match(button_data or "")
+    if m is None:
+        return None
+    session_key, decision, request_id = m.groups()
+    return session_key, decision, request_id or ""
 
 
 def parse_update_prompt_button_data(button_data: str) -> Optional[str]:
@@ -96,14 +105,18 @@ def _single_row_keyboard(group_id: str, *buttons: tuple) -> InlineKeyboard:
     return InlineKeyboard(content=KeyboardContent(rows=[row]))
 
 
-def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True) -> InlineKeyboard:
+def build_approval_keyboard(
+    session_key: str, *, allow_permanent: bool = True, request_id: str = "",
+) -> InlineKeyboard:
     """Build ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` (one group, so a click greys the rest). ⭐ is hidden when
-    persistent scope is unavailable; *session_key* rides in ``button_data`` so the decision routes correctly."""
+    persistent scope is unavailable; *session_key* rides in ``button_data`` so the decision routes correctly.
+    *request_id* (hex) names the one queued prompt this card may resolve."""
     prefix = f"{APPROVAL_BUTTON_PREFIX}{session_key}"
-    buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once", 1)]
+    suffix = f":{request_id}" if request_id else ""
+    buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once{suffix}", 1)]
     if allow_permanent:
-        buttons.append(("always", "⭐ 始终允许", "已始终允许", f"{prefix}:allow-always", 1))
-    buttons.append(("deny", "❌ 拒绝", "已拒绝", f"{prefix}:deny", 0))
+        buttons.append(("always", "⭐ 始终允许", "已始终允许", f"{prefix}:allow-always{suffix}", 1))
+    buttons.append(("deny", "❌ 拒绝", "已拒绝", f"{prefix}:deny{suffix}", 0))
     return _single_row_keyboard("approval", *buttons)
 
 
@@ -126,6 +139,7 @@ class ApprovalRequest:
     severity: str = ""
     timeout_sec: int = 120
     allow_permanent: bool = True
+    request_id: str = ""
 
 
 _SEVERITY_ICONS = {"critical": "🔴", "info": "🔵"}

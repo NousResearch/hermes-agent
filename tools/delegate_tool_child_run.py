@@ -518,7 +518,8 @@ class _SchemaOutcome:
     retries: int
 
 def _validate_child_output_schema(
-    child: Any, result: dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
+    child: Any, result: dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any,
+    *, task_label: str = "",
 ) -> _SchemaOutcome:
     """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
     dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
@@ -538,8 +539,10 @@ def _validate_child_output_schema(
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
         from agent.delegation_context import delegated_child_context
+        from tools.approval import delegated_gateway_approval_scope
         from tools.delegate_tool_routes import child_profile_scope
-        with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
+        with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")), \
+                delegated_gateway_approval_scope(task_label):
             _retry_result = child.run_conversation(
                 user_message=build_retry_message(_schema_errors), task_id=child_task_id,
                 stream_callback=relay_child_text,
@@ -907,9 +910,13 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
+            from tools.approval import delegated_gateway_approval_scope
             from tools.delegate_tool_routes import child_profile_scope
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
-            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            # The approval scope captures the parent gateway session while its notify callback is
+            # still the one this thread inherited, so a dangerous command posts on that chat.
+            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")), \
+                    delegated_gateway_approval_scope(self.goal):
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )

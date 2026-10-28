@@ -23,6 +23,28 @@ def _capture_settle(monkeypatch):
     return hooks
 
 
+def test_delegated_timeout_still_edits_the_card_after_the_turn(monkeypatch):
+    """The child prompt is posted on purpose after the parent turn. Edit that card; do not
+    send a new message into a chat the run no longer owns."""
+    hooks = _capture_settle(monkeypatch)
+    runner = _Runner(current=False)
+    settle_mod.register_timeout_notice(
+        runner, {"request_id": "r-child", "delegated_child": True},
+        command="sh -c 'echo hi'", card_message_id="42")
+    hooks["r-child"]("timeout")
+    assert len(runner.scheduled) == 1
+
+
+def test_delegated_timeout_without_a_card_does_not_post_after_the_turn(monkeypatch):
+    hooks = _capture_settle(monkeypatch)
+    runner = _Runner(current=False)
+    settle_mod.register_timeout_notice(
+        runner, {"request_id": "r-text", "delegated_child": True},
+        command="ls", card_message_id=None)
+    hooks["r-text"]("timeout")
+    assert runner.scheduled == []
+
+
 @pytest.mark.parametrize("current, expected", [(True, 1), (False, 0)])
 def test_timeout_notice_is_gated_on_the_run_still_being_current(monkeypatch, current, expected):
     hooks = _capture_settle(monkeypatch)

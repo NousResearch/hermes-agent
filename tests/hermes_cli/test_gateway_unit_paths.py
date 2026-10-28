@@ -3,7 +3,7 @@
 
 import pytest
 
-import hermes_cli.gateway as gateway
+from hermes_cli import gateway
 
 pytestmark = pytest.mark.platforms("linux")
 

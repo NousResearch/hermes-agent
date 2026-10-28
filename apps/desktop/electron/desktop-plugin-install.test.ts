@@ -124,6 +124,46 @@ describe('detectPluginComponents', () => {
   })
 })
 
+interface DetectionCase {
+  name: string
+  root: string
+  files: Record<string, string>
+  expect: { agent: boolean; desktop: boolean; agent_name: null | string }
+}
+
+// Shared with the gateway's detector (tests/hermes_cli/test_plugins_cmd_inspect.py).
+const DETECTION_CASES = (
+  JSON.parse(
+    fs.readFileSync(path.resolve(here, '..', '..', '..', 'tests', 'fixtures', 'plugin_component_detection.json'), 'utf8')
+  ) as { cases: DetectionCase[] }
+).cases
+
+describe('detectPluginComponents on the shared detection cases', () => {
+  const roots: string[] = []
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each(DETECTION_CASES)('$name', async ({ root, files, expect: expected }) => {
+    const parent = mkdtemp('hermes-detect-')
+    roots.push(parent)
+    const pluginRoot = path.join(parent, root)
+    fs.mkdirSync(pluginRoot)
+
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(pluginRoot, rel)), { recursive: true })
+      fs.writeFileSync(path.join(pluginRoot, rel), text)
+    }
+
+    const detected = await detectPluginComponents(pluginRoot)
+
+    expect({ agent: detected.agent, desktop: detected.desktop, agent_name: detected.agentName }).toEqual(expected)
+  })
+})
+
 describe('probePluginRepo', () => {
   const roots: string[] = []
 
@@ -164,13 +204,17 @@ describe('installDesktopPluginFromGit', () => {
 
   /** A git repo whose root is one plugin: `desktop/plugin.js` plus, when
    *  `agentName` is given, the agent half that makes it a unified package. */
-  function pluginRepo(agentName: null | string): string {
+  function pluginRepo(agentName: null | string, desktopFiles: Record<string, string> = {}): string {
     const repo = mkdtemp('hermes-plugin-install-')
     roots.push(repo)
     const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
 
     fs.mkdirSync(path.join(repo, 'desktop'), { recursive: true })
     fs.writeFileSync(path.join(repo, 'desktop', 'plugin.js'), 'export function register() {}\n')
+
+    for (const [name, text] of Object.entries(desktopFiles)) {
+      fs.writeFileSync(path.join(repo, 'desktop', name), text)
+    }
 
     if (agentName) {
       fs.writeFileSync(path.join(repo, 'plugin.yaml'), `name: ${agentName}\n`)
@@ -245,6 +289,21 @@ describe('installDesktopPluginFromGit', () => {
 
   it('leaves a desktop-only repo unmarked so it stays a standalone plugin', async () => {
     const repo = pluginRepo(null)
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result.ok).toBe(true)
+    expect(fs.existsSync(path.join(appRoot, String(result.pluginName), 'plugin.js'))).toBe(true)
+    expect(fs.existsSync(path.join(appRoot, String(result.pluginName), PACKAGE_MARKER))).toBe(false)
+  })
+
+  it('drops a package marker a desktop-only repo ships, so it cannot pose as another package', async () => {
+    // The marker is what pairs a desktop half with an agent package (and lets
+    // it render that package's tool media); only this app may write it.
+    const forged = JSON.stringify({ package: 'meshy-ish', source: '/elsewhere' })
+    const repo = pluginRepo(null, { [PACKAGE_MARKER]: forged })
     const appRoot = mkdtemp('hermes-plugin-root-')
     roots.push(appRoot)
 

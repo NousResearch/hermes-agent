@@ -39,6 +39,7 @@ def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.Compl
         return subprocess.run(
             argv, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
             errors='replace', timeout=timeout, stdin=subprocess.DEVNULL, env=env,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -357,11 +358,46 @@ def _has_staged(raw: str) -> bool:
     return any(_entry_staged(tag, xy) for tag, xy, _ in _walk_entries(raw))
 
 
+def _review_commit_env(cwd: str) -> dict[str, str]:
+    """Carry Git's effective identity into an otherwise isolated commit.
+
+    Only read-only ``git var`` queries see the original config files. Git resolves
+    local/conditional config and author/committer environment precedence in *cwd*;
+    status, staging and the commit itself retain all noninteractive isolation.
+    """
+    base = dict(os.environ)
+    env = noninteractive_git_env(base)
+    probe_env = dict(env)
+    for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"):
+        if key in base:
+            probe_env[key] = base[key]
+        else:
+            probe_env.pop(key, None)
+    for role in ("AUTHOR", "COMMITTER"):
+        proc = _run(["git", "var", f"GIT_{role}_IDENT"], cwd, 5, probe_env)
+        if proc is None:
+            raise RuntimeError("git identity lookup failed")
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "git identity lookup failed")
+        ident = re.fullmatch(r"(.*) <([^<>]*)> -?\d+ [+-]\d{4}", proc.stdout.strip())
+        if ident is None:
+            raise RuntimeError("git returned an invalid commit identity")
+        env[f"GIT_{role}_NAME"], env[f"GIT_{role}_EMAIL"] = ident.groups()
+    return env
+
+
 def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
+    env = _review_commit_env(cwd)
     if not _has_staged(_status_z(cwd)[1]):
         _git_ok(cwd, ["add", "-A"])
-    _git_ok(cwd, ["commit", "-m", message])
+    proc = _run(
+        ["git", *harden_git_argv(["commit", "-m", message])], cwd, _GIT_TIMEOUT, env
+    )
+    if proc is None or proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr.strip() if proc is not None else "") or "git commit failed"
+        )
     if push:
         _review_push(cwd)
     return {"ok": True}
@@ -487,7 +523,7 @@ def _own_pr(key: str, field: dict) -> dict | None:
     return next((n for n in (field.get("nodes") or []) if n and not n.get("isCrossRepository")), None)
 
 
-def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> dict:
+def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = None) -> dict:
     """PRs on the given branches (plus any asked for by number) — queried per branch
     rather than paging the repo's newest PRs and hoping ours are in the page."""
     not_ready = {"ghReady": False, "prs": []}
@@ -682,7 +718,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
     root = _main_root(cwd)
     options = options or {}
     if options.get("existingBranch"):
-        return _worktree_for_existing(root, options["existingBranch"])
+        result = _worktree_for_existing(root, options["existingBranch"])
+        if result.get("path") != root:  # a new checkout, not a switch of the main tree
+            from hermes_cli.worktree_registry import record_worktree_repo
+            record_worktree_repo(root)
+        return result
 
     slug = _slugify(options.get("name") or f"work-{os.urandom(4).hex()}")
     branch = _sanitize_branch(options.get("branch") or "") or f"hermes/{slug}"
@@ -708,6 +748,8 @@ def worktree_add(cwd: str, options: dict) -> dict:
         if "already exists" not in (err or "").lower():
             raise RuntimeError(err.strip() or "git worktree add failed")
         _git_ok(root, ["worktree", "add", target, branch])
+    from hermes_cli.worktree_registry import record_worktree_repo
+    record_worktree_repo(root)
     return {"path": target, "branch": branch, "repoRoot": root}
 
 

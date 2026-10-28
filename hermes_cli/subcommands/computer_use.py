@@ -97,7 +97,7 @@ def _cu_perms_status(args) -> None:
     if not st["installed"]:
         print("cua-driver: not installed. Run: hermes computer-use install")
         sys.exit(1)
-    glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")  # noqa: E731
+    glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")
     print(f"cua-driver: {st['version'] or 'installed'} ({st['platform']})")
     if st["can_grant"]:  # macOS TCC permissions
         print(f"  {glyph(st['accessibility'])} Accessibility")

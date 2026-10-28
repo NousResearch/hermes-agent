@@ -38,7 +38,8 @@ import {
   applyRenamedSessionTitle,
   moveSessionToProject,
   projectIdForCwd,
-  projectRootCwd
+  projectRootCwd,
+  refreshProjectTree
 } from '@/store/projects'
 import {
   $activeSessionId,
@@ -52,7 +53,13 @@ import {
   sessionPinId
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import {
+  $sessionStates,
+  $sessionTiles,
+  closeAllOpenSessionTiles,
+  requestForOwnedSession
+} from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -124,10 +131,14 @@ export async function renameSessionPreferringRpc(
 
   if (title && runtimeId && gateway) {
     try {
-      const result = await gateway.request<SessionTitleResponse>('session.title', {
-        session_id: runtimeId,
-        title
-      })
+      // The runtime lives on its owner's backend; the ambient socket would
+      // refuse a secondary profile's session and drop us to REST.
+      const result = await requestForOwnedSession<SessionTitleResponse>(
+        runtimeId,
+        ambientRequestFor(gateway),
+        'session.title',
+        { session_id: runtimeId, title }
+      )
 
       return { title: result?.title ?? title }
     } catch (err) {
@@ -213,6 +224,16 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  // The flat (non-grouped) sidebar view only warms $projectTree on a
+  // background timer (PROJECT_TREE_WARM_MS in sidebar/index.tsx), so opening
+  // this submenu before that timer fires — or before the grouped view has
+  // ever been visited this run — showed "No other projects" even when
+  // projects exist. Refresh on open so the list is authoritative regardless
+  // of sidebar grouping state or timing.
+  useEffect(() => {
+    void refreshProjectTree()
+  }, [])
 
   if (targets.length === 0) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>

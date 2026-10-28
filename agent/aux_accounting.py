@@ -81,7 +81,11 @@ def record_aux_usage(
                 estimated_cost = float(cost.amount_usd)
         except Exception:
             logger.debug("Aux usage cost estimation failed", exc_info=True)
-        session_db.record_auxiliary_usage(
+        # Inside a Relay-driven tool callback the thread runs Relay's loop; a worker store refuses
+        # synchronous RPC there (#139029).
+        from agent.runtime_session_store import call_off_event_loop
+        call_off_event_loop(
+            session_db.record_auxiliary_usage,
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,

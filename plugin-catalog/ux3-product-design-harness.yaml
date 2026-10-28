@@ -1,0 +1,33 @@
+name: ux3-product-design-harness
+title: UX3 Product Design Harness
+repo: https://github.com/cis2042/ux3-product-design-harness
+sha: 48965c6b501f61ebbb8130c9c2e4f9af08922b9f
+version: "0.2.0"
+description: >-
+  MIT-licensed product judgment across User, Evidence and Business flows, with
+  one portable Agent Plugins v1 skill and all 91 original skill files.
+  Disclosure: skill instructions run bundled local Python/jsonschema validators
+  and read/write user-controlled local briefs, context packs and review outputs,
+  which can contain personal data. Optional evidence gathering uses explicitly
+  user/host-authorized tools, including external search and connectors; selected
+  claims, queries or evidence go to the chosen services under their policies.
+  There is no publisher-operated receiving endpoint, retention service,
+  telemetry or background process. The bundled jev_gate.py runs offline;
+  connecting a remote decision service needs separate configuration and consent.
+  No MCP server, native plugin entrypoint, registered tools, hooks or middleware.
+maintainer: cis2042
+tier: community
+category: general
+requires_hermes: ">=0.22.4"
+docs_url: https://github.com/cis2042/ux3-product-design-harness/blob/48965c6b501f61ebbb8130c9c2e4f9af08922b9f/README.md
+readme: true
+platforms: []
+known_issues:
+  - "Hermes 0.15.1 does not support this portable package; Hermes >=0.22.4 is required."
+  - "Compatible-host installation, runtime inventory, enable/disable and admission scanning have not been executed locally."
+  - "User-invoked bundled validators require existing Python and jsonschema dependencies; no dependency installer or plugin install hook is provided."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -28,11 +28,13 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     stop_for_relaunch(incomplete=True)
 
 
-def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
+def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None) -> list[tuple[str, int, int]]:
     """Migrate every SIBLING profile's config.yaml (the shared checkout serves all profiles). Per
     sibling (active skipped): scope via the context-local HERMES_HOME override (never ``os.environ``)
     and run the NON-INTERACTIVE quiet migration — prompt-requiring settings wait for that profile's
-    own session. Returns ``[(name, from_version, to_version), ...]``; never raises.
+    own session. Returns ``[(name, from_version, to_version), ...]``; never raises. *notes* receives
+    each migrated sibling's display lines for what quiet mode muted (a reset/removed setting, a
+    warning), as the active profile's quiet path re-prints them; the tuple shape stays for old updaters.
 
     91277 Phase 2 (fleet-wide config migration; #20438/#54926/#79048): the shared checkout serves every
     profile, but ``hermes update`` historically migrated only the active profile's config — siblings drifted
@@ -42,7 +44,7 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     ``_get_default_hermes_home()``, not under ``profiles/``, so a named-profile
     ``hermes update`` still migrates it.
     """
-    from hermes_cli.config import check_config_version, migrate_config
+    from hermes_cli.config import check_config_version, get_missing_config_fields, migrate_config
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
@@ -50,17 +52,22 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
         from hermes_cli.backup import _sibling_profile_homes
         active_home = Path(get_process_hermes_home())
         for name, profile_home in _sibling_profile_homes(active_home):
-            if not (profile_home / "config.yaml").is_file():
+            if not (profile_home / "config.yaml").is_file():  # config-reader: ok — profile directory discovery marker
                 continue  # profile never configured — nothing to migrate
             token = set_hermes_home_override(profile_home)
             try:
                 current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
                 if current_ver >= latest_ver:
                     continue
-                migrate_config(interactive=False, quiet=True)
+                results = migrate_config(interactive=False, quiet=True)
                 after_ver, _ = check_config_version(raise_on_parse_error=True)
                 if after_ver > current_ver:
                     migrated.append((name, current_ver, after_ver))
+                    if notes is not None:
+                        # config_added also lists the new default keys; those are not changes.
+                        new_keys = {field["key"] for field in get_missing_config_fields()}
+                        notes[name] = [f"ℹ {note}" for note in results["config_added"] if note not in new_keys]
+                        notes[name] += [f"⚠️  {warning}" for warning in results["warnings"]]
             except Exception as exc:
                 logger.debug("Config migration for profile %s failed: %s", name, exc)
             finally:
@@ -103,7 +110,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         # Safety net: a writer in the update's mutation window replaced agent-job prompts
         # with the job NAME while the count stayed identical, so the count-based net above
         # passed it undetected (issue #82990). Restore only the degraded prompt fields.
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         prompt_restore = restore_cron_prompt_fields_if_degraded(pre_update_snapshot_id)
         if prompt_restore:
             print()
@@ -120,7 +127,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
             print()
             print(f"  ⚠️  Profile '{_restored['profile']}': {_cron_line(_restored)}")
     with _best_effort('Sibling cron prompt-field auto-restore check failed: %s'):
-        from hermes_cli.backup import restore_cron_prompt_fields_all_profiles
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_all_profiles
         for _prompt_restored in restore_cron_prompt_fields_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_prompt_restored['profile']}': {_prompt_line(_prompt_restored)}")
@@ -243,8 +250,11 @@ def _check_and_apply_config_migration(
     # The migration above touched only the active profile; run the same NON-INTERACTIVE
     # migration per sibling home via the context-local HERMES_HOME override (never os.environ).
     with _best_effort('Sibling config migration failed: %s'):
-        for _name, _from_ver, _to_ver in _migrate_sibling_profile_configs():
+        sibling_notes: dict[str, list[str]] = {}
+        for _name, _from_ver, _to_ver in _migrate_sibling_profile_configs(sibling_notes):
             print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
+            for _note in sibling_notes.get(_name, ()):
+                print(f"      {_note}")
 
     _restore_snapshot_safety_nets(pre_update_snapshot_id)
     if owed_error is not None:

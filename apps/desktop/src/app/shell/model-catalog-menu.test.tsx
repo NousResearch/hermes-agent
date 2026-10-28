@@ -148,6 +148,96 @@ describe('the current row effort', () => {
   })
 })
 
+describe('usage-window plan rows', () => {
+  it('says a spent all-model allowance once, never as a note on every row', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['example/model-b', 'example/model-free:free'],
+          name: 'Nous',
+          plan_usage: {
+            gauges: [{ label: 'day', left_fraction: 0, scope: 'all', style: 'red' }],
+            kind: 'usage_window'
+          },
+          slug: 'nous',
+          usage_levels: { 'example/model-free:free': 'free', 'example/model-b': 'medium' }
+        }
+      ]
+    })
+    renderMenu({ model: 'example/model-free:free', provider: 'nous' })
+
+    await screen.findByText('Free')
+    // Only Large / Free carry a tag. A spent all-model allowance shows once under the provider, not on each row.
+    expect(screen.queryByText('Medium')).toBeNull()
+    expect(screen.getByText('Daily limit reached', { exact: false })).toBeTruthy()
+    expect(screen.queryByText('used up')).toBeNull()
+  })
+
+  it('marks only Large rows when the large-model limit is spent; pay as you go is said once, not per row', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['example/model-b', 'example/model-a', 'example/model-free:free'],
+          name: 'Nous',
+          plan_usage: {
+            credits_pay: true,
+            gauges: [
+              { label: 'day', left_fraction: 0.5, scope: 'all', style: 'green' },
+              { label: 'top_tier', left_fraction: 0, scope: 'top_tier', style: 'red' }
+            ],
+            kind: 'usage_window'
+          },
+          slug: 'nous',
+          usage_levels: {
+            'example/model-a': 'low',
+            'example/model-free:free': 'free',
+            'example/model-b': 'top_tier'
+          }
+        }
+      ]
+    })
+    renderMenu({ model: 'example/model-free:free', provider: 'nous' })
+
+    await screen.findByText('Large')
+    expect(screen.queryByText('Small')).toBeNull()
+    expect(screen.queryByText('uses credits')).toBeNull()
+    expect(screen.getByText('· Large models now use your credits (pay as you go)', { exact: false })).toBeTruthy()
+  })
+})
+
+describe('usage-window plan sections', () => {
+  it('a pinned current model the catalog omits goes under Other models, never under Recommended', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['example/model-a', 'example/model-b'],
+          name: 'Nous',
+          plan_usage: {
+            featured_model_ids: ['example/model-a'],
+            gauges: [{ label: 'day', left_fraction: 0.5, scope: 'all', style: 'green' }],
+            kind: 'usage_window'
+          },
+          slug: 'nous'
+        }
+      ]
+    })
+    renderMenu({ model: 'custom/model-x', provider: 'nous' })
+
+    const recommended = await screen.findByText('Recommended')
+    const other = screen.getByText('Other models')
+    const pick = screen.getByText(/model[- ]a/i)
+    const pinned = screen.getByText(/model[- ]x/i)
+    const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+    expect(follows(recommended, pick)).toBe(true)
+    expect(follows(pick, other)).toBe(true)
+    expect(follows(other, pinned)).toBe(true)
+  })
+})
+
 describe('the reasoning-effort badge (#51833)', () => {
   it('renders the effort as its own Badge chip beside the name, never inside it', async () => {
     renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
@@ -394,6 +484,34 @@ describe('the catalog owns favorite models', () => {
 
     expect(select).not.toHaveBeenCalled()
     expect(closeMenu).not.toHaveBeenCalled()
+  })
+})
+
+describe('the current model the catalog omits (#57534)', () => {
+  it('renders the current model as a selectable row when the provider catalog lacks it', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+
+    renderMenu({ model: 'qwen/qwen-2.5-72b-instruct', provider: 'openrouter' })
+
+    // The current model paints as its own family row (humanized name), ahead
+    // of the catalog's families, and stays selectable.
+    const row = (await screen.findByText('Qwen 2.5 72B Instruct')).closest('[role="menuitem"]')!
+
+    expect(row.textContent).toContain('Qwen 2.5 72B Instruct')
+  })
+
+  it('does not inject the current model into a provider that is not the current one', async () => {
+    // current.provider has no row; the model must not leak into another group.
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+
+    renderMenu({ model: 'qwen/qwen-2.5-72b-instruct', provider: 'nous' })
+
+    await screen.findByText('GPT-4o-mini')
+    expect(screen.queryByText('Qwen 2.5 72B Instruct')).toBeNull()
   })
 })
 

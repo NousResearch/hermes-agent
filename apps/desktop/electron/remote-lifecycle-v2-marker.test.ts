@@ -10,6 +10,7 @@ import { test } from 'vitest'
 
 import { buildRemoteUpdateObservationCommand, parseRemoteUpdateObservation } from './managed-ssh-update'
 import { assertRemoteInstallUpdateClear } from './remote-lifecycle'
+import { shellSshDouble } from './remote-ssh-exec.test-helpers'
 
 const exec = promisify(execCallback)
 
@@ -22,7 +23,7 @@ test.runIf(process.platform === 'linux')(
     const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-v2-marker-'))
     const marker = path.join(home, '.hermes-update-in-progress')
     const shell = (await exec('command -v bash')).stdout.trim()
-    const ssh = { exec: async (command: string) => (await exec(command, { shell })).stdout }
+    const ssh = shellSshDouble({ shell })
     const exited = spawn(process.execPath, ['-e', ''])
     await new Promise(resolve => exited.once('exit', resolve))
     // The updater's v2 claim: pid, started_at, creation-time line (A2), then tagged lines.
@@ -76,7 +77,7 @@ test.runIf(process.platform === 'linux')(
   async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-v2-shapes-'))
     const marker = path.join(home, '.hermes-update-in-progress')
-    const ssh = { exec: async (command: string) => (await exec(command, { shell: 'sh' })).stdout }
+    const ssh = shellSshDouble()
     const target = { ssh, platform: 'Linux', hermesPath: '/opt/hermes/hermes', hermesHome: home }
     const correlation = randomUUID()
 

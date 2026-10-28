@@ -45,7 +45,7 @@ def test_partial_clone_never_downloads_history_for_a_sha_it_lacks(monkeypatch, t
     import subprocess
     from types import SimpleNamespace
 
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import update_cmd
 
     def git(cwd, *args):
         return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd,

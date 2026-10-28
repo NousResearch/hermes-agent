@@ -154,10 +154,6 @@ class TestSmartModeFiresHooks:
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
         monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: verdict)
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _: {"action": "allow", "findings": [], "summary": ""},
-        )
 
     @pytest.mark.parametrize(
         ("guard", "value", "verdict", "approved", "choice", "pattern_key"),
@@ -317,10 +313,6 @@ class TestSmartModeFiresHooks:
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
         monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: next(verdicts))
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _: {"action": "allow", "findings": [], "summary": ""},
-        )
         captured = []
         with patch(
             "hermes_cli.plugins.invoke_hook",

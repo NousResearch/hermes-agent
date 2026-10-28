@@ -35,7 +35,7 @@ class EmptyResponseVerdict:
     (unreachable: every path exits; kept for the contract)."""
 
     action: str
-    result: Optional[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
     final_response: Any
     turn_exit_reason: Any
     active_system_prompt: Any
@@ -139,7 +139,7 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
 
 def recover_empty_response(
     agent: Any, assistant_message: Any, response: Any, finish_reason: str, *, final_response: Any,
-    messages: List[Dict[str, Any]], api_messages: Any, conversation_history: Any,
+    messages: list[dict[str, Any]], api_messages: Any, conversation_history: Any,
     active_system_prompt: Any, api_call_count: int, turn_exit_reason: Any,
     preflight_compression_blocked: bool,
 ) -> EmptyResponseVerdict:
@@ -151,7 +151,7 @@ def recover_empty_response(
     _turn_exit_reason = turn_exit_reason
     _preflight_compression_blocked = preflight_compression_blocked
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> EmptyResponseVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> EmptyResponseVerdict:
         return EmptyResponseVerdict(
             action=action, result=result, final_response=final_response,
             turn_exit_reason=_turn_exit_reason, active_system_prompt=active_system_prompt,
@@ -189,10 +189,12 @@ def recover_empty_response(
         agent._empty_content_retries = 0
         # Do NOT modify the assistant message content (injected text poisoned history).
         final_response = agent._strip_think_blocks(fallback).strip()
-        agent._response_was_previewed = True
         # The final IS the response streamed before the housekeeping tool: name that identity
         # so a client settles the text it already shows instead of painting it a second time.
-        agent._reused_response_text = final_response
+        # A held turn never showed it: its rewrite goes out as a new final.
+        if getattr(agent, "_hold_stream", False) is not True:
+            agent._response_was_previewed = True
+            agent._reused_response_text = final_response
         return _verdict("break")
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.

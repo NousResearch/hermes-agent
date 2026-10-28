@@ -84,7 +84,6 @@ class TestStepfunPickerMergesLiveWithCurated:
 
         def fake_pick(model_list, *args, **kwargs):
             captured["models"] = list(model_list)
-            return None
 
         with patch(
             "hermes_cli.model_setup_flows._ensure_flow_api_key", return_value=(None, "sk-stepfun-test", False)

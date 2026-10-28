@@ -84,10 +84,9 @@ def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
 
 @_projects_handler("projects.discover_repos")
 def _(rid, params: dict) -> dict:
-    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived. A profile whose
+    session store was never initialized still answers from its scan cache (``db`` is None then)."""
     with _profile_db(params) as db:
-        if db is None:
-            return _ok(rid, {"repos": []})
         from hermes_cli import projects_db as pdb
         policy = _repo_discovery_policy()
         with pdb.connect_closing() as conn:
@@ -123,7 +122,7 @@ def _(rid, params: dict) -> dict:
         elif not policy["enabled"]:
             pdb.clear_discovered_repos(conn, policy_key=policy_key)
     with _profile_db(params) as db:
-        repos = [] if db is None else _discover_repos_payload(db, include_cached=policy["enabled"])
+        repos = _discover_repos_payload(db, include_cached=policy["enabled"])
         return _ok(rid, {"repos": repos, "accepted": accepted, "discovery_policy": policy})
 
 
@@ -208,7 +207,8 @@ def _cfg_get_reasoning(params):
     session = _sessions.get(params.get("session_id", "")) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
-        reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
+        from agent.voice_turn_route import session_runtime_view
+        reasoning_config = getattr(session_runtime_view(session.get("agent")), "reasoning_config", None)
     if isinstance(reasoning_config, dict):
         enabled = reasoning_config.get("enabled") is not False
         effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
@@ -244,9 +244,9 @@ def _cfg_get_thinking_mode(params):
 
 
 def _cfg_get_mtime(params):
-    cfg_path = _hermes_home / "config.yaml"
+    from hermes_cli.config_backend import config_version_or_none, version_token
     try:
-        mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
+        mtime = version_token(config_version_or_none(_hermes_home / "config.yaml"))
     except Exception:
         return {"mtime": 0}
     # mcp_rev: hash of the MCP-relevant sections so the poller reloads MCP servers only when
@@ -403,7 +403,7 @@ def _(rid, params: dict) -> dict:
                 # ``ready`` = this process's boot bootstrap has settled (a named profile has no
                 # record of its own; the launch record says whether the free tier is minted).
                 # Since one host backend serves every profile (#118246), the desktop's
-                # setup-profile probe lands here, and its kickoff requires ``ready``.
+                # named-profile probe lands here too.
                 launch = wait_for_record() if profile else None
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
                         **({"ready": True, "free_tier_account": launch.free_tier_account,
@@ -467,7 +467,9 @@ def _(rid, params: dict) -> dict:
             api_key_text = "" if callable(api_key) else str(api_key or "").strip()
             if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
                     or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                return fail(f"No usable credentials found for {blamed}.", runtime.get("source"))
+                from hermes_cli.runtime_readiness import missing_credentials_suffix
+                return fail(f"No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}",
+                            runtime.get("source"))
             from hermes_cli.anon_auth import route_is_welcome_host
             # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.

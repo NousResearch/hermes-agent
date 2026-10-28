@@ -11,7 +11,7 @@ provider's sections still read the way it wrote them.
 """
 from __future__ import annotations
 
-from agent.memory_manager import build_memory_context_block
+from agent.memory_context import build_memory_context_block
 
 
 def _body(block: str) -> str:

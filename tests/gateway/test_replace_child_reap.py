@@ -179,6 +179,13 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from gateway.session import SessionStore
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self.session_store._db = self._session_db
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -190,7 +197,8 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
             return True
 
         async def stop(self):
-            return None
+            self.session_store.close_all_db_handles()
+            self._session_db.close()
 
     _pid_state = {"alive": True}
     monkeypatch.setattr(
@@ -217,7 +225,7 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks", lambda **kwargs: 0
+        "gateway.status_scoped_locks.release_all_scoped_locks", lambda **kwargs: 0
     )
     monkeypatch.setattr(
         "gateway.status._snapshot_gateway_children",

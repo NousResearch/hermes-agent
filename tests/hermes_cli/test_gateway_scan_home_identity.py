@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gateway as gateway
+from hermes_cli import gateway
 from hermes_cli import dashboard_procs
 
 # Named ``hermes`` so ``python <dir>/hermes gateway run`` satisfies the canonical gateway matcher.
@@ -62,7 +62,7 @@ def test_scan_claims_a_bare_gateway_only_for_the_home_its_environment_names(tmp_
     real_home_for_pid = dashboard_procs._hermes_home_for_pid
     monkeypatch.setattr(
         dashboard_procs, "_hermes_home_for_pid",
-        lambda pid: real_home_for_pid(pid) if pid == proc.pid else None,
+        lambda pid, **kw: real_home_for_pid(pid, **kw) if pid == proc.pid else None,
     )
     try:
         _wait_for(ready, proc)

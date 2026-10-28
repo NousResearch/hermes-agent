@@ -12,7 +12,15 @@ export const jaPluginSettings = {
     manage: 'プラグインを管理',
     agentSettings: 'エージェント設定',
     pageCount: (n: number) => `${n} ページ`,
-    missing: 'このプラグインには設定ページがありません。無効化またはアンインストールされた可能性があります。'
+    missing: 'このプラグインには設定ページがありません。無効化またはアンインストールされた可能性があります。',
+    statusEnabled: '有効',
+    statusDisabled: '無効',
+    noSettingsBadge: '設定なし',
+    noSettingsDeclared: 'このプラグインはマニフェストに設定を宣言していません。',
+    unresolvableSource: 'このプラグインが宣言する設定ソースはここでは編集できません。対象を直接編集してください。',
+    configLocation: '設定ソース',
+    configureIn: (surface: string) => `${surface} で設定`,
+    providerSurfaceNote: (surface: string) => `このプロバイダープラグインは ${surface} 設定ページで構成します。`
   },
   plugins: {
     openFolder: 'デスクトッププラグインフォルダーを開く',

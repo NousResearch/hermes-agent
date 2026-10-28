@@ -897,9 +897,10 @@ def _discover_all_plugins() -> list:
 
 
 def _category_active_names() -> set:
-    """Provider names switched on through ``<category>.provider`` config rather than
-    ``plugins.enabled`` (the live memory provider), so status never calls them "not enabled"."""
-    return {n for n in (_get_current_memory_provider(),) if n}
+    """Provider names switched on through ``<category>.provider`` / ``context.engine`` config rather than
+    ``plugins.enabled`` (the live memory provider or context engine), so status never calls them "not enabled"."""
+    engine = _get_current_context_engine()
+    return {n for n in (_get_current_memory_provider(), "" if engine == "compressor" else engine) if n}
 
 
 def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, source: str = "",

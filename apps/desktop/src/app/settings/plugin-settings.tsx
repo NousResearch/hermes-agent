@@ -29,8 +29,10 @@ import {
   $agentPlugins,
   $agentPluginsProfile,
   $agentPluginsStatus,
+  type AgentPluginRow,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
+  type PluginSettingsLink,
   saveAgentPluginSettings
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
@@ -38,16 +40,22 @@ import { $settingsRequestProfile, setSettingsScope } from '@/store/settings-scop
 
 import { desktopPackageName } from '../capabilities/plugins/plugin-packages'
 import type { OverlayNavLink } from '../overlays/overlay-split-layout'
-import { CAPABILITIES_ROUTE } from '../routes'
+import { CAPABILITIES_ROUTE, SETTINGS_ROUTE } from '../routes'
 
 import { PluginSettingsForm } from './plugin-settings-form'
-import { EmptyState, ListRowSkeleton, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, ListRowSkeleton, Pill, SectionHeading, SettingsContent } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 
 /** Opens Settings ▸ Plugins at a route; `null` = the overview. */
 export type OpenPluginSettings = (route: null | PluginSettingsRoute) => void
 
 const MANAGE_PLUGINS_HREF = `#${CAPABILITIES_ROUTE}?tab=plugins`
+
+const SETTINGS_LINK_HREF: Record<PluginSettingsLink, string> = {
+  context: `#${SETTINGS_ROUTE}?tab=config:memory&page=context`,
+  memory: `#${SETTINGS_ROUTE}?tab=config:memory&page=persistent`,
+  providers: `#${SETTINGS_ROUTE}?tab=providers`
+}
 
 // codiconIcon mints a component per call; cache so rail rows keep a stable
 // element type across renders (no icon remount on every navigation).
@@ -242,6 +250,17 @@ export function pluginSettingsNavChildren(
 const BLURB_CLASS =
   'mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)'
 
+function settingsSurfaceLabel(
+  link: PluginSettingsLink | null | undefined,
+  t: ReturnType<typeof useI18n>['t']
+): null | string {
+  if (!link) {
+    return null
+  }
+
+  return link === 'providers' ? t.settings.nav.providers : t.settings.sections.memory
+}
+
 function PluginSettingsOverview({
   entries,
   missing,
@@ -288,6 +307,12 @@ function PluginSettingsOverview({
         <div className="mt-2 grid overflow-hidden rounded-lg border border-(--ui-stroke-tertiary)">
           {entries.map(entry => {
             const Icon = entryIcon(entry)
+            const agentRow = entry.agentRow
+            const linkedSurface = settingsSurfaceLabel(agentRow?.config_source?.settings_link, t)
+
+            const editableAgentForm =
+              Boolean(agentRow?.settings_schema?.length) && agentRow?.config_source?.editable !== false
+
             // The landing page counts as one; sub-pages add to it.
             const pages = entry.children.length + 1
 
@@ -300,14 +325,33 @@ function PluginSettingsOverview({
                 type="button"
               >
                 <Icon className="size-4 shrink-0 text-(--ui-text-tertiary)" />
-                <span className="min-w-0 flex-1 truncate text-[length:var(--conversation-text-font-size)]">
-                  {entry.title}
+                <span className="flex min-w-0 flex-1 items-center gap-2">
+                  <span className="truncate text-[length:var(--conversation-text-font-size)]">{entry.title}</span>
+                  {agentRow?.version && (
+                    <span className="shrink-0 font-mono text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      v{agentRow.version}
+                    </span>
+                  )}
+                  {agentRow?.source && (
+                    <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      {agentRow.source}
+                    </span>
+                  )}
                 </span>
-                {pages > 1 && (
+                {agentRow && <Pill>{agentRow.status === 'enabled' ? copy.statusEnabled : copy.statusDisabled}</Pill>}
+                {pages > 1 ? (
                   <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                     {copy.pageCount(pages)}
                   </span>
-                )}
+                ) : entry.kind === 'agent' && linkedSurface ? (
+                  <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {linkedSurface}
+                  </span>
+                ) : entry.kind === 'agent' && !editableAgentForm ? (
+                  <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {copy.noSettingsBadge}
+                  </span>
+                ) : null}
                 <Codicon className="text-(--ui-text-tertiary)" name="chevron-right" size="0.8rem" />
               </button>
             )
@@ -331,8 +375,61 @@ function PluginSettingsLoading() {
   )
 }
 
-/** Automatic page for an agent plugin's manifest `config_schema`: the schema
- *  form, saved through `plugins.manage settings` (+ `.env` for secrets).
+function ConfigSourceRow({ label, path }: { label: string; path: string }) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-y border-(--ui-stroke-tertiary) py-2.5 text-[length:var(--conversation-caption-font-size)]">
+      <span className="text-(--ui-text-tertiary)">{label}</span>
+      <code className="font-mono text-(--ui-text-secondary)">{path}</code>
+    </div>
+  )
+}
+
+function PluginReadonlyPage({ row }: { row: AgentPluginRow }) {
+  const { t } = useI18n()
+  const copy = t.settings.pluginPages
+  const link = row.config_source?.settings_link ?? null
+  const linkedSurface = settingsSurfaceLabel(link, t)
+  const unresolvableWithSchema = Boolean(row.settings_schema?.length) && row.config_source?.editable === false
+  const metaParts = [row.version ? `v${row.version}` : null, row.source || null].filter(Boolean).join(' · ')
+
+  return (
+    <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
+      <SectionHeading
+        aside={
+          <div className="flex items-center gap-2">
+            <Pill>{row.status === 'enabled' ? copy.statusEnabled : copy.statusDisabled}</Pill>
+            {link && linkedSurface && (
+              <Button asChild className="gap-1.5" size="sm" variant="outline">
+                <a href={SETTINGS_LINK_HREF[link]}>
+                  {copy.configureIn(linkedSurface)}
+                  <Codicon name="arrow-right" size="0.75rem" />
+                </a>
+              </Button>
+            )}
+          </div>
+        }
+        icon={iconFor('plug')}
+        meta={metaParts || undefined}
+        page
+        title={row.name}
+      />
+      {row.description && <p className={BLURB_CLASS}>{row.description}</p>}
+      <p className="mt-2 text-[length:var(--conversation-text-font-size)] text-(--ui-text-secondary)">
+        {linkedSurface
+          ? copy.providerSurfaceNote(linkedSurface)
+          : unresolvableWithSchema
+            ? copy.unresolvableSource
+            : copy.noSettingsDeclared}
+      </p>
+      {row.config_source?.path && <ConfigSourceRow label={copy.configLocation} path={row.config_source.path} />}
+    </SettingsContent>
+  )
+}
+
+/** Automatic page for an agent plugin: renders the editable schema form when
+ *  its config source can be resolved safely, or a read-only metadata / deep-link
+ *  surface otherwise (#144485).
  *
  *  Bound to ONE profile for its whole life: the pane keys it by
  *  (profile, plugin) so a scope switch remounts it (the draft goes with the
@@ -341,14 +438,29 @@ function PluginSettingsLoading() {
 function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner: null | string }) {
   const { t } = useI18n()
   const p = t.skills.plugins
+  const copy = t.settings.pluginPages
   const { requestGateway } = useGatewayRequest()
   const { rows } = useOwnedAgentPlugins(owner)
   const row = rows.find(candidate => candidate.key === agentKey)
   const busy = useStore($agentPluginBusy) === agentKey
 
-  if (!row?.settings_schema?.length) {
+  if (!row) {
     return <PluginSettingsLoading />
   }
+
+  // Hard rule (#144485): never render an editable form when the plugin declares
+  // no schema or when its declared config_source cannot be resolved safely.
+  if (!row.settings_schema?.length || row.config_source?.editable === false) {
+    return <PluginReadonlyPage row={row} />
+  }
+
+  const intro =
+    row.description || row.config_source?.path ? (
+      <div className="mb-3">
+        {row.description && <p className={BLURB_CLASS}>{row.description}</p>}
+        {row.config_source?.path && <ConfigSourceRow label={copy.configLocation} path={row.config_source.path} />}
+      </div>
+    ) : undefined
 
   return (
     <SettingsContent>
@@ -357,7 +469,7 @@ function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner
         disabled={busy}
         fields={row.settings_schema}
         idPrefix={`plugin-settings-${agentKey}`}
-        intro={row.description ? <p className={BLURB_CLASS}>{row.description}</p> : undefined}
+        intro={intro}
         onSave={async changes => {
           // Belt and braces: the key remount already discards a draft when
           // the scope moves, but a submit must never write a profile other

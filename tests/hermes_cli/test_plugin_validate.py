@@ -82,7 +82,7 @@ BASE_MANIFEST = {
 def test_requires_hermes_spec_is_validated(tmp_path):
     manifest = dict(BASE_MANIFEST, description="café", requires_hermes=">=0.21")
     d = _make_plugin(tmp_path, manifest=manifest)
-    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8-sig")
+    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8-sig")  # windows-footgun: ok
 
     report = validate_plugin_dir(d)
 
@@ -108,6 +108,34 @@ def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path
     bad = validate_plugin_dir(_make_plugin(
         tmp_path / "bad", manifest=dict(BASE_MANIFEST, config_schema={"x": {"type": "mapping"}})))
     assert [ok for n, ok, _ in bad.checks if n == "config schema"] == [False], bad.checks
+
+
+def test_config_source_validates_supported_kinds_and_paths(tmp_path):
+    """``hermes plugins validate`` accepts valid ``config_section`` and ``json_file`` sources and fails
+    traversal, outside-home, or reserved host-section ``config_source`` declarations (#144485)."""
+    sec_ok = validate_plugin_dir(_make_plugin(
+        tmp_path / "sec_ok",
+        manifest=dict(BASE_MANIFEST, config_source={"kind": "config_section", "path": "myplugin"}),
+    ))
+    assert sec_ok.ok, sec_ok.failures
+
+    json_ok = validate_plugin_dir(_make_plugin(
+        tmp_path / "json_ok",
+        manifest=dict(BASE_MANIFEST, config_source={"kind": "json_file", "path": "$HERMES_HOME/myplugin.json"}),
+    ))
+    assert json_ok.ok, json_ok.failures
+
+    for idx, bad_source in enumerate([
+        {"kind": "toml_file", "path": "$HERMES_HOME/x.toml"},
+        {"kind": "json_file", "path": "$HERMES_HOME/../escape.json"},
+        {"kind": "json_file", "path": "/etc/passwd.json"},
+        {"kind": "config_section", "path": "security"},
+    ]):
+        bad = validate_plugin_dir(_make_plugin(
+            tmp_path / f"bad_{idx}",
+            manifest=dict(BASE_MANIFEST, config_source=bad_source),
+        ))
+        assert not bad.ok, bad_source
 
 
 def test_admission_runs_the_install_scanner(tmp_path):

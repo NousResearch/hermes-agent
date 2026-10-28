@@ -107,7 +107,15 @@ export const arSettings = {
       manage: 'إدارة الإضافات',
       agentSettings: 'إعدادات الوكيل',
       pageCount: (n: number) => `${n} صفحات`,
-      missing: 'هذه الإضافة ليس لها صفحة إعدادات. ربما عُطّلت أو أُزيلت.'
+      missing: 'هذه الإضافة ليس لها صفحة إعدادات. ربما عُطّلت أو أُزيلت.',
+      statusEnabled: 'مفعّل',
+      statusDisabled: 'معطّل',
+      noSettingsBadge: 'بلا إعدادات',
+      noSettingsDeclared: 'لا تعلن هذه الإضافة أي إعدادات في ملف البيان الخاص بها.',
+      unresolvableSource: 'لا يمكن تحرير مصدر الإعدادات المعلن لهذه الإضافة هنا. حرّر الهدف مباشرة.',
+      configLocation: 'مصدر الإعدادات',
+      configureIn: (surface: string) => `الإعداد في ${surface}`,
+      providerSurfaceNote: (surface: string) => `تُضبط إضافة المزوّد هذه في صفحة الإعدادات ${surface}.`
     },
     nav: {
       providers: 'المزودون',

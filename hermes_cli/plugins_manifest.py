@@ -33,7 +33,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "name", "version", "description", "author", "requires_env", "provides_tools", "provides_hooks",
     "kind", "hooks", "label", "optional_env", "platforms", "external_dependencies",
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
-    "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
+    "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema", "config_source",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime", "provides_locales", "requires_auth", "oauth",
 }
@@ -174,6 +174,8 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
         "Plugin %s: python_dependencies entry %r must be a non-empty requirement string; skipping",
     )
     schema = _config_schema_entries(key, _manifest_field_of_type(data, key, "config_schema", Mapping, "a mapping"))
+    raw_source = _manifest_field_of_type(data, key, "config_source", Mapping, "a mapping")
+    config_source = dict(raw_source) if isinstance(raw_source, Mapping) else None
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
@@ -184,7 +186,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
         )
     return {
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
-        "config_schema": schema, "license": str(data.get("license") or ""),
+        "config_schema": schema, "config_source": config_source, "license": str(data.get("license") or ""),
         "homepage": str(data.get("homepage") or ""), "tags": tags,
     }
 
@@ -386,8 +388,9 @@ class PluginManifest:
     # VALIDATED AND SURFACED ONLY — Hermes never auto-installs these (isolation design for the install seam
     # is a deferred follow-up; see #64165 round-2 review and #15220).
     python_dependencies: list[str] = field(default_factory=list)
-    # Schema for plugins.entries.<id>.settings; mismatches warn, never fail.
+    # Schema for plugins.entries.<id>.settings (or config_source when declared); mismatches warn, never fail.
     config_schema: dict[str, Any] = field(default_factory=dict)
+    config_source: Optional[dict[str, Any]] = None
     license: str = ""
     homepage: str = ""
     tags: list[str] = field(default_factory=list)
@@ -495,16 +498,18 @@ def requires_hermes_error(manifest: PluginManifest | Mapping[str, Any]) -> Optio
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
     """Build the manifest for a portable Agent Plugin directory (``plugin.json``); diagnostics warn."""
-    from hermes_cli.agent_plugins import manifest_config_schema, read_agent_plugin_manifest
+    from hermes_cli.agent_plugins import manifest_config_schema, manifest_config_source, read_agent_plugin_manifest
     data, diagnostics = read_agent_plugin_manifest(child)
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)
     key = f"{prefix}/{child.name}" if prefix else data["name"]
+    raw_source = manifest_config_source(data)
     return PluginManifest(
         name=data["name"], version=data.get("version", ""), description=data.get("description", ""),
         author=_display_author(data.get("author", "")), source=source, path=str(child), key=key,
         portable=True, data_namespace=_portable_data_namespace(key),
         config_schema=_config_schema_entries(key, manifest_config_schema(data)),
+        config_source=dict(raw_source) if isinstance(raw_source, Mapping) else None,
     )
 
 

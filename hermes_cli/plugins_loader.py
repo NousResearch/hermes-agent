@@ -518,21 +518,15 @@ class PluginLoaderMixin:
             )
 
     def _validate_plugin_config_schema(self, manifest: PluginManifest) -> None:
-        """Warn (never block) on plugins.entries.<id> settings that violate config_schema.
-
-        See #64165.
-        """
+        """Warn (never block) on plugin settings that violate config_schema (#64165, #144485)."""
         if not manifest.config_schema:
             return
         plugin_id = manifest_key(manifest)
         settings: Mapping[str, Any] = {}
         try:
-            from hermes_cli.config import load_config
-            entry = _plugin_settings_entry(load_config() or {}, plugin_id) or {}
-            raw = entry.get("settings")
-            if not isinstance(raw, Mapping):
-                raw = entry.get("config")  # migration fallback mirroring ctx.get_config
-            settings = raw if isinstance(raw, Mapping) else {}
+            from hermes_cli.plugins_settings import read_plugin_config_values
+            plugin_dir = Path(manifest.path) if manifest.path and Path(manifest.path).is_dir() else None
+            settings, _resolved = read_plugin_config_values(plugin_id, plugin_dir)
         except Exception:
             settings = {}
         for warning in validate_config_schema(plugin_id, manifest.config_schema, settings):

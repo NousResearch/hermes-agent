@@ -1679,13 +1679,17 @@ def _plugin_rows() -> list[dict]:
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
         _dir_path = Path(str(_dir)) if _dir else None
         portable = pc._is_portable_plugin_dir(_dir)
+        settings_schema, config_source = _tools_mod("hermes_cli.plugins_settings").plugin_config_surface(
+            key, _dir_path, name=name
+        )
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
             "source": source, "status": status, "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
-            # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
-            "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
+            # Manifest ``config_schema`` + current values and resolved ``config_source`` (#144485).
+            "settings_schema": settings_schema,
+            **({"config_source": config_source} if config_source is not None else {}),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
             # Tools this package's own code registered: Desktop's tool-media renderer ownership check.
             "tools": owned_tools.get(key, []),

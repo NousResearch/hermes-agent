@@ -529,6 +529,13 @@ def manifest_config_schema(manifest: Any) -> Any:
     return hermes.get("config_schema") if isinstance(hermes, dict) else None
 
 
+def manifest_config_source(manifest: Any) -> Any:
+    """Raw ``extensions.com.nousresearch.hermes.config_source`` of a parsed ``plugin.json``, else ``None``."""
+    extensions = manifest.get("extensions") if isinstance(manifest, dict) else None
+    hermes = extensions.get(_HERMES_EXTENSION) if isinstance(extensions, dict) else None
+    return hermes.get("config_source") if isinstance(hermes, dict) else None
+
+
 def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPluginDiagnostic, ...]]:
     """Validate only root ``plugin.json`` without discovering components."""
     _root, manifest, diagnostics = _validate_root(plugin_root)

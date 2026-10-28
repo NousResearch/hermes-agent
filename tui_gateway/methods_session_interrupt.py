@@ -136,7 +136,11 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
             # restart the pre-correction prompt.
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
-    return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
+    result = {"status": accepted_status if accepted else "rejected", "text": text}
+    if verb == "steer" and accepted:
+        # Accepted by the steer entry, not proof the model has consumed the text.
+        result["disposition"] = "steer"
+    return _ok(rid, result)
 
 
 def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
@@ -163,15 +167,20 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # drains when compression finishes (the Discord-gateway contract; mirrors the
         # interrupt→queue demotion in gateway/run_busy.py for the channel busy path).
         if _session_compression_in_flight(session):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            queued = _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
-            return _ok(rid, {"status": "queued", "text": text})
+            result = {"status": "queued", "text": text}
+            if verb == "steer" and queued is not None:
+                result.update(disposition="queue", reason="compression")
+            return _ok(rid, result)
         if not supported(agent):
             return _err(rid, 4010, unsupported)
         # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool
         # row (#64578). 'rejected' makes the client queue it as a normal next prompt.
         if verb == "steer" and not session.get("running"):
-            return _ok(rid, {"status": "rejected", "text": text})
+            # Unlike an agent's False/ACK timeout, this branch never delivered it.
+            return _ok(rid, {"status": "rejected", "text": text,
+                             "delivered": False, "reason": "turn_ended"})
         return _apply_correction(rid, session, verb, text, accepted_status)
 
 

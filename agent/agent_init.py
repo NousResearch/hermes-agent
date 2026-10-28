@@ -2195,7 +2195,7 @@ def init_agent(
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:
         setattr(agent, _cb, _params[_cb])
-    agent.suppress_status_output = False
+    agent.suppress_status_output, agent.route_change_callback = False, None  # the host installs the latter
 
     _set_defaults(agent, _CONTROL_STATE)
 

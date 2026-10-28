@@ -1468,7 +1468,7 @@ def restore_primary_runtime(agent) -> bool:
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
-        from agent.route_binding import reinstall_primary_runtime
+        from agent.route_binding import notify_route_change, reinstall_primary_runtime
         reinstall_primary_runtime(
             agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
@@ -1482,7 +1482,7 @@ def restore_primary_runtime(agent) -> bool:
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
-        return True
+        return notify_route_change(agent)
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
         return False

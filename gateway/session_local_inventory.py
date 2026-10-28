@@ -233,8 +233,6 @@ def publish_settled_info(turn, agent) -> None:
         return
     with contextlib.suppress(Exception):
         from gateway.session_cli_turn import cli_turn
-        from gateway.session_contract import SessionRef
-        from gateway.session_local import local_session_info
         from gateway.session_policy import policy_for_source
         authority, session_id, _generation = turn._approval_owner
         message_id = getattr(getattr(turn, "_ctx", None), "inbound_message_id", None)
@@ -249,8 +247,7 @@ def publish_settled_info(turn, agent) -> None:
                     evict(live.route, release_after_turn=True)
                 except Exception:
                     logger.debug("one-turn agent cache drop failed", exc_info=True)
-        ref = SessionRef(authority.profile_id, session_id)
-        info = {**agent_inventory(agent), **local_session_info(authority, ref)}
+        info = _agent_session_info(authority, session_id, agent)
         if one_turn and live is not None:
             try:
                 runner = getattr(authority, "runner", None) or turn._runner
@@ -265,3 +262,19 @@ def publish_settled_info(turn, agent) -> None:
                 if provider:
                     info["provider"] = provider
         turn._publish_execution("session.info", info)
+
+
+def publish_route_info(turn, agent) -> None:
+    """``session.info`` the moment a fallback switch or primary restore changes the turn's route
+    (``agent.route_change_callback``), so the status bar names the model the turn runs on now
+    rather than at turn end. A mid-turn route change is not a one-turn admission, so this skips
+    ``publish_settled_info``'s ``model_override`` handling. Never breaks the turn."""
+    with contextlib.suppress(Exception):
+        authority, session_id, _generation = turn._approval_owner
+        turn._publish_execution("session.info", _agent_session_info(authority, session_id, agent))
+
+
+def _agent_session_info(authority, session_id, agent) -> dict:
+    from gateway.session_contract import SessionRef
+    from gateway.session_local import local_session_info
+    return {**agent_inventory(agent), **local_session_info(authority, SessionRef(authority.profile_id, session_id))}

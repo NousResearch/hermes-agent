@@ -754,21 +754,25 @@ async def _vision_analyze_native(
 
 
 def _aux_call_kwargs(messages: list, model: Optional[str], default_timeout: float, *,
-                     min_timeout: Optional[float] = None) -> dict:
-    """``async_call_llm`` kwargs with ``auxiliary.vision.timeout`` / ``.temperature`` from config.
+                     min_timeout: Optional[float] = None, task: str = "vision",
+                     max_tokens: Optional[int] = None) -> dict:
+    """``async_call_llm`` kwargs with ``auxiliary.<task>.timeout`` / ``.temperature`` from config.
     Local vision models (llama.cpp, ollama) can take well over 30s, hence generous defaults
     (temperature 0.1); ``min_timeout`` lets video enforce a floor."""
     timeout, temperature = default_timeout, 0.1
     try:
-        _vision_cfg = _cfg_auxiliary("vision", default={}) or {}
-        if _vision_cfg.get("timeout") is not None:
-            timeout = max(float(_vision_cfg["timeout"]), float("-inf") if min_timeout is None else min_timeout)
-        if _vision_cfg.get("temperature") is not None:
-            temperature = float(_vision_cfg["temperature"])
+        _task_cfg = _cfg_auxiliary(task, default={}) or {}
+        if _task_cfg.get("timeout") is not None:
+            timeout = max(float(_task_cfg["timeout"]), float("-inf") if min_timeout is None else min_timeout)
+        if _task_cfg.get("temperature") is not None:
+            temperature = float(_task_cfg["temperature"])
     except Exception:
         pass
-    return {"task": "vision", "messages": messages, "temperature": temperature, "timeout": timeout,
-            **({"model": model} if model else {})}
+    kwargs = {"task": task, "messages": messages, "temperature": temperature, "timeout": timeout,
+              **({"model": model} if model else {})}
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return kwargs
 
 
 def _media_messages(user_prompt: str, part_type: str, data_url: str) -> list:
@@ -887,7 +891,8 @@ async def _run_analysis(
 
 async def vision_analyze_tool(
     image_url: str, user_prompt: str, model: str | None = None,
-    task_id: Optional[str] = None, region: Optional[list] = None) -> str:
+    task_id: Optional[str] = None, region: Optional[list] = None,
+    task: str = "vision", max_tokens: Optional[int] = None) -> str:
     """Describe an image (URL, local path, data: URL) with the auxiliary vision LLM. ``user_prompt``
     is pre-formatted by the caller. Temp images live under $HERMES_HOME/cache/vision/."""
     async def stage(prompt: str, debug_call_data: dict, temp_paths: list) -> tuple:
@@ -907,7 +912,7 @@ async def vision_analyze_tool(
         debug_call_data["image_size_bytes"] = prepared.size_bytes
         messages = _media_messages(prompt, "image_url", image_data_url)
         logger.info("Processing image with vision model...")
-        call_kwargs = _aux_call_kwargs(messages, model, 120.0)
+        call_kwargs = _aux_call_kwargs(messages, model, 120.0, task=task, max_tokens=max_tokens)
         _load_auxiliary_client()
         try:
             response = await async_call_llm(**call_kwargs)
@@ -1000,14 +1005,23 @@ VISION_ANALYZE_SCHEMA = {
 
 def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
     """First non-empty ``auxiliary.<section>.model`` from config.yaml, else the first non-empty
-    env var (legacy override), else None."""
+    env var (legacy override), else None. Env vars resolve through the active profile secret scope,
+    so a served profile without its own value never inherits the launch profile's override."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
     for section in sections:
         _vmodel = _cfg_auxiliary(section, "model")
         if _vmodel:
             if str(_vmodel).strip():
                 return str(_vmodel).strip()
             break
-    return next((v for v in (os.getenv(e, "").strip() for e in env_vars) if v), None)
+    for env_var in env_vars:
+        try:
+            _val = (get_secret(env_var, "") or "").strip()
+        except UnscopedSecretError:
+            return None
+        if _val:
+            return _val
+    return None
 
 
 async def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> str:
@@ -1024,6 +1038,9 @@ async def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> str:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}")
     model = _configured_aux_model(("vision",), ("AUXILIARY_VISION_MODEL",))
+    ocr_context = await _maybe_ocr_context(image_url, region=region, task_id=task_id)
+    if ocr_context:
+        full_prompt += "\n\n" + ocr_context
     return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id, region=region)
 
 
@@ -1035,6 +1052,167 @@ registry.register(
     check_fn=check_vision_requirements,
     is_async=True,
     emoji="👁️")
+
+
+def check_vision_ocr_requirements() -> bool:
+    """``vision_ocr`` gate: an OCR model is configured AND the OCR task's own route resolves to a
+    client (probed under ``aux_probe_mode``). Independent of the vision route, so an OCR-only setup
+    advertises the tool; the handler fails closed with guidance otherwise."""
+    from agent.auxiliary_client import _try_configured_fallback_chain, aux_probe_mode, get_text_auxiliary_client
+    if _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) is None:
+        return False
+    with aux_probe_mode():
+        client, _ = get_text_auxiliary_client("ocr")
+        if client is None:
+            client, _, _ = _try_configured_fallback_chain("ocr", "")
+    return client is not None
+
+
+VISION_OCR_SCHEMA = {
+    "name": "vision_ocr",
+    "description": (
+        "Extract text from an image VERBATIM using the dedicated local OCR "
+        "model (fast, exact, includes layout bounding boxes). PREFER this "
+        "over vision_analyze whenever the image is primarily text: "
+        "screenshots, documents, receipts, invoices, error dialogs, chat "
+        "captures, signs, tables, forms. Use vision_analyze only for scenes, "
+        "objects, people, or when you need interpretation rather than the "
+        "exact text. Accepts a URL, local file path, or data URL."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_url": {
+                "type": "string",
+                "description": "Image URL (http/https), local file path, or data: URL to OCR."
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "Optional focus, e.g. 'only the table' or 'the total "
+                    "amount'. Leave empty for a full verbatim transcription."
+                )
+            },
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": (
+                    "Optional [x1, y1, x2, y2] crop region in pixel "
+                    "coordinates of the ORIGINAL image, applied before any "
+                    "downscaling."
+                )
+            }
+        },
+        "required": ["image_url"]
+    }
+}
+
+
+# Cap on the OCR transcript prepended to the scene model's prompt. The OCR call can return up to
+# max_tokens=4000 tokens of text on a dense page; embedding that whole dump in every OCR-grounded
+# vision prompt inflates latency and cost, so the grounding section is bounded to this many chars.
+_OCR_CONTEXT_MAX_CHARS = 4000
+
+
+async def _maybe_ocr_context(
+    image_url: str,
+    *,
+    region: Optional[list] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Cheap verbatim OCR transcript to ground the auxiliary vision model.
+
+    Small scene models read embedded text poorly; the dedicated OCR model is
+    a ~5s CPU call. OPT-IN: runs only when ``auxiliary.vision.ocr_context`` is
+    set to true AND ``auxiliary.ocr.model`` is configured, so users who do not
+    enable it do not pay the extra latency. When enabled, run OCR first and
+    return a prompt section with the transcript (capped at
+    ``_OCR_CONTEXT_MAX_CHARS``). Fail-open: any error or an empty transcript
+    returns "" and vision proceeds as before. The native fast path does not
+    use this yet (multimodal envelope shape).
+    """
+    ocr_model = None
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        if not cfg_get(_cfg, "auxiliary", "vision", "ocr_context"):
+            return ""
+        _omodel = cfg_get(_cfg, "auxiliary", "ocr", "model")
+        if _omodel:
+            ocr_model = str(_omodel).strip() or None
+    except Exception:
+        return ""
+    if not ocr_model:
+        return ""
+    try:
+        raw = await vision_analyze_tool(
+            image_url,
+            "OCR this image. Output the text verbatim.",
+            ocr_model,
+            task_id=task_id,
+            region=region,
+            task="ocr",
+            max_tokens=4000,
+        )
+        parsed = json.loads(raw)
+        transcript = (parsed.get("analysis") or "").strip() if parsed.get("success") else ""
+        if not transcript:
+            return ""
+        if len(transcript) > _OCR_CONTEXT_MAX_CHARS:
+            transcript = transcript[:_OCR_CONTEXT_MAX_CHARS].rstrip() + "\n[OCR transcript truncated]"
+        return (
+            "Verbatim OCR transcript of this image (layout blocks with "
+            "[x1, y1, x2, y2] pixel boxes) — trust it for any text content, "
+            "you only need to describe the visual/scene aspects:\n"
+            + transcript
+        )
+    except Exception:
+        logger.info("vision_analyze: OCR context unavailable, proceeding without", exc_info=True)
+        return ""
+
+
+async def _handle_vision_ocr(args: dict[str, Any], **kw: Any) -> str:
+    image_url = args.get("image_url", "")
+    question = (args.get("question") or "").strip()
+    region = args.get("region")
+    task_id = kw.get("task_id")
+
+    # No native fast path here on purpose: even a vision-capable main model
+    # reads pixels lossily, while the dedicated OCR model returns verbatim
+    # text with layout boxes. This tool is only as good as its pinned model.
+    prompt = "OCR this image. Output the text verbatim."
+    if question:
+        prompt += f" Focus: {question}"
+
+    model = _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",))
+    if not model:
+        return tool_error(
+            "vision_ocr is not configured: set auxiliary.ocr.model (and "
+            "provider) in config.yaml, or use vision_analyze instead.",
+            success=False,
+        )
+    return await vision_analyze_tool(
+        image_url,
+        prompt,
+        model,
+        task_id=task_id,
+        region=region,
+        task="ocr",
+        max_tokens=4000,
+    )
+
+
+registry.register(
+    name="vision_ocr",
+    toolset="vision",
+    schema=VISION_OCR_SCHEMA,
+    handler=_handle_vision_ocr,
+    check_fn=check_vision_ocr_requirements,
+    is_async=True,
+    emoji="🔤",
+)
 
 
 # --- video_analyze --------------------------------------------------------

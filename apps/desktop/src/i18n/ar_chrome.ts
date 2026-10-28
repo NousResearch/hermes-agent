@@ -564,7 +564,8 @@ export const arChrome = {
     saveApply: 'حفظ وتطبيق',
     notExpressible: 'هذا الترتيب متشابك — لا يمكن تمثيله كتقسيمات متداخلة بعد',
     zoneCount: count => `${count} مناطق`,
-    tabCount: count => `${count} تبويبات`
+    tabCount: count => `${count} تبويبات`,
+    tabActions: title => `إجراءات ${title}`
   },
   contextMenu: {
     link: {

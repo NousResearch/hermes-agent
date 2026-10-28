@@ -320,7 +320,7 @@ function EditVeil({ label, onPointerDown, top, ...menu }: EditVeilProps) {
 
 type CompactTabPickerProps = ComponentProps<typeof CompactTabPicker>
 
-interface CompactZoneTabsProps extends Pick<CompactTabPickerProps, 'activeId' | 'newTab' | 'tabs'> {
+interface CompactZoneTabsProps extends Pick<CompactTabPickerProps, 'activeId' | 'newTab' | 'tabActions' | 'tabs'> {
   belowControls: boolean
   /** The active tab takes Close (see TreeGroup's `closeableTab`). */
   closeable: boolean
@@ -329,7 +329,7 @@ interface CompactZoneTabsProps extends Pick<CompactTabPickerProps, 'activeId' | 
 
 /** A narrow touch zone's tab row: the picker in place of the scrolling strip.
  *  Picking a tab is a strip tap, so a minimized zone restores first. */
-function CompactZoneTabs({ activeId, belowControls, closeable, newTab, node, tabs }: CompactZoneTabsProps) {
+function CompactZoneTabs({ activeId, belowControls, closeable, newTab, node, tabActions, tabs }: CompactZoneTabsProps) {
   return (
     <div
       className={cn('flex min-w-0 flex-1', belowControls && 'absolute inset-x-0 bottom-0')}
@@ -349,6 +349,7 @@ function CompactZoneTabs({ activeId, belowControls, closeable, newTab, node, tab
 
           activateTreePane(node.id, paneId)
         }}
+        tabActions={tabActions}
         tabs={tabs}
       />
     </div>
@@ -713,6 +714,7 @@ export function TreeGroup({
               closeable={closeableTab(activeId)}
               newTab={newTab}
               node={node}
+              tabActions={paneId => paneChrome(paneFor(paneId)).tabActions?.()}
               tabs={shown.map(id => ({ id, label: tabLabel(id), title: tabText(id) }))}
             />
           ) : headerVisible ? (

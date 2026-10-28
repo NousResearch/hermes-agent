@@ -3833,6 +3833,8 @@ catalog: CatalogTranslations
     notExpressible: string
     zoneCount: (count: number) => string
     tabCount: (count: number) => string
+    /** A phone tab picker row's actions button (names the tab). */
+    tabActions: (title: string) => string
   }
 
   contextMenu: {

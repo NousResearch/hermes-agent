@@ -695,14 +695,16 @@ def _load_mcp_overlay() -> dict[str, dict]:
     values only. On any read/parse error, warn without file contents or header values and
     return ``{}``. Result is run through the suspicious-server filter.
     """
+    # health: allow HX002 -- per-run overlay path from the spawning process, not a durable setting
     path = (os.getenv("HERMES_MCP_OVERLAY") or "").strip()
     if not path:
         return {}
-    try:
-        from urllib.parse import urlparse
+    from urllib.parse import urlparse
 
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:
+    try:
+        # utf-8-sig accepts a Windows BOM; plain utf-8 makes json.loads fail on that file.
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
         logger.warning("Failed to load MCP overlay from %s", path)
         return {}
     if not isinstance(data, dict):
@@ -717,10 +719,7 @@ def _load_mcp_overlay() -> dict[str, dict]:
         if not isinstance(url, str):
             continue
         stripped = url.strip()
-        try:
-            scheme = urlparse(stripped).scheme.lower()
-        except Exception:
-            continue
+        scheme = urlparse(stripped).scheme.lower()
         if scheme not in ("http", "https"):
             logger.warning("Skipping MCP overlay server '%s': URL must be http or https", name)
             continue

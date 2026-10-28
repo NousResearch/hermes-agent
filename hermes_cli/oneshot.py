@@ -693,3 +693,64 @@ def _oneshot_clarify_callback(questions: list) -> dict:
     return {"answers": {}, "outcome": "undelivered", "notice": (
         "oneshot mode: no user available. Pick the best choices using your own judgment, "
         "or make the most reasonable assumption you can, and continue.")}
+
+
+def _run_and_exit_oneshot(
+    prompt: str,
+    *,
+    model: object = None,
+    provider: object = None,
+    toolsets: object = None,
+    skills: object = None,
+    usage_file: object = None,
+    resume: object = None,
+    reasoning: object = None,
+) -> None:
+    """Run one turn then hard-exit; process cleanup lives on ``hermes_cli.main``.
+
+    Late-imports ``_cleanup_oneshot_runtime`` / ``_exit_after_oneshot`` from main
+    inside this function so oneshot and main do not import each other at module load.
+    Re-exported on ``hermes_cli.main`` under the same name so existing patches on
+    ``main_mod._run_and_exit_oneshot`` keep working.
+    """
+    try:
+        rc = run_oneshot(
+            prompt,
+            model=model,
+            provider=provider,
+            toolsets=toolsets,
+            skills=skills,
+            usage_file=usage_file,
+            resume=resume,
+            reasoning=reasoning,
+        )
+    except KeyboardInterrupt:
+        rc = 130
+    except SystemExit as exc:
+        if exc.code is not None and not isinstance(exc.code, int):
+            print(exc.code, file=sys.stderr)
+            rc = 1
+        else:
+            rc = exc.code
+    except BaseException:  # health: allow BLE001 -- hard-exit boundary: map any escape to rc=1 then os._exit
+        # ``run_oneshot`` already maps agent failures to an int rc; anything
+        # still escaping means it malfunctioned. Print it but never fall
+        # through to interpreter teardown (the SIGABRT path this routine fixes).
+        import traceback
+        try:
+            traceback.print_exc()
+        except OSError:
+            # stderr may already be closed on the hard-exit path
+            pass
+        rc = 1
+    try:
+        from hermes_cli.main import _cleanup_oneshot_runtime
+
+        _cleanup_oneshot_runtime()
+    finally:
+        # Even an interrupt during cleanup must not fall back into interpreter
+        # finalization, where the native SIGABRT occurs.
+        # The hard exit is the safety boundary for #43055.
+        from hermes_cli.main import _exit_after_oneshot
+
+        _exit_after_oneshot(rc)

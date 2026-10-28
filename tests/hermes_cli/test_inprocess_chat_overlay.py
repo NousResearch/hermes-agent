@@ -15,7 +15,6 @@ def test_cmd_chat_inprocess_routes_to_oneshot(monkeypatch):
     def fake_oneshot(prompt, **kwargs):
         captured["prompt"] = prompt
         captured.update(kwargs)
-        raise SystemExit(0)
 
     monkeypatch.setenv("HERMES_INPROCESS_CHAT", "1")
     monkeypatch.setattr(main_mod, "_run_and_exit_oneshot", fake_oneshot)

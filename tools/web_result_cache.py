@@ -281,7 +281,9 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
 
 def extract_cache_record_final_url(url: str, final_url: str, format: Optional[str] = None, provider: str = "") -> None:
     """Remember the post-redirect URL behind a cached page, so a hit can re-run the website policy and
-    SSRF gates against the page it actually serves (a blocklist added after caching must still bite)."""
+    SSRF gates against the page it actually serves (a blocklist added after caching must still bite).
+    Call only after ``extract_cache_put`` wrote this content: a skipped write must not retarget the
+    older entry still on disk."""
     with _index_lock:
         index = _load_index()
         entry = index.get(_url_digest(url, format, provider))
@@ -293,16 +295,17 @@ def extract_cache_record_final_url(url: str, final_url: str, format: Optional[st
 
 def extract_cache_put(
     url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
-) -> None:
+) -> bool:
     """Store one successful extraction's full clean text for TTL reuse; pages over the truncate-store
-    ceiling are not cached (serving a capped copy back as if whole would silently lose the tail)."""
+    ceiling are not cached (serving a capped copy back as if whole would silently lose the tail).
+    True only when this call wrote the entry."""
     if not content or not _cacheable(url):
-        return
+        return False
     try:
         from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
         file_path = _entry_file_path(url, format, provider)
         if len(content) > MAX_STORED_TEXT_CHARS or file_path is None:
-            return
+            return False
         from tools.spill_safety import write_text_exclusive
         write_text_exclusive(file_path, content, private=False, overwrite=True)
         with _index_lock:
@@ -311,5 +314,7 @@ def extract_cache_put(
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }
             _save_index(index)
+        return True
     except Exception as exc:
         logger.debug("Failed to cache web extract for %s: %s", url, exc)
+        return False

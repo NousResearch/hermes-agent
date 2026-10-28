@@ -71,3 +71,30 @@ def test_cached_redirect_is_regated_on_its_final_url(monkeypatch, gate):
 
     assert provider.calls == 2, "a hit whose final URL is now refused must be a miss (live fetch re-checks)"
     assert not result.get("cached")
+
+
+
+def test_an_uncached_refetch_never_retargets_the_old_entry(monkeypatch):
+    """A refused hit re-fetches; if that fetch lands somewhere allowed but is too big to cache, the old
+    entry keeps its own final URL, so its blocked content is never served under the new target."""
+    check, safe = _policy()
+    monkeypatch.setattr("tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    _extract(_RedirectingProvider())
+
+    check, safe = _policy(blocked_host="target.example")
+    monkeypatch.setattr("tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
+    huge = "x" * (MAX_STORED_TEXT_CHARS + 1)
+
+    class _NowElsewhere(_RedirectingProvider):
+        async def extract(self, urls, format=None):
+            self.calls += 1
+            return [{"url": "https://allowed.example/", "content": huge, "raw_content": huge,
+                     "metadata": {"sourceURL": urls[0]}}]
+
+    _extract(_NowElsewhere())
+    later = _RedirectingProvider()
+    result = _extract(later)[0]
+    assert later.calls == 1 and not result.get("cached"), "the old blocked page was served from cache"

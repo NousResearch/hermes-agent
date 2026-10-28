@@ -12,7 +12,9 @@ function queryPath(route: string, values: Record<string, boolean | null | string
   const query = new URLSearchParams()
 
   for (const [key, value] of Object.entries(values)) {
-    if (value !== null && value !== undefined) {query.set(key, String(value))}
+    if (value !== null && value !== undefined) {
+      query.set(key, String(value))
+    }
   }
 
   return `${route}?${query.toString()}`
@@ -72,14 +74,15 @@ export function createBrowserFilesBridge({
         throw new Error(`${payload.path} does not name one file`)
       }
 
-      return (await fileEndpointUrl(bootstrap, 'stream', {
-        path: payload.path,
-        profile: payload.profile ?? currentProfile(),
-        session_id: payload.sessionId
-      })).href
+      return (
+        await fileEndpointUrl(bootstrap, 'stream', {
+          path: payload.path,
+          profile: payload.profile ?? currentProfile(),
+          session_id: payload.sessionId
+        })
+      ).href
     },
-    readDir: (path: string) =>
-      fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
+    readDir: (path: string) => fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
     readFileDataUrl: readDataUrl,
     readFileDataUrlForAttach: readDataUrl,
     readFileText: (path: string) =>

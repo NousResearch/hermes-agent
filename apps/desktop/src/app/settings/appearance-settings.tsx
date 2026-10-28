@@ -11,7 +11,7 @@ import type { DesktopMarketplaceSearchItem } from '@/global'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
+import { Check, Download, Globe, Loader2, Palette, Trash2, Users } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -69,7 +69,7 @@ import {
 import { $userBubbleTransparency, setUserBubbleTransparency } from '@/store/user-bubble-transparency'
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
-import { getBaseColors, useTheme } from '@/themes/context'
+import { $themeScope, getBaseColors, setThemeScope, type ThemeScope, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
@@ -446,6 +446,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const themeScope = useStore($themeScope)
+  const sharedTheme = themeScope === 'shared'
   const a = t.settings.appearance
 
   // A pointer held on the intensity slider when this overlay closes (Escape
@@ -489,9 +491,15 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     // Active theme first; stable sort keeps the rest in their original order.
     .sort((a, b) => Number(b.name === themeName) - Number(a.name === themeName))
 
-  // Themes save per profile. Surface that only when the user actually has more
-  // than one profile (single-profile installs never see the distinction).
+  // Themes save per profile (or shared, by choice). Surface the scope only when
+  // the user actually has more than one profile (single-profile installs never
+  // see the distinction).
   const showProfileNote = profiles.length > 1
+
+  const themeScopeOptions = [
+    { id: 'per-profile', icon: Users, label: a.themeScopePerProfile },
+    { id: 'shared', icon: Globe, label: a.themeScopeShared }
+  ] as const satisfies readonly { id: ThemeScope; icon: typeof Users; label: string }[]
 
   const activeProfileName =
     profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
@@ -656,7 +664,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   </div>
                   {showProfileNote && (
                     <p className="mt-3 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                      {a.themeProfileNote(activeProfileName)}
+                      {sharedTheme ? a.themeSharedNote : a.themeProfileNote(activeProfileName)}
                     </p>
                   )}
                 </>
@@ -665,6 +673,24 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.theme)}
               title={a.themeTitle}
               wide
+            />
+          )}
+
+          {show('theme') && showProfileNote && (
+            <ListRow
+              action={
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setThemeScope(id)
+                  }}
+                  options={themeScopeOptions}
+                  value={themeScope}
+                />
+              }
+              description={sharedTheme ? a.themeScopeSharedDesc : a.themeScopePerProfileDesc}
+              id={settingElementId(ids.themeScope)}
+              title={a.themeScopeTitle}
             />
           )}
 

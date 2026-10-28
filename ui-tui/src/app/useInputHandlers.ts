@@ -636,12 +636,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return scrollTranscript(key.pageUp ? -step : step)
     }
 
-    // Turn jumps: `[` previous user turn, `]` next; `]` on the last turn
-    // returns to live (scrollToBottom). No chord (shift/ctrl/alt) — plain
-    // keys only, matching the jump-keys contract in the help overlay.
-    if (!key.shift && !key.ctrl && !key.meta && !key.alt && (ch === '[' || ch === ']')) {
+    // Turn jumps: Alt+← previous user turn, Alt+→ next; on the last turn
+    // Alt+→ returns to live (scrollToBottom). A chord, NOT plain `[`/`]` —
+    // printable keys always belong to the composer, and ESC-prefixed brackets
+    // never arrive as keypresses anyway (the tokenizer swallows them as
+    // OSC/CSI sequence starts — probed in turnJumpChord.test). Alt+arrows
+    // decode cleanly (`\x1b[1;3D/C` → name left/right + meta).
+    if (key.alt && (key.leftArrow || key.rightArrow)) {
       if (terminal.turnJump) {
-        terminal.turnJump(ch === '[' ? -1 : 1)
+        terminal.turnJump(key.leftArrow ? -1 : 1)
       }
 
       return

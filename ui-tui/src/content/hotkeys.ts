@@ -29,7 +29,7 @@ export function hotkeys(): [string, string][] {
     ['Esc Esc', h.discardDraft],
     ['Tab', h.applyCompletion],
     ['↑/↓', h.arrows],
-    ['[ / ]', h.turnJump],
+    ['Alt+← / Alt+→', h.turnJump],
     ['Ctrl+X', h.sessionSwitcher],
     ['Ctrl+T', h.expandAgents],
     ['Ctrl+R / F7', h.collapseAgents],

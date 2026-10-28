@@ -24,7 +24,7 @@ export const anchorCompensation = (wasPresent: boolean, isPresent: boolean): num
 }
 
 const GLYPH = '↳'
-const HISTORY_HINT = '] = live'
+const HISTORY_HINT = 'Alt+→ = live'
 const GLYPH_COLS = 2 // glyph + one space
 const HINT_COLS = 3 // ' · ' separator + hint
 

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- bug fix for #146005: /btw and /bg now catch the owner's refusal around the side-task start (the added lines are a minimal branch at this existing chokepoint); the re-attach and the refusal text live in the sibling hermes_cli/gateway_side.py
 """Slash-command handlers for the interactive CLI (``HermesCLI`` inherits ``CLICommandsMixin``).
 
 cli.py-internal symbols (``_cprint``/``_ACCENT``/``save_config_value``…) are imported LAZILY inside
@@ -1342,11 +1343,16 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         task_num = self._background_task_counter
         preview = _ellipsize(prompt, 60)
         from hermes_cli import gateway_side
+        from hermes_cli import gateway_client
         connection = gateway_side.connection_for(self)
         if connection is not None:
             # The gateway runs the side agent on this session's route (prompt.background); this
             # process never builds one.
-            task_id, wait = gateway_side.start(connection, self.session_id, "background", prompt)
+            try:
+                task_id, wait = gateway_side.start(connection, self.session_id, "background", prompt)
+            except gateway_client.GatewayClientError as exc:
+                # A refusal is the gateway's own answer about this session, not a crash: say it.
+                return _cp(f"  /bg: {gateway_side.refusal_message(exc)}")
             _cp(f"  {_t('background.started', number=task_num, preview=preview)}",
                 f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
             return self._start_background_worker(task_id, task_num, preview, wait)
@@ -1514,11 +1520,16 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if not question:
             return _cp(*_lines(_t("btw.usage")))
         from hermes_cli import gateway_side
+        from hermes_cli import gateway_client
         connection = gateway_side.connection_for(self)
         if connection is not None:
             # The gateway answers from its own copy of the conversation (prompt.btw): the live
             # agent's fork when it has one, else the stored transcript.
-            _task_id, wait = gateway_side.start(connection, self.session_id, "btw", question)
+            try:
+                _task_id, wait = gateway_side.start(connection, self.session_id, "btw", question)
+            except gateway_client.GatewayClientError as exc:
+                # A refusal is the gateway's own answer about this session, not a crash: say it.
+                return _cp(f"  /btw: {gateway_side.refusal_message(exc)}")
             preview = _ellipsize(question, 60)
             _cp(*_lines(_gt("btw.started", preview=preview)), "")
             self._side_worker(wait, name="btw-side-question", fail_label="/btw",

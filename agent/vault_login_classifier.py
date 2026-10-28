@@ -74,6 +74,7 @@ class LoginControl:
     name: str
     type: str
     max_length: Optional[int] = None
+    otp_context: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
@@ -87,6 +88,7 @@ class LoginControl:
             name=str(raw.get("name") or ""),
             type=str(raw.get("type") or ""),
             max_length=int(max_length) if max_length is not None else None,
+            otp_context=raw.get("otpContext") is True,
         )
 
 
@@ -150,6 +152,12 @@ def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginC
             continue
         if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
+    if not out:
+        contextual = [c for c in controls if c.otp_context and c.form_index is not None
+                      and c.type in ("text", "tel", "number")
+                      and _normalize_text(c.label).strip() == "code"]
+        if len(contextual) == 1:
+            out.append(ClassifiedLoginControl(contextual[0], 60, "one-time-code"))
     return out
 
 
@@ -241,14 +249,32 @@ def build_otp_fills(otp_controls: list[ClassifiedLoginControl], code: str) -> li
 
 
 def build_inspection_js(nonce: str) -> str:
-    return _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
+    return (_LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
+            .replace("__STAMP__", "true" if nonce else "false"))
+
+
+def build_otp_probe_js() -> str:
+    """Use the same inspected metadata for tab discovery, without stamping controls."""
+    inspect = build_inspection_js("")
+    pattern = json.dumps(_RE_OTP.pattern)
+    return r"""(() => {
+      const controls = JSON.parse(__INSPECT__);
+      const normalize = value => value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const explicit = new RegExp(__PATTERN__);
+      const matches = controls.filter(c => c.autocomplete.toLowerCase().split(/\s+/).includes('one-time-code') ||
+        (['text', 'tel', 'number', 'password', ''].includes(c.type) &&
+         explicit.test(normalize(c.name + ' ' + c.label))));
+      if (matches.length) return true;
+      return controls.filter(c => c.otpContext && c.formIndex !== null &&
+        ['text', 'tel', 'number'].includes(c.type) && normalize(c.label) === 'code').length === 1;
+    })()""".replace("__INSPECT__", inspect).replace("__PATTERN__", pattern)
 
 
 _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   const elements = Array.from(document.querySelectorAll("input, select"));
   const forms = Array.from(document.forms);
-  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
+  if (__STAMP__) elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];
@@ -260,7 +286,15 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       .map((id) => { const n = document.getElementById(id); return n ? (n.textContent || "") : ""; })
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
+    // A generic Code label is meaningful only in its own bounded visible form.
+    // Never borrow verification text from document.body or a hidden sibling.
+    const formText = element.form ? Array.from(element.form.querySelectorAll('p, h1, h2, h3, legend, [role="heading"]'))
+      .filter(n => getComputedStyle(n).visibility !== 'hidden' && n.getClientRects().length)
+      .map(n => n.innerText || '').join(' ').slice(0, 2000).toLowerCase() : '';
+    const otpContext = /\\b(?:authenticator|one[ -]?time|verification)\\b/.test(formText) &&
+      /\\bcode\\b/.test(formText);
     return [{
+      otpContext,
       autocomplete: element.autocomplete || "",
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,

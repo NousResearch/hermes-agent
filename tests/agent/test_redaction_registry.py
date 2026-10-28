@@ -11,6 +11,7 @@ and reset the plugin registry around each test so module-global state
 never leaks between tests.
 """
 
+import re
 import importlib.util
 
 import pytest
@@ -51,8 +52,8 @@ def test_registered_pattern_masks_token():
     assert register_redaction_patterns([NVAPI_PATTERN], source="test") == 1
     out = redact_sensitive_text(f"connect failed: {NVAPI_KEY}", force=True)
     assert NVAPI_KEY not in out
-    # Head/tail mask preserved for debuggability (same rule as built-ins).
-    assert "nvapi-" in out and "..." in out
+    # Keyed ***#xxxxxx fingerprint, no head/tail characters (same rule as built-ins).
+    assert re.search(r"\*\*\*#[0-9a-f]{6}", out) and "nvapi-" not in out
 
 
 
@@ -223,7 +224,7 @@ def test_plugin_register_end_to_end(tmp_path):
         f"NIM request failed: 401 for key {NVAPI_KEY}", force=True,
     )
     assert NVAPI_KEY not in out
-    assert "nvapi-" in out  # label survives for debuggability
+    assert re.search(r"\*\*\*#[0-9a-f]{6}", out)  # still recognisably masked
 
 
 def test_registered_pattern_no_prose_false_positive(tmp_path):

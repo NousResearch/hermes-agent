@@ -160,7 +160,7 @@ class TestKnownPrefixes:
         for token in samples:
             result = redact_sensitive_text(f"provider error {token}")
             assert token not in result
-            assert "..." in result
+            assert "***" in result and "..." not in result
 
     def test_short_fireworks_like_words_unchanged(self):
         text = "fw-tooshort fw_tooshort fpk_tooshort"
@@ -628,7 +628,7 @@ class TestRedactingFormatter:
         )
         result = formatter.format(record)
         assert "abc123def456" not in result
-        assert "sk-pro" in result
+        assert _FP.search(result) and "sk-pro" not in result
 
 
 class TestPrintenvSimulation:
@@ -1030,7 +1030,7 @@ class TestXaiToken:
     def test_bare_token_masked(self):
         result = redact_sensitive_text(f"using key {self.KEY}", force=True)
         assert self.KEY not in result
-        assert "xai-AB" in result
+        assert _FP.search(result) and "xai-AB" not in result
 
 
     def test_too_short_not_masked(self):
@@ -1474,7 +1474,7 @@ class TestFireworksToken:
     def test_bare_token_masked(self):
         result = redact_sensitive_text(f"fireworks error: key {self.KEY}", force=True)
         assert self.KEY not in result
-        assert "fw_AA" in result
+        assert _FP.search(result) and "fw_AA" not in result
 
 
     def test_too_short_not_masked(self):
@@ -1807,3 +1807,32 @@ class TestMaskSecretFingerprint:
     def test_empty(self, fp_home):
         assert _redact_mod.mask_secret("") == ""
         assert _redact_mod.mask_secret("", empty="(not set)") == "(not set)"
+
+
+class TestMaskTokenRevealsNothing:
+    """Log / model-context / egress masks (``_mask_token``) emit no character of the token:
+    the old 6+4 head/tail leaked doubled passwords and the base64 head of ``Basic`` auth."""
+
+    def test_doubled_password_token(self, fp_home):
+        out = _redact_mod._mask_token("Password" * 2 + "12")
+        assert "Passwo" not in out and "rd12" not in out
+        assert _FP.fullmatch(out), out
+
+    def test_short_token_is_stars(self, fp_home):
+        assert _redact_mod._mask_token("short-token") == "***"
+        assert _redact_mod._mask_token("") == "***"
+
+    def test_basic_auth_username_not_leaked(self, fp_home):
+        import base64
+
+        b64 = base64.b64encode(b"chad:" + b"hunter2" * 3).decode()
+        out = redact_sensitive_text("Authorization: Basic " + b64, force=True)
+        assert out.startswith("Authorization: Basic ***"), out
+        assert b64[:6] not in out and b64[-4:] not in out
+
+    def test_jwt_still_recognisably_redacted(self, fp_home):
+        parts = ["eyJ" + "hbGciOiJIUzI1NiJ9", "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0",
+                 "dozjgNryP4J3jVmNHl0w5N" + "_XgL0n3I9PlFUP0THsR8U"]
+        out = redact_sensitive_text("token " + ".".join(parts), force=True)
+        assert out.startswith("token ***"), out
+        assert not any(part[:6] in out or part[-4:] in out for part in parts)

@@ -1,4 +1,5 @@
 import json
+import re
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -85,10 +86,11 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     # Terminal output now passes code_file=True: ENV-assignment redaction is
     # skipped (so code constants like MAX_TOKENS=100 aren't corrupted), but a
     # real sk-/ghp_/JWT-shaped value is STILL masked by _PREFIX_RE. The full
-    # secret never survives; only the leading prefix marker remains. (#33801)
+    # secret never survives; a keyed ***#xxxxxx fingerprint replaces it. (#33801)
     assert secret not in result["output"]
     assert "OPENAI_API_KEY=" in result["output"]
-    assert "sk-pro" in result["output"]  # prefix marker from _mask_token
+    assert re.search(r"OPENAI_API_KEY=\*\*\*#[0-9a-f]{6}", result["output"])  # _mask_token fingerprint
+    assert "sk-pro" not in result["output"]
     assert "abc123def456" not in result["output"]  # secret body is gone
 
 

@@ -739,11 +739,13 @@ def mask_secret(value: str, *, empty: str = "") -> str:
 
 
 def _mask_token(token: str) -> str:
-    """Mask a log token — 18-char floor, preserves 6 prefix / 4 suffix; empty → ``***``."""
+    """Mask a log / model-context token: ``***#xxxxxx`` (same keyed fingerprint as ``mask_secret``)
+    from 18 chars, else ``***``. No character is kept — a 6+4 head/tail leaked doubled passwords
+    and the base64 head (the username) of ``Authorization: Basic``."""
     token = _DISPLAY_CONTROL_RE.sub("", token) if token else token
     if not token or len(token) < 18:
         return "***"
-    return f"{token[:6]}...{token[-4:]}"
+    return mask_secret(token, empty="***")
 
 
 REDACTED_CREDENTIAL_WRITE_DETAIL = (
@@ -945,8 +947,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 
     ``mask_nonreusable`` masks the assignments with the ``«redacted:…»`` sentinel that
     ``file_read=True`` already uses for prefix-matched credentials. Without it an agent
-    that read a secret-bearing file would hold a head/tail mask shaped like a real but
-    truncated key and could write it back as a dead credential (#35519)."""
+    that read a secret-bearing file would hold a ``_mask_token`` mask and could write it
+    back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
@@ -1023,8 +1025,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     ``code_file=True``: skip the ENV/JSON assignment passes for known source
     code (``MAX_TOKENS=***``, ``"apiKey": "test"`` fixtures). ``file_read=True``
     (implies code_file unless ``secret_file``): prefix-matched credentials become a
-    non-reusable sentinel (``«redacted:ghp_…»``) instead of a head/tail mask an agent
-    could write back into config.yaml as a dead credential.
+    non-reusable sentinel (``«redacted:ghp_…»``) instead of a ``_mask_token`` mask an
+    agent could write back into config.yaml as a dead credential.
     Every regex sits behind a cheap substring gate that its pattern requires,
     so the gates are never false-negative.
 

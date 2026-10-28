@@ -565,7 +565,9 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
     followed: the child runs in its parent's workspace container, never the profile's.
     Reads the raw table (not :func:`resolve_task_overrides`, which calls back into key resolution).
     """
-    if not task_id:
+    # Desktop/ACP also register a cwd when no host folder is mounted. That cwd must
+    # not split the profile's persistent sandbox away from its existing CLI files.
+    if not task_id or not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"):
         return base
     if task_id.startswith(f"{base}:ws:"):
         return task_id

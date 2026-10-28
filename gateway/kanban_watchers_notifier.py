@@ -736,6 +736,20 @@ class _KanbanNotification:
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
                     event_id=ev.id,
                 ))
+                # Observer hook (kanban_notify_delivered): lets plugins thread-anchor
+                # the subscription to the message just sent, without the notifier
+                # knowing about threads. Failures must not affect delivery state.
+                try:
+                    from hermes_cli.lifecycle import ainvoke_hook
+                    await ainvoke_hook("kanban_notify_delivered", task_id=self.task_id,
+                                       board=self.board_slug, platform=self.platform_str,
+                                       chat_id=self.sub.get("chat_id"),
+                                       thread_id=self.sub.get("thread_id") or None,
+                                       event_id=ev.id, event_kind=ev.kind,
+                                       notifier_profile=self.sub_profile or None)
+                except Exception:
+                    logger.debug("kanban notifier: kanban_notify_delivered hook failed for %s",
+                                 self.task_id, exc_info=True)
                 self.clear_failures()
             except Exception as exc:
                 await self.delivery_failed(

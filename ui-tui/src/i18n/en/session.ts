@@ -37,6 +37,8 @@ export const sessionEn = {
     },
     lifecycle: {
       newLiveSessionStarted: 'new live session started',
+      temporaryBanner: '🕶  Temporary chat — not saved to history, memory is off. Deleted when you exit.',
+      temporaryBlocked: (command: string) => `/${command} is not available in a temporary chat.`,
       sessionTitleSet: (title: string) => `session title set: ${title}`,
       titleQueuedSuffix: ' (queued while session initializes)',
       failedToSetTitle: (message: string) => `failed to set session title: ${message}`,

@@ -9,7 +9,7 @@ import { zhConnectorCard } from './zh_connector_card'
 import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
-import { zhGatewayHost } from './zh_gateway_host'
+import { zhLanguage } from './zh_language'
 import { zhLocalModels } from './zh_local_models'
 import { zhMemoryLayers } from './zh_memory_layers'
 import { zhModelMenu } from './zh_model_menu'
@@ -22,6 +22,7 @@ import { zhPluginUpdate } from './zh_plugin_update'
 import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhTemporaryChat } from './zh_temporary_chat'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
@@ -36,6 +37,7 @@ export const zhOverrides = {
   sharedMetrics: zhSharedMetrics,
   firstRun: zhFirstRun,
   intro: introZh,
+  ...zhTemporaryChat,
   connectors: zhConnectorCard,
   sessionImport: {
     title: '从其他应用继续',
@@ -356,6 +358,7 @@ export const zhOverrides = {
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
+      'session.newTemporary': '新建临时聊天',
       'session.newTab': '新建会话标签',
       'session.newWindow': '新建窗口',
       'session.next': '下一个会话',
@@ -443,15 +446,7 @@ export const zhOverrides = {
     previous: '上一个匹配'
   },
 
-  language: {
-    label: '语言',
-    description: '选择桌面界面的语言。',
-    saving: '正在保存语言…',
-    saveError: '语言更新失败',
-    switchTo: '切换语言',
-    searchPlaceholder: '搜索语言…',
-    noResults: '未找到语言'
-  },
+  ...zhLanguage,
 
   settings: {
     memoryLayers: zhMemoryLayers,

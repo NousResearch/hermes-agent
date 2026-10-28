@@ -74,6 +74,7 @@ export const arChrome = {
       'nav.cron': 'فتح المهام المجدولة',
       'nav.agents': 'فتح الوكلاء',
       'session.new': 'جلسة جديدة',
+      'session.newTemporary': 'محادثة مؤقتة جديدة',
       'session.newTab': 'علامة تبويب جلسة جديدة',
       'session.newWindow': 'جلسة جديدة في نافذة',
       'session.next': 'الجلسة التالية',

@@ -201,6 +201,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     inherited(parser, "--ignore-user-config", action="store_true", default=False,
               help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded)")
+    inherited(parser, "--temporary", action="store_true", default=False,
+              help="Temporary chat: not saved to history, no memory read or written; deleted when you exit")
     inherited(parser, "--ignore-rules", action="store_true", default=False,
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills")
     inherited(parser, "--safe-mode", action="store_true", default=False,
@@ -310,6 +312,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Include the session ID in the agent's system prompt")
     inherited(chat_parser, "--ignore-user-config", action="store_true", default=SUPPRESS,
               help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.")
+    inherited(chat_parser, "--temporary", action="store_true", default=SUPPRESS,
+              help="Temporary chat: not saved to history, no memory read or written; deleted when you exit")
     inherited(chat_parser, "--ignore-rules", action="store_true", default=SUPPRESS,
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.")
     inherited(chat_parser, "--safe-mode", action="store_true", default=SUPPRESS,

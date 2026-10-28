@@ -132,6 +132,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearSessionSubagents } from '@/store/subagents'
+import { setTemporaryDraft } from '@/store/temporary-chat'
 import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
@@ -190,6 +191,7 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { seedCreatedSession, temporaryCreateParams } from './temporary-create'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -278,6 +280,8 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
+  /** Start the draft as a temporary chat (default: a normal one — New Chat exits temporary mode). */
+  temporary?: boolean
   replaceRoute?: boolean
   rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
@@ -515,6 +519,8 @@ export function useSessionActions({
         rotateFreshDraftKey()
       }
 
+      setTemporaryDraft(draftOptions.temporary ?? false)
+
       resetViewSync()
       busyRef.current = false
       setBusy(false)
@@ -623,7 +629,8 @@ export function useSessionActions({
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent)),
-          request_id: createIntent
+          request_id: createIntent,
+          ...temporaryCreateParams()
         }
 
         // Lease the owner socket for the whole create → owner-publication
@@ -720,13 +727,17 @@ export function useSessionActions({
 
         if (stored) {
           markSessionCreatedThisRun(stored)
+
           // Seed the sidebar preview with the user's first message so the row
           // reads meaningfully while the turn is in flight, instead of flashing
           // "Untitled session" until the turn persists and auto-title runs. The
           // server later returns its own preview/title and supersedes this.
           // The row carries the create route's exact owner (backend profile +
           // connection), never the ambient profile — see upsertOptimisticSession.
-          upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          seedCreatedSession(params, created.session_id, stored, () =>
+            upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          )
+
           // Anything still parked under the pre-session draft bucket belongs
           // to this chat now (#114122); the composer moves it on scope swap.
           announceNewSessionDraftKey(stored)

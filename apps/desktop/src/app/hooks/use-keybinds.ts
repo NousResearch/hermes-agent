@@ -88,6 +88,7 @@ import {
   switcherJustClosed
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import { requestNewTemporaryChat } from '@/store/temporary-chat'
 import { requestThreadPageScroll } from '@/store/thread-scroll'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
@@ -326,6 +327,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
     'session.newTab': () => deps.openNewSessionTab(),
+    'session.newTemporary': requestNewTemporaryChat,
     'session.newWindow': () => void openNewWindow(),
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),

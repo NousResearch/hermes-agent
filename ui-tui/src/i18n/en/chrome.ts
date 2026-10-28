@@ -16,7 +16,8 @@ export const chromeEn = {
     resumesWhenSubagentsFinish: (count: number) => `↩ resumes when ${count} subagents finish`,
     bgTasks: (count: number) => `${count} bg`,
     compressions: (count: number) => `cmp ${count}`,
-    fast: 'fast'
+    fast: 'fast',
+    temporary: '🕶 temporary chat · not saved'
   },
   composer: {
     interruptHint: 'Ctrl+C to interrupt…',

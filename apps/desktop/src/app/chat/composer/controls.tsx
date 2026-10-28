@@ -17,6 +17,7 @@ import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
+import { TemporaryChatToggle } from './temporary-chat-toggle'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceFan } from './voice-fan'
 import { VoiceMenu } from './voice-menu'
@@ -145,6 +146,7 @@ export function ComposerControls({
     >
       {minimal ? null : (
         <>
+          <TemporaryChatToggle disabled={disabled} />
           {hideModelPill ? null : (
             <>
               <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />

@@ -9,7 +9,7 @@ import { frConnectorCard } from './fr_connector_card'
 import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
-import { frGatewayHost } from './fr_gateway_host'
+import { frLanguage } from './fr_language'
 import { frLocalModels } from './fr_local_models'
 import { frMemoryLayers } from './fr_memory_layers'
 import { frModelMenu } from './fr_model_menu'
@@ -22,6 +22,7 @@ import { frPluginUpdate } from './fr_plugin_update'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frTemporaryChat } from './fr_temporary_chat'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
@@ -30,6 +31,7 @@ export const frOverrides = {
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
   intro: introFr,
+  ...frTemporaryChat,
   connectors: frConnectorCard,
   connectorsPage: {
     title: 'Connecteurs',
@@ -574,6 +576,7 @@ export const frOverrides = {
       'nav.cron': 'Ouvrir les tâches planifiées',
       'nav.agents': 'Ouvrir les agents',
       'session.new': 'Nouvelle session',
+      'session.newTemporary': 'Nouvelle discussion temporaire',
       'session.newTab': 'Nouvel onglet de session',
       'session.newWindow': 'Nouvelle fenêtre',
       'session.next': 'Session suivante',
@@ -672,15 +675,7 @@ export const frOverrides = {
     next: 'Correspondance suivante',
     previous: 'Correspondance précédente'
   },
-  language: {
-    label: 'Langue',
-    description: "Choisissez la langue de l'interface du desktop.",
-    saving: 'Enregistrement de la langue…',
-    saveError: 'Échec de la mise à jour de la langue',
-    switchTo: 'Changer de langue',
-    searchPlaceholder: 'Rechercher des langues…',
-    noResults: 'Aucune langue trouvée'
-  },
+  ...frLanguage,
   settings: {
     memoryLayers: frMemoryLayers,
     subpages: {

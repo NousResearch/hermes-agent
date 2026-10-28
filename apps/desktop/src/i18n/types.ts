@@ -19,6 +19,7 @@ import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from '.
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
+import type { LanguageTranslations } from './types_language'
 import type { GatewayHostTranslations } from './types_gateway_host'
 import type { MemoryLayersTranslations } from './types_memory_layers'
 import type { ModelMenuTranslations } from './types_model_menu'
@@ -31,6 +32,7 @@ import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { TemporaryChatTranslations } from './types_temporary_chat'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
@@ -97,6 +99,7 @@ export interface Translations extends NoticeTranslations {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
   }
+  temporaryChat: TemporaryChatTranslations
   connectors: ConnectorCardTranslations
 catalog: CatalogTranslations
   connectorsPage: {
@@ -585,15 +588,7 @@ catalog: CatalogTranslations
     previous: string
   }
 
-  language: {
-    label: string
-    description: string
-    saving: string
-    saveError: string
-    switchTo: string
-    searchPlaceholder: string
-    noResults: string
-  }
+  language: LanguageTranslations
 
   settings: {
     subpages: Record<string, string>

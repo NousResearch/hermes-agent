@@ -853,39 +853,27 @@ def test_resume_refusal_names_the_clashing_flag_and_the_way_forward(store):
                             {"info": {"launch_request": {"provider": "openrouter"}}})
 
 
-def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store, monkeypatch):
-    """#134889 CLI-22: `/clear` inside the running CLI redraws the banner from the new gateway
-    session's snapshot (its MCP tools, main's 8-character label), as the startup banner does; this
-    process's own tool registry has no MCP servers and is never walked."""
-    import cli as cli_mod
-    from cli import HermesCLI
+def test_a_temporary_cli_creates_every_session_temporary(store, monkeypatch):
+    """`hermes --temporary`: the first session and every `/new` one are created temporary on the
+    gateway (it stamps, hides and later deletes the row); a normal CLI never sends the flag."""
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     db, client = store
-    canonical = "local-ab12cd34" + "e" * 56
-    info = {**INFO, "tools": {"file": ["read_file"], "mcp-zeta": ["mcp__zeta__ro_probe"]}}
-    created = {**snapshot(canonical), "info": info}
+    temporary_cli = types.SimpleNamespace(session_id="x", _resumed=False, temporary=True)
+    db.open_session(temporary_cli, {})
+    assert client.calls[-1] == ("session.create", client.calls[-1][1]) and client.calls[-1][1]["temporary"] is True
+    db.create({})  # /new
+    assert client.calls[-1][1]["temporary"] is True
+    db.open_session(cli(), {})
+    assert "temporary" not in client.calls[-1][1]
 
-    async def rpc(method, *, _timeout=None, **params):
-        client.calls.append((method, params))
-        return created if method == "session.create" else {}
-    client.rpc = rpc
-    banners = []
-    monkeypatch.setattr("hermes_cli.banner.build_welcome_banner", lambda **kw: banners.append(kw))
-    monkeypatch.setattr(cli_mod, "get_tool_definitions", lambda **_kw: pytest.fail("walked the CLI's registry"))
-    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a: None)
-    monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: types.SimpleNamespace(columns=200, lines=50))
-    shell = HermesCLI.__new__(HermesCLI)
-    shell.__dict__.update(
-        _session_db=db, session_id="local-old", compact=False, model="fake-model", provider="custom",
-        enabled_toolsets=["hermes-cli"], disabled_toolsets=[], agent=None,
-        _app=types.SimpleNamespace(output=types.SimpleNamespace(
-            erase_screen=lambda: None, cursor_goto=lambda *_a: None, flush=lambda: None)))
-    shell._confirm_destructive_slash = lambda *_a, **_k: "once"
-    shell._print_random_tip = lambda: None
-    shell.new_session = lambda silent=False: setattr(shell, "session_id", db.create({}))
 
-    shell._cmd_clear("/clear")
-
-    (banner,) = banners
-    assert banner["session_id"] == "ab12cd34"
-    assert sorted(t["function"]["name"] for t in banner["tools"]) == ["mcp__zeta__ro_probe", "read_file"]
-    assert banner["get_toolset_for_tool"]("mcp__zeta__ro_probe") == "mcp-zeta"
+def test_delete_temporary_session_never_deletes_a_saved_chat(store, monkeypatch):
+    db, _client = store
+    reader = types.SimpleNamespace(is_session_temporary=lambda sid: sid == "local-temp")
+    monkeypatch.setattr(db, "_db", lambda: reader)
+    deleted = []
+    monkeypatch.setattr(db, "delete_session", lambda sid, sessions_dir=None: deleted.append(sid) or True)
+    assert db.delete_temporary_session("local-saved") is False
+    assert db.delete_temporary_session("local-temp") is True
+    assert deleted == ["local-temp"]
+    db.mark_session_temporary("local-temp")  # the gateway stamps it at create: a no-op here

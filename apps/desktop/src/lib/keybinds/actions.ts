@@ -147,6 +147,13 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Session ──────────────────────────────────────────────────────────────
   // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
   // hijacked normal typing — pressing uppercase N outside an input (or via an
+  // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
+  // stays; users who liked ⇧N can rebind it in the panel.
+  { id: 'session.new', category: 'session', defaults: ['mod+n'] },
+  { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
+  // ⌘⇧P / Ctrl+Shift+P — the browsers' private-window chord.
+  { id: 'session.newTemporary', category: 'session', defaults: ['mod+shift+p'] },
+  { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // IME) created a new session unexpectedly.
   { id: 'session.new', category: 'session', ...hostDefaults(['mod+n'], { mac: 'mod+ctrl+n', other: 'alt+n' }) },
   { id: 'session.newTab', category: 'session', ...hostDefaults(['mod+t'], { mac: 'mod+ctrl+t', other: 'alt+t' }) },

@@ -2,6 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { STARTUP_TEMPORARY } from '../config/env.js'
+
 const MAX = 1000
 const dir = process.env.HERMES_HOME ?? join(homedir(), '.hermes')
 const file = join(dir, '.hermes_history')
@@ -61,6 +63,11 @@ export function append(line: string) {
 
   if (items.length > MAX) {
     items.splice(0, items.length - MAX)
+  }
+
+  // A temporary chat recalls earlier prompts but keeps its own in memory only.
+  if (STARTUP_TEMPORARY) {
+    return
   }
 
   try {

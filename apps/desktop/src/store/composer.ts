@@ -21,6 +21,7 @@ import {
   writeDraftStash
 } from './composer-draft-stash'
 import { recordDislike, recordFriction } from './desktop-metrics'
+import { $temporaryDraft, isTemporarySession } from './temporary-chat-registry'
 
 /** Release blob: chip previews created for OS image drops (see #63682). */
 export function revokeAttachmentPreviewUrl(url?: string | null) {
@@ -532,6 +533,26 @@ export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDe
   window.addEventListener(DRAFT_SYNC_EVENT, listener)
 
   return () => window.removeEventListener(DRAFT_SYNC_EVENT, listener)
+}
+
+function persistDraftTexts() {
+  try {
+    // A temporary chat's draft (and the fresh draft while it is toggled temporary) stays in memory.
+    const entries = [...draftsBySession]
+      .filter(
+        ([key, draft]) => draft.text && !isTemporarySession(key) && !(isFreshDraftScope(key) && $temporaryDraft.get())
+      )
+      .slice(-MAX_PERSISTED_DRAFTS)
+      .map(([key, draft]) => [key, draft.text] as const)
+
+    if (entries.length === 0) {
+      window.localStorage.removeItem(SESSION_DRAFTS_STORAGE_KEY)
+    } else {
+      window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)))
+    }
+  } catch {
+    // Best-effort only — quota/private-mode must never break typing.
+  }
 }
 
 export function stashSessionDraft(scope: string | null | undefined, text: string, attachments: ComposerAttachment[]) {

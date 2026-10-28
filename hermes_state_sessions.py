@@ -23,7 +23,8 @@ from hermes_state_common import (
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
-from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
+from hermes_state_compression import _CHAIN_CAP
+from hermes_state_temporary import not_temporary_sql
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -1047,6 +1048,8 @@ class SessionSessionsMixin:
         Exempt the canonical Bot Chat (hidden + exact registry title): the desktop contract keeps it
         hidden and reachable only through the bot row, and unhiding it would also disable the
         rename guard in ``_set_session_title`` that protects its identity (see review on #106180)."""
+        if pinned and self.is_session_temporary(session_id):  # a pinned temporary chat would surface
+            return False
         result = self._set_lineage_column("pinned", session_id, int(pinned))
         if pinned:
             row = self.get_session(session_id)
@@ -1059,6 +1062,8 @@ class SessionSessionsMixin:
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""
+        if not hidden and self.is_session_temporary(session_id):  # a temporary chat stays hidden
+            return False
         return self._set_lineage_column("hidden", session_id, int(hidden))
 
     def set_session_read(self, session_id: str, read: bool = True) -> bool:
@@ -1334,6 +1339,7 @@ class SessionSessionsMixin:
             # A local reset lineage is one conversation (hermes_state_local.local_lineage_index):
             # earlier segments leave the page in SQL, before LIMIT/OFFSET, not after it.
             heads = exclude_superseded_segments(self, where_clauses, params)
+        where_clauses.append(not_temporary_sql("s"))  # temporary chats never list, even as hidden/archived
         where_sql = _where_sql(where_clauses)
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
         select_head = (
@@ -1434,6 +1440,7 @@ class SessionSessionsMixin:
                 pinned_clauses.append("s.hidden = 0")
             if heads:
                 exclude_superseded_segments(self, pinned_clauses, pinned_params)
+            pinned_clauses.append(not_temporary_sql("s"))
             pinned_clauses.append("s.pinned = 1")
             pinned_where = _where_sql(pinned_clauses)
             pinned_query = f"""
@@ -1546,9 +1553,8 @@ class SessionSessionsMixin:
     ) -> list[dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
         so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several.
-        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET, and
-        ``skip_launch_stubs`` drops empty launch stubs (launch_stub_filter_sql) before it too."""
-        where_clauses = [launch_stub_filter_sql(self)] if skip_launch_stubs else []
+        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET."""
+        where_clauses = [not_temporary_sql("s")]  # `-c` / `--resume latest` never reopen a temporary chat
         params: list = []
         if source:
             sources = [source] if isinstance(source, str) else list(source)

@@ -80,3 +80,25 @@ describe('createGatewaySession', () => {
     }
   })
 })
+
+it('a backend without temporary chats refuses with a plain reason, never a silent saved chat', async () => {
+  const requestGateway = vi.fn(async () => {
+    throw rejection('temporary', ' — the client and the Hermes backend are out of sync (different versions)')
+  })
+
+  await expect(
+    createGatewaySession(null, { source: 'desktop', temporary: true }, requestGateway as never)
+  ).rejects.toThrow("doesn't support temporary chats")
+  expect(requestGateway).toHaveBeenCalledTimes(1)
+})
+
+it('a canonical gateway without temporary chats (bare invalid_params) refuses the same way', async () => {
+  const requestGateway = vi.fn(async () => {
+    throw new Error('invalid_params')
+  })
+
+  await expect(
+    createGatewaySession(null, { source: 'desktop', temporary: true }, requestGateway as never)
+  ).rejects.toThrow("doesn't support temporary chats")
+  expect(requestGateway).toHaveBeenCalledTimes(1)
+})

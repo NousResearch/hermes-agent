@@ -207,30 +207,6 @@ def _active_pet():
     return None if not enabled or pet is None or not pet.exists else (pet, scale)
 
 
-def _billing_call(rid, fn, extra: dict | None = None) -> dict:
-    """Portal call → ok; BillingError → serialized envelope, else generic; ``extra`` rides both ERROR envelopes."""
-    from hermes_cli.nous_billing import BillingError
-    try:
-        return _ok(rid, fn())
-    except BillingError as exc:
-        return _ok(rid, {**_serialize_billing_error(exc), **(extra or {})})
-    except Exception as exc:
-        return _ok(rid, {"ok": False, "error": "error", "message": str(exc), **(extra or {})})
-
-
-def _billing_invalid(rid, message: str, error: str = "invalid_request") -> dict:
-    return _ok(rid, {"ok": False, "error": error, "message": message})
-
-
-def _billing_pick(result: dict, **fields) -> dict:
-    """``{"ok": True, <snake>: result[<camel>], ...}`` in ``fields`` order."""
-    return {"ok": True, **{key: result.get(src) for key, src in fields.items()}}
-
-
-def _billing_pending_change(result: dict) -> dict:
-    return {"ok": True, "message": result.get("message"), "payload": result}
-
-
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
                     model: str, copy_fields=(), compensate: bool = False, title_source: str = "user",
@@ -378,6 +354,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
+    if parent_session_id and _parent_is_temporary(params, parent_session_id):
+        return _err(rid, 4008, "temporary chats can't be branched")  # would save the temporary transcript
     if copy_parent_history:
         if not parent_session_id:
             return _err(rid, 4008, "parent_session_id is required when copying parent history")
@@ -434,6 +412,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
+        _apply_temporary_create(_sessions[sid], params)
         if idem_key is not None:
             _idempotency_keys[idem_key] = (sid, now)
     if session_model_override:

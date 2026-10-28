@@ -262,6 +262,20 @@ async def test_session_messages_returns_compression_ancestors(adapter, session_d
 
 
 @pytest.mark.asyncio
+async def test_fork_of_a_temporary_session_is_refused(adapter, session_db):
+    """A temporary chat is never copied into a saved, listed session, and is left as it was."""
+    source_id = session_db.create_session("temp-source", "desktop")
+    assert session_db.mark_session_temporary(source_id)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"id": "temp-child"})
+        assert resp.status == 409
+        assert (await resp.json())["error"]["code"] == "temporary_session_cannot_branch"
+    assert session_db.get_session("temp-child") is None
+    assert session_db.is_session_temporary(source_id) and session_db.get_session(source_id)["end_reason"] is None
+
+
+@pytest.mark.asyncio
 async def test_fork_session_writes_branched_from_marker(adapter, session_db):
     """The API fork must stamp _branched_from like the CLI/TUI branch paths, so the
     fork is never misclassified as a compression continuation."""

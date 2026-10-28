@@ -82,6 +82,8 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
 
 
 def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
+    if _session_is_temporary(session, session_id=session.get("session_key"), fail_closed=True):  # tui_gateway.session_temporary
+        return _err(rid, 4008, "temporary chats can't be branched")  # would save the temporary transcript
     # Idempotency (#65410, same registry as session.create): a client retrying a
     # branch whose first response was lost gets the SAME child, not a duplicate.
     idem_key = _str_param(params, "idempotency_key") or None

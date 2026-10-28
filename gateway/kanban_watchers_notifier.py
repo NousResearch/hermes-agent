@@ -350,10 +350,31 @@ class _Collector:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
         run_summaries = self._completed_run_summaries(conn, sub, events)
+        pr_facts = self._completed_pr_facts(conn, sub, task, events)
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
         return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events,
-                "task": task, "board": slug, "run_summaries": run_summaries}
+                "task": task, "board": slug, "run_summaries": run_summaries,
+                "pr_facts": pr_facts}
+
+    def _completed_pr_facts(self, conn: Any, sub: dict, task: Any, events: list) -> Any:
+        """Verified PR facts for a batch that closes a task, else ``None``.
+
+        Resolved here, on the collector's own connection and thread, so the
+        formatter never queries. Only a batch containing this task's own
+        ``completed`` event triggers the lookup: a pure ``blocked``/``gave_up``
+        ping has nothing to say about a pull request, and an unnecessary ``gh``
+        call would slow every notification.
+        """
+        if not any(getattr(ev, "kind", None) == "completed" for ev in events):
+            return None
+        from gateway import kanban_pr_receipt
+
+        try:
+            return kanban_pr_receipt.verify_task_pull_request(conn, task)
+        except Exception as exc:  # noqa: BLE001 - a receipt must never break delivery
+            logger.debug("kanban notifier: PR verification failed for %s: %s", sub["task_id"], exc)
+            return kanban_pr_receipt.PrFacts(reason="verification_error")
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -508,11 +529,17 @@ def _completion_typed_status_line(key: str, value: str) -> str:
     return t("gateway.kanban.ping.completion.line", label=t(label), value=t(labels[value]))
 
 
-def _completed_receipt_lines(summary: Any, task_id: str) -> list[str]:
-    """Build the completion receipt: typed self-reports, then a fixed next step.
+def _completed_receipt_lines(summary: Any, task_id: str, pr_facts: Any = None) -> list[str]:
+    """Build the completion receipt: typed self-reports, PR facts, then a fixed next step.
 
-    Always non-empty: even a run with no usable summary yields the next-step line, so a
+    Always non-empty: even a run with no usable summary yields a next-step line, so a
     finished task never reads as "nothing happened".
+
+    ``pr_facts`` is a :class:`gateway.kanban_pr_receipt.PrFacts`. It is rendered only
+    from GitHub's own answer bound to this task's branch — never from worker text.
+    ``None`` means the lookup was not attempted, which is reported as not-verified
+    rather than silently dropped: a Human asking "did this make a PR?" must get an
+    answer either way.
     """
     fields = _parse_completion_typed_fields(summary)
     lines = [
@@ -520,7 +547,42 @@ def _completed_receipt_lines(summary: Any, task_id: str) -> list[str]:
         for key, _label, _labels in _COMPLETION_TYPED_RENDER
         if fields.get(key)
     ]
+    lines.extend(_completion_pr_lines(pr_facts))
     lines.append(t("gateway.kanban.ping.completion.open_task", task_id=task_id))
+    return lines
+
+
+def _completion_pr_lines(pr_facts: Any) -> list[str]:
+    """The PR verdict lines: a verified GitHub fact, or nothing.
+
+    A verified PR is named with its URL, state and HEAD. When nothing could be
+    verified, NO PR line is emitted at all: this receipt's whole reason to exist is
+    that every line it prints is a fact, and a "PR_NOT_VERIFIED" line would (a) put
+    unverified content in the channel anyway and (b) break the established contract
+    that a silent receipt names nothing beyond the task pointer. Absence of a PR
+    line is the not-verified signal; the Human gets the task link either way.
+    """
+    if pr_facts is None or not getattr(pr_facts, "verified", False):
+        return []
+    number = pr_facts.number
+    if getattr(pr_facts, "merged", False):
+        state_key = "gateway.kanban.ping.completion.pr.state_merged"
+    elif getattr(pr_facts, "state", "") == "CLOSED":
+        state_key = "gateway.kanban.ping.completion.pr.state_closed"
+    elif getattr(pr_facts, "draft", False):
+        state_key = "gateway.kanban.ping.completion.pr.state_draft"
+    else:
+        state_key = "gateway.kanban.ping.completion.pr.state_open"
+    lines = [t(
+        "gateway.kanban.ping.completion.pr.verified",
+        number=number, url=pr_facts.url, state=t(state_key),
+        repository=pr_facts.repository,
+    )]
+    if pr_facts.head_oid:
+        lines.append(t(
+            "gateway.kanban.ping.completion.pr.head",
+            oid=pr_facts.head_oid, branch=pr_facts.head_branch or "",
+        ))
     return lines
 
 
@@ -530,13 +592,16 @@ def _fmt_completed(ev, n) -> tuple:
     The summary is read from the exact completed attempt's run row (``run_summaries``)
     and only its typed fields are projected. ``task.result`` is deliberately not used:
     it is unrestricted worker prose and this message goes to an external channel.
+
+    The pull-request line is a GitHub fact bound to this task's own branch; see
+    :mod:`gateway.kanban_pr_receipt`. Nothing a worker writes can reach it.
     """
     summary = (
         n.d.get("run_summaries", {}).get(ev.id)
         if getattr(ev, "run_id", None) is not None
         else None
     )
-    body = "\n".join(_completed_receipt_lines(summary, n.task_id))
+    body = "\n".join(_completed_receipt_lines(summary, n.task_id, n.d.get("pr_facts")))
     # The wake turn keeps the run's own summary verbatim: it is agent context, not a
     # Human-facing publication, and it must not be replaced by the projection.
     wake_handoff = _first_line(str(summary), 200) if summary else None

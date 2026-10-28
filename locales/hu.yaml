@@ -234,6 +234,32 @@ gateway:
       guidance: "Ez egy automatikus feladatállapot-értesítés, nem kérés a feladat újbóli felbontására. Nézd meg az aktuális táblát, mielőtt követő feladatokat hoznál létre; ne hozz létre újra már létező feladatokat vagy gráfokat."
     ping:
       completed: "✔ {head} kész — {title}{handoff}"
+      completion:
+        open_task: "Open task {task_id} on the Kanban board for the full result."
+        pr:
+          verified: "Pull request: #{number} {url} ({state}) — verified by GitHub in {repository}"
+          head: "Head: {oid} on branch {branch}"
+          state_open: "open"
+          state_draft: "open, draft"
+          state_merged: "merged"
+          state_closed: "closed without merging"
+        line: "{label}: {value}"
+        label:
+          kanban_status: "Board status (worker-reported)"
+          review: "Review (worker-reported)"
+          tests: "Tests (worker-reported)"
+        state:
+          done: "reported done"
+          partial: "reported partial"
+          blocked: "reported blocked"
+          unknown: "unknown"
+          not_run: "not run"
+        review:
+          self_pass: "self-reported pass (not independently verified)"
+          self_blocked: "self-reported not passing"
+        tests:
+          self_pass: "self-reported pass (not re-run on this host)"
+          self_failed: "self-reported failure"
       review_requested: "👀 {head} átnézésre kész — {title}{handoff}"
       changes_default_reason: "az átnéző visszajelzése módosítást kér"
       reviewer_suffix: " — átnéző: @{reviewer}"

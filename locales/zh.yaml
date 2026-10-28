@@ -233,6 +233,14 @@ gateway:
       completed: "✔ {head} 已完成——{title}{handoff}"
       completion:
         open_task: "完整结果请查看看板任务 {task_id}。"
+        pr:
+          # 仅根据 GitHub 返回结果渲染，并绑定到本任务分支。
+          verified: "Pull request：#{number} {url}（{state}）—— 已由 GitHub 在 {repository} 核验"
+          head: "HEAD：{oid}，分支 {branch}"
+          state_open: "已开启"
+          state_draft: "已开启（草稿）"
+          state_merged: "已合并"
+          state_closed: "已关闭但未合并"
         line: "{label}：{value}"
         label:
           kanban_status: "自报状态"

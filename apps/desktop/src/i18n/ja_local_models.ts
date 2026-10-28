@@ -6,6 +6,7 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   connectionChanged: 'ローカルモデルの接続が変更されました',
   title: 'ローカルモデル',
   runtimeTitle: 'ローカルランタイム',
+  engineRequired: minimum => (minimum ? `llama.cpp ${minimum} 以降が必要です` : '新しい llama.cpp エンジンが必要です'),
   runtimeReady: backend => `準備完了 · ${backend}`,
   serverRunning: '実行中',
   runtimeInstalled: 'llama.cpp ランタイムをインストール済み',

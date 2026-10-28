@@ -4,6 +4,7 @@ export const enLocalModels: Translations['settings']['localModels'] = {
   connectionChanged: 'Local models connection changed',
   title: 'Local Models',
   runtimeTitle: 'Local runtime',
+  engineRequired: minimum => (minimum ? `Requires llama.cpp ${minimum} or newer` : 'Requires a newer llama.cpp engine'),
   runtimeReady: backend => `Ready · ${backend}`,
   serverRunning: 'Running',
   runtimeInstalled: 'llama.cpp runtime installed',

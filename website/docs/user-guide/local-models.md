@@ -85,6 +85,23 @@ maker can set a different default, and Hermes recommends that model
 whenever it fits. When no model reaches the floor, Hermes recommends none,
 and you can still choose any model that fits.
 
+## Newly released models and engine compatibility
+
+Memory fit and engine support are separate checks. A new model can fit your
+machine while requiring a newer llama.cpp build than Hermes currently ships.
+It stays visible in the catalog, with its engine requirement; Download and Use
+remain disabled until a compatible managed engine is installed. Installing the
+current runtime again does not add support that is absent from its pinned build.
+
+The catalog includes **LFM3 1.7B** in the publisher's Q4_K_M build: a compact,
+text-only option for tool use and structured tasks, not complex coding. It is
+an explicit choice rather than an automatic recommendation. Its hybrid memory
+profile, 256K native context, and sampling defaults come from the official GGUF.
+LFM3 requires llama.cpp b11938 or newer. Hermes ships b11940 for all managed
+backends, with release archives verified against their pinned SHA-256 digests.
+If an older engine is already installed, use the engine update in Local Models
+before downloading or selecting LFM3.
+
 ## How memory management works
 
 Local models live or die by memory placement, so Hermes manages it

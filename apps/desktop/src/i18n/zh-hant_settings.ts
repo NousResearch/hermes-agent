@@ -1140,6 +1140,7 @@ export const zhHantSettings = {
       connectionChanged: '本地模型連線已變更',
       title: '本地模型',
       runtimeTitle: '本地執行環境',
+      engineRequired: minimum => (minimum ? `需要 llama.cpp ${minimum} 或更新版本` : '需要更新的 llama.cpp 引擎'),
       runtimeReady: backend => `就緒 · ${backend}`,
       serverRunning: '執行中',
       runtimeInstalled: '已安裝 llama.cpp 執行環境',

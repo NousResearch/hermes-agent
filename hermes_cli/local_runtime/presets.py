@@ -190,6 +190,10 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
     entry = entry_for_model(model_id)
+    if (entry is not None and entry.min_engine and engine_tag is not None
+            and (_engine_build(engine_tag) or 0) < (_engine_build(entry.min_engine) or 0)):
+        return PresetEntry(model_id=model_id, window=0, spilled=False,
+                           refusal=f"{entry.display_name} needs llama.cpp {entry.min_engine} or newer")
     companions = _companions(entry)
     is_mtp = _runs_mtp(entry, companions) if entry is not None else model_id in mtp_capable
 

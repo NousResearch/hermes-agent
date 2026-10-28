@@ -578,10 +578,23 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     (case-insensitive: typing matches the file name, the router registers the preset id);
     anything else falls through to the live listing, which stays authoritative for ids that
     were never downloaded here."""
+    from hermes_cli.local_runtime import binaries, catalog
     from hermes_cli.local_runtime.bootstrap import staged_model_ids
+    from hermes_cli.local_runtime.growth import is_managed_endpoint
 
-    staged = {sid.lower() for sid in staged_model_ids()}
-    if req.lookup.strip().lower() in staged:
+    staged = {sid.lower(): sid for sid in staged_model_ids()}
+    staged_id = staged.get(req.lookup.strip().lower())
+    if staged_id is not None:
+        entry = catalog.entry_for_model(staged_id)
+        # An explicit external llama-server owns its own architecture support.
+        if entry is not None and entry.min_engine and (not req.base_url or is_managed_endpoint(req.base_url)):
+            from hermes_cli.config import load_config
+
+            backend = (load_config().get("local_runtime") or {}).get("backend", "auto")
+            engine = binaries.installed_engine(backend)
+            if engine is None or int(engine.tag.removeprefix("b")) < int(entry.min_engine.removeprefix("b")):
+                return _reject(f"{entry.display_name} needs llama.cpp {entry.min_engine} or newer. "
+                               "Update the managed engine in Local Models before selecting it.")
         return _accept_with_note(
             f"Note: `{req.requested}` was not found in the live /v1/models listing "
             "but is downloaded in the managed local-models library — accepted."

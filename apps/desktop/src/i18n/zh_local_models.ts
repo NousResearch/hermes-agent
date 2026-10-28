@@ -6,6 +6,7 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   connectionChanged: '本地模型连接已更改',
   title: '本地模型',
   runtimeTitle: '本地运行时',
+  engineRequired: minimum => (minimum ? `需要 llama.cpp ${minimum} 或更高版本` : '需要更新的 llama.cpp 引擎'),
   runtimeReady: backend => `就绪 · ${backend}`,
   serverRunning: '运行中',
   runtimeInstalled: '已安装 llama.cpp 运行时',

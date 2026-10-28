@@ -6,6 +6,8 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   connectionChanged: 'Verbindung für lokale Modelle geändert',
   title: 'Lokale Modelle',
   runtimeTitle: 'Lokale Laufzeit',
+  engineRequired: minimum =>
+    minimum ? `Benötigt llama.cpp ${minimum} oder neuer` : 'Benötigt eine neuere llama.cpp-Engine',
   runtimeReady: backend => `Bereit · ${backend}`,
   serverRunning: 'Läuft',
   runtimeInstalled: 'llama.cpp-Laufzeit installiert',

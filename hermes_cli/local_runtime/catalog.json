@@ -231,6 +231,40 @@
       },
       "quality": 85,
       "decode_fraction": 0.1
+    },
+    {
+      "id": "lfm3-1.7b",
+      "display_name": "LFM3 1.7B",
+      "description": "Compact text model for tool use and structured tasks; not intended for complex coding",
+      "repo": "LiquidAI/LFM3-1.7B-GGUF",
+      "variants": [
+        {
+          "quant": "Q4_K_M",
+          "validated": true,
+          "files": [
+            {
+              "path": "LFM3-1.7B-Q4_K_M.gguf",
+              "size_bytes": 1099627808,
+              "revision": "b3f2ae5d73cd3c91bf40e8ba752c648aa05dffdf"
+            }
+          ]
+        }
+      ],
+      "n_ctx_train": 262144,
+      "full_layers": 6,
+      "swa_layers": 5,
+      "swa_window": 256,
+      "recurrent_layers": 13,
+      "per_layer_f16": 2048,
+      "n_vocab": 128000,
+      "architecture": "lfm3",
+      "sampling": {
+        "temp": "0.1",
+        "top-k": "50",
+        "repeat-penalty": "1.1"
+      },
+      "min_engine": "b11938",
+      "recommend": false
     }
   ]
 }

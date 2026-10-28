@@ -420,6 +420,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/devops/devops-inference-sh-cli',
                     'user-guide/skills/optional/devops/devops-pinggy-tunnel',
                     'user-guide/skills/optional/devops/devops-setup-wizard-generator',
+                    'user-guide/skills/optional/devops/devops-terraform-enterprise',
                     'user-guide/skills/optional/devops/devops-watchers',
                   ],
                 },

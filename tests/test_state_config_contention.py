@@ -18,7 +18,9 @@ from utils import atomic_yaml_write
 import hermes_state_wal as wal
 
 
-def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
+def test_first_provider_env_fill_cannot_invert_config_and_wal_locks(tmp_path):
+    """Importing hermes_cli.config lists no providers (that reads config); the first read of
+    OPTIONAL_ENV_VARS does, holding no lock, while another thread opens a database."""
     script = textwrap.dedent(
         """
         from pathlib import Path
@@ -35,8 +37,7 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
 
         def controlled_list_providers():
             module = sys.modules["hermes_cli.config"]
-            assert module.__spec__._initializing
-            assert hasattr(module, "_CONFIG_LOCK") and hasattr(module, "load_config")
+            assert not module.__spec__._initializing, "hermes_cli.config listed providers at import"
             partial_ready.set()
             assert opener_inside_resolve.wait(5)
             module.load_config()
@@ -60,7 +61,10 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
 
         def importer():
             import hermes_cli.config
+            assert not partial_ready.is_set()
             outcomes.append("import-returned")
+            hermes_cli.config.OPTIONAL_ENV_VARS.get("OPENAI_API_KEY")  # the first read fills
+            outcomes.append("fill-returned")
 
         def opener():
             with sqlite3.connect(database) as connection:
@@ -75,7 +79,7 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
         opening.join(5)
         assert importer_load_returned.is_set()
         assert not importing.is_alive() and not opening.is_alive(), outcomes
-        assert "import-returned" in outcomes
+        assert "import-returned" in outcomes and "fill-returned" in outcomes
         assert any(value.startswith("open:") for value in outcomes)
         """
     )

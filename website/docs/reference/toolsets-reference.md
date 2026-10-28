@@ -77,6 +77,7 @@ Or in-session:
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search` (via `includes`) | Read-only research + media generation. No file writes, no terminal, no code execution. |
 | `search` | `web_search` | Web search only (without extract). |
 | `session_search` | `session_search` | Search past conversation sessions. |
+| `peer_messaging` | `peer_sessions`, `peer_send` | Inter-session messaging (inspired by Muse Code): discover the user's other live Hermes sessions on this machine and send them messages. Local-only filesystem mailboxes under the Hermes home — nothing crosses the network; delivery rides the mid-turn steer channel. Off by default; enable via `hermes tools` → Peer Messaging. |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `terminal` | `process_manage`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo_list` | Task list management within a session. |

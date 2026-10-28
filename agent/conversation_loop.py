@@ -1772,7 +1772,7 @@ def _run_conversation_turn(
     return result
 
 
-def run_conversation(
+def _run_conversation_with_boundary(
     agent,
     user_message: Any,
     system_message: str | None = None,
@@ -1832,6 +1832,60 @@ def run_conversation(
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
     _close_durable_failed_turn(agent, result)
     return result
+
+
+def run_conversation(
+    agent,
+    user_message: Any,
+    system_message: str | None = None,
+    conversation_history: list[dict[str, Any]] | None = None,
+    task_id: str | None = None,
+    stream_callback: Optional[callable] = None,
+    persist_user_message: Optional[Any] = None,
+    persist_user_timestamp: Optional[float] = None,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[dict[str, Any]] = None,
+    persist_user_platform_id: Optional[str] = None,
+    moa_config: Optional[dict[str, Any]] = None,
+    turn_author: Optional[dict[str, Any]] = None,
+    title_user_message: Optional[str] = None,
+    prelude: Optional[Prelude] = None,
+) -> dict[str, Any]:
+    """Run one complete turn under the provider-neutral timing lifecycle.
+
+    Timing opens before turn setup and closes on every exit path (result,
+    error, or interrupt); the turn itself is ``_run_conversation_with_boundary``.
+    """
+    from agent.turn_timing import finish_turn_timing, start_turn_timing
+
+    subject_message = persist_user_message if persist_user_message is not None else user_message
+    start_turn_timing(agent, subject_message, conversation_history=conversation_history)
+    result = None
+    escaped = None
+    try:
+        result = _run_conversation_with_boundary(
+            agent,
+            user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            moa_config=moa_config,
+            turn_author=turn_author,
+            title_user_message=title_user_message,
+            prelude=prelude,
+        )
+        return result
+    except BaseException as exc:
+        escaped = exc
+        raise
+    finally:
+        finish_turn_timing(agent, result, escaped)
 
 
 _FAILED_TURN_ERROR_MAX_CHARS = 2000

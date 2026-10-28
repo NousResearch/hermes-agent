@@ -173,6 +173,11 @@ def run_tool_round(
 
     finish_tool_round(agent)
 
+    from agent.turn_timing import progress_turn_timing
+    progress_turn_timing(
+        agent, "active", iteration=api_call_count, announce_remaining=True
+    )
+
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to
         # the model or project later events from this turn.

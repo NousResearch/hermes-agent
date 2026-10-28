@@ -1,7 +1,7 @@
 name: minimalist-themes
 title: Minimalist Themes
 repo: https://github.com/mykeura/minimalist-themes-for-hermes
-sha: 4b19c422deacf1332f129599fec8f8f516685dc4
+sha: 40db68aa21cf91c424266e7ddd99af164abd69f0
 description: "Eighteen warm, readable palettes for Hermes Desktop, assigned natively per profile, with one embedded type system (Figtree + Geist Mono) and matching terminal colors. Disclosure — theme-only desktop plugin: it registers eighteen themes through the plugin SDK, and its stylesheet adjusts a few Desktop surfaces (profile-rail glyph contrast, Capabilities metadata, the MCP JSON editor and the Manage Profiles overlay) only while a Minimalist theme is active. Fonts are bundled; no network requests, no agent tools or hooks, no background processes."
 maintainer: mykeura
 tier: community
@@ -9,14 +9,14 @@ category: desktop
 requires_hermes: ">=0.21.3"
 docs_url: https://github.com/mykeura/minimalist-themes-for-hermes#readme
 version: "1.4.0"
-image: https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/4b19c422deacf1332f129599fec8f8f516685dc4/images/hermes-cover.png
+image: https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/40db68aa21cf91c424266e7ddd99af164abd69f0/images/minimalist-themes.png
 screenshots:
-  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/4b19c422deacf1332f129599fec8f8f516685dc4/images/beetroot-juice.png
-  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/4b19c422deacf1332f129599fec8f8f516685dc4/images/diana-yin.png
-  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/4b19c422deacf1332f129599fec8f8f516685dc4/images/horchata.png
-  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/4b19c422deacf1332f129599fec8f8f516685dc4/images/oceans.png
-  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/4b19c422deacf1332f129599fec8f8f516685dc4/images/mango.png
-  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/4b19c422deacf1332f129599fec8f8f516685dc4/images/yuzu.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/40db68aa21cf91c424266e7ddd99af164abd69f0/images/beetroot-juice.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/40db68aa21cf91c424266e7ddd99af164abd69f0/images/diana-yin.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/40db68aa21cf91c424266e7ddd99af164abd69f0/images/horchata.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/40db68aa21cf91c424266e7ddd99af164abd69f0/images/oceans.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/40db68aa21cf91c424266e7ddd99af164abd69f0/images/mango.png
+  - https://raw.githubusercontent.com/mykeura/minimalist-themes-for-hermes/40db68aa21cf91c424266e7ddd99af164abd69f0/images/yuzu.png
 capabilities:
   provides_tools: []
   provides_hooks: []

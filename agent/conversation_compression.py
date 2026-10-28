@@ -2176,15 +2176,15 @@ _SYNTHETIC_USER_FLAGS = (
 def _is_real_user_message(message: Any) -> bool:
     """Distinguish human intent from user-role runtime scaffolding.
     A compaction summary flipped to ``role="user"`` for alternation is scaffolding and must not short-circuit
-    anchor restoration."""
+    anchor restoration. A non-steer ``display_kind`` row (e.g. an async-delegation notice) is scaffolding too."""
     if not isinstance(message, dict) or message.get("role") != "user":
         return False
-    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
+    from agent.context_compressor import STEER_DISPLAY_KIND, ContextCompressor  # display_kind rule mirrors _is_actionable_user_turn
+    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS) or message.get("display_kind") not in (None, "", STEER_DISPLAY_KIND):
         return False
     text = _message_text(message).strip()
     if not text or text.startswith(_SYNTHETIC_USER_PREFIXES):
         return False
-    from agent.context_compressor import ContextCompressor
     return not ContextCompressor._is_synthetic_compression_user_turn(message)
 
 

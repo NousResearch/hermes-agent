@@ -327,15 +327,22 @@ def admission_display(payload):
 
 
 def _route_identity(source):
-    """Routing-only identity of a message source: exactly the fields a session key derives
-    from (``build_session_key``). Provenance/display fields a synthetic wake cannot
-    reconstruct (``chat_name``, ``chat_topic``, ``is_bot``, ``user_name``) are deliberately
-    excluded: the persisted routing origin of an async delegation does not carry
-    ``chat_topic``, so under a full-dict comparison a wake for a NAMED Telegram forum
-    topic was unadmittable by construction (eternal ``admission_conflict`` → 48h terminal
-    drop), while only unnamed topics (``chat_topic`` absent on both sides) delivered."""
-    return {field: getattr(source, field) for field in
-            ('platform', 'chat_id', 'chat_type', 'thread_id', 'scope_id', 'profile')}
+    """Identity of a message source for wake admission: the routing/provenance fields
+    reconstructible from a persisted delegation origin — platform, chat ids, thread,
+    scope, profile, and the user the wake is bound to (upstream contract from
+    ``871d05520a``: user drift must refuse, ``group_sessions_per_user`` isolation
+    depends on it). Deliberately excludes ``message_id`` (a wake is not a reply to the
+    stale trigger, #52694) and display-only fields a persisted origin cannot
+    reconstruct (``chat_name``, ``chat_topic``): under a full-dict comparison a wake
+    for a NAMED Telegram forum topic was unadmittable by construction (eternal
+    ``admission_conflict`` → 48h terminal drop), while unnamed topics (``chat_topic``
+    absent on both sides) delivered.
+
+    Session-key binding is enforced independently by ``_owner`` and
+    ``check_automation_route`` via ``_generate_session_key``."""
+    return {field: getattr(source, field, None) for field in
+            ('platform', 'chat_id', 'chat_type', 'thread_id', 'scope_id', 'profile',
+             'user_id', 'user_name')}
 
 
 def committed_route_envelope(authority, entry):

@@ -50,6 +50,7 @@ TEAMS_SDK_AVAILABLE = _probe_teams_sdk_available()
 # SDK symbols stay None until check_teams_requirements() binds them (via _SDK_IMPORTS below).
 ClientOptions = App = ActivityContext = MessageActivity = ConversationReference = None  # type: ignore[assignment,misc]
 TypingActivityInput = AdaptiveCardInvokeActivity = AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
+FileConsentInvokeActivity = None  # type: ignore[assignment,misc]
 AdaptiveCardActionMessageResponse = AdaptiveCardInvokeResponse = InvokeResponse = None  # type: ignore[assignment,misc]
 HttpRequest = HttpResponse = HttpRouteHandler = AdaptiveCard = ExecuteAction = TextBlock = None  # type: ignore[assignment,misc]
 HttpMethod = str  # type: ignore[assignment,misc]
@@ -253,6 +254,7 @@ _SDK_IMPORTS = {
     "microsoft_teams.api": ("MessageActivity", "ConversationReference"),
     "microsoft_teams.api.activities.typing": ("TypingActivityInput",),
     "microsoft_teams.api.activities.invoke.adaptive_card": ("AdaptiveCardInvokeActivity",),
+    "microsoft_teams.api.activities.invoke.file_consent": ("FileConsentInvokeActivity",),
     "microsoft_teams.api.models.adaptive_card": ("AdaptiveCardActionCardResponse", "AdaptiveCardActionMessageResponse"),
     "microsoft_teams.api.models.invoke_response": ("InvokeResponse", "AdaptiveCardInvokeResponse"),
     "microsoft_teams.apps.http.adapter": ("HttpMethod", "HttpRequest", "HttpResponse", "HttpRouteHandler"),

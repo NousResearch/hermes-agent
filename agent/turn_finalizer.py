@@ -244,7 +244,7 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
     # providers don't see ``tool → user`` (placeholder: final_response is usually empty).
     if interrupted:
         from agent.message_sanitization import close_interrupted_tool_sequence
-        close_interrupted_tool_sequence(messages, final_response)
+        close_interrupted_tool_sequence(messages, final_response, stopped=True)
 
     # Recovery ``break`` sites can return a final_response with no closing assistant
     # row; enforce "delivered final_response ⇒ assistant row" here. Compare content,
@@ -857,6 +857,11 @@ def finalize_turn(
                 messages_snapshot=list(messages), review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )
+
+    # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
+    # between turns. No-op otherwise; never raises.
+    from agent.prepared_compaction import maybe_prepare
+    maybe_prepare(agent, messages, origin="turn-end")
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.

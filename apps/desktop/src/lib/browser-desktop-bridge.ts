@@ -4,14 +4,16 @@ import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
 import { createBrowserConnectionBridge } from '@/lib/browser-connection'
+import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { browserApi, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
+import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
-import { createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
+import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { failDesktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
@@ -35,6 +37,9 @@ export function installBrowserDesktopBridge(): boolean {
   const bootstrap = browserBootstrap()
 
   if (!bootstrap) {return false}
+
+  // A gated host's opener waits for this window to say it booted (createBrowserWindowOpener).
+  if (!bootstrap.privateSession) {announceWebappWindow()}
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
 
@@ -69,12 +74,14 @@ export function installBrowserDesktopBridge(): boolean {
   }
 
   const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls, previewUrls })
+  const files = createBrowserFilesBridge({ api, bootstrap, currentProfile })
 
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
     ...createBrowserConnectionBridge({ api, bootstrap }),
-    ...createBrowserFilesBridge({ api, bootstrap, currentProfile }),
+    ...files,
+    ...createBrowserDesktopPluginsBridge({ api, files }),
     ...uploads,
     api,
     // This renderer is built from the serving checkout, so its version is the
@@ -135,6 +142,7 @@ export function installBrowserDesktopBridge(): boolean {
       }
     }),
     ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),
+    uiPreferences: createBrowserUiPreferences(api),
     zoom: createBrowserZoom(bootstrap.basePath)
   }
 

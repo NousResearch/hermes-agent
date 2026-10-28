@@ -12,6 +12,8 @@ from hermes_cli.model_switch import ModelSwitchResult
 
 
 class RecordingConnection:
+    epoch = 1
+
     def __init__(self, info):
         from hermes_cli.gateway_connection import SessionState
         self.events = queue.Queue()
@@ -21,6 +23,9 @@ class RecordingConnection:
         self.final = False
         self._state = SessionState("s")
         self._state.info = dict(info)
+
+    def start(self, timeout=90):
+        pass
 
     def state(self, session_id):
         return self._state

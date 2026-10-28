@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/configuration',
         'user-guide/which-file-does-what',
         'user-guide/managed-scope',
+        'user-guide/remote-config',
         'user-guide/configuring-models',
         {
           type: 'category',
@@ -803,6 +804,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/session-storage',
             'developer-guide/state-db-recovery',
             'developer-guide/provider-runtime',
+            'developer-guide/config-backend',
             'developer-guide/programmatic-integration',
           ],
         },

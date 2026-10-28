@@ -16,6 +16,7 @@ import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
+import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
@@ -455,6 +456,7 @@ export const en: Translations = {
       microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
+      microphoneNeedsHttps: 'The microphone needs a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to use it.',
       microphonePermissionDenied: 'Microphone permission was denied.',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',
@@ -1103,6 +1105,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -1898,7 +1901,8 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
+      defaultDirUpdated: shortcut =>
+        `Default project directory updated — start a new chat${shortcut ? ` (${shortcut})` : ''} for it to take effect`,
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -2470,9 +2474,6 @@ export const en: Translations = {
       resume: 'Resume',
       runNow: 'Run now',
       memoryData: 'Memory data',
-      memoryDataDesc: 'Built-in memory files injected into every session',
-      memoryProvider: name => `Active provider: ${name}`,
-      builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
       bytes: size => size,
@@ -2770,8 +2771,10 @@ export const en: Translations = {
     exported: 'Profile exported',
     failedImport: 'Failed to import profile',
     failedExport: 'Failed to export profile',
+    exportNeedsHost: name => `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
+    notServedHere: 'Not served here',
     switchToProfile: name => `Switch to ${name}`,
     switchToConnection: name => `Switch to ${name}`,
     switchConnectionFailed: name => `Could not connect to ${name}`,
@@ -3753,6 +3756,8 @@ export const en: Translations = {
     versionDetailsTitle: 'Version details',
     versionDetailsBody: 'This install is managed outside the app. Update it the same way you installed it.',
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'This device',
+    versionDetailsBackend: 'Connected backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build Origin',
     versionDetailsDistribution: 'Distribution',
@@ -4191,6 +4196,7 @@ export const en: Translations = {
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,
     terminalDropControlTitle: 'Not typed into the terminal',
     terminalDropControl: paths => `These names hold control characters the shell would act on as keys: ${paths}`,
+    terminalDropUnquotable: (shell, paths) => `No safe way to type these names in ${shell}: ${paths}`,
     addToChat: 'Add to chat'
   },
 
@@ -4707,6 +4713,7 @@ export const en: Translations = {
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',
     imageAttachFailed: 'Image attach failed',
+    attachFailed: 'Attach failed',
     pastedContent: 'Pasted content',
     pasteAttachFailed: 'Could not attach pasted text',
     attachImages: 'Attach images',
@@ -4714,6 +4721,7 @@ export const en: Translations = {
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
     dropFiles: 'Drop files',
+    dropFilesMore: (count: number) => `and ${count} more`,
     handoff: {
       pickPlatform: 'Choose a destination',
       success: platform => `Handed off to ${platform}. Resume here anytime.`,

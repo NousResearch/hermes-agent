@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { mergeUsage, parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
+import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -7,6 +7,7 @@ import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
+import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -267,7 +268,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         return false
       }
 
-      const submissionId = options?.submission_id ?? crypto.randomUUID()
+      const submissionId = options?.submission_id ?? randomUuid()
 
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
@@ -1022,10 +1023,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const result = await requestGateway<{ value?: string }>('config.set', params)
+            const result = await requestGateway<{ status?: string; value?: string }>('config.set', params)
+            const value = result.value || params.value
 
             applyReasoningSlashResult(result.value)
-            renderSlashOutput(`reasoning: ${result.value || params.value}`)
+            // Typed while a reply streams: the owner applies the level from the next turn.
+            renderSlashOutput(
+              result.status === 'deferred'
+                ? translateNow('shell.modelMenu.pickDeferred', value)
+                : `reasoning: ${value}`
+            )
           } catch (err) {
             if (isMissingRpcMethod(err)) {
               await runExec(ctx)

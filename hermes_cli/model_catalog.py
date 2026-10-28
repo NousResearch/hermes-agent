@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,6 @@ DEFAULT_FETCH_TIMEOUT = 8.0
 # on every picker build. Same window as the models.dev registry's failure backoff.
 FETCH_RETRY_DELAY_SECONDS = 300.0
 SUPPORTED_SCHEMA_VERSION = 1
-
-_HERMES_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 
 # In-process cache, invalidated against the disk file's path + mtime and TTL. The path matters:
 # under a multiplexed gateway each profile has its own ``<home>/cache/model_catalog.json``, and
@@ -127,7 +125,7 @@ def _cache_path() -> Path:
 def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
     """HTTP GET the manifest URL and return a validated dict, or None on failure."""
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT})
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": hermes_user_agent()})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
@@ -292,18 +290,23 @@ def refresh_interval_seconds() -> float:
 
 
 def refresh_catalogs() -> bool:
-    """Force-refresh every remote catalog the picker reads (manifest, OpenRouter live list, Nous Portal
-    recommendations), writing each disk cache so the next ``/model`` open in ANY process sees them.
-    Blocking; run it off the event loop."""
+    """Force-refresh every remote catalog the picker reads (manifest, OpenRouter live list, and the
+    Nous Portal recommendations for a Nous account, the only reader), writing each disk cache so the
+    next ``/model`` open in ANY process sees them. Blocking; run it off the event loop."""
     if not _load_catalog_config()["enabled"]:
         return False
     clear_fetch_backoff()  # provider overrides are re-asked too, not only the forced manifest
     catalog = get_catalog(force_refresh=True)
     try:
-        from hermes_cli.models import fetch_nous_recommended_models, fetch_openrouter_models
+        from agent.secret_scope import get_secret
+        from hermes_cli.anon_auth import current_nous_state, is_guest_state
+        from hermes_cli.auth import read_credential_pool
+        from hermes_cli.models import _resolve_nous_portal_url, fetch_nous_recommended_models, fetch_openrouter_models
 
         fetch_openrouter_models(force_refresh=True)
-        fetch_nous_recommended_models(force_refresh=True)
+        logins = [current_nous_state(), *read_credential_pool("nous")]
+        if any(e and not is_guest_state(e) for e in logins) or get_secret("NOUS_API_KEY"):
+            fetch_nous_recommended_models(_resolve_nous_portal_url(), force_refresh=True)
     except Exception:
         logger.debug("provider catalog refresh failed", exc_info=True)
     return bool(catalog)

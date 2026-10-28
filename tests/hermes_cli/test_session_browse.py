@@ -145,6 +145,79 @@ class TestCursesBrowse:
 
 
 
+    def test_slash_enters_search_mode_allowing_leading_d(self):
+        """Typing '/' then 'data' filters without triggering delete."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Alpha project", "preview": "", "last_active": time.time()},
+        ]
+        # '/' arms search mode, then 'd' types (does not delete), 'a', 't', 'a' filter.
+        keys = [ord("/"), ord("d"), ord("a"), ord("t"), ord("a"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"
+
+    def test_slash_enters_search_mode_allowing_leading_q(self):
+        """Typing '/' then 'qos' filters without quitting."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "QoS tuning", "preview": "qos", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Alpha project", "preview": "", "last_active": time.time()},
+        ]
+        keys = [ord("/"), ord("q"), ord("o"), ord("s"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"
+
+    def test_second_slash_while_searching_is_inert(self):
+        """A '/' typed while already searching does not get inserted into the query."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Alpha project", "preview": "", "last_active": time.time()},
+        ]
+        # '/' arms search, 'd' + '/' (inert) + 'a' filters to 'da' still matching s1.
+        keys = [ord("/"), ord("d"), ord("/"), ord("a"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"
+
+    def test_ordinary_letter_auto_enters_search(self):
+        """Typing a non-reserved letter still filters immediately (no '/' needed)."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Alpha project", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Beta project", "preview": "", "last_active": time.time()},
+        ]
+        keys = [ord(c) for c in "Beta"] + [10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s2"
+
+    def test_escape_inside_search_clears_then_quits(self):
+        """Esc inside search clears the query first; a second Esc quits."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+        ]
+        # '/' then 'd' then Esc (clears search) then Esc (quits) -> None
+        keys = [ord("/"), ord("d"), 27, 27]
+        result = self._run_with_keys(sessions, keys)
+        assert result is None
+
+    def test_backspace_empty_stays_in_search_mode(self):
+        """Backspace that empties the query keeps you in search mode, so a
+        subsequent 'd'/'q' still types instead of delete/quit."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+        ]
+        # '/' 'd' Backspace(empties, must stay searching) 'q' -> q becomes search char
+        keys = [ord("/"), ord("d"), 127, ord("q")]
+        result = self._run_with_keys(sessions, keys)  # if q quit, result would be None
+        assert result is not None  # still filtering, didn't quit
+
+    def test_backspace_no_chars_stays_searching(self):
+        """Backspace on an empty armed search does not exit search mode."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+        ]
+        # '/' then Backspace (no chars) then Esc quits -> None (not treated as a normal backspace-exit)
+        keys = [ord("/"), 127, 27]
+        result = self._run_with_keys(sessions, keys)
+        assert result is None  # Esc finally quits
+
 
 
 

@@ -32,10 +32,13 @@ from gateway.session import SessionSource
 from gateway.session_envelope import restore_native, snapshot_native, _validate_native
 from gateway.session_ingress_context import native_callback, register_transport_home
 
-GUILD = "1546589088034070698"
-CTO_CHANNEL = "1561271563339169855"
-CTO_THREAD = "1564423227227246715"
-USER = "1546583770310909952"
+# Synthetic identifiers only: these must never be real guild / channel / thread / user IDs.
+# Discord snowflakes are 64-bit decimal, so 19-digit values are shape-correct.
+PROFILE = "satellite"
+GUILD = "100000000000000001"
+PARENT_CHANNEL = "100000000000000002"
+THREAD = "100000000000000003"
+USER = "100000000000000004"
 
 
 class _FakeDiscordAdapter:
@@ -44,7 +47,7 @@ class _FakeDiscordAdapter:
     token = "fake-discord-bot-token"
 
 
-def _reserve_homes(tmp_path, monkeypatch, names=("cto",)):
+def _reserve_homes(tmp_path, monkeypatch, names=(PROFILE,)):
     root = tmp_path / ".hermes"
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -67,8 +70,8 @@ def _runner(root, homes):
     config._runtime_profile_homes = tuple(homes)
     config.profile_routes = parse_profile_routes([
         # The deployed shape: routes name the parent CHANNEL; the traffic is in its threads.
-        {"name": "cto-channel", "platform": "discord", "guild_id": GUILD,
-         "chat_id": CTO_CHANNEL, "profile": "cto"},
+        {"name": "routed-channel", "platform": "discord", "guild_id": GUILD,
+         "chat_id": PARENT_CHANNEL, "profile": PROFILE},
     ])
     return GatewayRunner(config)
 
@@ -76,15 +79,15 @@ def _runner(root, homes):
 def _thread_source():
     return SessionSource(
         platform=Platform.DISCORD,
-        chat_id=CTO_THREAD,
-        chat_name="Clear Choice Group / #cto / design",
+        chat_id=THREAD,
+        chat_name="Example Guild / #routed / design",
         chat_type="thread",
         user_id=USER,
-        user_name="clearchoicegroup",
+        user_name="test-user",
         scope_id=GUILD,
         guild_id=GUILD,
-        thread_id=CTO_THREAD,
-        parent_chat_id=CTO_CHANNEL,
+        thread_id=THREAD,
+        parent_chat_id=PARENT_CHANNEL,
     )
 
 
@@ -123,13 +126,13 @@ async def _admitted_queued_payload(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_thread_message_on_shared_bot_satellite_keeps_primary_provenance(tmp_path, monkeypatch):
-    """The capture half: a routed thread stamps ``cto`` but binds the primary bot."""
+    """The capture half: a routed thread stamps the satellite profile but binds the primary bot."""
     _, _, provenance, source, _ = await _admitted_queued_payload(tmp_path, monkeypatch)
 
-    assert source.profile == "cto"
+    assert source.profile == PROFILE
     assert provenance["platform"] == "discord"
     assert provenance["transport_profile"] is None, "the bot belongs to the launch profile"
-    assert provenance["runtime_home"].endswith("/profiles/cto")
+    assert provenance["runtime_home"].endswith(f"/profiles/{PROFILE}")
 
 
 @pytest.mark.asyncio
@@ -138,7 +141,7 @@ async def test_queued_thread_message_reauthorizes_at_claim_time(tmp_path, monkey
     runner, payload, provenance, _, adapter = await _admitted_queued_payload(tmp_path, monkeypatch)
 
     restored = restore_native(payload, runner)
-    assert restored.source.profile == "cto"
+    assert restored.source.profile == PROFILE
     # ``_validate_native`` is the exact gate ``check_native_route`` runs before a claim.
     _validate_native(runner, restored, provenance)
     assert runner._adapter_for_source(restored.source) is adapter
@@ -167,14 +170,14 @@ async def test_restored_satellite_lane_still_reauthorizes_its_queued_row(tmp_pat
     await check_native_route(runner, payload, sid, restored_source, live_adapter)
 
 
-
 @pytest.mark.asyncio
 async def test_queued_row_survives_a_bot_reconnect(tmp_path, monkeypatch):
     """The bot reconnects (a new adapter object) between ingest and claim.
 
-    ``gateway.log`` shows exactly this: ``Discord WebSocket unhealthy`` -> forced reconnect ->
-    ``Connected as Hermes Choice#5759``, and the refusal follows minutes later. The queued row's
-    provenance still names the pre-reconnect adapter while the registry now holds its replacement.
+    A gateway reconnect logs a WebSocket-unhealthy line, forces a reconnect, and re-registers
+    the bot under a new adapter object; the refusal then follows on the same thread. The queued
+    row's provenance still names the pre-reconnect adapter while the registry now holds its
+    replacement.
     """
     from gateway.session_envelope import check_native_route
 

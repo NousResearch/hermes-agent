@@ -636,6 +636,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return scrollTranscript(key.pageUp ? -step : step)
     }
 
+    // Turn jumps: `[` previous user turn, `]` next; `]` on the last turn
+    // returns to live (scrollToBottom). No chord (shift/ctrl/alt) — plain
+    // keys only, matching the jump-keys contract in the help overlay.
+    if (!key.shift && !key.ctrl && !key.meta && !key.alt && (ch === '[' || ch === ']')) {
+      if (terminal.turnJump) {
+        terminal.turnJump(ch === '[' ? -1 : 1)
+      }
+
+      return
+    }
+
     // Escape-based voice bindings (ctrl/alt/super+escape) must win before the
     // generic Esc handlers below; otherwise queue-edit cancel / selection-clear
     // would swallow the chord and /voice would advertise a shortcut that never

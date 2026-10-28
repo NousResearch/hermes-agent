@@ -115,3 +115,62 @@ export const turnAnchorFromViewport = (
 
   return null
 }
+
+// Jump between user turns ([ / ]). `userMsgIndices` are the message indices of
+// user messages (turn starts); `currentIndex` is the turn the viewport is in.
+// Returns whether a jump happened. `]` on the last turn returns to live.
+export const jumpToTurn = (
+  scroll: { scrollTo: (y: number) => void; scrollToBottom: () => void },
+  offsets: ArrayLike<number>,
+  userMsgIndices: readonly number[],
+  currentIndex: number,
+  dir: -1 | 1
+): boolean => {
+  if (!userMsgIndices.length || !offsets.length) {
+    return false
+  }
+
+  const turnPos = userMsgIndices.indexOf(currentIndex)
+  const pos = turnPos === -1 ? userMsgIndices.length - 1 : turnPos
+  const next = pos + dir
+
+  if (next < 0) {
+    return false
+  }
+
+  if (next >= userMsgIndices.length) {
+    scroll.scrollToBottom()
+
+    return true
+  }
+
+  const target = userMsgIndices[next] ?? 0
+  scroll.scrollTo(offsets[target] ?? 0)
+
+  return true
+}
+
+// The user message whose turn the viewport is in: the last one whose row
+// offset is at or above the scroll top (the message a `]`/`[` jump moves
+// relative to). -1 when there are no user messages.
+export const currentTurnIndex = (
+  userMsgIndices: readonly number[],
+  offsets: ArrayLike<number>,
+  scrollTop: number
+): number => {
+  if (!userMsgIndices.length) {
+    return -1
+  }
+
+  let active = -1
+  for (const idx of userMsgIndices) {
+    if ((offsets[idx] ?? 0) <= scrollTop) {
+      active = idx
+    } else {
+      break
+    }
+  }
+
+  // Above the first turn → anchor the first.
+  return active === -1 ? (userMsgIndices[0] ?? -1) : active
+}

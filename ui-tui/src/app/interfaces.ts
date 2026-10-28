@@ -474,6 +474,8 @@ export interface InputHandlerContext {
     scrollWithSelection: (delta: number) => void
     selection: SelectionApi
     stdout?: NodeJS.WriteStream
+    /** Jump to the previous (-1) / next (+1) user turn (keys `[` / `]`). */
+    turnJump: ((dir: -1 | 1) => void) | undefined
   }
   voice: {
     enabled: boolean

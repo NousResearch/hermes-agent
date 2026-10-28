@@ -327,13 +327,13 @@ class SessionCompressionMixin:
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
         from hermes_state_sessions import _parse_model_config
+        # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
+        # verbs also publish through here, and their child is its own conversation.
+        continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
         carried = {key: value for key, value in _parse_model_config(parent["model_config"]).items()
-                   if key in _CONVERSATION_MODEL_CONFIG_KEYS}
+                   if continuation and key in _CONVERSATION_MODEL_CONFIG_KEYS}
         model_config = {**carried, **(model_config or {})}
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
-        # Pin/archive are compression-lineage flags; canonical branch/reset verbs also publish through
-        # here, and their child is its own conversation, so it starts unpinned and visible.
-        continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
         # Copy a real creating surface. Automatic compression passes the parent's live
         # label (``local`` after the peer refresh); reset, branch and the compress
         # mutation pass the policy label. ``local`` and ``unknown`` are not surfaces,

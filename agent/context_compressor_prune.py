@@ -68,6 +68,8 @@ class ProactivePruneMixin:
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
         )
+        from agent.context_compressor_tail import with_pruned_row_skill_safety_rule
+        pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
         if not pruned_count:
             # No-op contract: return the INPUT object so callers can gate on `result is not input`.
             self._warn_reclamation_no_op("prune:nothing_eligible", current_tokens)

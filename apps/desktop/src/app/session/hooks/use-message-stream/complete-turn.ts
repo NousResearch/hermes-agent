@@ -27,10 +27,11 @@ import {
   type DuplicateFinalCollapse,
   identicalInterimSiblingIndex
 } from './collapse-duplicate-final'
-import { extendInterruptedReply } from './interrupted-reply'
+import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { nextStreamMessageId, type UpdateSessionState } from './mutate-stream'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { completionErrorText } from './utils'
 
 /**
@@ -96,10 +97,21 @@ export function useCompleteTurn(
     runtimeSessionId?: string | null
   ) => Promise<void>,
   scheduleSessionsRefresh: () => void,
-  compactedTurnRef: MutableRefObject<Set<string>>
+  compactedTurnRef: MutableRefObject<Set<string>>,
+  segmentCursorsRef: MutableRefObject<Map<string, SegmentCursor>>
 ) {
   const finalizeInterimAssistantMessage = useCallback(
-    (sessionId: string, text: string, occurredAt = Date.now() / 1000) => {
+    (sessionId: string, text: string, occurredAt = Date.now() / 1000, stamp?: null | SegmentStamp) => {
+      if (stamp) {
+        const admitted = admitSegmentSeal(segmentCursorsRef.current.get(sessionId), stamp)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+
+        // A copy of a seal this turn already applied: its bubble is on screen.
+        if (!admitted.fresh) {
+          return
+        }
+      }
+
       updateSessionState(sessionId, state => {
         if (state.interrupted) {
           return state
@@ -202,7 +214,7 @@ export function useCompleteTurn(
         }
       })
     },
-    [updateSessionState]
+    [segmentCursorsRef, updateSessionState]
   )
 
   const completeAssistantMessage = useCallback(
@@ -228,8 +240,10 @@ export function useCompleteTurn(
         if (state.interrupted) {
           return {
             ...state,
-            messages:
+            messages: bindStoppedTurnReceipt(
               status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
+              persistedTurn
+            ),
             awaitingResponse: false,
             busy: false,
             needsInput: false,

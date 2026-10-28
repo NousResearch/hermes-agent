@@ -200,3 +200,29 @@ test('an unrelated invalid_params keeps the generic toast', () => {
   )
   expect(lastMessage()).toBe('invalid_params')
 })
+
+// #143133: a model pick or option change on a chat whose launch API key changed showed the raw
+// `launch_credentials_unavailable` code. Every retry repeats it; a new chat runs on the current key.
+test('a launch-credentials refusal says the key changed and offers a new chat', () => {
+  notifyError(
+    new JsonRpcGatewayError('launch_credentials_unavailable', {
+      code: 4001,
+      data: {
+        reason: 'launch_credentials_unavailable',
+        field: 'model.api_key',
+        detail: 'changed in config.yaml since this session started'
+      }
+    }),
+    en.shell.modelOptions.updateFailed
+  )
+
+  const toast = $notifications.get()[0]
+  expect(toast?.message).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
+  expect(toast?.message).not.toContain('launch_credentials_unavailable')
+  expect(toast?.action?.label).toBe(en.assistant.thread.errorStartNewSession)
+
+  // A deferred pick's refusal event carries only the bare code.
+  clearNotifications()
+  notifyError(new Error('launch_credentials_unavailable'), en.desktop.modelSwitchFailed)
+  expect(lastMessage()).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
+})

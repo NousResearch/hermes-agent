@@ -11,6 +11,7 @@ import { useDeltaFlush } from './delta-flush'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { type UpdateSessionState, useMutateStream } from './mutate-stream'
+import type { SegmentCursor } from './segment-identity'
 import { useToolUpsert } from './tool-upsert'
 
 interface MessageStreamOptions {
@@ -90,12 +91,17 @@ export function useMessageStream({
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
 
+  // Deltas and seals share a cursor so retransmissions cannot repaint a segment.
+  const segmentCursorsRef = useRef<Map<string, SegmentCursor>>(new Map())
+
   // Last session we applied a session.info cwd for — lets us tell an agent
   // relocating the SAME session (follow it) from a session switch (don't yank).
   const lastCwdInfoSessionRef = useRef<null | string>(null)
 
-  const { flushQueuedDeltas, dropQueuedDeltas, appendAssistantDelta, appendReasoningDelta } =
-    useDeltaFlush(mutateStream)
+  const { flushQueuedDeltas, dropQueuedDeltas, appendAssistantDelta, appendReasoningDelta } = useDeltaFlush(
+    mutateStream,
+    segmentCursorsRef
+  )
 
   const upsertToolCall = useToolUpsert(mutateStream, flushQueuedDeltas, sessionInterrupted, nativeSubagentSessionsRef)
 
@@ -103,7 +109,8 @@ export function useMessageStream({
     updateSessionState,
     hydrateFromStoredSession,
     scheduleSessionsRefresh,
-    compactedTurnRef
+    compactedTurnRef,
+    segmentCursorsRef
   )
 
   const handleGatewayEvent = useGatewayEventHandler({

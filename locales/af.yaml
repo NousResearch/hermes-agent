@@ -697,6 +697,7 @@ gateway:
     no_credentials: "⚠️ Ek kon nie met die KI-modeldiens verbind nie, so hierdie boodskap is nie verwerk nie. Gebruik /login om weer aan te meld, of /model om 'n ander model te kies. As dit aanhou misluk, voer `hermes doctor` op die gasheer uit."
     cron_session_read_only: "⚠️ Hierdie klets behoort aan 'n geskeduleerde taak en voer net daardie taak uit, so jou boodskap is nie uitgevoer nie. Begin 'n nuwe klets om dit te stuur."
     workspace_unavailable: "⚠️ Hierdie klets se werkvouer bestaan nie meer nie ({path}), so jou boodskap is nie uitgevoer nie. Skep die vouer weer, of skuif die klets na 'n ander een (`/worktree new` in die CLI, “Move to project” in die rekenaarprogram), en stuur dan jou boodskap weer."
+    launch_credentials_unavailable: "⚠️ Hierdie klets kan nie meer die API-sleutel gebruik waarmee dit begin is nie{detail}, daarom kan niks daarin loop nie. 'n Oop klets skakel nooit self na 'n ander sleutel oor nie, so /retry misluk op dieselfde manier. Gebruik /new om 'n nuwe klets met jou huidige sleutel te begin."
   skills:
     disabled: "Die **{name}**-vaardigheid is geïnstalleer, maar gedeaktiveer.\nAktiveer dit met: `hermes skills config`"
     not_installed: "Die **{name}**-vaardigheid is beskikbaar, maar nie geïnstalleer nie.\nInstalleer dit met: `hermes skills install {install_name}`"
@@ -2017,7 +2018,6 @@ cli:
     cleared_picker_cache: "Modelkieser-kasie uitgevee. Verfris..."
     moa_one_shot_queued: "MoA-eenmalige lopie in tou geplaas met voorafinstelling {preset}; die vorige model word na hierdie beurt herstel."
     normalized_model: "Model '{old}' genormaliseer na '{new}' vir {provider}."
-    normalized_copilot_model: "Copilot-model '{old}' genormaliseer na '{new}'."
     stripped_provider_prefix: "Verskaffervoorvoegsel van '{old}' verwyder; gebruik '{new}' vir {provider}."
     restored_from_session: "Model vanaf sessie herstel: {model}"
     could_not_load_config: "❌ kon nie konfigurasie laai nie: {error}"

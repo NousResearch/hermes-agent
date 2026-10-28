@@ -46,7 +46,8 @@ def candidate_members(extra_dirs=(), **selection):
 
 def selection_snapshot() -> dict[Path, bytes | None]:
     from pm.plugins_state import dependency_homes
-    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml") for home in dependency_homes()}
+    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml")  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+            for home in dependency_homes()}
 
 
 def validate_manifest(source: Path) -> dict:
@@ -62,13 +63,14 @@ def validate_manifest(source: Path) -> dict:
 class PluginSelection:
     def __init__(self, selection: dict):
         from hermes_yaml import roundtrip_yaml
+        from pm.plugin_eviction import settle_record
 
         self.configs = selection_snapshot()
         self.home = Path(selection["home"]).resolve()
         if not self.home.is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
         self.path = self.home / "config.yaml"
-        self.previous = read_bytes_or_none(self.path)
+        self.previous = read_bytes_or_none(self.path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
         expected = selection.get("expected_config")
         actual = hashlib.sha256(self.previous).hexdigest() if self.previous is not None else "missing"
         if expected is not None and expected != actual:
@@ -84,6 +86,7 @@ class PluginSelection:
             raise ValueError(f"plugins must be a mapping in {self.path}")
         plugins["enabled"] = sorted(selection["enabled"])
         plugins["disabled"] = sorted(selection["disabled"])
+        settle_record(plugins, selection.get("settled", ()))
         output = io.StringIO()
         yaml.dump(config, output)
         self.proposed = output.getvalue().encode("utf-8")
@@ -91,7 +94,7 @@ class PluginSelection:
                                          enabled=selection["enabled"], disabled=selection["disabled"])
 
     def publish(self, project: Path) -> None:
-        if selection_snapshot() != self.configs or read_bytes_or_none(self.path) != self.previous:
+        if selection_snapshot() != self.configs or read_bytes_or_none(self.path) != self.previous:  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
             raise ValueError("plugin configuration changed while preparing publication; retry")
         row = {"config": str(self.path),
                "previous": base64.b64encode(self.previous).decode() if self.previous is not None else None,

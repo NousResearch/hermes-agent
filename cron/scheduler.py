@@ -1,4 +1,4 @@
-# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint. Also #141468: match the `mcp-<server>` toolset spelling so a narrow job's MCP allowlist is not widened into every enabled server — a minimal branch at the same chokepoint.
 """Cron job scheduler: tick() runs due jobs (gateway calls it every 60s from a background thread).
 A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
 """
@@ -43,6 +43,7 @@ from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
+from hermes_cli.config_backend import ConfigBackendUnavailable
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
@@ -445,7 +446,15 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
     from hermes_cli.tools_config import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
-    if set(result) & enabled_mcp:
+    # A job names an MCP server by its TOOLSET name (``mcp-<server>``) or by the bare alias the
+    # registry registers for it; compare against BOTH, or a job that named one server never matched
+    # and the fallback below unioned EVERY enabled server into its allowlist (#141468).
+    # A server that is CONFIGURED but disabled still counts as named: it is the user's selection, it
+    # stays off, and it must not fall through to every enabled server either - the same rule the
+    # interactive resolver follows (hermes_cli.tools_config._merge_mcp_servers).
+    configured = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+    known = enabled_mcp | {str(name) for name in configured}
+    if set(result) & (known | {f"mcp-{name}" for name in known}):
         return result
     for name in sorted(enabled_mcp):
         if name not in result:
@@ -1498,16 +1507,6 @@ class _BoundedCronSessionDB:
         return _bounded
 
 
-def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
-    """Common markdown header for the short-circuit run docs (no_agent / monitor)."""
-    return (
-        f"# Cron Job: {job_name}\n\n"
-        f"**Job ID:** {job_id}\n"
-        f"**Run Time:** {now_iso}\n"
-        f"**Mode:** {mode}\n"
-    )
-
-
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
     """Configured job workdir, or None when unset / no longer a directory (logged)."""
     workdir = (job.get("workdir") or "").strip() or None
@@ -1632,9 +1631,10 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     _cfg: dict = {}
     _model_cfg: Any = {}
     try:
+        from hermes_cli.config_backend import config_exists
         from hermes_cli.config_effective import load_user_config_effective
         _cfg_path = str(_get_hermes_home() / "config.yaml")
-        if os.path.exists(_cfg_path):
+        if config_exists(_cfg_path):
             _cfg = load_user_config_effective(Path(_cfg_path))
             # Coerce null to {} so a falsy default never clobbers a resolved env value.
             _model_cfg = _cfg.get("model") or {}
@@ -1652,7 +1652,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                         _model_cfg.get("default") or _model_cfg.get("model") or _model_cfg.get("name")
                         if isinstance(_model_cfg, dict) else "")
                     model = str(_main or "").strip() or model
-    except Exception as e:
+    except Exception as e:  # ConfigBackendUnavailable is not one: run_job fails this fire, never defaults
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
     model = (model if isinstance(model, str) else "").strip() or trial_model()
     # Fail fast: an empty model otherwise reaches the provider as an opaque 400 (#23979).
@@ -2649,7 +2649,7 @@ def run_job(
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
         return True, output, final_response, None
 
-    except Exception as e:
+    except (Exception, ConfigBackendUnavailable) as e:  # the plane being down fails THIS fire only
         error_msg = f"{type(e).__name__}: {e!s}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         # Cowork-style unreachable-model re-run (cron/unreachable_retry.py): flag failures where
@@ -3446,6 +3446,8 @@ def _run_one_job_body(
         # and no error. Owner fencing still applies: a stale worker must not record over a replacement claim
         # owner.
         _err_text = str(e) or type(e).__name__
+        # A config backend outage (a SystemExit by design) fails this fire, never the ticker.
+        contained = isinstance(e, (Exception, ConfigBackendUnavailable))
         logger.error(
             "Error processing job %s: %s",
             job["id"],
@@ -3455,7 +3457,7 @@ def _run_one_job_body(
         # Owner fencing: a stale worker whose claim was taken over (or transport-cancelled) must not
         # send a failure alert on top of the replacement run's; fall through to fenced bookkeeping.
         if (
-            isinstance(e, Exception)
+            contained
             and not delivery_attempted
             and not isinstance(e, _FireClaimLostDuringSideEffect)
             and not _fire_claim_ownership_lost()
@@ -3470,7 +3472,7 @@ def _run_one_job_body(
                 mark_kwargs = {}
                 if fire_owner is not None:
                     mark_kwargs["expected_fire_owner"] = fire_owner
-                if isinstance(e, Exception):
+                if contained:
                     mark_kwargs["delivery_error"] = delivery_error
                 from cron.unreachable_retry import is_retry_run
                 if is_retry_run(job):
@@ -3485,7 +3487,7 @@ def _run_one_job_body(
                 execution_id, success=False, error=_err_text, delivery_outcome=delivery_outcome)
         except Exception as record_err:
             logger.error("Failed to finish execution record for job %s: %s", job["id"], record_err)
-        if not isinstance(e, Exception):
+        if not contained:
             raise
         return False
     finally:
@@ -4072,10 +4074,9 @@ def _worktree_maintenance_repos() -> list[str]:
 def _maybe_run_worktree_maintenance() -> None:
     """Throttled worktree prune from the cron tick, on a daemon thread so the tick never waits on
     git. Same pruner as ``hermes -w`` startup (idle dirty/unpushed trees archived before removal,
-    live trees untouched). Throttled per profile home: a multiplexed tick runs once per served
-    profile, and each must sweep its own registered repos under its own config. The thread runs in
-    a copy of the caller's context so the profile-home override travels with it. Errors never
-    propagate: GC is hygiene, not scheduling."""
+    live trees untouched). Discovery is throttled per profile home, the prune once per repo across
+    served profiles, and ``cron.scheduler_worktree_maintenance`` runs one sweep at a time per
+    process. Runs in a copy of the caller's context (profile-home override); never raises."""
     global _last_worktree_maintenance_at
     import contextvars
 
@@ -4091,19 +4092,10 @@ def _maybe_run_worktree_maintenance() -> None:
         _last_worktree_maintenance_at = {**stamps, home: now}
 
     def _run() -> None:
-        try:
-            repos = _worktree_maintenance_repos()
-            if not repos:
-                return
-            from hermes_cli.worktree_ops import _prune_stale_worktrees
+        from cron.scheduler_worktree_maintenance import run_sweep
 
-            for repo in repos:
-                try:
-                    _prune_stale_worktrees(repo)
-                except Exception:
-                    logger.debug("Cron worktree maintenance failed for %s", repo, exc_info=True)
-        except Exception:
-            logger.debug("Cron worktree maintenance skipped", exc_info=True)
+        run_sweep(_worktree_maintenance_repos,
+                  interval_seconds=_WORKTREE_MAINTENANCE_INTERVAL_SECONDS)
 
     threading.Thread(target=contextvars.copy_context().run, args=(_run,), name="cron-worktree-prune",
                      daemon=True).start()
@@ -4397,7 +4389,7 @@ from cron.scheduler_script import (
 from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
-    _parse_wake_gate,
+    _job_doc_header, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

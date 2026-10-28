@@ -23,7 +23,6 @@ from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
-from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -266,8 +265,8 @@ def _tool_defs_cache_key(
         return None
     try:
         from hermes_cli.config import get_config_path
-        cfg_stat = get_config_path().stat()
-        cfg_fp = file_signature(cfg_stat)
+        from hermes_cli.config_backend import config_version
+        cfg_fp = config_version(get_config_path())
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
     return (
@@ -380,6 +379,18 @@ def _rewrite_browser_exec(td: dict[str, Any], available: set) -> Optional[dict[s
     return td if "terminal" in available else None
 
 
+def _rewrite_browser_exec_vision(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Point a header that says screenshots are not attached at vision_analyze, only when the
+    session has it (an auxiliary vision route alone does not expose the tool)."""
+    from tools.browser_use_cli import SCREENSHOTS_DETACHED
+    fn = td["function"]
+    desc = fn.get("description", "")
+    if "vision_analyze" not in available or SCREENSHOTS_DETACHED not in desc:
+        return td
+    hint = " To inspect one, pass its capture_screenshot() path to vision_analyze."
+    return _fn_def({**fn, "description": desc.replace(SCREENSHOTS_DETACHED, SCREENSHOTS_DETACHED + hint, 1)})
+
+
 def _rewrite_delegate_task(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Trim the child-restrictions line to sibling tools actually present, or drop
     the line when none apply, so the model never learns ghost vocabulary. Two
@@ -450,7 +461,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_cdp": _rewrite_browser_cdp,
-    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
+    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_browser_exec_vision, _rewrite_input_tool_for_vault),
     "browser_vault": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }

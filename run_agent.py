@@ -406,7 +406,9 @@ class AIAgent(
         self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
-        # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
+        # Provider hooks that failed in the old session (agent.provider_route_hooks) are asked again.
+        self._provider_hook_failures = set()
+        # True for the first API call of a user turn, False for tool-loop follow-ups (provider request_headers).
         self._is_user_initiated_turn = False
 
         self._transition_context_engine_session(
@@ -528,11 +530,6 @@ class AIAgent(
         url = str(base_url).lower() if base_url is not None else (getattr(self, "_base_url_lower", "") or "")
         return base_url_host_matches(url, "openai.azure.com")
 
-    def _is_github_copilot_url(self, base_url: str | None = None) -> bool:
-        """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
-        hostname = self._hostname_for(base_url)
-        return bool(hostname) and (hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com"))
-
     def _resolved_api_call_timeout(self) -> float:
         """Per-call request timeout: per-model ``timeout_seconds`` > provider ``request_timeout_seconds`` >
         ``HERMES_API_TIMEOUT`` > 1800s."""
@@ -619,15 +616,6 @@ class AIAgent(
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
-    def _is_copilot_url(self) -> bool:
-        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
-        return any(base_url_host_matches(self._base_url_lower, h) for h in ("api.githubcopilot.com", "models.github.ai"))
-
-    def _is_copilot_provider(self) -> bool:
-        """True when the active provider is GitHub Copilot under any alias (``copilot`` / ``github-copilot`` /
-        ``github``) or by base URL; a bare equality check would silently skip credential recovery."""
-        return (self.provider or "").strip().lower() in {"copilot", "github-copilot", "github"} or self._is_copilot_url()
-
     def _is_codex_backend(self) -> bool:
         """Return True for the ChatGPT OAuth Codex Responses backend."""
         return (getattr(self, "api_mode", None) == "codex_responses"
@@ -659,19 +647,26 @@ class AIAgent(
         from hermes_cli.runtime_provider_backends import _is_external_process_provider
         if _is_external_process_provider(normalized_provider):
             return False
-        if normalized_provider == "copilot":
-            try:
-                from hermes_cli.models import _should_use_copilot_responses_api
-                return _should_use_copilot_responses_api(model)
-            except Exception:
-                pass  # fall back to the generic GPT-5 rule
+        # A provider serving several wires behind one endpoint decides per model (pure, no I/O).
+        from providers import get_provider_profile
+        profile = get_provider_profile(normalized_provider) if normalized_provider else None
+        from agent.provider_route_hooks import model_api_mode
+        derived = model_api_mode(profile, model) if profile is not None else None
+        if derived is not None:
+            return derived == "codex_responses"
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
-        """``max_completion_tokens`` for newer OpenAI families (and Azure / Copilot serving them), else
-        ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
-        if (self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url()
-                or model_forces_max_completion_tokens(self.model)):
+        """``max_completion_tokens`` for newer OpenAI families (and Azure / provider routes declaring it),
+        else ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
+        if self._is_direct_openai_url() or self._is_azure_openai_url():
+            return {"max_completion_tokens": value}
+        from agent.provider_route_hooks import route_answer
+        declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "", scope=self,
+                                base_url=getattr(self, "base_url", "") or "", model=self.model or "")
+        if declared:
+            return {declared: value}
+        if model_forces_max_completion_tokens(self.model):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -760,13 +755,14 @@ class AIAgent(
 
         A review whose runtime is the MANAGED LOCAL llama-server is queued for machine idle (``defer: auto``)
         instead of hitting the user's GPU mid-session; everything else spawns immediately. ``explicit``
-        (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
+        (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
+        ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
         """
-        # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+        # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
+        if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
-        if focus is None:
+        if not explicit and focus is None:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
@@ -836,7 +832,7 @@ class AIAgent(
         """
         try:
             # Not cancelled == ran to completion (or was never admitted).
-            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None:
+            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None or kwargs.get("explicit"):
                 return
             if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
                 logger.info("Preempted background review dropped after %d requeues", self._REVIEW_REQUEUE_MAX_ATTEMPTS)
@@ -936,6 +932,8 @@ class AIAgent(
         _quietly(self._close_codex_session)
         if getattr(self, "_memory_manager", None) is not None:
             _quietly(self._memory_manager.release_soft)
+        from agent.prepared_compaction import release_for_agent
+        _quietly(release_for_agent, self)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
@@ -944,6 +942,8 @@ class AIAgent(
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
+        from agent.prepared_compaction import release_for_agent
+        _quietly(release_for_agent, self)
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)

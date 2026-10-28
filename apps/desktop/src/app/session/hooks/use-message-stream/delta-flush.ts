@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import {
   appendAssistantTextPart,
@@ -11,6 +11,7 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 
 import type { MutateStream } from './mutate-stream'
+import { admitSegmentDelta, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface QueuedStreamDelta {
@@ -19,7 +20,10 @@ interface QueuedStreamDelta {
   type: 'assistant' | 'reasoning'
 }
 
-export function useDeltaFlush(mutateStream: MutateStream) {
+export function useDeltaFlush(
+  mutateStream: MutateStream,
+  segmentCursorsRef: MutableRefObject<Map<string, SegmentCursor>>
+) {
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDelta[]>>(new Map())
 
   const flushHandleRef = useRef<number | null>(null)
@@ -245,14 +249,20 @@ export function useDeltaFlush(mutateStream: MutateStream) {
   }, [flushQueuedDeltas])
 
   const appendAssistantDelta = useCallback(
-    (sessionId: string, delta: string, occurredAt?: number) => {
+    (sessionId: string, delta: string, occurredAt?: number, stamp?: null | SegmentStamp) => {
       if (!delta) {
         return
       }
 
+      if (stamp) {
+        const admitted = admitSegmentDelta(segmentCursorsRef.current.get(sessionId), stamp, delta)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+        delta = admitted.text
+      }
+
       queueDelta(sessionId, 'assistant', delta, occurredAt)
     },
-    [queueDelta]
+    [queueDelta, segmentCursorsRef]
   )
 
   const appendReasoningDelta = useCallback(

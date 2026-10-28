@@ -498,3 +498,15 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
     if api_disabled or any(status != "ok" for status, _, _ in web_rows):
         f.issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+    _warn_partially_stripped_toolsets(f)
+
+
+def _warn_partially_stripped_toolsets(f: Finding) -> None:
+    """An enabled CLI toolset that agent.disabled_toolsets cuts down still reads as available above;
+    name the missing tools and the entry removing them (#134593)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.tools_config import _get_platform_tools, toolsets_partially_stripped
+    config = load_config() or {}
+    for ts, (tools, by, hint) in toolsets_partially_stripped(config, _get_platform_tools(config, "cli")).items():
+        check_warn(f"{ts} (partly disabled)", f"({', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)})")
+        f.issues.append(f"{ts}: {hint[0].upper()}{hint[1:]} {', '.join(tools)}")

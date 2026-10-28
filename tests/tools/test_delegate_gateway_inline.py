@@ -93,6 +93,28 @@ def test_a_session_keeps_its_mode_until_a_new_session():
     assert session_joins_delegation(rebuilt) is False
 
 
+@pytest.mark.parametrize("refresh", [
+    {"content_aware": True},  # the compaction boundary (agent/conversation_compression.py)
+    {},  # /reload-mcp over the cached agents (gateway/run_turn.py)
+], ids=["compaction-refresh", "reload-mcp"])
+@pytest.mark.parametrize("pinned_inline", [True, False], ids=["pinned-inline", "pinned-background"])
+def test_a_restored_mode_survives_a_later_tools_refresh(refresh, pinned_inline):
+    """The pin is authoritative: a fresh agent built for the other mode restores the session's variant, and a later
+    rebuild from fresh definitions (which reads the agent's frozen decision) keeps it instead of flipping the chat
+    mid-conversation to whatever the current config says."""
+    from tools.delegate_tool import session_joins_delegation
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools, restore_agent_tool_prefix, tool_pin_version
+
+    first = _built(inline=pinned_inline)
+    fresh = _built(inline=not pinned_inline)
+    restore_agent_tool_prefix(fresh, {"version": tool_pin_version(), "tools": first.tools})
+    assert session_joins_delegation(fresh) is pinned_inline
+
+    refresh_agent_mcp_tools(fresh, quiet_mode=True, **refresh)
+    assert session_joins_delegation(fresh) is pinned_inline
+    assert _delegate(fresh) == _delegate(first)
+
+
 def _parent(tools, depth=0):
     parent = MagicMock()
     parent._delegate_depth = depth

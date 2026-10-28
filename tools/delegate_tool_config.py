@@ -137,7 +137,8 @@ _GATEWAY_DELEGATION_INLINE: ContextVar[bool] = ContextVar("hermes_gateway_delega
 
 @contextmanager
 def gateway_delegation_inline_scope(inline: bool) -> Iterator[None]:
-    """Build an agent whose session joins its delegations in the call (see :func:`agent_joins_delegation`)."""
+    """Build an agent whose tools carry the joined ``delegate_task`` variant (frozen on the agent by
+    :func:`agent_joins_delegation`). Dispatch reads the variant the session carries, not this flag."""
     token = _GATEWAY_DELEGATION_INLINE.set(bool(inline))
     try:
         yield
@@ -145,9 +146,10 @@ def gateway_delegation_inline_scope(inline: bool) -> Iterator[None]:
         _GATEWAY_DELEGATION_INLINE.reset(token)
 
 def agent_joins_delegation(agent: Any) -> bool:
-    """The gateway's inline decision, frozen on *agent* at its first tool build (like ``agent_is_oneshot``), so
-    later rebuilds outside the build scope keep the same ``delegate_task`` bytes. Dispatch does not read this: it
-    follows the schema the session carries (``tools.delegate_tool.session_joins_delegation``)."""
+    """The gateway's inline decision, frozen on *agent* at its first tool build (like ``agent_is_oneshot``) and
+    re-frozen from a restored tools[] pin (``tools.delegate_tool.adopt_session_delegation_mode``), so later rebuilds
+    outside the build scope keep the session's ``delegate_task`` bytes. Dispatch does not read this: it follows the
+    schema the session carries (``tools.delegate_tool.session_joins_delegation``)."""
     cached = getattr(agent, "_delegation_inline", None)
     if not isinstance(cached, bool):
         cached = _GATEWAY_DELEGATION_INLINE.get()

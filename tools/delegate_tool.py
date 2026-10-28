@@ -886,6 +886,16 @@ def session_joins_delegation(agent: Any) -> bool:
     return False
 
 
+def adopt_session_delegation_mode(agent: Any) -> None:
+    """Re-freeze *agent*'s inline decision (``agent_joins_delegation``) from the ``delegate_task`` it carries once a
+    fresh agent has restored its session's tools[] pin, so the pin is authoritative: a later rebuild from fresh
+    definitions (compaction boundary, ``/reload-mcp``, Bot Chat refresh) derives the session's variant, not the one
+    the current config would build."""
+    tools = getattr(agent, "tools", None) or ()
+    if any(isinstance(tool, dict) and (tool.get("function") or {}).get("name") == "delegate_task" for tool in tools):
+        agent._delegation_inline = session_joins_delegation(agent)
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 

@@ -651,12 +651,33 @@ schema as a one-shot run. While it waits, the typing indicator stays on and the 
 behaves like any long tool call. `/stop` stops the children, and so does a follow-up
 message under the default `busy_input_mode: interrupt` (each child returns an interrupted
 result with its partial output); under `queue` the follow-up waits for the turn.
-`display.long_running_notifications` still governs the periodic "still working" notice.
 Nested delegation is unchanged.
 
-The mode is part of a session's tool schema, which is cached with the conversation. A
+Inline turns that run past `agent.gateway_notify_interval` (180 seconds by default) still
+get the periodic "still working" notice, which `display.long_running_notifications`
+controls separately and which is on by default for Telegram, Slack, Discord and WhatsApp.
+For a single message per turn, also set it to `off` for that platform (`generic` only
+changes the notice's wording):
+
+```yaml
+display:
+  interim_assistant_messages: false
+  platforms:
+    telegram:
+      long_running_notifications: false
+```
+
+The mode is part of a session's tool schema, which is pinned with the conversation. A
 change to `gateway_mode` or to `interim_assistant_messages` applies from the next session
-(`/new`); a running chat keeps the mode it started with, also across gateway restarts.
+(`/new`). A running chat keeps the mode it started with across gateway restarts, agent
+cache evictions, context compaction and `/reload-mcp`. A scheduled heartbeat turn mutes
+interim messages only for itself and does not change the chat's mode. One exception: the
+first turn after a Hermes update rebuilds the session's tool definitions from the new
+code, so the chat adopts the current setting at that turn.
+
+Listing `delegate_task` in `tools.tool_search.defer` turns inline off for that session:
+the model loads the regular (background) `delegate_task` schema through `tool_describe`,
+and delegation follows the schema the model sees.
 
 ## Lifetime and Durability
 

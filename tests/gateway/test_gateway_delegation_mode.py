@@ -309,6 +309,92 @@ def test_each_profile_resolves_its_own_mode_under_the_multiplexer(monkeypatch, t
     assert seen == [True, False, True]
 
 
+async def _two_turns(monkeypatch, config: dict, *, first_heartbeat: bool, restart_between=False):
+    """Two turns on one Telegram chat through a runner WITH an agent cache (the second turn reuses the first turn's
+    agent) and a real SessionDB in the temp HERMES_HOME (the tools[] pin is persisted). ``restart_between`` drops
+    the cache between the turns, so the second turn builds a fresh agent that restores the session's pin.
+    Returns (chat, the delegate_task definition of each parent request, the persisted pin)."""
+    import json
+
+    import gateway.run as gateway_run
+    from hermes_state import SessionDB
+    from tools import async_delegation
+
+    home = Path(os.environ["HERMES_HOME"])
+    platform = Platform.TELEGRAM
+    chat = _Chat(platform)
+    source = SessionSource(platform=platform, chat_id="c1", chat_type="dm", user_id="u1")
+    session_key = f"agent:main:{platform.value}:dm:c1"
+    respond, aux = _model(Text(f"Audit finished: {FINDING}"))
+    merged = {"tools": {"tool_search": {"enabled": "off"}}, "platform_toolsets": {platform.value: ["delegation", "todo"]},
+              **config, "display": {"tool_progress": "off", **config.get("display", {})}}
+    with FakeLLMServer(respond, aux=aux) as srv:
+        write_hermes_home(home, srv.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW
+                          + yaml.safe_dump(merged))
+        monkeypatch.setattr(gateway_run, "_hermes_home", home)
+        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {
+            "api_key": "sk-fake-e2e", "base_url": srv.base_url, "provider": "custom", "api_mode": "chat_completions"})
+        runner = _make_runner(chat)
+        runner.config.streaming = StreamingConfig(enabled=False)
+        runner._session_db = SessionDB(home / "state.db")
+        runner._session_db.create_session("s1", source=platform.value)  # the session store creates the row first
+        runner._agent_cache, runner._agent_cache_lock = {}, threading.Lock()
+        heartbeats, history = [first_heartbeat, False], []
+
+        async def handler(ev):
+            # The second turn continues the session (a fresh agent reads the session row, and its pin, only then).
+            result = await runner._run_agent(message=ev.text, context_prompt="", history=list(history), source=source,
+                                             session_id="s1", session_key=session_key,
+                                             scheduled_heartbeat=heartbeats.pop(0))
+            history.extend([{"role": "user", "content": ev.text},
+                            {"role": "assistant", "content": result["final_response"]}])
+            return None if result.get("already_sent") else result["final_response"]
+
+        chat.set_message_handler(handler)
+        for i in range(2):
+            if i and restart_between:
+                runner._agent_cache.clear()
+            event = MessageEvent(text=f"How is billing doing? ({i})", source=source, message_type=MessageType.TEXT)
+            await asyncio.wait_for(chat._process_message_background(event, session_key), timeout=60)
+            await asyncio.to_thread(wait_until, lambda: async_delegation.active_count() == 0, 30, 0.02, "async units")
+        row = runner._session_db.get_session("s1") or {}
+        pin = json.loads(row["tool_names"]) if row.get("tool_names") else None
+    schemas = [_delegate_def(r["body"]) for r in srv.requests if r["kind"] == "main" and GOAL not in _first_user_text(r)]
+    return chat, schemas, pin
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("config", "first_heartbeat", "inline"), [
+    ({}, True, False),
+    ({}, False, False),
+    (_interim(False), True, True),
+], ids=["interim-on-heartbeat-first", "interim-on-control", "interim-off-heartbeat-first"])
+async def test_a_heartbeat_turn_does_not_decide_the_chats_mode(monkeypatch, dispatches, config, first_heartbeat, inline):
+    """A scheduled heartbeat mutes interim messages for its own turn, and it runs under the user's session key: when
+    it is the turn that builds the session's (cached) agent, the mode must still come from the chat's configured
+    interim setting, or an interim-on chat runs inline for the rest of the session."""
+    chat, schemas, _ = await _two_turns(monkeypatch, config, first_heartbeat=first_heartbeat)
+
+    assert len(schemas) >= 2
+    assert all((END_TURN in schema["description"]) is not inline for schema in schemas)
+    assert len(dispatches) == (0 if inline else 2)
+    assert chat.sent[-1] == (ANSWER if inline else PAUSE)
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_built_agent_pins_the_configured_mode_across_a_restart(monkeypatch, dispatches):
+    """Composed: agent cache + persisted tools[] pin + heartbeat. The heartbeat builds the session's agent on a cold
+    cache, the gateway restarts, the user's next turn builds a fresh agent that restores the pin: it is the
+    background schema an interim-on chat configured."""
+    chat, schemas, pin = await _two_turns(monkeypatch, {}, first_heartbeat=True, restart_between=True)
+
+    assert pin is not None
+    delegate = next(t["function"] for t in pin["tools"] if t["function"]["name"] == "delegate_task")
+    assert END_TURN in delegate["description"]
+    assert all(END_TURN in schema["description"] for schema in schemas)
+    assert len(dispatches) == 2 and chat.sent[-1] == PAUSE
+
+
 @pytest.mark.parametrize("platform_key", ["api_server", "local", "webhook"])
 def test_auto_never_joins_on_a_surface_that_is_not_a_chat(platform_key):
     """``auto`` is about a pause message reaching a person: API, local and webhook turns keep today's path."""

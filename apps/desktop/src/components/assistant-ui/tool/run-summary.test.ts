@@ -41,21 +41,39 @@ describe('summarizeToolRun', () => {
     )
   })
 
-  it('puts the running category in the present tense and leaves the rest past', () => {
+  it('puts only pending calls in the present tense', () => {
     expect(running([read('a.ts'), tool('read_file', { path: 'b.ts' }), ran('x'), ran('y')])).toBe(
-      'Exploring 2 files, ran 2 commands'
+      'Explored a.ts, exploring b.ts, ran 2 commands'
     )
+  })
+
+  it('keeps completed commands out of the running count even without a result', () => {
+    const completed = [
+      ...Array.from({ length: 21 }, () => ran('pwd')),
+      { ...tool('terminal', { command: 'pwd' }), completedAt: 123 }
+    ]
+
+    expect(running([...completed, tool('terminal', { command: 'npm test' })])).toBe('Ran 22 commands, running npm test')
+  })
+
+  it('counts pending batch pages separately and narrates every pending category', () => {
+    expect(
+      running([
+        tool('read_file', { path: 'next.ts' }),
+        webExtracted(['https://a.example', 'https://b.example']),
+        tool('web_extract', { urls: ['https://c.example', 'https://d.example', 'https://e.example'] })
+      ])
+    ).toBe('Exploring next.ts, read 2 pages, reading 3 pages')
   })
 
   it('names the command that is still running', () => {
     expect(running([tool('terminal', { command: 'npm run typecheck' })])).toMatch(/^Running /)
   })
 
-  // Sequential calls leave a gap where the run is still going but nothing is
-  // pending. Falling back to past tense there contradicted the ticker still
-  // scrolling underneath, so the most recent call carries the present tense.
-  it('stays in the present tense between two sequential calls', () => {
-    expect(running([read('a.ts'), ran('x'), ran('y')])).toBe('Explored a.ts, running 2 commands')
+  // The run stays live between sequential calls, but its completed work must
+  // read as history while the ticker waits for the next call.
+  it('uses the past tense between two sequential calls', () => {
+    expect(running([read('a.ts'), ran('x'), ran('y')])).toBe('Explored a.ts, ran 2 commands')
   })
 
   // A turn can end — or the agent can simply move on — with a call that never
@@ -70,7 +88,7 @@ describe('summarizeToolRun', () => {
   // (#123085).
   it('counts web searches as queries, not explored files', () => {
     expect(settled([webSearched('hermes agent'), webSearched('kv cache')])).toBe('Searched 2 queries')
-    expect(running([webSearched('hermes agent'), webSearched('kv cache')])).toBe('Searching 2 queries')
+    expect(running([webSearched('hermes agent'), webSearched('kv cache')])).toBe('Searched 2 queries')
   })
 
   it('names a lone web search the way its row does', () => {
@@ -79,7 +97,8 @@ describe('summarizeToolRun', () => {
 
   it('names a lone web extract by hostname the way its row does', () => {
     expect(settled([webExtracted(['https://example.com/docs'])])).toBe('Read example.com/docs')
-    expect(running([webExtracted(['https://example.com/docs'])])).toBe('Reading example.com/docs')
+    expect(running([webExtracted(['https://example.com/docs'])])).toBe('Read example.com/docs')
+    expect(running([tool('web_extract', { urls: ['https://example.com/docs'] })])).toBe('Reading example.com/docs')
   })
 
   it('still names a legacy string-url web extract shape', () => {

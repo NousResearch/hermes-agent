@@ -152,8 +152,9 @@ function toolTarget(tool: ToolCallLike): string {
 }
 
 /**
- * One clause per category. A category holding a single thing says what it was
- * ("Edited wiring.tsx"); anything else counts ("explored 3 files"). A settled
+ * One clause for calls sharing a category and completion state. A group holding
+ * a single thing says what it was ("Edited wiring.tsx"); anything else counts
+ * ("explored 3 files"). A settled
  * command is the exception — "ran 5 commands" is the useful reading, and a
  * command line only earns its space while it's the thing you're waiting on.
  */
@@ -176,9 +177,9 @@ function lowerFirst(text: string): string {
 
 /**
  * Collapse a run of tool calls into the single grey line that stands in for it
- * — "Explored 3 files, ran 5 commands". While the run is live, the category
- * holding its most recent call speaks in the present tense so the line reads as
- * work in progress rather than work already done.
+ * — "Explored 3 files, ran 5 commands". While the run is live, only pending
+ * calls speak in the present tense. Completed work stays in the past tense,
+ * including in the gaps between sequential calls while the ticker stays live.
  *
  * Whether the run is `live` is the caller's to say, not something readable off
  * the calls: a call can be left without a result by a turn that ended or an
@@ -190,13 +191,6 @@ function lowerFirst(text: string): string {
  * diff to report here; each edit carries its own +N/−M on its card.
  */
 export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean): string {
-  // Which clause narrates in the present tense: normally the outstanding call,
-  // but sequential calls leave gaps where the run is still going and nothing is
-  // pending. The most recent call covers these, and it's the one the ticker is
-  // showing anyway.
-  const narrating = live ? (tools.find(isPending) ?? tools.at(-1)) : undefined
-  const liveCategory = narrating ? toolCategory(narrating.toolName) : null
-
   const byCategory = new Map<RunCategory, ToolCallLike[]>()
   const skillClauses: string[] = []
 
@@ -222,7 +216,17 @@ export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean):
   const clauses = CATEGORY_ORDER.flatMap(category => {
     const group = byCategory.get(category)
 
-    return group ? [clause(category, group, category === liveCategory)] : []
+    if (!group) {
+      return []
+    }
+
+    const completed = live ? group.filter(tool => !isPending(tool)) : group
+    const pending = live ? group.filter(isPending) : []
+
+    return [
+      ...(completed.length ? [clause(category, completed, false)] : []),
+      ...(pending.length ? [clause(category, pending, true)] : [])
+    ]
   })
 
   const failed = tools.filter(toolCallFailed).length

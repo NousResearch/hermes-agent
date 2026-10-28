@@ -67,6 +67,149 @@ const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
 // eslint-disable-next-line no-control-regex
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/
 
+// ConPTY win32-input-mode (microsoft/terminal spec #4999): once a console is in
+// that mode (DECSET 9001) every KEY_EVENT_RECORD reaches us as
+// CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _ — one record per key-down and per key-up,
+// omitted parameters default to 0, Rc to 1. Without a decoder the ESC-stripped
+// record text (`[79;24;79;1;48;1_`) is printable and lands in the composer.
+// eslint-disable-next-line no-control-regex
+const WIN32_INPUT_RE = /^\x1b\[([\d;]*)_$/
+// dwControlKeyState bits
+const WIN32_RIGHT_ALT = 0x0001
+const WIN32_LEFT_ALT = 0x0002
+const WIN32_CTRL = 0x0004 | 0x0008
+const WIN32_SHIFT = 0x0010
+// wRepeatCount is a WORD, but a keyboard batches at most a few auto-repeats
+// into one record; cap it so a corrupt record cannot expand into a key flood.
+const WIN32_MAX_REPEAT = 32
+
+// Virtual keys that carry no UnicodeChar, as the tail of the legacy xterm
+// sequence the same terminal sends outside win32-input-mode
+// (CSI [1;mod] letter, or CSI number [;mod] ~), so the existing parser maps them.
+const WIN32_VK_SEQUENCE: Record<number, string> = {
+  33: '5~', // VK_PRIOR
+  34: '6~', // VK_NEXT
+  35: 'F', // VK_END
+  36: 'H', // VK_HOME
+  37: 'D', // VK_LEFT
+  38: 'A', // VK_UP
+  39: 'C', // VK_RIGHT
+  40: 'B', // VK_DOWN
+  45: '2~', // VK_INSERT
+  46: '3~', // VK_DELETE
+  112: '11~', // VK_F1
+  113: '12~',
+  114: '13~',
+  115: '14~',
+  116: '15~',
+  117: '17~',
+  118: '18~',
+  119: '19~',
+  120: '20~',
+  121: '21~',
+  122: '23~',
+  123: '24~' // VK_F12
+}
+
+/**
+ * Legacy xterm sequence for a win32-input-mode record that carries a virtual
+ * key but no character (arrows, Home/End, F-keys, ...), with the modifier
+ * parameter the terminal would have added; null for modifier-only or unknown
+ * keys.
+ */
+function win32VirtualKeySequence(vk: number, cs: number, alt: boolean): string | null {
+  const tail = WIN32_VK_SEQUENCE[vk]
+
+  if (!tail) {
+    return null
+  }
+
+  const modifier = 1 + (cs & WIN32_SHIFT ? 1 : 0) + (alt ? 2 : 0) + (cs & WIN32_CTRL ? 4 : 0)
+
+  if (modifier === 1) {
+    return `\x1b[${tail}`
+  }
+
+  if (tail.endsWith('~')) {
+    return `\x1b[${tail.slice(0, -1)};${modifier}~`
+  }
+
+  return `\x1b[1;${modifier}${tail}`
+}
+
+/**
+ * Decode one win32-input-mode record into the keypresses the legacy VT
+ * encoding of the same key would have produced, by translating it to that
+ * encoding and reusing parseKeypress. Returns null when `s` is not a record.
+ * `pendingSurrogate` carries a high surrogate half between the two records
+ * of a non-BMP character; it is kept across key-ups and dropped by any other
+ * key-down.
+ */
+function parseWin32InputRecord(
+  s: string,
+  pendingSurrogate: string | undefined
+): { keys: ParsedKey[]; pendingSurrogate: string | undefined } | null {
+  const match = WIN32_INPUT_RE.exec(s)
+
+  if (!match) {
+    return null
+  }
+
+  const params = match[1]!.split(';')
+  const field = (index: number, fallback: number): number => (params[index] ? parseInt(params[index]!, 10) : fallback)
+  const vk = field(0, 0)
+  const uc = field(2, 0)
+  const keyDown = field(3, 0)
+  const cs = field(4, 0)
+  const repeat = field(5, 1)
+
+  if (keyDown !== 1) {
+    return { keys: [], pendingSurrogate }
+  }
+
+  const none = { keys: [], pendingSurrogate: undefined }
+
+  if (uc > 0xffff) {
+    return none
+  }
+
+  // AltGr arrives as LEFT_CTRL|RIGHT_ALT with the composed character in Uc.
+  const alt = (cs & WIN32_LEFT_ALT) !== 0 || ((cs & WIN32_RIGHT_ALT) !== 0 && (cs & WIN32_CTRL) === 0)
+  let sequence: string
+
+  if (uc === 0) {
+    const vkSequence = win32VirtualKeySequence(vk, cs, alt)
+
+    if (!vkSequence) {
+      return none
+    }
+
+    sequence = vkSequence
+  } else {
+    let char = String.fromCharCode(uc)
+
+    if (uc >= 0xd800 && uc <= 0xdbff) {
+      return { keys: [], pendingSurrogate: char }
+    }
+
+    if (uc >= 0xdc00 && uc <= 0xdfff) {
+      if (!pendingSurrogate) {
+        return none
+      }
+
+      char = pendingSurrogate + char
+    }
+
+    // Ctrl chords already carry their C0 byte in Uc (Ctrl+C = 3), which the
+    // legacy branches name; Shift+Tab is the one chord with its own sequence.
+    sequence = char === '\t' && cs & WIN32_SHIFT ? '\x1b[Z' : (alt ? '\x1b' : '') + char
+  }
+
+  const count = Math.min(Math.max(repeat, 1), WIN32_MAX_REPEAT)
+
+  return { keys: Array.from({ length: count }, () => parseKeypress(sequence)), pendingSurrogate: undefined }
+}
+
 function createPasteKey(content: string): ParsedKey {
   return {
     kind: 'key',
@@ -258,6 +401,9 @@ export type KeyParseState = {
   pasteBuffer: string
   // Internal tokenizer instance
   _tokenizer?: Tokenizer
+  // High surrogate half of a non-BMP character awaiting its second
+  // win32-input-mode record (see parseWin32InputRecord)
+  _win32Surrogate?: string
 }
 
 export const INITIAL_STATE: KeyParseState = {
@@ -301,6 +447,7 @@ export function parseMultipleKeypresses(
   const keys: ParsedInput[] = []
   let inPaste = prevState.mode === 'IN_PASTE'
   let pasteBuffer = prevState.pasteBuffer
+  let win32Surrogate = prevState._win32Surrogate
 
   for (const token of tokens) {
     if (token.type === 'sequence') {
@@ -318,9 +465,13 @@ export function parseMultipleKeypresses(
         // Sequences inside paste are treated as literal text
         pasteBuffer += token.value
       } else {
-        const response = parseTerminalResponse(token.value)
+        const win32 = parseWin32InputRecord(token.value, win32Surrogate)
+        const response = win32 ? null : parseTerminalResponse(token.value)
 
-        if (response) {
+        if (win32) {
+          win32Surrogate = win32.pendingSurrogate
+          keys.push(...win32.keys)
+        } else if (response) {
           keys.push({ kind: 'response', sequence: token.value, response })
         } else {
           const mouse = parseMouseEvent(token.value)
@@ -368,7 +519,8 @@ export function parseMultipleKeypresses(
     mode: inPaste ? 'IN_PASTE' : 'NORMAL',
     incomplete: tokenizer.buffer(),
     pasteBuffer,
-    _tokenizer: tokenizer
+    _tokenizer: tokenizer,
+    _win32Surrogate: win32Surrogate
   }
 
   return [keys, newState]

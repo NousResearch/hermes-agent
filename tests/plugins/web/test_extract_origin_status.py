@@ -131,3 +131,38 @@ def test_origin_429_does_not_walk_the_keyless_extract_ring():
         keyless_mcp._KEYLESS_EXTRACTORS["parallel"] = _extractor("parallel", "HTTP 429: Too Many Requests")
         [entry] = keyless_mcp.extract_with_failover("parallel", ["https://t.test/x"])
         assert (calls, entry["error"]) == (["parallel", "firecrawl"], "Firecrawl: other error")
+
+
+def test_vendor_reported_origin_status_does_not_walk_the_keyless_extract_ring():
+    """Keenable and keyless Exa relay the target's 429 in their own words (bodies as served live
+    for httpbin.org/status/429). That is the page's answer: no failover, and the error says so.
+    Keenable throttling this client is still a vendor rate limit and fails over."""
+    def _http(status, body, content_type="application/json"):
+        return SimpleNamespace(status_code=status, headers={"Content-Type": content_type},
+                               content=body.encode(), json=lambda: json.loads(body))
+
+    target_429 = json.dumps({"error": "Rate limit exceeded", "message": "The target server rate-limited this fetch, please retry shortly."})
+    own_429 = json.dumps({"error": "Rate limit exceeded", "message": "Too many requests, slow down."})
+    exa_crawl_429 = "data: " + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": [
+        {"type": "text", "text": "Error fetching URL(s): https://t.test/x: CRAWL_HTTP_429"}]}})
+    keenable = {"body": target_429}
+
+    def _ring(start):
+        return ["keenable", "exa"] if start == "keenable" else ["exa", "keenable"]
+
+    url = "https://t.test/x"
+    with patch.object(keyless_mcp, "_ring_order", side_effect=_ring), \
+            patch("requests.get", side_effect=lambda *_a, **_kw: _http(429, keenable["body"])) as keenable_get, \
+            patch("requests.post", return_value=_http(200, exa_crawl_429, "text/event-stream")) as exa_post:
+        [entry] = keyless_mcp.extract_with_failover("keenable", [url])
+        assert entry["error"] == "HTTP 429 from origin: The target server rate-limited this fetch, please retry shortly."
+        assert (keenable_get.call_count, exa_post.call_count) == (1, 0)
+
+        [entry] = keyless_mcp.extract_with_failover("exa", [url])
+        assert entry["error"] == "HTTP 429 from origin"
+        assert (exa_post.call_count, keenable_get.call_count) == (1, 1)
+
+        keenable["body"] = own_429
+        keenable_get.reset_mock(), exa_post.reset_mock()
+        keyless_mcp.extract_with_failover("keenable", [url])
+        assert (keenable_get.call_count, exa_post.call_count) == (1, 1)

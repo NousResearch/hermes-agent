@@ -15,7 +15,8 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from plugins.web._common import (
-    document as _page, is_origin_http_error, page_error as _page_error, search_fail, search_ok, vendor_error_entry, web_hit as _row,
+    document as _page, exa_crawl_status, is_origin_http_error, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,
+    search_ok, vendor_error_entry, web_hit as _row,
 )
 
 logger = logging.getLogger(__name__)
@@ -279,7 +280,13 @@ def exa_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     """Called per-URL; the tool returns one combined text payload."""
     def _fetch(url: str) -> dict[str, Any]:
-        text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+        try:
+            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+        except KeylessMCPError as exc:
+            # ``...: CRAWL_HTTP_429`` is the page's answer, not Exa throttling this client.
+            if origin := origin_http_error(exa_crawl_status(exc)):
+                return _page_error(url, origin)
+            raise
         # Title: first markdown H1 or ``Title:`` line, whichever comes first.
         titles = (_after(s, "# " if s.startswith("# ") else "Title:") for s in map(str.strip, text.splitlines()) if s.startswith(("# ", "Title:")))
         return _page(url, next(titles, ""), text)
@@ -316,7 +323,8 @@ def _keenable_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         headers["Content-Type"] = "application/json"
     response = getattr(requests, method)(f"{KEENABLE_API_URL}{path}", headers=headers, timeout=_TIMEOUT_SECONDS, **kwargs)
     if response.status_code >= 400:
-        raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response).strip()[:300]}")
+        body = _response_text(response).strip()
+        raise KeylessMCPError(keenable_origin_error(response.status_code, body) or f"HTTP {response.status_code}: {body[:300]}")
     return response.json()
 
 
@@ -333,7 +341,12 @@ def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 def keenable_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     def _fetch(url: str) -> dict[str, Any]:
-        data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+        try:
+            data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+        except KeylessMCPError as exc:
+            if is_origin_http_error(str(exc)):  # the target's answer, relayed by Keenable
+                return _page_error(url, str(exc))
+            raise
         return _page(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url)
 
     return _per_url(urls, _fetch, "keenable")

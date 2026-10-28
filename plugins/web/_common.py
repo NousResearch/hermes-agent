@@ -7,6 +7,7 @@ slots) lazily at call time so monkeypatching the source module keeps working.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -94,6 +95,33 @@ def origin_http_error(status: Any, reason: Any = None) -> Optional[str]:
         return None
     detail = str(reason or "").strip()
     return f"HTTP {code} from origin: {detail}" if detail else f"HTTP {code} from origin"
+
+
+# Vendors that fetch the page themselves also report its status in their own words: Exa
+# ``CRAWL_HTTP_<code>`` / ``CRAWL_NOT_FOUND``; Keenable mirrors the target's code as its own HTTP
+# status with a message about the target. Read as vendor errors, an origin 429 looked like the
+# vendor throttling us and walked the keyless ring.
+_EXA_CRAWL_STATUS_RE = re.compile(r"\bCRAWL_(?:HTTP_(\d{3})|(NOT_FOUND))\s*$")
+_KEENABLE_ORIGIN_MESSAGE_RE = re.compile(r"the (?:target server|page does not exist)\b", re.IGNORECASE)
+
+
+def exa_crawl_status(text: Any) -> Optional[int]:
+    """The origin status an Exa crawl error tag ends with (``CRAWL_HTTP_429`` → 429, ``CRAWL_NOT_FOUND`` → 404)."""
+    match = _EXA_CRAWL_STATUS_RE.search(str(text or ""))
+    if match is None:
+        return None
+    return int(match.group(1)) if match.group(1) else 404
+
+
+def keenable_origin_error(status: Any, body: str) -> Optional[str]:
+    """``HTTP <status> from origin: <message>`` when a Keenable fetch error describes the target's
+    answer; None for Keenable's own refusals (its rate limit for this client, auth, 5xx)."""
+    try:
+        data = json.loads(body or "")
+    except ValueError:
+        return None
+    message = str(data.get("message") or "").strip() if isinstance(data, dict) else ""
+    return origin_http_error(status, message) if _KEENABLE_ORIGIN_MESSAGE_RE.match(message) else None
 
 
 def with_origin_status(entry: dict[str, Any], status: Any, reason: Any = None) -> dict[str, Any]:

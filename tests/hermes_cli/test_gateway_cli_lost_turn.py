@@ -2,8 +2,9 @@
 
 The restarted owner fences the turn it died running ``unknown``; nothing queued behind it runs
 until it is acknowledged. The classic CLI used to submit into that FIFO and wait forever on a
-``message.complete`` that never comes. It must refuse with the recovery instead, and ``/discard``
-must acknowledge the lost turn from the chat itself.
+``message.complete`` that never comes. Refusing before submit and ``/discard`` are upstream's
+(``_prepare_submit``, ``_handle_discard_command``); these cover what that check cannot see: a fence
+that lands after submit, and a prompt queued behind another admission that is still running.
 """
 import asyncio
 
@@ -55,18 +56,6 @@ def _agent(client):
     return conn, GatewayAgent(connection=conn, session_id=SID)
 
 
-def test_prompt_on_a_paused_session_is_refused_with_the_recovery_not_queued_forever():
-    client = _PausedClient([LOST])
-    conn, agent = _agent(client)
-    try:
-        result = agent.run_conversation("continue")
-    finally:
-        conn.close()
-    assert result["failed"] and result["failure_reason"] == "unknown_execution"
-    assert "/discard" in result["error"]
-    assert "prompt.submit" not in [m for m, _ in client.calls]  # nothing left queued behind it
-
-
 def test_prompt_fenced_after_submit_is_withdrawn_instead_of_waiting_forever():
     client = _PausedClient([], fence_after_submit=True)
     conn, agent = _agent(client)
@@ -75,6 +64,7 @@ def test_prompt_fenced_after_submit_is_withdrawn_instead_of_waiting_forever():
     finally:
         conn.close()
     assert result["failed"] and result["failure_reason"] == "unknown_execution"
+    assert "/discard lost-1" in result["error"]
     assert ("prompt.cancel", {"session_id": SID, "admission_id": "adm-1"}) in client.calls
 
 
@@ -110,64 +100,3 @@ def test_prompt_queued_behind_another_running_turn_says_so_once_then_gets_its_ow
         conn.close()
     assert result["final_response"] == "mine"
     assert sum("Queued: another turn is still running" in line for line in printed) == 1, printed
-
-
-def test_discard_command_acknowledges_the_lost_turn_and_unblocks_the_next_prompt(monkeypatch, capsys):
-    from cli import HermesCLI
-    client = _PausedClient([LOST])
-    conn, agent = _agent(client)
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
-    cli = HermesCLI.__new__(HermesCLI)
-    cli.session_id = SID
-    try:
-        assert cli.process_command("/discard lost-1") is True
-        assert ("prompt.resolve_unknown", {"session_id": SID, "admission_id": "lost-1",
-                                           "execution_generation": 4}) in client.calls
-        assert "Discarded lost turn lost-1" in capsys.readouterr().out
-        assert agent._lost_turns() == []  # the next prompt is submitted, not refused
-    finally:
-        conn.close()
-
-
-def test_bare_discard_asks_before_acknowledging_every_lost_turn(monkeypatch, capsys):
-    """A bare /discard covers every lost turn, so it confirms first as ``hermes sessions discard``
-    does, through the composer's modal (a raw input() races prompt_toolkit for stdin); a declined
-    prompt leaves the turn untouched."""
-    from cli import HermesCLI
-    client = _PausedClient([LOST])
-    conn, agent = _agent(client)
-    asked = []
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
-    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("raw input() inside the TUI"))
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", lambda self, **kw: asked.append(kw) or "cancel")
-    cli = HermesCLI.__new__(HermesCLI)
-    cli.session_id = SID
-    try:
-        assert cli.process_command("/discard") is True
-        assert asked and "lost-1" in asked[0]["detail"]
-        assert ("prompt.resolve_unknown", {"session_id": SID, "admission_id": "lost-1",
-                                           "execution_generation": 4}) not in client.calls
-        assert "Nothing discarded" in capsys.readouterr().out
-        assert agent._lost_turns() == ["lost-1"]
-    finally:
-        conn.close()
-
-
-def test_bare_discard_without_a_tty_names_the_admission_ids_instead_of_discarding(monkeypatch, capsys):
-    from cli import HermesCLI
-    client = _PausedClient([LOST])
-    conn, agent = _agent(client)
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
-    cli = HermesCLI.__new__(HermesCLI)
-    cli.session_id = SID
-    try:
-        assert cli.process_command("/discard") is True
-        assert not [c for c in client.calls if c[0] == "prompt.resolve_unknown"]
-        out = capsys.readouterr().out
-        assert "lost-1" in out and "/discard <id>" in out
-        assert agent._lost_turns() == ["lost-1"]
-    finally:
-        conn.close()
-

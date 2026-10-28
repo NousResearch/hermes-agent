@@ -1,14 +1,16 @@
 name: agentplaybooks-tools
 repo: https://github.com/matebenyovszky/agentplaybooks
-sha: f31e9c3af6520cebda1c0712447b4b487ffc12a7
+sha: 1060d810769c3108a2fd4b4301de7fda5d0730de
 subdir: packages/hermes-portable/agentplaybooks-tools
 description: >-
   Connect AgentPlaybooks skills and hosted MCP/OpenAPI tools to Hermes, with guided setup,
   profile selection, permission diagnostics and an authenticated MCP check. Requires Node.js 20+
-  and @agentplaybooks/cli@0.7.0; the CLI is installed separately. Disclosure — skill-only; the
+  and @agentplaybooks/cli@0.8.1; the CLI is installed separately. Disclosure — skill-only; the
   separately installed apb CLI does the work. `apb hermes setup --apply` restores complete skill
   trees into the chosen project and edits the selected Hermes profile's config.yaml to register
-  those skills and a hosted playbook MCP endpoint. Local writes require --apply; setup also probes
+  those skills and a local stdio relay for the hosted playbook MCP endpoint. The relay is a child
+  process that forwards actual requests, answers MCP pings locally and sends no idle HTTP keepalives;
+  existing HTTP configurations need an explicit migration. Local writes require --apply; setup also probes
   MCP initialization and tool listing using a scoped key from the process environment, without
   invoking tools. `doctor` checks profile credential variable names without exposing their values.
   Hosted operations contact agentplaybooks.ai (or an explicitly configured service); skill restore
@@ -17,9 +19,9 @@ maintainer: matebenyovszky
 tier: community
 category: tools
 requires_hermes: ">=0.22.4"
-version: "0.2.0"
-docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/f31e9c3af6520cebda1c0712447b4b487ffc12a7/packages/hermes-portable/agentplaybooks-tools
-image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/f31e9c3af6520cebda1c0712447b4b487ffc12a7/public/plugin-catalog/hermes-tools.png
+version: "0.2.1"
+docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/1060d810769c3108a2fd4b4301de7fda5d0730de/packages/hermes-portable/agentplaybooks-tools
+image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/1060d810769c3108a2fd4b4301de7fda5d0730de/public/plugin-catalog/hermes-tools.png
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

@@ -3228,6 +3228,14 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         and _claim_is_live(job.get("run_claim"), now, run_claim_ttl)
     ):
         return False
+    # Same cross-process guard for recurring (cron/interval) jobs: a live fire_claim held by
+    # another process/host means that process is still mid-dispatch for this occurrence. Without
+    # this, every tick re-evaluates the job as due, re-dispatches, and claim_job_for_fire() loses
+    # to the live claim every time -> a "Fire claim lost" failure storm once per tick until the
+    # claim's TTL lapses (t_30f68d08). Uses FIRE_CLAIM_TTL_SECONDS (not run_claim_ttl, which is the
+    # unrelated one-shot run-claim TTL) to match the window claim_job_for_fire() itself honours.
+    if _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS):
+        return False
 
     next_run = _restore_unclaimed_slot(job, scan) or job.get("next_run_at") or _recover_missing_next_run(job, scan)
     if not next_run:

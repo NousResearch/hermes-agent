@@ -7,7 +7,9 @@ CWD-only loading in ``prompt_builder.py``."""
 import hashlib
 import logging
 import os
+import queue
 import shlex
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
@@ -27,6 +29,79 @@ _MAX_HINT_CHARS = 32_000
 _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 _COMMAND_TOOLS = {"terminal"}
 _MAX_ANCESTOR_WALK = 5  # ancestor levels walked per path — bounds deep-path scans
+
+# How long a single path resolution may take before we give up on it.
+#
+# WHY THIS EXISTS (2026-10-28)
+#
+# ``_add_path_candidate`` called ``Path.resolve()`` directly. resolve() is
+# os.path.realpath(), which ``stat()``s every component of the path. On a
+# path that crosses a wedged NFS mount, that stat() does not fail — it
+# BLOCKS, indefinitely, because the mount is a ``hard`` mount (NFS hard
+# mounts never time out I/O; the kernel retries forever).
+#
+# Consequence: a single tool call whose arguments mention such a path
+# stalled the whole agent turn. The turn-liveness watchdog eventually
+# aborted it ("no progress for 603.3s"), but the worker PROCESS stayed
+# alive, so the kanban dispatcher kept the claim and kept extending it
+# (``reason: pid_alive``). The card burned its entire retry budget and
+# was marked gave_up without the docs ever being written.
+#
+# Observed on kanban t_565de3ca (Mission Control Telegram sink wiki):
+# worker heartbeat stopped at 00:47, claim extended at 01:02/01:23/01:39,
+# reclaimed at 01:55 -> gave_up.
+#
+# The trigger was OBSIDIAN_VAULT_PATH=/mnt/Stor1/nfs_appdata/obsidian/...
+# (a path whose mount was wedged). Note the vault plugin itself talks to
+# the Obsidian REST API over HTTP — it never touches the NFS path — but the
+# agent mentions that path in tool-call arguments, and every path-like
+# token in a terminal command is a resolve() candidate.
+#
+# The existing ``except (OSError, ValueError, RuntimeError)`` never fires
+# here because the call does not raise; it hangs. So the fix is a timeout,
+# not an exception handler.
+#
+# Same daemon-thread + queue pattern as prompt_builder._read_text_with_timeout:
+# the reader thread is orphaned and finishes on its own if the path ever
+# becomes resolvable again.
+_RESOLVE_TIMEOUT_SECONDS = 5.0
+
+
+def _resolve_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[Path]:
+    """``Path.resolve()`` on a daemon thread so a wedged mount can't stall a turn.
+
+    Returns the resolved path, or ``None`` if the resolution did not
+    complete within *timeout* seconds (or raised). A path we cannot
+    resolve in time is simply not a hint candidate — the agent's actual
+    tool call proceeds unaffected, we just skip the optional
+    AGENTS.md discovery for it.
+    """
+    if timeout is None:
+        timeout = _RESOLVE_TIMEOUT_SECONDS
+    result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
+
+    def _resolver() -> None:
+        try:
+            result.put((True, path.resolve()))
+        except Exception as exc:  # re-raised on the caller thread
+            result.put((False, exc))
+
+    threading.Thread(
+        target=_resolver, daemon=True, name=f"path-resolve:{path.name}"
+    ).start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty:
+        logger.warning(
+            "Path %s did not resolve within %.1fs (wedged mount?); "
+            "skipping subdirectory hint discovery for it",
+            path,
+            timeout,
+        )
+        return None
+    if ok:
+        return value  # type: ignore[return-value]
+    raise value  # type: ignore[misc]
 
 # Shared with broad recursive search probes so context discovery and search never drift into
 # different dependency/cache/build trees (those hold *copies* of context files, never authoritative ones).
@@ -209,7 +284,13 @@ class SubdirectoryHintTracker:
             p = Path(raw_path).expanduser()
             if not p.is_absolute():
                 p = self.working_dir / p
-            p = p.resolve()
+            # Timeout-guarded: resolve() stats every path component, and a
+            # stat() across a wedged (hard) NFS mount blocks forever
+            # rather than raising. See _resolve_with_timeout.
+            resolved = _resolve_with_timeout(p)
+            if resolved is None:
+                return
+            p = resolved
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
             for _ in range(_MAX_ANCESTOR_WALK):

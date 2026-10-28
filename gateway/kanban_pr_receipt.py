@@ -169,14 +169,20 @@ def _rest_pulls(repository: str, gh: str, *, head: Optional[str]) -> Optional[li
 
 
 def _rest_entry_to_facts_entry(entry: dict) -> dict:
-    """Flatten a REST PR into the flat shape the verification step reads."""
+    """Flatten a REST PR into the flat shape the verification step reads.
+
+    A deleted fork reports ``head.repo`` (and therefore ``owner``) as ``null``;
+    those collapse to ``None`` here rather than raising, so the verification step
+    refuses the entry on its own terms instead of relying on a caller's blanket
+    exception handler.
+    """
     head_raw = entry.get("head")
-    repo_raw = head_raw.get("repo") if isinstance(head_raw, dict) else None
-    owner_raw = repo_raw.get("owner") if isinstance(repo_raw, dict) else None
-    base_raw = entry.get("base")
     head: dict = head_raw if isinstance(head_raw, dict) else {}
+    repo_raw = head.get("repo")
     repo: dict = repo_raw if isinstance(repo_raw, dict) else {}
+    owner_raw = repo.get("owner")
     owner: dict = owner_raw if isinstance(owner_raw, dict) else {}
+    base_raw = entry.get("base")
     base: dict = base_raw if isinstance(base_raw, dict) else {}
     state = str(entry.get("state") or "").lower()
     merged_at = entry.get("merged_at")
@@ -238,20 +244,21 @@ def _entry_head_owner(entry: dict) -> Optional[str]:
 
 
 def _resolve_head_owner(repository: str, branch: str, gh: str, *, exclude: set[str]) -> list[str]:
-    """The fork logins allowed to own this task's PR, most reliable first.
+    """The one fork login allowed to own this task's PR, or an empty list.
 
-    The candidate set is NOT "whoever has a branch with this name". Collecting
-    owners from the PRs themselves would let an older PR from *another* fork
-    nominate its own owner, and then win the state preference — the very
-    mis-attribution this binding exists to stop.
+    The candidate set is NOT "whoever has a branch with this name", and NOT
+    "whatever checkout the process happens to be in". Both were tried and both
+    are unsafe:
 
-    So the only admissible owners are identities the task's own tooling holds:
+    * collecting owners from the PRs themselves let an older PR from another fork
+      nominate its own owner and then win the state preference;
+    * using the process cwd's ``origin`` let any fork checkout of a same-named
+      repository nominate itself — cwd is process-global and this module cannot
+      vouch for it, so "worker cannot influence it" was false.
 
-    1. the authenticated ``gh`` login (the account that would have pushed);
-    2. the ``origin`` remote's owner, when it is not the upstream org itself —
-       i.e. a fork checkout, which is the normal shape for a contribution.
-
-    A same-named branch in some unrelated fork is therefore never a candidate.
+    The only identity this module can actually vouch for is the authenticated
+    ``gh`` login: the account whose token would have pushed the branch and opened
+    the PR. Anything else is unprovable, and unprovable means no PR line.
     """
     owners: list[str] = []
     try:
@@ -265,15 +272,6 @@ def _resolve_head_owner(repository: str, branch: str, gh: str, *, exclude: set[s
             owners.append(login)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.debug("kanban receipt: gh identity lookup failed: %s", exc)
-    # The checkout's own origin, but only when it is a fork of the upstream repo
-    # (same repository name, different owner). A checkout of the upstream repo
-    # itself tells us nothing about who pushed a branch.
-    upstream_owner, _, upstream_name = repository.partition("/")
-    origin = _repo_owner_name(_origin_path() or "") if _origin_path() else None
-    if origin:
-        origin_owner, _, origin_name = origin.partition("/")
-        if origin_name.lower() == upstream_name.lower() and origin_owner.lower() != upstream_owner.lower():
-            owners.append(origin_owner.lower())
     seen: set[str] = set()
     ordered: list[str] = []
     for owner in owners:
@@ -281,20 +279,6 @@ def _resolve_head_owner(repository: str, branch: str, gh: str, *, exclude: set[s
             seen.add(owner)
             ordered.append(owner)
     return ordered
-
-
-def _origin_path() -> Optional[str]:
-    """A checkout to ask for its ``origin`` remote: the task-independent cwd.
-
-    Worker-controlled state is avoided on purpose — ``tasks.workspace_path`` is a
-    directory the worker itself can rewrite. This is only used as a *corroborating*
-    hint for a fork owner, and every candidate is then confirmed against GitHub's
-    own per-PR ``head.repo.owner.login``, so a wrong value here cannot create a
-    verified PR; it can only fail to find one.
-    """
-    import os
-
-    return os.getcwd()
 
 
 def verify_task_pull_request(conn, task) -> PrFacts:

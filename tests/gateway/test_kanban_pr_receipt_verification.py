@@ -94,15 +94,21 @@ def gh_env(monkeypatch):
         m = re.search(r"[?&]head=([^&]+)", path)
         if m:
             want = m.group(1)
+
+            def head_of(entry):
+                head = entry.get("head") if isinstance(entry.get("head"), dict) else {}
+                repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+                owner = repo.get("owner") if isinstance(repo.get("owner"), dict) else {}
+                return head.get("ref"), owner.get("login")
+
             if ":" in want:
                 owner, want_branch = want.split(":", 1)
                 entries = [
                     e for e in entries
-                    if e.get("head", {}).get("ref") == want_branch
-                    and e.get("head", {}).get("repo", {}).get("owner", {}).get("login") == owner
+                    if head_of(e) == (want_branch, owner)
                 ]
             else:
-                entries = [e for e in entries if e.get("head", {}).get("ref") == want]
+                entries = [e for e in entries if head_of(e)[0] == want]
         r.stdout = json.dumps(entries)
         return r
 
@@ -400,21 +406,51 @@ def test_the_query_is_scoped_to_the_task_owner_not_a_bare_branch(fake_gh):
         assert f"head={BRANCH}&" not in path and not path.endswith(f"head={BRANCH}"), path
 
 
-def test_a_pr_whose_fork_disagrees_with_the_selector_is_discarded(fake_gh):
-    """If gh answers with a different fork than we asked for, nothing is adopted.
+def test_an_impostor_pr_is_dropped_while_the_tasks_own_pr_still_verifies(fake_gh):
+    """The impostor is not merely "not found" — the real PR must still win.
 
-    The per-owner query filters on the fork GitHub reports, so a reply that names
-    ``someone-else`` while we asked for ``task-owner:branch`` is not eligible at
-    all: it is dropped before any state preference can pick it.
+    A test that only asserts "the impostor renders nothing" passes on the
+    vulnerable tree too, so it proves nothing. This asserts the positive: with a
+    hostile fork's PR present, the receipt still names the task's own PR.
     """
     impostor = _rest(number=777, owner="someone-else")
-    gh_env_state = fake_gh(impostor)
-    # Discovery names the task's own identity, but the only PR belongs to another fork.
+    own = _rest(number=950, owner="task-owner")
+    gh_env_state = fake_gh(impostor, own)
     gh_env_state["identity"] = "task-owner"
+
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    assert facts.verified is True
+    assert facts.number == 950
+    assert facts.head_owner == "task-owner"
+    rendered = _receipt(facts)
+    assert "pull/950" in rendered
+    assert "pull/777" not in rendered
+
+
+def test_a_deleted_fork_fails_closed_without_raising(fake_gh):
+    """``head.repo`` is null when a fork is deleted; that must not crash or verify."""
+    deleted = _rest()
+    deleted["head"]["repo"] = None
+    gh_env_state = fake_gh(deleted)
+    gh_env_state["identity"] = "task-owner"
+
     facts = verify_task_pull_request(conn=None, task=_Task())
 
     assert facts.verified is False
-    assert facts.reason == "no_pull_request_for_task_branch"
+    _assert_no_pr_line(_receipt(facts))
+
+
+def test_a_pr_whose_owner_field_is_null_fails_closed(fake_gh):
+    """``head.repo.owner`` may also be null; same rule."""
+    entry = _rest()
+    entry["head"]["repo"]["owner"] = None
+    gh_env_state = fake_gh(entry)
+    gh_env_state["identity"] = "task-owner"
+
+    facts = verify_task_pull_request(conn=None, task=_Task())
+
+    assert facts.verified is False
     _assert_no_pr_line(_receipt(facts))
 
 

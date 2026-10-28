@@ -53,7 +53,7 @@ from hermes_cli.config_backend import (
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
-    _yaml_error_location)
+    _yaml_error_location, parse_failure_still_current)
 
 logger = logging.getLogger(__name__)
 
@@ -2249,7 +2249,7 @@ def _load_config_impl(*, want_deepcopy: bool, home: Optional[Path] = None) -> di
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         # An explicit home never serves a cached expansion over a file that currently fails to parse.
-        stale_failure = home is not None and _CONFIG_PARSE_FAILURES.get(path_key, ())[:4] == user_sig
+        stale_failure = home is not None and parse_failure_still_current(config_path)
         hit = None if stale_failure else _load_config_cache_hit(path_key, cache_sig)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit

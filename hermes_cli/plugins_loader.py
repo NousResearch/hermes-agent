@@ -7,6 +7,7 @@ through ``hermes_cli.plugins`` so tests that patch them on the origin keep worki
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import importlib
@@ -62,6 +63,18 @@ class PluginLoadTimeout(Exception):
 def in_plugin_load_worker() -> bool:
     """True on a deadline worker thread; re-entrant discovery from there must not block on its own parent."""
     return _IN_PLUGIN_LOAD.get() is not None
+
+
+async def _async_delivery_manager():
+    """Wait off-loop for discovery, except when register() re-enters its own sweep."""
+    from hermes_cli import plugins
+
+    manager = plugins.get_plugin_manager()
+    # A thread hop loses RLock ownership and makes the owner wait on its own waiter.
+    owns_discovery = getattr(manager, "_discovery_is_owned_by_current_thread", lambda: False)()
+    if not owns_discovery and (not getattr(manager, "_discovered", True) or plugins.plugin_discovery_in_flight()):
+        return await asyncio.to_thread(plugins._delivery_manager)
+    return manager
 
 
 def _resolve_plugin_load_timeout() -> float:

@@ -1812,8 +1812,8 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 
 async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """:func:`invoke_hook` for callers on an event loop (see ``PluginManager.ainvoke_hook``)."""
-    mgr = get_plugin_manager()
-    mgr = await asyncio.to_thread(_delivery_manager) if (not getattr(mgr, "_discovered", True) or plugin_discovery_in_flight()) else mgr
+    from hermes_cli.plugins_loader import _async_delivery_manager
+    mgr = await _async_delivery_manager()
     return await mgr.ainvoke_hook(hook_name, **kwargs)
 
 

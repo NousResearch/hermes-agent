@@ -288,6 +288,35 @@ describe('installDesktopPluginFromGit', () => {
     expect(fs.readFileSync(path.join(appRoot, result.pluginName!, 'panel.js'), 'utf8')).toBe('reviewed\n')
   })
 
+  it.each([
+    ['a symlinked file inside it', (repo: string) => fs.symlinkSync('/etc/hostname', path.join(repo, 'desktop', 'leak.txt'))],
+    [
+      'a symlinked desktop folder',
+      (repo: string, outside: string) => {
+        fs.renameSync(path.join(repo, 'desktop'), path.join(outside, 'desktop'))
+        fs.symlinkSync(path.join(outside, 'desktop'), path.join(repo, 'desktop'))
+      }
+    ]
+  ])('refuses a desktop tree with %s and publishes nothing', async (_label, link) => {
+    // A symlink in the copied tree would publish whatever it points at on this machine as plugin files.
+    const repo = pluginRepo(null)
+    const outside = mkdtemp('hermes-plugin-outside-')
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(outside, appRoot)
+    link(repo, outside)
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' })
+    execFileSync('git', ['-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'link'], {
+      cwd: repo,
+      stdio: 'pipe'
+    })
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('symbolic link')
+    expect(fs.readdirSync(appRoot)).toEqual([])
+  })
+
   it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {
     // Without the marker the Plugins page has no evidence that this copy is the
     // agent row's desktop half: the row sits on "copying…" while the copy shows

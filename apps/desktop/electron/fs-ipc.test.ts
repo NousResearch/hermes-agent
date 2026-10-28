@@ -10,6 +10,8 @@ import path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type * as DesktopPluginInstall from './desktop-plugin-install'
+
 const electron = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   showItemInFolder: vi.fn()
@@ -28,7 +30,11 @@ vi.mock('electron', () => ({
   }
 }))
 
-vi.mock('./desktop-plugin-install', () => ({ installDesktopPluginFromGit: vi.fn(), probePluginRepo: vi.fn() }))
+vi.mock('./desktop-plugin-install', async importOriginal => ({
+  guiInstallSourceRefusal: (await importOriginal<typeof DesktopPluginInstall>()).guiInstallSourceRefusal,
+  installDesktopPluginFromGit: vi.fn(async () => ({ ok: true })),
+  probePluginRepo: vi.fn()
+}))
 vi.mock('./desktop-plugins-root', () => ({
   DESKTOP_PLUGINS_DIR: 'desktop-plugins',
   ensureDir: vi.fn(async (dir: string) => dir),
@@ -36,6 +42,7 @@ vi.mock('./desktop-plugins-root', () => ({
   reconcileUnifiedDesktopHalves: vi.fn()
 }))
 
+import { installDesktopPluginFromGit } from './desktop-plugin-install'
 import { registerFsIpc } from './fs-ipc'
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-ipc-'))
@@ -109,5 +116,33 @@ describe('hermes:fs:logsRoot', () => {
       expect(path.relative(scratch, root).startsWith('..')).toBe(false)
       expect(root).toBe(path.join(scratch, 'profiles', 'launch-profile', 'logs'))
     }
+  })
+})
+
+// A click in the app clones over https:// only; `hermes plugins install` keeps the other schemes.
+describe('hermes:plugin:installDesktop', () => {
+  const install = (identifier: string) =>
+    electron.handlers.get('hermes:plugin:installDesktop')!({}, { identifier }) as Promise<{ error?: string; ok: boolean }>
+
+  it.each([
+    'file:///srv/plugin',
+    'ssh://git@example.com/acme/plugin.git',
+    'git@example.com:acme/plugin.git',
+    'http://example.com/acme/plugin.git'
+  ])('refuses %s before any clone', async identifier => {
+    vi.mocked(installDesktopPluginFromGit).mockClear()
+
+    const result = await install(identifier)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('https://')
+    expect(installDesktopPluginFromGit).not.toHaveBeenCalled()
+  })
+
+  it.each(['https://example.com/acme/plugin.git', 'acme/plugin'])('installs %s', async identifier => {
+    vi.mocked(installDesktopPluginFromGit).mockClear()
+
+    await expect(install(identifier)).resolves.toMatchObject({ ok: true })
+    expect(installDesktopPluginFromGit).toHaveBeenCalledOnce()
   })
 })

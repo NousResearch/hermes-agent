@@ -84,7 +84,7 @@ def query_session_listing(
     include_all_sources: bool = False,
     include_unnamed: bool = False,
     search_query: str | None = None,
-    limit: int = 10,
+    limit: int | None = 10,
     exclude_sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return session rows for interactive listing surfaces (shared CLI/gateway policy).
@@ -93,14 +93,15 @@ def query_session_listing(
     current session hidden unless requested (then marked ``is_current_session``); ``session_key``
     restricts gateway callers to one lane before the DB limit applies. With ``search_query`` rows
     are filtered by title/id in SQL, ordered by recent activity, and unnamed sessions stay visible
-    since an id match may be the only handle.
+    since an id match may be the only handle. ``limit=None`` lists every eligible row;
+    SQLite's negative LIMIT supplies the unbounded query (binding None is not supported).
     """
     search = (search_query or "").strip()
     rows = session_db.list_sessions_rich(
         source=None if include_all_sources else source,
         session_key=session_key,
         exclude_sources=exclude_sources,
-        limit=max(limit * 4, limit),
+        limit=-1 if limit is None else max(limit * 4, limit),
         search_query=search or None,
         order_by_last_active=bool(search),
     )
@@ -112,7 +113,7 @@ def query_session_listing(
         ):
             continue
         result.append({**row, "is_current_session": True} if is_current else row)
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 

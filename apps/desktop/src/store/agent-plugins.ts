@@ -427,7 +427,9 @@ export async function inspectAgentPlugin(
       desktopName: result?.desktop_name ?? null,
       warnings: result?.warnings ?? [],
       insecure: Boolean(result?.insecure),
-      ...(ok && typeof result.sha === 'string' && COMMIT_SHA_RE.test(result.sha) ? { sha: result.sha.toLowerCase() } : {}),
+      ...(ok && typeof result.sha === 'string' && COMMIT_SHA_RE.test(result.sha)
+        ? { sha: result.sha.toLowerCase() }
+        : {}),
       ...(ok ? {} : { error: result?.error || 'Inspection failed' })
     }
   } catch (e) {

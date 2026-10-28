@@ -135,12 +135,7 @@ import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
-import type {
-  SessionCreateResponse,
-  SessionMessagesResponse,
-  SessionResumeResult,
-  UsageStats
-} from '@/types/hermes'
+import type { SessionCreateResponse, SessionMessagesResponse, SessionResumeResult, UsageStats } from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -2058,7 +2053,12 @@ export function useSessionActions({
             : viewMessagesForReconcile()
 
           // Tail page + previously backfilled prefix (same-session re-resume).
-          prefetchedPage = await graftTranscriptPage(prefetchedResult, previousMessages, storedSessionId, sessionRestScope)
+          prefetchedPage = await graftTranscriptPage(
+            prefetchedResult,
+            previousMessages,
+            storedSessionId,
+            sessionRestScope
+          )
           prefetchedTranscriptMessages = prefetchedPage.transcript
           localSnapshot = prefetchedPage.snapshot
           prefetchApplied = true

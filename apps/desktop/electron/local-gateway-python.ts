@@ -66,10 +66,22 @@ class TicketBridge {
   private idleTimer?: ReturnType<typeof setTimeout>
   private closed = false
 
-  constructor(command: string, cwd: string, env: NodeJS.ProcessEnv, private key: string) {
-    this.child = spawn(command, ['-P', '-u', '-c', TICKET_SCRIPT], hiddenWindowsChildOptions({
-      cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe']
-    }))
+  constructor(
+    command: string,
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    private key: string
+  ) {
+    this.child = spawn(
+      command,
+      ['-P', '-u', '-c', TICKET_SCRIPT],
+      hiddenWindowsChildOptions({
+        cwd,
+        env,
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+    )
     this.child.stderr.resume()
     this.child.stdout.setEncoding('utf8')
     this.child.stdout.on('data', data => this.receive(String(data)))
@@ -82,16 +94,20 @@ class TicketBridge {
     clearTimeout(this.idleTimer)
 
     return new Promise((resolve, reject) => {
-      if (this.closed) { reject(new Error('Gateway ticket bootstrap failed'));
+      if (this.closed) {
+        reject(new Error('Gateway ticket bootstrap failed'))
 
- return }
+        return
+      }
 
       const id = ++this.sequence
       const request = JSON.stringify({ id, endpoint, purpose }) + '\n'
 
-      if (Buffer.byteLength(request) > 65536) { reject(new Error('Gateway ticket request too large'));
+      if (Buffer.byteLength(request) > 65536) {
+        reject(new Error('Gateway ticket request too large'))
 
- return }
+        return
+      }
 
       const timer = setTimeout(() => this.dispose(), 10_000)
       this.pending.set(id, { resolve, reject, timer })
@@ -103,9 +119,11 @@ class TicketBridge {
   private receive(data: string): void {
     this.output += data
 
-    if (this.output.length > 65536) { this.dispose();
+    if (this.output.length > 65536) {
+      this.dispose()
 
- return }
+      return
+    }
 
     let end: number
 
@@ -117,30 +135,47 @@ class TicketBridge {
         const reply = JSON.parse(line)
         const waiter = this.pending.get(reply.id)
 
-        if (!waiter) { this.dispose();
+        if (!waiter) {
+          this.dispose()
 
- return }
+          return
+        }
 
         this.pending.delete(reply.id)
         clearTimeout(waiter.timer)
 
-        if (typeof reply.ticket === 'string' && reply.ticket) { waiter.resolve(reply.ticket) }
-        else { waiter.reject(Object.assign(new Error('Gateway ticket bootstrap failed'),
-          typeof reply.error === 'string' ? { reason: reply.error } : {})) }
-      } catch { this.dispose();
+        if (typeof reply.ticket === 'string' && reply.ticket) {
+          waiter.resolve(reply.ticket)
+        } else {
+          waiter.reject(
+            Object.assign(
+              new Error('Gateway ticket bootstrap failed'),
+              typeof reply.error === 'string' ? { reason: reply.error } : {}
+            )
+          )
+        }
+      } catch {
+        this.dispose()
 
- return }
+        return
+      }
     }
 
-    if (!this.pending.size) { this.idleTimer = setTimeout(() => this.dispose(), 30_000) }
+    if (!this.pending.size) {
+      this.idleTimer = setTimeout(() => this.dispose(), 30_000)
+    }
   }
 
   dispose(): void {
-    if (this.closed) { return }
+    if (this.closed) {
+      return
+    }
     this.closed = true
     clearTimeout(this.idleTimer)
 
-    if (bridges.get(this.key) === this) { bridges.delete(this.key) }
+    if (bridges.get(this.key) === this) {
+      bridges.delete(this.key)
+    }
 
     for (const waiter of this.pending.values()) {
       clearTimeout(waiter.timer)
@@ -155,7 +190,9 @@ class TicketBridge {
 export function closeGatewayTicketBridges(): void {
   bridgeGeneration++
 
-  for (const bridge of bridges.values()) { bridge.dispose() }
+  for (const bridge of bridges.values()) {
+    bridge.dispose()
+  }
 }
 
 interface ResolvedTicketBackend {
@@ -174,13 +211,21 @@ const RUNTIME_COMMAND_TIMEOUT_MS = 30_000
 /** Ask an installation launcher for its interpreter; it owns ABI and store selection. */
 function launcherRuntimePython(backend: ResolvedTicketBackend & { root: string }): Promise<string> {
   return new Promise((resolve, reject) => {
-    const fail = (detail: string) => reject(new Error(`Gateway ticket bootstrap could not resolve the installed Hermes Python runtime: ${detail}`))
+    const fail = (detail: string) =>
+      reject(new Error(`Gateway ticket bootstrap could not resolve the installed Hermes Python runtime: ${detail}`))
 
     // A .cmd override is a shell backend: quote it as the backend spawn does, or cmd.exe
     // splits a launcher path with a space at the first one (#74064).
-    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), ['--print-runtime-command'], hiddenWindowsChildOptions({
-      cwd: backend.root, env: { ...process.env, ...backend.env }, shell: Boolean(backend.shell), stdio: ['ignore', 'pipe', 'ignore']
-    }))
+    const child = spawn(
+      windowsShellCommand(backend.command, Boolean(backend.shell)),
+      ['--print-runtime-command'],
+      hiddenWindowsChildOptions({
+        cwd: backend.root,
+        env: { ...process.env, ...backend.env },
+        shell: Boolean(backend.shell),
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
+    )
 
     let output = ''
     const timer = setTimeout(() => child.kill('SIGKILL'), RUNTIME_COMMAND_TIMEOUT_MS)
@@ -188,28 +233,39 @@ function launcherRuntimePython(backend: ResolvedTicketBackend & { root: string }
     child.stdout!.on('data', data => {
       output += String(data)
 
-      if (output.length > 65536) { child.kill('SIGKILL') }
+      if (output.length > 65536) {
+        child.kill('SIGKILL')
+      }
     })
-    child.on('error', error => { clearTimeout(timer); fail(error.message) })
+    child.on('error', error => {
+      clearTimeout(timer)
+      fail(error.message)
+    })
     child.on('close', code => {
       clearTimeout(timer)
 
-      if (code !== 0) { fail(`launcher exited ${code ?? 'without a code'}; refresh this installation's launcher`);
+      if (code !== 0) {
+        fail(`launcher exited ${code ?? 'without a code'}; refresh this installation's launcher`)
 
- return }
+        return
+      }
 
       let command: unknown
 
-      try { command = JSON.parse(output) } catch { fail('launcher did not report a runtime command');
+      try {
+        command = JSON.parse(output)
+      } catch {
+        fail('launcher did not report a runtime command')
 
- return }
+        return
+      }
 
       const python = Array.isArray(command) ? command[0] : undefined
 
       if (typeof python !== 'string' || !path.isAbsolute(python) || python.includes('\0') || !isFile(python)) {
-        fail('launcher reported an invalid runtime command');
+        fail('launcher reported an invalid runtime command')
 
- return
+        return
       }
 
       resolve(python)
@@ -218,7 +274,11 @@ function launcherRuntimePython(backend: ResolvedTicketBackend & { root: string }
 }
 
 function isFile(candidate: string): boolean {
-  try { return statSync(candidate).isFile() } catch { return false }
+  try {
+    return statSync(candidate).isFile()
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -226,7 +286,9 @@ function isFile(candidate: string): boolean {
  * launcher backend names its own. The helper is stdlib-only, so the checkout on
  * PYTHONPATH is its whole import closure (-P still keeps the cwd out).
  */
-export async function ticketRuntimeFor(backend: ResolvedTicketBackend): Promise<{ command: string; env?: NodeJS.ProcessEnv }> {
+export async function ticketRuntimeFor(
+  backend: ResolvedTicketBackend
+): Promise<{ command: string; env?: NodeJS.ProcessEnv }> {
   if (backend.ticketCommand) {
     return { command: backend.ticketCommand, env: { ...backend.env, ...backend.ticketEnv } }
   }
@@ -254,17 +316,23 @@ export function createGatewayTicketResolver(resolveBackend: () => Promise<Resolv
     if (!cached || cachedGeneration !== generation) {
       cachedGeneration = generation
 
-      const flight = resolveBackend().then(ticketRuntimeFor).catch(error => {
-        if (cached === flight) { cached = undefined }
-        throw error
-      })
+      const flight = resolveBackend()
+        .then(ticketRuntimeFor)
+        .catch(error => {
+          if (cached === flight) {
+            cached = undefined
+          }
+          throw error
+        })
 
       cached = flight
     }
 
     const backend = await cached
 
-    if (generation !== bridgeGeneration) { throw new Error('Gateway ticket runtime changed; retry connection') }
+    if (generation !== bridgeGeneration) {
+      throw new Error('Gateway ticket runtime changed; retry connection')
+    }
 
     return mintGatewayTicketWithPython(backend, cwd(), endpoint, purpose)
   }
@@ -276,8 +344,13 @@ export function mintGatewayTicketWithPython(
   endpoint: TicketEndpoint,
   purpose: GatewayTicketPurpose
 ): Promise<string> {
-  const env = { ...process.env, ...backend.env, HERMES_HOME: endpoint.profile_id,
-    PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
+  const env = {
+    ...process.env,
+    ...backend.env,
+    HERMES_HOME: endpoint.profile_id,
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1'
+  }
 
   const key = JSON.stringify([backend.command, cwd, Object.entries(env).sort(([a], [b]) => a.localeCompare(b))])
   let bridge = bridges.get(key)

@@ -301,6 +301,14 @@ gateway:
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
 
+Caption-less media joins the same batch: a photo, video or document sent bare is held for a longer
+quiet period (**8s**, `media_caption_wait_seconds`, max `30.0`) so the instruction typed right after
+it ("please print it") merges into one agent turn instead of interrupting the turn the file already
+spawned. The trailing text lands → the combined event dispatches after the normal short quiet
+period; the file stays alone → dispatched after the caption window. Voice notes and captioned media
+are never held. Set `media_caption_wait_seconds: 0` to dispatch bare media immediately (the previous
+behavior).
+
 ### Quoted Replies
 
 Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.

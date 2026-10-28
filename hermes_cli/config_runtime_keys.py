@@ -56,10 +56,11 @@ def _selected_memory_provider_manifest():
     name = cfg_get(load_config(), "memory", "provider")
     if not isinstance(name, str) or not name.strip():
         return None
-    from plugins.memory import find_provider_dir
+    from plugins.memory import _explicitly_disabled, find_provider_dir
 
     provider_dir = find_provider_dir(name.strip())
-    if provider_dir is None:
+    # The memory loader refuses a provider parked in ``plugins.disabled``; its keys are not live either.
+    if provider_dir is None or _explicitly_disabled(name.strip(), provider_dir):
         return None
     manifest_file = next((f for f in (provider_dir / "plugin.yaml", provider_dir / "plugin.yml") if f.exists()), None)
     return parse_manifest_file(manifest_file, provider_dir, "memory", "memory") if manifest_file else None

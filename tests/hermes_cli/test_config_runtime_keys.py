@@ -132,6 +132,8 @@ def test_selected_memory_provider_declares_its_config_keys(hermes_home, capsys):
     assert _set_notice("memory.widgetmem.project", "p1", capsys)  # installed, not selected
     _write_config(hermes_home, {"memory": {"provider": "widgetmem"}})
     assert not _set_notice("memory.widgetmem.project", "p2", capsys)
+    _write_config(hermes_home, {"memory": {"provider": "widgetmem"}, "plugins": {"disabled": ["widgetmem"]}})
+    assert _set_notice("memory.widgetmem.project", "p3", capsys)  # selected but disabled
 
 
 def test_enabled_project_plugin_declares_its_config_keys(hermes_home, tmp_path, monkeypatch, capsys):

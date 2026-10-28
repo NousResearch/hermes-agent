@@ -70,6 +70,15 @@ def oauth_fixture(mode="success"):
             if self.path == "/register":
                 if DEVICE_GRANT not in data.get("grant_types", []):
                     return self.reply(400, {"error": "invalid_client_metadata"})
+                if mode == "rejects_registration":
+                    return self.reply(400, {"error": "invalid_client_metadata",
+                                            "error_description": "fixture-device-secret MUST NOT BE PRINTED"})
+                if mode == "rejects_empty_response_types":
+                    if data.get("response_types") == []:
+                        return self.reply(400, {"error": "invalid_client_metadata",
+                                                "error_description": "response_types should not be empty"})
+                    # RFC 7591 s3.2.1: the response carries the defaults the server provisioned.
+                    return self.reply(201, {"response_types": ["code"], **data, "client_id": "fixture-client"})
                 return self.reply(201, {**data, "client_id": "fixture-client"})
             if self.path == "/device":
                 return self.reply(200, {"device_code": "fixture-device-secret", "user_code": "TEST-CODE",

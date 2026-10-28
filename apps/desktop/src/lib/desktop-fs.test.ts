@@ -10,6 +10,7 @@ import {
   DesktopFileMissingError,
   desktopFsCacheKey,
   desktopGitRoot,
+  openDesktopPathWithDefaultApp,
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileDataUrlLocalFirst,
@@ -395,5 +396,17 @@ describe('desktop filesystem facade', () => {
     })
 
     await expect(readDesktopFileText('/gone.txt')).rejects.toBeInstanceOf(DesktopFileMissingError)
+  })
+
+  it('opens a local path through the OS default app via the bare-path bridge route', async () => {
+    const openExternal = vi.fn(async () => {})
+
+    vi.stubGlobal('window', { hermesDesktop: { api, openExternal } })
+    $connection.set({ mode: 'local' } as never)
+
+    await openDesktopPathWithDefaultApp('/tmp/报告 1.xlsx')
+
+    expect(openExternal).toHaveBeenCalledWith('/tmp/报告 1.xlsx')
+    expect(api).not.toHaveBeenCalled()
   })
 })

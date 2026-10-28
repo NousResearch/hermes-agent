@@ -17,7 +17,8 @@ const { isDesktopFsRemoteMode, notifyError, openPreview } = vi.hoisted(() => ({
   openPreview: vi.fn()
 }))
 
-vi.mock('@/lib/desktop-fs', () => ({
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...(await (importOriginal() as Promise<Record<string, unknown>>)),
   isDesktopFsRemoteMode,
   readDesktopDir: vi.fn(),
   readDesktopFileDataUrl: vi.fn(),

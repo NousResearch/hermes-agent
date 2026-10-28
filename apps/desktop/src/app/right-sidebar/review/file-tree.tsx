@@ -24,6 +24,7 @@ import {
   $renamingPath,
   copyFilePath,
   downloadRemoteFile,
+  openFileWithDefaultApp,
   revealFile,
   shouldOfferRemoteFileDownload,
   toRelativePath
@@ -510,9 +511,12 @@ function ReviewFileContextMenu({
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => revealFileInTree(dragPath)}>{m.revealInSidebar}</ContextMenuItem>
         {localFs && (
-          <ContextMenuItem onSelect={() => void revealFile(dragPath)}>
-            {pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)}
-          </ContextMenuItem>
+          <>
+            <ContextMenuItem onSelect={() => void openFileWithDefaultApp(dragPath)}>{m.openWithApp}</ContextMenuItem>
+            <ContextMenuItem onSelect={() => void revealFile(dragPath)}>
+              {pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)}
+            </ContextMenuItem>
+          </>
         )}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => void copyFilePath(dragPath)}>{m.copyPath}</ContextMenuItem>

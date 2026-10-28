@@ -34,7 +34,7 @@ import {
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { ExternalLink } from '@/lib/external-link'
-import { Check, Pencil, X } from '@/lib/icons'
+import { Check, ExternalLink as ExternalLinkIcon, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
@@ -49,6 +49,7 @@ import {
 } from '@/lib/preview-markdown-links'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
+import { openFileWithDefaultApp } from '@/store/file-actions'
 import { markPreviewTabMissing, openPreview, type PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
@@ -204,6 +205,69 @@ function filePathForTarget(target: PreviewTarget) {
   }
 
   return fileUrlToNativePath(target.url) ?? target.url
+}
+
+// Small header affordance that hands the previewed file to its OS default
+// application (Excel/WPS for xlsx, Preview for pdf). Only real local files
+// qualify: artifact targets have no on-disk path, remote-gateway paths don't
+// exist on this machine, and transient (pasted) bytes are not reliably on disk.
+// Filesystem origin is captured when the tab opens, so pinned remote tabs stay
+// ineligible after the user switches to a local session (and vice versa).
+export function canOpenWithDefaultApp(target: PreviewTarget): boolean {
+  return (
+    target.kind === 'file' &&
+    !target.transient &&
+    target.filesystemOrigin === 'local' &&
+    Boolean(window.hermesDesktop?.openExternal)
+  )
+}
+
+function OpenWithDefaultAppButton({ target }: { target: PreviewTarget }) {
+  const { t } = useI18n()
+
+  if (!canOpenWithDefaultApp(target)) {
+    return null
+  }
+
+  const filePath = filePathForTarget(target)
+
+  return (
+    <Tip label={t.fileMenu.openWithApp}>
+      <button
+        className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+        onClick={() => void openFileWithDefaultApp(filePath)}
+        type="button"
+      >
+        <ExternalLinkIcon className="size-3" />
+        {t.fileMenu.openWithApp}
+      </button>
+    </Tip>
+  )
+}
+
+function openWithDefaultAppSecondaryAction(target: PreviewTarget, filePath: string, label: string) {
+  return canOpenWithDefaultApp(target) ? { label, onClick: () => void openFileWithDefaultApp(filePath) } : undefined
+}
+
+function PdfFilePreview({ pdfUrl, target }: { pdfUrl: string; target: PreviewTarget }) {
+  return (
+    <div className="flex h-full w-full flex-col overflow-hidden bg-transparent">
+      <PreviewModeSwitcher
+        active="source"
+        modes={[]}
+        onSelect={() => {}}
+        trailing={<OpenWithDefaultAppButton target={target} />}
+      />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <iframe
+          aria-label={target.label}
+          className="h-full w-full border-0 bg-white"
+          src={pdfUrl}
+          title={target.label}
+        />
+      </div>
+    </div>
+  )
 }
 
 function formatBytes(bytes: number | undefined) {
@@ -1173,6 +1237,7 @@ export function LocalFilePreview({
       <PreviewEmptyState
         body={binary ? t.preview.binaryBody(target.label) : t.preview.largeBody(target.label, formatBytes(size))}
         primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
+        secondaryAction={openWithDefaultAppSecondaryAction(target, filePath, t.fileMenu.openWithApp)}
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
       />
@@ -1193,16 +1258,7 @@ export function LocalFilePreview({
   }
 
   if (isPdf && state.dataUrl && pdfUrl) {
-    return (
-      <div className="h-full w-full overflow-hidden bg-transparent">
-        <iframe
-          aria-label={target.label}
-          className="h-full w-full border-0 bg-white"
-          src={pdfUrl}
-          title={target.label}
-        />
-      </div>
-    )
+    return <PdfFilePreview pdfUrl={pdfUrl} target={target} />
   }
 
   if (isPdf && state.dataUrl) {

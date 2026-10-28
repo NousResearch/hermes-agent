@@ -50,22 +50,32 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 
 - Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`.
 - Pick the interpreter with `terminal`. Use `python` when it already imports
-  the libraries (the Hermes Docker image ships them); otherwise let Hermes
-  build its shared, pinned documents environment under the Hermes home. It
-  survives container restarts, never touches the Hermes install itself, and is
-  safe to run from several agents at once. Use this exact command in every
-  document skill so they all share one environment:
+  the libraries (the Hermes Docker image ships them). Otherwise, when `hermes`
+  is on PATH, let Hermes build its shared, pinned documents environment under
+  the Hermes home: it survives container restarts, never touches the Hermes
+  install itself, and is safe to run from several agents at once. When it is
+  not (the terminal runs in a Docker sandbox, which has no Hermes), the block
+  builds a venv in the sandbox home with the same pinned versions. Use this
+  exact block in every document skill so they all share one environment:
 
   ```bash
-  python -c "import pypdf, reportlab, pdfplumber" 2>/dev/null && PY=python || PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
+  python -c "import pypdf, reportlab, pdfplumber" 2>/dev/null && PY=python || if command -v hermes >/dev/null 2>&1; then
+    PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
+  else
+    PY="$HOME/.cache/hermes-docs-venv/bin/python"
+    [ -x "$PY" ] || python3 -m venv "$HOME/.cache/hermes-docs-venv"
+    "$PY" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null ||
+      "$PY" -m pip install -q --disable-pip-version-check python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 reportlab==5.1.0 pypdf==6.21.2 pdfplumber==0.11.10 pypdfium2==5.14.0
+  fi
   export PY
   "$PY" scripts/pdf_create.py --help
   ```
 
-  Run every helper below with `"$PY"`. In PowerShell:
+  Run every helper below with `"$PY"`. In PowerShell (Hermes runs on that
+  host, so it is on PATH):
   `$env:PY = hermes pm environment documents --extra documents --extra documents-pdf`.
-  Never `pip install` into the interpreter that runs Hermes or into this
-  environment; `hermes pm environment` owns it.
+  Never `pip install` into the interpreter that runs Hermes or into the
+  `hermes pm environment` one; Hermes owns both.
 - Page rasterization (`pdf_page_image.py`, overlay rendering) uses `pypdfium2`, which the documents environment already has (if your `python` lacks it, switch `PY` to that environment with the command above), or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
 - Each helper script checks imports lazily and prints an install hint if a dependency is missing.
 

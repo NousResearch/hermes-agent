@@ -44,13 +44,22 @@ Adapted from Anthropic's `xlsx-author` and `audit-xls` skills in the [anthropics
 ## Setup
 
 Use `python` when it already imports `openpyxl` (the Hermes Docker image ships
-it). Otherwise let Hermes build its shared, pinned documents environment
-under the Hermes home (the same command as the docx/xlsx/powerpoint/pdf
-skills; safe to run from several agents at once), and never `pip install`
-into the interpreter that runs Hermes:
+it). Otherwise, when `hermes` is on PATH, let Hermes build its shared, pinned
+documents environment under the Hermes home (safe to run from several agents
+at once); in a Docker sandbox without Hermes the block builds a venv in the
+sandbox home with the same pinned versions. It is the same block as the
+docx/xlsx/powerpoint/pdf skills. Never `pip install` into the interpreter that
+runs Hermes:
 
 ```bash
-python -c "import openpyxl" 2>/dev/null && PY=python || PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
+python -c "import openpyxl" 2>/dev/null && PY=python || if command -v hermes >/dev/null 2>&1; then
+  PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
+else
+  PY="$HOME/.cache/hermes-docs-venv/bin/python"
+  [ -x "$PY" ] || python3 -m venv "$HOME/.cache/hermes-docs-venv"
+  "$PY" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null ||
+    "$PY" -m pip install -q --disable-pip-version-check python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 reportlab==5.1.0 pypdf==6.21.2 pdfplumber==0.11.10 pypdfium2==5.14.0
+fi
 export PY
 ```
 

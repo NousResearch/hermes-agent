@@ -46,7 +46,7 @@ def main() -> int:
     try:
         from pypdf import PdfReader, PdfWriter
     except ImportError:
-        print("Missing dependency: 'pypdf' is not importable here; rerun with the documents environment's interpreter: hermes pm environment documents --extra documents --extra documents-pdf", file=sys.stderr)
+        print("Missing dependency: 'pypdf' is not importable here; rerun with the documents interpreter $PY from the pdf skill's Prerequisites setup block", file=sys.stderr)
         return 2
 
     reader = PdfReader(args.pdf)

@@ -148,6 +148,31 @@ button) reach the OS browser through one explicit bridge instead:
 Widening any of those three (partition key, trusted-click gate, scheme set)
 reopens the gesture-less forced-navigation class the advisory closed.
 
+## Rendering work follows visibility and ownership
+
+- Idle preview guests use Chromium's background throttling. Owned activity
+  leases wake the guest and its embedding window; the window controller still
+  arbitrates streaming and Wayland fullscreen policy. One operation finishing
+  must not suspend overlapping work.
+  Registration belongs in `electron/preview-guest-ipc.ts`; `main.ts` only binds
+  the owner-window wake callback. Keep validation and ownership checks at that IPC boundary.
+- Main owns script readiness, dispatch and document cancellation. Work queued
+  during navigation belongs to the incoming page; a promise abandoned in the
+  old document must release its lease. Reapply the guest wake after loading:
+  Electron's stored throttling flag does not prove a replacement widget is awake.
+  Preserve the existing script completion-value contract and plugin consent.
+- Capture leases cover paint waits and image capture, not waiting for a user's
+  next annotation. Keep action acquisition cancellable and bounded without
+  imposing an arbitrary deadline on approved plugin scripts or long typing.
+
+Verify scheduling changes with native hidden/minimized windows and real preview
+navigation, typing and capture. Browser automation's focus emulation can keep
+hidden frames awake and conceal regressions; disable it for these checks.
+Software-rendered VM timings are not hardware GPU or battery measurements.
+With a graphical session (or Xvfb), `npm run test:preview-activity-native
+--workspace apps/desktop` exercises real hidden-frame navigation, overlapping
+operations, cancellation and plugin completion values in a disposable profile.
+
 ## Nous free tier: state is pulled, never latched in the renderer
 
 The free tier (a Nous identity with no account, `hermes_cli/anon_auth.py`) reaches the renderer

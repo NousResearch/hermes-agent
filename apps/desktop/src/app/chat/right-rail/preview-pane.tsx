@@ -72,7 +72,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
-import { usePreviewDriveChannels } from './preview-drive-channels'
+import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewGuestActivity } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
 import { type PreviewInputEvent } from './preview-input'
@@ -487,7 +487,8 @@ export function PreviewPane({
           throw new Error('preview guest has no webContents')
         }
 
-        const viewport = (await bindPreviewExecuteJavaScript(webview)(
+        const viewport = (await runPreviewGuestScript(
+          webview,
           '({ width: window.innerWidth, height: window.innerHeight })'
         )) as { height: number; width: number }
 
@@ -499,7 +500,9 @@ export function PreviewPane({
 
         return dataUrl
       },
-      executeJavaScript: bindPreviewExecuteJavaScript(webview)
+      executeJavaScript: bindPreviewExecuteJavaScript(webview),
+      withActivity: operation =>
+        withPreviewGuestActivity(webview, () => operation(code => runPreviewGuestScript(webview, code)))
     }
   }, [])
 

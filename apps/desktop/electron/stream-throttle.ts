@@ -49,11 +49,13 @@ export interface StreamThrottleOptions {
 }
 
 export interface StreamThrottle {
-  /** True while windows are currently unthrottled (streaming or trailing). */
+  /** True while the fleet is unthrottled (streaming or trailing). */
   isUnthrottled(): boolean
   /** Track a chat window; applies the current state immediately and stops
    * tracking on close. */
   register(win: ThrottleWindowLike & { on?: (event: string, fn: () => void) => void }): void
+  /** Keep one window's timers awake for bounded native work; release is idempotent. */
+  holdWindow(win: ThrottleWindowLike): () => void
   /** Report whether any turn is in flight across all renderers. */
   update(busy: boolean): void
 }
@@ -64,6 +66,7 @@ export function createStreamThrottle(
   options: StreamThrottleOptions = {}
 ): StreamThrottle {
   const windows = new Set<ThrottleWindowLike>()
+  const windowHolds = new WeakMap<ThrottleWindowLike, number>()
   const keepFullscreenPainting = options.keepFullscreenPainting === true
   let unthrottled = false
   let trailing: unknown = null
@@ -90,6 +93,7 @@ export function createStreamThrottle(
   function apply(win: ThrottleWindowLike) {
     if (win.isDestroyed()) {
       windows.delete(win)
+      windowHolds.delete(win)
 
       return
     }
@@ -101,7 +105,7 @@ export function createStreamThrottle(
     }
 
     try {
-      contents.setBackgroundThrottling(!unthrottled)
+      contents.setBackgroundThrottling(!(unthrottled || windowHolds.has(win)))
     } catch {
       // A window mid-teardown can throw; it's about to leave the set anyway.
     }
@@ -128,10 +132,49 @@ export function createStreamThrottle(
   return {
     isUnthrottled: () => unthrottled,
 
+    holdWindow(win) {
+      if (!windows.has(win) || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) {
+        throw new Error('Preview owner is not a live registered window')
+      }
+
+      const held = windowHolds.get(win) ?? 0
+      windowHolds.set(win, held + 1)
+
+      if (!held && !unthrottled) {
+        apply(win)
+      }
+
+      let released = false
+
+      return () => {
+        if (released) {
+          return
+        }
+
+        released = true
+        const count = windowHolds.get(win)
+
+        if (count === undefined) {
+          return
+        }
+
+        if (count > 1) {
+          windowHolds.set(win, count - 1)
+        } else {
+          windowHolds.delete(win)
+
+          if (!unthrottled) {
+            apply(win)
+          }
+        }
+      }
+    },
+
     register(win) {
       windows.add(win)
       win.on?.('closed', () => {
         windows.delete(win)
+        windowHolds.delete(win)
         armRethrottleIfIdle()
       })
 

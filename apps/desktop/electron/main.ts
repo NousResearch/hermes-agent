@@ -433,7 +433,8 @@ import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
-import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
+import { registerPreviewGuestIpc } from './preview-guest-ipc'
+import { commandFocusedGuest } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
@@ -15588,15 +15589,7 @@ ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
 })
 
-// The host renderer reports which of its Browser guests are off screen (a
-// hidden session's kept-alive page), so focused-guest gestures skip them.
-ipcMain.on('hermes:preview-guest-hidden', (event, payload) => {
-  notePreviewGuestHidden(
-    event.sender,
-    electronWebContents.fromId(Number(payload?.webContentsId)),
-    Boolean(payload?.hidden)
-  )
-})
+registerPreviewGuestIpc(owner => streamThrottle.holdWindow(owner))
 
 ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
   if (active) {

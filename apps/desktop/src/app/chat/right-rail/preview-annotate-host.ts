@@ -13,6 +13,8 @@ import {
 export interface PreviewAnnotateGuest {
   capture?: (rect: { height: number; width: number; x: number; y: number }) => Promise<string>
   executeJavaScript: (code: string) => Promise<unknown>
+  /** Only bounded capture work is awake; waiting for the next user pick is not. */
+  withActivity: <T>(operation: (execute: PreviewAnnotateGuest['executeJavaScript']) => Promise<T>) => Promise<T>
 }
 
 /**
@@ -96,9 +98,9 @@ export async function hideAnnotateDraft(guest: PreviewAnnotateGuest): Promise<vo
 }
 
 /** Guest calls are best-effort dressing: never let one fail the capture. */
-async function tryGuest(guest: PreviewAnnotateGuest, code: string): Promise<void> {
+async function tryGuest(execute: PreviewAnnotateGuest['executeJavaScript'], code: string): Promise<void> {
   try {
-    await guest.executeJavaScript(code)
+    await execute(code)
   } catch {
     // The overlay may be mid-teardown or the guest gone. Shoot anyway.
   }
@@ -112,15 +114,15 @@ export async function captureAnnotateCrop(
     throw new Error('preview capture is unavailable')
   }
 
-  // Bracket the shot: the overlay hides saved pins and waits for a paint, so
-  // the crop carries this comment's marker and no neighbour's. `endCapture`
-  // runs even when the capture throws, or one failed crop leaves every saved
-  // pin invisible on the page.
-  await tryGuest(guest, 'window.__hermesAnnotate ? window.__hermesAnnotate.beginCapture() : null')
+  // Keep the guest awake through both paint frames, capturePage, and cleanup.
+  // The annotation event-wait loop must not hold this lease.
+  return guest.withActivity(async execute => {
+    try {
+      await tryGuest(execute, 'window.__hermesAnnotate ? window.__hermesAnnotate.beginCapture() : null')
 
-  try {
-    return await guest.capture(padRect(rect))
-  } finally {
-    await tryGuest(guest, 'window.__hermesAnnotate && window.__hermesAnnotate.endCapture()')
-  }
+      return await guest.capture!(padRect(rect))
+    } finally {
+      await tryGuest(execute, 'window.__hermesAnnotate && window.__hermesAnnotate.endCapture()')
+    }
+  })
 }

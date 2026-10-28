@@ -2187,10 +2187,11 @@ DEFAULT_CONFIG = {
         # also catches SLOW ~150s crash cycles. max_restarts=0 disables.
         "restart_loop_guard": {"max_restarts": 3, "window_seconds": 60, "max_gap_seconds": 300},
         # Respawn-storm circuit breaker (complements restart_loop_guard): counts (re)starts in a
-        # sliding window and sleeps an exponential backoff before booting so a crash-looping
+        # gap-chained window and sleeps an exponential backoff before booting so a crash-looping
         # supervisor can't hammer the process. max_starts <= 0 disables. Env escape hatches:
-        # HERMES_GATEWAY_MAX_STARTS / HERMES_GATEWAY_START_WINDOW_S.
-        "respawn_storm": {"max_starts": 5, "window_seconds": 120},
+        # HERMES_GATEWAY_MAX_STARTS / HERMES_GATEWAY_START_WINDOW_S /
+        # HERMES_GATEWAY_START_MAX_GAP_S.
+        "respawn_storm": {"max_starts": 5, "window_seconds": 120, "max_gap_seconds": 300},
         # Prefix user messages IN THE MODEL'S CONTEXT with a timestamp (e.g. "[Tue 2026-04-28
         # 13:40:53 CEST]") for temporal awareness. Persisted transcripts stay clean (timestamp is
         # message metadata regardless), so enabling later surfaces past send-times too.

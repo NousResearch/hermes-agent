@@ -358,7 +358,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml_seen["text"]
     assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml_seen["text"]
     assert "<RestartOnFailure>" in xml_seen["text"]
-    assert "<Count>999</Count>" in xml_seen["text"]
+    assert "<Count>3</Count>" in xml_seen["text"]
     # Scheduled Task launches the console-less .vbs via wscript.exe, never cmd.exe
     # (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A).
     assert "<Command>wscript.exe</Command>" in xml_seen["text"]
@@ -386,11 +386,52 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True" in content  # hidden window, synchronous wait for exit code
+    assert "If rc <> 75 Then Exit Do" in content
+    assert "attempts >= 3" in content
+    assert "WScript.Sleep delay" in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
+
+
+def test_scheduled_task_bounds_its_own_restart_policy():
+    """The Scheduled Task is the SECOND, independent brake on a respawn storm.
+
+    The VBS caps its own retry loop, and the gateway's app-level breaker caps
+    the boot chain -- but the task can also relaunch the launcher itself, so
+    its restart policy must be bounded too. An unbounded ``Count`` (the old
+    999) let the task relaunch forever, and the VBS's own cap never got a
+    chance to matter.
+    """
+    xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway_alice",
+        Path(r"C:\Hermes\gateway-service\Hermes_Gateway_alice.vbs"),
+        r"DOMAIN\alice",
+    )
+    assert "<RestartOnFailure>" in xml
+    assert f"<Count>{gateway_windows._TASK_RESTART_COUNT}</Count>" in xml
+    assert "<Count>999</Count>" not in xml
+    assert gateway_windows._TASK_RESTART_COUNT <= 3
+    assert gateway_windows._TASK_RESTART_INTERVAL == "PT1M"
+
+
+def test_scheduled_task_ignores_a_new_instance_while_one_is_running():
+    """A second launcher must not race a draining predecessor.
+
+    ``IgnoreNew`` is what makes the launcher's synchronous wait meaningful:
+    with the old detached VBS the task finished in under a second, so the
+    policy no longer covered the gateway's lifetime and a second generation
+    could hard-kill the first (the 2026-10-26 pattern).
+    """
+    xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway_alice",
+        Path(r"C:\Hermes\gateway-service\Hermes_Gateway_alice.vbs"),
+        r"DOMAIN\alice",
+    )
+    assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
+    assert "<MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>" not in xml
 
 
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):

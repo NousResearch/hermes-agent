@@ -764,6 +764,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
 
+    try:
+        from gateway.status import respawn_storm_backoff
+        # The breaker sleeps; run it off the event loop (ASYNC251). The wait is
+        # intentional and bounded, and the startup watchdog was already told
+        # the sleep is coming, so it will not kill the boot for backing off.
+        await asyncio.to_thread(respawn_storm_backoff)
+    except Exception as _be:
+        logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
+
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()

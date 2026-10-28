@@ -1,6 +1,6 @@
 name: signal-notify
 repo: https://github.com/dbrosnan/hermes-signal-notify
-sha: ec854743c3408facaeee1589f691b6e68b3a7585
+sha: 16bff1f8bd5f19bb639a44e96091eef615a4fc6c
 description: >-
   Signal texts when a Hermes turn pauses, fails or is interrupted, and when Hermes
   waits on a clarify question, approval or sudo prompt. Sends through the user's own

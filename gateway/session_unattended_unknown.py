@@ -50,6 +50,9 @@ def settle_recovered_unattended(db, epoch) -> int:
             "SELECT * FROM session_admissions WHERE status='unknown' ORDER BY seq").fetchall()]
     settled = 0
     for row in _unattended_unknown(rows):
+        from gateway.session_ancillary import process_stop_pending
+        if process_stop_pending(db, row['target_session_id']) is not None:
+            continue
         try:
             resolve_unknown_session_input(
                 db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],

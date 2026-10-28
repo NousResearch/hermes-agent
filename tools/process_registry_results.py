@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 from hermes_dir_acl import make_user_dir
 
@@ -24,6 +25,12 @@ _RESULT_FIELDS = (
     "parent_session_id", "started_at", "exit_code", "completion_reason",
     "termination_source", "notify_on_complete",
 )
+
+
+def complete_result(record):
+    """Output completeness cannot manufacture the original process's missing status."""
+    return (record.get('result_complete') is True and type(record.get('exit_code')) is int
+            and record.get('completion_reason') != 'lost')
 
 
 def _result_paths():
@@ -46,26 +53,168 @@ def _result_paths():
     return [path for _, path in retained[:MAX_RETAINED_RESULTS]]
 
 
-def save_completed_result(session) -> None:
+def _refresh_complete_payload(session, record):
+    """Retry actual final data collected while this snapshot waited for file locks."""
+    from agent.redact import redact_terminal_output
+    from tools.process_registry import MAX_OUTPUT_CHARS
+    from tools.process_registry_output_log import unit_log_pending
+    with session._lock:
+        if (not session._result_complete or type(session.exit_code) is not int
+                or session.completion_reason == 'lost' or unit_log_pending(session)
+                or (record['result_complete'] and record.get('output_log_state') == session.output_log_state)):
+            return
+        if (record.get('output_log_state') != session.output_log_state
+                and record.get('output_log_state') and not (session.output_log_state or {}).get('final')):
+            return  # Borrowed source metadata cannot refresh from an older cached payload.
+        for key in ('exit_code', 'completion_reason', 'termination_source'):
+            record[key] = getattr(session, key)
+        record['output'] = session.output_buffer[-MAX_OUTPUT_CHARS:]
+        record['result_complete'] = True
+        record['output_log_state'] = session.output_log_state
+    record['output'] = redact_terminal_output(record['output'], record['command'], force=True)
+
+
+def save_completed_result(session) -> bool:
+    """Retain the snapshot; return true only for a complete original result."""
     from agent.redact import redact_sensitive_text, redact_terminal_output
     from tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:
+        if type(session.exit_code) is not int or session.completion_reason == 'lost':
+            session._result_complete, session._result_persisted_generation = False, -1
+            session._scope_stop_pending = True
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
+        record["completion_consumed"] = session.completion_consumed
+        record.update(pid=session.pid, host_start_time=session.host_start_time, pid_scope=session.pid_scope,
+                      native_job_scope=session.native_job_scope,
+                      ownership_generation=session.ownership_generation, handoff_note=session.handoff_note,
+                      systemd_unit=session.systemd_unit, output_log=session.output_log, output_log_state=session.output_log_state)
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
+        record['result_complete'] = session._result_complete
     # Live-output opt-out must not persist raw credentials in durable receipts.
     record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
+    record['handoff_note'] = redact_sensitive_text(record['handoff_note'], code_file=True, force=True)
     directory = get_hermes_home() / "logs" / "process-results"
     try:
         from hermes_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
         make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
-        atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)
-        _result_paths()
-    except OSError:
+        from hermes_cli.active_sessions import _FileLock
+        from tools.process_registry import _checkpoint_path
+        from tools.process_registry_handoff import merge_ownership, OWNERSHIP_FIELDS
+        from tools.process_registry_job import inherit_job_scope
+        from tools.process_registry_output_log import inherit_unit_log, merge_unit_log_result, unit_log_pending
+        checkpoint = _checkpoint_path()
+        # Match the checkpoint writer's lock order. A retired/cached reader can
+        # finish after handoff; merge its immutable process's committed identity
+        # before it publishes either the retained receipt or completion event.
+        with _FileLock(checkpoint.with_name(checkpoint.name + '.lock')):
+            try:
+                previous = json.loads(checkpoint.read_text(encoding='utf-8-sig'))
+            except FileNotFoundError:
+                previous = []
+            merge_ownership([record], previous)
+            inherit_job_scope([record], previous)
+            if inherit_unit_log([record], previous):
+                record['result_complete'] = False  # Borrowed metadata is not a collected payload.
+            with _FileLock(directory / '.lock'):
+                path = directory / f"{session.id}.json"
+                # This writer may have waited behind the original reader. Retry its
+                # actual complete payload, never turn the old partial snapshot into
+                # durability evidence merely because writing that snapshot succeeded.
+                _refresh_complete_payload(session, record)
+                receipts = completed_ownership([record])
+                merge_ownership([record], receipts)
+                inherit_job_scope([record], receipts)
+                if inherit_unit_log([record], receipts):
+                    record['result_complete'] = False
+                if unit_log_pending(record):
+                    record['result_complete'] = False
+                final_log = bool(receipts and merge_unit_log_result(record, receipts[0]))
+                # A delayed Stop snapshot may predate the original reader's final drain.
+                # The existing receipt's explicit publisher phase is monotonic, independent
+                # of ownership transfer and completion consumption.
+                if (receipts and receipts[0].get('result_complete') is True and not record['result_complete']
+                        and not unit_log_pending(record)
+                        and not (record.get('output_log_state') or {}).get('final')):
+                    previous = receipts[0]
+                    if any(previous.get(key) != record.get(key) for key in ('id', 'pid', 'host_start_time', 'started_at')):
+                        raise ValueError('completed process identity mismatch')
+                    for key in ('output', 'exit_code', 'completion_reason', 'termination_source', 'result_complete'):
+                        record[key] = previous[key]
+                # A stale result writer cannot unconsume a completed Stop.
+                record['completion_consumed'] |= completed_result_consumed(session.id)
+                record['result_complete'] = complete_result(record)
+                atomic_json_write(path, record, mode=0o600)
+                _result_paths()
+        with session._lock:
+            session.native_job_scope |= record['native_job_scope']
+            if session.ownership_generation <= record['ownership_generation']:
+                for field in OWNERSHIP_FIELDS:
+                    setattr(session, field, record[field])
+            session.completion_consumed |= record['completion_consumed']
+            if (record['result_complete'] and (not session._result_complete or final_log
+                    or record.get('output_log_state') != session.output_log_state)
+                    and (session._completion_event.is_set() or session._reader_thread is None
+                         or session._reader_thread is threading.current_thread())):
+                # A read failure can use an actual complete retained payload of this
+                # same immutable job. Copy its data; never promote an empty snapshot.
+                session.output_buffer = record['output']
+                for field in ('exit_code', 'completion_reason', 'termination_source'):
+                    setattr(session, field, record[field])
+                session._result_complete = True
+                session.output_log_state = record.get('output_log_state')
+            if (record.get('output_log_state') and type(record.get('exit_code')) is int
+                    and record.get('completion_reason') != 'lost'):
+                for field in ('exit_code', 'completion_reason', 'termination_source'):
+                    setattr(session, field, record[field])
+            session._result_persisted_generation = record['ownership_generation'] if record['result_complete'] else -1
+            if not record['result_complete']:
+                session._scope_stop_pending = True
+        if not record['result_complete']:
+            return False
+        from tools.process_registry_handoff import settle_persisted_scope, notify_completion_observers
+        settle_persisted_scope(session, record)
+        notify_completion_observers(session)  # Post-only observers; a caller may hold its registry lock.
+        return True
+    except (OSError, ValueError, TypeError):
         # Preserve live delivery on disk failure, but never silently claim durability.
         logger.warning("Could not retain completed process result %s", session.id, exc_info=True)
+        return False
+
+
+def completed_result_consumed(session_id: str) -> bool:
+    """Read the existing native result's monotonic consumption verdict after reload."""
+    if not isinstance(session_id, str) or not re.fullmatch(r'proc_[\w]+', session_id):
+        return False
+    path = get_hermes_home() / 'logs' / 'process-results' / f'{session_id}.json'
+    try:
+        record = json.loads(path.read_text(encoding='utf-8-sig'))
+    except FileNotFoundError:
+        return False
+    if not isinstance(record, dict) or record.get('id') != session_id:
+        raise ValueError('invalid retained process result')
+    return record.get('completion_consumed') is True
+
+
+def completed_ownership(entries):
+    """Same native process receipts only; caller holds its profile checkpoint lock."""
+    records = []
+    for entry in entries:
+        sid = entry.get('session_id', entry.get('id'))
+        if not isinstance(sid, str) or not re.fullmatch(r'proc_[\w]+', sid):
+            continue
+        path = get_hermes_home() / 'logs' / 'process-results' / f'{sid}.json'
+        try:
+            record = json.loads(path.read_text(encoding='utf-8-sig'))
+        except FileNotFoundError:
+            continue
+        if not isinstance(record, dict) or record.get('id') != sid:
+            raise ValueError('invalid retained process ownership')
+        record['result_complete'] = complete_result(record)
+        records.append(record)
+    return records
 
 
 def _owns_result(owner: str, parent: str | None) -> bool:
@@ -84,19 +233,30 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         db.close()
 
 
-def load_completed_results(prefix: str = "") -> dict:
+def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
-    from tools.process_registry import ProcessSession
+    from tools.process_registry import ProcessSession, _checkpoint_path
 
     from gateway.session_context import get_session_env
 
     owner = get_session_env("HERMES_SESSION_ID", "")
-    if not owner:
+    if not owner and owns_entry is None:
         return {}
     results = {}
     try:
+        try:
+            checkpoint = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
+        except FileNotFoundError:
+            checkpoint = []
+        if not isinstance(checkpoint, list) or any(not isinstance(row, dict) for row in checkpoint):
+            raise ValueError('invalid process checkpoint')
+        scopes = {row.get('session_id'): row.get('pid_scope', 'host') for row in checkpoint}
+        native_jobs = {row.get('session_id'): row.get('native_job_scope', False) for row in checkpoint}
+        metadata = {row.get('session_id'): row for row in checkpoint}
         paths = _result_paths()
-    except OSError:
+    except (OSError, ValueError):
+        if strict:
+            raise
         logger.warning("Could not read retained process results", exc_info=True)
         return results
     for path in paths:
@@ -106,14 +266,33 @@ def load_completed_results(prefix: str = "") -> dict:
             record = json.loads(path.read_text(encoding="utf-8-sig"))
             if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
                 continue
-            if not _owns_result(owner, record.get("parent_session_id")):
+            if not (owns_entry(record) if owns_entry is not None else _owns_result(owner, record.get("parent_session_id"))):
                 continue
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
-                exited=True, output_buffer=record["output"],
+                exited=True, output_buffer=record["output"], completion_consumed=record.get('completion_consumed', False),
+                pid=record.get('pid'), host_start_time=record.get('host_start_time'),
+                pid_scope=scopes.get(record['id'], record.get('pid_scope', 'host')),
+                native_job_scope=native_jobs.get(record['id'], record.get('native_job_scope', False)),
+                ownership_generation=record.get('ownership_generation', 0), handoff_note=record.get('handoff_note', ''),
+                output_log=metadata.get(record['id'], {}).get('output_log', record.get('output_log', '')),
+                output_log_state=record.get('output_log_state') or metadata.get(record['id'], {}).get('output_log_state'),
+                systemd_unit=metadata.get(record['id'], {}).get('systemd_unit', record.get('systemd_unit', '')),
             )
             session._completion_event.set()
+            session._result_complete = complete_result(record)
+            from tools.process_registry_output_log import valid_unit_log_state
+            from tools.process_registry_job import job_quiescent, read_job_receipt
+            if (session._result_complete and valid_unit_log_state(session.output_log_state)
+                    and session.output_log_state['final'] and job_quiescent(session)
+                    and session.systemd_unit in ('', session.output_log_state['unit'])
+                    and (read_job_receipt(session) or {}).get('unit') == session.output_log_state['unit']):
+                session.systemd_unit = ''
+            session._result_persisted_generation = session.ownership_generation if session._result_complete else -1
+            session._scope_stop_pending |= not session._result_complete
             results[session.id] = session
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+            if strict:
+                raise
             logger.debug("Skipping unreadable process result %s", path.name, exc_info=True)
     return results

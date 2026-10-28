@@ -1100,8 +1100,25 @@ class LocalEnvironment(BaseEnvironment):
                 self.cwd, safe_cwd)
         self.cwd = safe_cwd
 
+    def _before_execute(self):
+        self._recover_cwd()  # The wrapper and native launch must use the same recovered directory.
+
+    def _spawn_command(self, command, *, yield_handler=None, **kwargs):
+        if sys.platform != 'linux':
+            return self._run_bash(command, **kwargs)
+        prepare = getattr(yield_handler, 'prepare_local', None)
+        if callable(prepare):
+            session = prepare()
+        else:
+            from gateway.session_context import get_session_env
+            from tools.process_registry import process_registry
+            owner = get_session_env('HERMES_SESSION_ID', '')
+            session = process_registry._new_session(command, owner, owner,
+                get_session_env('HERMES_SESSION_KEY', ''), self.cwd, persist_on_release=True)
+        return self._run_bash(command, native_session=session, **kwargs)
+
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None, native_session=None) -> subprocess.Popen:
         bash = _find_bash()
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
@@ -1109,6 +1126,9 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        if native_session is not None:
+            from tools.process_registry_chat_execution import spawn_foreground
+            return spawn_foreground(native_session, args, _make_run_env(self.env), self.cwd, stdin_data)
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1130,6 +1150,8 @@ class LocalEnvironment(BaseEnvironment):
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
+        if getattr(proc, '_hermes_native_foreground', False) is True:
+            return proc.kill()
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
         except OSError:  # ProcessLookupError / PermissionError included
@@ -1138,6 +1160,8 @@ class LocalEnvironment(BaseEnvironment):
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
+        if getattr(proc, '_hermes_native_foreground', False) is True:
+            return proc.kill()  # Only the native helper may reap its owned children.
         if _IS_WINDOWS:  # already a forced tree kill
             return self._kill_process(proc)
         with contextlib.suppress(OSError):

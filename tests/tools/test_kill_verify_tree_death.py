@@ -5,7 +5,6 @@ session: the live tree would become unmanageable (missing from the
 background list while still holding resources).
 """
 
-import sys
 import time
 from contextlib import suppress
 from unittest.mock import MagicMock, patch
@@ -18,7 +17,7 @@ from tools.process_registry import ProcessRegistry, ProcessSession
 def _live_session(sid="proc_killverify1", pid=424242, start=777001):
     s = ProcessSession(
         id=sid, command="sleep 999", task_id="t1", started_at=time.time(),
-        pid=pid, pid_scope="host", host_start_time=start,
+        pid=pid, pid_scope="host", host_start_time=start, systemd_unit=f"hermes-worker-{sid}.scope",
     )
     proc = MagicMock()
     proc.pid = pid
@@ -28,7 +27,10 @@ def _live_session(sid="proc_killverify1", pid=424242, start=777001):
 
 def _paused_registry_calls():
     """Neutralize tree-kill + checkpoint side effects; return the mocks."""
-    t = patch.object(ProcessRegistry, "_terminate_host_pid", return_value=None).start()
+    # Component boundary: native scope teardown may claim success, but the
+    # final live-survivor guard must still refuse to settle the process.
+    t = patch.object(ProcessRegistry, "_signal_kill", return_value=None).start()
+    patch.object(ProcessRegistry, "_stop_scope", return_value=True).start()
     c = patch.object(ProcessRegistry, "_write_checkpoint", return_value=None).start()
     s = patch("tools.process_registry.save_completed_result").start()
     return t, c, s
@@ -104,7 +106,7 @@ def test_kill_with_dead_tree_still_reports_killed():
     assert s.id in reg._finished
 
 
-@pytest.mark.platforms("posix")  # POSIX signal escalation; Windows uses taskkill
+@pytest.mark.platforms("linux")  # The native Linux job scope supplies physical cleanup proof.
 @pytest.mark.live_system_guard_bypass  # SIGKILL may target a snapshotted child after it is reparented
 def test_escalated_kill_of_sigterm_ignoring_child_reports_killed(tmp_path, monkeypatch):
     """The #115490 scenario itself: a child that ignores SIGTERM is SIGKILLed after the grace
@@ -127,7 +129,7 @@ def test_escalated_kill_of_sigterm_ignoring_child_reports_killed(tmp_path, monke
     assert s.id in reg._finished
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal escalation; Windows uses taskkill")
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass  # the late children are SIGKILLed after their shell dies
 def test_kill_reaps_children_spawned_during_the_grace_window(tmp_path, monkeypatch):
     """The interactive ``bash -lic`` wrapper ignores SIGTERM and keeps running its script

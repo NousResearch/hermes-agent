@@ -1270,6 +1270,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     ) -> Optional[bool]:
         from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted
+        from tools.process_registry import process_registry
         from tools.process_registry_notifications import should_surface_notification
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
@@ -1283,6 +1284,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
                 return claim.early_result
+            if evt.get('type', 'completion') == 'completion' and process_registry.is_completion_consumed(evt.get('session_id')):
+                return None
             if getattr(self, 'session_authority', None) is not None:
                 from gateway.session_automation import completion_admission
                 if completion_admission(self, evt) is not None:
@@ -1381,26 +1384,38 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 self._completion_notification_batch_tasks.pop(key, None)
             if not entries:
                 return
-            if getattr(self, 'session_authority', None) is not None:
-                from gateway.session_automation import completion_admission, producer_identity
-                entries_to_deliver = [item for item in entries if completion_admission(self, item[1]) is None]
-                if not entries_to_deliver:
-                    delivered = True
-                    return
-            else:
-                entries_to_deliver = entries
-            synth_text = (entries_to_deliver[0][0] if len(entries_to_deliver) == 1
-                          else self._format_coalesced_process_completions(entries_to_deliver))
-            from tools.process_registry_notifications import process_completion_display_text
-            display_text = process_completion_display_text([evt for _text, evt, _future in entries_to_deliver])
+            from tools.process_registry import process_registry
+            from gateway.session_automation import completion_admission, producer_identity
+            entries_to_deliver, identities = [], []
+            native = getattr(self, 'session_authority', None) is not None
+            admitted = False
+            # A recovered queue is drained in the launch scope. Resolve each
+            # producer's durable flags before it can enter text or native identity lists.
+            for item in entries:
+                async with self._completion_event_scope(item[1]):
+                    if process_registry.is_completion_consumed(item[1].get('session_id')):
+                        continue
+                    if native:
+                        if completion_admission(self, item[1]) is not None:
+                            admitted = True
+                            continue
+                        identities.append(producer_identity(self, item[1]))
+                    entries_to_deliver.append(item)
+            if not entries_to_deliver:
+                delivered = True if admitted else None
+                return
+            async with self._completion_event_scope(entries_to_deliver[0][1]):
+                synth_text = (entries_to_deliver[0][0] if len(entries_to_deliver) == 1
+                              else self._format_coalesced_process_completions(entries_to_deliver))
+                from tools.process_registry_notifications import process_completion_display_text
+                display_text = process_completion_display_text([evt for _text, evt, _future in entries_to_deliver])
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries_to_deliver:
                 candidate_evt = dict(candidate_evt, _display_text=display_text)
-                if getattr(self, 'session_authority', None) is not None:
-                    candidate_evt = dict(candidate_evt, _automation_identities=[
-                        producer_identity(self, evt) for _text, evt, _future in entries_to_deliver])
+                if native:
+                    candidate_evt = dict(candidate_evt, _automation_identities=identities)
                 delivered = await self._deliver_completion_notification(synth_text, candidate_evt)
                 if delivered is not None:
                     break
@@ -1751,6 +1766,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw
+        if getattr(session, 'ownership_generation', 0) > 0:
+            # The watcher can predate an authenticated native handoff. Its
+            # original child identity cannot override the committed parent.
+            watcher = {**watcher, 'parent_session_id': session.parent_session_id,
+                       'session_key': session.session_key}
         return {
             "type": "completion",
             "session_id": session_id,

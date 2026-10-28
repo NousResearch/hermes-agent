@@ -41,6 +41,16 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     request.addfinalizer(runner.close_all_session_db_handles)
     request.addfinalizer(runner.session_store.close_all_db_handles)
     runner._completion_notification_batch_window = 0
+    # Transport tests still use a real, birth-identified process for durable handoff.
+    import subprocess
+    import sys
+    child_process = subprocess.Popen([sys.executable, '-c', 'import threading; threading.Event().wait(120)'])
+    birth_ticks = registry._safe_host_start_time(child_process.pid)
+    def release_child():
+        if child_process.poll() is None:
+            child_process.terminate()
+            child_process.wait(timeout=10)
+    request.addfinalizer(release_child)
     admitted = []
     homes = {}
     for name, surface in (("a", surface_a), ("b", not surface_a)):
@@ -69,14 +79,16 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     runner.adapters[Platform.TELEGRAM] = transport
     runner._profile_adapters = {name: {Platform.TELEGRAM: transport} for name in homes}
     runner._profile_configs = {name: GatewayConfig() for name in homes}
-    return SimpleNamespace(runner=runner, registry=registry, adapter=adapter, admitted=admitted, homes=homes)
+    return SimpleNamespace(runner=runner, registry=registry, adapter=adapter, admitted=admitted, homes=homes, pid=child_process.pid, birth=birth_ticks)
 
 
 def _transfer_to_parent(rig, leg):
-    assert rig.registry.transfer_ownership(
-        leg.proc.id, from_owner="sa-child", to_owner="parent-owner", to_task_id="parent-owner",
-        to_session_key=leg.entry.session_key, note="finish build",
-    ) is leg.proc
+    from gateway.run import _profile_runtime_scope
+    with _profile_runtime_scope(rig.homes[leg.name]):
+        assert rig.registry.transfer_ownership(
+            leg.proc.id, from_owner="sa-child", to_owner="parent-owner", to_task_id="parent-owner",
+            to_session_key=leg.entry.session_key, to_parent_session_id=leg.entry.session_id, note="finish build",
+        ) is leg.proc
 
 
 async def _for_each_leg(rig, owner, surface_a, path, consume):
@@ -104,6 +116,7 @@ async def _for_each_leg(rig, owner, surface_a, path, consume):
             owner_task_id="parent-owner" if owner == "foreground" else "sa-child",
             task_id="container-parent", session_key=entry.session_key,
             parent_session_id=child, notify_on_complete=True, output_buffer="READY\n", started_at=1.0,
+            pid=rig.pid, host_start_time=rig.birth,
         )
         registry._running[proc.id] = proc
         watcher = {
@@ -135,7 +148,7 @@ async def _for_each_leg(rig, owner, surface_a, path, consume):
                 assert event.metadata["gateway_session_id"] == entry.session_id
         completion = runner._build_process_completion_event(watcher, proc, proc.id)
         assert completion["owner_task_id"] == proc.owner_task_id
-        assert completion["parent_session_id"] == child
+        assert completion["parent_session_id"] == (entry.session_id if handed_off else child)
         assert proc.notify_on_complete is True
         if not proc.exited:
             proc.mark_exited(2)

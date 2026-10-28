@@ -58,7 +58,10 @@ def test_kill_all_targets_owner_spawned_process():
     with patch.object(reg, "kill_process",
                       return_value={"status": "killed"}) as kill:
         assert reg.kill_all("sa-1-abc123", source="t") == 1
-    kill.assert_called_once_with("proc_own1", source="t", consume_output=False)
+    kill.assert_called_once_with(
+        "proc_own1", source="t", consume_output=False,
+        expected_ownership=("sa-1-abc123", "default", "", "", "", 0, None, None),
+    )
 
 
 def test_wsl_launcher_command_stamped_at_spawn():

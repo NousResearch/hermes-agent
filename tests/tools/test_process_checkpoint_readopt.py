@@ -100,11 +100,10 @@ class TestCheckpointReadopt:
                 proc.kill()
                 proc.wait()
 
-    def test_kill_terminates_readopted_pid_when_start_probe_fails(
+    def test_unscoped_kill_stays_unknown_when_start_probe_fails(
         self, registry, monkeypatch
     ):
-        """kill must reach a re-adopted live child with an unreadable start
-        time, not report already_exited and leave it running unsupervised."""
+        """A matching root PID alone cannot establish whole-job containment."""
         proc = _sleep_proc()
         try:
             start = ProcessRegistry._safe_host_start_time(proc.pid)
@@ -114,9 +113,9 @@ class TestCheckpointReadopt:
 
             result = registry.kill_process(session.id)
 
-            assert result["status"] == "killed", result
-            proc.wait(timeout=10)
-            assert session.exited is True
+            assert (result['status'], result['error']) == ('error', 'process_stop_unknown')
+            assert proc.poll() is None and not session.exited
+            assert session._scope_stop_pending and session.host_start_time == start
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -144,7 +143,7 @@ class TestCheckpointReadopt:
         assert polled["status"] == "not_found"
         assert _completions(registry) == []
 
-    def test_recover_reattaches_live_pid_when_start_probe_fails(
+    def test_recover_keeps_unscoped_checkpoint_when_start_probe_fails(
         self, registry, tmp_path, monkeypatch
     ):
         proc = _sleep_proc()
@@ -171,16 +170,17 @@ class TestCheckpointReadopt:
             recovered = registry.recover_from_checkpoint()
             polled = registry.poll("proc_recover_live")
 
-            assert recovered == 1
+            assert recovered == 0
             assert proc.poll() is None
-            assert polled["status"] == "running"
+            assert polled["status"] == "not_found"
             assert "exit_code" not in polled
+            assert json.loads(checkpoint.read_text())[0]['host_start_time'] == start
             assert _completions(registry) == []
         finally:
             proc.kill()
             proc.wait()
 
-    def test_recover_does_not_kill_a_reused_pid(self, registry, tmp_path, monkeypatch):
+    def test_recover_stops_recorded_scope_without_signaling_reused_pid(self, registry, tmp_path, monkeypatch):
         proc = _sleep_proc()
         try:
             real = ProcessRegistry._safe_host_start_time(proc.pid)
@@ -204,13 +204,20 @@ class TestCheckpointReadopt:
                 "tools.process_registry._stop_systemd_unit",
                 lambda unit: stopped.append(unit) or True,
             )
+            monkeypatch.setattr(registry, "_terminate_host_pid",
+                                lambda *a, **kw: pytest.fail("reused PID was signaled"))
 
             recovered = registry.recover_from_checkpoint()
 
             assert recovered == 0
             assert proc.poll() is None
             assert registry.get("proc_recover_reused") is None
-            assert stopped == []
+            assert stopped == ["hermes-worker-proc_recover_reused.scope"]
+            retained, = json.loads(checkpoint.read_text())
+            assert retained['session_id'] == 'proc_recover_reused'
+            assert retained['systemd_unit'] == stopped[0]
+            # Scope emptiness cannot invent this old job's absent original result.
+            assert not registry._finished and not registry._running
             assert _completions(registry) == []
         finally:
             if proc.poll() is None:

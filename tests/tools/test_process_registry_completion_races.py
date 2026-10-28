@@ -135,14 +135,15 @@ class _ReleaseHookLock:
 @pytest.mark.parametrize("read", [
     lambda registry, sid: registry.poll(sid),
     lambda registry, sid: registry.read_log(sid),
-    lambda registry, sid: registry.kill_process(sid),
-], ids=["poll", "read_log", "kill_exited"])
+], ids=["poll", "read_log"])
 def test_a_snapshot_taken_before_the_reader_finishes_does_not_consume_it(read, monkeypatch):
     """The reader finishes between the snapshot and the consume decision: the decision must
     describe the snapshot returned, so the completion still delivers the whole output."""
     registry = ProcessRegistry()
     monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
     session = _finalizing_session(registry)
+    session.systemd_unit = 'hermes-worker-proc_finalizing.scope'
+    monkeypatch.setattr(module, '_stop_systemd_unit', lambda unit: True)
 
     def reader_finishes():
         session.append_output("FINAL")
@@ -155,6 +156,30 @@ def test_a_snapshot_taken_before_the_reader_finishes_does_not_consume_it(read, m
     assert session.id not in registry._poll_observed
     assert not registry.is_completion_consumed(session.id)
     assert registry.completion_queue.get_nowait()["output"].endswith("FINAL")
+
+
+def test_incomplete_kill_cancels_completion_and_preserves_the_final_output(monkeypatch):
+    """Explicit cancellation suppresses continuation even while cleanup is unknown."""
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    session = _finalizing_session(registry)
+    session.systemd_unit = 'hermes-worker-proc_finalizing.scope'
+
+    def reader_finishes():
+        session.append_output("FINAL")
+        registry._finish_exited(session, 0)
+
+    session._lock = cast(Any, _ReleaseHookLock(reader_finishes))
+    result = registry.kill_process(session.id)
+    assert result['status'] == 'error' and result['error'] == 'process_stop_unknown'
+    assert session._scope_stop_pending and session.systemd_unit
+    assert session._completion_event.is_set() and session.output_buffer.endswith('FINAL')
+    assert registry.is_completion_consumed(session.id)
+    completion = registry.completion_queue.get_nowait()
+    assert completion['output'].endswith('FINAL')
+    registry.completion_queue.put(completion)
+    registry._completions_restored = True
+    assert registry.drain_notifications(skip_poll_observed=False) == []
 
 
 @pytest.mark.platforms("posix")
@@ -216,7 +241,7 @@ def test_kill_of_an_exited_session_reports_a_failed_scope_stop(monkeypatch):
 
     result = registry.kill_process(session.id)
 
-    assert result["status"] == "already_exited"
+    assert result["status"] == "error" and result["error"] == "process_stop_unknown"
     assert result["scope_stop_failed"] == "hermes-worker-proc_exited_scope_stuck.scope"
 
 
@@ -261,6 +286,7 @@ class _SandboxEnv:
         hook = self.hooks.pop(step, None)
         if hook:
             hook()
+            self.alive = False  # The fixture wrapper finishes after the callback.
         return {"output": out}
 
 
@@ -277,7 +303,7 @@ def _poll_sandbox(registry, session, env):
     registry._env_poller_loop(session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit")
 
 
-def test_a_sandbox_exit_read_after_a_kill_keeps_the_kill(monkeypatch):
+def test_sandbox_exit_after_refused_stop_preserves_actual_exit(monkeypatch):
     registry = ProcessRegistry()
     killed = []
     env = _SandboxEnv(hooks={"exit": lambda: killed.append(registry.kill_process("proc_sandbox"))})
@@ -285,12 +311,13 @@ def test_a_sandbox_exit_read_after_a_kill_keeps_the_kill(monkeypatch):
 
     _poll_sandbox(registry, session, env)
 
-    assert killed[0]["status"] == "killed"
+    assert killed[0]["status"] == "error"
+    assert session._scope_stop_pending
     assert (session.exit_code, session.completion_reason, session.termination_source) == (
-        -15, "killed", "process.kill")
+        0, "exited", "")
 
 
-def test_a_sandbox_lost_after_a_kill_keeps_the_kill(monkeypatch):
+def test_sandbox_loss_after_refused_stop_remains_unknown(monkeypatch):
     registry = ProcessRegistry()
 
     def kill_then_lose_the_backend():
@@ -302,8 +329,9 @@ def test_a_sandbox_lost_after_a_kill_keeps_the_kill(monkeypatch):
 
     _poll_sandbox(registry, session, env)
 
+    assert session._scope_stop_pending
     assert (session.exit_code, session.completion_reason, session.termination_source) == (
-        -15, "killed", "process.kill")
+        -1, "lost", "backend_lost")
 
 
 def test_a_lost_sandbox_without_a_kill_is_reported_lost(monkeypatch):
@@ -323,9 +351,8 @@ def test_a_lost_sandbox_without_a_kill_is_reported_lost(monkeypatch):
     assert session._completion_event.is_set()
 
 
-def test_sandbox_output_fetched_before_a_kill_is_not_added_after_it(monkeypatch):
-    """The kill published its snapshot; a delta the poller already had in hand must not grow
-    the session's output past what the caller and the completion were given."""
+def test_sandbox_output_continues_after_refused_stop(monkeypatch):
+    """A refused Stop preserves the reader so its later output is not discarded."""
     registry = ProcessRegistry()
     killed = []
     env = _SandboxEnv(delta="FINAL", alive=True,
@@ -336,10 +363,11 @@ def test_sandbox_output_fetched_before_a_kill_is_not_added_after_it(monkeypatch)
     _poll_sandbox(registry, session, env)
 
     assert killed[0]["output"] == "partial"
-    assert session.output_buffer == "partial"
+    assert killed[0]["status"] == "error"
+    assert session.output_buffer == "partialFINAL"
 
 
-def test_a_log_rotation_seen_after_a_kill_does_not_clear_its_output(monkeypatch):
+def test_log_rotation_after_refused_sandbox_stop_preserves_current_output(monkeypatch):
     registry = ProcessRegistry()
     env = _SandboxEnv(delta="partial", alive=True)
     session = _sandbox_session(registry, monkeypatch, env)
@@ -347,14 +375,16 @@ def test_a_log_rotation_seen_after_a_kill_does_not_clear_its_output(monkeypatch)
 
     def rotated_on_the_second_read(command, **kwargs):
         if command.startswith("O=7;"):  # second log read: the log shrank, so the offset restarts
-            registry.kill_process("proc_sandbox")
+            assert registry.kill_process("proc_sandbox")["status"] == "error"
+            env.alive = False
             return {"output": "3 0\nnew"}
         return execute(command, **kwargs)
 
     monkeypatch.setattr(env, "execute", rotated_on_the_second_read)
     _poll_sandbox(registry, session, env)
 
-    assert session.output_buffer == "partial"
+    assert session.output_buffer == "new"
+    assert session._scope_stop_pending
 
 
 def _scoped_session(registry, monkeypatch, sid, stops, **fields) -> ProcessSession:
@@ -366,20 +396,19 @@ def _scoped_session(registry, monkeypatch, sid, stops, **fields) -> ProcessSessi
     return session
 
 
-def test_a_recovered_pid_that_dies_mid_kill_reports_the_failed_scope_stop(monkeypatch):
-    """``get`` sees the recovered PID alive, ``_signal_kill`` sees it gone: the scope stop it
-    then runs can still fail, and that must not be reported as a clean exit."""
+def test_recovered_identity_unproved_at_signal_keeps_the_failed_scope_fenced(monkeypatch):
+    """A conservative status read grants no permission to signal or report cleanup."""
     registry = ProcessRegistry()
     session = _scoped_session(registry, monkeypatch, "proc_recovered", [False],
                               pid=4242, detached=True, pid_scope="host")
-    fates = iter(["running", "gone"])
-    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_args: next(fates))
+    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_args: "running")
+    monkeypatch.setattr(registry, "_terminate_host_pid", lambda *_args: pytest.fail('unproved PID signaled'))
 
     result = registry.kill_process(session.id)
 
-    assert result["status"] == "already_exited"
+    assert result["status"] == "error" and result["error"] == "process_stop_unknown"
     assert result["scope_stop_failed"] == session.systemd_unit
-    assert session.id in registry._finished  # keeps its unit for a retry
+    assert session.id in registry._running and session._scope_stop_pending
 
 
 def test_bulk_cleanup_does_not_count_a_failed_scope_stop_and_retries_it(monkeypatch):

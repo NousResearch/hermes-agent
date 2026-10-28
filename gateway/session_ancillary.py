@@ -19,6 +19,177 @@ _SUBAGENT_FIELDS = (
 )
 _TAIL_BYTES = 16384
 _PROCESS_TAIL_CHARS = 32768  # main's dock tail view (cli_process_dock.process_tail)
+_PROCESS_STOP_PREFIX = 'gateway.process_stop.v1:'
+
+
+def process_stop_pending(db, session_id):
+    """Native cleanup status only; process ownership remains in the existing registry."""
+    return db.get_meta(_PROCESS_STOP_PREFIX + session_id)
+
+
+def record_process_stop(authority, ref, generation):
+    from hermes_state_runtime import _epoch
+    token = f'{authority.epoch}:{generation}'
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        pending = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                               (_PROCESS_STOP_PREFIX + ref.session_id,)).fetchone()
+        if pending is not None:
+            return pending[0]
+        authority.db.set_meta(_PROCESS_STOP_PREFIX + ref.session_id, token, cursor=conn)
+        return token
+    return authority.db._execute_write(write)
+
+
+def clear_process_stop(authority, ref, token):
+    from hermes_state_runtime import _epoch
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        conn.execute('DELETE FROM state_meta WHERE key=? AND value=?',
+                     (_PROCESS_STOP_PREFIX + ref.session_id, token))
+    authority.db._execute_write(write)
+
+
+async def retry_process_stop(authority, ref, agent=None):
+    """Reconcile a failed/unfinished Stop before any FIFO handoff, including after reload."""
+    token = process_stop_pending(authority.db, ref.session_id)
+    if token is None:
+        return True
+    from gateway.session_authorities import owner_scope
+    from gateway.session_runtime_workers import tracked_write
+    from tools.process_registry import _checkpoint_path
+    with owner_scope(authority):
+        if (not token.startswith(str(authority.epoch) + ':')
+                or await asyncio.to_thread(_checkpoint_path().exists)):
+            if not await asyncio.to_thread(_recover_stopped_processes, authority, ref):
+                _observe_process_stop_completion(authority, ref, agent)
+                return False
+        try:
+            if not await interrupt_processes(authority, ref, agent):
+                return False
+        except RuntimeStoreError as exc:
+            if exc.reason != 'process_stop_unknown':
+                raise
+            # Unproved process ownership is the same cleanup refusal as False,
+            # independent of an already validated inference result.
+            return False
+    await tracked_write(authority, partial(clear_process_stop, authority, ref, token))
+    return True
+
+
+def _observe_process_stop_completion(authority, ref, agent=None):
+    """A real resource finish rechecks the existing fenced human FIFO once."""
+    from contextvars import copy_context
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from tools.process_registry_handoff import observe_completion
+    token = process_stop_pending(authority.db, ref.session_id)
+    live = authority.sessions.get(ref.session_id)
+    if token is None or live is None:
+        return
+    try:
+        # The original publisher may already have completed resource/result
+        # cleanup while this owner's logical Stop still fences its FIFO.
+        # Existing per-control dedup handles that immediate-ready observation.
+        registry, scopes = _process_targets(authority, ref, agent, (), select=lambda p: True)
+        generation = authority._handle(ref).execution_generation
+    except (RuntimeStoreError, OSError):
+        return  # The durable fence remains; a later native control can recover.
+    loop, context = asyncio.get_running_loop(), copy_context()
+    home = hermes_home_key(get_hermes_home())
+    observation = authority.epoch, generation, token, authority.instance_id
+    key = home, ref.session_id
+    for process_id, expected in scopes.items():
+        def wake(process_id=process_id, expected=expected):
+            _wake_process_stop_completion(authority, ref, live, registry, process_id, expected, observation, home)
+        def completed(wake=wake):
+            try:
+                loop.call_soon_threadsafe(wake, context=context.copy())
+            except RuntimeError:
+                return  # The owning loop retired; the durable Stop remains for recovery.
+        observe_completion(registry, process_id, expected, key, observation, completed)
+
+
+def _wake_process_stop_completion(authority, ref, live, registry, process_id, expected, observation, home):
+    """Only current native ownership may schedule; the drain still proves cleanup."""
+    import sqlite3
+    from gateway.session_authorities import owner_scope
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_state_runtime import _epoch
+    from tools.process_registry_handoff import ownership_identity
+    from tools.process_registry_job import job_quiescent
+    epoch, generation, token, _instance = observation
+    try:
+        with owner_scope(authority):
+            if (authority.epoch != epoch or authority.instance_id != _instance
+                    or authority.retiring or authority.runner._draining or authority.sessions.get(ref.session_id) is not live
+                    or hermes_home_key(get_hermes_home()) != home):
+                return
+            with authority.db._read_ctx(reopen=False) as conn:
+                _epoch(conn, epoch)
+            if (process_stop_pending(authority.db, ref.session_id) != token
+                    or authority._handle(ref).execution_generation != generation
+                    or getattr(sys.modules.get('tools.process_registry'), 'process_registry', None) is not registry):
+                return
+            current, scopes = _process_targets(authority, ref, None, (), select=lambda p: p.id == process_id)
+            with current._lock:
+                process = current._running.get(process_id) or current._finished.get(process_id)
+                ready = (process is not None and scopes.get(process_id) == expected
+                         and ownership_identity(process) == expected and process._completion_event.is_set()
+                         and process._result_persisted_generation == process.ownership_generation)
+            if not ready or not job_quiescent(process):
+                return
+            if live.task is not None and not live.task.done():
+                live.task.add_done_callback(lambda _task: _wake_process_stop_completion(
+                    authority, ref, live, registry, process_id, expected, observation, home))
+            else:
+                authority._schedule(ref)
+    except (RuntimeStoreError, OSError, sqlite3.Error):
+        return  # Unknown ownership/storage cannot release the fence or execute queued work.
+
+
+def _recover_stopped_processes(authority, ref):
+    """Use native birth-checked recovery for this session only; unreadable evidence stays unknown."""
+    import json
+    from tools.process_registry import process_registry, _checkpoint_path
+    from tools.process_registry_job import job_quiescent
+    keys, owners, parents = _ownership(authority, ref, None, ())
+    def owned(entry):
+        return entry.get('session_key') in keys and (
+            entry['parent_session_id'] in parents if entry.get('parent_session_id')
+            else (entry.get('owner_task_id') or entry.get('task_id')) in owners)
+    try:
+        entries = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            return False
+        if any(owned(entry) and (entry.get('pid_scope', 'host') != 'host' or entry.get('wsl_chain')
+               or type(entry.get('host_start_time')) is not int or type(entry.get('pid')) is not int
+               or entry['host_start_time'] <= 0 or entry['pid'] <= 0
+               or (not entry.get('native_job_scope') and not entry.get('systemd_unit')
+                   and not job_quiescent(entry))) for entry in entries):
+            return False
+        process_registry.recover_from_checkpoint(owns_entry=owned, stop_scopes=True)
+        remaining = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
+        if not isinstance(remaining, list) or any(not isinstance(entry, dict) for entry in remaining):
+            return False
+        with process_registry._lock:
+            tracked = {**process_registry._finished, **process_registry._running}
+        if any(owned(entry) and (entry.get('session_id') not in tracked or
+               (entry.get('systemd_unit') and tracked[entry['session_id']].systemd_unit != entry['systemd_unit']) or
+               (entry.get('native_job_scope') and not entry.get('systemd_unit') and not job_quiescent(entry)
+                and (tracked[entry['session_id']].exited or not tracked[entry['session_id']].native_job_scope)))
+               for entry in remaining):
+            return False
+        # Result snapshots carry output, never evidence that a recorded native
+        # scope stopped. Import them only after the checkpoint proof above.
+        from tools.process_registry_results import load_completed_results
+        retained = load_completed_results(owns_entry=owned, strict=True)
+        with process_registry._lock:
+            for pid, result in retained.items():
+                if pid not in process_registry._running:
+                    process_registry._finished.setdefault(pid, result)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def handlers(connection):
@@ -251,7 +422,7 @@ async def read(connection, ref, params, *, kind):
 
 
 def _owned_targets(connection, ref, params, *, select):
-    """``(registry, ids)``: the session's own processes (what ``process.list`` shows) that
+    """``(registry, captured scopes)``: the session's own processes (what ``process.list`` shows) that
     ``select(process)`` keeps; ``(None, [])`` when no process was ever registered here."""
     authority = connection.authority
     if ref.session_id not in authority.sessions:
@@ -261,13 +432,74 @@ def _owned_targets(connection, ref, params, *, select):
     with live.event_stream.lock:
         _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref)
-        module = sys.modules.get('tools.process_registry')
-        if module is None:
-            return None, []
-        registry = module.process_registry
-        keys, owners = _ownership(authority, ref, agent, records)
-        with registry._lock:
-            return registry, [p.id for p in _owned_locked(registry, keys, owners) if select(p)]
+        return _process_targets(authority, ref, agent, records, select=select)
+
+
+def _process_targets(authority, ref, agent, records, *, select):
+    module = sys.modules.get('tools.process_registry')
+    if module is None:
+        return None, {}
+    registry = module.process_registry
+    from tools.process_registry_handoff import ownership_identity
+    if not registry.refresh_ownership():
+        raise RuntimeStoreError('process_stop_unknown')
+    keys, owners, parents = _ownership(authority, ref, agent, records)
+    with registry._lock:
+        return registry, {p.id: ownership_identity(p) for p in _owned_locked(registry, keys, owners, parents) if select(p)}
+
+
+async def interrupt_processes(authority, ref, agent):
+    """Stop this conversation's processes, including intentionally persisted jobs.
+
+    Capture IDs before yielding: a successor can reuse the raw owner and route while a
+    slow kill runs, but its new process must never enter this Stop's target set. Run again
+    at the interrupted turn boundary to catch a spawn already in flight when Stop arrived.
+    The native interrupt receipt acknowledges the request, not verified process quiescence.
+    """
+    if agent is None:
+        lookup = (getattr(authority.runner, '_resident_agent_for', None)
+                  or getattr(authority.runner, '_cached_agent_for', None))
+        agent = lookup(authority.sessions[ref.session_id].route) if lookup is not None else None
+    registry = getattr(sys.modules.get('tools.process_registry'), 'process_registry', None)
+    # Turn Stop leaves detached delegations running; their raw owners are not this agent's.
+    registry, targets = _process_targets(authority, ref, agent, (),
+        select=lambda p: not p.exited or p._scope_stop_pending or p.systemd_unit
+        or (p.notify_on_complete and not p.completion_consumed)
+        or (p._reader_thread is not None and not p._completion_event.is_set()))
+    if targets:
+        # Stop cancels these autonomous notices even if termination is refused or a reader
+        # is still publishing its exit. Output remains in the native process result.
+        def kill():
+            from tools.process_registry_results import save_completed_result
+            results = [registry.kill_process(pid, source='session.interrupt', consume_output=True, expected_ownership=targets[pid])
+                       for pid in targets]
+            durable = True
+            for pid, result in zip(targets, results):
+                if result.get('status') == 'ownership_changed':
+                    continue
+                if result.get('status') not in {'killed', 'already_exited'} or 'scope_stop_failed' in result:
+                    durable = False
+                    continue
+                with registry._lock:
+                    process = registry._finished.get(pid) or registry._running.get(pid)
+                if process is None:
+                    durable = False
+                    continue
+                with process._lock:
+                    process.completion_consumed = True
+                if not save_completed_result(process):
+                    with process._lock:
+                        process.completion_consumed = False
+                    durable = False
+            return durable
+        killed = await asyncio.to_thread(kill)
+    else:
+        killed = True
+    from gateway.session_automation import withdraw_consumed_process_notices
+    withdrawn = await withdraw_consumed_process_notices(authority, ref)
+    if not (killed and withdrawn):
+        _observe_process_stop_completion(authority, ref, agent)
+    return killed and withdrawn
 
 
 async def kill_process(connection, ref, params):
@@ -281,7 +513,11 @@ async def kill_process(connection, ref, params):
     if not ids:
         # Never ``not_found``: Desktop reads that reason as "this chat is gone" (dokterdok N64).
         raise RuntimeStoreError('process_not_found')
-    return await asyncio.to_thread(registry.kill_process, ids[0])
+    pid = next(iter(ids))
+    result = await asyncio.to_thread(registry.kill_process, pid, expected_ownership=ids[pid])
+    if result.get('status') == 'ownership_changed':
+        raise RuntimeStoreError('process_not_found')
+    return result
 
 
 async def reload_mcp(connection, ref, params):
@@ -397,7 +633,8 @@ async def stop_processes(connection, ref, params):
                                        select=lambda p: not p.exited or p._scope_stop_pending)
 
     def kill():
-        results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]
+        results = [registry.kill_process(pid, source='process.stop', consume_output=False, expected_ownership=targets[pid])
+                   for pid in targets]
         return sum(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r
                    for r in results)
     killed = await asyncio.to_thread(kill) if targets else 0
@@ -571,23 +808,28 @@ def subagent_tail(records, subagent_id):
 
 
 def _ownership(authority, ref, agent, records):
-    """``(routing keys, owners)`` a registry process must match to belong to this session: its
-    routing key AND an owner among the session, its agent and its subagents."""
+    """Exact route plus native parent lineage; legacy unparented jobs retain raw-owner matching."""
     target = physical_target(authority, ref)
-    keys, owners = {authority.sessions[ref.session_id].route, target}, {target}
+    keys, owners = {authority.sessions[ref.session_id].route, target}, {target, ref.session_id}
+    owners.update(_compression_lineage(authority.db, authority.db.get_compression_tip(target) or target))
+    parents = set(owners)
     if agent is not None:
         owners.add(getattr(agent, 'session_id', None))
+        parents.add(getattr(agent, 'session_id', None))
+        owners.update(getattr(agent, '_process_owner_task_ids', ()))
     owners.update(r.get('subagent_id') for r in records)
+    parents.update(r.get('subagent_id') for r in records)
     owners.discard(None)
     owners.discard('')
-    return keys, owners
+    return keys, owners, parents - {None, ''}
 
 
-def _owned_locked(registry, keys, owners):
+def _owned_locked(registry, keys, owners, parents):
     """Matching process objects; the caller holds ``registry._lock``. Read directly:
     ``list_sessions`` refreshes recovered processes and writes checkpoints."""
     return [p for p in (*registry._running.values(), *registry._finished.values())
-            if p.session_key in keys and (p.owner_task_id or p.task_id) in owners]
+            if p.session_key in keys and (p.parent_session_id in parents if p.parent_session_id
+                                         else (p.owner_task_id or p.task_id) in owners)]
 
 
 def process_snapshot(authority, ref, agent, records):
@@ -595,7 +837,9 @@ def process_snapshot(authority, ref, agent, records):
     if module is None:
         return []
     registry = module.process_registry
-    keys, owners = _ownership(authority, ref, agent, records)
+    keys, owners, parents = _ownership(authority, ref, agent, records)
+    if not registry.refresh_ownership():
+        raise RuntimeStoreError('process_stop_unknown')
     # Keep ownership and output together.
     with registry._lock:
         return [{'session_id': p.id, 'command': p.command[:200],
@@ -603,4 +847,4 @@ def process_snapshot(authority, ref, agent, records):
                  # The classic CLI dock's elapsed / exit-age / verdict and its 32k tail view.
                  'started_epoch': p.started_at, 'exited_at': p.exited_at or None,
                  'completion_reason': p.completion_reason if p.exited else None,
-                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners)]
+                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners, parents)]

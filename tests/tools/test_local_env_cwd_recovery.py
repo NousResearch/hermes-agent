@@ -97,7 +97,7 @@ class TestRunBashCwdRecovery:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
-                env.execute("echo hello")
+                env._run_bash("echo hello")
         finally:
             _close_fds(fds)
 
@@ -121,7 +121,7 @@ class TestRunBashCwdRecovery:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
-                env.execute("echo hello")
+                env._run_bash("echo hello")
         finally:
             _close_fds(fds)
 

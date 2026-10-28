@@ -36,6 +36,8 @@ def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_pa
     _Agent.calls = []
     controls = worker.WorkerControls.__new__(worker.WorkerControls)  # no stdin reader thread
     controls.agent, controls.stopped, controls.lock, controls.clarifications = _Agent(), threading.Event(), threading.Lock(), {}
+    controls.route = 'fixture-route'
+    controls.stop_processes_requested = False
     controls.stop()
     frame, _ = assignment(tmp_path, monkeypatch)
 
@@ -47,7 +49,9 @@ def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_pa
         def close(self): pass
 
     class Latched:  # a Stop that arrived while the agent was being constructed
+        stop_processes = worker.WorkerControls.stop_processes
         def __init__(self, *args):
+            self.route = args[1]
             self.stopped, self.finish = threading.Event(), threading.Event()
             self.stopped.set()
             self.finish.set()

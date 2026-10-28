@@ -186,18 +186,20 @@ class TestReapUntrackedGroupGuard:
     be recycled onto an unrelated process that leads its own group, and the old
     raw killpg arm would have tree-killed the stranger."""
 
-    def test_termination_delegates_with_recorded_identity(self, monkeypatch):
+    @pytest.mark.parametrize('verified', [False, True])
+    def test_termination_delegates_with_recorded_identity(self, monkeypatch, verified):
         """The shared terminate path receives the pid AND the start time
         recorded at spawn; no group primitive is consulted or signalled."""
         from unittest.mock import MagicMock
 
-        from tools.process_registry import ProcessRegistry
+        from tools.process_registry import ProcessRegistry, ProcessSession
 
         reg = ProcessRegistry()
         proc = MagicMock()
         proc.pid = 999
-        session = SimpleNamespace(systemd_unit="", host_start_time=4242)
+        session = ProcessSession(id='proc_untracked_fixture', command='fixture', host_start_time=4242)
         calls, forbidden = [], []
+        monkeypatch.setattr(reg, '_host_pid_is_ours', lambda pid, start: verified and (pid, start) == (999, 4242))
         monkeypatch.setattr(
             ProcessRegistry, "_terminate_host_pid",
             classmethod(
@@ -207,13 +209,13 @@ class TestReapUntrackedGroupGuard:
 
         reg._reap_untracked(session, proc)
 
-        assert calls == [(999, 4242)]
+        assert calls == ([(999, 4242)] if verified else [])
         assert forbidden == []
 
     def test_group_leader_child_is_reaped(self, monkeypatch):
         """Control: a real start_new_session child whose recorded start time
         still matches is terminated."""
-        from tools.process_registry import ProcessRegistry
+        from tools.process_registry import ProcessRegistry, ProcessSession
 
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.5))
@@ -223,7 +225,7 @@ class TestReapUntrackedGroupGuard:
         try:
             real_start = ProcessRegistry._safe_host_start_time(proc.pid)
             assert real_start is not None, "no /proc start time on this platform?"
-            session = SimpleNamespace(systemd_unit="", host_start_time=real_start)
+            session = ProcessSession(id='proc_untracked_fixture', command='fixture', host_start_time=real_start)
 
             ProcessRegistry()._reap_untracked(session, proc)
 
@@ -237,7 +239,7 @@ class TestReapUntrackedGroupGuard:
         """Regression: a group leader whose recorded start time does not match
         (the recycled-PID shape: same numeric pid, different process) must NOT
         be signalled, even though getpgid(pid) == pid authorized the old arm."""
-        from tools.process_registry import ProcessRegistry
+        from tools.process_registry import ProcessRegistry, ProcessSession
 
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.5))
@@ -248,7 +250,7 @@ class TestReapUntrackedGroupGuard:
             real_start = ProcessRegistry._safe_host_start_time(proc.pid)
             assert real_start is not None, "no /proc start time on this platform?"
             assert os.getpgid(proc.pid) == proc.pid  # leads its group: old arm fired here
-            session = SimpleNamespace(systemd_unit="", host_start_time=real_start + 1)
+            session = ProcessSession(id='proc_untracked_fixture', command='fixture', host_start_time=real_start + 1)
             # A stub Popen keeps the wait tail from parking 5s on the still-live child.
             stub = SimpleNamespace(pid=proc.pid, wait=lambda timeout=None: None)
 

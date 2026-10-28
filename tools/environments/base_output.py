@@ -375,7 +375,12 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
         fd = None
     try:
         if not isinstance(fd, int) or fd < 0:
-            for piece in stream:
+            pieces = iter(stream)
+            while stop is None or not stop.is_set():
+                try:
+                    piece = next(pieces)
+                except StopIteration:
+                    break
                 if piece is not None:
                     output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
         elif os.name == "nt":

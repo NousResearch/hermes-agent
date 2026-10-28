@@ -1,14 +1,13 @@
-"""Killing a PTY background process must return while a descendant that escapes it holds the PTY.
+"""Native PTY Stop reaps detached descendants and closes after the final drain.
 
-An escapee (a descendant that ``setsid()``s into its own session) keeps the PTY slave open, so
-the reader thread stays blocked in ``read()`` holding the PTY file object's buffer lock. Closing
-the PTY from the kill path waited on that lock until the escapee exited (forever, for a
-long-lived one), so the kill never returned. Once killed, the session's output stays as the
-kill reported it. Real PTY, real processes: a fake PTY cannot hold the lock.
+A detached descendant can keep the PTY slave open after its primary exits.
+The Linux helper keeps custody through that exit; Stop must finish within its
+native grace and leave no later output after its ACK. Real PTYs and processes
+exercise the reader's buffer-lock behavior.
 """
 
+import json
 import shutil
-import sys
 import threading
 import time
 
@@ -18,17 +17,16 @@ import tools.process_registry as module
 from tools.process_registry import ProcessRegistry
 
 _POSIX_PTY = pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("setsid") is None, reason="POSIX PTY + setsid")
+    shutil.which("setsid") is None, reason="setsid executable required")
 
-# The escapee exits on its own (it is reparented to init, outside what a test may signal).
-# Before the fix the kill could only return once it had, so the kill deadline is shorter.
+# Natural lifetime exceeds the Stop deadline, so a passing Stop requires cleanup.
 _ESCAPEE_LIFETIME_S = 8
 _KILL_DEADLINE_S = 5
 
 
 @pytest.fixture
-def unscoped(monkeypatch):
-    # No systemd scope: stopping one would reap the escapee and hide the hang.
+def native_local(monkeypatch):
+    # Exercise the Linux job helper without the optional systemd transport.
     monkeypatch.setattr(module, "_is_supervised_gateway_process", lambda: False)
 
 
@@ -42,20 +40,20 @@ def _wait_for(predicate, timeout):
 
 
 def _terminate_owned(session):
-    """Failure-path cleanup: stop the PTY child this test spawned (never the reparented escapee)."""
-    if not session.exited and session._pty is not None:
-        try:
-            session._pty.terminate(force=True)
-        except Exception:
-            pass
+    """Failure cleanup uses the birth-verified native job helper."""
+    if not session.exited:
+        from tools.process_registry_job import request_job_stop
+        assert request_job_stop(ProcessRegistry(), session)
 
 
 def _spawn_with_escapee(registry, tmp_path, late_output=""):
     pidfile = tmp_path / "escapee.pid"
     # Without ``late_output`` the escapee never writes to the PTY, so nothing ends the reader's
     # blocked read before the kill deadline. ``late_output`` is printed after the test has
-    # killed the session.
-    late = f"sleep 2; echo {late_output}; " if late_output else ""
+    # received the native Stop ACK.
+    gate = tmp_path / 'late-release'
+    late = (f'for i in $(seq 1 80); do test -f {gate} && break; sleep .1; done; '
+            f'test -f {gate} && echo {late_output}; ') if late_output else ""
     # The escapee's pid is read as the PPID of a grandchild, not as ``$$``: under
     # ``systemd-run --scope`` with environment expansion, ``$$`` reaches the shell as ``$``.
     session = registry.spawn_local(
@@ -80,16 +78,17 @@ def _kill_within_deadline(registry, session):
 
 
 def _wait_for_reader_close(session):
-    # The reader outlives the kill and closes the PTY itself once its read ends (when the
-    # escapee exits), so the master FD is still released.
+    # The final reader releases the PTY master after the contained job closes
+    # its slave, including a native Stop that crossed a read in progress.
     reader = session._reader_thread
     assert reader is not None
     assert _wait_for(lambda: not reader.is_alive(), _ESCAPEE_LIFETIME_S + 7)
     assert session._pty.closed
 
 
+@pytest.mark.platforms("linux")
 @_POSIX_PTY
-def test_kill_returns_while_escaped_descendant_holds_the_pty(tmp_path, unscoped):
+def test_kill_reaps_escaped_descendant_without_blocking_on_pty_reader(tmp_path, native_local):
     pytest.importorskip("ptyprocess")
     registry = ProcessRegistry()
     session = _spawn_with_escapee(registry, tmp_path)
@@ -102,8 +101,9 @@ def test_kill_returns_while_escaped_descendant_holds_the_pty(tmp_path, unscoped)
     _wait_for_reader_close(session)
 
 
+@pytest.mark.platforms("linux")
 @_POSIX_PTY
-def test_output_after_the_kill_is_not_added_to_the_killed_session(tmp_path, monkeypatch, unscoped):
+def test_output_after_the_kill_is_not_added_to_the_killed_session(tmp_path, monkeypatch, native_local):
     pytest.importorskip("ptyprocess")
     registry = ProcessRegistry()
     emit, emitted = registry._emit_output, []
@@ -119,17 +119,21 @@ def test_output_after_the_kill_is_not_added_to_the_killed_session(tmp_path, monk
     finally:
         _terminate_owned(session)
     assert result["status"] == "killed"
-    # The reader drains what the escapee printed after the kill, but does not keep it.
+    # Release output only AFTER the native cleanup ACK. The contained escapee
+    # must already be dead, so it cannot produce that later output/effect.
+    (tmp_path / 'late-release').touch()
     _wait_for_reader_close(session)
     assert "LATE-ESCAPEE-OUTPUT" not in session.output_buffer
     assert not any("LATE-ESCAPEE-OUTPUT" in text for text in emitted)
 
 
+@pytest.mark.platforms("linux")
 @_POSIX_PTY
-def test_chunk_read_before_the_kill_is_not_added_after_it(tmp_path, unscoped):
-    # The reader has read a chunk but not yet buffered it when the kill snapshots the output
-    # and sets ``exited``. The chunk must not land in the killed session afterwards.
+def test_held_original_pty_reader_keeps_stop_unknown_until_full_result_is_published(tmp_path, native_local):
     pytest.importorskip("ptyprocess")
+    from hermes_constants import get_hermes_home
+    from tools.process_registry_job import job_quiescent, read_job_receipt, request_job_stop
+
     registry = ProcessRegistry()
     entered, release = threading.Event(), threading.Event()
     ingest, emit, emitted = registry._ingest_output, registry._emit_output, []
@@ -146,15 +150,35 @@ def test_chunk_read_before_the_kill_is_not_added_after_it(tmp_path, unscoped):
 
     registry._ingest_output = paused_ingest
     registry._emit_output = recording_emit
+    foreign = registry.spawn_local("exec sleep 30", cwd=str(tmp_path),
+                                   task_id="foreign-worker", session_key="foreign-route")
     session = registry.spawn_local(
         "sleep 0.2; echo RACE-MARKER; exec sleep 15", cwd=str(tmp_path), use_pty=True)
     try:
         assert entered.wait(5), "reader never read the marker"
         result = registry.kill_process(session.id)
+        assert (result["status"], result["error"]) == ("error", "process_stop_unknown")
+        assert job_quiescent(session) and session._scope_stop_pending
+        assert not session._completion_event.is_set()
+        assert foreign.process.poll() is None and not foreign._completion_event.is_set()
+        assert session.id in {row["session_id"] for row in json.loads(module._checkpoint_path().read_text())}
+        release.set()
+        assert session._completion_event.wait(5), "original reader did not publish its captured chunk"
+        original_code = read_job_receipt(session)["exit_code"]
+        assert type(original_code) is int and session.exit_code == original_code
+        retried = registry.kill_process(session.id)
+        assert retried["status"] == "already_exited"
+        assert retried["exit_code"] == original_code
+        assert "RACE-MARKER" in retried["output"] and "RACE-MARKER" in session.output_buffer
+        assert any("RACE-MARKER" in text for text in emitted)
+        retained = json.loads((get_hermes_home() / "logs" / "process-results" / (session.id + ".json")).read_text())
+        assert retained["result_complete"] and retained["exit_code"] == original_code
+        assert retained["output"] == session.output_buffer
+        assert session.id not in {row["session_id"] for row in json.loads(module._checkpoint_path().read_text())}
+        assert foreign.process.poll() is None and not foreign._completion_event.is_set()
     finally:
         release.set()
-    assert result["status"] == "killed"
-    assert _wait_for(lambda: not session._reader_thread.is_alive(), 5)
-    assert "RACE-MARKER" not in result.get("output", "")
-    assert "RACE-MARKER" not in session.output_buffer
-    assert not any("RACE-MARKER" in text for text in emitted)
+        assert request_job_stop(registry, session)
+        assert session._completion_event.wait(5)
+        assert request_job_stop(registry, foreign)
+        assert foreign._completion_event.wait(5)

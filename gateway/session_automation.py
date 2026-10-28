@@ -256,6 +256,23 @@ async def _withdraw(authority, row):
     return receipt.outcome == 'cancelled'
 
 
+async def withdraw_consumed_process_notices(authority, ref):
+    """Withdraw queued completion inputs whose native results Stop has consumed."""
+    from tools.process_registry import process_registry
+    from gateway.session_ancillary import process_stop_pending
+    stopping = process_stop_pending(authority.db, ref.session_id) is not None
+    for row in list_session_admissions(authority.db, session_id=ref.session_id):
+        if row['status'] != 'queued' or not row['principal_id'].startswith('automation:'):
+            continue
+        descriptor = _descriptor(row['payload'])
+        identities = descriptor.get('identities', [descriptor.get('identity')])
+        if any(len(identity) > 1 and identity[0] == 'completion'
+               and (stopping or process_registry.is_completion_consumed(identity[1])) for identity in _identities(identities)):
+            if not await _withdraw(authority, row):
+                return False
+    return True
+
+
 def _route_owner(authority, entry):
     # Compression moves the route's transcript to a child; admissions stay on the logical root.
     return (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
@@ -527,10 +544,20 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
             if replaced:  # the guard ran in the committed write; an exact replay runs no guard
                 authority._settle_cancelled(ref, replaces)
             return admitted(row)
+    def authorize(conn):
+        from tools.process_registry import process_registry
+        descriptor = payload.get('local_automation_v1') or payload['native_text_v1']['automation']
+        for producer in _identities(descriptor.get('identities', [identity])):
+            if len(producer) > 1 and producer[0] == 'completion' and (
+                    process_registry.is_completion_consumed(producer[1])
+                    or conn.execute('SELECT 1 FROM state_meta WHERE key=?', ('gateway.process_stop.v1:' + sid,)).fetchone()):
+                raise RuntimeStoreError('process_result_consumed')
+        if replaces is not None:
+            _replace_queued(replaces, ref.session_id, replaced)(conn)
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and _replace_queued(replaces, ref.session_id, replaced))),
+        _authorize_write=authority._admission_gate(authorize)),
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 

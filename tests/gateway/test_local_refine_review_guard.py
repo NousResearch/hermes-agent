@@ -97,8 +97,9 @@ async def test_new_turn_cancels_the_cold_refine_review(monkeypatch):
     try:
         await refine.refine_local_session(object(), live.source, None)
         wait_until(lambda: started, what='the review started')
-        owner = SimpleNamespace(executing={})
-        result = await SessionAuthority._execute_claimed(owner, SessionRef('p', sid), live, {'admission_id': 'a'})
+        owner = SimpleNamespace(executing={}, delivered_stops={})
+        result = await SessionAuthority._execute_claimed(owner, SessionRef('p', sid), live,
+                                                        {'admission_id': 'a', 'generation': 1})
     finally:
         for thread in threads:
             thread.join(10)

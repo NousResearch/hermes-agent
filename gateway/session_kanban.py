@@ -92,9 +92,19 @@ async def run_task(connection, params):
     if saved:
         policy = restore_policy(saved['policy'])
         context = json.loads(policy.kanban_json or '{}')
-        if (not connection.native_owner or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
+        if (not connection.native_owner or connection.actor.profile_id != authority.profile_id
+                or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
                 or any(params[k] != context.get(k) for k in params)):
             raise RuntimeStoreError('permission_denied')
+        from hermes_state_runtime import find_session_admission
+        committed = await asyncio.to_thread(find_session_admission, authority.db,
+            principal_id=connection.actor.subject, session_id=sid, request_id=request_id)
+        if committed is not None:
+            # A saved request is readback, not a new handoff. In particular it
+            # cannot retire work admitted by a later run or wake a stopped turn.
+            receipt = authority._receipt(committed)
+            authority.authorize(connection.actor, receipt.ref, 'session:read')
+            return {'session_id': sid, 'receipt': asdict(receipt)}
         from gateway.session_local_recovery import restore_local_session
         ref = restore_local_session(authority, sid)
     else:
@@ -107,14 +117,16 @@ async def run_task(connection, params):
     import psutil
     from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
+    from gateway.session_kanban_stop import require_current_claim, retire_previous_attempts
+    await retire_previous_attempts(connection, context)
 
     def admit_claim():
         # The Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s): the claim
         # check and its marker share one write transaction, off the owner loop.
         with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-            # Either this exact attempt was already admitted to this session (retry after a
-            # crash between session creation and admission), or the claim is still current
-            # now; a reclaimed/closed task never reaches resume/submit.
+            # Even a retry after session/marker creation but before input commit
+            # needs its current claim. Fully committed retries returned readback above.
+            require_current_claim(conn, context)
             marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
                                   (params['task_id'], params['run_id'])).fetchone()
             if marker:
@@ -122,8 +134,6 @@ async def run_task(connection, params):
                     raise RuntimeStoreError('stale_kanban_claim')
             else:
                 task = kb.get_task(conn, params['task_id'])
-                if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
-                    raise RuntimeStoreError('stale_kanban_claim')
                 kb._append_event(conn, task.id, 'owner_admitted',
                     {'db': owner_db, 'session_id': ref.session_id,
                      'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
@@ -133,20 +143,10 @@ async def run_task(connection, params):
     await connection.resume(ref, {})
     # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
     # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
-    # A retry of an attempt admitted before cards were finite resubmits its committed payload,
-    # so the store returns the original receipt instead of admission_conflict.
-    from hermes_state_runtime import find_session_admission
-    committed = None if not saved else await asyncio.to_thread(find_session_admission, authority.db,
-        principal_id=connection.actor.subject, session_id=ref.session_id, request_id=request_id)
-    payload: dict = {'text': f'work kanban task {params["task_id"]}'}
-    if committed is None or 'finite' in committed['payload']:
-        payload['finite'] = True
+    payload: dict = {'text': f'work kanban task {params["task_id"]}', 'finite': True}
     # The dispatcher's trusted producer marker (#134889 KB-8): nobody waits on a card attempt, so one
-    # lost across an owner restart settles interrupted instead of pausing the card session. An
-    # attempt main committed without it resubmits unmarked (same digest, original receipt).
-    card = None
-    if committed is None or 'kanban_card_v1' in committed['payload']:
-        card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
+    # lost across an owner restart settles interrupted instead of pausing the card session.
+    card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
     receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'),
                                      _kanban_card=card)
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
@@ -197,7 +197,6 @@ def bind_worker_context(frame):
     expires = json.loads(claimed[0]).get('expires') if claimed else None
     if isinstance(expires, int) and claimed[1]:
         env['HERMES_KANBAN_CLAIM_TTL_SECONDS'] = str(max(1, expires - int(claimed[1])))
-    _watch_submitter(Path(context['db']), context['run_id'])
     os.environ.update(env)
     os.chdir(context['workspace'])
 
@@ -205,11 +204,19 @@ def bind_worker_context(frame):
 _TURNS_DONE = threading.Event()
 
 
-def _watch_submitter(db, run_id):
-    """The dispatcher's spawned worker is this attempt's handle: killing it (an operator, a
-    timeout, an OOM kill) must end the attempt, as it did when the worker ran the agent itself.
-    Exiting hard leaves no ``worker_result``, so the dead-worker sweep books this run's crash.
-    The run row is re-read each tick: the dispatcher records the pid only after its spawn returns."""
+def watch_worker_task(frame, stop):
+    context = json.loads(frame['policy'].get('kanban_json') or 'null')
+    if context is not None:
+        _watch_submitter(Path(context['db']), context['run_id'], stop=stop)
+
+
+def _watch_submitter(db, run_id, *, stop=None):
+    """An aborted run or dead submitter asks the owner to stop this attempt and its processes.
+
+    The callback reaches the existing durable Stop path; a worker's hard exit alone cannot
+    terminate its detached terminal jobs. Legacy direct watchers retain their exit behavior.
+    Terminal reaping clears the mutable handle, so retain this run's immutable spawn identity.
+    """
     import os
     from hermes_cli.kanban_db_dispatch import _worker_alive
 
@@ -217,10 +224,19 @@ def _watch_submitter(db, run_id):
         with closing(sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
             while not _TURNS_DONE.wait(1.0):
                 try:
-                    row = conn.execute('SELECT worker_pid, worker_started_at FROM task_runs WHERE id=?', (run_id,)).fetchone()
+                    row = conn.execute('SELECT worker_pid, worker_started_at, status FROM task_runs WHERE id=?', (run_id,)).fetchone()
+                    aborted = row is not None and row[2] not in {'running', 'done', 'review', 'scheduled'}
+                    completed = row is not None and row[2] in {'done', 'review', 'scheduled'}
+                    if row and not row[0]:
+                        row = conn.execute("SELECT json_extract(payload, '$.pid'), json_extract(payload, '$.started_at') "
+                            "FROM task_events WHERE run_id=? AND kind IN ('spawned','worker_registered') "
+                            "ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
                 except sqlite3.Error:
                     continue
-                if row and row[0] and row[0] != os.getpid() and not _worker_alive(row[0], row[1]):
+                if (aborted and stop is not None) or (row and row[0] and row[0] != os.getpid() and not _worker_alive(row[0], row[1])):
+                    if stop is not None and not completed:
+                        stop()  # the owner sends the existing scoped Stop and retains cleanup uncertainty
+                        return
                     os._exit(1)
     threading.Thread(target=watch, name='kanban-submitter-watch', daemon=True).start()
 

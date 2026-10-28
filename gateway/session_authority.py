@@ -850,6 +850,9 @@ class SessionAuthority:
         """``resolve_unknown`` past authorization: also the owner's own call when the last viewer
         closed a session whose turn recovered ``unknown`` (gateway/session_viewer_close), or when an
         unattended automation turn settles itself (``notice``: its transcript copy, GW-10)."""
+        from gateway.session_ancillary import retry_process_stop
+        if not await retry_process_stop(self, ref):
+            raise RuntimeStoreError('process_stop_unknown')
         captured = self.pending_results.get(admission_id)
         before = get_session_admission(self.db, admission_id=admission_id)
         prepared = None
@@ -897,10 +900,18 @@ class SessionAuthority:
 
     async def interrupt(self, actor, ref, generation):
         self.authorize(actor, ref, 'session:control')
+        # An idle Stop and a queued claim must order at the same boundary. A cleanup
+        # that yields cannot let the next admission start before its verdict is durable.
+        async with self.sessions[ref.session_id].claim_gate:
+            return await self._interrupt_at_boundary(actor, ref, generation)
+
+    async def _interrupt_at_boundary(self, actor, ref, generation):
+        self.authorize(actor, ref, 'session:control')
         handle = self._handle(ref)
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
         live, agent = self.sessions[ref.session_id], None
+        returned = False
         if handle.execution_state == 'running':
             # Latches are written under the lock adopt_agent takes on the executor thread, BEFORE the
             # agent is called: an adoption racing the call consumes them. The agent is called outside it.
@@ -916,13 +927,26 @@ class SessionAuthority:
                         # Accepted for this exact claim before its turn adopted an agent: whatever agent
                         # the turn adopts for this generation must not run the work as if no Stop arrived.
                         self.pending_stops[ref.session_id] = generation
-                if agent is not None:
+                if not returned:
                     self.delivered_stops[ref.session_id] = generation
         # Stop hard-cancels this turn (aborts compression too). Background delegations are not the
         # turn: they keep running and report back; `/stop` and session close/reset end them.
         from agent.interrupt_compat import request_hard_interrupt
         if agent is not None:
             request_hard_interrupt(agent)
+        if not returned:
+            from gateway.session_ancillary import interrupt_processes, record_process_stop, retry_process_stop
+            from gateway.session_runtime_workers import tracked_write
+            await tracked_write(self, partial(record_process_stop, self, ref, generation))
+            if handle.execution_state == 'running':
+                stopped = await interrupt_processes(self, ref, agent)
+            else:
+                stopped = await retry_process_stop(self, ref, agent)
+                if stopped and any(row['status'] == 'queued' for row in list_session_admissions(
+                        self.db, session_id=ref.session_id)):
+                    self._schedule(ref)
+            if not stopped:
+                raise RuntimeStoreError('process_stop_unknown')
         return self._handle(ref)
 
     def _classic_turn_holds(self, route):
@@ -979,8 +1003,10 @@ class SessionAuthority:
         with live.event_stream.lock if live is not None else contextlib.nullcontext():
             self.adopted[session_id] = (generation, agent)
             clear = getattr(agent, 'clear_interrupt', None)
-            if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
-                clear()
+            if self.delivered_stops.get(session_id, generation) != generation:
+                del self.delivered_stops[session_id]
+                if clear is not None:
+                    clear()
             if self.pending_stops.get(session_id) == generation:
                 del self.pending_stops[session_id]
                 from agent.interrupt_compat import request_hard_interrupt
@@ -1039,6 +1065,9 @@ class SessionAuthority:
     async def _claim_next(self, ref, live):
         # False asks the pump to re-read after a queued head changed during preflight.
         async with live.claim_gate, live.mutation_lock:
+            from gateway.session_ancillary import retry_process_stop
+            if not await retry_process_stop(self, ref):
+                raise RuntimeStoreError('process_stop_unknown')
             pending = list_session_admissions(self.db, session_id=ref.session_id)
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
@@ -1112,7 +1141,6 @@ class SessionAuthority:
                 return 'classic_busy', first
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
-            live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
@@ -1178,6 +1206,7 @@ class SessionAuthority:
         route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
         backoff, conflicted, refusing = 0.0, None, None
         while True:
+            live.rescan = False  # Consume the prior wake; preserve a new one during this attempt.
             # The refusal handling's own reads and writes share the claim's storage retry, which finishes
             # that exact refusal first: once its cancellation commits, the claim no longer sees the row.
             try:
@@ -1208,6 +1237,10 @@ class SessionAuthority:
                             refusing = None
                             if refused:
                                 continue
+                    if live.rescan:
+                        if self._drain_stopping(ref, live):
+                            return None
+                        continue  # Recheck native gates once per new event, never poll an unchanged refusal.
                     import logging
                     logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                     self._pause(ref, exc.reason)
@@ -1250,6 +1283,18 @@ class SessionAuthority:
             finally:
                 with live.event_stream.lock:
                     self.executing.pop(ref.session_id, None)
+                if self.delivered_stops.get(ref.session_id) == row['generation']:
+                    from gateway.session_ancillary import retry_process_stop
+                    if (not await retry_process_stop(self, ref, self.adopted.get(ref.session_id, (None, None))[1])
+                            and row['admission_id'] not in self.pending_results):
+                        # Cleanup uncertainty does not erase an already captured turn result.
+                        # Ordinary settlement persists it; the Stop fence still gates every
+                        # successor until native cleanup and the original reader have settled.
+                        from gateway.session_settlement_recovery import recover_failed_settlement
+                        await recover_failed_settlement(self, row)
+                        self.pending_results.pop(row['admission_id'], None)
+                        self._publish_pending(ref)
+                        raise ManagedExecutionUnknown('process_stop_unknown')
         except ManagedExecutionUnknown:
             with live.event_stream.lock:
                 live.event_stream.execution = {}
@@ -1260,7 +1305,8 @@ class SessionAuthority:
             # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
             # so the followers already queued run in this drain; a person's turn still pauses.
             from gateway.session_unattended_unknown import settle_unattended_unknown
-            if await settle_unattended_unknown(self, ref):
+            from gateway.session_ancillary import process_stop_pending
+            if process_stop_pending(self.db, ref.session_id) is None and await settle_unattended_unknown(self, ref):
                 return None, 'settled_unknown'
             self._pause(ref, 'unknown_execution')
             raise

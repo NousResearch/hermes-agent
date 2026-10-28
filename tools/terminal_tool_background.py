@@ -140,8 +140,12 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
     }
     runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
     runner = runner_ref() if callable(runner_ref) else None
-    if runner is not None and runner.arm_process_watcher(watcher):
-        return
+    if runner is not None:
+        try:
+            if runner.arm_process_watcher(watcher):
+                return
+        except Exception:
+            logger.exception('Process watcher arming failed; retaining pending descriptor')
     process_registry.pending_watchers.append(watcher)
 
 
@@ -260,17 +264,45 @@ def yield_to_background_handler(
     if env_type != "local":
         return None
 
-    def _handler(proc, output_so_far: str) -> dict:
+    def _prepare_local():
         from tools.process_registry import process_registry
-        session = process_registry.adopt_local(
-            proc, command=command, cwd=cwd, task_id=effective_task_id,
-            owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
-        _stamp_routing_if_gateway(process_registry, session, session_key)
+        from gateway.session_context import get_session_env
+        session = process_registry._new_session(command, effective_task_id, task_id or effective_task_id,
+                                                session_key, cwd, persist_on_release=True)
+        session.notify_on_complete = False
+        _stamp_gateway_routing(session, get_session_env)
+        return session
+
+    def _handler(proc, output_so_far: str) -> dict:
+        from tools.process_registry import ProcessSession, process_registry
+        native = isinstance(getattr(proc, '_hermes_job_session', None), ProcessSession)
+        if native:
+            from copy import copy
+            from tools.process_registry_chat_execution import adopt_foreground
+            prepared = copy(proc._hermes_job_session)
+            prepared.persist_on_release, prepared.notify_on_complete = False, True
+            from gateway.session_context import async_delivery_supported, get_session_env
+            if async_delivery_supported():
+                _stamp_gateway_routing(prepared, get_session_env)
+                if prepared.watcher_platform:
+                    prepared.watcher_interval = 5
+            else:
+                prepared.notify_on_complete = False
+            session = adopt_foreground(process_registry, proc, command=command, cwd=cwd,
+                task_id=effective_task_id, owner_task_id=task_id or effective_task_id,
+                session_key=session_key, notify_on_complete=prepared.notify_on_complete, prepared=vars(prepared))
+            if session.notify_on_complete and session.watcher_platform:
+                _register_completion_watcher(process_registry, session, session_key)
+        else:
+            session = process_registry.adopt_local(
+                proc, command=command, cwd=cwd, task_id=effective_task_id,
+                owner_task_id=task_id or effective_task_id, session_key=session_key,
+                output_so_far=output_so_far)
+            _stamp_routing_if_gateway(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
-        return {
-            "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
-        }
+        return {'output': output_so_far, 'returncode': None,
+                'yielded_session_id': session.id, 'pid': session.pid}
+    _handler.prepare_local = _prepare_local
     return _handler
 
 

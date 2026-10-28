@@ -39,7 +39,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   // path — request-shaped so the API helpers never see a primary-targeting
   // null).
   const scopeProfile = useStore($settingsRequestProfile)
-  const { rowProps, vars } = useEnvCredentials(scopeProfile)
+  const { rowProps, vars } = useEnvCredentials(scopeProfile, view)
   const [openKey, setOpenKey] = useState<null | string>(null)
 
   useEffect(() => {

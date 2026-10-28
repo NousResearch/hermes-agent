@@ -104,4 +104,53 @@ describe('TextInput submit clearing', () => {
     expect(changes.at(-1)).toBe('x')
     expect(changes).not.toContain(`${full}x`)
   })
+
+  it('clears the composer when text and a CSI-u Enter arrive in one read', async () => {
+    const streams = makeStreams()
+    const changes: string[] = []
+    const submits: string[] = []
+
+    function Harness() {
+      const [value, setValue] = useState('')
+
+      return (
+        <TextInput
+          columns={80}
+          onChange={next => {
+            changes.push(next)
+            setValue(next)
+          }}
+          onSubmit={text => {
+            submits.push(text)
+            setValue('')
+          }}
+          value={value}
+        />
+      )
+    }
+
+    const instance = renderSync(React.createElement(Harness), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as unknown as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    await settle()
+
+    // Text and the Enter key share one read and one React batch, so the parent value ends
+    // where it started ('') and the draft only clears if TextInput re-syncs on submit.
+    streams.stdin.send('hello\x1b[13u')
+    await settle(25)
+
+    streams.stdin.send('x')
+    await settle(25)
+
+    instance.unmount()
+    instance.cleanup()
+
+    expect(submits).toEqual(['hello'])
+    expect(changes.at(-1)).toBe('x')
+    expect(changes).not.toContain('hellox')
+  })
 })

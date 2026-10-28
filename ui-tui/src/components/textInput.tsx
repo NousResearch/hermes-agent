@@ -796,6 +796,11 @@ export function TextInput({
   )
 
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
+  // Bumped on every submit so the value-sync effect below re-runs even when the parent's value
+  // ends where it started: text + Return in ONE stdin read (`tmux send-keys 'text' Enter`) emits
+  // the text and the submit's clear in the same React batch, so `value` never visibly changes and
+  // the submitted text would stay in the composer.
+  const [submitSeq, setSubmitSeq] = useState(0)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -958,7 +963,7 @@ export function TextInput({
     lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
     undo.current = []
     redo.current = []
-  }, [value])
+  }, [value, submitSeq])
 
   // The composer unmounts while full-screen monitors own input. Keep its
   // insertion point with the shell, not with transient steer/secret inputs.
@@ -1455,6 +1460,7 @@ export function TextInput({
         if (insertNewline) {
           commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
         } else {
+          setSubmitSeq(n => n + 1)
           cbSubmit.current?.(pending.value)
         }
 

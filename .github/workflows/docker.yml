@@ -58,7 +58,7 @@ permissions:
 # (test/publish) of this workflow live inside ONE parent run, and a
 # shared group would cancel the parent mid-release.
 concurrency:
-  group: docker-${{ github.event.pull_request.number || github.ref }}-${{ inputs.release-phase || 'standalone' }}
+  group: docker-${{ inputs.release-phase && github.run_id || github.event.pull_request.number || github.ref }}-${{ inputs.release-phase || 'standalone' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

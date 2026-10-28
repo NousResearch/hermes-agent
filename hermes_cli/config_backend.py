@@ -526,25 +526,6 @@ def refused_locked_omission_prefixes() -> tuple[str, ...]:
 # Dotted keys a document save in this context stores at the user layer even when the value equals
 # what an upper level already supplies (an explicit `config set`): the file backend always writes
 # them, and a backend with levels must not drop them as "no change".
-_NO_BOOT: contextvars.ContextVar[bool] = contextvars.ContextVar("config_no_boot", default=False)
-
-
-@contextlib.contextmanager
-def without_boot():
-    """Reads in this scope never start loading a profile's config (a remote boot fetch, with its
-    network calls and retries): a backend raises :class:`ConfigBackendUnavailable` instead. For
-    code that must never wait, such as a log formatter."""
-    token = _NO_BOOT.set(True)
-    try:
-        yield
-    finally:
-        _NO_BOOT.reset(token)
-
-
-def boot_allowed() -> bool:
-    return not _NO_BOOT.get()
-
-
 _PINNED_KEYS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("config_pinned_keys", default=())
 
 

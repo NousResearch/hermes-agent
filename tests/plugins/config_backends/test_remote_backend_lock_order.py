@@ -107,15 +107,11 @@ def test_nothing_is_logged_under_a_backend_lock(plane, monkeypatch):
 
 
 def test_boot_retry_warning_through_the_real_redacting_formatter(plane, monkeypatch):
-    """The boot's retry warning is formatted by RedactingFormatter, which reads the routed profile's
-    redaction policy from config: on the booting thread that read must not re-enter the boot (it
-    would abort it), and it must never wait for the config lock another thread holds."""
+    """The boot's retry warning goes through RedactingFormatter on a routed profile: formatting reads
+    no config, so it neither re-enters the boot nor waits for a lock a config reader holds."""
     import logging
-    import threading
 
-    from agent import redact
     from agent.redact import RedactingFormatter
-    from hermes_cli import config as config_mod
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     backend = remote_pkg.get_remote_backend()
@@ -133,40 +129,50 @@ def test_boot_retry_warning_through_the_real_redacting_formatter(plane, monkeypa
         return resp
 
     monkeypatch.setattr(backend_mod.client, "request", first_get_fails)
-    monkeypatch.setattr(redact, "_REDACT_ENABLED_BY_HOME", {})
     handler = Handler(level=logging.WARNING)
     handler.setFormatter(RedactingFormatter("%(message)s"))
     backend_mod.logger.addHandler(handler)
     plane.upper = {"display": {"skin": "ares"}}
     plane.fail_status = 503
-    token = set_hermes_home_override(plane.home)  # a routed profile: the formatter reads its config
+    token = set_hermes_home_override(plane.home)
     try:
         assert backend.read_user_doc(plane.home)["display"]["skin"] == "ares"  # booted after one retry
-        assert any("retrying" in m for m in formatted), formatted
-        assert len(_gets(plane)) == 2
-        assert redact._REDACT_ENABLED_BY_HOME == {}  # the boot-time fallback was not cached
-
-        # Another thread holds the config lock: formatting returns at once with the secure default.
-        held, release = threading.Event(), threading.Event()
-
-        def holder():
-            with config_mod._CONFIG_LOCK:
-                held.set()
-                release.wait(10)
-
-        t = threading.Thread(target=holder, daemon=True)
-        t.start()
-        assert held.wait(5)
-        try:
-            done: list = []
-            worker = threading.Thread(target=lambda: done.append(redact._redact_enabled()), daemon=True)
-            worker.start()
-            worker.join(5)
-            assert done == [True], "the formatter waited for the config lock"
-            assert redact._REDACT_ENABLED_BY_HOME == {}
-        finally:
-            release.set()
-            t.join(5)
     finally:
         reset_hermes_home_override(token)
         backend_mod.logger.removeHandler(handler)
+    assert any("retrying" in m for m in formatted), formatted
+    assert len(_gets(plane)) == 2
+
+
+def test_the_formatter_never_reads_config(tmp_path, monkeypatch):
+    """Under a backend whose every read raises, a routed profile's records still format, redacted
+    (its policy is not recorded yet: the secure default), and no config read is attempted."""
+    import logging
+
+    import hermes_cli.config_backend as cb
+    from agent import redact
+    from agent.redact import RedactingFormatter
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+
+    reads: list = []
+
+    def refuse(*args, **kwargs):
+        reads.append(args)
+        raise ConfigBackendUnavailable("this test's backend refuses every read")
+
+    monkeypatch.setattr(cb, "_route", refuse)
+    monkeypatch.setattr(redact, "_ENV_POLICY_BY_HOME", {})
+    monkeypatch.setattr(redact, "_CONFIG_POLICY_BY_HOME", {})
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)  # the launch profile opted out
+    secret = "sk-proj-" + "c" * 32
+    record = logging.LogRecord("t", logging.WARNING, __file__, 1, "key %s", (secret,), None)
+    token = set_hermes_home_override(tmp_path)
+    try:
+        out = RedactingFormatter("%(message)s").format(record)
+        redact.note_env_policy(hermes_home_key(), None)
+        redact.note_config_policy(hermes_home_key(), "false")  # recorded later: the profile opted out
+        out_after = RedactingFormatter("%(message)s").format(record)
+    finally:
+        reset_hermes_home_override(token)
+    assert secret not in out and secret in out_after
+    assert reads == []

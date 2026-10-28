@@ -1982,22 +1982,6 @@ def load_config() -> dict[str, Any]:
     return _load_config_impl(want_deepcopy=True)
 
 
-def load_config_readonly_nowait() -> Optional[dict[str, Any]]:
-    """:func:`load_config_readonly` for code that must never wait (a log formatter, under the
-    handler's lock). None when ``_CONFIG_LOCK`` is held elsewhere or the read would start a remote
-    boot fetch: callers use a secure default and must not cache it."""
-    from hermes_cli.config_backend import ConfigBackendUnavailable, without_boot
-    if not _CONFIG_LOCK.acquire(blocking=False):
-        return None
-    try:
-        with without_boot():
-            return load_config_readonly()
-    except ConfigBackendUnavailable:
-        return None
-    finally:
-        _CONFIG_LOCK.release()
-
-
 def load_config_readonly() -> dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
@@ -2298,6 +2282,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        _note_policy("note_config_policy", (expanded.get("security") or {}).get("redact_secrets"))
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while
             # load_config_readonly() callers all see the same stable object. The env snapshot
@@ -2436,7 +2421,17 @@ def load_env() -> dict[str, str]:
         return {}
     from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
 
-    return load_env_file(get_env_path())
+    env = load_env_file(get_env_path())
+    _note_policy("note_env_policy", env.get("HERMES_REDACT_SECRETS"))
+    return env
+
+
+def _note_policy(setter: str, raw: Any) -> None:
+    """Record the loaded profile's redaction policy for the log formatter, which never reads config."""
+    note = getattr(sys.modules.get("agent.redact"), setter, None)
+    if note is not None:
+        from hermes_constants import hermes_home_key
+        note(hermes_home_key(), raw)
 
 
 def _parse_env_value(raw_value: str) -> str:

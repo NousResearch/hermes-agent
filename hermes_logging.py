@@ -935,6 +935,10 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
             homes.append(resolved)
     if len(homes) < 2:
         return False
+    # Each routed profile's redaction policy, read now: the formatter never reads config per record.
+    from agent.redact import resolve_profile_policy
+    for home in homes:
+        resolve_profile_policy(home)
 
     with _queue_state_lock:
         if not _queued_file_handlers:

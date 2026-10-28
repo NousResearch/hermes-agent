@@ -477,7 +477,7 @@ Agent 身份文件是独立的：Hermes 从 `$HERMES_HOME/SOUL.md` 加载其主�
 }
 ```
 
-Token 存储在 `$HERMES_HOME/mcp-tokens/<server-name>.json` 中，在重启和重建后持久保留。
+只要保留 Hermes home 目录，OAuth 状态就在重启和 Nix 重建后持久保留。OAuth 的 JSON 状态存储在当前 profile 的 `$HERMES_HOME/mcp-tokens/` 目录中（默认 profile 为 `~/.hermes/mcp-tokens/`）：`<server>.json` 保存 token，`<server>.client.json` 保存客户端注册信息，`<server>.meta.json` 保存已发现的授权服务器元数据，包括 token 端点。这里的 `<server>` 指用于文件名的规范化服务器名称。文件按需创建，目录中还可能包含内部锁文件、标记文件或备份文件。
 
 <details>
 <summary><strong>无头服务器上的初始 OAuth 授权</strong></summary>
@@ -490,20 +490,29 @@ Token 存储在 `$HERMES_HOME/mcp-tokens/<server-name>.json` 中，在重启和�
 # 容器模式
 docker exec -it hermes-agent \
   hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
+docker exec -it hermes-agent hermes mcp login my-oauth-server
 
 # 原生模式
 sudo -u hermes HERMES_HOME=/var/lib/hermes/.hermes \
   hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
+sudo -u hermes HERMES_HOME=/var/lib/hermes/.hermes \
+  hermes mcp login my-oauth-server
 ```
 
 容器使用 `--network=host`，因此 `127.0.0.1` 上的 OAuth 回调监听器可从主机浏览器访问。
 
-**方案 B：预置 token** — 在工作站上完成流程，然后复制 token：
+**方案 B：预置 OAuth 状态。** 在工作站上完成授权，然后停止使用该服务器的 Hermes 进程，再复制实际存在的 JSON 状态文件。下面的 Bash 示例使用工作站的 `HERMES_HOME`，未设置时使用默认 profile；目标目录须已存在，且 SSH 账户对其有写入权限：
 
 ```bash
 hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
-scp ~/.hermes/mcp-tokens/my-oauth-server{,.client}.json \
-    server:/var/lib/hermes/.hermes/mcp-tokens/
+hermes mcp login my-oauth-server
+state_files=()
+for file in "${HERMES_HOME:-$HOME/.hermes}/mcp-tokens"/my-oauth-server{,.client,.meta}.json; do
+  if [ -f "$file" ]; then
+    state_files+=("$file")
+  fi
+done
+scp "${state_files[@]}" server:/var/lib/hermes/.hermes/mcp-tokens/
 # 确保：chown hermes:hermes，chmod 0600
 ```
 

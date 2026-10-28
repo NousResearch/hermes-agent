@@ -168,6 +168,12 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
 
 def _patch_aborted_startup(monkeypatch, runner_cls):
     """Run start_gateway() against a runner that aborts before running mode."""
+    # Listener I/O is unrelated to the startup verdict and may be sandboxed.
+    monkeypatch.setattr(
+        "gateway.run_bootstrap._start_gateway_start_control_socket",
+        AsyncMock(return_value=MagicMock(stop=AsyncMock())),
+    )
+    monkeypatch.setattr("gateway.run_runtime.start_gateway_runtime_api", AsyncMock())
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
     monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)

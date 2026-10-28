@@ -170,6 +170,26 @@ describe('parseMultipleKeypresses text control splitting', () => {
     ])
   })
 
+  it('keeps the trailing CR of a paste whose reads keep arriving past the quiet window', () => {
+    // 'one\r', 'two', ' continued', ' again', ' end\r' 100 ms apart: the last break is older than
+    // BURST_END_QUIET_MS, but input never went quiet, so the trailing CR is still paste content.
+    let state = INITIAL_STATE
+    const keys = []
+
+    for (const [i, chunk] of ['one\r', 'two', ' continued', ' again', ' end\r'].entries()) {
+      const [parsed, next] = parseMultipleKeypresses(state, chunk, 1_000 + i * 100)
+
+      keys.push(...parsed)
+      state = next
+    }
+
+    const [flushed] = parseMultipleKeypresses(state, null, 1_400 + BURST_END_QUIET_MS)
+
+    keys.push(...flushed)
+    expect(keys.some(key => 'name' in key && key.name === 'return')).toBe(false)
+    expect(keys.at(-1)).toEqual(expect.objectContaining({ raw: ' end\r' }))
+  })
+
   it('keeps the trailing CR of a multi-line non-bracketed paste inside the text token', () => {
     const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'line one\rline two\r')
 

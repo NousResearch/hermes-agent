@@ -6,7 +6,8 @@ deliver every newline as its own Enter key right behind the text, so an Enter wi
 A script typing ``text`` + Enter in ONE write (``tmux send-keys 'text' Enter``, a PTY write of
 ``text\\r``) looks identical up to that Enter, except nothing follows it and no other Enter came
 before it. So an Enter with more keys of the same read still queued stays a newline, and so does
-the last Enter of a burst that already held one (the tail of a multi-line paste). The lone Enter
+the last Enter of a burst that already held one (the tail of a multi-line paste: input never went
+quiet for ``BURST_END_QUIET_S`` since that earlier Enter, however long the paste ran). The lone Enter
 that ends a burst inserts a provisional newline and submits once input has stayed quiet for
 ``BURST_END_QUIET_S``; any input in that window (the next chunk of a paste split across reads)
 keeps the newline.
@@ -23,6 +24,14 @@ RAPID_INPUT_ENTER_WINDOW_S = 0.05
 BURST_END_QUIET_S = 0.25
 
 
+def note_text_change(cli) -> float:
+    """Record a buffer change; input arriving inside the quiet window keeps a paste burst alive."""
+    now = monotonic()
+    if now - getattr(cli, "_tui_paste_burst_at", float("-inf")) < BURST_END_QUIET_S:
+        cli._tui_paste_burst_at = now
+    return now
+
+
 def handle_burst_enter(cli, event, buf) -> bool:
     """Handle an Enter that arrived mid-burst; False when it is an ordinary (human) Enter.
 
@@ -32,8 +41,8 @@ def handle_burst_enter(cli, event, buf) -> bool:
     now = monotonic()
     if now - getattr(cli, "_tui_last_text_change", 0.0) >= RAPID_INPUT_ENTER_WINDOW_S:
         return False
-    pasted_newline_before = now - getattr(cli, "_tui_burst_newline_at", 0.0) < BURST_END_QUIET_S
-    cli._tui_burst_newline_at = now
+    pasted_newline_before = now - getattr(cli, "_tui_paste_burst_at", float("-inf")) < BURST_END_QUIET_S
+    cli._tui_paste_burst_at = now
     before = buf.document  # the newline lands at the cursor, not necessarily at the end
     buf.insert_text("\n")
     app = event.app

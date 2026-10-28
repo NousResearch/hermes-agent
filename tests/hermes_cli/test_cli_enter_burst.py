@@ -149,3 +149,19 @@ def test_unbracketed_multiline_paste_keeps_newlines_and_never_submits(clock):
     loop.run_scheduled()
     assert buf.text == "chunk one\nchunk two"
     assert _submitted(shell) == []
+
+
+def test_paste_whose_reads_continue_past_the_quiet_window_never_submits(clock):
+    """A multi-line paste split into reads 100 ms apart, newlines only in the first and last read:
+    the paste is still arriving when the last Enter lands, so it stays a newline even though the
+    previous newline is older than the quiet window."""
+    shell, buf, loop, app = _rig(clock)
+    buf.insert_text("one")
+    _enter(shell, app, more_keys_in_read=False)
+    for chunk in ("two", " continued", " again", " end"):
+        clock.advance(0.1)
+        buf.insert_text(chunk)
+    _enter(shell, app, more_keys_in_read=False)   # the paste's trailing newline
+    loop.run_scheduled()
+    assert buf.text == "one\ntwo continued again end\n"
+    assert _submitted(shell) == []

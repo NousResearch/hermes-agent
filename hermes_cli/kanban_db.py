@@ -566,6 +566,23 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def board_db_path(board: Optional[str] = None) -> Path:
+    """The physical ``kanban.db`` backing a named board, ignoring the env pins.
+
+    :func:`kanban_db_path` answers "which file does THIS execution's board work
+    go to", where a dispatcher-injected ``HERMES_KANBAN_DB`` correctly outranks
+    the slug. Board-*enumeration* surfaces (``hermes kanban boards list/show``)
+    ask a different question — "what is board ``<slug>``'s own DB" — and must
+    answer it per board. Resolving those through the pin made a worker-fenced
+    session print the pinned board's counts on EVERY row of ``boards list``
+    (t_5dedbbe8). ``default`` keeps the legacy ``<root>/kanban.db``.
+    """
+    slug = _slug_or_default(board)
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban.db"
+    return board_dir(slug) / "kanban.db"
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""

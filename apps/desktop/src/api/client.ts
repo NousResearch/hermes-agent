@@ -99,6 +99,9 @@ function remainingRequestBudget(deadline: number, signal?: AbortSignal): number 
 
 export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
+  private nativeDial = false
+  private protocolReady: Promise<void> = Promise.resolve()
+  private finishProtocolReady?: (error?: Error) => void
   private readonly protocol = new CanonicalDesktopProtocol()
   private readonly promptHandlers = new Set<ServerRequestHandler>()
   // A stored ID can exist in several profile islands (for example after import).
@@ -328,12 +331,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   protected override isDesktopLocal(): boolean {
-    return this.canonical
+    return this.nativeDial
   }
 
   override async connect(wsUrl: string): Promise<void> {
+    if (this.connectionState === 'open' || this.connectionState === 'connecting') { return super.connect(wsUrl) }
     this.connectionGeneration++
-    this.canonical = new URL(wsUrl).searchParams.has('native_dial')
+    this.nativeDial = new URL(wsUrl).searchParams.has('native_dial')
+    this.canonical = this.nativeDial
     this.attached.clear()
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
@@ -343,7 +348,33 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
 
-    return super.connect(wsUrl)
+    // URL/SSH auth does not identify the session wire. Modern remote owners advertise the
+    // canonical contract in gateway.ready; wait before startup calls or reconnect replay write.
+    this.protocolReady = this.nativeDial ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+      let settled = false
+      const timer = setTimeout(() => this.finishProtocolReady?.(new Error('Hermes gateway did not advertise its session protocol')), DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+
+      this.finishProtocolReady = error => {
+        if (settled) { return }
+        settled = true
+        clearTimeout(timer)
+        this.finishProtocolReady = undefined
+
+        if (error) { reject(error) } else { resolve() }
+      }
+    })
+
+    const generation = this.connectionGeneration
+    const finishReady = this.finishProtocolReady
+
+    try {
+      await Promise.all([super.connect(wsUrl), this.protocolReady])
+    } catch (error) {
+      finishReady?.(error instanceof Error ? error : new Error(String(error)))
+
+      if (generation === this.connectionGeneration) { super.close() }
+      throw error
+    }
   }
 
   // Sessions attached over THIS socket. An authority subscription is per
@@ -388,9 +419,12 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
-    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
-    const generation = this.connectionGeneration
     const deadline = requestDeadline(timeoutMs)
+    await this.protocolReady
+    signal?.throwIfAborted()
+
+    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), remainingRequestBudget(deadline, signal), signal) }
+    const generation = this.connectionGeneration
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 
@@ -529,6 +563,13 @@ export class HermesGateway extends JsonRpcGatewayClient {
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
       socketFactory: openGatewaySocket
+    })
+    this.onState(state => {
+      if (state === 'closed' || state === 'error') { this.finishProtocolReady?.(new Error(GATEWAY_NOT_CONNECTED_MESSAGE)) }
+    })
+    this.on('gateway.ready', event => {
+      if (!this.nativeDial) { this.canonical = event.payload?.session_authority === true }
+      this.finishProtocolReady?.()
     })
     this.onEvent(event => {
       if (!this.canonical) { return }

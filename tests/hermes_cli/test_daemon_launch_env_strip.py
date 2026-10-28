@@ -2,10 +2,13 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 
 import pytest
+
+from tests.waiting import wait_until
 
 # Every launch-scoped value a client process may hold when it auto-starts the shared daemon
 # (SWEEP_daemon-launch-env.md): consent, Kanban worker pins, the launching turn's session identity,
@@ -82,9 +85,14 @@ def test_daemon_started_below_a_launchd_gateway_is_unsupervised(tmp_path, monkey
         monkeypatch.delenv(key, raising=False)
     child = start.spawn_unmanaged_gateway(home, deadline=time.monotonic() + 5, idle_exit=True)
     try:
-        assert child.wait(timeout=20) == 0
+        # With a GUI session launchd takes the job (a GatewayJob: poll()/pid only), else a plain child.
+        wait_until(lambda: witness.exists() and witness.read_text(), timeout=20, what='supervisor witness')
     finally:
-        if child.poll() is None:
-            child.kill()
+        if isinstance(child, subprocess.Popen):
+            if child.poll() is None:
+                child.kill()
             child.wait(timeout=5)
+        else:
+            subprocess.run(['launchctl', 'remove', child.target.rsplit('/', 1)[-1]], check=False,
+                           capture_output=True, stdin=subprocess.DEVNULL)
     assert json.loads(Path(witness).read_text()) == ['manual', False]

@@ -1,6 +1,6 @@
 name: hermes-whatsapp-voice
 repo: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice
-sha: e472a47dda4e9986ca44f0ad62cb1b71c893bec0
+sha: ef3b8be4a79651b6c11a720f20a95b9e2939c92e
 title: WhatsApp Voice Calls
 description: >-
   Live voice calls with Hermes over WhatsApp, on the linked-device (personal number) setup most
@@ -9,9 +9,12 @@ description: >-
   real work to Hermes mid-call. Or let Hermes call you for things that matter: whatsapp_call_owner
   rings only the configured owner number (it has no destination parameter) and reports answered,
   no answer or declined, so the agent can fall back to another channel, including from cron. A short
-  summary of each call arrives in WhatsApp. Speech runs on Gemini Live (gemini-3.8-live by default),
-  reusing the Gemini key Hermes already has; any Live setup field is configurable, plus a language
-  lock. Setup is a dashboard tab (pairing QR, settings, test call) or an agent runbook skill.
+  summary of each call arrives in WhatsApp, and each call keeps a record with timing metrics
+  (hermes whatsapp-voice calls). Speech runs on Gemini Live (gemini-3.8-live by default), reusing the
+  Gemini key Hermes already has; every call setting (languages, pauses, timeouts, any Live setup
+  field) is configurable. Optional chat-session mode (context_mode: core_session, off by default)
+  makes the call part of the owner's WhatsApp chat with Hermes. Setup is a dashboard tab (pairing QR,
+  settings, test call) or an agent runbook skill.
   Disclosure — runs a separate sidecar process (Rust, built on whatsapp-rust) that the user starts or
   installs as a systemd/launchd user service; the binary is downloaded from this repo's GitHub
   release, built and attested by its release workflow, and checked against checksums pinned in the
@@ -25,10 +28,19 @@ description: >-
   to Hermes memory and whose result is sent to the owner on WhatsApp. The
   dashboard tab's backend saves only this plugin's settings (through hermes config set), starts and
   stops pairing, places test calls to the owner, and restarts the sidecar service (systemctl --user
-  or launchctl). No telemetry.
+  or launchctl). A pre_gateway_dispatch hook sends the owner's WhatsApp DM texts into an active
+  chat-session call instead of a second text reply (slash commands, media, groups and other chats are
+  untouched). Chat-session mode (opt-in) also runs a loopback service inside Hermes's process that
+  reads the owner's WhatsApp DM session (system prompt, recent history, tool schemas) and sends it to
+  Gemini, runs the voice's tool calls through Hermes in that session under Hermes's approval flow, and
+  writes the call into that session; it imports private Hermes modules (listed in the repo's
+  CORE_PATCHES.md) and falls back to the default mode if they change. Optional recording
+  (record_calls, off) saves the owner's side of each call as WAV in the plugin's data directory,
+  locally only. An advanced voice_api_url setting can point the Live connection at another endpoint,
+  which then receives the Gemini key and call audio. No telemetry.
 maintainer: ashwanthbalakrishnan5
 tier: community
-version: "0.1.12"
+version: "0.2.1"
 category: voice
 docs_url: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice#readme
 requires_hermes: ">=0.21.6"
@@ -40,6 +52,7 @@ capabilities:
   provides_tools:
     - whatsapp_call_owner
     - whatsapp_call_status
-  provides_hooks: []
+  provides_hooks:
+    - pre_gateway_dispatch
   provides_middleware: []
   requires_env: []

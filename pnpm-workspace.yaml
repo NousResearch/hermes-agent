@@ -1,5 +1,7 @@
 packages:
   - apps/*
+  # The docs app keeps its own npm lockfile and install (apps/docs/README.md).
+  - '!apps/docs'
   - ui-tui
   - ui-tui/packages/*
   - web

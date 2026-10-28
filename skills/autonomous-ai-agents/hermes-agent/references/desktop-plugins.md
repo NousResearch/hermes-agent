@@ -24,7 +24,7 @@ There are TWO on-disk doors, same contract and hot reload:
   "plugin not appearing" report before checking that toggle.
 
 Full human reference (every export, area payloads, backend, security):
-`website/docs/developer-guide/desktop-plugin-sdk.md`.
+`apps/docs/content/en/developer-guide/desktop-plugin-sdk.md`.
 
 ## When to Use
 

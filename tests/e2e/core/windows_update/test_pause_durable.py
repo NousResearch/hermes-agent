@@ -34,7 +34,7 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
 
 _PAUSED = "Paused gateway profile"
 _RECORD_STEM = ".hermes-update-paused-gateways"  # <stem>.<checkout key>.json, plus <record>.<pid>.<nonce>.claim
-_EARLY, _HELD = "AGENTS.md", "website/package.json"  # checkout order: the early file is written first
+_EARLY, _HELD = "AGENTS.md", "apps/docs/package.json"  # checkout order: the early file is written first
 _PULL_MARKER = "hermes-update-pull"  # hermes_cli._early_recovery.INTERRUPTED_PULL_MARKER, in the git dir
 _RESTORED = "Checkout restored"  # the updater's own in-place restore of git's half-written files
 

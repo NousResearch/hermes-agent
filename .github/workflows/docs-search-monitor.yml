@@ -5,7 +5,7 @@ name: Docs Search Monitor
 # Algolia search key, then Vercel access controls), because nothing ever
 # exercised the deployed site.
 #
-# website/scripts/check-live-search.mjs reads the Algolia credentials from the
+# apps/docs/scripts/check-live-search.mjs reads the Algolia credentials from the
 # bundle the site is serving, queries Algolia with the site's Origin, opens the
 # top results, then types into the real search modal in headless Chromium.
 #
@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          sparse-checkout: website/scripts
+          sparse-checkout: apps/docs/scripts
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
@@ -57,7 +57,7 @@ jobs:
           # One retry after a pause so a transient blip never pages anyone.
           # Only the retry writes annotations, so a run that recovers on the
           # retry carries no stale error and a failed run lists each reason once.
-          if GITHUB_ACTIONS= node website/scripts/check-live-search.mjs; then exit 0; fi
+          if GITHUB_ACTIONS= node apps/docs/scripts/check-live-search.mjs; then exit 0; fi
           echo "::warning::first probe failed; retrying in 90s"
           sleep 90
-          node website/scripts/check-live-search.mjs
+          node apps/docs/scripts/check-live-search.mjs

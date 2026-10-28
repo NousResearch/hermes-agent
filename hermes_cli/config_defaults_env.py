@@ -1,4 +1,70 @@
-"""Entry factories for ``config_defaults.OPTIONAL_ENV_VARS`` (pure-data leaf, no imports)."""
+"""Entry factories for ``config_defaults.OPTIONAL_ENV_VARS`` (pure-data leaf, stdlib only)."""
+
+import threading
+
+_FILL_LOCK = threading.RLock()  # re-entrant: the fill itself reads the table
+
+
+class OptionalEnvVars(dict):
+    """``OPTIONAL_ENV_VARS``: a dict that runs one armed ``fill(table)`` before it is first read.
+
+    Some entries (provider profiles') are only known after work that must not run at import
+    (``hermes_cli.config_provider_env``); writes never trigger the fill. A fill that raises is
+    re-armed, so the next read tries again."""
+
+    _fill = None
+
+    def arm(self, fill) -> None:
+        self._fill = fill
+
+    def _ready(self) -> None:
+        if self._fill is None:
+            return
+        with _FILL_LOCK:
+            fill, self._fill = self._fill, None
+            if fill is None:
+                return
+            try:
+                fill(self)
+            except BaseException:
+                self._fill = fill
+                raise
+
+    def __getitem__(self, key):
+        self._ready()
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        self._ready()
+        return dict.get(self, key, default)
+
+    def __contains__(self, key) -> bool:
+        self._ready()
+        return dict.__contains__(self, key)
+
+    def __iter__(self):
+        self._ready()
+        return dict.__iter__(self)
+
+    def __len__(self) -> int:
+        self._ready()
+        return dict.__len__(self)
+
+    def keys(self):
+        self._ready()
+        return dict.keys(self)
+
+    def items(self):
+        self._ready()
+        return dict.items(self)
+
+    def values(self):
+        self._ready()
+        return dict.values(self)
+
+    def copy(self) -> dict:
+        self._ready()
+        return dict(dict.items(self))
 
 
 def _env(description, prompt, **keys):

@@ -289,7 +289,11 @@ class TestResumeOpensTheTargetOnTheGateway:
 
         assert cli_obj.session_id == "target"
         assert conn.states["target"].subscription_id == "sub-target"
-        assert [method for method, _ in calls] == ["session.resume", "session.detach"]
+        # Target classified, old session detached, then the same empty-row prune /new runs:
+        # the store re-reads the row it is about to delete (#146165).
+        assert [method for method, _ in calls] == [
+            "session.resume", "session.detach", "session.resume",
+        ]
         assert conn.states["current_session"].subscription_id is None
 
     @pytest.mark.parametrize("refusal", ["not_found", "permission_denied", "profile_mismatch"])

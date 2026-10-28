@@ -1904,6 +1904,17 @@ def _emit_feasibility_notice(agent: Any, msg: str) -> None:
     agent._emit_diagnostic_status(msg)
 
 
+def _is_builtin_compressor(compressor: Any) -> bool:
+    """True for Hermes' own :class:`ContextCompressor`, false for plugin context engines.
+
+    Plugin engines (llmslim) own their compaction policy: their budget comes from
+    ``context_length * target_percent``, and they do not summarise with the auxiliary model.
+    Only the built-in compressor may have its trigger lowered to the auxiliary window.
+    """
+    from agent.context_compressor import ContextCompressor
+    return isinstance(compressor, ContextCompressor)
+
+
 def _lower_threshold_to_aux_context(
     agent: Any, *, aux_model: str, aux_context: int, aux_provider: str, aux_base_url: str
 ) -> None:
@@ -1912,6 +1923,19 @@ def _lower_threshold_to_aux_context(
     Retention is recalibrated through its selected policy: lean is window-relative;
     only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
+    # A plugin context engine owns its own compaction policy: it computes its budget from
+    # ``context_length * target_percent`` and (llmslim) never calls the auxiliary model at all.
+    # Lowering its trigger to the aux window fires the engine before there is anything to
+    # compress — the request is dominated by the system prompt and tool schemas while the
+    # message body is still tiny — so compress() returns the transcript unchanged and the host
+    # aborts every compaction with ``no_progress`` (#113737). Leave plugin engines untouched.
+    if not _is_builtin_compressor(compressor):
+        logger.info(
+            "Skipping auxiliary-window threshold lowering for external context engine %s: "
+            "it owns its own compaction policy and does not summarise with the auxiliary model.",
+            type(compressor).__name__,
+        )
+        return
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
     # Durable ceiling: update_model() recomputes threshold_tokens from the main model on every window

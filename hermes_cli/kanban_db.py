@@ -1424,9 +1424,21 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
+    exclude_status: Optional[Iterable[str]] = None,
 ) -> list[Task]:
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
+    # ``exclude_status`` is the only NEGATIVE filter the board has: the status set
+    # is closed (``VALID_STATUSES``), but enumerating its complement on the caller
+    # side fails by OMISSION — one forgotten column silently disappears from a
+    # board review, which is the expensive direction. Validated per value so a
+    # typo is an error rather than a filter that quietly matches everything.
+    excluded = tuple(exclude_status or ())
+    unknown = [s for s in excluded if s not in VALID_STATUSES]
+    if unknown:
+        raise ValueError(
+            f"exclude_status must be one of {sorted(VALID_STATUSES)}; got {sorted(unknown)}"
+        )
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
     for col, val in (
@@ -1437,6 +1449,12 @@ def list_tasks(
         if val is not None:
             query += f" AND {col} = ?"
             params.append(val)
+    if excluded:
+        # Repeatable values are harmless in SQL, so no dedupe: the caller's list
+        # goes in as given.
+        placeholders = ", ".join("?" for _ in excluded)
+        query += f" AND status NOT IN ({placeholders})"
+        params.extend(excluded)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:

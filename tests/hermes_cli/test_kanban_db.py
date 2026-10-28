@@ -2082,3 +2082,63 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# Negative status filter (exclude_status)
+# ---------------------------------------------------------------------------
+
+
+def test_list_tasks_exclude_status_drops_finished_work(kanban_home):
+    """A board review needs "everything still in flight", which the single-value
+    ``status`` filter cannot express: it can only include, never exclude."""
+    conn = kbc.connect()
+    try:
+        live = kb.create_task(conn, title="still live")
+        finished = kb.create_task(conn, title="finished")
+        shelved = kb.create_task(conn, title="shelved")
+        kb.complete_task(conn, finished, summary="done")
+        kb.archive_task(conn, shelved)
+        ids = {t.id for t in kb.list_tasks(conn, exclude_status=["done", "archived"])}
+        assert ids == {live}
+        # Sanity: without the filter the same call still carries the finished card.
+        assert {t.id for t in kb.list_tasks(conn)} == {live, finished}
+    finally:
+        conn.close()
+
+
+def test_list_tasks_exclude_status_can_still_include_archived(kanban_home):
+    conn = kbc.connect()
+    try:
+        live = kb.create_task(conn, title="live")
+        shelved = kb.create_task(conn, title="shelved")
+        kb.archive_task(conn, shelved)
+        ids = {
+            t.id
+            for t in kb.list_tasks(conn, include_archived=True, exclude_status=["done"])
+        }
+        assert ids == {live, shelved}
+    finally:
+        conn.close()
+
+
+def test_list_tasks_exclude_status_rejects_unknown_status(kanban_home):
+    """A typo must be an error, not a filter that silently matches everything."""
+    conn = kbc.connect()
+    try:
+        kb.create_task(conn, title="anything")
+        with pytest.raises(ValueError) as exc:
+            kb.list_tasks(conn, exclude_status=["done", "nonsense"])
+        assert "exclude_status" in str(exc.value)
+    finally:
+        conn.close()
+
+
+def test_list_tasks_status_and_exclude_status_combine_as_and(kanban_home):
+    """Documented resolution: a status named in BOTH filters is excluded."""
+    conn = kbc.connect()
+    try:
+        kb.create_task(conn, title="ready one")
+        assert kb.list_tasks(conn, status="ready", exclude_status=["ready"]) == []
+    finally:
+        conn.close()

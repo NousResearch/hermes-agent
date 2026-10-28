@@ -9279,17 +9279,17 @@ def _default_spawn(
 def _resolve_assignee_home(assignee: str) -> Path:
     """Return the HERMES_HOME directory for an assignee profile.
 
-    Uses the profiles root so the lookup works from any active profile
-    (matches ``_get_profiles_root()`` semantics from profiles.py).
+    Raises on failure — callers MUST NOT fall back to the dispatcher's own
+    HERMES_HOME on error.  Silently falling back would re-introduce the
+    cross-account meter bug (query subject ≠ execution subject) where a
+    named profile resolution error causes the dispatcher's own credentials
+    to be queried instead.
     """
-    try:
-        from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root
-        if not assignee or assignee.strip().lower() in ("", "default"):
-            return _get_default_hermes_home()
-        return _get_profiles_root() / assignee.strip().lower()
-    except Exception:
-        from hermes_constants import get_default_hermes_root
-        return get_default_hermes_root()
+    from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root
+    normalized = (assignee or "").strip().lower()
+    if not normalized or normalized == "default":
+        return _get_default_hermes_home()
+    return _get_profiles_root() / normalized
 
 
 def _read_assignee_credentials(
@@ -9297,85 +9297,121 @@ def _read_assignee_credentials(
 ) -> dict[str, tuple[Optional[str], Optional[str]]]:
     """Read usable provider credentials from an assignee profile.
 
-    Returns a mapping of provider_name → (api_key_or_oauth_token, base_url).
-    Only providers with *non-exhausted* credentials are included.  The caller
-    should pass this to ``remediate_candidate(_credentials=...)`` so that
-    meter queries use the assignee's own credentials, not the dispatcher's.
+    Returns a mapping of provider_name → (token_or_api_key, base_url).
+    Only providers with a non-empty credential are included.  The caller
+    passes this mapping to ``remediate_candidate(_credentials=...)`` so
+    that meter queries use the assignee's own credentials.
 
-    Checked sources (in order, first non-empty wins per provider):
-      1. auth.json  ``providers.<provider>.access_token``  (OAuth)
-      2. auth.json  ``credential_pool.<provider>[]``       (pool entries)
-      3. .env       ANTHROPIC_API_KEY / OPENAI_API_KEY     (API-key auth)
+    Strategy — mirrors the runtime resolution order used by the live agent:
+
+      Anthropic:
+        1. ANTHROPIC_TOKEN in profile .env       (Hermes-managed OAuth)
+        2. CLAUDE_CODE_OAUTH_TOKEN in profile .env (Claude Code OAuth)
+        3. ANTHROPIC_API_KEY in profile .env      (API key)
+        4. credential_pool OAuth entry in profile auth.json
+           (read via _resolve_anthropic_pool_token under hermes_home override)
+
+      openai-codex:
+        1. credential_pool / singleton in profile auth.json
+           (via resolve_codex_runtime_credentials under hermes_home override)
+        2. OPENAI_API_KEY in profile .env         (API key fallback)
+
+    Reading auth.json fields directly is intentionally avoided: Anthropic
+    credential_pool entries often store only a ``secret_fingerprint`` without
+    an ``access_token``.  Using the existing runtime resolvers (with HERMES_HOME
+    scoped to the assignee profile via a ContextVar override) is the only way
+    to faithfully replicate how the worker process would resolve its own token.
     """
     result: dict[str, tuple[Optional[str], Optional[str]]] = {}
 
-    # --- auth.json -------------------------------------------------------
-    auth_path = hermes_home / "auth.json"
-    auth_data: dict = {}
-    if auth_path.exists():
-        try:
-            raw = auth_path.read_text(encoding="utf-8")
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                auth_data = parsed
-        except Exception:
-            pass
-
-    providers_block = auth_data.get("providers")
-    if not isinstance(providers_block, dict):
-        providers_block = {}
-    pool_block = auth_data.get("credential_pool")
-    if not isinstance(pool_block, dict):
-        pool_block = {}
-
-    # anthropic OAuth token
-    anthropic_state = providers_block.get("anthropic")
-    if isinstance(anthropic_state, dict):
-        tok = str(anthropic_state.get("access_token") or "").strip()
-        if tok:
-            result["anthropic"] = (tok, None)
-
-    # openai-codex: prefer credential_pool (pool-managed OAuth), then
-    # providers.openai-codex direct OAuth, then nothing.
-    if "openai-codex" not in result:
-        codex_entries = pool_block.get("openai-codex")
-        if isinstance(codex_entries, list):
-            for entry in codex_entries:
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("last_status") == "exhausted":
-                    continue
-                tok = str(entry.get("access_token") or "").strip()
-                if tok:
-                    burl = str(entry.get("base_url") or "").strip() or None
-                    result["openai-codex"] = (tok, burl)
-                    break
-
-    if "openai-codex" not in result:
-        codex_state = providers_block.get("openai-codex")
-        if isinstance(codex_state, dict) and codex_state.get("last_status") != "exhausted":
-            tok = str(codex_state.get("access_token") or "").strip()
-            if tok:
-                result["openai-codex"] = (tok, None)
-
-    # --- .env API-key fallback -------------------------------------------
+    # --- Step 1: Read credential env vars from the profile's .env -----------
+    # These are read from the file, never from the dispatcher's os.environ,
+    # so assignee credentials never bleed into the dispatcher's process state.
+    env_vars: dict[str, str] = {}
     env_path = hermes_home / ".env"
     if env_path.exists():
         try:
             for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = line.strip()
-                if not line or line.startswith("#"):
+                if not line or line.startswith("#") or "=" not in line:
                     continue
-                if "anthropic" not in result and line.upper().startswith("ANTHROPIC_API_KEY="):
-                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if key:
-                        result["anthropic"] = (key, None)
-                elif "openai-codex" not in result and line.upper().startswith("OPENAI_API_KEY="):
-                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if key:
-                        result["openai-codex"] = (key, None)
+                key, _, val = line.partition("=")
+                key = key.strip().upper()
+                val = val.strip().strip('"').strip("'")
+                if key in {
+                    "ANTHROPIC_TOKEN",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                    "ANTHROPIC_API_KEY",
+                    "OPENAI_API_KEY",
+                }:
+                    env_vars[key] = val
         except Exception:
             pass
+
+    # --- Step 2: Resolve credentials via existing runtime resolvers ----------
+    # Redirect HERMES_HOME via ContextVar so auth.json reads go to the
+    # assignee profile, not the dispatcher.  Thread-safe: ContextVar is
+    # per-context and does not mutate os.environ.
+    try:
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    except Exception:
+        # Fallback: can't scope HERMES_HOME, resolve env vars only.
+        set_hermes_home_override = None  # type: ignore[assignment]
+        reset_hermes_home_override = None  # type: ignore[assignment]
+
+    override_token = None
+    if set_hermes_home_override is not None:
+        try:
+            override_token = set_hermes_home_override(hermes_home)
+        except Exception:
+            override_token = None
+    try:
+        # 2a. Anthropic — check env vars first (fastest, no I/O).
+        #     Priority mirrors resolve_anthropic_token() sources 1, 2, 5.
+        anthropic_token = (
+            env_vars.get("ANTHROPIC_TOKEN")
+            or env_vars.get("CLAUDE_CODE_OAUTH_TOKEN")
+            or env_vars.get("ANTHROPIC_API_KEY")
+        )
+        if anthropic_token and anthropic_token.strip():
+            result["anthropic"] = (anthropic_token.strip(), None)
+
+        # 2b. Anthropic credential_pool OAuth entry (source 4 in
+        #     resolve_anthropic_token).  Reads auth.json via get_hermes_home(),
+        #     which now resolves to hermes_home via the ContextVar override.
+        if "anthropic" not in result:
+            try:
+                from agent.anthropic_adapter import _resolve_anthropic_pool_token
+                pool_tok = _resolve_anthropic_pool_token()
+                if pool_tok:
+                    result["anthropic"] = (pool_tok, None)
+            except Exception:
+                pass
+
+        # 2c. openai-codex — runtime resolver handles singleton + pool fallback
+        #     under the hermes_home-scoped HERMES_HOME override.
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+            creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+            if isinstance(creds, dict) and creds.get("api_key"):
+                result["openai-codex"] = (
+                    str(creds["api_key"]).strip(),
+                    str(creds.get("base_url") or "").strip() or None,
+                )
+        except Exception:
+            pass
+
+        # 2d. Codex API-key env var fallback.
+        if "openai-codex" not in result:
+            api_key = (env_vars.get("OPENAI_API_KEY") or "").strip()
+            if api_key:
+                result["openai-codex"] = (api_key, None)
+    finally:
+        if override_token is not None and reset_hermes_home_override is not None:
+            try:
+                reset_hermes_home_override(override_token)
+            except Exception:
+                pass
 
     return result
 

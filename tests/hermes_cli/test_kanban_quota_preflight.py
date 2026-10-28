@@ -117,7 +117,7 @@ class TestQuotaPreflightReadyRetention:
                 patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                 patch(
                     "agent.account_usage.fetch_account_usage",
-                    side_effect=lambda p: _exhausted_snapshot(p),
+                    side_effect=lambda p, **_: _exhausted_snapshot(p),
                 ),
                 patch("hermes_cli.profiles.profile_exists", return_value=True),
             ):
@@ -150,7 +150,7 @@ class TestQuotaPreflightReadyRetention:
                 patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                 patch(
                     "agent.account_usage.fetch_account_usage",
-                    side_effect=lambda p: _exhausted_snapshot(p),
+                    side_effect=lambda p, **_: _exhausted_snapshot(p),
                 ),
                 patch("hermes_cli.profiles.profile_exists", return_value=True),
             ):
@@ -178,7 +178,7 @@ class TestQuotaPreflightReadyRetention:
                 patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                 patch(
                     "agent.account_usage.fetch_account_usage",
-                    side_effect=lambda p: _exhausted_snapshot(p),
+                    side_effect=lambda p, **_: _exhausted_snapshot(p),
                 ),
                 patch("hermes_cli.profiles.profile_exists", return_value=True),
             ):
@@ -236,7 +236,7 @@ class TestQuotaPreflightReadyRetention:
                 patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                 patch(
                     "agent.account_usage.fetch_account_usage",
-                    side_effect=lambda p: _exhausted_snapshot(p),
+                    side_effect=lambda p, **_: _exhausted_snapshot(p),
                 ),
                 patch("hermes_cli.profiles.profile_exists", return_value=True),
                 patch("hermes_cli.kanban_db.claim_task", side_effect=tracking_claim),
@@ -254,6 +254,14 @@ class TestQuotaPreflightRecovery:
 
     def test_recovery_next_tick_spawns_task(self, kanban_home):
         """첫 tick: quota 고갈 → skip. 두 번째 tick: quota 회복 → spawn."""
+        # Provide credentials for the assignee profile so the strict
+        # credential gate in _read_assignee_credentials() passes.
+        # Without this the gate raises RuntimeError on both ticks and
+        # the recovery assertion fails.
+        profile_dir = kanban_home / "profiles" / "myprofile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / ".env").write_text("ANTHROPIC_TOKEN=test-sentinel-token\n")
+
         with kb.connect() as conn:
             tid = _make_task(conn)
 
@@ -269,7 +277,7 @@ class TestQuotaPreflightRecovery:
                 patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                 patch(
                     "agent.account_usage.fetch_account_usage",
-                    side_effect=lambda p: _exhausted_snapshot(p),
+                    side_effect=lambda p, **_: _exhausted_snapshot(p),
                 ),
                 patch("hermes_cli.profiles.profile_exists", return_value=True),
             ):
@@ -287,7 +295,7 @@ class TestQuotaPreflightRecovery:
                 patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                 patch(
                     "agent.account_usage.fetch_account_usage",
-                    side_effect=lambda p: _healthy_snapshot(p),
+                    side_effect=lambda p, **_: _healthy_snapshot(p),
                 ),
                 patch("hermes_cli.profiles.profile_exists", return_value=True),
             ):
@@ -312,7 +320,7 @@ class TestQuotaPreflightRecovery:
                     patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                     patch(
                         "agent.account_usage.fetch_account_usage",
-                        side_effect=lambda p: _exhausted_snapshot(p),
+                        side_effect=lambda p, **_: _exhausted_snapshot(p),
                     ),
                     patch("hermes_cli.profiles.profile_exists", return_value=True),
                 ):
@@ -399,7 +407,7 @@ class TestQuotaPreflightDispatchResult:
                 patch("hermes_cli.config.load_config", return_value=_meter_settings()),
                 patch(
                     "agent.account_usage.fetch_account_usage",
-                    side_effect=lambda p: _exhausted_snapshot(p),
+                    side_effect=lambda p, **_: _exhausted_snapshot(p),
                 ),
                 patch("hermes_cli.profiles.profile_exists", return_value=True),
             ):

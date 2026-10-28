@@ -45,7 +45,7 @@ def test_remediate_candidate_uses_live_usage_lookup(monkeypatch) -> None:
     )
     calls: list[str] = []
 
-    def fetch(provider: str):
+    def fetch(provider: str, *, api_key=None, base_url=None):
         calls.append(provider)
         return snapshot
 

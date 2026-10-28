@@ -8,6 +8,7 @@ fallbacks for this policy.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from typing import Mapping, Optional, Tuple
@@ -27,12 +28,28 @@ _PROVIDER_PRIORITY = {"anthropic": 0, "openai-codex": 1}
 # ---------------------------------------------------------------------------
 # Transient-failure cache
 # ---------------------------------------------------------------------------
-# Keyed by provider name (lowercase). Value: (snapshot, monotonic_time).
+# Keyed by (provider_name, credential_fingerprint).  Using a compound key
+# prevents snapshots from different accounts / assignee profiles from being
+# mixed: A profile's healthy Anthropic reading must not rescue B profile's
+# transient 429, and vice versa.
+#
 # The cache is process-local and reset on each dispatcher restart — that is
 # intentional: a fresh dispatcher should re-probe rather than trusting a
 # potentially stale reading from a previous run.
-_snapshot_cache: dict[str, Tuple[AccountUsageSnapshot, float]] = {}
+_snapshot_cache: dict[Tuple[str, str], Tuple[AccountUsageSnapshot, float]] = {}
 _SNAPSHOT_CACHE_TTL = 300.0  # seconds
+
+
+def _credential_fingerprint(api_key: Optional[str]) -> str:
+    """Return a short non-secret stable identifier for a credential value.
+
+    Used as the secondary component of the snapshot cache key so that
+    snapshots for different accounts are never shared.  Returns the empty
+    string when no credential is given (anonymous / default resolver path).
+    """
+    if not api_key:
+        return ""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
 
 # Substrings that indicate a *transient* unavailability (429 / network).
 # Lowercase comparison; NOT the same as quota exhaustion (that shows up in
@@ -145,14 +162,17 @@ def remediate_candidate(
         # refreshed meters and tests/operators can replace the live lookup
         # without re-importing this policy module.
         raw = account_usage.fetch_account_usage(provider, api_key=api_key, base_url=base_url)
+        # Build a (provider, credential_fingerprint) compound cache key so that
+        # snapshots from different accounts are never mixed across assignees.
+        cache_key = (provider, _credential_fingerprint(api_key))
         if raw is not None and raw.available:
             # Success — update the cache.
-            _snapshot_cache[provider] = (raw, now)
+            _snapshot_cache[cache_key] = (raw, now)
             readings[provider] = raw
         elif raw is not None and _is_transient_unavailable(raw):
             # Transient (429 / network).  Reuse the last good reading if it
             # is still within TTL; otherwise treat as unknown (fail-closed).
-            cached = _snapshot_cache.get(provider)
+            cached = _snapshot_cache.get(cache_key)
             if cached is not None and (now - cached[1]) < _SNAPSHOT_CACHE_TTL:
                 readings[provider] = cached[0]
             else:

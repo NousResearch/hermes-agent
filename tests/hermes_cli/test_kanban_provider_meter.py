@@ -23,6 +23,7 @@ from hermes_cli.kanban_provider_meter import (
     ProviderMeterCandidate,
     _snapshot_cache,
     _SNAPSHOT_CACHE_TTL,
+    _credential_fingerprint,
     choose_available_candidate,
     remediate_candidate,
 )
@@ -182,7 +183,8 @@ class TestDefect3TransientCacheReuse:
         """
         cached = _make_snapshot("anthropic", 20)  # 80% remaining — healthy
         now = time.monotonic()
-        _snapshot_cache["anthropic"] = (cached, now - 10)  # 10 s old, well within TTL
+        # Cache key is (provider, credential_fingerprint(api_key)).
+        _snapshot_cache[("anthropic", _credential_fingerprint("tok-a"))] = (cached, now - 10)  # 10 s old, well within TTL
 
         def _fake_fetch(provider, *, api_key=None, base_url=None):
             if provider == "anthropic":
@@ -240,7 +242,8 @@ class TestDefect3TransientCacheReuse:
         """
         cached = _make_snapshot("anthropic", 20)  # healthy, but stale
         stale_time = time.monotonic() - (_SNAPSHOT_CACHE_TTL + 60)  # 1 min past TTL
-        _snapshot_cache["anthropic"] = (cached, stale_time)
+        # Cache key is (provider, credential_fingerprint(api_key)).
+        _snapshot_cache[("anthropic", _credential_fingerprint("tok-a"))] = (cached, stale_time)
 
         def _fake_fetch(provider, *, api_key=None, base_url=None):
             if provider == "anthropic":
@@ -335,5 +338,5 @@ class TestCombinedDefects:
 
         assert result is not None
         assert result.provider == "anthropic"
-        # cache should now be populated
-        assert "anthropic" in _snapshot_cache
+        # cache should now be populated — key is (provider, fingerprint)
+        assert any(k[0] == "anthropic" for k in _snapshot_cache)

@@ -32,6 +32,7 @@ export const UNREAD_WRITE_GUARD_MS = 10_000
 /** Immutable owner + id -> the value we wrote and when. Guarded rows outrank list pages. */
 export const $unreadWriteGuard = atom<Map<string, { at: number; value: boolean }>>(new Map())
 interface UnreadWriteState {
+  active: null | symbol
   confirmed: boolean
   latest: symbol
   tail: Promise<void>
@@ -72,7 +73,7 @@ export async function markSessionUnread(session: SessionInfo | string, unread: b
 
   const state =
     unreadWrites.get(writeKey) ??
-    ({ confirmed: row.unread === true, latest: revision, tail: Promise.resolve() } satisfies UnreadWriteState)
+    ({ active: null, confirmed: row.unread === true, latest: revision, tail: Promise.resolve() } satisfies UnreadWriteState)
 
   state.latest = revision
   unreadWrites.set(writeKey, state)
@@ -85,7 +86,17 @@ export async function markSessionUnread(session: SessionInfo | string, unread: b
   guard.set(writeKey, { at: Date.now(), value: unread })
   $unreadWriteGuard.set(guard)
 
-  const write = state.tail.then(() => setSessionUnreadRemote(storedId, unread, scope).then(() => undefined))
+  const write = state.tail.then(async () => {
+    state.active = revision
+
+    try {
+      await setSessionUnreadRemote(storedId, unread, scope)
+    } finally {
+      if (state.active === revision) {
+        state.active = null
+      }
+    }
+  })
 
   // Serialize transport per session so late server completions cannot restore
   // an older value after a newer click. A failed predecessor does not block
@@ -143,10 +154,12 @@ export function watchUnreadWriteGuard(): void {
 
     for (const [key, entry] of guard) {
       const row = rows.find(r => unreadWriteKey(r) === key)
+      const state = unreadWrites.get(key)
 
-      if (row && row.unread === entry.value) {
+      // A page can confirm only the write currently on the wire. A value that
+      // merely matches a later queued intent may predate every pending PATCH.
+      if (row && row.unread === entry.value && (!state || state.active === state.latest)) {
         guard.delete(key)
-        const state = unreadWrites.get(key)
 
         if (state) {
           state.confirmed = entry.value

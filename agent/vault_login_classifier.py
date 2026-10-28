@@ -318,38 +318,36 @@ _FILL_JS_TEMPLATE = """(() => {
   }
   const fills = __FILLS__;
   const nonce = __NONCE__;
-  // Shadow-piercing lookup: stamped controls may live inside a shadow root (see the
-  // shadow-piercing collect in the inspection script), so plain document.querySelector
-  // would never find them.
-  const shadowQuery = (selector) => {
-    const out = [];
-    (function walk(root) {
-      for (const n of root.querySelectorAll(selector)) out.push(n);
-      for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
-    })(document);
-    return out;
-  };
+  // Stamped controls may live inside a shadow root (see the inspection script's walk): collect every
+  // stamp once, across open shadow roots, and reuse the map for the fills and the cleanup.
+  const stamped = [];
+  (function walk(root) {
+    for (const n of root.querySelectorAll("[data-hermes-vault-slot]")) stamped.push(n);
+    for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+  })(document);
+  const slots = new Map(stamped.map((n) => [n.getAttribute("data-hermes-vault-slot"), n]));
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
-    const el = shadowQuery('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    const el = slots.get(nonce + ":" + f.index);
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
         const want = norm(f.value);
         const opt = Array.from(el.options).find((o) => [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, "")));
-        if (opt) { el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true })); filled += 1; }
+        if (opt) { el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true, composed: true })); filled += 1; }
         continue;
       }
       el.focus();
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
       // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+      // composed: a component listening on its shadow host must see the value change too.
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
+      el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  shadowQuery("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  stamped.forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
   return JSON.stringify({ filled });
 })()"""

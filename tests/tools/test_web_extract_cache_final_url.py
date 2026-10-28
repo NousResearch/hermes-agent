@@ -100,6 +100,25 @@ def test_an_uncached_refetch_never_retargets_the_old_entry(monkeypatch):
     assert later.calls == 1 and not result.get("cached"), "the old blocked page was served from cache"
 
 
+def test_crlf_page_round_trips_through_the_cache(monkeypatch):
+    """A page with CRLF line endings (Tavily passes text through untouched) must hit on the next
+    call, not miss forever and re-buy the vendor fetch."""
+    check, safe = _policy()
+    monkeypatch.setattr("tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+
+    class _Crlf(_RedirectingProvider):
+        async def extract(self, urls, format=None):
+            self.calls += 1
+            body = "line one\r\nline two\r\n"
+            return [{"url": TARGET, "content": body, "raw_content": body, "metadata": {"sourceURL": urls[0]}}]
+
+    provider = _Crlf()
+    _extract(provider)
+    assert _extract(provider)[0].get("cached") is True
+    assert provider.calls == 1
+
+
 def test_interleaved_writers_never_pair_one_body_with_anothers_final_url(monkeypatch):
     """Two fetches of one key: A writes its body, B writes its body and final URL, then A's late
     final-URL write lands. B's body must stay paired with B's destination, so blocking B's host

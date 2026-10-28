@@ -284,7 +284,10 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
 
 
 def _content_sha(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    # Hash the text as ``extract_cache_get`` reads it back: text-mode reads translate CRLF/CR to LF
+    # and ``utf-8-sig`` drops a leading BOM, so a raw-text digest would never match those pages.
+    normalized = content.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def extract_cache_record_final_url(

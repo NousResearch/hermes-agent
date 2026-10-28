@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: posteverywhere
+connector_slug: posteverywhere_mcp
+description: Social media scheduler. Write, schedule and publish posts to Instagram, TikTok, YouTube, LinkedIn, Facebook, X, Threads, Pinterest, Bluesky, Telegram, Discord and WordPress, plan a content calendar and cross-post video (https://posteverywhere.ai).
+source: https://posteverywhere.ai/mcp
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: 401 WWW-Authenticate -> RFC 9728 protected-resource
+# metadata -> AS metadata with registration_endpoint, PKCE S256); Hermes's
+# MCP client + mcp_oauth_manager handle discovery, PKCE, token exchange.
+
+transport:
+  type: http
+  url: https://mcp.posteverywhere.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - posteverywhere
+    - social media
+    - social media scheduler
+    - schedule post
+    - content calendar
+    - instagram
+    - tiktok
+    - linkedin
+  hosts:
+    - posteverywhere.ai
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to
+  PostEverywhere (or run `hermes mcp login posteverywhere`). Approve
+  access, then restart the session so tools load. Posts publish to the
+  social accounts connected in your PostEverywhere workspace; ask for a
+  draft first if you want to review before anything goes live.
+  Docs: https://posteverywhere.ai/mcp

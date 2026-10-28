@@ -1,0 +1,63 @@
+{
+  "name": "@hermes/docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/prebuild.mjs",
+    "dev": "next dev --webpack",
+    "prebuild": "node scripts/prebuild.mjs",
+    "build": "next build --webpack && node scripts/postbuild.mjs",
+    "start": "next dev --webpack",
+    "typecheck": "fumadocs-mdx && tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "lint:diagrams": "ascii-guard lint --exclude-code-blocks content/en"
+  },
+  "dependencies": {
+    "@docsearch/css": "5.1.2",
+    "@docsearch/react": "5.1.2",
+    "@fumadocs/language": "0.2.13",
+    "@mdx-js/react": "3.1.1",
+    "@mermaid-js/layout-elk": "0.1.9",
+    "clsx": "2.1.1",
+    "fumadocs-core": "16.17.2",
+    "fumadocs-mdx": "15.4.7",
+    "fumadocs-ui": "16.17.2",
+    "mermaid": "11.17.2",
+    "next": "16.4.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "rehype-raw": "7.0.0",
+    "remark-directive": "4.0.0",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
+    "shiki": "4.5.0",
+    "tailwindcss": "4.3.3",
+    "unified": "11.0.5",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@mdx-js/mdx": "3.1.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/mdx": "2.0.14",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "6.0.3"
+  },
+  "overrides": {
+    "dompurify": "3.4.17",
+    "katex": "0.19.0",
+    "mermaid": "11.17.2",
+    "postcss-selector-parser": "7.1.6"
+  },
+  "engines": {
+    "node": ">=26.0",
+    "npm": ">=11.17.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

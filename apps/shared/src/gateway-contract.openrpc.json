@@ -36745,6 +36745,51 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "steer",
+                  "queue"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disposition"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "compression",
+                  "turn_ended"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "delivered": {
+            "anyOf": [
+              {
+                "const": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delivered"
           }
         },
         "required": [

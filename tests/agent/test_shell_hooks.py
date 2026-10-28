@@ -716,7 +716,7 @@ class TestRoutedProfileEnv:
 @pytest.mark.platforms("windows")
 def test_bare_script_hook_path_executes_on_windows(tmp_path):
     """A hook whose command is a bare script path — the shape every example in
-    ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
+    ``apps/docs/content/en/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
     kernel's shebang handling; CreateProcess has no equivalent, so the same config failed on
     Windows while working everywhere else. A path that is not a file must still be reported as
     missing rather than laundered through an interpreter."""

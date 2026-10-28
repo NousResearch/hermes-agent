@@ -82,7 +82,7 @@ EXCLUDED_DIRS = {
     ".mypy_cache",
     ".pytest_cache",
     "site-packages",
-    "website/build",
+    "apps/docs/out",  # docs app's Next static export (local build output)
     "optional-skills",  # external skills
 }
 

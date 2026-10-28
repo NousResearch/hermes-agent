@@ -107,8 +107,8 @@ apps/desktop/**/*.key
 # Test suite — not shipped in production images
 tests/
 
-# Documentation site (Docusaurus)
-website/
+# Documentation site — apps/docs/ is excluded by the `apps/` pattern above
+# (only apps/shared and apps/desktop are re-included for the Webapp build).
 
 # Keep the source artwork needed by web's icon-generation prebuild.
 assets/

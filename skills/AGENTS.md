@@ -1,7 +1,7 @@
 # skills/ + optional-skills/ — bundled skills, authoring standards, curator
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/creating-skills.md`;
-user docs: `website/docs/user-guide/features/skills.md`, `curator.md`.
+Applies on top of the root `AGENTS.md`. Long-form: `apps/docs/content/en/developer-guide/creating-skills.md`;
+user docs: `apps/docs/content/en/user-guide/features/skills.md`, `curator.md`.
 
 ## Two surfaces
 

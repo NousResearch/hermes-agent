@@ -934,7 +934,7 @@ def remove_oauth_tokens(server_name: str, *, hermes_home: str | Path | None = No
 
 # CIMD (OAuth Client ID Metadata Documents): the client_id IS an HTTPS URL the server fetches for our
 # name/logo/redirect URIs, replacing per-install DCR. The SDK does the protocol; Hermes only decides
-# eligibility. Published from ``website/static/oauth/client-metadata.json``; the github.io origin is
+# eligibility. Published from ``apps/docs/public/oauth/client-metadata.json``; the github.io origin is
 # deliberate — servers MUST NOT follow redirects when fetching it, and hermes-agent.nousresearch.com/docs/* 301s here.
 _CIMD_CLIENT_METADATA_URL = "https://nousresearch.github.io/hermes-agent/docs/oauth/client-metadata.json"
 # Loopback ports/hosts declared in that document (exact match, so no ephemeral port under CIMD);

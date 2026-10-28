@@ -72,7 +72,7 @@ Esto no es una barra de calidad — es una decisión de acoplamiento y mantenimi
 ### Preparar el entorno
 
 Se requieren Git y git-lfs. PM proporciona Python 3.14 (`>=3.14,<3.15`) y las herramientas fijadas.
-Sigue el [flujo de desarrollo de PM](website/docs/reference/package-management.md#developer-workflow).
+Sigue el [flujo de desarrollo de PM](apps/docs/content/en/reference/package-management.md#developer-workflow).
 Selecciona un `HERMES_HOME` de desarrollo antes de preparar el checkout.
 
 En Bash, desde la raíz del repositorio:
@@ -179,7 +179,7 @@ hermes-agent/
 ├── skills/                   # Habilidades incluidas (copiadas a ~/.hermes/skills/ en la instalación)
 ├── optional-skills/          # Habilidades opcionales oficiales (descubribles vía hub, no activadas por defecto)
 ├── tests/                    # Suite de tests
-├── website/                  # Sitio de documentación (hermes-agent.nousresearch.com)
+├── apps/docs/                # Sitio de documentación, instalación propia (hermes-agent.nousresearch.com)
 │
 ├── cli-config.yaml.example   # Configuración de ejemplo (copiada a ~/.hermes/config.yaml)
 └── AGENTS.md                 # Guía de desarrollo para asistentes de codificación IA

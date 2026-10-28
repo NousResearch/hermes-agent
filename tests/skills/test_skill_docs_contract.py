@@ -1,7 +1,7 @@
 """Contract: the committed skill docs stay in sync with the shipped skill tree.
 
-``website/scripts/generate-skill-docs.py`` is the documented source of both catalogs and of the
-per-skill pages under ``website/docs/user-guide/skills/``. The *Docs Site Checks* workflow
+``apps/docs/scripts/generate-skill-docs.py`` is the documented source of both catalogs and of the
+per-skill pages under ``apps/docs/content/en/user-guide/skills/``. The *Docs Site Checks* workflow
 regenerates them before building the site, but nothing compares that output with what is
 committed, so the committed copies — which GitHub renders and which contributors read and copy
 from — drifted:
@@ -26,10 +26,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CATALOGS = {
-    "skills": REPO_ROOT / "website" / "docs" / "reference" / "skills-catalog.md",
-    "optional-skills": REPO_ROOT / "website" / "docs" / "reference" / "optional-skills-catalog.md",
+    "skills": REPO_ROOT / "apps" / "docs" / "content" / "en" / "reference" / "skills-catalog.md",
+    "optional-skills": REPO_ROOT / "apps" / "docs" / "content" / "en" / "reference" / "optional-skills-catalog.md",
 }
-SKILL_PAGES = REPO_ROOT / "website" / "docs" / "user-guide" / "skills"
+SKILL_PAGES = REPO_ROOT / "apps" / "docs" / "content" / "en" / "user-guide" / "skills"
 
 _ROW_RE = re.compile(r"^\|\s*\[(?:\*\*)?`?([^`*\]]+)`?(?:\*\*)?\]\(([^)]+)\)", re.MULTILINE)
 _PATH_ROW_RE = re.compile(r"^\|\s*Path\s*\|\s*`([^`]+)`", re.MULTILINE)

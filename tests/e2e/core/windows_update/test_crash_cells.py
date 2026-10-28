@@ -53,7 +53,7 @@ child past its lock acquisition (its banner in update.log) plus the claimed mark
 exits before its kill point is a harness verdict, never a pass.
 
 The crash-cell matrix (cell -> file -> fixing lane) is in
-website/docs/developer-guide/source-update-completion.md.
+apps/docs/content/en/developer-guide/source-update-completion.md.
 """
 
 from __future__ import annotations

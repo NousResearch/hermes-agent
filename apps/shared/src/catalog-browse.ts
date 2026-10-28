@@ -1,5 +1,5 @@
 /** Shared with the docs catalog: taxonomy order is independent of popularity. Keep keys in sync
- *  with CATALOG_CATEGORIES in hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py. */
+ *  with CATALOG_CATEGORIES in hermes_cli/plugin_catalog.py and apps/docs/scripts/extract-plugins.py. */
 export const PLUGIN_CATEGORIES: Record<string, { label: string; icon: string; blurb: string }> = {
   desktop: { label: 'Desktop', icon: '🖥️', blurb: 'Panes, tabs and views for Hermes Desktop' },
   memory: { label: 'Memory', icon: '🧠', blurb: 'Memory providers and context engines' },

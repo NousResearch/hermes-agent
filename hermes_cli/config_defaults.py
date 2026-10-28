@@ -469,7 +469,7 @@ DEFAULT_CONFIG = {
         "real_profile_pin": "",
         # CDP supervisor: dialog + frame detection over a persistent WebSocket; active only with a
         # CDP-capable backend (Browserbase, or local Chrome via /browser connect). See
-        # website/docs/developer-guide/browser-supervisor.md.
+        # apps/docs/content/en/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
         # Read by the `camofox` catalog plugin (Camofox left core). An empty free-form mapping, so
@@ -621,7 +621,7 @@ DEFAULT_CONFIG = {
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized
-        # stall beats the cached-prefix discount. See website/docs/developer-guide/micro-compaction.md.
+        # stall beats the cached-prefix discount. See apps/docs/content/en/developer-guide/micro-compaction.md.
         "micro_compact": False,
         # Cadence: run a pass every Nth completed turn (1 = one cache break per turn, 5 = a fifth of
         # the breaks). Clamped >= 1; ignored unless micro_compact is true.
@@ -1741,7 +1741,7 @@ DEFAULT_CONFIG = {
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
     # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:
-    # website/docs/user-guide/features/hooks.md.
+    # apps/docs/content/en/user-guide/features/hooks.md.
     "hooks": {},
     # Auto-accept shell-hook registrations without a TTY prompt (also --accept-hooks or
     # HERMES_ACCEPT_HOOKS=1). Gateway/cron/non-interactive runs need one of these to pick up
@@ -2323,7 +2323,7 @@ DEFAULT_CONFIG = {
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
     # and upload to Nous (`send`) are separate keys that every consent surface sets together; see
-    # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
+    # apps/docs/content/en/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,

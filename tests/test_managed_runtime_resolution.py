@@ -59,7 +59,7 @@ _EXEMPT_DIRS = (
     "optional-skills",
     "scripts",
     "evals",
-    "website",
+    "apps/docs",
     "node_modules",
     ".build",
     ".cache",
@@ -220,11 +220,11 @@ def _source_files() -> list[Path]:
     # subtrees entirely.
     for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
         rel_dir = Path(dirpath).relative_to(REPO_ROOT)
-        if rel_dir == Path("."):
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in _EXEMPT_DIRS and not _is_packaging_copy(d)
-            ]
+        dirnames[:] = [
+            d for d in dirnames
+            if (rel_dir / d).as_posix() not in _EXEMPT_DIRS
+            and (rel_dir != Path(".") or not _is_packaging_copy(d))
+        ]
         for fname in filenames:
             if fname.endswith(".py"):
                 files.append(Path(dirpath) / fname)
@@ -291,6 +291,26 @@ def _format_resolution_sites(sites: set[tuple[str, str, str]]) -> str:
     return "\n".join(
         f"  {path}::{symbol} ({kind})" for path, symbol, kind in sorted(sites)
     )
+
+
+def test_source_scan_excludes_standalone_docs_but_not_product_apps(tmp_path, monkeypatch):
+    paths = {
+        "apps/docs/scripts/generate.py",
+        "apps/docs-extra/runtime.py",
+        "apps/desktop/runtime.py",
+        "hermes_cli/runtime.py",
+    }
+    for relative in paths:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+    _is_packaging_copy.cache_clear()
+    try:
+        actual = {path.relative_to(tmp_path).as_posix() for path in _source_files()}
+        assert actual == paths - {"apps/docs/scripts/generate.py"}
+    finally:
+        _is_packaging_copy.cache_clear()
 
 
 def test_bare_which_and_known_path_tables_are_allowlisted():

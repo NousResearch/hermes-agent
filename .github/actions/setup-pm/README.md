@@ -64,7 +64,7 @@ Keep an installed-tree cache in the caller if that job needs one.
 and npm caches. Each defaults to `true`; language-specific caches run only for
 that toolchain. `python-cache-dependency-glob` defaults to `pyproject.toml` and
 `uv.lock`. `node-cache-dependency-path` defaults to `package-lock.json`; use
-`website/package-lock.json` for site jobs. Both accept multiline glob strings.
+`apps/docs/package-lock.json` for site jobs. Both accept multiline glob strings.
 An npm cache without a matching lockfile fails, rather than caching an
 unversioned dependency set.
 

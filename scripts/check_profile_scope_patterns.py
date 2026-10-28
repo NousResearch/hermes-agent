@@ -30,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PATTERNS = ROOT / "scripts" / "ci" / "profile_scope_patterns.json"
 SUFFIXES = (".py", ".ts", ".tsx")
-SKIP_PREFIXES = ("tests/", "website/", "skills/", "optional-skills/", "evals/", "scripts/", ".worktrees/")
+SKIP_PREFIXES = ("tests/", "apps/docs/", "skills/", "optional-skills/", "evals/", "scripts/", ".worktrees/")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 

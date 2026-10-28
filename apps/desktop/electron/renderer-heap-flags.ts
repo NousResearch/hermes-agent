@@ -31,7 +31,7 @@ export interface PlannedSwitch {
  * block the launch — but a `desktop:` block that clearly MEANT to set one of
  * them and produced nothing warns once, because the failure is otherwise
  * invisible (the app just launches with no heap ceiling). The supported shape
- * is documented in `website/docs/user-guide/desktop.md`.
+ * is documented in `apps/docs/content/en/user-guide/desktop.md`.
  */
 export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
   const out: DesktopLaunchConfig = { electronFlags: [], rendererMaxOldSpaceMb: 0 }

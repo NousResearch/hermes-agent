@@ -293,7 +293,7 @@ NEW = {"plugin-catalog/new.yaml": "name: new\n"}
     (lambda r: _write(r, {**NEW, "contributors/emails/a@b.c": "someone\n"}), 0,
      ["plugin-catalog/new.yaml"], None),
     (lambda r: _write(r, {"plugin-catalog/README.md": "rules v2\n",
-                          "website/docs/catalog.md": "docs\n",
+                          "apps/docs/content/en/docs/catalog.md": "docs\n",
                           ".github/workflows/x.yml": "on: push\n"}), 0, [], None),
 ], ids=["rename", "typechange", "entry-plus-tooling", "sha-bump",
         "entry-plus-email-map", "readme-docs-ci-only"])

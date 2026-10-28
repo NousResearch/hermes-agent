@@ -1,7 +1,7 @@
 # plugins/ — plugin kinds, compat contract, in-tree policy
 
 Applies on top of the root `AGENTS.md`. Authoring guide + canonical compat contract:
-`website/docs/developer-guide/plugins/index.md`. Per-kind guides: `memory-provider-plugin.md`,
+`apps/docs/content/en/developer-guide/plugins/index.md`. Per-kind guides: `memory-provider-plugin.md`,
 `model-provider-plugin.md`, `context-engine-plugin.md`, `image-gen-provider-plugin.md`, ...
 
 ## Plugins never touch core (Teknium, May 2026)
@@ -64,7 +64,7 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
 human-merged via PR (`plugin-catalog/README.md` = admission policy, mirrored word for word in
-`website/docs/developer-guide/plugins/catalog-submission.md` with the submission guide; `plugin-catalog-ci.yml` clones
+`apps/docs/content/en/developer-guide/plugins/catalog-submission.md` with the submission guide; `plugin-catalog-ci.yml` clones
 each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
 every install path (CLI, dashboard, TUI) refuses matches (repo URLs compared by canonical
 `host/owner/repo`, so `git@`/`ssh://`/`www.` spellings match); only the CLI has a loud

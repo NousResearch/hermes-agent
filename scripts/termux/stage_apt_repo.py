@@ -504,7 +504,7 @@ def sign(dists: Path, release_path: Path, gpg_key_file: Path) -> None:
         # Publish the signing key's public half at the repo root. The key is
         # exported from the exact key that signed THIS suite, so the two can
         # never drift -- a key rotation re-publishes itself on the next run.
-        # Users verify it by fingerprint (see website/docs/getting-started/
+        # Users verify it by fingerprint (see apps/docs/content/en/getting-started/
         # termux.md); the fingerprint is the trust anchor, not the URL.
         pub = _gpg_run(homedir, ["--armor", "--export", key_id]).stdout
         if not pub.strip():

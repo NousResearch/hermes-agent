@@ -7,7 +7,7 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 ``plugin-catalog/README.md``.
 
 Live refresh: the docs build publishes the same data as ONE JSON document
-(``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
+(``apps/docs/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
 an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
 cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """

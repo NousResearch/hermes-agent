@@ -57,7 +57,7 @@ def main(repo: Path) -> int:
     for line in over:
         print(line)
     if over:
-        print("Move long form into website/docs/developer-guide/ or a sibling doc instead of raising a cap.")
+        print("Move long form into apps/docs/content/en/developer-guide/ or a sibling doc instead of raising a cap.")
     return 1 if over else 0
 
 

@@ -677,7 +677,7 @@ compression:
   # codex_app_server API mode is refused at agent init (the codex agent
   # compacts its own thread — no checkpoint can be guaranteed there). Only
   # enable it with a checkpoint-capable provider configured — see
-  # website/docs/developer-guide/memory-provider-plugin.md
+  # apps/docs/content/en/developer-guide/memory-provider-plugin.md
   # ("Pre-Compress Checkpoints").
   checkpoint_required: false
 
@@ -1575,7 +1575,7 @@ platform_toolsets:
 # =============================================================================
 # Connect to external MCP servers to add tools from the MCP ecosystem.
 # Each server's tools are automatically discovered and registered.
-# See website/docs/user-guide/features/mcp.md for full documentation.
+# See apps/docs/content/en/user-guide/features/mcp.md for full documentation.
 #
 # Stdio servers (spawn a subprocess):
 #   command: the executable to run
@@ -2151,7 +2151,7 @@ display:
 # runs (gateway, cron) need --accept-hooks, HERMES_ACCEPT_HOOKS=1, or the
 # hooks_auto_accept key below.
 #
-# See website/docs/user-guide/features/hooks.md for the full JSON wire
+# See apps/docs/content/en/user-guide/features/hooks.md for the full JSON wire
 # protocol and worked examples.
 #
 # hooks:

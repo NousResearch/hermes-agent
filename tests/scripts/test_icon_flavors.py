@@ -122,10 +122,23 @@ def assert_same_geometry(original, flavored):
 
 
 def assert_unbranded_outputs(stable, flavored):
-    for directory in ("assets", "website", "web", "apps/bootstrap-installer"):
-        for path in (stable / directory).rglob("*"):
-            if path.is_file():
-                assert path.read_bytes() == (flavored / path.relative_to(stable)).read_bytes(), path
+    for directory in ("assets", "apps/docs/public/img", "web", "apps/bootstrap-installer"):
+        files = [path for path in (stable / directory).rglob("*") if path.is_file()]
+        assert files, f"No generated assets found under {directory}"
+        for path in files:
+            assert path.read_bytes() == (flavored / path.relative_to(stable)).read_bytes(), path
+
+
+def test_unbranded_guard_covers_docs_assets(tmp_path):
+    stable, flavored = tmp_path / "stable", tmp_path / "flavored"
+    for relative in ("assets/icon.png", "apps/docs/public/img/logo.png", "web/icon.png", "apps/bootstrap-installer/icon.png"):
+        for root in (stable, flavored):
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"unchanged icon")
+    (flavored / "apps/docs/public/img/logo.png").write_bytes(b"incorrectly branded icon")
+    with pytest.raises(AssertionError):
+        assert_unbranded_outputs(stable, flavored)
 
 
 def test_renderer_canary_rule_is_the_canonical_one(monkeypatch):

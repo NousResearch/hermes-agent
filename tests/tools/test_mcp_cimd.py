@@ -41,7 +41,7 @@ from tools.mcp_oauth import (
 
 _DOCUMENT_PATH = (
     Path(__file__).resolve().parents[2]
-    / "website" / "static" / "oauth" / "client-metadata.json"
+    / "apps" / "docs" / "public" / "oauth" / "client-metadata.json"
 )
 
 def _document() -> dict:

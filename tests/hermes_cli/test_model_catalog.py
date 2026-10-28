@@ -240,14 +240,23 @@ class TestFetchFailure:
 
 class TestFallbackChain:
     """``_fetch_manifest_with_fallback`` walks ``DEFAULT_CATALOG_FALLBACK_URLS``
-    when the primary URL fails. Regression: the Docusaurus site behind Vercel
+    when the primary URL fails. Regression: the docs site behind Vercel
     occasionally returns HTTP 403 + x-vercel-mitigated: challenge for urllib;
     without a fallback URL the user's disk cache freezes and new model
     releases (opus 4.8, etc.) never reach the picker.
+
+    The manifest lives at ``apps/docs/public/api/model-catalog.json``; the raw
+    fallback prefers that path, while the legacy ``website/static/api`` raw URL
+    stays in the chain — released clients fetch it, and a web redirect cannot
+    repair a GitHub raw path.
     """
 
     PRIMARY = "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json"
-    FALLBACK = (
+    NEW_RAW = (
+        "https://raw.githubusercontent.com/NousResearch/hermes-agent"
+        "/main/apps/docs/public/api/model-catalog.json"
+    )
+    LEGACY_RAW = (
         "https://raw.githubusercontent.com/NousResearch/hermes-agent"
         "/main/website/static/api/model-catalog.json"
     )
@@ -280,7 +289,30 @@ class TestFallbackChain:
             result = model_catalog._fetch_manifest_with_fallback(self.PRIMARY, 5.0)
 
         assert result is not None
-        assert calls == [self.PRIMARY, self.FALLBACK]
+        assert calls == [self.PRIMARY, self.NEW_RAW], (
+            "the relocated manifest's raw copy must be the first fallback tried"
+        )
+
+    def test_keeps_the_legacy_raw_url_as_a_surviving_secondary(self, isolated_home):
+        """Rollback safety: the new raw path 404s until the relocation lands on
+        main, so the shipped ``website/static/api`` raw URL must remain in the
+        chain and still be reached when the newer path fails."""
+        from hermes_cli import model_catalog
+        calls: list[str] = []
+
+        def fake_fetch(url, timeout):
+            calls.append(url)
+            if url in (self.PRIMARY, self.NEW_RAW):
+                return None
+            return _valid_manifest()
+
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch):
+            result = model_catalog._fetch_manifest_with_fallback(self.PRIMARY, 5.0)
+
+        assert result is not None
+        assert calls == [self.PRIMARY, self.NEW_RAW, self.LEGACY_RAW], (
+            "the legacy raw fallback URL was removed from the chain"
+        )
 
 
     def test_get_catalog_uses_fallback_chain(self, isolated_home):
@@ -300,7 +332,9 @@ class TestFallbackChain:
             result = model_catalog.get_catalog(force_refresh=True)
 
         assert result == manifest
-        assert self.FALLBACK in calls
+        assert calls == [self.PRIMARY, self.NEW_RAW], (
+            "get_catalog must serve the first working fallback, not stop at the primary failure"
+        )
 
 
 class TestCuratedAccessors:
@@ -369,7 +403,7 @@ class TestDefaultModelFromCache:
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
         manifest = json.loads(
-            (repo_root / "website" / "static" / "api" / "model-catalog.json").read_text()
+            (repo_root / "apps" / "docs" / "public" / "api" / "model-catalog.json").read_text()
         )
         for provider in ("openrouter", "nous"):
             block = manifest["providers"][provider]
@@ -378,6 +412,42 @@ class TestDefaultModelFromCache:
                 f"{provider}: exactly one entry must be labeled default and it "
                 f"must match PREFERRED_SILENT_DEFAULT_MODEL"
             )
+
+
+class TestSeedFromCheckout:
+    """``hermes update`` seeds the disk cache from the checkout's manifest: the
+    docs app's copy first, the legacy website/static copy for pre-relocation
+    checkouts, and nothing when neither validates."""
+
+    def test_seeds_from_the_docs_app_copy(self, isolated_home, tmp_path):
+        from hermes_cli import model_catalog
+        new = tmp_path / "apps" / "docs" / "public" / "api"
+        legacy = tmp_path / "website" / "static" / "api"
+        for d, marker in ((new, "new"), (legacy, "legacy")):
+            d.mkdir(parents=True)
+            (d / "model-catalog.json").write_text(
+                json.dumps({**_valid_manifest(), "metadata": {"source": marker}}),
+                encoding="utf-8",
+            )
+        assert model_catalog.seed_cache_from_checkout(tmp_path) is True
+        seeded = model_catalog._read_disk_cache()[0]
+        assert seeded["metadata"]["source"] == "new", "the legacy copy won over the docs app's"
+
+    def test_seeds_from_the_legacy_copy_when_the_new_one_is_absent(self, isolated_home, tmp_path):
+        from hermes_cli import model_catalog
+        legacy = tmp_path / "website" / "static" / "api"
+        legacy.mkdir(parents=True)
+        (legacy / "model-catalog.json").write_text(json.dumps(_valid_manifest()), encoding="utf-8")
+        assert model_catalog.seed_cache_from_checkout(tmp_path) is True
+        assert model_catalog._read_disk_cache()[0] is not None
+
+    def test_returns_false_when_no_manifest_validates(self, isolated_home, tmp_path):
+        from hermes_cli import model_catalog
+        bad = tmp_path / "apps" / "docs" / "public" / "api"
+        bad.mkdir(parents=True)
+        (bad / "model-catalog.json").write_text('{"version": 99}', encoding="utf-8")
+        assert model_catalog.seed_cache_from_checkout(tmp_path) is False
+        assert model_catalog._read_disk_cache()[0] is None
 
 
 class TestProviderOverride:
@@ -567,10 +637,12 @@ class TestIntegrationWithModelsModule:
 
 # -----------------------------------------------------------------------------
 # Drift guard — prevent the in-repo curated lists from going out of sync with
-# the docs-hosted manifest at website/static/api/model-catalog.json.
+# the docs-hosted manifest at apps/docs/public/api/model-catalog.json (and its
+# byte-identical legacy copy at website/static/api/model-catalog.json, kept for
+# the raw fallback URL released clients fetch).
 #
 # History: qwen/qwen3.6-plus was added to _PROVIDER_MODELS["nous"] in commit
-# 9dd6e5510 but website/static/api/model-catalog.json was not regenerated for
+# 9dd6e551 but the model-catalog.json manifest was not regenerated for
 # weeks, so free-tier users on a new install fetched a stale manifest and the
 # free-tier picker showed "No free models currently available." even though
 # the Portal was serving qwen/qwen3.6-plus as free. CI must catch this.
@@ -679,12 +751,13 @@ class TestManifestMatchesInRepoLists:
     def test_in_repo_lists_match_manifest(self):
         """``scripts/build_model_catalog.py`` output must match the committed file.
 
-        If this fails, run ``python scripts/build_model_catalog.py`` and
-        commit the regenerated ``website/static/api/model-catalog.json``.
+        If this fails, run ``python scripts/build_model_catalog.py`` and commit
+        the regenerated ``apps/docs/public/api/model-catalog.json`` (and the
+        legacy copy it writes beside it).
         """
         # Resolve the repo root from this test file's location.
         repo_root = Path(__file__).resolve().parents[2]
-        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        manifest_path = repo_root / "apps" / "docs" / "public" / "api" / "model-catalog.json"
 
         if not manifest_path.exists():
             pytest.skip(f"manifest missing at {manifest_path}")
@@ -702,10 +775,27 @@ class TestManifestMatchesInRepoLists:
             actual = json.load(fh)
 
         assert self._strip_volatile(actual) == self._strip_volatile(expected), (
-            "website/static/api/model-catalog.json is out of sync with "
+            "apps/docs/public/api/model-catalog.json is out of sync with "
             "_PROVIDER_MODELS['nous'] / OPENROUTER_MODELS. "
             "Run: python scripts/build_model_catalog.py && "
-            "git add website/static/api/model-catalog.json"
+            "git add apps/docs/public/api/model-catalog.json"
+        )
+
+    def test_legacy_raw_copy_is_generated_and_byte_identical(self):
+        """Released clients fetch the legacy ``website/static/api`` raw URL; the
+        generator must keep that copy present and byte-identical to the docs
+        app's manifest, or old installs silently serve a stale catalog."""
+        repo_root = Path(__file__).resolve().parents[2]
+        primary = repo_root / "apps" / "docs" / "public" / "api" / "model-catalog.json"
+        legacy = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        assert primary.exists(), f"manifest missing at {primary}"
+        assert legacy.exists(), (
+            "the legacy raw fallback URL shipped in released clients has no "
+            "generated copy; run python scripts/build_model_catalog.py"
+        )
+        assert legacy.read_bytes() == primary.read_bytes(), (
+            "website/static/api/model-catalog.json must be serialized from the "
+            "same bytes as apps/docs/public/api/model-catalog.json"
         )
 
     def test_inclusion_ling_free_is_curated_and_published(self):
@@ -722,7 +812,7 @@ class TestManifestMatchesInRepoLists:
         assert "inclusionai/ling-3.0-flash:free" in curated_ids
 
         repo_root = Path(__file__).resolve().parents[2]
-        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        manifest_path = repo_root / "apps" / "docs" / "public" / "api" / "model-catalog.json"
         if not manifest_path.exists():
             pytest.skip(f"manifest missing at {manifest_path}")
         with open(manifest_path, encoding="utf-8") as fh:

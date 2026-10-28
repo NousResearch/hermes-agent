@@ -22,7 +22,7 @@ hermes-agent/
 │   └── platforms/        # Platform adapters (telegram, discord, etc.)
 ├── cron/                 # Job scheduler
 ├── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
-└── website/              # Docusaurus docs site
+└── apps/docs/           # Docs site (content/en/ holds the developer guide)
 ```
 
 Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.

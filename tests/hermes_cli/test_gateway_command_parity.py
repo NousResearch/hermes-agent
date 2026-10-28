@@ -19,7 +19,7 @@ def test_committed_parity_table_matches_every_client_verdict():
     gen = _generator()
     rendered = gen.render()
     assert gen.OUT.read_text(encoding="utf-8") == rendered, (
-        "website/docs/developer-guide/gateway-command-parity.md is stale — run "
+        "apps/docs/content/en/developer-guide/gateway-command-parity.md is stale — run "
         "scripts/gen_gateway_command_parity.py")
     from hermes_cli.commands import COMMAND_REGISTRY
     rows = [line for line in rendered.splitlines() if line.startswith("| `/")]

@@ -4,7 +4,7 @@
 A config key counts as documented when the docs mention its dotted path (``agent.max_turns``),
 a placeholder path covers it (``auxiliary.<task>.timeout``), or a YAML example in the docs nests
 it under the right parents. A slash command counts when ``/name`` appears in
-``website/docs/reference/slash-commands.md``.
+``apps/docs/content/en/reference/slash-commands.md``.
 
 What was undocumented when the ratchet landed lives in ``docs_drift_baseline.json``. Only NEW
 gaps fail; documenting a baselined item or deleting it never breaks anything (``--update``
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOCS = ROOT / "website" / "docs"
+DOCS = ROOT / "apps" / "docs" / "content" / "en"
 SLASH_PAGE = DOCS / "reference" / "slash-commands.md"
 BASELINE = Path(__file__).with_name("docs_drift_baseline.json")
 _FENCE = re.compile(r"```ya?ml[^\n]*\n(.*?)```", re.DOTALL)
@@ -154,11 +154,11 @@ def compare(gaps: dict[str, list[str]], baseline: dict[str, list[str]]) -> tuple
 def failure_message(new: dict[str, list[str]]) -> str:
     lines = ["Undocumented user-facing surface (docs drift ratchet):"]
     if new["config"]:
-        lines.append("  config keys (mention the dotted path, or add a YAML example, in website/docs/ "
-                     "-- usually user-guide/configuration.md):")
+        lines.append("  config keys (mention the dotted path, or add a YAML example, in apps/docs/content/en/ "
+                     "-- usually user-guide/configuration.mdx):")
         lines += [f"    {k}" for k in new["config"]]
     if new["slash_commands"]:
-        lines.append("  slash commands (add a row to website/docs/reference/slash-commands.md):")
+        lines.append("  slash commands (add a row to apps/docs/content/en/reference/slash-commands.md):")
         lines += [f"    /{c}" for c in new["slash_commands"]]
     lines.append("Deliberately undocumented? `python scripts/ci/check_docs_drift.py --update` adds it to "
                  "the baseline; reviewers see that in the diff.")

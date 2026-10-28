@@ -6,7 +6,7 @@ session (top page + auto-attached OOPIF / worker targets), pending dialogs + fra
 tree exposed via a thread-safe snapshot. Not in the tool schema — output reaches the
 agent via ``browser_dialog``. Dialog capture and frame tracking
 are mixins (``browser_supervisor_dialogs`` / ``browser_supervisor_frames``).
-Design spec: ``website/docs/developer-guide/browser-supervisor.md``.
+Design spec: ``apps/docs/content/en/developer-guide/browser-supervisor.md``.
 """
 
 from __future__ import annotations

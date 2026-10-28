@@ -507,7 +507,7 @@ class ProviderProfile:
         This is the hook that lets a provider ship *outside* this tree: with it,
         a profile registered from ``~/.hermes/plugins/model-providers/`` or a
         pip entry point can supply its own transport without any core edit. See
-        ``website/docs/developer-guide/model-provider-plugin.md``.
+        ``apps/docs/content/en/developer-guide/model-provider-plugin.md``.
         """
         return None
 

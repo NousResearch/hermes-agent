@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 # Reviewed gateway handlers only: listing a command is not permission to run it. Each read was
-# run through its real handler against a local session (website/docs/developer-guide/
+# run through its real handler against a local session (apps/docs/content/en/developer-guide/
 # gateway-command-parity.md); a handler that reads messaging-only state or writes config is not here.
 _READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',
                             'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',

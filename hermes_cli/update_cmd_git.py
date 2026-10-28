@@ -648,7 +648,7 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
 def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
     """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
     workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
-    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
+    A manifest outside that graph (``apps/docs/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
     owners = {Path(".")}
     try:
         import json

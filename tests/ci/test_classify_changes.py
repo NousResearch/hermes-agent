@@ -115,14 +115,27 @@ CASES = {
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True, docker=True, nix=True)),
-    "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
-    # A website file the Python suite cannot read stays site-only.
-    "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
+    "docs app lockfile → site + npm_lock, not frontend": (
+        ["apps/docs/package-lock.json"],
+        _lanes(site=True, npm_lock=True),
+    ),
+    # The docs app has its own lane (site → docs-site-checks.yml); it must not
+    # select the whole-product TypeScript matrix merely because it lives under
+    # apps/ — that lane builds desktop/TUI/web and cannot fail on a docs change.
+    "docs app source → site, not frontend": (
+        ["apps/docs/src/components/CatalogFilters.tsx"],
+        _lanes(site=True),
+    ),
+    # A docs app file the Python suite cannot read stays site-only.
+    "docs app config → site": (["apps/docs/next.config.mjs"], _lanes(site=True)),
+    # The legacy compatibility copy (the raw URL released clients fetch) still
+    # deploys the site and touches no Python contract by itself.
+    "legacy model catalog copy → site": (["website/static/api/model-catalog.json"], _lanes(site=True)),
     # uv lock --check re-resolves against PyPI, so it must stay off for any
     # diff that can't desync the lockfile — a registry blip on a docs PR
     # otherwise shows up as a blocking "uv.lock out of sync" red X.
     "docs → no uv_lock": (
-        ["website/docs/developer-guide/plugins/index.md"],
+        ["apps/docs/content/en/developer-guide/plugins/index.md"],
         _lanes(python=True, site=True),
     ),
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
@@ -147,18 +160,18 @@ CASES = {
     # The published CIMD document is asserted about by the Python suite, so a
     # lone edit there must not skip the lane that would catch a bad edit.
     "cimd document → python + site": (
-        ["website/static/oauth/client-metadata.json"],
+        ["apps/docs/public/oauth/client-metadata.json"],
         _lanes(python=True, site=True),
     ),
     # A new docs page must reach llms.txt, and the generator that puts it there
     # has its own tests. Skipping Python on either is how the index drifted to
     # 53% coverage while every PR stayed green.
     "docs page → python + site": (
-        ["website/docs/user-guide/bot-mode.md"],
+        ["apps/docs/content/en/user-guide/bot-mode.md"],
         _lanes(python=True, site=True),
     ),
     "docs generator → python + site": (
-        ["website/scripts/generate-llms-txt.py"],
+        ["apps/docs/scripts/generate-llms-txt.py"],
         _lanes(python=True, scan=True, site=True),
     ),
     # SKILL.md reads like docs, but the skill-doc tests read skills/, so a
@@ -769,7 +782,7 @@ def test_catalog_lane_runs_every_test_that_reads_the_shipped_catalog():
         "tests/hermes_cli/test_plugin_catalog.py",
         "tests/scripts/test_validate_plugin_catalog.py",
         "tests/scripts/test_contributor_map.py",
-        "tests/website/test_extract_plugins.py",
+        "tests/docs_site/test_extract_plugins.py",
     ):
         assert must in files
     assert not any(f.startswith("tests/e2e/") for f in files)

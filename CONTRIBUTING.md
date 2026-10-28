@@ -122,7 +122,7 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 
 ### PM developer environment
 
-Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
+Use the [PM developer workflow](apps/docs/content/en/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
 dependency changes, and test environments. Select your development
 home before setup so experimental code does not migrate production data.
 
@@ -162,7 +162,7 @@ To run one command in the environment without activating a shell, use
 
 ### Manual development and test environment
 
-Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
+Use the [PM developer workflow](apps/docs/content/en/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
 Run these commands from that checkout with its prepared Python. Keep the same
 development `HERMES_HOME`. PM must be able to start before it can build another
 environment. On Windows, initialize the native C++ build environment for your
@@ -199,14 +199,14 @@ For an isolated development instance, select a disposable `HERMES_HOME` before
 starting the source command. Use `hermes setup` to configure it rather
 than copying production credentials into the checkout.
 
-### JavaScript workspaces and website
+### JavaScript workspaces and the docs app
 
 From the repository root, run `npm ci` for the desktop, TUI, dashboard, and
-shared JS workspaces. The website is separate:
+shared JS workspaces. The docs app is separate (own lockfile, not a workspace):
 
 ```bash
-npm ci --prefix website
-npm run build:fast --prefix website
+npm ci --prefix apps/docs
+npm run build --prefix apps/docs
 ```
 
 Use a Node/npm version accepted by the corresponding `package.json` engines.
@@ -234,7 +234,7 @@ subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
 
 Run the relevant JS workspace checks for JS changes. Native install/update
 E2E runs on disposable CI hosts, never against the developer's live app.
-See [Package management](website/docs/reference/package-management.md) for PM commands and runtime ownership.
+See [Package management](apps/docs/content/en/reference/package-management.md) for PM commands and runtime ownership.
 
 ---
 
@@ -310,7 +310,7 @@ hermes-agent/
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
 ├── tests/                    # Test suite
-├── website/                  # Documentation site (hermes-agent.nousresearch.com)
+├── apps/docs/                # Documentation site, own install/lockfile (hermes-agent.nousresearch.com)
 │
 ├── cli-config.yaml.example   # Example configuration (copied to ~/.hermes/config.yaml)
 └── AGENTS.md                 # Development guide for AI coding assistants

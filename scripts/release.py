@@ -3,7 +3,7 @@
 
 Stable releases use the ``release``, ``publish``, and ``abandon`` subcommands.
 Canary, commit, and dynamic-channel operations retain their top-level flags.
-See ``website/docs/developer-guide/stable-releases.md`` for the operator flow.
+See ``apps/docs/content/en/developer-guide/stable-releases.md`` for the operator flow.
 """
 
 import argparse

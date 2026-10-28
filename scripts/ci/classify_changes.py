@@ -22,7 +22,7 @@ Lanes:
   gate forces these lanes off on pull requests and pushes to main: the E2E
   suites run only on a release run or a manual dispatch.
 * ``frontend``    — TS typecheck matrix + desktop build.
-* ``site``        — Docusaurus + generated skill docs.
+* ``site``        — docs app (Next static export) + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
@@ -72,12 +72,16 @@ must never skip one a change could break:
   only the flake reads them, so they skip the Python lanes and run ``nix``
   alone. ``pyproject.toml`` and ``uv.lock`` are flake inputs too, but the
   packaging tests read them, so they keep every Python lane.
-* ``website/static/oauth/`` is python-relevant too: it publishes the OAuth
+* ``apps/docs/public/oauth/`` is python-relevant too: it publishes the OAuth
   Client ID Metadata Document that ``tests/tools/test_mcp_cimd.py`` checks
   against the pinned callback ports in ``tools/mcp_oauth.py``.
-* ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
-  reason: the docs tree generates ``llms.txt``, and
-  ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
+* ``apps/docs/content/`` and ``apps/docs/scripts/`` are python-relevant for
+  the same reason: the docs tree generates ``llms.txt``, and
+  ``tests/docs_site/test_generate_llms_txt.py`` asserts every page reaches it.
+* The docs app under ``apps/docs/`` runs its OWN lane (``site`` →
+  docs-site-checks.yml), never the whole-product ``frontend`` matrix: that
+  lane builds desktop/TUI/web and cannot fail on a docs change. The legacy
+  ``website/`` tree (the raw model-catalog copy) still routes to ``site``.
 * A cross-language fixture (``_SHARED_FIXTURE_CONSUMERS``) selects the test
   lanes of every consumer that reads it: the update-marker corpus runs pytest,
   cargo, vitest and the Windows hand-off tests, not only ``python``.
@@ -91,29 +95,35 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
+# The docs app lives under apps/ but is NOT a frontend-matrix package: it has
+# its own install/lockfile and its own lane (`site`). Keeping it out of
+# `frontend` is the point — otherwise every docs PR built desktop/TUI/web.
+_DOCS_APP = "apps/docs/"
 # Shipped page outside those packages, exercised by the desktop Electron suite.
 _FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
-_SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
+_SITE = ("apps/docs/", "website/", "skills/", "optional-skills/")  # docs app + legacy JSON + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
-_PY_SKIP = ("docs/", "website/") + _FRONTEND
-# Published artifacts that live under website/ but that Python asserts about.
+# apps/docs/ skips Python for everything outside the carve-outs below (its
+# React/config trees are the docs app's own lane, not a Python surface).
+_PY_SKIP = ("docs/", "website/", "apps/docs/") + _FRONTEND
+# Published surfaces of the docs app that Python asserts about.
 # The OAuth Client ID Metadata Document is cross-checked against the pinned
 # callback ports in tools/mcp_oauth.py, so editing it alone must still run the
 # Python lane — otherwise dropping a redirect URI goes green here and breaks
 # every CIMD login on main.
-# website/docs/ and website/scripts/ are asserted about the same way. The docs
-# tree generates llms.txt — the index every LLM (Hermes included, via the
+# apps/docs/content/ and apps/docs/scripts/ are asserted about the same way. The
+# docs tree generates llms.txt — the index every LLM (Hermes included, via the
 # hermes-agent skill) reads to learn what Hermes can do — and
-# tests/website/test_generate_llms_txt.py holds every page to appearing in it.
+# tests/docs_site/test_generate_llms_txt.py holds every page to appearing in it.
 # Skipping Python on a docs-only PR is how the index drifted to 53% coverage.
 _PY_RELEVANT_SITE = (
-    "website/static/oauth/",
-    "website/docs/",
-    "website/scripts/",
+    "apps/docs/public/oauth/",
+    "apps/docs/content/",
+    "apps/docs/scripts/",
 )
 # Cross-language contract files: data committed under a frontend tree that a
 # pytest pins against the Python side (emitter inventory, command registry).
@@ -127,7 +137,7 @@ _PY_RELEVANT_CONTRACT_FILES = {
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
-    # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
+    # tests/docs_site/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
 }
 
@@ -617,9 +627,10 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     python = any(not _py_irrelevant(f) for f in code)
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in code)
     frontend = any(
-        f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
-        or f.startswith("tests-js/")
-        or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts")))
+        (f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
+         or f.startswith("tests-js/")
+         or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts"))))
+        and not f.startswith(_DOCS_APP)
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)

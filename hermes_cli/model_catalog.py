@@ -25,9 +25,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CATALOG_URL = (
     "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json")
-# The Docusaurus site sits behind Vercel, which occasionally 403s non-browser clients (bot
+# The docs site sits behind Vercel, which occasionally 403s non-browser clients (bot
 # challenge); the raw GitHub copy is the same manifest and is not bot-gated.
+# Order matters: the manifest lives in the docs app's public tree, so its raw
+# path is preferred; the legacy website/static path stays second because
+# released clients fetch it and a web redirect cannot repair a raw path.
+# scripts/build_model_catalog.py keeps the two byte-identical.
 DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
+    "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/apps/docs/public/api/model-catalog.json",
     "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/api/model-catalog.json",
 )
 DEFAULT_TTL_MINUTES = 20
@@ -372,22 +377,31 @@ def get_default_model_from_cache(provider: str) -> str | None:
 
 
 def seed_cache_from_checkout(project_root: Path | str) -> bool:
-    """Overwrite the disk cache with the checkout's ``website/static/api/model-catalog.json``.
-    After ``hermes update`` that file IS the newest catalog, so the picker stays current even when
-    the remote fetch is bot-gated. Validated, then written via the same atomic writer."""
-    src = Path(project_root) / "website" / "static" / "api" / "model-catalog.json"
-    try:
-        with open(src, encoding="utf-8-sig") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.debug("model catalog seed from checkout skipped (%s): %s", src, exc)
-        return False
-    if not _validate_manifest(data):
-        logger.debug("model catalog seed from checkout skipped: invalid manifest at %s", src)
-        return False
-    _write_disk_cache(data)
-    reset_cache()  # drop the in-process copy so the next read picks up the seed
-    return True
+    """Overwrite the disk cache with the checkout's model-catalog manifest.
+
+    After ``hermes update`` that file IS the newest catalog, so the picker stays current even
+    when the remote fetch is bot-gated. The docs app's copy at
+    ``apps/docs/public/api/model-catalog.json`` is preferred; the legacy copy at
+    ``website/static/api/model-catalog.json`` (kept for the raw URL released clients fetch)
+    still seeds pre-relocation checkouts. Validated, then written via the same atomic writer."""
+    for rel in (
+        ("apps", "docs", "public", "api", "model-catalog.json"),
+        ("website", "static", "api", "model-catalog.json"),
+    ):
+        src = Path(project_root).joinpath(*rel)
+        try:
+            with open(src, encoding="utf-8-sig") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("model catalog seed from checkout skipped (%s): %s", src, exc)
+            continue
+        if not _validate_manifest(data):
+            logger.debug("model catalog seed from checkout skipped: invalid manifest at %s", src)
+            continue
+        _write_disk_cache(data)
+        reset_cache()  # drop the in-process copy so the next read picks up the seed
+        return True
+    return False
 
 
 def reset_cache() -> None:

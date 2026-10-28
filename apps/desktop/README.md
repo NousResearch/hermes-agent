@@ -14,7 +14,7 @@
 > this Mac". Stable releases build the native `darwin-x64` bundle only when
 > cut with `--with macos-intel`; otherwise install the
 > [CLI](../../README.md) and run `hermes desktop`. See
-> [Platform Support](../../website/docs/getting-started/platform-support.md#build-targets-and-support-priority).
+> [Platform Support](../../apps/docs/content/en/getting-started/platform-support.md#build-targets-and-support-priority).
 
 <table>
 <tr><td><b>Chat with the full agent</b></td><td>Streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Hermes surface.</td></tr>

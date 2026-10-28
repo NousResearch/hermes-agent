@@ -61,6 +61,6 @@ def test_pause_help_and_docs_say_interactive_turns_are_held_too():
     text = ' '.join(sub.format_help().split())
     for needle in ('CLI', 'TUI', 'Desktop', 'hermes resume'):
         assert needle in text, text
-    doc = (Path(__file__).resolve().parents[2] / 'website/docs/reference/cli-commands.md').read_text()
+    doc = (Path(__file__).resolve().parents[2] / 'apps/docs/content/en/reference/cli-commands.md').read_text()
     row = next(line for line in doc.splitlines() if line.startswith('| `hermes pause`'))
     assert 'CLI, TUI and Desktop' in row and 'finish' in row, row

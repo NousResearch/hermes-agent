@@ -1547,6 +1547,7 @@ def terminal_tool(
                     heartbeat_seconds=heartbeat,
                     persist_on_release=persist_on_release,
                     auto_backgrounded=auto_bg is not None and plan.promoted_from_foreground_timeout is None,
+                    clear_interrupt=verdict.approved_run,
                 )
                 if plan.promoted_from_foreground_timeout is not None:
                     result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)

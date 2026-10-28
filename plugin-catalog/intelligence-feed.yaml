@@ -1,0 +1,23 @@
+name: intelligence-feed
+repo: https://github.com/bit-RGB/briefnest
+sha: 98a347c8c2b52d74a9feb294e40366f2a50c3649
+description: BriefNest (讯集), a multi-channel news dashboard for Hermes Desktop with search, bookmarks, source controls, and webpage previews.
+maintainer: bit-RGB
+tier: community
+category: desktop
+title: BriefNest · 讯集
+version: "0.1.0"
+docs_url: https://github.com/bit-RGB/briefnest#readme
+platforms:
+  - windows
+readme: true
+known_issues:
+  - The interface and README are currently in Chinese.
+  - Validated primarily on Windows; other platforms have not been verified.
+  - News source availability depends on website structure and network access.
+  - Local English-to-Chinese title translation is optional and requires a separately installed model and dependencies.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

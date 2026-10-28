@@ -12,7 +12,7 @@ import json
 import os
 import asyncio
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, ANY
 
 from tests.tools.conftest import register_all_web_providers
 
@@ -169,7 +169,7 @@ class TestWebExtractCacheAttribution:
             asyncio.run(wte._dispatch_extract(_PartialProvider(), urls, None))
 
         cache_put.assert_called_once_with(
-            "https://example.com/second", "second page", "Second", format=None, provider="tavily"
+            "https://example.com/second", "second page", "Second", format=None, provider="tavily", retrieved_at=ANY
         )
 
     def test_redirected_page_caches_under_requested_source_url(self):
@@ -191,7 +191,7 @@ class TestWebExtractCacheAttribution:
             asyncio.run(wte._dispatch_extract(_RedirectProvider(), urls, None))
 
         cache_put.assert_called_once_with(
-            "https://example.com/old", "moved page", "Moved", format=None, provider="keenable"
+            "https://example.com/old", "moved page", "Moved", format=None, provider="keenable", retrieved_at=ANY
         )
 
 

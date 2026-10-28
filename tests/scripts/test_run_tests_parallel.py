@@ -808,3 +808,38 @@ def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(
     slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
               for i in range(3)]
     assert sorted(f for s in slices for f in s) == sorted(files)
+
+
+@pytest.mark.parametrize("flag", [["--basetemp", "external"], ["--basetemp=external"]])
+def test_external_basetemp_cannot_escape_runner_cleanup(tmp_path, flag):
+    root = _probe_root(tmp_path)
+    probe = root / "test_probe.py"
+    probe.write_text("def test_ok(): pass\n")
+    result = subprocess.run([sys.executable, str(root / "scripts/run_tests_parallel.py"),
+                             str(probe), "--", *flag], cwd=root,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2
+    assert "escapes runner-owned cleanup" in result.stderr
+    assert not (root / "external").exists()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_owned_scratch_is_removed_but_failure_diagnostic_survives(tmp_path, monkeypatch, fails):
+    import importlib.util
+    runner = Path(__file__).resolve().parents[2] / "scripts/run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("bounded_lifecycle_runner", runner)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    monkeypatch.setattr(module, "_runner_scratch_root", lambda: str(owned))
+    probe = tmp_path / "test_lifecycle_probe.py"
+    probe.write_text("import tempfile\nfrom pathlib import Path\n"
+                     "def test_probe():\n"
+                     "    (Path(tempfile.gettempdir()) / 'disposable').write_bytes(b'x' * 1048576)\n"
+                     f"    assert {not fails!r}, 'named failure: lifecycle canary'\n")
+    _, code, output, _, _ = module._run_one_file_once(probe, [], tmp_path, 30)
+    assert code == (1 if fails else 0)
+    assert not list(owned.iterdir())
+    if fails:
+        assert "named failure: lifecycle canary" in output

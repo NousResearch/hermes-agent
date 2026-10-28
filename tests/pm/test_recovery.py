@@ -30,7 +30,7 @@ def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
     from pm.recovery import validate_environment
 
     candidate = tmp_path / "candidate"
-    venv.EnvBuilder(with_pip=False).create(candidate)
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(candidate)
     python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     target = site_packages(candidate)
     package = target / "ruamel" / "yaml"

@@ -161,7 +161,9 @@ Providers can advertise multiple capabilities from a single class — Firecrawl,
 
 ## Response shape
 
-The tool wrapper expects a fixed envelope so it doesn't have to translate between backends.
+`search()` answers with a fixed envelope so the tool wrapper doesn't have to translate between
+backends. `extract()` does not: it returns the list of per-URL entries directly. The asymmetry is
+deliberate — the dispatcher iterates `extract()`'s return value and reads each entry with `.get()`.
 
 **Search success:**
 
@@ -177,30 +179,32 @@ The tool wrapper expects a fixed envelope so it doesn't have to translate betwee
 }
 ```
 
-**Extract success:**
+**Extract success** — a list, not an envelope:
 
 ```python
-{
-    "success": True,
-    "data": [
-        {
-            "url": str,
-            "title": str,
-            "content": str,
-            "raw_content": str,
-            "metadata": dict,    # optional
-            "error": str,        # optional, only on per-URL failure
-        },
-        ...
-    ],
-}
+[
+    {
+        "url": str,
+        "title": str,
+        "content": str,
+        "raw_content": str,
+        "metadata": dict,    # optional
+        "error": str,        # optional, only on per-URL failure
+    },
+    ...
+]
 ```
 
-**Either capability, on failure:**
+**`search()` on failure:**
 
 ```python
 {"success": False, "error": "human-readable message"}
 ```
+
+`extract()` has no batch envelope: a per-URL problem is that entry's `"error"`, and a whole-batch
+failure is an exception. A provider that returns the search envelope from `extract()` is rejected by
+name (`<provider>.extract() returned a success/data envelope; expected list[dict]`) instead of
+failing later on `'str' object has no attribute 'get'`.
 
 Both `search()` and `extract()` may be `async def` — the dispatcher detects coroutine functions via `inspect.iscoroutinefunction` and awaits accordingly. Sync implementations that do blocking I/O (HTTP, SDK calls) are fine for small backends; the dispatcher handles threading.
 

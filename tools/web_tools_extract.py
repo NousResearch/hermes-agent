@@ -85,6 +85,29 @@ def _merge_in_order(
     return [merged[i] for i in range(total)]
 
 
+def _check_extract_shape(provider, results: Any) -> list[dict]:
+    """Fail by name when ``provider.extract()`` breaks the documented return shape.
+
+    The contract is a bare ``list[dict]`` (``agent/web_search_provider.py``), not the
+    ``{"success": True, "data": [...]}`` envelope ``search()`` uses. A provider written to the
+    envelope had its own string keys iterated here and died on ``str.get`` — ``'str' object has no
+    attribute 'get'``, an error naming neither the provider nor the shape it got wrong.
+    """
+    if isinstance(results, dict) and ({"success", "data"} & set(results)):
+        raise TypeError(
+            f"{provider.name}.extract() returned a success/data envelope; expected list[dict] "
+            "(extract() has no envelope — return the list of per-URL entries)")
+    if not isinstance(results, list):
+        raise TypeError(
+            f"{provider.name}.extract() returned {type(results).__name__}; expected list[dict]")
+    for entry in results:
+        if not isinstance(entry, dict):
+            raise TypeError(
+                f"{provider.name}.extract() returned a list containing "
+                f"{type(entry).__name__}; expected list[dict]")
+    return results
+
+
 def _validate_extract_urls(urls: list[Any]):
     """Normalize model-supplied items and block URLs carrying secrets (percent-encoded forms are unquoted
     and checked too). Returns ``(normalized_urls, normalized_indices, invalid_urls, blocked_json)``;
@@ -177,6 +200,7 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+    results = _check_extract_shape(provider, results)
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 

@@ -8,8 +8,13 @@ exa, parallel, tavily, keenable, firecrawl) implements; registered via
 Response shapes (legacy contract, the tool wrapper does not translate)::
 
     search:  {"success": True, "data": {"web": [{"title", "url", "description", "position"}, ...]}}
-    extract: {"success": True, "data": [{"url", "title", "content", "raw_content", "metadata"}, ...]}
-    failure: {"success": False, "error": str}
+    failure: {"success": False, "error": str}   (``search()`` only)
+    extract: [{"url", "title", "content", "raw_content", "metadata"}, ...]
+
+``search()`` answers with the envelope above; ``extract()`` returns the bare list. That asymmetry is
+deliberate: the dispatcher (``tools/web_tools_extract.py``) iterates ``extract()``'s return value
+directly and reads each entry with ``.get()``, so a ``{"success": ...}`` envelope there is a list of
+its own string keys. It is rejected by name rather than half-consumed.
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@
 // `hermes desktop` — restarts once with the flag on argv instead.
 
 import { LAUNCHER_READY_FD_ENV } from './linux-launcher-ready'
-import { canRelaunch, type RelaunchHost, relaunchNow, relaunchTarget } from './relaunch-target'
+import { canRelaunch, relaunchTarget } from './relaunch-target'
 import { alreadyHasNoSandbox, buildNoSandboxRelaunchArgs } from './windows-sandbox-fallback'
 
 export interface SandboxRelaunch {
@@ -71,8 +71,10 @@ export function linuxNoSandboxRelaunch(options: {
   }
 }
 
-interface SandboxRelaunchHost extends RelaunchHost {
+/** The app's relauncher (app-relaunch.ts createAppRelauncher), which owns how the target starts. */
+interface SandboxRelaunchHost {
   commandLine: { hasSwitch(name: string): boolean }
+  relaunch(options: { args: string[] }): void
   exit(code: number): void
 }
 
@@ -100,10 +102,8 @@ export function relaunchIfNoSandboxCameTooLate(host: SandboxRelaunchHost, before
   // number would make the next process write its reveal byte into whatever
   // file reuses that descriptor.
   delete process.env[LAUNCHER_READY_FD_ENV]
-  restoreLaunchTmpdir(process.env)
-  // Before the relaunch: the target starts at once and reads the boot witnesses.
+  host.relaunch({ args: relaunch.args })
   beforeExit()
-  relaunchNow(host, relaunch.args, relaunch.target, process.env)
   host.exit(0)
 
   return true

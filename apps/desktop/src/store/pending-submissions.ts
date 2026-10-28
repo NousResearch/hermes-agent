@@ -1,4 +1,5 @@
-import { getQueuedPrompts, type QueuedPromptEntry, writeSessionQueue } from './composer-queue'
+import { noteListedSubmissions } from './admitted-submissions'
+import { getQueuedPrompts, type QueuedPromptEntry, queuedSubmissionId, writeSessionQueue } from './composer-queue'
 import { $sessions, resolveComposerSessionKey } from './session'
 
 // One localStorage key per (session, admission). Every Desktop window of the origin shares this
@@ -245,7 +246,8 @@ function projectQueue(
   const next: QueuedPromptEntry[] = []
 
   for (const entry of current) {
-    const receipt = receipts.get(admissionByInput.get(entry.id) ?? entry.id)
+    const submissionId = queuedSubmissionId(entry)
+    const receipt = receipts.get(admissionByInput.get(submissionId) ?? submissionId)
 
     if (receipt) {
       if (receipt.status !== 'started') {
@@ -332,6 +334,7 @@ export function reconcilePendingSubmissions(storedId: string, value: unknown, fe
   // shown there. Receipts journaled under the tip before the lineage was known move along.
   const key = journalKey(storedId)
   adoptJournal(storedId, key)
+  noteListedSubmissions(key, value.flatMap(raw => (typeof raw?.input_id === 'string' ? [raw.input_id] : [])))
 
   const before = readPendingSubmissions(key)
   const known = { ...before }

@@ -16,6 +16,7 @@ import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
+import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
@@ -1103,6 +1104,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -1898,7 +1900,8 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
+      defaultDirUpdated: shortcut =>
+        `Default project directory updated — start a new chat${shortcut ? ` (${shortcut})` : ''} for it to take effect`,
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -2470,9 +2473,6 @@ export const en: Translations = {
       resume: 'Resume',
       runNow: 'Run now',
       memoryData: 'Memory data',
-      memoryDataDesc: 'Built-in memory files injected into every session',
-      memoryProvider: name => `Active provider: ${name}`,
-      builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
       bytes: size => size,
@@ -3799,6 +3799,8 @@ export const en: Translations = {
     versionDetailsTitle: 'Version details',
     versionDetailsBody: 'This install is managed outside the app. Update it the same way you installed it.',
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'This device',
+    versionDetailsBackend: 'Connected backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build Origin',
     versionDetailsDistribution: 'Distribution',

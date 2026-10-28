@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { ownAppImage, relaunchNow } from './relaunch-target'
+import { ownAppImage, spawnRelaunch } from './relaunch-target'
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof childProcess>()
@@ -42,13 +42,17 @@ describe('ownAppImage', () => {
   })
 })
 
-describe('relaunchNow', () => {
+// The helper waits while it is still this process's child and this runner stays, so a shell that
+// starts the helper in the background (stdin kept: an async list's is /dev/null) and exits stands in.
+const EXITING_PARENT = 'exec 4<&0; "$@" <&4 4<&- &'
+
+describe('spawnRelaunch', () => {
   // Chromium's relauncher closes inherited fds; a libuv spawn does not. The
   // AppImage runtime's keepalive pipe (fd 3) in the new image kept the old
   // mount and its squashfuse daemon alive for the new app's whole life; once
   // it is closed, the new image must not look anything up through that mount.
-  // A spawn error arrives after the caller exited, so an image that cannot run
-  // must keep this instance, its lock and its env instead.
+  // A spawn error can arrive after the caller exited, so an image that cannot
+  // run must keep this instance, its lock and its env instead.
   it.skipIf(process.platform !== 'linux')(
     'starts the image free of this mount, and stays put when it cannot',
     async () => {
@@ -71,7 +75,7 @@ describe('relaunchNow', () => {
           relaunchIfNoSandboxCameTooLate(
             {
               commandLine: { hasSwitch: name => name === 'no-sandbox' },
-              releaseSingleInstanceLock: () => events.push('release'),
+              relaunch: () => events.push('relaunch'),
               exit: () => events.push('exit')
             },
             () => events.push('beforeExit')
@@ -86,25 +90,26 @@ describe('relaunchNow', () => {
           { mode: 0o755 }
         )
         // Node marks every inherited fd close-on-exec at startup and Electron's
-        // main does not, so the command relaunchNow spawns runs from a shell
+        // main does not, so the command spawnRelaunch spawns runs from a shell
         // that holds fds 3 and 9 open on a marker file, as Electron holds the
-        // runtime's keepalive pipe.
+        // runtime's keepalive pipe. That shell exits at once, as the app would.
         const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
         vi.mocked(spawn).mockImplementationOnce((file, args, options) =>
-          realSpawn('/bin/sh', ['-c', 'exec 3<"$0" 9<"$0"; exec "$@"', held, file, ...args], options)
+          realSpawn('/bin/sh', ['-c', `exec 3<"$0" 9<"$0"; ${EXITING_PARENT}`, held, file, ...args], options)
         )
         fs.writeFileSync(held, '')
         // This mount's AppRun prepended it to PATH; the mount is gone soon after the child starts.
         const mount = path.join(dir, '.mount_HermesQ7x2Lp')
-        relaunchNow(
-          { releaseSingleInstanceLock: () => events.push('release') },
-          [],
-          image,
-          { ...process.env, APPDIR: mount, PATH: `${mount}:${mount}/usr/sbin:/usr/bin:/bin` }
-        )
 
+        const helper = spawnRelaunch(image, [], {
+          ...process.env,
+          APPDIR: mount,
+          PATH: `${mount}:${mount}/usr/sbin:/usr/bin:/bin`
+        })
+
+        // The helper's stdin closes when this process is gone.
+        helper.stdin!.end()
         await vi.waitFor(() => expect(fs.existsSync(report)).toBe(true), { timeout: 5000 })
-        expect(events).toEqual(['release'])
         const [childPath, ...fds] = fs.readFileSync(report, 'utf8').split('\n')
         expect(childPath).toBe('/usr/bin:/bin')
         expect(fds.join('\n')).not.toContain(held)
@@ -133,10 +138,9 @@ describe('relaunchNow', () => {
     const mount = '/run/user/1000/.mount_HermesQ7x2Lp'
     const image = '/home/u/Apps/Hermes.AppImage'
 
-    relaunchNow(
-      { releaseSingleInstanceLock: () => undefined },
-      [],
+    spawnRelaunch(
       image,
+      [],
       {
         APPIMAGE: image,
         LD_LIBRARY_PATH: `${mount}/usr/lib`,
@@ -146,5 +150,123 @@ describe('relaunchNow', () => {
     )
 
     expect(childEnv).toEqual({ APPIMAGE: image, PATH: '/tmp/.mount_IdeAbC123/usr/bin:/usr/bin' })
+  })
+
+  // --appimage-extract-and-run restarts the executable inside APPDIR, a plain
+  // directory no AppRun re-enters: dropping APPDIR there left ownAppImage blind
+  // and uninstall unable to find the image file.
+  it.skipIf(process.platform !== 'linux')('keeps APPDIR for an executable inside it', async () => {
+    const appDir = path.join(os.tmpdir(), 'appimage_extracted_0123abcd')
+    const env: NodeJS.ProcessEnv = { APPDIR: appDir, APPIMAGE: '/apps/Hermes.AppImage', PATH: `${appDir}/usr/bin:/bin` }
+    const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+    let childEnv: NodeJS.ProcessEnv | undefined
+    vi.mocked(spawn).mockImplementationOnce((_file, _args, options) => {
+      childEnv = (options as childProcess.SpawnOptions).env
+
+      return realSpawn('true', [], { stdio: 'pipe' })
+    })
+
+    spawnRelaunch(path.join(appDir, 'hermes'), [], env).stdin!.end()
+
+    expect(childEnv).toMatchObject(env)
+  })
+
+  // APPDIR keeps the raw $TMPDIR (a symlink on Fedora Atomic, /home -> /var/home)
+  // while process.execPath is resolved: the containment check must agree with ownAppImage.
+  it.skipIf(process.platform !== 'linux')(
+    'keeps APPDIR when the extracted dir is reached through a symlink',
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-extracted-link-'))
+
+      try {
+        const realDir = path.join(root, 'var-home', 'appimage_extracted_0123abcd')
+        fs.mkdirSync(realDir, { recursive: true })
+        fs.writeFileSync(path.join(realDir, 'hermes'), '')
+        fs.symlinkSync(path.join(root, 'var-home'), path.join(root, 'home'))
+        const appDir = path.join(root, 'home', 'appimage_extracted_0123abcd')
+        const exe = fs.realpathSync(path.join(realDir, 'hermes'))
+
+        const env: NodeJS.ProcessEnv = {
+          APPDIR: appDir,
+          APPIMAGE: '/apps/Hermes.AppImage',
+          PATH: `${appDir}/usr/bin:/bin`
+        }
+
+        const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+        let childEnv: NodeJS.ProcessEnv | undefined
+        vi.mocked(spawn).mockImplementationOnce((_file, _args, options) => {
+          childEnv = (options as childProcess.SpawnOptions).env
+
+          return realSpawn('true', [], { stdio: 'pipe' })
+        })
+
+        expect(ownAppImage(exe, env)).toBe('/apps/Hermes.AppImage')
+        spawnRelaunch(exe, [], env).stdin!.end()
+
+        expect(childEnv).toMatchObject(env)
+        expect(ownAppImage(exe, childEnv!)).toBe('/apps/Hermes.AppImage')
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  // Started from another app's AppImage (an AppImage terminal), Hermes inherits
+  // that app's APPDIR/APPIMAGE and its mount on PATH and EDITOR; app.relaunch
+  // kept them, so a restart must not strip half of that env.
+  it.skipIf(process.platform !== 'linux')("keeps another app's AppImage env intact", async () => {
+    const mount = path.join(os.tmpdir(), '.mount_TermAbC123')
+
+    const env: NodeJS.ProcessEnv = {
+      APPDIR: mount,
+      APPIMAGE: '/apps/Terminal.AppImage',
+      EDITOR: `${mount}/usr/bin/nvim`,
+      PATH: `${mount}/usr/bin:/bin`
+    }
+
+    const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+    let childEnv: NodeJS.ProcessEnv | undefined
+    vi.mocked(spawn).mockImplementationOnce((_file, _args, options) => {
+      childEnv = (options as childProcess.SpawnOptions).env
+
+      return realSpawn('true', [], { stdio: 'pipe' })
+    })
+
+    spawnRelaunch('/opt/Hermes/hermes', [], env).stdin!.end()
+
+    expect(childEnv).toEqual(env)
+  })
+
+  // After `ready` Chromium holds dozens of fds above 9 without O_CLOEXEC
+  // (crashpad client socket, DevTools listener, caches); dash, Debian's
+  // /bin/sh, cannot close them, and each relaunch carried the last one's.
+  it.skipIf(process.platform !== 'linux')('starts the target without an fd above 9 this process holds', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-relaunch-high-fd-'))
+    const exe = path.join(dir, 'hermes')
+    const report = path.join(dir, 'fds')
+    const held = path.join(dir, 'held')
+    const fd = fs.openSync(held, 'w')
+
+    try {
+      fs.writeFileSync(exe, `#!/bin/sh\nls -l /proc/$$/fd > "${report}.part"\nmv "${report}.part" "${report}"\n`, {
+        mode: 0o755
+      })
+      // Electron's main keeps such fds across exec; Node marks its own close-on-exec, so hand one down as fd 12.
+      const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+      vi.mocked(spawn).mockImplementationOnce((file, args, options) =>
+        realSpawn('/bin/sh', ['-c', EXITING_PARENT, 'sh', file, ...args], {
+          ...options,
+          stdio: ['pipe', ...Array<'ignore'>(11).fill('ignore'), fd]
+        })
+      )
+
+      spawnRelaunch(exe, [], { PATH: process.env.PATH }).stdin!.end()
+
+      await vi.waitFor(() => expect(fs.existsSync(report)).toBe(true), { timeout: 5000 })
+      expect(fs.readFileSync(report, 'utf8')).not.toContain(held)
+    } finally {
+      fs.closeSync(fd)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

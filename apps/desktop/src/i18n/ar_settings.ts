@@ -1,4 +1,5 @@
 import { arDelegationRouting } from './ar_delegation_routing'
+import { arMemoryLayers } from './ar_memory_layers'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -13,6 +14,7 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    memoryLayers: arMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -728,6 +730,7 @@ export const arSettings = {
         unavailableDetail: reason => `تعذّر على البوابة تقديم تطبيق الويب: ${reason}`,
         restartBusy: 'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
         restartFailed: 'تم الحفظ، لكن تعذّرت إعادة تشغيل البوابة. اختر «إعادة تشغيل البوابة» للمحاولة مجددًا.',
+        restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
         stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
         start: 'تشغيل',
@@ -936,7 +939,8 @@ export const arSettings = {
       deleteConfirm: title => `حذف "${title}" نهائياً؟ لا يمكن التراجع عن هذا.`,
       defaultDirTitle: 'مجلد المشروع الافتراضي',
       defaultDirDesc: 'تبدأ الجلسات الجديدة في هذا المجلد ما لم تختر غيره. اتركه غير مضبوط لاستخدام مجلدك الرئيسي.',
-      defaultDirUpdated: 'تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة (Ctrl/⌘+N) ليطبق التغيير',
+      defaultDirUpdated: shortcut =>
+        `تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة${shortcut ? ` (${shortcut})` : ''} ليطبق التغيير`,
       defaultsTo: label => `الافتراضي هو ${label}.`,
       change: 'تغيير',
       choose: 'اختيار',

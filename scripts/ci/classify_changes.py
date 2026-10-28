@@ -80,7 +80,8 @@ must never skip one a change could break:
   ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
 * A cross-language fixture (``_SHARED_FIXTURE_CONSUMERS``) selects the test
   lanes of every consumer that reads it: the update-marker corpus runs pytest,
-  cargo, vitest and the Windows hand-off tests, not only ``python``.
+  cargo, vitest and the Windows hand-off tests, not only ``python``; the plugin
+  component-detection cases run pytest and vitest.
 """
 
 from __future__ import annotations
@@ -185,6 +186,11 @@ _SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py",  # marker.ps1
         "apps/desktop/electron/remote-update-marker-programs.test.ts",  # SSH remote judge
         "apps/desktop/electron/remote-lifecycle-v2-marker.test.ts",  # SSH relaunch/spawn gate
+    ),
+    # Which halves a plugin folder ships: the gateway's and native Desktop's inspectors.
+    "tests/fixtures/plugin_component_detection.json": (
+        "tests/hermes_cli/test_plugins_cmd_inspect.py",  # Python: detect_components
+        "apps/desktop/electron/desktop-plugin-install.test.ts",  # Electron: detectPluginComponents
     ),
 }
 # What a fixture inherits from its consumers: the lanes that run them as tests.
@@ -349,6 +355,8 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/backup_cron_prompts.py",  # restore_cron_prompt_fields_if_degraded (update_cmd_config)
     "hermes_cli/backup_restore.py",
     "hermes_cli/config_backend.py",  # update_channel writes the channel key through the seam
+    "hermes_cli/env_loader.py",  # update_proxy_env keeps proxy keys a .env load wrote
+    "agent/proxy_bypass.py",  # update_proxy_env reads NO_PROXY entries with it
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
     "hermes_cli/model_catalog.py",

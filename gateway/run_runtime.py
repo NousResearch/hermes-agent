@@ -652,6 +652,8 @@ async def recover_profile_native_sessions(runner, authority):
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
                     for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
         outcome = await authority.recover_native_sessions(bindings)
+        from gateway.session_detached import recover_detached_sessions
+        outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
     return outcome

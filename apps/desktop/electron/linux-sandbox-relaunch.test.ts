@@ -1,5 +1,5 @@
 import type * as childProcess from 'node:child_process'
-import { type ChildProcess, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -22,20 +22,6 @@ vi.mock('node:child_process', async importOriginal => {
 
   return { ...actual, spawn: vi.fn(actual.spawn) }
 })
-
-// The next relaunch's spawn, recorded instead of run: under vitest the target
-// would be node itself.
-function recordNextSpawn(): { env?: NodeJS.ProcessEnv } {
-  const seen: { env?: NodeJS.ProcessEnv } = {}
-
-  vi.mocked(spawn).mockImplementationOnce(((_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
-    seen.env = options.env
-
-    return { on: () => undefined, unref: () => undefined } as unknown as ChildProcess
-  }) as typeof spawn)
-
-  return seen
-}
 
 const argv = ['/opt/Hermes/hermes', '--ozone-platform=x11', 'hermes://session/abc']
 
@@ -101,82 +87,6 @@ describe('Linux runtime --no-sandbox relaunch', () => {
     ).toBeNull()
   })
 
-  // The relaunch skips `hermes desktop`, so it must not inherit the long TMPDIR
-  // main.ts restored after the lock: that path hangs requestSingleInstanceLock().
-  it.skipIf(process.platform !== 'linux')('relaunches with the short socket TMPDIR the launcher chose', async () => {
-    const saved = { ...process.env }
-    const shortDir = '/run/user/1000/hermes-desktop'
-    const longDir = `/home/u/.hermes/profiles/${'p'.repeat(80)}/cache/scratch`
-
-    try {
-      process.env.TMPDIR = shortDir
-      process.env.HERMES_DESKTOP_TMPDIR = longDir
-      delete process.env.ELECTRON_DISABLE_SANDBOX
-      vi.resetModules()
-      const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
-
-      // main.ts: the lock is held, the backend's directory comes back.
-      process.env.TMPDIR = longDir
-      delete process.env.HERMES_DESKTOP_TMPDIR
-
-      const relaunch = recordNextSpawn()
-
-      const relaunched = relaunchIfNoSandboxCameTooLate(
-        {
-          commandLine: { hasSwitch: name => name === 'no-sandbox' },
-          releaseSingleInstanceLock: () => undefined,
-          exit: () => undefined
-        },
-        () => undefined
-      )
-
-      expect(relaunched).toBe(true)
-      expect(relaunch.env?.TMPDIR).toBe(shortDir)
-      expect(relaunch.env?.HERMES_DESKTOP_TMPDIR).toBe(longDir)
-    } finally {
-      restoreEnv(saved)
-    }
-  })
-
-  // Hermes started from another app's AppImage (an IDE or terminal) inherits
-  // that app's APPDIR/APPIMAGE and its mount on PATH and LD_LIBRARY_PATH;
-  // app.relaunch kept them, so the restart must start Hermes with that env whole.
-  it.skipIf(process.platform !== 'linux')("restarts with another app's AppImage env intact", async () => {
-    const saved = { ...process.env }
-    const mount = '/tmp/.mount_IdeAbC123'
-
-    const foreign = {
-      APPDIR: mount,
-      APPIMAGE: '/home/u/Apps/Ide.AppImage',
-      LD_LIBRARY_PATH: `${mount}/usr/lib`,
-      PATH: `${mount}/usr/bin:/usr/local/bin:/usr/bin:/bin`,
-      SHELL: `${mount}/usr/bin/zsh`
-    }
-
-    try {
-      delete process.env.ELECTRON_DISABLE_SANDBOX
-      delete process.env.HERMES_DESKTOP_TMPDIR
-      Object.assign(process.env, foreign)
-      vi.resetModules()
-      const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
-      const relaunch = recordNextSpawn()
-
-      const relaunched = relaunchIfNoSandboxCameTooLate(
-        {
-          commandLine: { hasSwitch: name => name === 'no-sandbox' },
-          releaseSingleInstanceLock: () => undefined,
-          exit: () => undefined
-        },
-        () => undefined
-      )
-
-      expect(relaunched).toBe(true)
-      expect(relaunch.env).toMatchObject(foreign)
-    } finally {
-      restoreEnv(saved)
-    }
-  })
-
   // main.ts wires the NVIDIA recovery's cleanExit in: the restart happens after
   // createNvidiaEglRecovery wrote its `booting` witness, and the next launch
   // must not read that deliberate exit as a GPU abort mid-boot.
@@ -204,12 +114,11 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       vi.resetModules()
       const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
       const recovery = launch()
-      recordNextSpawn()
 
       const relaunched = relaunchIfNoSandboxCameTooLate(
         {
           commandLine: { hasSwitch: name => name === 'no-sandbox' },
-          releaseSingleInstanceLock: () => undefined,
+          relaunch: () => undefined,
           exit: () => undefined
         },
         () => recovery.cleanExit()
@@ -263,12 +172,11 @@ describe('Linux runtime --no-sandbox relaunch', () => {
         ] as const) {
           writeLinuxGpuMarker(userData, prior)
           const decision = launch()
-          recordNextSpawn()
 
           relaunchIfNoSandboxCameTooLate(
             {
               commandLine: { hasSwitch: name => name === 'no-sandbox' },
-              releaseSingleInstanceLock: () => undefined,
+              relaunch: () => undefined,
               exit: () => undefined
             },
             () => clearLinuxGpuBootMarker(userData, decision.nextMarker.state === 'fallback')
@@ -283,64 +191,10 @@ describe('Linux runtime --no-sandbox relaunch', () => {
     }
   )
 
-  // Electron's relauncher execs with PR_SET_NO_NEW_PRIVS, inherited by the
-  // backend and the agent's terminal: sudo and pkexec would stop working for
-  // good. An unpacked app restarts as an ordinary child instead.
-  it.skipIf(process.platform !== 'linux')(
-    'restarts an unpacked app as an ordinary child that can still gain privileges',
-    async () => {
-      const saved = { ...process.env }
-      const savedArgv = process.argv
-      const savedExecPath = process.execPath
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-unpacked-relaunch-'))
-      const report = path.join(dir, 'report')
-      const exe = path.join(dir, 'hermes')
-      const events: string[] = []
-
-      fs.writeFileSync(
-        exe,
-        `#!/bin/sh\nprintf '%s\\n' "$*" "$(grep NoNewPrivs /proc/self/status | tr -d ' \\t')" > "${report}.part"\nmv "${report}.part" "${report}"\n`,
-        { mode: 0o755 }
-      )
-
-      try {
-        delete process.env.ELECTRON_DISABLE_SANDBOX
-        delete process.env.APPIMAGE
-        delete process.env.APPDIR
-        process.argv = [exe, 'hermes://session/abc']
-        process.execPath = exe
-        vi.resetModules()
-        const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
-
-        relaunchIfNoSandboxCameTooLate(
-          {
-            commandLine: { hasSwitch: name => name === 'no-sandbox' },
-            relaunch: () => events.push('electron-relaunch'),
-            releaseSingleInstanceLock: () => events.push('release'),
-            exit: () => events.push('exit')
-          } as Parameters<typeof relaunchIfNoSandboxCameTooLate>[0],
-          () => undefined
-        )
-
-        await vi.waitFor(() => expect(fs.existsSync(report)).toBe(true), { timeout: 5000 })
-        const [args, noNewPrivs] = fs.readFileSync(report, 'utf8').split('\n')
-
-        expect(events).toEqual(['release', 'exit'])
-        expect(args).toBe('hermes://session/abc --no-sandbox')
-        expect(noNewPrivs).toBe(fs.readFileSync('/proc/self/status', 'utf8').match(/NoNewPrivs:\s*(\d)/)?.[0].replace(/\s/g, ''))
-      } finally {
-        process.argv = savedArgv
-        process.execPath = savedExecPath
-        restoreEnv(saved)
-        fs.rmSync(dir, { recursive: true, force: true })
-      }
-    }
-  )
-
   // Electron's relauncher execs its target with PR_SET_NO_NEW_PRIVS: the image's
   // runtime then cannot FUSE-mount, and the old mount dies with this process.
   it.skipIf(process.platform !== 'linux')(
-    'starts a mounted AppImage again as a detached child after dropping the lock',
+    'starts a mounted AppImage again as a detached child once this process is gone',
     async () => {
       const saved = { ...process.env }
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-appimage-relaunch-'))
@@ -362,26 +216,38 @@ describe('Linux runtime --no-sandbox relaunch', () => {
         delete process.env.ELECTRON_DISABLE_SANDBOX
         vi.resetModules()
         const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
+        const { createAppRelauncher } = await import('./app-relaunch')
 
         process.env.TMPDIR = dir
         delete process.env.HERMES_DESKTOP_TMPDIR
         process.env.APPIMAGE = image
         process.env.APPDIR = path.dirname(process.execPath)
 
-        relaunchIfNoSandboxCameTooLate(
+        const relauncher = createAppRelauncher(
           {
             commandLine: { hasSwitch: name => name === 'no-sandbox' },
+            relaunch: () => events.push('electron relaunch'),
             releaseSingleInstanceLock: () => events.push('release'),
-            exit: () => events.push('exit')
+            exit: code => events.push(`exit ${code}`)
           },
-          () => undefined
+          'linux'
         )
+
+        // The helper waits while it is still this process's child; a shell that starts it in the
+        // background (in a session of its own, as the detached spawn gives it) and exits stands in.
+        const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+        vi.mocked(spawn).mockImplementationOnce((file, args, options) =>
+          realSpawn('/bin/sh', ['-c', 'exec 4<&0; setsid "$@" <&4 4<&- &', 'sh', file, ...args], options)
+        )
+        relaunchIfNoSandboxCameTooLate(relauncher, () => events.push('beforeExit'))
+        expect(events).toEqual(['beforeExit', 'release', 'exit 0'])
+        // This process is gone: the waiting helper's stdin closes.
+        vi.mocked(spawn).mock.results.at(-1)!.value.stdin.end()
 
         await vi.waitFor(() => expect(fs.existsSync(report)).toBe(true), { timeout: 5000 })
         const [args, session, tmpdir, readyFd] = fs.readFileSync(report, 'utf8').split('\n')
         const [sid, pid] = session.split(' ')
 
-        expect(events).toEqual(['release', 'exit'])
         expect(args.split(' ').at(-1)).toBe('--no-sandbox')
         // Its own session: nothing that ends this process's session takes it down.
         expect(sid).toBe(pid)

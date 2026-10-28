@@ -167,6 +167,12 @@ import {
   withoutEarlyClarifyProjection
 } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import {
+  type GraftedTranscriptPage,
+  graftTranscriptPage,
+  prefetchServesResume,
+  rereadPageAfterResumeBarrier
+} from './resume-barrier-reread'
 import { clearResumeLatches, clearResumeToasts, notifyResumeFailed, type ResumeAttemptOptions } from './resume-latches'
 import {
   ambientResumeConnectionId,
@@ -1974,6 +1980,7 @@ export function useSessionActions({
         let prefetchApplied = false
         let prefetchedStoredSessionId: string | null = null
         let prefetchedTranscriptMessages: ChatMessage[] | null = null
+        let prefetchedPage: GraftedTranscriptPage | null = null
 
         // REST transcript prefetch and the gateway resume RPC are independent
         // — run them concurrently so a big session's wall time is
@@ -2051,18 +2058,9 @@ export function useSessionActions({
             : viewMessagesForReconcile()
 
           // Tail page + previously backfilled prefix (same-session re-resume).
-          // A long turn can push every rendered row off the newest page; read
-          // older pages until they overlap so the graft keeps earlier history.
-          const prefetchedTail = await extendRefreshPageToOverlap(
-            toChatMessages(prefetchedResult.messages),
-            previousMessages,
-            olderPageReader(storedSessionId, sessionRestScope, prefetchedResult)
-          )
-
-          const graftedPrefetch = graftRefreshedTailOntoBackfill(prefetchedTail, previousMessages)
-
-          prefetchedTranscriptMessages = graftedPrefetch
-          localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
+          prefetchedPage = await graftTranscriptPage(prefetchedResult, previousMessages, storedSessionId, sessionRestScope)
+          prefetchedTranscriptMessages = prefetchedPage.transcript
+          localSnapshot = prefetchedPage.snapshot
           prefetchApplied = true
           prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
 
@@ -2074,21 +2072,22 @@ export function useSessionActions({
 
         const resumed = await resumePromise
 
+        const reread = await rereadPageAfterResumeBarrier(resumed, prefetchedPage, storedSessionId, sessionRestScope)
+
+        if (reread) {
+          ;({ page: prefetchedResult, snapshot: localSnapshot, transcript: prefetchedTranscriptMessages } = reread)
+        }
+
         if (!isCurrentResume()) {
           return
         }
 
         const currentMessages = viewMessagesForReconcile()
 
-        // Keep the local snapshot when resume would only reshuffle runtime
-        // projection. When the REST prefetch already hydrated the transcript,
-        // skip converting/reconciling the resume payload entirely — on a
-        // 1000+-message session that second conversion plus the deep
-        // equivalence compare costs over a second of main-thread time.
-        const resumedStoredSessionId = resumed.session_key || resumed.resumed
-
-        const prefetchMatchesResumedSession =
-          !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
+        // A current prefetch skips converting the resume payload (over a second
+        // on a 1000+-message session); a page older than the resume snapshot
+        // (it lacks a durable row the resume carries) yields to that snapshot.
+        const prefetchMatchesResumedSession = prefetchServesResume(prefetchedStoredSessionId, resumed, prefetchedResult)
 
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 

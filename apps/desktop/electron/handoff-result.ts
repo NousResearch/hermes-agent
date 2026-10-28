@@ -40,6 +40,10 @@ export interface HandoffResult {
   manual: boolean
   message: string
   branch: string
+  /** The run this result belongs to; the update receipt carries the same value
+   * as `correlation_id`, so a failed run can be explained by its own stop.
+   * Null for producers that predate the field. */
+  runId: string | null
   /** C2: `ok:true` with follow-up work that failed after the commit point. */
   warnings: string[]
   /** #101789: programs outside Hermes whose working folder blocked the Desktop app swap. */
@@ -166,6 +170,8 @@ function toHandoffResult(parsed: any, manual: boolean): HandoffResult {
     manual,
     message: typeof parsed?.message === 'string' ? parsed.message : '',
     branch: typeof parsed?.branch === 'string' ? parsed.branch : '',
+    // Already validated by handoffRunMismatch: a present but malformed id was discarded there.
+    runId: typeof parsed?.run_id === 'string' ? parsed.run_id : null,
     warnings: Array.isArray(parsed?.warnings) ? parsed.warnings.map(String).filter(Boolean) : [],
     releaseHolders: toReleaseHolders(parsed?.release_holders)
   }

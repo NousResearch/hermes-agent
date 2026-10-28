@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -42,7 +42,12 @@ export function ownAppImage(execPath: string, env: NodeJS.ProcessEnv): string | 
   const exe = posix.resolve(execPath)
 
   if (!appDir) {
-    return posix.dirname(exe).split('/').some(segment => segment.startsWith('.mount_')) ? appImage : undefined
+    return posix
+      .dirname(exe)
+      .split('/')
+      .some(segment => segment.startsWith('.mount_'))
+      ? appImage
+      : undefined
   }
 
   if (isInside(posix.resolve(appDir), exe)) {
@@ -73,43 +78,92 @@ export function relaunchTarget(execPath: string = process.execPath, env: NodeJS.
   return image && !extracted ? image : execPath
 }
 
-export interface RelaunchHost {
-  releaseSingleInstanceLock(): void
+function executableError(file: string): string | null {
+  try {
+    fs.accessSync(file, fs.constants.X_OK)
+
+    return null
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code ?? String(error)
+  }
+}
+
+/**
+ * The shell that runs EXEC_AFTER_EXIT. dash (Debian/Ubuntu /bin/sh)
+ * cannot name fds above 9, and after `ready` Chromium holds dozens there, so
+ * bash closes them where it exists. `-p` keeps BASH_ENV, ENV and exported
+ * functions from running in it while still passing them to the image; bash
+ * rewrites an exported SHELLOPTS/BASHOPTS for its children, so an env that
+ * carries one keeps /bin/sh.
+ */
+function trampolineShell(env: NodeJS.ProcessEnv): { file: string; args: string[]; fallback?: string } {
+  const bashOptsExported = env.SHELLOPTS !== undefined || env.BASHOPTS !== undefined
+
+  if (!bashOptsExported && !executableError('/bin/bash')) {
+    return { file: '/bin/bash', args: ['-p'] }
+  }
+
+  return {
+    file: '/bin/sh',
+    args: [],
+    fallback: bashOptsExported ? 'SHELLOPTS/BASHOPTS exported' : '/bin/bash unavailable'
+  }
 }
 
 /**
  * Whether `target` can start this app again. A spawn failure is reported
- * asynchronously, after the caller has already exited, so the target is
- * checked up front and a refusal is logged now; the caller then keeps running
- * in place of the relaunch.
+ * asynchronously, possibly after the caller has exited, so the target and the
+ * shell that starts it are checked up front and a refusal is logged now with
+ * what the caller does instead.
  */
-export function canRelaunch(target: string): boolean {
-  try {
-    fs.accessSync(target, fs.constants.X_OK)
+export function canRelaunch(
+  target: string,
+  instead = 'continuing without the relaunch',
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  for (const file of [target, trampolineShell(env).file]) {
+    const reason = executableError(file)
 
-    return true
-  } catch (error) {
-    const reason = (error as NodeJS.ErrnoException).code ?? String(error)
-    console.error(`[hermes] cannot start ${target} again (${reason}); continuing without the relaunch`)
+    if (reason) {
+      console.error(`[hermes] cannot start ${file} (${reason}); ${instead}`)
 
-    return false
+      return false
+    }
   }
+
+  return true
 }
 
+// The helper starts before the caller's shutdown wait and execs the target
+// once this process is gone, as Electron's relauncher would. EOF on its stdin
+// (this process is that pipe's only writer) only means Node's teardown began:
+// Chromium can still hold the DevTools port, storage locks and the GPU for
+// seconds, longer if it dumps core. The helper then waits until the kernel
+// reparents it, which happens after the dead process released its files. A
+// stuck old process holds the restart back for 600 polls (~30 s) at most, and
+// without /proc the read fails and the target starts at EOF.
+//
 // libuv's spawn keeps every descriptor this process inherited without
 // O_CLOEXEC, which Chromium's launcher (app.relaunch) closes. Ours include the
 // AppImage runtime's keepalive pipe, whose last reader keeps this process's
 // FUSE mount and squashfuse daemon alive, and the launcher's ready pipe. The
-// child therefore goes through /bin/sh, which drops every fd above 2 and then
-// execs the image. POSIX only promises redirections on fds 0-9 and dash
-// exits on `exec 10<&-`, so higher numbers are closed where the shell takes
-// them (bash, busybox) and left in place under dash.
-const EXEC_WITH_STDIO_ONLY = `big=
+// child therefore goes through a shell (trampolineShell), which drops every fd
+// above 2 and then execs the target. POSIX only promises redirections on fds
+// 0-9 and dash exits on `exec 10<&-`, so higher numbers are closed where the
+// shell takes them (bash, busybox) and left in place under dash.
+const EXEC_AFTER_EXIT = `while read -r _; do :; done
+n=0
+while [ $n -lt 600 ] && read -r _ _ _ cur _ </proc/self/stat && [ "$cur" = "$pp" ]; do
+  sleep 0.05
+  n=$((n + 1))
+done
+exec </dev/null
+big=
 (eval 'exec 10<&-') 2>/dev/null && big=1
 for f in /proc/self/fd/*; do
   n=\${f##*/}
   case $n in
-    0 | 1 | 2) continue ;;
+    0 | 1 | 2 | '' | *[!0-9]*) continue ;;
     [3-9]) ;;
     *) [ -n "$big" ] || continue ;;
   esac
@@ -170,22 +224,24 @@ function withoutMountEntries(env: NodeJS.ProcessEnv, execPath: string): NodeJS.P
 }
 
 /**
- * Start `target` with `args` as an ordinary detached child; the caller exits
- * right after. Electron's relauncher (app.relaunch) execs with
- * PR_SET_NO_NEW_PRIVS, which every descendant inherits: sudo, pkexec and any
- * setuid helper stop working in the backend and the agent's terminal, and a
- * relaunched AppImage runtime cannot mount through the setuid fusermount.
- * Check `canRelaunch(target)` first. The child takes the single-instance lock
- * itself, so the lock is dropped first.
+ * Start `target` with `args` once this process is gone, as an ordinary
+ * detached child: Electron's relauncher execs with PR_SET_NO_NEW_PRIVS, which
+ * locks sudo, pkexec and FUSE out of the new app and all its descendants.
+ * Check `canRelaunch(target)` first; kill the returned helper to cancel.
  */
-export function relaunchNow(
-  host: RelaunchHost,
+export function spawnRelaunch(
+  target: string,
   args: string[],
-  target: string = relaunchTarget(),
   env: NodeJS.ProcessEnv = process.env,
   execPath: string = process.execPath
-): void {
-  host.releaseSingleInstanceLock()
+): ChildProcess {
+  const shell = trampolineShell(env)
+
+  if (shell.fallback) {
+    console.warn(
+      `[hermes] relaunching through /bin/sh (${shell.fallback}); file descriptors above 9 may stay open in the new process`
+    )
+  }
 
   // Only a restart of our own image file (relaunchTarget returns it only when
   // ownAppImage claims it) drops the dying mount. Any other target keeps the env
@@ -195,12 +251,15 @@ export function relaunchNow(
   const ownImage = env.APPIMAGE && posix.resolve(target) === posix.resolve(env.APPIMAGE)
   const childEnv = ownImage ? withoutMountEntries(env, execPath) : env
 
-  const child = spawn('/bin/sh', ['-c', EXEC_WITH_STDIO_ONLY, target, ...args], {
+  // This pid, not the shell's $PPID: if this process dies before the shell starts, $PPID is already the new parent.
+  const child = spawn(shell.file, [...shell.args, '-c', `pp=${process.pid}\n${EXEC_AFTER_EXIT}`, target, ...args], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['pipe', 'ignore', 'ignore'],
     env: childEnv
   })
 
   child.on('error', error => console.error(`[hermes] relaunching ${target} failed: ${error.message}`))
   child.unref()
+
+  return child
 }

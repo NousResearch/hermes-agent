@@ -313,3 +313,17 @@ def test_keyless_worker_on_a_fallback_never_sends_its_key_to_the_primary_endpoin
     assert primary and fallback_key not in primary
     assert all(fallback_key != key for key, _ in clients)
     assert built['api_key'] is None
+
+
+def test_keyless_worker_gets_its_routes_credential_pool(monkeypatch):
+    """A Kanban worker's key comes from the profile's credential pool; the agent needs the pool
+    itself, or a 429 on the first account can never rotate to the profile's other accounts."""
+    from gateway import session_worker_construct as swc
+    pool = object()
+    runtime = {'api_key': 'fake-pool-entry', 'base_url': 'https://api.anthropic.com',
+               'api_mode': 'anthropic_messages', 'provider': 'anthropic', 'credential_pool': pool}
+    monkeypatch.setattr(swc, 'route_runtime', lambda *a, **k: (runtime, None))
+    policy = SimpleNamespace(effective=lambda: ({'model': {'provider': 'anthropic'}}, 'claude-opus'))
+    assert swc.worker_route(policy, {'api_key': None})['credential_pool'] is pool
+    # A bound launch key is the credential itself: no pool rides along.
+    assert 'credential_pool' not in swc.worker_route(policy, {'api_key': 'fake-launch'})

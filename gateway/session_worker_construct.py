@@ -215,8 +215,15 @@ def worker_route(policy, construct):
     if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
             and not (frozen.get('model') or {}).get('api_mode')):
         api_mode = None
-    return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
-            'api_mode': api_mode}
+    route = {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
+             'api_mode': api_mode}
+    # A key-less worker's key is one entry of the profile's credential pool. Without the pool the agent
+    # cannot rotate on a 429/402, so a card whose first account hit its quota wall retries that same
+    # account until the run fails, while the profile's other accounts sit idle. A bound launch key is
+    # the credential itself and keeps no pool.
+    if construct['api_key'] is None and runtime.get('credential_pool') is not None:
+        route['credential_pool'] = runtime['credential_pool']
+    return route
 
 
 def checkpoint_agent_kwargs(config):

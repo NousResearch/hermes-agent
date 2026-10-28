@@ -78,7 +78,15 @@ async def _open(authority, row, event):
         # None for a heartbeat or ``typing_indicator: false``, as on the adapter path.
         bracket.typing = adapter._start_typing_refresh(event, bracket.stop, bracket.metadata)
     if hooks:
-        await adapter._run_processing_hook('on_processing_start', event)
+        try:
+            await adapter._run_processing_hook('on_processing_start', event)
+        except BaseException:
+            # Cancelled before ``producer_turn``'s finally exists: release what was opened here.
+            bracket.stop.set()
+            if bracket.typing is not None:
+                bracket.typing.cancel()
+            turns.pop(row['admission_id'], None)
+            raise
     return bracket
 
 

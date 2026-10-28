@@ -311,3 +311,58 @@ async def test_a_scheduled_wake_on_the_chat_shows_no_reaction_or_typing(tmp_path
         # A bracket would have reacted and refreshed typing when the wake started, before its reply.
         assert [a for a in _actions(outgoing) if a.get('op') == 'react'] == before_reacts
         assert len(_heartbeats(outgoing, 'D7')) == before_typing
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_start_hook_runs_leaks_no_typing():
+    """A drain cancelled while on_processing_start is awaited stops typing and drops the bracket."""
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.session_producer_lifecycle import producer_turn
+
+    class Adapter(BasePlatformAdapter):
+        name = property(lambda self: 'fake')
+
+        def __init__(self):
+            self._typing_paused = set()
+            self._status_text = {}
+            self.config = type('C', (), {'typing_indicator': True})()
+            self.started = asyncio.Event()
+
+        async def send_typing(self, chat_id, metadata=None):
+            return None
+
+        async def stop_typing(self, chat_id, metadata=None):
+            return None
+
+        async def on_processing_start(self, event):
+            self.started.set()
+            await asyncio.Event().wait()
+
+        async def on_processing_complete(self, event, outcome):
+            return None
+
+        async def get_chat_info(self, *a, **k): ...
+        async def connect(self): ...
+        async def disconnect(self): ...
+        async def send(self, *a, **k): ...
+
+    adapter = Adapter()
+    source = type('S', (), {'chat_id': 'C1', 'thread_id': None, 'platform': 'slack', 'chat_type': 'dm',
+                            'user_id': 'U', 'scope_id': None, 'profile': None})()
+    event = type('E', (), {'source': source, 'message_id': 'm1', 'raw_message': None, 'internal': False,
+                           'reply_anchor_override': None})()
+    runner = type('R', (), {'_adapter_for_source': lambda self, s: adapter})()
+    authority = type('A', (), {'runner': runner, 'producer_turns': {'adm': None}})()
+
+    async def drain():
+        async with producer_turn(authority, {'admission_id': 'adm'}, event, {}):
+            pass
+
+    task = asyncio.create_task(drain())
+    await adapter.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await async_wait_until(lambda: not _typing_refreshes(), timeout=2)
+    assert authority.producer_turns == {}
+

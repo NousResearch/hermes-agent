@@ -71,11 +71,13 @@ describe('inspectAgentPlugin', () => {
     const sha = 'ABCDEF0123456789abcdef0123456789abcdef01'
     const request = answering(sha)
 
-    expect(await inspectAgentPlugin(request as never, { identifier: 'owner/repo', profile: 'research' })).toMatchObject({
-      ok: true,
-      agentName: 'demo',
-      sha: sha.toLowerCase()
-    })
+    expect(await inspectAgentPlugin(request as never, { identifier: 'owner/repo', profile: 'research' })).toMatchObject(
+      {
+        ok: true,
+        agentName: 'demo',
+        sha: sha.toLowerCase()
+      }
+    )
     expect(request).toHaveBeenCalledWith(
       'plugins.manage',
       { action: 'inspect', identifier: 'owner/repo', profile: 'research' },
@@ -181,7 +183,12 @@ describe('saveAgentPluginSettings (#46600, #87934)', () => {
       writeSecret: vi.fn(async () => ({ ok: true }))
     })
 
-    expect(request).toHaveBeenCalledWith('plugins.manage', { action: 'settings', key: 'demo', profile: 'workbot', values: {} })
+    expect(request).toHaveBeenCalledWith('plugins.manage', {
+      action: 'settings',
+      key: 'demo',
+      profile: 'workbot',
+      values: {}
+    })
     expect(JSON.stringify(request.mock.calls)).not.toContain('sk-2')
   })
 

@@ -32,18 +32,33 @@ function fixture() {
       const token = subscriptions.get(sid) ?? `sub-${++nextToken}`
       subscriptions.set(sid, token)
 
-      const result = canonicalResult(method, { session_id: sid, stored_session_id: sid,
-        subscription_id: token, authority_epoch: 1, execution_generation: 0,
-        messages: [], pending: [], running: false, info: { model: 'test', tools: {}, skills: {} } })
+      const result = canonicalResult(method, {
+        session_id: sid,
+        stored_session_id: sid,
+        subscription_id: token,
+        authority_epoch: 1,
+        execution_generation: 0,
+        messages: [],
+        pending: [],
+        running: false,
+        info: { model: 'test', tools: {}, skills: {} }
+      })
 
-      return new Promise((resolve, reject) => pending.push({ resolve: () => resolve(result),
-        reject: () => reject(new Error('fixture response failed')), invalid: () => resolve(null) }))
+      return new Promise((resolve, reject) =>
+        pending.push({
+          resolve: () => resolve(result),
+          reject: () => reject(new Error('fixture response failed')),
+          invalid: () => resolve(null)
+        })
+      )
     }
 
     if (wire.method === 'session.detach') {
       const detached = subscriptions.get(sid) === wire.params.subscription_id
 
-      if (detached) {subscriptions.delete(sid)}
+      if (detached) {
+        subscriptions.delete(sid)
+      }
 
       return Promise.resolve({ ...wire.params, detached })
     }
@@ -54,19 +69,37 @@ function fixture() {
   let lifecycle!: ReturnType<typeof useSessionLifecycle>
 
   function Harness() {
-    lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { isCanonical: true, request }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
-      setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
-      setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
+    lifecycle = useSessionLifecycle({
+      colsRef: { current: 80 },
+      composerActions: { setComposerTokens: vi.fn() },
+      gw: { isCanonical: true, request },
+      rpc: request,
+      scrollRef: { current: null },
+      panel: vi.fn(),
+      sys: vi.fn(),
+      setHistoryItems: vi.fn(),
+      setLastUserMsg: vi.fn(),
+      setSessionStartedAt: vi.fn(),
+      setStickyPrompt: vi.fn(),
+      setVoiceProcessing: vi.fn(),
+      setVoiceRecording: vi.fn()
+    } as any)
 
     return <Text>viewer ordering</Text>
   }
 
-  const instance = renderSync(<Harness />, { stdin: new PassThrough() as any,
+  const instance = renderSync(<Harness />, {
+    stdin: new PassThrough() as any,
     stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any,
-    stderr: new PassThrough() as any, patchConsole: false })
+    stderr: new PassThrough() as any,
+    patchConsole: false
+  })
 
-  return { subscriptions, pending, request, lifecycle: () => lifecycle,
+  return {
+    subscriptions,
+    pending,
+    request,
+    lifecycle: () => lifecycle,
     attach: (method: AttachmentAction, sid: string) => lifecycle[method](sid),
     async initial() {
       lifecycle.resumeById('x')
@@ -79,7 +112,8 @@ function fixture() {
       resetUiState()
       vi.unstubAllEnvs()
       rmSync(home, { recursive: true, force: true })
-    } }
+    }
+  }
 }
 
 const detaches = (request: ReturnType<typeof vi.fn>) =>

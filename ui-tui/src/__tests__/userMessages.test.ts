@@ -329,6 +329,8 @@ describe('describeShellExecError', () => {
     expect(text).toContain('Ask the agent to run it instead.')
     expect(text).not.toContain('not local')
     expect(text).not.toContain("agent's terminal runs inside")
-    expect(describeShellExecError(new JsonRpcGatewayError('dangerous_command', { code: 4001 }))).toBe('dangerous_command')
+    expect(describeShellExecError(new JsonRpcGatewayError('dangerous_command', { code: 4001 }))).toBe(
+      'dangerous_command'
+    )
   })
 })

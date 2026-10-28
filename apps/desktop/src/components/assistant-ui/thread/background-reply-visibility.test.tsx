@@ -89,10 +89,13 @@ it('keeps every assistant reply around consecutive completions in the main trans
 
   await waitFor(() => expect(finalReply(container)).toBeTruthy())
   expect(container.querySelectorAll('[data-slot="aui_background-result"]')).toHaveLength(2)
-  expect([...container.querySelectorAll('[data-role="assistant"]')].map(row => row.textContent)).toEqual([
-    'Started two reviewers.',
-    'The review found one blocker.'
-  ])
+
+  // The reply body only: the action bar beside it also carries the message time.
+  const replyBodies = [...container.querySelectorAll('[data-role="assistant"]')].map(
+    row => row.querySelector('[data-slot="aui_assistant-message-content"]')?.textContent
+  )
+
+  expect(replyBodies).toEqual(['Started two reviewers.', 'The review found one blocker.'])
 
   for (const row of container.querySelectorAll('[data-role="assistant"]')) {
     expect(row.closest('[data-slot="aui_background-result"]')).toBeNull()

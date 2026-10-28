@@ -163,6 +163,8 @@ reopens the gesture-less forced-navigation class the advisory closed.
   snapshot. A quiet tab can reopen after cold eviction without any new registry
   notification; recovery must not duplicate live output or exempt cold entries
   from the retention budget.
+- Root geometry variables are not theme changes. Authored custom CSS can depend
+  on those variables, so it must retain full repaint notifications.
 
 ## Nous free tier: state is pulled, never latched in the renderer
 

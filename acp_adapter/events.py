@@ -121,6 +121,7 @@ def make_tool_progress_cb(
     tool_call_meta: dict[str, dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
     turn_state: dict[str, Any] | None = None,
+    subagent_progress: Callable | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -131,6 +132,10 @@ def make_tool_progress_cb(
     only fires on the *next* step, which leaves a turn's last tools open."""
 
     def _tool_progress(event_type: str, name: str | None = None, preview: str | None = None, args: Any = None, **kwargs) -> None:
+        if event_type.startswith("subagent."):
+            if subagent_progress is not None:
+                subagent_progress(event_type, name, preview, args, **kwargs)
+            return
         if event_type == "tool.completed" and name:
             if turn_state is not None:
                 turn_state["saw_completion"] = True

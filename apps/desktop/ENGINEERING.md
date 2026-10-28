@@ -148,6 +148,13 @@ button) reach the OS browser through one explicit bridge instead:
 Widening any of those three (partition key, trusted-click gate, scheme set)
 reopens the gesture-less forced-navigation class the advisory closed.
 
+## Rendering work follows visibility and ownership
+
+- Hidden terminals stay mounted and keep parsing output. Suppress only their
+  DOM rows, not the measurable host/helpers or terminal state. Do not reduce
+  scrollback or replace parser state to save painting work. WebGL surfaces remain
+  unchanged; hidden DOM-row suppression must leave fitting and font helpers measurable.
+
 ## Nous free tier: state is pulled, never latched in the renderer
 
 The free tier (a Nous identity with no account, `hermes_cli/anon_auth.py`) reaches the renderer

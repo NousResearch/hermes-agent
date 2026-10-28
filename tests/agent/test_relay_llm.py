@@ -1348,6 +1348,70 @@ def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch):
     assert baseline is None
 
 
+def test_sync_managed_call_resolves_loop_sensitive_provider(relay_turn):
+    """A dual-mode client sees Relay's loop even when its caller is synchronous."""
+    from openai.types.chat import ChatCompletion
+
+    completed = ChatCompletion(
+        id="chatcmpl-test", object="chat.completion", created=1, model="test-model",
+        choices=[{"index": 0, "message": {"role": "assistant", "content": "done"},
+                  "finish_reason": "stop"}],
+    )
+    observed = []
+
+    async def respond():
+        await asyncio.sleep(0)
+        observed.append(relay_runtime._MANAGED_CALLBACK_DEPTH.get())
+        return completed
+
+    def provider(_request):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return completed
+        return respond()
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": [{"role": "user", "content": "hello"}]},
+        provider, session_id="session-1", name="custom", model_name="test-model",
+        metadata={"api_mode": "chat_completions"},
+    )
+    assert result is completed
+    assert observed and all(depth > 0 for depth in observed)
+
+
+def test_sync_managed_call_preserves_awaited_provider_error(relay_turn):
+    failure = ValueError("provider rejected request")
+
+    async def reject():
+        await asyncio.sleep(0)
+        raise failure
+
+    with pytest.raises(ValueError) as caught:
+        relay_llm.execute(
+            {"model": "test-model", "messages": []}, lambda _request: reject(),
+            session_id="session-1", name="custom", model_name="test-model",
+            metadata={"api_mode": "custom"},
+        )
+    assert caught.value is failure
+
+
+@pytest.mark.asyncio
+async def test_sync_loop_rejection_closes_unstarted_relay_coroutine():
+    import inspect
+
+    async def operation():
+        pytest.fail("Rejected synchronous work must not start")
+
+    pending = operation()
+    try:
+        with pytest.raises(RuntimeError, match="event-loop thread"):
+            relay_llm._run_awaitable(pending)
+        assert inspect.getcoroutinestate(pending) == inspect.CORO_CLOSED
+    finally:
+        pending.close()
+
+
 def test_stream_current_unwraps_completed_response(tmp_path, monkeypatch):
     """Auxiliary streaming (the MoA aggregator) must surface a completed
     provider response raw instead of crashing when the client ignores

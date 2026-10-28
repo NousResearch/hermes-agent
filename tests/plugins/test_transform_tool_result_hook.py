@@ -132,6 +132,25 @@ def test_transform_tool_result_runs_after_post_tool_call(monkeypatch):
     ]
 
 
+def test_execute_code_rpc_dispatches_keep_inner_results_json(monkeypatch):
+    """Inner tool calls return machine-readable results even when plugins rewrite display output."""
+    from tools.code_execution_rpc import _default_dispatch
+    from tools.code_kernel import CellAuthority
+    from tools.registry import registry
+
+    raw_result = '{"output": "original"}'
+    monkeypatch.setattr(registry, "dispatch", lambda *args, **kwargs: raw_result)
+    monkeypatch.setattr(model_tools, "_READ_SEARCH_TOOLS", frozenset())
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda hook_name, **kwargs: ["not json"] if hook_name == "transform_tool_result" else [],
+    )
+
+    assert _default_dispatch("rpc-turn")("dummy_tool", {}) == raw_result
+    assert CellAuthority("kernel-turn").dispatch("dummy_tool", {}) == raw_result
+
+
 def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_path):
     """End-to-end: load a real plugin from HERMES_HOME and verify it rewrites results."""
     import hermes_yaml as yaml

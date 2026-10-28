@@ -941,20 +941,31 @@ class TestWeixinQuotedReplyExtraction:
             [self._text_item("普通消息")]) == "普通消息"
 
     @pytest.mark.asyncio
-    async def test_quote_payload_is_logged(self, caplog):
-        """The raw ref_msg must land in the log so future iLink wire changes are
-        visible instead of silent."""
+    async def test_quote_shape_logged_without_private_content(self, caplog):
+        """INFO must carry the quote SHAPE (keys, type, lengths) so future iLink wire
+        changes are visible, but never the quoted text itself — quoted content is
+        private conversation, and routine INFO logs are routinely collected. The raw
+        payload only appears at DEBUG."""
         adapter = _make_adapter()
         adapter._poll_session = object()
         adapter.handle_message = AsyncMock()
         adapter._text_batch_delay_seconds = 0.05
         adapter._text_batch_split_delay_seconds = 0.05
+        secret_title = "PRIVATE_TITLE_被引用的摘要"
         message = {
             "from_user_id": "wxid_user1",
             "message_id": "msg-quote-1",
-            "item_list": [self._text_item("这条讲得好", {"title": "被引用的摘要"})],
+            "item_list": [self._text_item("这条讲得好", {"title": secret_title})],
         }
         with caplog.at_level("INFO"):
             await adapter._process_message(message)
-        # The forensic log line is emitted synchronously inside _process_message.
-        assert any("quoted reply payload" in rec.message for rec in caplog.records)
+        info_lines = [rec.message for rec in caplog.records if "quoted reply from=" in rec.message]
+        assert info_lines, "forensic INFO line missing"
+        assert f"title_len={len(secret_title)}" in info_lines[0]
+        assert secret_title not in info_lines[0]
+
+        caplog.clear()
+        with caplog.at_level("DEBUG"):
+            await adapter._process_message({**message, "message_id": "msg-quote-2"})
+        assert any(secret_title in rec.message for rec in caplog.records
+                   if "quoted reply raw ref_msg" in rec.message)

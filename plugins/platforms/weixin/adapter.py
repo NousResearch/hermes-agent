@@ -891,14 +891,24 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
         # Quote forensics: iLink changed its ref_msg delivery around 2026-07 with no
-        # hermes-side change, and quotes vanished silently. Log the raw ref_msg so the
-        # next quoted reply leaves evidence of what the wire actually carries.
+        # hermes-side change, and quotes vanished silently. INFO records shape only
+        # (keys, item type, lengths) — enough to tell "absent" from "title-only" from
+        # "full" without copying private quoted content into routine logs; the raw
+        # payload stays at debug for on-demand diagnosis.
         for _item in item_list:
             if isinstance(_item, dict) and _item.get("ref_msg"):
+                _ref = _item.get("ref_msg") or {}
+                _ref_item = _ref.get("message_item") or {}
                 logger.info(
-                    "[%s] quoted reply payload from=%s ref_msg=%s",
+                    "[%s] quoted reply from=%s ref_keys=%s message_item_type=%s title_len=%d content_len=%d",
+                    self.name, _safe_id(sender_id), sorted(_ref.keys()), _ref_item.get("type"),
+                    len(str(_ref.get("title") or "")),
+                    len(str((_ref_item.get("text_item") or {}).get("text") or "")),
+                )
+                logger.debug(
+                    "[%s] quoted reply raw ref_msg from=%s: %s",
                     self.name, _safe_id(sender_id),
-                    json.dumps(_item.get("ref_msg"), ensure_ascii=False, default=str)[:400],
+                    json.dumps(_ref, ensure_ascii=False, default=str)[:400],
                 )
         text = _extract_text(item_list)
         if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):

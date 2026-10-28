@@ -132,3 +132,36 @@ def test_dropped_spawn_path_dirs_return_after_the_login_path(tmp_path, monkeypat
         assert out == ["extra-b", "user-bin"]
     finally:
         env.cleanup()
+
+
+@pytest.mark.platforms("posix")
+def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_path, monkeypatch):
+    """Background commands run ``bash -lic`` with no snapshot, so a ``~/.profile`` that
+    resets PATH Debian-style dropped every parent-only dir: the terminal tool's background
+    spawn re-appends them through the same helper as the foreground, profile dirs first."""
+    import time
+    from types import SimpleNamespace
+
+    from tools.process_registry import ProcessRegistry
+    from tools.terminal_tool_background import _spawn
+
+    profile_bin, parent_bin = tmp_path / "profile-bin", tmp_path / "parent-bin"
+    for d in (profile_bin, parent_bin):
+        d.mkdir()
+    _exe(parent_bin, "only-in-parent")
+    (tmp_path / ".profile").write_text(f'PATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n')
+    monkeypatch.setenv("HOME", str(tmp_path))
+    registry = ProcessRegistry()
+    session = _spawn(registry, env=SimpleNamespace(env={"PATH": f"{parent_bin}:/usr/bin:/bin"}),
+                     env_type="local", command='only-in-parent; printf "PATH=%s\\n" "$PATH"',
+                     cwd=str(tmp_path), effective_task_id="t", task_id="t", session_key="",
+                     effective_pty=False)
+    deadline = time.monotonic() + 30
+    while not session.exited and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert session.exited, session.output_buffer
+    assert "parent-bin" in session.output_buffer.split(), session.output_buffer
+    path_line = next(ln for ln in session.output_buffer.splitlines() if ln.startswith("PATH="))
+    entries = path_line.removeprefix("PATH=").split(":")
+    assert entries[0] == str(profile_bin)
+    assert entries.index("/bin") < entries.index(str(parent_bin))

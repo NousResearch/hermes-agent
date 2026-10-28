@@ -25,7 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
+from tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
@@ -1176,15 +1176,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def spawn_local(
         self, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
-        persist_on_release: bool = False) -> ProcessSession:
+        persist_on_release: bool = False, restore_login_path: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends: spawn_via_env()).
         ``use_pty`` asks ptyprocess/pywinpty for a pseudo-terminal; on failure: pipe + ``pty_fallback``.
-        ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
+        ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225).
+        ``restore_login_path`` re-appends spawn-env PATH dirs the login profile reset (#56634)."""
         # Bash runs ``A && B &`` as a subshell holding our stdout pipe open while a server B lives;
         # the rewriter makes it ``A && { B & }`` (#68915). Lazy: terminal_tool imports this module.
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
-        safe_command = _rewrite_bg(command)
+        login_path = self._spawn_env(env_vars).get("PATH", "") if restore_login_path else ""
+        safe_command = _append_dropped_path_entries(_rewrite_bg(command), login_path)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
         pty_scope_attempted = False

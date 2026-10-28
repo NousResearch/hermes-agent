@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 _DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+# Persistent typing loop cadence and idle deadline. Every ``send_typing`` call (the
+# ``_keep_typing`` heartbeat ticks every ~2s while a turn runs) refreshes the deadline, so a
+# loop that nobody stops any more — e.g. a ``send_typing`` that lands just after the turn's
+# final ``stop_typing``, or an approval pause that never resumes — retires itself instead of
+# leaving "typing…" on the channel forever.
+_TYPING_POST_INTERVAL_SECONDS = 12.0
+_TYPING_LOOP_IDLE_SECONDS = 120.0
+
 
 def _voice_mixer_module():
     """Sibling ``voice_mixer`` module: flat import (plugin dir on sys.path) else package-relative."""
@@ -1286,6 +1294,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._semantic_thread_renames = SemanticThreadRenames()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: dict[str, asyncio.Task] = {}
+        # Last time a persistent loop was (re)requested; the loop retires itself once this goes
+        # stale so an orphaned indicator cannot type forever.
+        self._typing_touch: dict[str, float] = {}
         self._bot_task: Optional[asyncio.Task] = None
         # Background task that runs post-connect housekeeping (command-menu registration + DM-topic setup)
         # off the connect path so a slow Bot API call (e.g. a set_my_commands stall for certain tokens)
@@ -4331,15 +4342,26 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
-        TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
+        TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it.
+        Each call also refreshes an idle deadline: ``_keep_typing`` ticks every ~2s while a turn is
+        running, so a loop whose last ``stop_typing`` already happened (a late ``send_typing`` racing
+        the turn's final stop) goes quiet instead of typing on a finished turn forever."""
         if not self._client:
             return
+        self._typing_touch[chat_id] = time.monotonic()
         if chat_id in self._typing_tasks:
             return
 
         async def _typing_loop() -> None:
             try:
                 while True:
+                    idle = time.monotonic() - self._typing_touch.get(chat_id, 0.0)
+                    if idle > _TYPING_LOOP_IDLE_SECONDS:
+                        logger.debug(
+                            "Discord typing loop for %s idle %.0fs; self-terminating",
+                            chat_id, idle,
+                        )
+                        return
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing", channel_id=chat_id,
@@ -4359,15 +4381,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             return
                         await asyncio.sleep(retry_after)
                         continue
-                    await asyncio.sleep(12)
+                    await asyncio.sleep(_TYPING_POST_INTERVAL_SECONDS)
             except asyncio.CancelledError:
                 pass
             finally:
                 self._typing_tasks.pop(chat_id, None)
+                self._typing_touch.pop(chat_id, None)
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the persistent typing indicator for a channel."""
+        self._typing_touch.pop(chat_id, None)
         task = self._typing_tasks.pop(chat_id, None)
         if task:
             task.cancel()

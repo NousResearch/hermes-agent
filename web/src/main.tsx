@@ -10,8 +10,9 @@ import { ThemeProvider } from "./themes";
 import { HERMES_BASE_PATH } from "./lib/api";
 import { startChunkLoadRecovery } from "./lib/chunk-load-recovery";
 
-// Before the first render, so the first lazy route is covered too.
-startChunkLoadRecovery();
+// Before the first render, so the first lazy route is covered too. The dev
+// server has no hashed build to go stale.
+if (import.meta.env.PROD) startChunkLoadRecovery();
 
 // Expose the plugin SDK before rendering so plugins loaded via <script>
 // can access React, components, etc. immediately.

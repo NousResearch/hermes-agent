@@ -5,7 +5,7 @@ import {
   useCallback,
   useRef,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -727,6 +727,9 @@ function SessionsPagination({
 }
 
 export default function SessionsPage() {
+  const [searchParams] = useSearchParams();
+  // ?project=<id> — filter sessions by project (used by "View all" links on the Projects page)
+  const projectFilter = searchParams.get("project") ?? null;
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -777,6 +780,7 @@ export default function SessionsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
+  const navigate = useNavigate();
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -1302,6 +1306,18 @@ export default function SessionsPage() {
 
   return (
     <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
+      {projectFilter && (
+        <div className="flex items-center gap-2 px-1 py-2 bg-midground/5 border border-midground/15 rounded text-xs font-mono">
+          <span className="text-midground/50 uppercase tracking-wider">Filtered by project:</span>
+          <span className="text-midground font-medium">{projectFilter}</span>
+          <a
+            className="ml-auto text-midground/50 hover:text-midground cursor-pointer"
+            onClick={() => navigate(`/projects?id=${projectFilter}`)}
+          >
+            ← View project
+          </a>
+        </div>
+      )}
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
       <input

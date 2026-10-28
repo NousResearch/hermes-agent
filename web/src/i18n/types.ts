@@ -98,6 +98,7 @@ export interface Translations {
       models: string;
       profiles: string;
       plugins: string;
+      projects: string;
       sessions: string;
       skills: string;
     };

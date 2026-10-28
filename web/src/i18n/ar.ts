@@ -77,6 +77,7 @@ export const ar = defineLocale({
       models: "النماذج",
       profiles: "الملفات الشخصية",
       plugins: "المكوِّنات الإضافية",
+      projects: "Projects",
       sessions: "الجلسات",
       skills: "المهارات",
     },

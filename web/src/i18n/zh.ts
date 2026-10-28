@@ -76,6 +76,7 @@ export const zh: Translations = {
       models: "模型",
       profiles: "多Agent配置",
       plugins: "插件管理",
+      projects: "Projects",
       sessions: "会话",
       skills: "技能",
     },

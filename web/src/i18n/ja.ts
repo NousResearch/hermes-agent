@@ -77,6 +77,7 @@ export const ja: Translations = {
       models: "モデル",
       profiles: "プロファイル : マルチエージェント",
       plugins: "プラグイン",
+      projects: "Projects",
       sessions: "セッション",
       skills: "スキル",
     },

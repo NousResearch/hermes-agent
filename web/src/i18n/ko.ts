@@ -77,6 +77,7 @@ export const ko: Translations = {
       models: "모델",
       profiles: "프로필: 멀티 에이전트",
       plugins: "플러그인",
+      projects: "Projects",
       sessions: "세션",
       skills: "스킬",
     },

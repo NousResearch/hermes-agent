@@ -33,7 +33,9 @@ import {
   catalogSources,
   catalogTags,
   filterCatalog,
-  relatedEntries, sortCatalog } from './catalog-query'
+  relatedEntries,
+  sortCatalog
+} from './catalog-query'
 import { $catalogCardView } from './store'
 import { useCatalogFilters } from './use-catalog-filters'
 
@@ -266,7 +268,11 @@ const detailRelated = (entries: CatalogEntry[], selected: CatalogEntry | undefin
  *  stay their own shelves, Community and multi-category picks keep their
  *  category shelves. One category is a drill-in, so it stays a flat grid. */
 const isDiscoverView = (facets: CatalogFacets, query: string, kind: CatalogKind) =>
-  (kind === 'plugins' || !facets.sources.length) && facets.categories.length !== 1 && !facets.tags.length && !query && !facets.installedOnly
+  (kind === 'plugins' || !facets.sources.length) &&
+  facets.categories.length !== 1 &&
+  !facets.tags.length &&
+  !query &&
+  !facets.installedOnly
 
 function CatalogLoadState({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
   const { t } = useI18n()
@@ -411,7 +417,12 @@ export const CatalogBrowser = memo(function CatalogBrowser({
       />
     )
 
-  const card = (entry: CatalogEntry, accentIndex: number, variant: CatalogCardVariant = 'default', placement?: React.CSSProperties) => (
+  const card = (
+    entry: CatalogEntry,
+    accentIndex: number,
+    variant: CatalogCardVariant = 'default',
+    placement?: React.CSSProperties
+  ) => (
     <CatalogCard
       accentIndex={accentIndex}
       action={entryAction(entry, variant === 'hero')}
@@ -497,9 +508,22 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}`}
                   >
                     {discover ? (
-                      <CatalogDiscovery actions={actions} byCategory={facets.categories.length > 1} card={card} entries={filtered} kind={kind} narrowed={facets.sources.length > 0 || facets.categories.length > 1} onCategory={filters.chooseCategory} />
+                      <CatalogDiscovery
+                        actions={actions}
+                        byCategory={facets.categories.length > 1}
+                        card={card}
+                        entries={filtered}
+                        kind={kind}
+                        narrowed={facets.sources.length > 0 || facets.categories.length > 1}
+                        onCategory={filters.chooseCategory}
+                      />
                     ) : (
-                      <CatalogFilteredCards card={card} entries={filtered.slice(0, limit)} more={filtered.length > limit} onMore={() => setLimit(value => value + PAGE_SIZE)} />
+                      <CatalogFilteredCards
+                        card={card}
+                        entries={filtered.slice(0, limit)}
+                        more={filtered.length > limit}
+                        onMore={() => setLimit(value => value + PAGE_SIZE)}
+                      />
                     )}
                   </div>
                 </div>
@@ -533,7 +557,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                         selected={entry.id === selected.id}
                       />
                     ))}
-                    {filtered.length > limit && <CatalogMoreButton onMore={() => setLimit(value => value + PAGE_SIZE)} />}
+                    {filtered.length > limit && (
+                      <CatalogMoreButton onMore={() => setLimit(value => value + PAGE_SIZE)} />
+                    )}
                   </ListColumn>
                   <DetailColumn footer={c.snapshotHint}>
                     <div className="sm:hidden">

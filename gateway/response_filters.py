@@ -31,10 +31,14 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
 # machinery kinds may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
-# Async-result cards a gateway producer may name on its own internal event (with a display_text),
-# the same rows the in-process TUI persisted. A closed set: never a client-chosen presentation.
+# Async-result cards the in-process TUI persisted: a producer's internal event naming one (with a
+# display_text) persists as that row kind instead of internal_notification.
 PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+# What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
+# receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
+# nameable; never a client-chosen presentation such as ``hidden``.
+PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
@@ -137,6 +141,13 @@ def display_metadata_for_event(event: Any) -> dict:
     from gateway.session_display import admission_display
     preview = admission_display(event).get("title_preview")
     return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
+
+
+def persisted_user_metadata_for_event(event: Any) -> dict:
+    """The user row's display metadata: ``display_metadata_for_event`` plus the canonical admission's
+    ``submission_id``, which lets a client match a send whose ack it never received to its stored row."""
+    from gateway.session_display import admission_submission
+    return {**display_metadata_for_event(event), **admission_submission(event)}
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:

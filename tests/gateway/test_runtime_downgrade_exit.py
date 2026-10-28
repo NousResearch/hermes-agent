@@ -4,12 +4,14 @@ Downgrading is unsupported (#106742, jquesnelle item 6). After a manual ``git ch
 release>`` under a running head gateway, the older client cannot attach to it, and older
 ``gateway run`` refuses because this process still holds the profile. Nothing on the older side
 can stop it, so it stops itself: only on a proven, confirmed move to pre-runtime code, never
-mid-update, and without asking for a restart.
+mid-update, and without asking for a restart — the stop is a plain stop, but it exits with the
+service-restart code so the supervisor relaunches and the settled tree on disk serves.
 """
 import asyncio
 import subprocess
 
 from gateway import runtime_downgrade_exit as rde
+from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 _SKEW = ("aaaaaaaaaa", "bbbbbbbbbb")
 
@@ -17,6 +19,9 @@ _SKEW = ("aaaaaaaaaa", "bbbbbbbbbb")
 class _Runner:
     def __init__(self):
         self._running, self.stopped, self.restart_kwargs = True, 0, None
+        self._exit_code: int | None = None
+
+    exit_code = property(lambda self: self._exit_code)
 
     async def stop(self, **kwargs):
         self.stopped += 1
@@ -38,7 +43,8 @@ def _watch(skews, *, update=False, predates=lambda: True):
 
 def test_a_confirmed_move_to_a_pre_runtime_tree_stops_without_a_restart(tmp_path):
     runner = _watch([_SKEW, _SKEW])
-    assert runner.stopped == 1 and runner.restart_kwargs == {}  # a plain stop: no exit-75 respawn of this code
+    assert runner.stopped == 1 and runner.restart_kwargs == {}  # a plain stop: the relaunch runs the tree on disk, not this process
+    assert runner.exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE  # the supervisor relaunches the settled tree; the launchd plist parks exit 0 (SuccessfulExit=false)
     assert "predates the gateway runtime" in runner._exit_reason
     # A single blip, a live update, or a move to code that still has the runtime keep it up.
     assert _watch([_SKEW, None, _SKEW, None]).stopped == 0
@@ -74,3 +80,14 @@ def test_the_tree_probe_reads_the_checkout_on_disk(tmp_path):
     git("checkout", "-q", "--detach", "old")
     assert rde.tree_predates_runtime(tmp_path) is True
     assert rde.tree_predates_runtime(tmp_path / "missing") is False  # nothing readable proves nothing
+
+
+def test_the_downgrade_exit_code_reaches_the_process_exit():
+    """The bootstrap's exit verdict raises the runner's code, so launchd (SuccessfulExit=false) sees 75."""
+    import pytest
+    from gateway.run_shutdown import _resolve_gateway_exit_verdict
+    runner = _watch([_SKEW, _SKEW])
+    runner.should_exit_with_failure, runner._restart_requested, runner._restart_via_service = False, False, False
+    with pytest.raises(SystemExit) as exc:
+        _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown=False)
+    assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE

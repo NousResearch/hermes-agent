@@ -102,16 +102,31 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
-      // A canonical session's MCP servers are frozen with its launch policy; the shared owner's
-      // pool is every chat's, so there is no per-session reload verb yet.
+      const a = (arg || '').trim().toLowerCase()
+
+      // The shared owner serves a session-scoped reload.mcp: it reconciles only this profile's
+      // servers and moves this session to a new policy generation when idle (session_ancillary.py).
+      // It has no persistent opt-out (`always`), so `always` confirms this once like `now`.
       if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload-mcp'))
+        const confirm = ['always', 'approve', 'now', 'once', 'yes'].includes(a)
+
+        return void ctx.gateway
+          .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid, ...(confirm ? { confirm: true } : {}) })
+          .then(
+            ctx.guarded<ReloadMcpResponse>(r =>
+              ctx.transcript.sys(
+                r.message ||
+                  (r.status === 'confirm_required'
+                    ? t('slashCmd.ops.reloadMcp.confirmRequired')
+                    : t('slashCmd.ops.reloadMcp.reloaded'))
+              )
+            )
+          )
+          .catch(ctx.guardedErr)
       }
 
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
-      const a = (arg || '').trim().toLowerCase()
-
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
@@ -169,21 +184,14 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'manage the agent browser [connect|disconnect|status|use]',
+    help: 'manage the agent browser [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
       const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
       const action = rawAction.toLowerCase()
 
-      if (!['connect', 'disconnect', 'status', 'use'].includes(action)) {
+      if (!['connect', 'disconnect', 'status'].includes(action)) {
         return ctx.transcript.sys(t('slashCmd.ops.browser.usage'))
-      }
-
-      // `/browser use [on|off]` — same arguments as the classic CLI.
-      const mode = action === 'use' ? (rest[0] ?? 'on').toLowerCase() : undefined
-
-      if (mode && mode !== 'on' && mode !== 'off') {
-        return ctx.transcript.sys(t('slashCmd.ops.browser.useUsage'))
       }
 
       const sid = ctx.sid ?? null
@@ -197,8 +205,7 @@ export const opsCommands: SlashCommand[] = [
         .rpc<BrowserManageResponse>('browser.manage', {
           action,
           session_id: sid,
-          ...(url && { url }),
-          ...(mode && { enabled: mode === 'on' })
+          ...(url && { url })
         })
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
@@ -208,22 +215,12 @@ export const opsCommands: SlashCommand[] = [
               r.messages?.forEach(message => ctx.transcript.sys(message))
             }
 
-            if (action === 'use') {
-              ctx.transcript.sys(
-                t(mode === 'on' ? 'slashCmd.ops.browser.useEnabled' : 'slashCmd.ops.browser.useDisabled')
-              )
-
-              return ctx.transcript.sys(t('slashCmd.ops.browser.newSessionsOnly'))
-            }
-
             if (action === 'status') {
-              ctx.transcript.sys(
+              return ctx.transcript.sys(
                 r.connected
                   ? t('slashCmd.ops.browser.connected', r.url || t('slashCmd.ops.browser.urlUnavailable'))
                   : t('slashCmd.ops.browser.notConnected')
               )
-
-              return r.browser_use ? ctx.transcript.sys(t('slashCmd.ops.browser.modeBrowserUse')) : undefined
             }
 
             if (action === 'disconnect') {
@@ -306,11 +303,20 @@ export const opsCommands: SlashCommand[] = [
       }
 
       const hash = first
-      const filePath = rest.join(' ').trim()
+      // Main's --all/--force: a whole-tree restore also reverts hand-edits. A flag, never a path.
+      const isAll = (arg: string) => ['--all', '--force'].includes(arg.toLowerCase())
+
+      const filePath = rest
+        .filter(arg => !isAll(arg))
+        .join(' ')
+        .trim()
+
+      const all = !filePath && rest.some(isAll)
 
       return ctx.gateway
         .rpc<RollbackRestoreResponse>('rollback.restore', {
           ...(filePath ? { file_path: filePath } : {}),
+          ...(all ? { all } : {}),
           hash,
           session_id: ctx.sid
         })
@@ -325,6 +331,20 @@ export const opsCommands: SlashCommand[] = [
             const target = filePath || t('slashCmd.ops.rollback.workspaceTarget')
             const detail = r.reason || r.message || r.restored_to || t('slashCmd.ops.rollback.restoredDetail')
             ctx.transcript.sys(t('slashCmd.ops.rollback.restored', target, detail))
+
+            // What a safe whole-tree restore left alone, as main's CLI lists it: the first five paths.
+            const summarize = (paths: string[]) =>
+              paths.slice(0, 5).join(', ') + (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
+
+            for (const [key, paths] of [
+              ['keptUserEdits', r.skipped_user_edits],
+              ['keptOversize', r.skipped_oversize],
+              ['failedDeletes', r.failed_deletes]
+            ] as const) {
+              if (paths?.length) {
+                ctx.transcript.sys(t(`slashCmd.ops.rollback.${key}`, summarize(paths)))
+              }
+            }
 
             if ((r.history_removed ?? 0) > 0) {
               ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
@@ -784,9 +804,13 @@ export const opsCommands: SlashCommand[] = [
       if (ctx.sid && ctx.gateway.gw?.isCanonical) {
         // The shared gateway freezes a session's toolsets at launch (the classic CLI refuses the
         // same change): say so instead of answering enable/disable with the unchanged list.
-        return subcommand === 'disable' || subcommand === 'enable'
-          ? ctx.transcript.sys(t('canonical.controls.notAvailable', `tools ${subcommand}`))
-          : canonicalTools(ctx)
+        if (subcommand === 'disable' || subcommand === 'enable') {
+          return ctx.transcript.sys(t('canonical.controls.notAvailable', `tools ${subcommand}`))
+        }
+
+        ctx.ran?.()
+
+        return canonicalTools(ctx)
       }
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {

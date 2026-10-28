@@ -338,8 +338,6 @@ _TERMINAL_BACKENDS: list[dict[str, str]] = [
         ("local", "Local", "Run commands directly on this machine. No isolation."),
         ("docker", "Docker / Podman",
          "Run commands in an isolated Docker or Podman container with a persistent workspace."),
-        ("singularity", "Singularity / Apptainer",
-         "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),
         ("daytona", "Daytona", "Run commands in a Daytona cloud sandbox."),
         ("ssh", "SSH", "Run commands on a remote host over SSH."))]
@@ -467,8 +465,13 @@ def _hub_action_name(verb: str, key: str) -> str:
 
 def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """identifier -> installed lock entry for hub-installed skills (UI marks installed search
-    results). Scoped to ``profile``'s skills/.hub/lock.json when given — HubLockFile takes an
-    explicit path, sidestepping the import-time LOCK_FILE binding. {} when unreadable."""
+    results and catalog cards). Scoped to ``profile``'s skills/.hub/lock.json when given —
+    HubLockFile takes an explicit path, sidestepping the import-time LOCK_FILE binding. {} when
+    unreadable.
+
+    Keyed by ``HubLockFile.by_identifier``, so a ClawHub install also answers to the
+    ``clawhub/<slug>`` id a catalog card installs. Search lists a ClawHub skill by its bare
+    slug; a client looks such a hit up under that card id, going by the hit's source."""
     try:
         from tools.skills_hub import HubLockFile
         if _is_current_profile(profile):
@@ -477,8 +480,8 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
             profile_dir = _resolve_profile_dir(profile.strip())
             lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
         keys = ("name", "trust_level", "scan_verdict")
-        return {entry["identifier"]: {k: entry.get(k) for k in keys}
-                for entry in lock.list_installed() if entry.get("identifier")}
+        return {identifier: {k: entry.get(k) for k in keys}
+                for identifier, entry in lock.by_identifier().items()}
     except HTTPException:
         raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:

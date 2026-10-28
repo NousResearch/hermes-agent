@@ -5,7 +5,6 @@ footer is unreadable from the sandbox (#72389, #81984, #77015)."""
 import os
 import re
 
-from tools import browser_tool_snapshot
 from tools import delegate_tool_results
 from tools import web_tools_truncate
 
@@ -22,10 +21,9 @@ def test_truncation_footers_render_the_sandbox_visible_cache_path(tmp_path, monk
     body = "\n".join(f"row {i}" for i in range(5000))
 
     web_out, _ = web_tools_truncate._truncate_with_footer(body, "https://example.com/doc", 3000)
-    snap_out = browser_tool_snapshot._truncate_snapshot(body, 3000)
     deleg_out, _ = delegate_tool_results._trim_summary_with_footer(body, 3000, 0)
 
-    for text, subdir in ((web_out, "cache/web"), (snap_out, "cache/web"), (deleg_out, "cache/delegation")):
+    for text, subdir in ((web_out, "cache/web"), (deleg_out, "cache/delegation")):
         path = _footer_path(text)
         assert path.startswith(f"/root/.hermes/{subdir}/"), path
         # The bytes still live on the host under HERMES_HOME; only the rendered path is translated.

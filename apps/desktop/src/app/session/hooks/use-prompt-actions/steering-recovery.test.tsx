@@ -541,3 +541,20 @@ it.each(rebuiltRuntimeCases)(
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   }
 )
+
+it.each(['interrupt', 'steer'] as const)(
+  'a %s correction the owner consumed as a voice stop settles with no user bubble (TUI-26)',
+  async mode => {
+    seed()
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({ voice_stopped: true })
+    await act(async () => {
+      expect(await handle.actions.redirectPrompt('stop', mode)).toBe(true)
+    })
+
+    const rows = [...handle.cache.sessionStateByRuntimeIdRef.current.values()]
+      .flatMap(state => state.messages)
+      .filter(message => message.role === 'user')
+
+    expect(rows).toHaveLength(0)
+  }
+)

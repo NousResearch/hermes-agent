@@ -1,15 +1,19 @@
 """Managed-files policy for the dashboard file browser: root resolution, path containment, entry metadata.
 """
 
+import logging
 import mimetypes
 import os
+import re
 import stat
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
+logger = logging.getLogger(__name__)
 
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
@@ -32,6 +36,44 @@ def _resolve_fs_candidate(raw: str, *, cwd: str | None = None) -> Path:
     return candidate.resolve(strict=False)
 
 
+def _decoded_candidate(raw: str, *, cwd: str | None = None) -> Path | None:
+    """``raw`` percent-decoded once and resolved, or None when decoding adds a dot-segment.
+
+    The decode rescues a name that arrived encoded twice (issue #103425). A ``.`` or ``..`` it
+    produces (``..%2f``, ``%2e%2e/``) would move the lookup out of the folder the caller named."""
+    decoded = urllib.parse.unquote(raw)
+    separators = r"[\\/]" if os.name == "nt" else "/"
+
+    def dot_segments(path: str) -> int:
+        return sum(segment in (".", "..") for segment in re.split(separators, path))
+
+    if dot_segments(decoded) > dot_segments(raw):
+        return None
+    return _resolve_fs_candidate(decoded, cwd=cwd)
+
+
+def _file_url_path(url: str) -> str:
+    """The native path a ``file:`` URL names, percent-decoded once.
+
+    A URL that encodes a separator is refused (ValueError) as ``apps/shared/src/file-url.ts``
+    refuses it in the renderer and Electron: ``%2f``, and ``%5c`` on a Windows gateway or in a
+    Windows URL (a UNC host or a drive letter). Decoding it would add a segment, so ``..%2f`` would
+    name a file outside the folder the URL spells.
+    """
+    parsed = urllib.parse.urlparse(url)
+    uri_path = parsed.path
+    host = "" if parsed.netloc.lower() == "localhost" else parsed.netloc
+    drive = re.match(r"/[a-z]:", urllib.parse.unquote(uri_path), re.IGNORECASE)
+    windows = os.name == "nt" or bool(host) or drive is not None
+    if re.search(r"%2f", uri_path, re.IGNORECASE) or (windows and re.search(r"%5c", uri_path, re.IGNORECASE)):
+        raise ValueError("file: URL encodes a path separator")
+    if host:
+        if os.name != "nt":
+            raise ValueError("file: URL names another host")
+        uri_path = f"//{host}{uri_path}"
+    return urllib.request.url2pathname(uri_path)
+
+
 def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = True) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
@@ -39,14 +81,9 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
     if "\0" in raw:
         raise HTTPException(status_code=400, detail="Invalid path")
     try:
-        if raw.lower().startswith("file:"):
-            parsed = urllib.parse.urlparse(raw)
-            uri_path = parsed.path
-            if parsed.netloc and parsed.netloc.lower() != "localhost":
-                if os.name != "nt":
-                    raise ValueError
-                uri_path = f"//{parsed.netloc}{uri_path}"
-            raw = urllib.request.url2pathname(uri_path)
+        from_url = raw.lower().startswith("file:")
+        if from_url:
+            raw = _file_url_path(raw)
         elif os.name == "nt":
             # MEDIA links can reuse Git Bash paths; native Path would read /c/ as C:\c\.
             from tools.environments.local import _msys_to_windows_path
@@ -57,14 +94,247 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
         # decoding, so a non-ASCII name can arrive as a literal "%E5%8D%8A..."
         # string that stats as missing (issue #103425). The verbatim path wins
         # whenever it exists, so filenames that genuinely contain "%XX" keep
-        # resolving as-is; the unquoted form only rescues the lookup.
-        if decode_fallback and "%" in raw and not candidate.exists():
-            decoded = _resolve_fs_candidate(urllib.parse.unquote(raw), cwd=cwd)
-            if decoded.exists():
+        # resolving as-is; the unquoted form only rescues the lookup. A file: URL
+        # was decoded once above, and a second decode would read ..%252f as ../.
+        if decode_fallback and not from_url and "%" in raw and not candidate.exists():
+            decoded = _decoded_candidate(raw, cwd=cwd)
+            if decoded is not None and decoded.exists():
                 candidate = decoded
         return candidate
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
+
+
+_WORKSPACE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _session_workspace(session_id: str, cwd: str | None) -> tuple[str, str]:
+    """``(digest, host cwd)`` of this session's per-workspace Docker sandbox, or ``("", "")``.
+
+    The live override is the key the container was created under, and its cwd is the
+    workspace the turn mounted. After that binding is gone, the session row's host cwd
+    hashes to the same digest. ``/workspace`` and ``/root`` are container paths, not host
+    workspaces. Call it in the session's profile scope, where the turn registered the key.
+    """
+    from tools.terminal_tool import resolve_task_overrides, workspace_key_for
+
+    overrides = resolve_task_overrides(session_id)
+    key = overrides.get("workspace_key")
+    if isinstance(key, str) and _WORKSPACE_KEY_RE.fullmatch(key):
+        bound = overrides.get("cwd")
+        return key, bound if isinstance(bound, str) else ""
+    host = (cwd or "").strip()
+    if not host or "\0" in host or _is_container_cwd(host):
+        return "", ""
+    expanded = os.path.expanduser(host)
+    if not os.path.isdir(expanded):
+        return "", ""
+    return workspace_key_for(expanded), expanded
+
+
+def _is_container_cwd(host: str) -> bool:
+    return any(host == root or host.startswith(root + "/") for root in ("/workspace", "/root"))
+
+
+def _translate_agent_path(
+    candidate: Path, workspace_key: str = "", own_sandbox_only: bool = False, workspace_cwd: str = "",
+) -> Path | None:
+    """One translation attempt under whatever scope is bound; None off the docker backend.
+
+    The gate keeps a local-backend gateway with leftover ``docker_volumes`` from serving
+    mount sources in place of real host files. Quiet: fs callers also see ordinary host
+    paths, which are not MEDIA misses worth a warning. ``own_sandbox_only`` (a session's
+    Save) refuses with 409 a file the translator found only in a fallback sandbox."""
+    from gateway.platforms.base import _docker_env_active, _translate_docker_container_media_path
+    from tools.terminal_tool import _ensure_terminal_env_bridged
+
+    _ensure_terminal_env_bridged()
+    if not _docker_env_active():
+        return None
+    translated = _translate_docker_container_media_path(
+        candidate, quiet=True, workspace_key=workspace_key, workspace_cwd=workspace_cwd,
+    )
+    if own_sandbox_only and translated is not None and (
+        _in_fallback_sandbox(translated, workspace_key) or _in_shared_cwd_mount_guess(translated, workspace_key)
+    ):
+        raise HTTPException(status_code=409, detail=SANDBOX_COPY_MISSING)
+    return translated
+
+
+SANDBOX_COPY_MISSING = "File is no longer in this session's workspace"
+
+
+def _in_fallback_sandbox(target: Path, workspace_key: str) -> bool:
+    """Whether *target* is in a Docker sandbox other than the session's own, the first in the
+    translator's order (then the profile's shared ones). The session's own is that first name
+    whether or not its directory exists: reads fall through to the shared copies when the session's
+    file or its whole sandbox is gone, and a Save that did would change another sandbox's file."""
+    from gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
+    from tools.environments.base import get_sandbox_dir
+
+    base = get_sandbox_dir() / "docker"
+    names = _docker_sandbox_dir_candidates("", workspace_key)
+    fallbacks = [(base / name).resolve(strict=False) for name in names[1:]]
+    return any(_path_is_under(sandbox, target) for sandbox in fallbacks)
+
+
+def _in_shared_cwd_mount_guess(target: Path, workspace_key: str) -> bool:
+    """Whether *target* is in the cwd a shared container's ``/workspace`` is only assumed to mount:
+    that container mounts its first session's cwd, which nothing records, so a Save there could
+    change a file the agent never sees."""
+    from gateway.platforms.docker_media_paths import _shared_cwd_mount_guess
+
+    return any(_path_is_under(root, target) for root in _shared_cwd_mount_guess(workspace_key))
+
+
+@contextmanager
+def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
+    """Bind the profile whose sandbox a container path names: its home and its terminal policy.
+
+    A requested ``profile_home`` other than the current home binds that home and its complete
+    terminal policy, as MEDIA delivery does (#109024). A home already bound by the caller (a
+    native profile ticket's override) gets its own terminal policy when no scope is bound, so
+    translation never reads the launch profile's ambient ``TERMINAL_DOCKER_VOLUMES``. An
+    override naming the launch home keeps the ambient env, which may carry env-only policy.
+    Translation and the unmapped-path classification both run inside this scope, so they
+    agree about the backend.
+    """
+    from hermes_cli.config import get_hermes_home
+    from hermes_constants import (
+        get_hermes_home_override, get_process_hermes_home, reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.terminal_scope import get_terminal_scope, install_profile_terminal_scope, reset_terminal_scope
+
+    home_token = scope_token = None
+    if profile_home is not None and Path(profile_home).resolve() != get_hermes_home().resolve():
+        home_token = set_hermes_home_override(str(profile_home))
+    try:
+        foreign_override = (get_hermes_home_override() is not None
+                            and get_hermes_home().resolve() != get_process_hermes_home().resolve())
+        if home_token is not None or (foreign_override and get_terminal_scope() is None):
+            scope_token = install_profile_terminal_scope(get_hermes_home())
+        yield
+    finally:
+        if scope_token is not None:
+            reset_terminal_scope(scope_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+
+def _agent_container_path(
+    raw: str, *, profile_home: Path | None = None, workspace_key: str = "", own_sandbox_only: bool = False,
+    workspace_cwd: str = "",
+) -> Path | None:
+    """Map an agent-visible container path to its host bind mount, or None.
+
+    Docker agents emit container paths (``/workspace/...``, ``/root/...``) in
+    transcripts and MEDIA tags, while the dashboard fs routes stat the gateway
+    HOST filesystem (#85238). Reuse the gateway's MEDIA volume translator inside
+    ``_agent_path_scope(profile_home)``. When no terminal scope is bound even
+    then (``serve --isolated`` after a failed early bridge), retry once under the
+    current profile's complete terminal policy, never replacing an already-bound
+    scope or refusal (retry from #104992).
+
+    Runs on the raw string, before host normalization: on a Windows gateway
+    ``Path("/workspace/x").resolve()`` anchors to the current drive and the
+    container path is gone before translation sees it. ``..`` segments are never
+    translated, so the managed routes keep refusing them.
+    """
+    if not raw.startswith("/") or raw.startswith("//") or ".." in raw.split("/"):
+        return None
+    try:
+        from hermes_cli.config import get_hermes_home
+        from tools.terminal_scope import (
+            build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope, set_terminal_scope,
+        )
+
+        candidate = Path(raw)
+        with _agent_path_scope(profile_home):
+            translated = _translate_agent_path(candidate, workspace_key, own_sandbox_only, workspace_cwd)
+            if translated is not None or get_terminal_scope() is not None:
+                return translated
+            token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
+            try:
+                return _translate_agent_path(candidate, workspace_key, own_sandbox_only, workspace_cwd)
+            finally:
+                reset_terminal_scope(token)
+    except HTTPException:
+        raise  # a Save refused in a fallback sandbox
+    except Exception:  # fail open: translation is additive, the host path still serves
+        logger.debug("agent container path translation failed for %s", raw, exc_info=True)
+        return None
+
+
+SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live inside the agent sandbox"
+
+
+def _agent_fs_path(
+    raw_path: str, *, cwd: str | None = None, profile_home: Path | None = None,
+    workspace_key: str = "", decode_fallback: bool = True, own_sandbox_only: bool = False,
+    workspace_cwd: str = "",
+) -> Path:
+    """``_fs_path`` for agent-facing reads; container paths resolve to their host
+    mount, so callers' boundary guards see the real host target. A session's Save passes
+    ``own_sandbox_only``: a container path stays in the session's own sandbox (else 409).
+    ``workspace_cwd`` is the host cwd ``workspace_key`` hashes, the session's cwd mount.
+
+    POSIX: a readable host path wins, and translation only runs when the host
+    lookup misses, so a root-run gateway can still browse its own ``/root``.
+    Windows: a container-shaped path never names a host file (it would anchor to
+    the current drive), so a translation miss is a 404 rather than a drive lookup.
+    """
+    raw = str(raw_path or "").strip()
+    if os.name != "nt":
+        host = _fs_path(raw_path, cwd=cwd, decode_fallback=decode_fallback)
+        if os.access(host, os.R_OK):
+            return host
+        translated = _agent_container_path(
+            _file_url_container_text(raw), profile_home=profile_home, workspace_key=workspace_key,
+            own_sandbox_only=own_sandbox_only, workspace_cwd=workspace_cwd,
+        )
+        return translated if translated is not None else host
+    translated = _agent_container_path(
+        raw, profile_home=profile_home, workspace_key=workspace_key, own_sandbox_only=own_sandbox_only,
+        workspace_cwd=workspace_cwd,
+    )
+    if translated is not None:
+        return translated
+    if _is_unmapped_container_path(raw, profile_home=profile_home):
+        raise HTTPException(status_code=404, detail=SANDBOX_NOT_FOUND)
+    return _fs_path(raw_path, cwd=cwd, decode_fallback=decode_fallback)
+
+
+def _file_url_container_text(raw: str) -> str:
+    """The path a POSIX gateway's ``file:`` URL names (``file:///workspace/x`` -> ``/workspace/x``),
+    so a container path spelled as a URL translates like the bare path. Any other text, and every
+    URL on a Windows gateway, is returned unchanged; ``_fs_path`` already refused a bad URL."""
+    if os.name == "nt" or not raw.lower().startswith("file:"):
+        return raw
+    try:
+        return _file_url_path(raw)
+    except ValueError:
+        return raw
+
+
+def _is_unmapped_container_path(raw: str, *, profile_home: Path | None = None) -> bool:
+    """A docker-backend container path (``/workspace``, ``/root`` or a configured
+    volume target) rather than a host path or a typo elsewhere on the host. Reads
+    the backend and volumes in the same profile scope translation used."""
+    if not raw.startswith("/") or raw.startswith("//"):
+        return False
+    try:
+        from gateway.platforms.base import _docker_env_active, _parse_docker_volume_mounts
+        from tools.environments.local import _msys_to_windows_path
+
+        with _agent_path_scope(profile_home):
+            if not _docker_env_active() or _msys_to_windows_path(raw) != raw:
+                return False
+            roots = {"/workspace", "/root", *(c.as_posix() for _, c in _parse_docker_volume_mounts())}
+    except Exception:  # a refusal scope or import failure: just skip the hint
+        logger.debug("container path classification failed for %s", raw, exc_info=True)
+        return False
+    return any(raw == r or raw.startswith(r.rstrip("/") + "/") for r in roots)
 
 
 def _canonical_path(path: Path, *, require_exists: bool = False) -> Path:
@@ -159,11 +429,21 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
 
 
 def _resolve_managed_path(
-    raw_path: str | None, request: Request, *, for_write: bool = False
+    raw_path: str | None, request: Request, *, for_write: bool = False, create_root: bool = True,
+    for_agent_read: bool = False,
 ) -> tuple[ManagedFilesPolicy, Path, str]:
-    policy = _managed_files_policy(request)
+    policy = _managed_files_policy(request, create_root=create_root)
     text = _path_text(raw_path)
     root = policy.locked_root
+
+    if for_agent_read and text and not text.startswith("file:") and (
+            os.name == "nt" or not os.access(text, os.R_OK)):
+        # Agent-emitted container paths (/workspace/...) resolve to their host
+        # bind mount before the root checks, so the locked-root refusal below
+        # still governs the translated target (#85238). A readable host path wins.
+        translated = _agent_container_path(text)
+        if translated is not None:
+            text = str(translated)
 
     if root is not None and (not text or text in {".", "/"}):
         candidate = root

@@ -729,36 +729,36 @@ def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
 
 
 def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
-    """agent-browser on win32-arm64 ships the x64 PE (emulated). The guard
+    """chromium on win32-arm64 ships the x64 PE (emulated). The guard
     must not reject it when the package declares the target emulated."""
     from scripts.bundles import native as cli
     from pm.lock import Facts, Lockfile
     from pm.registry import get_package
 
     store = tmp_path / "store"
-    entry = store / "agent-browser-0.35.1"
-    bin_dir = entry / "bin"
+    entry = store / "chromium-1234"
+    bin_dir = entry / "chrome-win64"
     bin_dir.mkdir(parents=True)
     # A real x64 PE header (MZ + PE sig + machine 0x8664).
     x64_pe = (
         b"MZ" + b"\0" * 58 + (0x80).to_bytes(4, "little") + b"\0" * 64
         + b"PE\0\0" + (0x8664).to_bytes(2, "little") + b"\0" * 54
     )
-    binary = bin_dir / "agent-browser-win32-x64.exe"
+    binary = bin_dir / "chrome.exe"
     binary.write_bytes(x64_pe)
     from pm.package import machine_matches_binary
 
     assert machine_matches_binary(binary, "win32-arm64") is False
 
     lock = Lockfile(tmp_path / "lock.json")
-    lock.set_pin("agent-browser", "0.35.1", {"any": {"url": "x", "sha256": "0" * 64}})
+    lock.set_pin("chromium", "1234+145.0.0.0", {"any": {"url": "x", "sha256": "0" * 64}})
     lock.save()
     monkeypatch.setattr("scripts.bundles.native._lockfile", lambda: lock)
     monkeypatch.setattr("scripts.bundles.native.current_target", lambda: "win32-arm64")
     monkeypatch.setattr("scripts.bundles.native.get_package", lambda name: get_package(name))
 
     facts = Facts(store / "facts.json")
-    facts.record("agent-browser", "0.35.1", entry.name, {}, store)
+    facts.record("chromium", "1234+145.0.0.0", entry.name, {}, store)
 
     problems = cli._arch_guard(store)
     assert problems == []

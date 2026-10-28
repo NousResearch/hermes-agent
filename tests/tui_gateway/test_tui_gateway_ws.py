@@ -180,7 +180,7 @@ def _slow_dispatch_harness(monkeypatch):
     def fake_dispatch(req, transport):
         method = req.get("method")
         log.append(f"dispatch:{method}")
-        if method == "slow":
+        if method in {"slow", "session.context_breakdown"}:
             release.wait(5)
         log.append(f"done:{method}")
         return {"jsonrpc": "2.0", "id": req.get("id"), "result": {"method": method}}
@@ -249,6 +249,28 @@ def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
     asyncio.run(scenario())
     assert log.index("done:slow") < log.index("dispatch:fast")
     assert ids().index("r1") < ids().index("r2")
+
+
+def test_ws_context_breakdown_does_not_block_a_later_control_read(monkeypatch):
+    """Regression for #140667: the expensive read-only context meter may finish after controls."""
+    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
+    ids = lambda: [frame.get("id") for frame in sent if "id" in frame]
+
+    async def scenario():
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        try:
+            inbound.put_nowait(_rpc("context", "session.context_breakdown"))
+            inbound.put_nowait(_rpc("control", "session.control.read"))
+            assert await _wait_for(lambda: "control" in ids())
+            assert "context" not in ids()
+        finally:
+            release.set()
+        assert await _wait_for(lambda: "context" in ids())
+        inbound.put_nowait(None)
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    assert log.index("done:session.context_breakdown") > log.index("done:session.control.read")
 
 
 def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
@@ -414,6 +436,9 @@ def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
     class FakeConnection:
         def __init__(self, authority, transport, identity, operator=False):
             self.actor = type("Actor", (), {"capabilities": frozenset(capabilities), "profile_id": profile_id})()
+
+        def awaits_profile_start(self, req, held):
+            return None  # no profile is starting
 
         async def dispatch(self, req):
             return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": "unknown method"}}

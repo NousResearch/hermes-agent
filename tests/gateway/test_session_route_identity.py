@@ -32,6 +32,23 @@ def test_resolved_route_identity_and_url():
     assert resolved_route({'provider': ''}, CONFIG) == ('auto', '')
 
 
+def test_configured_entry_key_is_the_key_or_a_legacy_entrys_display_name():
+    """A keyed ``providers:`` entry is named by its key, never its display name. A legacy
+    ``custom_providers:`` entry has no key, so its normalized display name is its identity, the
+    same rule as Desktop's ``customDefaultSupersedesPick``."""
+    from gateway.session_route_identity import configured_entry_key, profile_route_identity
+
+    def held_key(entries, provider):
+        config = {**entries, 'model': {'provider': provider}}
+        return configured_entry_key(profile_route_identity(config), config)
+    keyed = {'providers': {'work': {'name': 'OpenRouter', 'base_url': A}}}
+    legacy = {'custom_providers': [{'name': 'OpenRouter', 'base_url': A}]}
+    assert held_key(keyed, 'custom:work') == 'work'
+    assert held_key(keyed, 'custom:openrouter') == 'work'
+    assert held_key(legacy, 'custom:openrouter') == 'openrouter'
+    assert held_key({}, 'openrouter') == ''
+
+
 def test_route_bound_keys_cover_route_wire_window_and_credentials():
     assert isinstance(ROUTE_BOUND_KEYS, tuple)
     for key in ('provider', 'base_url', 'api_mode', 'context_length',

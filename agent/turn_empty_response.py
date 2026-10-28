@@ -189,10 +189,12 @@ def recover_empty_response(
         agent._empty_content_retries = 0
         # Do NOT modify the assistant message content (injected text poisoned history).
         final_response = agent._strip_think_blocks(fallback).strip()
-        agent._response_was_previewed = True
         # The final IS the response streamed before the housekeeping tool: name that identity
         # so a client settles the text it already shows instead of painting it a second time.
-        agent._reused_response_text = final_response
+        # A held turn never showed it: its rewrite goes out as a new final.
+        if getattr(agent, "_hold_stream", False) is not True:
+            agent._response_was_previewed = True
+            agent._reused_response_text = final_response
         return _verdict("break")
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.

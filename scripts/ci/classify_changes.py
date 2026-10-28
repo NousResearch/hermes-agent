@@ -262,6 +262,7 @@ _UPDATE_PIPELINE = (
     "hermes_cli/_launchers.py",
     "hermes_cli/release_channels.py",
     "hermes_cli/gitlock.py",  # git self-heal + partial-clone fetch
+    "hermes_cli/git_commit_graph.py",  # every update starts the install checkout's graph refresh
     "hermes_cli/process_identity.py",  # marker owner liveness
     "hermes_cli/runtime_state.py",
     "hermes_cli/relaunch.py",
@@ -278,8 +279,10 @@ _UPDATE_PIPELINE = (
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
+    "hermes_dir_acl.py",  # update restores the Windows user ACL on the home after elevation
     "gateway/status.py",  # code_sha stamp the fleet verify reads
     "gateway/status_inline_source.py",  # the Windows pause identifies inline-bootstrapped gateways
+    "gateway/status_lock_dir.py",  # gateway/status.py imports it at module level
     "gateway/control_socket.py",  # pause-for-update verb
     "gateway/code_skew.py",
     "gateway/host_rendezvous.py",
@@ -329,8 +332,11 @@ _UPDATE_DEPENDENCIES = (
     "pm/plugins_state.py",
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
     "hermes_cli/desktop_build_lock.py",
+    "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
+    "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
     "hermes_cli/bundled_app.py",
@@ -342,6 +348,9 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/backup.py",  # pre-update backup
     "hermes_cli/backup_cron_prompts.py",  # restore_cron_prompt_fields_if_degraded (update_cmd_config)
     "hermes_cli/backup_restore.py",
+    "hermes_cli/config_backend.py",  # update_channel writes the channel key through the seam
+    "hermes_cli/env_loader.py",  # update_proxy_env keeps proxy keys a .env load wrote
+    "agent/proxy_bypass.py",  # update_proxy_env reads NO_PROXY entries with it
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
     "hermes_cli/model_catalog.py",
@@ -371,6 +380,9 @@ _UPDATE_DEPENDENCIES = (
     # The compilers source_build / the Desktop build run (freshness, node-deps,
     # tui, web, desktop and their shared frontend-common).
     "scripts/build/",
+    "apps/desktop/scripts/build-webapp.mjs",  # source_build's Webapp renderer build
+    "hermes_cli/webapp.py",  # source_build rebuilds the Webapp bundle a home serves
+    "gateway/webapp_listener.py",  # source_build reads which homes serve the Webapp
 )
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
@@ -423,6 +435,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/old_updater",
         # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
         "hermes_state_holders.py",
+        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
+        "hermes_state_fts.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",
@@ -448,6 +462,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # fleet-condensed-default.spec.ts: the profile rail's doors per gateway.
         "apps/desktop/src/app/chat/sidebar/profile-switcher",
         "apps/desktop/src/app/chat/sidebar/fleet-",
+        # reconnect-turn-state.spec.ts: the lost-turn card and Discard live in the queue panel.
+        "apps/desktop/src/app/chat/composer/queue-",
     ),
     "e2e_desktop_update": (
         *_DESKTOP_E2E_SHARED,
@@ -511,7 +527,11 @@ _E2E_LANE_EXCLUDES = {
     "e2e": ("tests/e2e/core/upgrade/", "tests/e2e/core/windows_update/"),
     "e2e_desktop_core": ("apps/desktop/e2e/update/",),
 }
-_DOCKER_PATHS = (*_DOCKER_META, *_DEP_MANIFESTS, *_NPM_MANIFESTS, "pm/", "tests/docker/")
+# The image builds the Webapp (webapp_build stage), so its manifests and build
+# recipe route here; Desktop sources stay out, as web/ and ui-tui/ do.
+_DOCKER_PATHS = (*_DOCKER_META, *_DEP_MANIFESTS, *_NPM_MANIFESTS, "pm/", "tests/docker/",
+                 "apps/desktop/package.json", "apps/desktop/scripts/build-webapp.mjs",
+                 "apps/shared/package.json", "scripts/build/")
 _NIX_LANE_PATHS = (*_NIX_PATHS, *_NIX_FILES, *_DEP_MANIFESTS, *_NPM_MANIFESTS)
 
 # A pull request with this label runs every slow lane, whatever it touches.

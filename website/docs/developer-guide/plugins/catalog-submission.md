@@ -106,7 +106,10 @@ the gallery. There is no separate listing to maintain.
 8. **Desktop plugins stay inside the SDK surface.** A `desktop/plugin.js` runs
    in the Desktop renderer with the app's full authority (the loader isolates
    errors, not capabilities), so a listed one may only use the plugin SDK:
-   no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
+   no prototype patching of renderer or browser objects (`Storage.prototype.y =`,
+   `Object.defineProperty(...prototype`), which reviewers check by hand (the
+   lint does not); a bundled library setting fields on classes it declares
+   itself (three.js and the like) is fine,
    no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
    / `react` (app bundle chunks, blob or http URLs included), no script-tag
    injection, no reaching into the app's internal stores or its own markup
@@ -145,8 +148,12 @@ the gallery. There is no separate listing to maintain.
    which honours the active profile (a bare `os.environ` read can pick up another
    profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
    today) is used only through `credentialed_provider_request` with
-   `requires_auth`, so Hermes attaches the token and the plugin never holds it. A
-   plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
+   `requires_auth`, so Hermes attaches the token and the plugin never holds it. An
+   OAuth client for a third-party API (the user's own Google Cloud client, for
+   example) is declared under `oauth:` in `plugin.yaml`, signed in with
+   `hermes auth add <plugin>:<id>` and used through the same helper; Hermes
+   stores and refreshes that token too. Its `authorize_url`, `token_url` and
+   `hosts` are `https` only, and its `hosts` belong to the API the scopes are for. A plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
    vendor CLI's token file, a browser profile, a keychain) or any other
    credential store directly, and never refreshes, rotates or writes OAuth tokens
    or presents itself as another vendor's client. If Hermes has no route for a
@@ -165,9 +172,16 @@ the gallery. There is no separate listing to maintain.
    reporting are opt-in. Reviewers summarise these as disclosure lines on the
    entry PR; undisclosed behaviour found in review is a request for changes.
 14. **Compatibility metadata is truthful.** `requires_hermes` is a SemVer floor
-   (`">=0.21.5"`), never a CalVer date, and never newer than the current release
-   (the loader skips the plugin otherwise). `version` matches the pinned code,
-   and Python dependencies resolve under Hermes's core constraints
+   (`">=0.21.5"`), never a CalVer date, and never newer than the current release.
+   The entry's `requires_hermes` is enforced: an install by catalog name refuses
+   on a Hermes it rejects, and `hermes plugins update` keeps an installed plugin
+   at its current pin until Hermes is updated. Declare the same floor in
+   `plugin.yaml` as well, because older Hermes versions enforce only that one
+   (the loader skips the plugin when it does not match). A portable package
+   (`plugin.json`) has no `requires_hermes` field, so the catalog entry's
+   `requires_hermes` is its only floor: set one when the package needs a recent
+   Hermes (a server declaration key an older release ignores). `version` matches the
+   pinned code, and Python dependencies resolve under Hermes's core constraints
    (`hermes plugins validate --install-deps` is what CI runs).
 15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a
    PR against `hermes-agent`, not a competing listing, and vendor-lookalike skins
@@ -198,6 +212,17 @@ the gallery. There is no separate listing to maintain.
    <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
    only from the upstream tool's official source, pinned by checksum, and
    disclosed (rule 13) — never bundled and never from an unofficial mirror.
+18. **Password managers come from their vendor.** A plugin that registers a
+   `browser_vault` login backend (`ctx.register_login_backend`) is listed only at
+   `tier: verified`, submitted from the password-manager vendor's own repository
+   by that vendor, or at `tier: official` when Nous maintains it. Community-tier,
+   fork and third-party listings of a login backend are declined. Hermes enforces
+   the same rule when the plugin loads: a login backend is accepted only from a
+   plugin bundled with Hermes or installed from this catalog at `verified` or
+   `official` tier and at the reviewed pin, as recorded in Hermes's own install
+   record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
+   `--allow-removed`, project and pip installs are refused, and no setting
+   relaxes it.
 <!-- admission-rules:end -->
 
 ## Updating your entry

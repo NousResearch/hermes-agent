@@ -39,6 +39,10 @@ from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
+# The knob's default is single-sourced in config_defaults (pure data, safe
+# direction to import) so config.yaml, env plumbing, and the environment agree.
+from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT
+
 logger = logging.getLogger(__name__)
 
 # Docker Desktop install paths checked when 'docker' is not in PATH
@@ -343,7 +347,29 @@ _BASE_SECURITY_ARGS = [
 # use and every further `docker exec` (browser command, cua-driver, thumbnail, CDP forward) died with
 # runc's "procReady not received". 2048 leaves room for a working browser and is still three orders of
 # magnitude under the host's pid_max.
-_DEFAULT_PIDS_LIMIT = "2048"
+_DEFAULT_PIDS_LIMIT = DEFAULT_DOCKER_PIDS_LIMIT
+
+
+def _extra_args_set_pids_limit(extra_args: list) -> bool:
+    """Return whether docker_extra_args already supplies ``--pids-limit``."""
+    return any(
+        isinstance(a, str) and (a == "--pids-limit" or a.startswith("--pids-limit="))
+        for a in (extra_args or []))
+
+
+def _resolve_pids_limit(pids_limit) -> Optional[str]:
+    """Normalise a configured PID ceiling, or return None to omit the flag."""
+    raw = str(pids_limit if pids_limit is not None else _DEFAULT_PIDS_LIMIT).strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid terminal.docker_pids_limit %r — falling back to %s",
+            raw, _DEFAULT_PIDS_LIMIT)
+        return _DEFAULT_PIDS_LIMIT
+    return str(value) if value > 0 else None
 
 # Docker's 64 MB /dev/shm default crashes Chromium/Playwright tabs and PyTorch
 # DataLoader workers. tmpfs is lazily allocated so a 1g ceiling costs nothing
@@ -676,6 +702,7 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list | None = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        pids_limit: str = _DEFAULT_PIDS_LIMIT,
         shared_container_key: str = "",
         snap_compat: bool = False,
         image_pinned: bool = False):
@@ -704,7 +731,7 @@ class DockerEnvironment(BaseEnvironment):
 
         _ensure_docker_available()
 
-        resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
+        resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, pids_limit, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
         mount = getattr(self, "host_cwd_mount", None)
         if mount and cwd_follows_host_mount(cwd, mount):
@@ -814,7 +841,7 @@ class DockerEnvironment(BaseEnvironment):
             check_extra_args_collisions(validated_extra, critical_egress_names, enforce_egress)
         return egress_label, egress_volume_args, egress_host_args, _name_only_env_args(merged_env), validated_extra
 
-    def _resource_args(self, image, cpu, memory, disk, network, shm_size, extra_args) -> list[str]:
+    def _resource_args(self, image, cpu, memory, disk, network, shm_size, pids_limit, extra_args) -> list[str]:
         """cgroup-gated CPU/memory/pids limits, shm size, disk quota and network mode."""
         args: list[str] = []
         if _cgroup_limits_available(image):
@@ -822,7 +849,9 @@ class DockerEnvironment(BaseEnvironment):
                 args.extend(["--cpus", str(cpu)])
             if memory > 0:
                 args.extend(["--memory", f"{memory}m"])
-            args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
+            pids = _resolve_pids_limit(pids_limit)
+            if pids is not None and not _extra_args_set_pids_limit(extra_args):
+                args.extend(["--pids-limit", pids])
         # --shm-size is a tmpfs option, not cgroup-gated. Skipped when the user
         # sets it in docker_extra_args or opts out with empty/"0".
         shm = str(shm_size or "").strip()

@@ -221,9 +221,16 @@ class GatewaySessionAgentMixin:
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
-            agent = self._build_fresh_agent(
-                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
-            )
+            from tools.delegate_tool_config import gateway_delegation_inline, gateway_delegation_inline_scope
+            # delegation.gateway_mode from this turn's own (profile-scoped) config and resolved interim setting;
+            # read once, by the agent's first tool build, then carried by its delegate_task schema and pin.
+            inline = gateway_delegation_inline(
+                ctx.user_config, platform_key, interim_enabled=ctx.interim_assistant_messages_enabled)
+            with gateway_delegation_inline_scope(inline):
+                agent = self._build_fresh_agent(
+                    turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+                    skip_context_files,
+                )
             if cache_lock and cache is not None:
                 with cache_lock:
                     # Record the snapshot's session_id with message_count so the cross-process guard

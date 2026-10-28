@@ -21,7 +21,7 @@ from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STA
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import FailoverReason, _from_cause_chain, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -69,14 +69,19 @@ def _blines(agent: Any, *lines: str) -> None:
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
-    """Extract a provider-reported image dimension ceiling, if present."""
+    """Read a ceiling from one error level, matching the classifier's bounded walk."""
+    return _from_cause_chain(error, _single_image_error_max_dimension, None)
+
+
+def _single_image_error_max_dimension(error: Exception) -> Optional[int]:
+    """Keep trigger terms and the ceiling on the same exception."""
     parts = []
     for value in (error, getattr(error, "message", None), getattr(error, "body", None)):
         if value:
             try:
                 parts.append(str(value))
             except Exception:
-                pass
+                logger.debug("Unable to stringify image-limit error field (%s)", type(value).__name__, exc_info=True)
     text = " ".join(parts).lower()
     # OpenAI Codex Responses reports a tile-patch budget (ceil(w/32)×ceil(h/32))
     # instead of a pixel ceiling. A square image is the worst case for the budget,
@@ -94,10 +99,7 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)
     if not match:
         return None
-    try:
-        max_dimension = int(match.group(1))
-    except ValueError:
-        return None
+    max_dimension = int(match.group(1))
     return max_dimension if 512 <= max_dimension <= 8000 else None
 
 

@@ -24,10 +24,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
-CATALOG_TIERS = ("official", "community")
+CATALOG_TIERS = ("official", "verified", "community")
 # Browse taxonomy for the catalog page / picker. Entries without one land on the Desktop shelf
 # (the common case for community submissions); "general" is for plugins that fit no shelf.
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
@@ -442,8 +443,8 @@ def _live_generated_time(data: dict[str, Any]) -> Optional[float]:
         return None
     try:
         from datetime import datetime, timezone
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+        parsed = datetime.fromisoformat(raw)
+        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp()
     except ValueError:
         return None
 

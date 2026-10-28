@@ -79,7 +79,7 @@ def _discover(r: Rig, relay: AnthropicMessagesServer | None, *, via: str) -> lis
     else:
         extra = {"ANTHROPIC_BASE_URL": relay.base_url.removesuffix("/anthropic")}
     proc = subprocess.run([sys.executable, "-c", _DISCOVERY_PROBE], cwd=r.project, env=r.env(extra),
-                          capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+                          capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]
     line = next(ln for ln in proc.stdout.splitlines() if ln.startswith("IDS="))
     return json.loads(line[4:])

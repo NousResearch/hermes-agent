@@ -252,7 +252,7 @@ class TestConfigGetPhantomKeyNotice:
         self, _isolated_hermes_home, capsys
     ):
         # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
-        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
+        # yet read by tools/browser_session_cloud.py, so the notice must not claim it is never read.
         (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
 
         config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))

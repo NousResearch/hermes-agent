@@ -218,7 +218,7 @@ def _adapter_class():
 
         splits_long_messages = True
 
-        def __init__(self, config, *, name: str, profile: str, world: "ChildWorld"):
+        def __init__(self, config, *, name: str, profile: str, world: ChildWorld):
             super().__init__(config, Platform(name))
             self.pname = name
             self.world = world
@@ -465,7 +465,7 @@ def _serve(spool: Path) -> None:  # pragma: no cover - runs in the child process
     async def main() -> None:
         nonlocal runner
         parent = int(os.environ.get("C12_PARENT_PID") or os.getppid())
-        watchdog = asyncio.ensure_future(orphan_watchdog(parent))
+        watchdog = asyncio.ensure_future(orphan_watchdog(parent))  # noqa: F841 -- strong ref: the loop holds tasks weakly
         runner = GatewayRunner(config)
         ok = await runner.start()
         if not ok:
@@ -529,7 +529,7 @@ class GatewayProcess:
         })
         return env
 
-    def start(self) -> "GatewayProcess":
+    def start(self) -> GatewayProcess:
         assert self.proc is None
         self.boots += 1
         ready_before = len(read_jsonl(self.spool / "ready.jsonl"))

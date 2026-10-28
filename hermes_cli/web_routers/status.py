@@ -20,8 +20,10 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
+from gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
@@ -54,6 +56,7 @@ _profile_cli_args = late("_profile_cli_args", "hermes_cli.web_server_profiles")
 get_install_id = late("get_install_id")
 get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
+served_profile_runtime = late("served_profile_runtime", "gateway.status_served")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
@@ -95,7 +98,7 @@ async def _status_active_sessions() -> int:
         return await asyncio.wait_for(
             run_in_threadpool(_count_status_active_sessions),
             timeout=_STATUS_ACTIVE_SESSIONS_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _log.debug("/api/status active session count exceeded %.2fs; returning 0",
                    _STATUS_ACTIVE_SESSIONS_TIMEOUT)
     except Exception as exc:
@@ -185,7 +188,7 @@ def _is_profile_platform_status_key(key: object) -> bool:
     return isinstance(key, str) and bool(_PROFILE_PLATFORM_STATUS_KEY_RE.fullmatch(key))
 
 
-def _status_platform_key_allowed(key: object, configured: "set[str] | None") -> bool:
+def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bool:
     """Whether a runtime-status platform key may appear publicly: namespaced
     ``<profile>:<platform>`` keys are validated against the grammar *unconditionally* (a
     failed config-set load must not fail open into projecting arbitrary keys from a
@@ -261,7 +264,7 @@ def _bounded_health_probe():
             return False, None
 
 
-def _project_gateway_platforms(gateway_platforms: dict, configured: "set[str] | None",
+def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | None,
                                gateway_running: bool, gateway_state) -> dict:
     """Public projection of a runtime's platform map (see ``_status_platform_key_allowed``
     for the key rules). A cleanly stopped gateway's platform states are stale noise and are
@@ -310,15 +313,28 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     runtime = local_runtime
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
+    # Unscoped, the profile is the process's own home (a pooled ``hermes --profile X serve``).
+    own_home = profile_dir or get_process_hermes_home()
     if liveness.runtime is not None:
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
-        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
-        # profile is the process's own home (a pooled ``hermes --profile X serve``).
+        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape.
         # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
         # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
-        served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
+        served_name = profile_name_for_home(own_home)
         runtime = {**liveness.runtime,
                    "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
+    elif local_liveness_pid(liveness) is not None:
+        # The PID rung answers before the multiplexer rung, and a served profile's gateway.lock is
+        # held by the multiplexer itself, so the ladder returns without its record while the
+        # profile's own gateway_state.json may be a retired standalone gateway's (#139080). The
+        # shared rule (also the messaging card's) picks the multiplexer record only when the lock
+        # holder IS the multiplexer and the profile's own record proves no live gateway.
+        try:
+            runtime = await run_in_threadpool(
+                served_profile_runtime, own_home, local_runtime, gateway_pid=local_liveness_pid(liveness)) or runtime
+        except Exception:  # health: allow BLE001 -- status route must never 500; traceback is logged
+            # A failed lookup keeps the profile's own record.
+            _log.warning("/api/status multiplexer record lookup failed", exc_info=True)
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -353,15 +369,15 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
-    # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
-    # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
-    served = (liveness.runtime or {}).get("served_profiles")
+    # A live multiplexer's record (the host's own, or the one serving this profile) names every
+    # profile a restart would blip ("default, alpha, beta"); a standalone gateway's names none.
+    shared_with = (runtime or {}).get("served_profiles") if gateway_running else None
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
-        "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
+        "gateway_shared_with": [str(p) for p in shared_with] if isinstance(shared_with, list) else None}
 
 
 def _auth_gate_status() -> dict[str, Any]:
@@ -448,19 +464,37 @@ async def _advisory_pressure(status: dict[str, Any], home: Path) -> None:
             status[key] = {"pressure": "unknown"}
 
     try:
-        from hermes_state import SessionDB as _SDB
-        from hermes_constants import get_hermes_home as _ghh
-        _db_path = _ghh() / "state.db"
-        if _db_path.exists():
-            _sdb = _SDB(db_path=_db_path, read_only=True)
-            try:
-                _rebuild = _sdb.fts_rebuild_status()
-            finally:
-                _sdb.close()
-            if _rebuild is not None:
-                status["fts_rebuild"] = _rebuild
+        # SQLite open + read: off the loop like the rest of the probe.
+        _rebuild = await run_in_threadpool(_fts_rebuild_status)
+        if _rebuild is not None:
+            status["fts_rebuild"] = _rebuild
     except Exception:
         pass
+
+
+def _status_local_reads() -> dict[str, Any]:
+    """The probe's synchronous local reads: the raw config.yaml stamp, the install method, the
+    auth store and (first call only) git provenance. Run on a worker thread: on the event loop that
+    also serves the session WebSocket they stalled every Desktop request behind the disk (#143561)."""
+    current_ver, latest_ver = check_config_version()
+    return {"version": get_version_info().base_version, "config_version": current_ver,
+            "latest_config_version": latest_ver,
+            "can_update_hermes": not _dashboard_local_update_managed_externally(),
+            "nous_session_valid": _nous_session_validity()}
+
+
+def _fts_rebuild_status() -> Optional[dict[str, Any]]:
+    """Deferred FTS rebuild progress of this home's state.db (read-only open), or None."""
+    from hermes_state import SessionDB as _SDB
+    from hermes_constants import get_hermes_home as _ghh
+    _db_path = _ghh() / "state.db"
+    if not _db_path.exists():
+        return None
+    _sdb = _SDB(db_path=_db_path, read_only=True)
+    try:
+        return _sdb.fts_rebuild_status()
+    finally:
+        _sdb.close()
 
 
 @router.get("/api/status")
@@ -482,7 +516,7 @@ async def get_status(profile: Optional[str] = None):
         status_scope.__enter__()
 
     try:
-        current_ver, latest_ver = check_config_version()
+        local = await run_in_threadpool(_status_local_reads)
         gateway = await _resolve_gateway_status(profile_dir, _GATEWAY_HEALTH_URL)
         gateway_running, gateway_state = gateway["gateway_running"], gateway["gateway_state"]
 
@@ -506,9 +540,9 @@ async def get_status(profile: Optional[str] = None):
         auth = _auth_gate_status()
 
         status = {
-            "version": get_version_info().base_version, "release_date": __release_date__,
-            "config_version": current_ver, "latest_config_version": latest_ver,
-            "can_update_hermes": not _dashboard_local_update_managed_externally(),
+            "version": local["version"], "release_date": __release_date__,
+            "config_version": local["config_version"], "latest_config_version": local["latest_config_version"],
+            "can_update_hermes": local["can_update_hermes"],
             "gateway_running": gateway_running, "gateway_state": gateway_state,
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
@@ -525,7 +559,7 @@ async def get_status(profile: Optional[str] = None):
             "gateway_drainable": derive_gateway_drainable(
                 gateway_running=gateway_running, gateway_state=gateway_state),
             "restart_drain_timeout": restart_drain_timeout, "active_sessions": active_sessions,
-            **auth, "nous_session_valid": _nous_session_validity()}
+            **auth, "nous_session_valid": local["nous_session_valid"]}
 
         # Stable per-install identity (first call may touch disk). Omitted (not null) when
         # unpersistable so older-client behavior and the no-identity fallback stay identical.
@@ -567,7 +601,7 @@ async def get_status(profile: Optional[str] = None):
 
 
 @router.get("/api/system/stats")
-async def get_system_stats():
+def get_system_stats():  # sync: FastAPI runs it on a worker (psutil.cpu_percent blocks 100 ms)
     """Host + process system stats for the System page (stdlib identity; psutil CPU/memory/
     disk/uptime when available). Non-sensitive: no env values, no paths beyond hermes home."""
     import platform as _platform

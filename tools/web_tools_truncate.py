@@ -48,7 +48,7 @@ def convert_base64_images_to_links(text: str) -> str:
     """Replace inline base64 image blobs (token bombs) with ``[IMAGE: alt]`` placeholders: markdown images
     (alt kept), parenthesised blobs, and bare ``data:image/...;base64,`` payloads. Real http(s) markdown
     image links are left untouched so the agent can ``web_extract`` / ``vision_analyze`` them."""
-    def _md_repl(m: "re.Match[str]") -> str:
+    def _md_repl(m: re.Match[str]) -> str:
         return f"[IMAGE: {alt}]" if (alt := (m.group("alt") or "").strip()) else "[IMAGE]"
 
     out = re.sub(r"!\[(?P<alt>[^\]]*)\]\(\s*data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+\)", _md_repl, text)
@@ -121,7 +121,7 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
     else:
         footer_lines.append(
             "Full text could not be stored; re-run web_extract on a more "
-            "specific URL or use browser_navigate for the complete page."
+            "specific URL or open it in the browser for the complete page."
         )
     footer_lines.append("─" * 29)
     model_text = head + "\n\n[... middle omitted — see footer ...]\n\n" + tail

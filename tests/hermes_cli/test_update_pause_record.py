@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import update_pause_record as pause_record
+from datetime import UTC
 
 REPO = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals; Windows cells live in wine2e")
@@ -131,6 +132,26 @@ def test_resume_waits_for_a_whole_tree(tmp_path):
     assert pause_record.tree_is_whole(token, root) == (True, "")
 
 
+def test_a_set_paused_on_an_already_unreadable_head_resumes_until_a_move_is_bound(tmp_path):
+    """A .git git rejects (HEAD lost) before the pause: the gateways were serving this exact tree
+    and nothing the update did could write it, so the set resumes instead of waiting for a repair
+    no update can make. A bound move, or a HEAD that was readable at the pause, still holds it."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "a.py").write_text("v1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "v1")
+    readable_at_pause = pause_record.stamp_tree({"resume_needed": True}, root)
+    (root / ".git" / "HEAD").unlink()
+
+    token = pause_record.stamp_tree({"resume_needed": True}, root)
+    assert pause_record.tree_is_whole(token, root) == (True, "")
+    token["baselines"][0]["move_targets"] = ["0" * 40]
+    assert pause_record.tree_is_whole(token, root) == (False, "the checkout HEAD is unreadable")
+    assert pause_record.tree_is_whole(readable_at_pause, root) == (False, "the checkout HEAD is unreadable")
+
+
 def test_an_update_adopting_an_orphan_never_certifies_the_tree_it_left_torn(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
     root.mkdir()
@@ -178,13 +199,13 @@ def test_an_adopted_baseline_never_replaces_this_runs_own(tmp_path, monkeypatch)
 
 def _orphan(tmp_path: Path, profiles: dict) -> None:
     """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
-    owner = _child("""
+    owner = _child(f"""
         import time
         from hermes_cli import update_pause_record as r
-        r.write(r.stamp_tree({"resume_needed": True, "profiles": %r}), owner=r.identity())
+        r.write(r.stamp_tree({{"resume_needed": True, "profiles": {profiles!r}}}), owner=r.identity())
         print("written", flush=True)
         time.sleep(120)
-    """ % profiles, env={"HERMES_HOME": str(tmp_path)})
+    """, env={"HERMES_HOME": str(tmp_path)})
     assert owner.stdout.readline().strip() == "written"
     owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
     owner.wait(timeout=10)
@@ -708,7 +729,7 @@ def test_an_accepted_stop_the_record_could_not_checkpoint_outlives_the_request_t
     saved = pause_record.read()["token"]
     assert saved["stop_sent"] == [], "premise: no checkpoint landed"
     body = json.loads(marker.read_text(encoding="utf-8"))
-    body["written_at"] = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()  # past the TTL
+    body["written_at"] = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()  # past the TTL
     marker.write_text(json.dumps(body), encoding="utf-8")
     owed = pause_record.drop_never_stopped(dict(saved))["profiles"]
     assert owed == ({"p": pid} if consumed else {}), "a gateway draining an accepted stop lost its restart debt"

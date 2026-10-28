@@ -3,6 +3,7 @@ per-model usage rows, and billing-route columns. Writer thread state lives on th
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import contextlib
 import logging
@@ -144,6 +145,17 @@ class SessionUsageMixin:
                 self._token_writer_busy = False
                 self._token_queue_cond.notify_all()
 
+    def flush_for_read(self) -> bool:
+        """Read-side token barrier. On a thread running an asyncio loop it never waits: the writer can sit
+        behind another connection's write lock, and a gateway handler reading a session there froze every
+        socket for up to the 5 s flush budget (#141966). That read sees totals stale by the queued deltas,
+        which the next read picks up; write barriers keep calling ``flush_token_counts`` and still wait."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self.flush_token_counts()
+        return self.flush_token_counts(timeout=0.0)
+
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
         """Block until every queued token delta has been applied. False on timeout (callers
         then read totals stale by the queued deltas). Never raises."""
@@ -278,19 +290,32 @@ class SessionUsageMixin:
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
         source: Optional[str]=None, task: str = "",
     ) -> None:
-        """Update token counters and backfill model if unset. *absolute*=False increments
-        (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
-        where the cached agent holds cumulative totals). ``source`` is the session's real surface
-        for the row-existence guard; callers that don't know it leave the placeholder. ``task`` names a
-        per-turn route (``voice_chat``): its calls count in the session totals and land in
-        ``session_model_usage`` under that task, but never become the session's recorded route."""
-        usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
+        """Update totals and route attribution, ensuring the legacy missing-row backfill.
+        *absolute*=False increments (per-API-call deltas, CLI path); *absolute*=True sets directly
+        (gateway path, where the cached agent holds cumulative totals). ``source`` is the session's
+        real surface for the row-existence guard; callers that don't know it leave the placeholder.
+        ``task`` names a per-turn route (``voice_chat``): its calls count in the session totals and
+        land in ``session_model_usage`` under that task, but never become the session's recorded route."""
+        values = dict(locals())
+        values.pop('self')
+        values.pop('session_id')
+        values.pop('source')
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
         # writer it must carry the agent's real source: the turn lease treats an existing row as
         # proof the create already happened, so the creator never returns to repair an anonymous
         # ``unknown`` placeholder and the session stays a phantom for life (#111999).
         self._insert_session_row(session_id, source or "unknown", model=model)
+        self._execute_write(lambda conn: self._update_token_counts_in_transaction(conn, session_id, **values))
+
+    def _update_token_counts_in_transaction(
+        self, conn, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str | None=None, cache_read_tokens: int=0,
+        cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
+        actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
+        pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
+        billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False, task: str="",
+    ) -> None:
+        usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         sql = _TOKEN_UPDATE_ABSOLUTE_SQL if absolute else _TOKEN_UPDATE_DELTA_SQL
         has_usage = bool(input_tokens or output_tokens or cache_read_tokens or cache_write_tokens or reasoning_tokens
                          or api_call_count or estimated_cost_usd)
@@ -313,28 +338,26 @@ class SessionUsageMixin:
         # of how many times the user switches. See #51607.
         record_model_usage = (not absolute) and has_usage
 
-        def _do(conn):
-            row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
-            ).fetchone()
-            existing = dict(row) if row is not None else {}
-            # create_session records the requested route before any API call. If that fails
-            # and fallback succeeds, the first accounted usage is the authoritative route;
-            # after that keep the row as is (one row cannot represent mixed usage).
-            first_accounted_route = (
-                not task and int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
-                and bool(billing_provider)
-                and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
-            )
-            if first_accounted_route:
-                conn.execute("""UPDATE sessions
-                       SET model = ?, billing_provider = ?,
-                       billing_base_url = ?, billing_mode = ?
-                       WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
-            conn.execute(sql, params)
-            if record_model_usage:
-                self._record_model_usage(conn, session_id, task=task, **usage)
-        self._execute_write(_do)
+        row = conn.execute(
+            "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
+        ).fetchone()
+        existing = dict(row) if row is not None else {}
+        # create_session records the requested route before any API call. If that fails
+        # and fallback succeeds, the first accounted usage is the authoritative route;
+        # after that keep the row as is (one row cannot represent mixed usage).
+        first_accounted_route = (
+            not task and int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
+            and bool(billing_provider)
+            and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
+        )
+        if first_accounted_route:
+            conn.execute("""UPDATE sessions
+                   SET model = ?, billing_provider = ?,
+                   billing_base_url = ?, billing_mode = ?
+                   WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
+        conn.execute(sql, params)
+        if record_model_usage:
+            self._record_model_usage(conn, session_id, task=task, **usage)
 
     def _record_model_usage(
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
@@ -385,10 +408,21 @@ class SessionUsageMixin:
         if not session_id or not task:
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
-        # FK to sessions.id: same guard as update_token_counts; the aux path carries no surface, so
-        # the placeholder stays repairable by the creator's upsert (_insert_session_row).
-        self._insert_session_row(session_id, "unknown")
-        self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
+        # FK to sessions.id. A missing row is inserted as the ``unknown`` placeholder, which
+        # the creator upsert later replaces. An existing row keeps source and created_source,
+        # including a NULL surface update_token_counts can still fill; the UPDATE below only
+        # fills a NULL profile_name, without writing ``unknown`` anywhere.
+        from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+
+        def _write(conn):
+            if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None:
+                insert_session_row_in_transaction(self, conn, session_id, "unknown")
+            elif own_profile := self._own_profile_name():
+                conn.execute(
+                    "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
+                    (own_profile, session_id))
+            self._record_model_usage(conn, session_id, task=task, **usage)
+        self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed

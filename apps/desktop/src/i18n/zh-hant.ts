@@ -10,9 +10,82 @@ import { zhHantCommandCenter } from './zh-hant_command_center'
 import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+
+  catalog: {
+    add: '新增',
+    added: '已新增',
+    discover: '探索',
+    featured: '精選',
+    explorePlugins: '探索外掛',
+    exploreSkills: '探索技能',
+    mostStarred: '星標最多',
+    newest: '最新發布',
+    recentlyUpdated: '最近更新',
+    alphabetical: '名稱',
+    sortBy: '排序方式',
+    seeAll: '查看全部',
+    related: '類似推薦',
+    tags: '標籤',
+    screenshots: '螢幕截圖',
+    listView: '清單檢視',
+    cardView: '卡片檢視',
+    installTitle: (name: string) => `安裝「${name}」？`,
+    installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
+    installTo: '安裝至',
+    thisComputer: '這部電腦',
+    installing: '正在安裝…',
+    installComplete: (name: string) => `已安裝「${name}」`,
+    destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
+    install: '安裝',
+    installed: '已安裝',
+    searchSkills: '搜尋技能',
+    searchPlugins: '搜尋外掛',
+    allSources: '所有來源',
+    allCategories: '所有分類',
+    about: '簡介',
+    author: '作者',
+    source: '來源',
+    category: '分類',
+    version: '版本',
+    platforms: '支援的平台',
+    requires: '相依項目',
+    tools: '工具',
+    hooks: '掛鉤',
+    middleware: '中介軟體',
+    commands: '指令',
+    license: '授權條款',
+    addedDate: '新增日期',
+    updatedDate: '更新日期',
+    repository: '程式碼儲存庫',
+    documentation: '文件',
+    noResults: '沒有符合的項目',
+    tryAnother: '請嘗試其他搜尋或清除篩選條件。',
+    clearFilters: '清除篩選條件',
+    filters: '篩選條件',
+    loadFailed: '無法載入目錄',
+    retry: '再試一次',
+    more: '顯示更多',
+    pinned: '已審核的提交',
+    snapshotHint: '內容來自 Hermes 目錄。瀏覽時不會連線至來源程式碼儲存庫。',
+    installHint: '安裝前請檢查原始碼。變更將於新的工作階段生效。',
+    results: (count: number) => `${count.toLocaleString('zh-Hant')} 個結果`,
+    back: '返回結果'
+  },
+  connectors: {
+    directory: {
+      suggested: '推薦',
+      allApps: '全部應用程式',
+      receiptConnected: apps => `已連接：${apps}`,
+      receiptNone: '未連接新的應用程式',
+      receiptTimedOut: '10 分鐘後已關閉',
+      finishInBrowser: '請在瀏覽器中完成',
+      signInFailed: '連接失敗，點擊重試'
+    }
+  },
   skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
@@ -44,23 +117,20 @@ export const zhHantOverrides = {
     collectedUsage: '代理品質：未成功的編輯、損壞的工具呼叫、卡住的迴圈、每個任務的成本',
     collectedMachine: '機器：作業系統、記憶體範圍、GPU 類型、Hermes 版本、本機模型使用情況',
     sending:
-      '除非你選擇分享，否則統計資料只會保留在這台電腦上。分享的統計資料每天傳送給 Nous 一次，並附帶此設定檔的隨機 ID。除了一則 Hermes 已安裝的一次性記錄（僅在你同意後計入）之外，你同意之前的統計資料永遠不會被傳送。你可以隨時在設定中變更。',
+      '如果你選擇分享，Hermes 每天傳送一次統計資料給 Nous，並附帶此設定檔的隨機 ID。除了一則 Hermes 已安裝的一次性記錄之外，你同意之前的統計資料永遠不會被傳送。你可以隨時在設定中變更。',
     readDocs: '查看完整說明',
     share: '與 Nous 分享',
-    local: '保留在這部電腦上',
     off: '不用了',
     saveFailed: '無法儲存你的選擇',
-    collectLabel: '收集使用統計',
-    collectDesc: '僅限計數，保留在這部電腦上。絕不包含你的訊息、檔案、路徑或錯誤文字。',
     sendLabel: '與 Nous 分享使用統計',
-    sendDesc:
-      '每天一次將統計資料連同此設定檔的隨機 ID 傳送給 Nous。除一次性的安裝記錄外，你同意之前的統計資料絕不會被傳送。需要先開啟收集。',
+    sendDesc: '僅限計數，每天傳送一次，並附帶此設定檔的隨機 ID。絕不包含你的訊息、檔案、路徑或錯誤文字。',
     unavailable: '請更新 Hermes 後端以變更此設定。',
     stripBody: '僅限計數，絕不包含你的訊息或檔案。',
     stripReaskBody: '再次詢問：舊版本可能在你看到此問題之前就已儲存了「不用了」。',
-    stripChoices: { share: '與 Nous 分享', local: '保留在這部電腦上', off: '不用了' },
+    stripChoices: { share: '與 Nous 分享', off: '不用了' },
     stripDetails: '詳細資訊'
   },
+  firstRun: zhHantFirstRun,
   intro: introZhHant,
   sessionImport: zhHantConnectors.sessionImport,
   common: zhHantCommon.common,
@@ -69,6 +139,8 @@ export const zhHantOverrides = {
   notifications: zhHantDiagnostics.notifications,
   remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
   butterbar: zhHantBoot.butterbar,
+  promptNotices: zhHantBoot.promptNotices,
+  keepAwakeOffer: zhHantBoot.keepAwakeOffer,
   billingBlock: zhHantCommon.billingBlock,
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
   titlebar: zhHantChrome.titlebar,
@@ -92,7 +164,15 @@ export const zhHantOverrides = {
   artifactCard: zhHantArtifacts.artifactCard,
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,
-  composer: zhHantChat.composer,
+  composer: {
+    ...zhHantChat.composer,
+    redirect: '重新導向目前的執行',
+    queueLostNote: '重新啟動期間該回合已遺失',
+    restoreImageDraft: '還原圖片草稿',
+    queueCancelFailed: '無法移除排隊的回合',
+    queueLostDiscard: '捨棄',
+    queueLostDiscardTip: '閘道在該回合進行中重新啟動，無法完成。捨棄後其後的排隊回合將繼續執行。'
+  },
   statusStack: zhHantChat.statusStack,
   updates: zhHantBoot.updates,
   install: zhHantBoot.install,
@@ -123,24 +203,6 @@ export const zhHantOverrides = {
   errors: zhHantDiagnostics.errors,
   tips: zhHantChat.tips,
   ui: zhHantCommon.ui,
-  handoffTour: {
-    profileTitle: '你的第一個任務在預設設定檔中執行',
-
-    profileText:
-      '這條欄用來切換設定檔。現在亮著的是 default，任務工作階段就在這裡。另一個是設定用的設定檔，歡迎聊天在那裡。',
-
-    sessionsTitle: '每個設定檔都有自己的工作階段',
-
-    sessionsText:
-      '這個清單屬於 default 設定檔。「新工作階段」會在目前選取的設定檔中開始。在欄上切換設定檔，清單也會跟著改變。',
-
-    stayTitle: 'Hermes 一鍵可及',
-
-    stayText: '需要幫忙時，切換到設定用的設定檔並開啟「歡迎使用 Hermes」。它會一直在那裡。',
-    localTitle: '這台電腦可以在本機執行模型',
-    localText: (model: string) =>
-      `${model} 適合你的硬體。免費執行，對話不會離開你的電腦。隨時在這裡的模型選單中選擇它。`
-  },
   freeTier: {
     offer: {
       heading: '繼續使用 Hermes',

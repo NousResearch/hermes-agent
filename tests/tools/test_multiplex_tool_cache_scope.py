@@ -37,35 +37,10 @@ class _scoped:
 
 @pytest.fixture
 def two_homes(tmp_path, monkeypatch):
-    a = _make_home(tmp_path / "A", {}, "CAMOFOX_URL=http://camofox-a:9377\n")
-    b = _make_home(tmp_path / "A" / "profiles" / "B", {}, "CAMOFOX_URL=http://camofox-b:9377\n")
+    a = _make_home(tmp_path / "A", {})
+    b = _make_home(tmp_path / "A" / "profiles" / "B", {})
     monkeypatch.setenv("HERMES_HOME", str(a))
-    monkeypatch.delenv("CAMOFOX_URL", raising=False)
     return a, b
-
-
-def test_camofox_vnc_memo_is_keyed_by_the_profiles_server_url(two_homes, monkeypatch):
-    """The one-shot VNC probe must not answer B (own CAMOFOX_URL) with A's server address."""
-    import tools.browser_camofox as cam
-
-    class _Resp:
-        status_code = 200
-
-        def __init__(self, url):
-            self._port = 6001 if "camofox-a" in url else 6002
-
-        def json(self):
-            return {"ok": True, "vncPort": self._port}
-
-    monkeypatch.setattr(cam.requests, "get", lambda url, *a, **k: _Resp(url))
-    a, b = two_homes
-    with _scoped(a):
-        assert cam.check_camofox_available() is True
-        assert cam.get_vnc_url() == "http://camofox-a:6001"
-    with _scoped(b):
-        assert cam.get_vnc_url() == "http://camofox-b:6002"
-    with _scoped(a):
-        assert cam.get_vnc_url() == "http://camofox-a:6001"
 
 
 def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypatch):

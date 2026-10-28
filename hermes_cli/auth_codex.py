@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
-    CODEX_OAUTH_USER_AGENT, CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
+    CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
+from hermes_cli.version_info import hermes_user_agent
 from utils import env_float, normalize_proxy_env_vars
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
@@ -257,7 +258,7 @@ def _recover_codex_tokens_from_cli(
 
 
 def _refresh_payload_access_token(
-    response: "httpx.Response", *, provider: str, invalid_json: tuple[str, str],
+    response: httpx.Response, *, provider: str, invalid_json: tuple[str, str],
     invalid_response: Optional[tuple[str, str]], missing_access: tuple[str, str],
     relogin_required: bool = True, invalid_json_relogin: Optional[bool] = None,
     strict_str: bool = True) -> tuple[dict[str, Any], str]:
@@ -335,7 +336,7 @@ def _is_transient_transport_error(exc: BaseException) -> bool:
     return False
 
 
-def _codex_login_post(url: str, *, failure: tuple[str, str], **kwargs: Any) -> "httpx.Response":
+def _codex_login_post(url: str, *, failure: tuple[str, str], **kwargs: Any) -> httpx.Response:
     """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``.
 
     A transient transport blip (a dropped connection mid-flow) is retried twice with a small
@@ -376,7 +377,7 @@ def _capped_byte_stream_class() -> type:
         stream subclass rather than a bare generator.
         """
 
-        def __init__(self, response: "httpx.Response") -> None:
+        def __init__(self, response: httpx.Response) -> None:
             self._response, self._raw = response, response.stream
 
         def __iter__(self) -> Iterator[bytes]:
@@ -398,7 +399,7 @@ def _capped_byte_stream_class() -> type:
     return _CappedByteStream
 
 
-def _cap_codex_response_body(response: "httpx.Response") -> None:
+def _cap_codex_response_body(response: httpx.Response) -> None:
     """httpx response hook: refuse to buffer an auth body above ``_CODEX_AUTH_BODY_MAX_BYTES``.
 
     Runs before ``client.post()`` reads the body, so a hostile or broken endpoint/proxy answering
@@ -408,7 +409,7 @@ def _cap_codex_response_body(response: "httpx.Response") -> None:
     response.stream = _capped_byte_stream_class()(response)
 
 
-def _codex_http_client(**kwargs: Any) -> "httpx.Client":
+def _codex_http_client(**kwargs: Any) -> httpx.Client:
     """Build an ``httpx.Client`` for Codex OAuth/probe endpoints with Happy-Eyeballs racing and a
     1 MiB response-body cap (``_cap_codex_response_body``).
 
@@ -440,7 +441,7 @@ def _codex_quota_exhausted_error(retry_after: Optional[int]) -> AuthError:
     return _codex_err(message, CODEX_RATE_LIMITED_CODE, relogin=False)
 
 
-def _codex_refresh_failure_error(response: "httpx.Response") -> AuthError:
+def _codex_refresh_failure_error(response: httpx.Response) -> AuthError:
     """Decode a non-200 Codex token-refresh response into a shaped AuthError."""
     from hermes_cli.auth import _nonempty_str
     code = "codex_refresh_failed"
@@ -489,7 +490,7 @@ def refresh_codex_oauth_pure(
                          "codex_auth_missing_refresh_token", relogin=True)
     with _codex_http_client(
         timeout=httpx.Timeout(max(5.0, float(timeout_seconds))),
-        headers={"Accept": "application/json", "User-Agent": CODEX_OAUTH_USER_AGENT}) as client:
+        headers={"Accept": "application/json", "User-Agent": hermes_user_agent()}) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL, headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
@@ -726,8 +727,7 @@ def _codex_usage_probe_url(base_url: Optional[str]) -> str:
     module does not import the auxiliary account-usage module.
     """
     normalized = _stripped(base_url).rstrip("/") or _codex_base_url()
-    if normalized.endswith("/codex"):
-        normalized = normalized[: -len("/codex")]
+    normalized = normalized.removesuffix("/codex")
     prefix = normalized + ("/wham" if "/backend-api" in normalized else "/api/codex")
     return prefix + "/usage"
 
@@ -982,7 +982,7 @@ def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool 
     _print_login_success("openai-codex", config_path, show_auth_state=True)
 
 
-def _codex_login_rate_limited_error(response: "httpx.Response", *, during: str = "") -> AuthError:
+def _codex_login_rate_limited_error(response: httpx.Response, *, during: str = "") -> AuthError:
     """AuthError for a 429 from OpenAI's device-auth endpoints (throttle, not credential fault)."""
     # Upstream rate-limit / usage-quota exhaustion on the token endpoint. The stored refresh token is still
     # valid here — re-authenticating cannot lift a quota cap. Classify distinctly from auth failures so

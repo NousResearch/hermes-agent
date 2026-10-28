@@ -114,6 +114,7 @@ def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = N
         result = subprocess.run(
             [brv_path] + args, capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=timeout, cwd=effective_cwd, env=env, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"brv timed out after {timeout}s"}
@@ -171,7 +172,10 @@ class ByteRoverMemoryProvider(MemoryProvider):
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        self._cwd, self._session_id, self._turn_count = str(_get_brv_cwd()), session_id, 0
+        # Bind to the profile the manager names, not the ambient one (multiplexing contract, MemoryProvider).
+        home = kwargs.get("hermes_home")
+        cwd = Path(home) / "byterover" if home else _get_brv_cwd()
+        self._cwd, self._session_id, self._turn_count = str(cwd), session_id, 0
         Path(self._cwd).mkdir(parents=True, exist_ok=True)
 
     def system_prompt_block(self) -> str:

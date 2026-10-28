@@ -186,6 +186,22 @@ def test_relative_path_metadata_exemption_tracks_working_directory(protected_hom
         guard.check(target, metadata=True)
 
 
+def test_resolving_a_path_entry_under_the_home_is_command_lookup(protected_home, monkeypatch):
+    """Command resolution realpath()s a PATH entry under the home (``~/.hermes/tools/<tool>``)
+    to tell Hermes-managed bin dirs apart; that lstats the entry and each of its ancestors."""
+    from tests.home_io_guard import HomeIOGuard
+
+    entry = protected_home / "tools" / "npm" / "bin"
+    guard = HomeIOGuard(lambda: [protected_home])
+    monkeypatch.setenv("PATH", str(entry))
+    guard.check(entry, metadata=True)
+    guard.check(entry.parent, metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(protected_home / "tools" / "other", metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(entry.parent, metadata=False)
+
+
 def test_checkout_inside_a_guarded_root_is_not_hermes_state():
     """The default install checks the repo out INSIDE the home (install.sh:
     INSTALL_DIR=$HERMES_HOME/hermes-agent): the checkout, its .venv and test
@@ -198,6 +214,21 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
     guard.check(PROJECT_ROOT / ".venv" / "bin" / "python", metadata=True)
     with pytest.raises(AssertionError, match="REAL hermes home"):
         guard.check(PROJECT_ROOT.parent / "config.yaml")
+
+
+@pytest.mark.parametrize("kind", ["environments", "test-environment"])
+def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, kind):
+    """scripts/run_tests.sh runs ``<home>/installs/<key>/<kind>/<gen>/venv`` with HOME pointed at the
+    run's fake home, so that venv sits under the guarded root. `hermes update` probes
+    ``<venv>/../hermes_cli/main.py`` (update_owning_install) and must not trip the guard."""
+    from tests.home_io_guard import _pm_generation_dirs
+
+    generation = tmp_path / ".hermes" / "installs" / "0123456789abcdef" / kind / "gen-1"
+    venv = generation / "venv"
+    venv.mkdir(parents=True)
+    assert _pm_generation_dirs([venv]) == {generation.resolve()}
+    # Only a generation venv: a checkout's .venv or a venv elsewhere adds nothing new.
+    assert _pm_generation_dirs([tmp_path / "checkout" / ".venv", tmp_path / "other" / "venv"]) == set()
 
 
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
@@ -225,6 +256,7 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider", "-q", str(probe)],
         cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout

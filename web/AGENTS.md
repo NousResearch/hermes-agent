@@ -34,6 +34,8 @@ launches the other. `serve` is the headless backend the desktop app spawns (`hea
 `cmd_dashboard` skips `_build_web_ui` and exports `HERMES_SERVE_HEADLESS=1` so `mount_spa()`
 disables the SPA even if a stray `web_dist/` exists — only JSON-RPC/WS/API is reachable). The
 desktop has no build/runtime dependency on this frontend. Details: `apps/desktop/src/AGENTS.md`.
+What each surface (`serve`, `dashboard`, `webapp`) may do is one table,
+`hermes_cli/web_server_surface.py`; read it instead of comparing `ui_surface` strings.
 
 ## Rules
 

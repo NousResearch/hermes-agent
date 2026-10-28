@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -214,19 +215,39 @@ def _goal_blocks_loop_tick(session_key: str) -> bool:
 _SESSION_CONTROL_SLASHES = frozenset({"goal", "heartbeat", "loop", "subgoal"})
 
 
-def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if_present: bool = False) -> None:
+# Tool completions publish from the agent thread while control actions and slash commands publish from
+# RPC threads: the snapshot read, the revision compare and the emit happen as one step, so an update read
+# before a user's change can never be emitted after it. The lock is the SESSION's: a stalled socket write
+# (up to the transport's write timeout) only holds back that session's own later updates, never another's.
+_PUBLISH_LOCK_GUARD = threading.Lock()
+
+
+def _session_publish_lock(session: dict) -> threading.Lock:
+    lock = session.get("control_publish_lock")
+    if lock is None:
+        with _PUBLISH_LOCK_GUARD:
+            lock = session.setdefault("control_publish_lock", threading.Lock())
+    return lock
+
+
+def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if_present: bool = False,
+                                      only_if_changed: bool = False) -> None:
     """Best-effort ``session.control.update`` for one live session. Also called after the post-turn hooks,
     because the goal judge and loop tick evaluation mutate persisted state AFTER ``message.complete`` — a
     client refresh keyed on that event reads the pre-judge turn count. ``only_if_present`` keeps the
-    post-turn event stream of a session with no automation state byte-identical to today's."""
+    post-turn event stream of a session with no automation state byte-identical to today's;
+    ``only_if_changed`` (every tool completion) also skips a snapshot equal to the last one published."""
     if not session or not (session_key := str(session.get("session_key") or "")):
         return
     try:
-        with _session_profile_runtime_scope(session):
-            control = _snapshot_control(session_key)
-        if only_if_present and not control["revision"]:
-            return
-        _emit("session.control.update", sid, {"control": control})
+        with _session_publish_lock(session):
+            with _session_profile_runtime_scope(session):
+                control = _snapshot_control(session_key)
+            if (only_if_present and not control["revision"]) or (
+                    only_if_changed and control["revision"] == session.get("control_revision", "")):
+                return
+            session["control_revision"] = control["revision"]
+            _emit("session.control.update", sid, {"control": control})
     except Exception:
         logger.debug("session.control.update publish failed for %s", sid, exc_info=True)
 
@@ -295,12 +316,10 @@ def _(rid, params: dict) -> dict:
         logger.debug("session.control snapshot after %s failed: %s", action, exc, exc_info=True)
         return _err(rid, 5031, f"session.control snapshot failed: {exc}")
 
-    # command.dispatch already published the update for goal/loop actions; manager actions publish here.
+    # command.dispatch already published the update for goal/loop actions; manager actions publish here,
+    # through the one publisher that records the revision the tool-completion gate compares against.
     if action not in _ACTION_COMMAND_MAP:
-        try:
-            _emit("session.control.update", params.get("session_id") or "", {"control": control})
-        except Exception as exc:
-            logger.debug("session.control.update emit failed (best-effort): %s", exc, exc_info=True)
+        _publish_session_control_snapshot(params.get("session_id") or "", session)
     return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result)})
 
 

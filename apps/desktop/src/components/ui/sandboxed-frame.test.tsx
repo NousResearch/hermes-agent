@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { createRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SANDBOXED_FRAME_DEFAULT_SANDBOX, SandboxedFrame, sanitizeFrameSandbox } from './sandboxed-frame'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  window.document.documentElement.removeAttribute('data-hermes-desktop-host')
+  vi.unstubAllGlobals()
+})
 
 describe('sanitizeFrameSandbox', () => {
   it('strips every realm-escaping or unknown token, case-insensitively, and never emits an empty attribute', () => {
@@ -95,5 +100,83 @@ describe('SandboxedFrame', () => {
 
     expect(warn).toHaveBeenCalledTimes(4)
     warn.mockRestore()
+  })
+})
+
+describe('SandboxedFrame in the Webapp', () => {
+  const guest = `data:text/html;charset=utf-8,${encodeURIComponent('<script>parent.postMessage("ready", "*")</script>')}`
+
+  function browserHost() {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal('__HERMES_BASE_PATH__', '/hermes')
+    vi.stubGlobal('__HERMES_UI_SURFACE__', 'webapp')
+  }
+
+  it('serves data: HTML through the guest shell with the caller tokens, and fires onLoad for the guest', () => {
+    browserHost()
+    const onLoad = vi.fn()
+    const ref = createRef<HTMLIFrameElement>()
+
+    const { container } = render(
+      <SandboxedFrame
+        onLoad={onLoad}
+        ref={ref}
+        sandbox="allow-forms ALLOW-SAME-ORIGIN allow-popups"
+        src={guest}
+        title="Widget"
+      />
+    )
+
+    const frame = container.querySelector('iframe')!
+
+    expect(ref.current).toBe(frame)
+    expect(frame.getAttribute('srcdoc')).toBeNull()
+    expect(frame.src).toBe(`${window.location.origin}/hermes/assets/webapp-guest.html`)
+    expect(frame.getAttribute('sandbox')).toBe('allow-forms allow-scripts')
+    expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
+
+    const send = vi.spyOn(frame.contentWindow!, 'postMessage')
+    fireEvent.load(frame)
+    expect(send).toHaveBeenLastCalledWith(
+      {
+        type: 'hermes-preview-document',
+        html: '<script>parent.postMessage("ready", "*")</script>',
+        sandbox: 'allow-forms'
+      },
+      '*'
+    )
+    // The shell loading is not the guest loading.
+    expect(onLoad).not.toHaveBeenCalled()
+
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'hermes-guest-loaded' }, source: window }))
+    })
+    expect(onLoad).not.toHaveBeenCalled()
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', { data: { type: 'hermes-guest-loaded' }, source: frame.contentWindow })
+      )
+    })
+    expect(onLoad).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps http(s) and non-HTML data: embeds on the direct frame', () => {
+    browserHost()
+
+    for (const src of ['https://example.com/feed', 'data:image/svg+xml,%3Csvg%2F%3E', 'data:,plain']) {
+      const { container, unmount } = render(<SandboxedFrame src={src} title="Feed" />)
+
+      expect(container.querySelector('iframe')!.getAttribute('src'), src).toBe(src)
+      unmount()
+    }
+  })
+
+  it('leaves native Desktop on the direct data: frame', () => {
+    const { container } = render(<SandboxedFrame src={guest} title="Widget" />)
+    const frame = container.querySelector('iframe')!
+
+    expect(frame.getAttribute('src')).toBe(guest)
+    expect(frame.getAttribute('sandbox')).toBe(SANDBOXED_FRAME_DEFAULT_SANDBOX)
   })
 })

@@ -62,7 +62,11 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     """
     home = profile_home.resolve()
     root = Path(__file__).resolve().parent.parent
-    if _disposable_tree(root) or _disposable_tree(home):
+    # The interpreter too: a scratch venv can point at code outside the scratch tree, and the
+    # 27/10 orphans were launched by one. absolute(), not resolve(): a venv python symlinks to the
+    # base install, which would drop the scratch segment from the path.
+    interpreter = Path(sys.executable).absolute()
+    if _disposable_tree(root) or _disposable_tree(home) or _disposable_tree(interpreter):
         # Refuse before any Popen: a client running from a scratch must never own a production daemon.
         raise RuntimeStartError("foreign_code_root")
     # A root home is only pinned by an explicit selector: without one the child's

@@ -61,6 +61,8 @@ def test_canonical_code_root_still_spawns(tmp_path, monkeypatch):
 
     child = SimpleNamespace(pid=321)
     seen = []
+    # The test runner's own interpreter may live under a scratch venv: pin the canonical one.
+    monkeypatch.setattr(start.sys, "executable", str(Path.home() / ".hermes/hermes-agent/venv/bin/python3"))
 
     def popen(command, **kwargs):
         seen.append(kwargs["cwd"])
@@ -69,3 +71,49 @@ def test_canonical_code_root_still_spawns(tmp_path, monkeypatch):
     monkeypatch.setattr(start.subprocess, "Popen", popen)
     assert start.spawn_unmanaged_gateway(tmp_path, deadline=time.monotonic() + 5) is child
     assert seen == [Path(start.__file__).resolve().parent.parent]
+
+
+def test_spawn_refused_when_interpreter_is_a_scratch_venv(tmp_path, monkeypatch):
+    # The 27/10 orphans ran a scratch venv's python: the root and home are canonical here, only the
+    # interpreter path is disposable, and the guard must still refuse before any Popen.
+    from hermes_cli import gateway_runtime_start as start
+    from hermes_cli.gateway_runtime_service import RuntimeStartError
+
+    venv_python = tmp_path / "profiles" / "cto" / "cache" / "scratch" / "t_c7ce02ae" / "venv" / "bin" / "python"
+    monkeypatch.setattr(start.sys, "executable", str(venv_python))
+    launched = []
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: launched.append(a))
+
+    with pytest.raises(RuntimeStartError) as refused:
+        start.spawn_unmanaged_gateway(tmp_path / "home", deadline=time.monotonic() + 5)
+
+    assert refused.value.reason == "foreign_code_root"
+    assert launched == []
+
+
+def test_ensure_turns_a_scratch_spawn_refusal_into_a_verdict(tmp_path, monkeypatch):
+    # The refusal is raised inside ensure_gateway_runtime's own try: callers (dispatcher, cron, TUI)
+    # get a GatewayDiscovery with the reason, never an exception and never a retry loop.
+    from hermes_cli import gateway_runtime as runtime
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli import gateway_runtime_start as start
+    from hermes_cli.gateway_runtime import GatewayDiscovery
+
+    home = tmp_path / "profiles" / "cto" / "cache" / "scratch" / "t_1"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(runtime, "_update_fenced", lambda *a, **k: False)
+    monkeypatch.setattr(runtime, "_overlay_owner_home", lambda h: h)
+    monkeypatch.setattr(runtime, "_observe_replacing_stale",
+                        lambda *a, **k: GatewayDiscovery("absent"))
+    monkeypatch.setattr(runtime, "_starting_multiplexer_root", lambda h: None)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint",
+                        lambda *a, **k: GatewayDiscovery("absent"))
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned from scratch"))
+    from hermes_cli import gateway_runtime_multiplex as mux
+    monkeypatch.setattr(mux, "multiplexer_serves_home", lambda h: None)
+    monkeypatch.setattr(mux, "implied_host_root", lambda h: None)
+
+    verdict = runtime.ensure_gateway_runtime(home, timeout=5)
+
+    assert verdict.reason_code == "foreign_code_root"

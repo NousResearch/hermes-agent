@@ -1880,3 +1880,98 @@ def test_custom_endpoint_make_default_refuses_when_its_provider_entry_is_locked(
             id="new-probe", name="new-probe", base_url="https://new.example/v1", model="new-model", make_default=True))
     assert exc.value.status_code == 403, exc.value
     assert plane.profile("default")["values"].get("model") in (None, {}), plane.profile("default")
+
+
+# --- re-entry ----------------------------------------------------------------------------
+
+def _blocked_in_state(thread) -> bool:
+    import sys
+    frame = sys._current_frames().get(thread.ident)
+    while frame is not None:
+        if frame.f_code is backend_mod.RemoteBackend._state.__code__:
+            return True
+        frame = frame.f_back
+    return False
+
+
+def test_same_thread_reentry_raises_while_other_threads_wait(plane, monkeypatch):
+    """Code on a profile's boot path (its credential before the fetch, or anything during it) that
+    reads that profile's config gets a loud ConfigBackendUnavailable at once instead of waiting on
+    its own load forever; another thread still waits for the fetch in flight and shares it."""
+    import threading
+    import time
+
+    from tests.waiting import wait_until
+
+    backend = remote_pkg.get_remote_backend()
+    home = plane.home
+    real_token, real_request = backend_mod.client.plane_token, backend_mod.client.request
+    errors: list = []
+    other: dict = {}
+    waiter = threading.Thread(target=lambda: other.setdefault("state", backend._state(home)), daemon=True)
+
+    def reenter():
+        started = time.monotonic()
+        try:
+            backend.version(home)
+        except ConfigBackendUnavailable as exc:
+            errors.append((str(exc), time.monotonic() - started))
+
+    def token(h):
+        if not errors:
+            reenter()  # before the fetch lock
+        return real_token(h)
+
+    def request(method, *args, **kwargs):
+        if method == "GET" and len(errors) == 1:
+            reenter()  # under the fetch lock
+            waiter.start()
+            wait_until(lambda: _blocked_in_state(waiter), timeout=5, what="the other thread waits")
+        return real_request(method, *args, **kwargs)
+
+    monkeypatch.setattr(backend_mod.client, "plane_token", token)
+    monkeypatch.setattr(backend_mod.client, "request", request)
+    plane.upper = {"display": {"skin": "ares"}}
+    assert backend.read_user_doc(home)["display"]["skin"] == "ares"
+    assert len(errors) == 2 and all("re-entered" in msg and secs < 1.0 for msg, secs in errors)
+    waiter.join(5)
+    assert not waiter.is_alive() and other["state"] is backend._state(home)
+    assert len(_gets(plane)) == 1  # the waiting thread used the fetch it waited for
+    backend.version(home)  # once loaded, the same thread reads normally
+
+
+def test_nothing_is_logged_under_a_backend_lock(plane, monkeypatch):
+    """A log handler can read config, and a thread holding the handler's lock may be waiting for a
+    backend lock: the boot retry warning and the write's inherited-key warning are both emitted
+    with no fetch lock or profile state lock held."""
+    import logging
+
+    backend = remote_pkg.get_remote_backend()
+    seen: list = []
+
+    class Probe(logging.Handler):
+        def emit(self, record):
+            held = any(lk.locked() for lk in list(backend._fetch_locks.values()))
+            held = held or any(st.lock._is_owned() for st in list(backend._states.values()))
+            seen.append((record.getMessage(), held))
+
+    real_request = backend_mod.client.request
+
+    def first_get_fails(method, *args, **kwargs):
+        resp = real_request(method, *args, **kwargs)
+        plane.fail_status = None
+        return resp
+
+    monkeypatch.setattr(backend_mod.client, "request", first_get_fails)
+    probe = Probe(level=logging.WARNING)
+    backend_mod.logger.addHandler(probe)
+    try:
+        plane.upper = {"display": {"personality": "concise"}}
+        plane.profile("default")["values"] = {"display": {"personality": "pirate"}}
+        plane.fail_status = 503  # the first GET: a retryable outage, warned about before the retry
+        write_config_key(plane.home / "config.yaml", "display.personality", None)
+    finally:
+        backend_mod.logger.removeHandler(probe)
+    messages = [m for m, _ in seen]
+    assert any("retrying" in m for m in messages) and any("still set by an upper level" in m for m in messages)
+    assert [m for m, held in seen if held] == []

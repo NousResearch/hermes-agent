@@ -159,6 +159,18 @@ class TestEdit:
         run_ = next(r for r in para.runs if "REPLACED" in r.text)
         assert run_.bold is True  # formatting survived
 
+    def test_replace_does_not_hang_when_replacement_contains_needle(
+            self, created: Path, workdir: Path):
+        """Regression: the cross-run pass looped forever when `new` contained `old`
+        (the replacement kept re-matching itself)."""
+        out = workdir / "replace-loop.docx"
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPTS / "docx_edit.py"), "replace", str(created),
+             "--find", "a", "--replace", "aa", "-o", str(out)],
+            capture_output=True, timeout=120)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+        assert json.loads(proc.stdout.decode("utf-8"))["replacements"] >= 1
+
     def test_set_cell(self, created: Path, workdir: Path):
         out = workdir / "cell.docx"
         run("docx_edit.py", "set-cell", created, "--table", "0", "--row",

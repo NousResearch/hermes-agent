@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Hermes 内部出了问题（{0}）· /
 userMessages.credential.currentProvider: "当前提供方"
 userMessages.credential.missingKey: "尚未为 {0} 设置 API 密钥，消息将会失败。请输入 /model，选择 {0} 并粘贴密钥（或运行 /setup）。"
 userMessages.details: "详情：{0}"
+userMessages.promptTimeout.approval: "审批提示已关闭：未及时回应，该命令未执行。准备好批准时请重新发送你的请求，或在 config.yaml 中调大 approvals.timeout。"
 userMessages.promptTimeout.secret: "密钥输入提示已关闭：未及时回应，需要它的步骤已被跳过。准备好输入时请重新发送你的请求。"
 userMessages.promptTimeout.sudo: "密码提示已关闭：未及时回应，该命令已被跳过。准备好输入时请重新发送你的请求。"
 userMessages.promptTimeout.vaultCode: "验证码提示已关闭：未及时回应，登录已被跳过。拿到验证码后请重新发送你的请求。"

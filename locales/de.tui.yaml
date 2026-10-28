@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "In Hermes ist ein Fehler aufgetreten (
 userMessages.credential.currentProvider: "den aktuellen Anbieter"
 userMessages.credential.missingKey: "Für {0} ist kein API-Schlüssel gesetzt, Nachrichten werden fehlschlagen. Geben Sie /model ein, wählen Sie {0} und fügen Sie einen Schlüssel ein (oder führen Sie /setup aus)."
 userMessages.details: "Details: {0}"
+userMessages.promptTimeout.approval: "Genehmigungs-Abfrage geschlossen: keine Antwort in der vorgegebenen Zeit, der Befehl wurde nicht ausgeführt. Senden Sie Ihre Anfrage erneut, wenn Sie bereit zur Genehmigung sind, oder erhöhen Sie approvals.timeout in config.yaml."
 userMessages.promptTimeout.secret: "Geheimnis-Abfrage geschlossen: keine Antwort in der vorgegebenen Zeit, der Schritt, der sie brauchte, wurde übersprungen. Senden Sie Ihre Anfrage erneut, wenn Sie bereit zur Eingabe sind."
 userMessages.promptTimeout.sudo: "Passwort-Abfrage geschlossen: keine Antwort in der vorgegebenen Zeit, der Befehl wurde übersprungen. Senden Sie Ihre Anfrage erneut, wenn Sie bereit zur Eingabe sind."
 userMessages.promptTimeout.vaultCode: "Abfrage des Bestätigungscodes geschlossen: keine Antwort in der vorgegebenen Zeit, die Anmeldung wurde übersprungen. Senden Sie Ihre Anfrage erneut, wenn Sie den Code haben."

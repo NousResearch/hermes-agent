@@ -48,7 +48,7 @@ const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionReque
 const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
   event.type === 'connection.update' && event.payload !== undefined
 
-/** `approval.settled` / `clarify.settled {prompt_id}`: take down the card
+/** `approval.settled` / `clarify.settled {prompt_id, reason?}`: take down the card
  *  parked under that server request id. Returns false for other events. */
 function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId } = ctx
@@ -84,9 +84,49 @@ function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
 
   if (approval) {
     clearApprovalRequest(sessionId, approval.requestId)
+
+    // The shared gateway's own expiry (`reason: "timeout"`); answered or
+    // withdrawn prompts settle with no reason and come down silently.
+    if ((payload as { reason?: unknown } | undefined)?.reason === 'timeout') {
+      announceApprovalTimeout(ctx, promptId)
+    }
   }
 
   return true
+}
+
+/** An approval nobody answered expired: the Run/Reject bar vanishing is the
+ *  only thing the user would otherwise see, and the tool row then shows a
+ *  model-facing "BLOCKED" result. Say what happened in human terms (the
+ *  command did not run) and point at the setting that controls the wait. */
+function announceApprovalTimeout({ deps, occurredAt, sessionId }: GatewayEventContext, id: string): void {
+  if (!sessionId) {
+    return
+  }
+
+  const line = translateNow('assistant.approval.timedOutSystemLine')
+  const messageId = `approval-timeout-${id}`
+
+  deps.flushQueuedDeltas(sessionId)
+  deps.updateSessionState(sessionId, state =>
+    state.messages.some(message => message.id === messageId)
+      ? state
+      : {
+          ...state,
+          messages: [
+            ...state.messages,
+            { id: messageId, role: 'system', parts: [textPart(line, occurredAt)], timestamp: occurredAt }
+          ]
+        }
+  )
+  notify({
+    kind: 'warning',
+    message: line,
+    action: {
+      label: translateNow('assistant.approval.openSafetySettings'),
+      onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
+    }
+  })
 }
 
 // A display card has no targets to name.
@@ -153,6 +193,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   // turn ended). The prompt id is the server request id this window parked the
   // card under. Only the parked card comes down: the answer itself reaches the
   // transcript through the tool's own completion, so no "skipped" projection.
+  // The one exception is an approval the gateway expired (`reason: "timeout"`).
   if (handlePromptSettledEvent(ctx)) {
     return true
   }
@@ -208,28 +249,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   if (approval) {
     clearApprovalRequest(sessionId, approval.requestId)
 
-    // The Run/Reject bar vanishing is the only thing the user would otherwise
-    // see; the tool row then shows a model-facing "BLOCKED" result. Say what
-    // happened in human terms and point at the setting that controls the wait.
-    if (payload?.reason === 'timeout' && sessionId) {
-      const line = translateNow('assistant.approval.timedOutSystemLine')
-
-      deps.flushQueuedDeltas(sessionId)
-      deps.updateSessionState(sessionId, state => ({
-        ...state,
-        messages: [
-          ...state.messages,
-          { id: `approval-timeout-${id}`, role: 'system', parts: [textPart(line, occurredAt)], timestamp: occurredAt }
-        ]
-      }))
-      notify({
-        kind: 'warning',
-        message: line,
-        action: {
-          label: translateNow('assistant.approval.openSafetySettings'),
-          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
-        }
-      })
+    if (payload?.reason === 'timeout') {
+      announceApprovalTimeout(ctx, id)
     }
   } else {
     cancelParkedCredentialRequest(ctx, key, id)

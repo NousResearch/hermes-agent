@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Qualcosa è andato storto dentro Herme
 userMessages.credential.currentProvider: "il provider corrente"
 userMessages.credential.missingKey: "Nessuna chiave API impostata per {0}, quindi i messaggi falliranno. Digita /model, seleziona {0} e incolla una chiave (oppure esegui /setup)."
 userMessages.details: "Dettagli: {0}"
+userMessages.promptTimeout.approval: "Richiesta di approvazione chiusa: nessuna risposta in tempo, quindi il comando non è stato eseguito. Invia di nuovo la richiesta quando sei pronto ad approvarla, oppure aumenta approvals.timeout in config.yaml."
 userMessages.promptTimeout.secret: "Richiesta del segreto chiusa: nessuna risposta in tempo, quindi il passaggio che lo richiedeva è stato saltato. Invia di nuovo la richiesta quando sei pronto a inserirlo."
 userMessages.promptTimeout.sudo: "Richiesta della password chiusa: nessuna risposta in tempo, quindi il comando è stato saltato. Invia di nuovo la richiesta quando sei pronto a inserirla."
 userMessages.promptTimeout.vaultCode: "Richiesta del codice di verifica chiusa: nessuna risposta in tempo, quindi l'accesso è stato saltato. Invia di nuovo la richiesta quando hai il codice."

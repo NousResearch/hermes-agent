@@ -46,3 +46,48 @@ def test_query_file_read_matches_main(tmp_path, capsys, launched, case, expected
     if fmt == "stream-json":
         result = [json.loads(line) for line in out.splitlines() if line.strip()][-1]
         assert result["type"] == "result" and result.get("is_error", result.get("subtype") != "success")
+
+
+class _Stdin:
+    def __init__(self, text, tty=False):
+        self._text, self._tty = text, tty
+
+    def isatty(self):
+        return self._tty
+
+    def read(self):
+        return self._text
+
+
+@pytest.fixture
+def oneshot_launched(monkeypatch):
+    seen = []
+    monkeypatch.setattr(startup, "ensure_launch_provider", lambda args: True)
+    monkeypatch.setattr(gateway_chat, "_register_terminal_process", lambda: None)
+
+    async def run(args, emitter=None):
+        seen.append(args.oneshot)
+        return 0
+    monkeypatch.setattr(gateway_chat, "run_gateway_chat", run)
+    return seen
+
+
+def _oneshot_args(prompt):
+    return argparse.Namespace(oneshot=prompt, query=None, query_file=None, output_format="text", model=None)
+
+
+@pytest.mark.parametrize("prompt, stdin, sent", [("-", "summarize $(id) 'this'\n", "summarize $(id) 'this'\n"),
+                                                 ("literal", "piped but unasked", "literal")])
+def test_oneshot_dash_reads_the_prompt_from_stdin(monkeypatch, oneshot_launched, prompt, stdin, sent):
+    """`hermes -z -` sends stdin verbatim; a literal -z prompt never consumes stdin."""
+    monkeypatch.setattr(gateway_chat.sys, "stdin", _Stdin(stdin))
+    assert gateway_chat.launch_from_args(_oneshot_args(prompt)) == 0
+    assert oneshot_launched == [sent]
+
+
+@pytest.mark.parametrize("stdin, expected", [(_Stdin("typed", tty=True), "reads the prompt from stdin"),
+                                             (_Stdin(" \n"), "empty prompt on stdin")])
+def test_oneshot_dash_refuses_terminal_or_empty_stdin(monkeypatch, capsys, oneshot_launched, stdin, expected):
+    monkeypatch.setattr(gateway_chat.sys, "stdin", stdin)
+    assert gateway_chat.launch_from_args(_oneshot_args("-")) == 2
+    assert oneshot_launched == [] and expected in capsys.readouterr().err

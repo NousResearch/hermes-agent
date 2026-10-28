@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Un problème est survenu dans Hermes (
 userMessages.credential.currentProvider: "le fournisseur actuel"
 userMessages.credential.missingKey: "Aucune clé API n'est définie pour {0}, les messages échoueront donc. Tapez /model, choisissez {0} et collez une clé (ou lancez /setup)."
 userMessages.details: "Détails : {0}"
+userMessages.promptTimeout.approval: "Invite d'approbation fermée : aucune réponse à temps, la commande n'a donc pas été exécutée. Renvoyez votre demande quand vous serez prêt à l'approuver, ou augmentez approvals.timeout dans config.yaml."
 userMessages.promptTimeout.secret: "Invite de secret fermée : aucune réponse à temps, l'étape qui en avait besoin a donc été ignorée. Renvoyez votre demande quand vous serez prêt à le saisir."
 userMessages.promptTimeout.sudo: "Invite de mot de passe fermée : aucune réponse à temps, la commande a donc été ignorée. Renvoyez votre demande quand vous serez prêt à le saisir."
 userMessages.promptTimeout.vaultCode: "Invite de code de vérification fermée : aucune réponse à temps, la connexion a donc été ignorée. Renvoyez votre demande quand vous aurez le code."

@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Hermes 내부에 문제가 생겼어�
 userMessages.credential.currentProvider: "현재 제공자"
 userMessages.credential.missingKey: "{0}에 설정된 API 키가 없어서 메시지가 실패할 거예요. /model 을 입력해 {0}을(를) 선택하고 키를 붙여 넣으세요 (또는 /setup 을 실행하세요)."
 userMessages.details: "세부 정보: {0}"
+userMessages.promptTimeout.approval: "승인 프롬프트가 닫혔어요: 제한 시간 안에 답이 없어서 명령을 실행하지 않았어요. 승인할 준비가 되면 요청을 다시 보내거나 config.yaml의 approvals.timeout 값을 늘리세요."
 userMessages.promptTimeout.secret: "시크릿 입력 프롬프트가 닫혔어요: 제한 시간 안에 답이 없어서 해당 단계를 건너뛰었어요. 입력할 준비가 되면 요청을 다시 보내세요."
 userMessages.promptTimeout.sudo: "비밀번호 프롬프트가 닫혔어요: 제한 시간 안에 답이 없어서 명령을 건너뛰었어요. 입력할 준비가 되면 요청을 다시 보내세요."
 userMessages.promptTimeout.vaultCode: "인증 코드 프롬프트가 닫혔어요: 제한 시간 안에 답이 없어서 로그인을 건너뛰었어요. 코드가 준비되면 요청을 다시 보내세요."

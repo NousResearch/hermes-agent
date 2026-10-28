@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Iets het binne Hermes verkeerd geloop 
 userMessages.credential.currentProvider: "die huidige verskaffer"
 userMessages.credential.missingKey: "Geen API-sleutel is vir {0} gestel nie, so boodskappe sal misluk. Tik /model, kies {0}, en plak 'n sleutel (of voer /setup uit)."
 userMessages.details: "Besonderhede: {0}"
+userMessages.promptTimeout.approval: "Goedkeuringsprompt gesluit: geen antwoord betyds nie, so die opdrag het nie geloop nie. Stuur jou versoek weer wanneer jy gereed is om dit goed te keur, of verhoog approvals.timeout in config.yaml."
 userMessages.promptTimeout.secret: "Geheim-prompt gesluit: geen antwoord betyds nie, so die stap wat dit nodig gehad het, is oorgeslaan. Stuur jou versoek weer wanneer jy gereed is om dit in te voer."
 userMessages.promptTimeout.sudo: "Wagwoord-prompt gesluit: geen antwoord betyds nie, so die opdrag is oorgeslaan. Stuur jou versoek weer wanneer jy gereed is om dit in te voer."
 userMessages.promptTimeout.vaultCode: "Verifikasiekode-prompt gesluit: geen antwoord betyds nie, so die aanmelding is oorgeslaan. Stuur jou versoek weer wanneer jy die kode het."

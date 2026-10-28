@@ -35,7 +35,7 @@ from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
 )
-from tools.approval_gateway_wait import _await_gateway_decision
+from tools.approval_gateway_wait import _SettleHooks, _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
 
@@ -121,6 +121,8 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+# (session_key, request_id) of approvals that timed out and whose settle hooks are still announcing it.
+_gateway_expiring: set[tuple[str, str]] = set()
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -199,13 +201,24 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
 
+def gateway_approval_open(session_key: str, request_id: str) -> bool:
+    """True while the approval is pending, or timed out with its settle hooks still announcing that.
+    A snapshot taken in that gap leaves the card to the hook, which settles it with its reason."""
+    with _lock:
+        return ((session_key, request_id) in _gateway_expiring
+                or any(entry.data.get("request_id") == request_id for entry in _gateway_queues.get(session_key, [])))
+
+
 def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
     """Attach ``settle(reason)`` to one pending approval; it runs once when that wait ends by any path.
+    Hooks stack: a chat's timeout notice and the shared viewers' card teardown both hear the outcome.
     False when the request is no longer pending (the surface should withdraw its prompt itself)."""
     with _lock:
         for entry in _gateway_queues.get(session_key, []):
             if entry.data.get("request_id") == request_id:
-                entry.settle = settle
+                if entry.settle is None:
+                    entry.settle = _SettleHooks()
+                entry.settle.append(settle)
                 return True
     return False
 

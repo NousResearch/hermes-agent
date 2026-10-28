@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Chuaigh rud éigin amú laistigh de He
 userMessages.credential.currentProvider: "an soláthraí reatha"
 userMessages.credential.missingKey: "Níl aon eochair API socraithe do {0}, mar sin teipfidh ar theachtaireachtaí. Clóscríobh /model, roghnaigh {0}, agus greamaigh eochair (nó rith /setup)."
 userMessages.details: "Sonraí: {0}"
+userMessages.promptTimeout.approval: "Dúnadh leid an cheada: níor tugadh freagra in am, mar sin níor ritheadh an t-ordú. Seol d'iarratas arís nuair a bheidh tú réidh é a cheadú, nó ardaigh approvals.timeout in config.yaml."
 userMessages.promptTimeout.secret: "Dúnadh an leid rúin: níor tugadh freagra in am, mar sin scipeáladh an chéim a bhí ag brath air. Seol d'iarratas arís nuair a bheidh tú réidh lena iontráil."
 userMessages.promptTimeout.sudo: "Dúnadh leid an phasfhocail: níor tugadh freagra in am, mar sin scipeáladh an t-ordú. Seol d'iarratas arís nuair a bheidh tú réidh lena iontráil."
 userMessages.promptTimeout.vaultCode: "Dúnadh leid an chóid fhíoraithe: níor tugadh freagra in am, mar sin scipeáladh an síniú isteach. Seol d'iarratas arís nuair a bheidh an cód agat."

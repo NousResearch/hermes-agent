@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Hermes içinde bir sorun oluştu ({0})
 userMessages.credential.currentProvider: "geçerli sağlayıcı"
 userMessages.credential.missingKey: "{0} için API anahtarı ayarlanmamış, bu yüzden mesajlar başarısız olur. /model yazın, {0} seçeneğini seçin ve bir anahtar yapıştırın (veya /setup çalıştırın)."
 userMessages.details: "Ayrıntılar: {0}"
+userMessages.promptTimeout.approval: "Onay istemi kapandı: zamanında yanıt gelmediği için komut çalıştırılmadı. Onaylamaya hazır olduğunuzda isteğinizi yeniden gönderin veya config.yaml içinde approvals.timeout değerini artırın."
 userMessages.promptTimeout.secret: "Gizli anahtar istemi kapandı: zamanında yanıt gelmediği için ona ihtiyaç duyan adım atlandı. Girmeye hazır olduğunuzda isteğinizi yeniden gönderin."
 userMessages.promptTimeout.sudo: "Parola istemi kapandı: zamanında yanıt gelmediği için komut atlandı. Girmeye hazır olduğunuzda isteğinizi yeniden gönderin."
 userMessages.promptTimeout.vaultCode: "Doğrulama kodu istemi kapandı: zamanında yanıt gelmediği için giriş atlandı. Kod elinizde olduğunda isteğinizi yeniden gönderin."

@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Усередині Hermes щось п�
 userMessages.credential.currentProvider: "поточного провайдера"
 userMessages.credential.missingKey: "Для {0} не задано ключ API, тому повідомлення не надсилатимуться. Введіть /model, виберіть {0} і вставте ключ (або виконайте /setup)."
 userMessages.details: "Подробиці: {0}"
+userMessages.promptTimeout.approval: "Запит підтвердження закрито: відповіді вчасно не було, тому команду не виконано. Надішліть запит знову, коли будете готові його підтвердити, або збільште approvals.timeout у config.yaml."
 userMessages.promptTimeout.secret: "Запит секрету закрито: відповіді вчасно не було, тому крок, якому він був потрібен, пропущено. Надішліть запит знову, коли будете готові його ввести."
 userMessages.promptTimeout.sudo: "Запит пароля закрито: відповіді вчасно не було, тому команду пропущено. Надішліть запит знову, коли будете готові його ввести."
 userMessages.promptTimeout.vaultCode: "Запит коду підтвердження закрито: відповіді вчасно не було, тому вхід пропущено. Надішліть запит знову, коли матимете код."

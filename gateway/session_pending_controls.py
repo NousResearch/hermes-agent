@@ -6,7 +6,7 @@ Secret/sudo prompts remain native; no response is published or journaled here.
 from copy import deepcopy
 
 from hermes_state_runtime import RuntimeStoreError
-from tools.approval import list_gateway_approvals, resolve_gateway_approval
+from tools.approval import gateway_approval_open, resolve_gateway_approval
 
 
 class PendingControls:
@@ -36,6 +36,20 @@ class PendingControls:
                 prompt['timeout_s'] = timeout_s
             self.pending[prompt_id] = (route, prompt)
             self.events.publish(session_id, prompt, event_type='approval.request')
+        from tools.approval import register_gateway_settle
+        register_gateway_settle(route, prompt_id, lambda reason: self._settle_timed_out(session_id, prompt_id, reason))
+
+    def _settle_timed_out(self, session_id, prompt_id, reason):
+        """Take an expired approval card down for every viewer, saying why: the command did not run."""
+        if reason != 'timeout':
+            return  # answered or withdrawn: respond()/snapshot() settle those
+        with self.events.lock:
+            entry = self.pending.pop(prompt_id, None)
+            self.remote_responders.pop(prompt_id, None)
+            if entry is not None:
+                self.events.publish(session_id, {'prompt_id': prompt_id, 'reason': 'timeout',
+                                                 'execution_generation': entry[1]['execution_generation']},
+                                    event_type='approval.settled')
 
     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
         from gateway.run import _redact_approval_command
@@ -55,7 +69,7 @@ class PendingControls:
             for prompt_id, (route, prompt) in list(self.pending.items()):
                 active = (prompt_id in self.remote_responders or
                           (not route.event.is_set() if prompt['kind'] == 'clarify' else
-                           any(p['request_id'] == prompt_id for p in list_gateway_approvals(route))))
+                           gateway_approval_open(route, prompt_id)))
                 if prompt['execution_generation'] != generation or not active:
                     del self.pending[prompt_id]
                     self.remote_responders.pop(prompt_id, None)

@@ -3,6 +3,7 @@ import type { SessionInfo } from '../types.js'
 
 import { patchOverlayState } from './overlayStore.js'
 import { patchUiState } from './uiStore.js'
+import { promptTimeoutNotice } from './userMessages.js'
 
 // Canonical-gateway event handling extracted from createGatewayEventHandler:
 // the owner-epoch lifecycle fence and the generation-bound shared controls
@@ -49,10 +50,16 @@ export function fenceLifecycleEvent(ev: AnyGatewayEvent, current: null | Session
 }
 
 /** Clears the shared approval/clarify card a settled event names. Returns true when handled. */
-export function settleSharedPrompt(ev: AnyGatewayEvent): boolean {
+export function settleSharedPrompt(ev: AnyGatewayEvent, announce: (text: string) => void): boolean {
   if (ev.type === 'approval.settled' || ev.type === 'clarify.settled') {
     const kind = ev.type === 'approval.settled' ? 'approval' : 'clarify'
     const promptId = ev.payload?.prompt_id
+    // An expired approval needs words: its tool row carries only the model-facing BLOCKED result.
+    const notice = ev.type === 'approval.settled' ? promptTimeoutNotice('approval', ev.payload?.reason) : null
+
+    if (notice) {
+      announce(notice)
+    }
 
     patchOverlayState(previous =>
       previous[kind]?.sharedControl?.prompt_id === promptId ? { ...previous, [kind]: null } : previous

@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Hermes 内部で問題が発生（{0}�
 userMessages.credential.currentProvider: "現在のプロバイダー"
 userMessages.credential.missingKey: "{0} の API キーが設定されていないため、メッセージの送信は失敗します。/model と入力して {0} を選び、キーを貼り付けてください（または /setup を実行してください）。"
 userMessages.details: "詳細: {0}"
+userMessages.promptTimeout.approval: "承認プロンプトを閉じました: 時間内に応答がなかったため、コマンドは実行されませんでした。承認の準備ができたらもう一度リクエストを送るか、config.yaml の approvals.timeout を引き上げてください。"
 userMessages.promptTimeout.secret: "シークレット入力プロンプトを閉じました: 時間内に入力がなかったため、それを必要とするステップはスキップされました。入力の準備ができたら、もう一度リクエストを送ってください。"
 userMessages.promptTimeout.sudo: "パスワード入力プロンプトを閉じました: 時間内に入力がなかったため、コマンドはスキップされました。入力の準備ができたら、もう一度リクエストを送ってください。"
 userMessages.promptTimeout.vaultCode: "確認コード入力プロンプトを閉じました: 時間内に入力がなかったため、サインインはスキップされました。コードが手元に届いたら、もう一度リクエストを送ってください。"

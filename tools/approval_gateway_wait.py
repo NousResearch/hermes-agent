@@ -22,6 +22,17 @@ from tools.approval_human_wait import activity_heartbeat, human_wait_window
 logger = logging.getLogger("tools.approval")
 
 
+class _SettleHooks(list):
+    """An approval's independent settle hooks; one that raises never keeps the next from hearing the outcome."""
+
+    def __call__(self, reason: str) -> None:
+        for hook in self:
+            try:
+                hook(reason)
+            except Exception:
+                logger.debug("approval settle hook failed", exc_info=True)
+
+
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
     __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle")
@@ -199,6 +210,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
+            # Off the queue but not yet announced: keep a timed-out approval visible as open until its hooks
+            # ran, so a concurrent snapshot cannot settle it first without the reason.
+            expiring = None
+            if settle is not None and choice is None and state == "timeout":
+                expiring = (session_key, entry.data["request_id"])
+                _approval._gateway_expiring.add(expiring)
             if choice is None and state in ("timeout", "notify_failed"):
                 # Coalesced followers block on this event: wake them with the leader's outcome rather than
                 # leaving them waiting their own full timeout on a prompt that no longer exists.
@@ -209,15 +226,21 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         if settle is not None:
             # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
             # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
-            # cannot answer) is ``session_closed``; never the raw poll-state token "set".
-            if state == "set":
-                reason = "resolved" if choice is not None else "session_closed"
+            # cannot answer) is ``session_closed``; never the raw poll-state token "set". A choice that landed
+            # after the deadline check is honoured, so its hooks hear ``resolved``, never "timeout" (the command
+            # runs). An interrupt stays a fail-closed deny whatever was committed.
+            if choice is not None and state != "interrupted":
+                reason = "resolved"
+            elif state == "set":
+                reason = "session_closed"
             else:
                 reason = state
             try:
                 settle(reason)
-            except Exception:
-                logger.debug("approval settle hook failed", exc_info=True)
+            finally:
+                if expiring:
+                    with _approval._lock:
+                        _approval._gateway_expiring.discard(expiring)
         return choice
 
     from tools.human_input_hooks import human_input_request

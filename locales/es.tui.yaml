@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Algo salió mal dentro de Hermes ({0})
 userMessages.credential.currentProvider: "el proveedor actual"
 userMessages.credential.missingKey: "No hay ninguna clave de API configurada para {0}, así que los mensajes fallarán. Escribe /model, elige {0} y pega una clave (o ejecuta /setup)."
 userMessages.details: "Detalles: {0}"
+userMessages.promptTimeout.approval: "El prompt de aprobación se cerró: no hubo respuesta a tiempo, así que el comando no se ejecutó. Envía tu solicitud de nuevo cuando estés listo para aprobarla, o aumenta approvals.timeout en config.yaml."
 userMessages.promptTimeout.secret: "El prompt del secreto se cerró: no hubo respuesta a tiempo, así que se omitió el paso que lo necesitaba. Envía tu solicitud de nuevo cuando estés listo para introducirlo."
 userMessages.promptTimeout.sudo: "El prompt de contraseña se cerró: no hubo respuesta a tiempo, así que se omitió el comando. Envía tu solicitud de nuevo cuando estés listo para introducirla."
 userMessages.promptTimeout.vaultCode: "El prompt del código de verificación se cerró: no hubo respuesta a tiempo, así que se omitió el inicio de sesión. Envía tu solicitud de nuevo cuando tengas el código."

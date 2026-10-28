@@ -1332,6 +1332,7 @@ userMessages.backend.stderrProblemNamed: "Valami hiba történt a Hermesben ({0}
 userMessages.credential.currentProvider: "a jelenlegi szolgáltató"
 userMessages.credential.missingKey: "Nincs API-kulcs beállítva {0} számára, ezért az üzenetek nem fognak menni. Írd be a /model parancsot, válaszd ki: {0}, majd illessz be egy kulcsot (vagy futtasd a /setup parancsot)."
 userMessages.details: "Részletek: {0}"
+userMessages.promptTimeout.approval: "A jóváhagyás bekérése bezárult: nem érkezett válasz időben, így a parancs nem futott le. Küldd el újra a kérésedet, amikor készen állsz a jóváhagyására, vagy növeld az approvals.timeout értékét a config.yaml fájlban."
 userMessages.promptTimeout.secret: "A titok bekérése bezárult: nem érkezett válasz időben, így az ezt igénylő lépés kimaradt. Küldd el újra a kérésedet, amikor készen állsz a megadására."
 userMessages.promptTimeout.sudo: "A jelszó bekérése bezárult: nem érkezett válasz időben, így a parancs kimaradt. Küldd el újra a kérésedet, amikor készen állsz a megadására."
 userMessages.promptTimeout.vaultCode: "Az ellenőrző kód bekérése bezárult: nem érkezett válasz időben, így a bejelentkezés kimaradt. Küldd el újra a kérésedet, amikor megvan a kód."

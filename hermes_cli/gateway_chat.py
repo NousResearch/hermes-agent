@@ -335,6 +335,35 @@ def _register_terminal_process() -> None:
         print(f"Warning: {warning}", file=sys.stderr)
 
 
+def _read_prompt_input(args) -> str | None:
+    """Load a prompt that lives outside argv into ``args``; an error message when it can't be read.
+
+    ``--query-file PATH`` (``-`` = stdin) is main's Bot Mode DM transport contract: undecodable
+    bytes are replaced, an unreadable or empty file is named. ``-z -`` reads the one-shot prompt
+    from stdin the same way; a terminal stdin is refused rather than waiting for an EOF nobody types.
+    """
+    query_file = getattr(args, "query_file", None)
+    if query_file:
+        try:
+            if query_file == "-":
+                args.query = sys.stdin.read()
+            else:
+                with open(query_file, encoding="utf-8-sig", errors="replace") as handle:
+                    args.query = handle.read()
+        except OSError as exc:
+            return f"cannot read --query-file {query_file}: {exc}"
+        return None if args.query.strip() else f"--query-file {query_file} is empty"
+    if getattr(args, "oneshot", None) != "-":
+        return None
+    if sys.stdin is None or sys.stdin.isatty():
+        return "-z - reads the prompt from stdin: pipe or redirect it (hermes -z - < prompt.txt)"
+    try:
+        args.oneshot = sys.stdin.read()
+    except OSError as exc:
+        return f"cannot read the -z prompt from stdin: {exc}"
+    return None if args.oneshot.strip() else "-z - got an empty prompt on stdin"
+
+
 def launch_from_args(args) -> int:
     from websockets.exceptions import WebSocketException
     emitter = None
@@ -371,20 +400,9 @@ def launch_from_args(args) -> int:
                 configured = False
             if not configured:
                 return failed("credentials or agent init failed", 1)
-        query_file = getattr(args, "query_file", None)
-        if query_file:
-            # Main's --query-file contract (the Bot Mode DM transport): undecodable bytes are
-            # replaced, and an unreadable or empty file is exit 2 with the file named.
-            try:
-                if query_file == "-":
-                    args.query = sys.stdin.read()
-                else:
-                    with open(query_file, encoding="utf-8-sig", errors="replace") as handle:
-                        args.query = handle.read()
-            except OSError as exc:
-                return failed(f"cannot read --query-file {query_file}: {exc}", 2)
-            if not args.query.strip():
-                return failed(f"--query-file {query_file} is empty", 2)
+        prompt_error = _read_prompt_input(args)
+        if prompt_error:
+            return failed(prompt_error, 2)
         if not (getattr(args, "query", None) or getattr(args, "q", None) or getattr(args, "oneshot", None) or sys.stdin.isatty()):
             raise GatewayClientError("Noninteractive chat requires --query or --oneshot")
         return asyncio.run(run_gateway_chat(args, emitter=emitter))

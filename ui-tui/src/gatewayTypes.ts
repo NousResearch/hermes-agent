@@ -46,7 +46,8 @@ export interface CanonicalClarifyPrompt extends CanonicalSharedPrompt {
  *  declare (it has no server→client prompt frames; controls ride the event stream). */
 export interface CanonicalGatewayEventMap {
   'approval.request': CanonicalApprovalPrompt
-  'approval.settled': Pick<CanonicalSharedPrompt, 'execution_generation' | 'prompt_id'>
+  /** `reason: 'timeout'` when nobody answered before `approvals.timeout`; absent when answered or withdrawn. */
+  'approval.settled': Pick<CanonicalSharedPrompt, 'execution_generation' | 'prompt_id'> & { reason?: 'timeout' }
   'clarify.request': CanonicalClarifyPrompt
   'clarify.settled': Pick<CanonicalSharedPrompt, 'execution_generation' | 'prompt_id'>
 }

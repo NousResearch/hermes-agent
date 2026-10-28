@@ -150,7 +150,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "response text to stdout. No banner, no spinner, no tool "
         "previews, no session_id line. Tools, memory, rules, and "
         "AGENTS.md in the CWD are loaded as normal; approvals are "
-        "auto-bypassed. Intended for scripts / pipes."))
+        "auto-bypassed. Intended for scripts / pipes; PROMPT '-' reads "
+        "the prompt from stdin (hermes -z - < prompt.txt)."))
     add("--usage-file", metavar="PATH", default=None, help=(
         "One-shot mode only: after the run, write a JSON usage report "
         "(estimated cost, token counts, model, api_calls) to PATH. "

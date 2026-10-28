@@ -35,7 +35,8 @@ export interface ClientLocalGatewayEventMap {
    *  layer projects them onto the named prompt listeners and answers over `approval.respond`
    *  / `clarify.respond`. Not part of the generated `tui_gateway` contract. */
   'approval.request': CanonicalPromptEvent & { command?: string; description?: string; choices?: string[]; edit?: unknown }
-  'approval.settled': CanonicalPromptEvent
+  /** `reason: 'timeout'` when the gateway expired an unanswered approval (the command did not run). */
+  'approval.settled': CanonicalPromptEvent & { reason?: 'timeout' }
   'clarify.request': CanonicalPromptEvent & { question?: string; choices?: string[]; multi_select?: boolean }
   'clarify.settled': CanonicalPromptEvent
   'dashboard.new_session_requested': { reason?: string }

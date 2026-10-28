@@ -226,7 +226,8 @@ describe('statusbar workspace menu — change working directory', () => {
 
     await vi.waitFor(() => expect(changeSessionCwd).toHaveBeenCalledWith('/opt/data/profiles/austin', undefined))
     expect(selectDesktopPaths).toHaveBeenCalledWith(
-      expect.objectContaining({ defaultPath: '/opt/data', directories: true })
+      expect.objectContaining({ defaultPath: '/opt/data', directories: true }),
+      undefined
     )
   })
 
@@ -253,6 +254,10 @@ describe('statusbar workspace menu — change working directory', () => {
       .find(menuItem => menuItem.id === 'change-workspace-path')
       ?.onSelect?.()
     await vi.waitFor(() => expect(changeSessionCwd).toHaveBeenCalledWith('/srv/bot', 'tile-rt'))
+    // The tile's folders are browsed as the tile's owner, not the window's profile.
+    expect(selectDesktopPaths).toHaveBeenLastCalledWith(expect.objectContaining({ directories: true }), {
+      sessionId: 'tile-rt'
+    })
 
     $sessions.set([{ connection_id: 'conn-remote', cwd: '/opt/data', id: 'tile' }] as never)
     expect(workspaceMenuIds()).not.toContain('change-workspace-path')

@@ -1,7 +1,13 @@
 import ignore from 'ignore'
 
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
-import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import {
+  desktopFsCacheKey,
+  type DesktopFsSessionScope,
+  desktopGitRoot,
+  readDesktopDir,
+  readDesktopFileDataUrl
+} from '@/lib/desktop-fs'
 import { ALWAYS_EXCLUDED, SHOW_IGNORED_EXCLUDED } from '@/lib/excluded-paths'
 import { cleanPath, comparisonPath, isUnderPath } from '@/lib/path-compare'
 
@@ -66,12 +72,12 @@ function ancestorDirs(root: string, dir: string) {
   return dirs
 }
 
-async function gitRootFor(start: string) {
-  const key = `${desktopFsCacheKey()}:${cleanPath(start)}`
+async function gitRootFor(start: string, scope?: DesktopFsSessionScope) {
+  const key = `${desktopFsCacheKey(undefined, scope)}:${cleanPath(start)}`
   let cached = gitRootCache.get(key)
 
   if (!cached) {
-    cached = desktopGitRoot(cleanPath(start))
+    cached = desktopGitRoot(cleanPath(start), scope)
     gitRootCache.set(key, cached)
   }
 
@@ -79,15 +85,15 @@ async function gitRootFor(start: string) {
 }
 
 /** Read .gitignore at `dir` if it actually exists — never probe missing files. */
-async function readGitignore(dir: string): Promise<GitignoreRule | null> {
+async function readGitignore(dir: string, scope?: DesktopFsSessionScope): Promise<GitignoreRule | null> {
   try {
-    const listing = await readDesktopDir(dir)
+    const listing = await readDesktopDir(dir, scope)
 
     if (!listing.entries.some(e => e.name === '.gitignore' && !e.isDirectory)) {
       return null
     }
 
-    const text = decodeDataUrl(await readDesktopFileDataUrl(`${dir}/.gitignore`))
+    const text = decodeDataUrl(await readDesktopFileDataUrl(`${dir}/.gitignore`, scope))
 
     return { base: dir, ig: ignore().add(text) }
   } catch {
@@ -95,12 +101,12 @@ async function readGitignore(dir: string): Promise<GitignoreRule | null> {
   }
 }
 
-async function gitignoreFor(dir: string) {
-  const key = `${desktopFsCacheKey()}:${cleanPath(dir)}`
+async function gitignoreFor(dir: string, scope?: DesktopFsSessionScope) {
+  const key = `${desktopFsCacheKey(undefined, scope)}:${cleanPath(dir)}`
   let cached = gitignoreCache.get(key)
 
   if (!cached) {
-    cached = readGitignore(cleanPath(dir))
+    cached = readGitignore(cleanPath(dir), scope)
     gitignoreCache.set(key, cached)
   }
 
@@ -119,18 +125,18 @@ async function gitignoreFor(dir: string) {
  * any directory, ignored or not: a nested repo resolves to itself, an ordinary ignored
  * directory resolves to the parent's root.
  */
-async function isNestedRepoRoot(entry: HermesReadDirEntry): Promise<boolean> {
+async function isNestedRepoRoot(entry: HermesReadDirEntry, scope?: DesktopFsSessionScope): Promise<boolean> {
   if (!entry.isDirectory) {
     return false
   }
 
-  const key = `${desktopFsCacheKey()}:${cleanPath(entry.path)}`
+  const key = `${desktopFsCacheKey(undefined, scope)}:${cleanPath(entry.path)}`
   let cached = nestedRepoCache.get(key)
 
   if (!cached) {
     cached = (async () => {
       try {
-        const root = await desktopGitRoot(cleanPath(entry.path))
+        const root = await desktopGitRoot(cleanPath(entry.path), scope)
 
         return root !== null && comparisonPath(root) === comparisonPath(entry.path)
       } catch {
@@ -155,7 +161,12 @@ function ignoredBy(rules: GitignoreRule[], entry: HermesReadDirEntry) {
   })
 }
 
-async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, dirPath: string) {
+async function filterIgnored(
+  entries: HermesReadDirEntry[],
+  rootPath: string,
+  dirPath: string,
+  scope?: DesktopFsSessionScope
+) {
   // Opting a project into its ignored files skips the gitignore pass entirely —
   // no git-root probe, no .gitignore reads. ALWAYS_EXCLUDED still applies: `.git`
   // internals and dependency/build dirs are never worth browsing, in any repo.
@@ -169,13 +180,13 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
   // inside dev/<repo> only <repo>'s own .gitignore chain governs. Without this,
   // the parent's `dev/*` pattern matches every entry inside the nested repo and
   // the tree shows an empty folder one level down.
-  const root = (await gitRootFor(dirPath)) ?? (await gitRootFor(rootPath))
+  const root = (await gitRootFor(dirPath, scope)) ?? (await gitRootFor(rootPath, scope))
 
   if (!root) {
     return entries
   }
 
-  const rules = (await Promise.all(ancestorDirs(root, dirPath).map(gitignoreFor))).filter((r): r is GitignoreRule =>
+  const rules = (await Promise.all(ancestorDirs(root, dirPath).map(dir => gitignoreFor(dir, scope)))).filter((r): r is GitignoreRule =>
     Boolean(r)
   )
 
@@ -191,14 +202,19 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
         return entry
       }
 
-      return (await isNestedRepoRoot(entry)) ? entry : null
+      return (await isNestedRepoRoot(entry, scope)) ? entry : null
     })
   )
 
   return visible.filter((entry): entry is HermesReadDirEntry => entry !== null)
 }
 
-export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {
+/** `scope` is the session whose workspace this is: every read below goes to its owner. */
+export async function readProjectDir(
+  dirPath: string,
+  rootPath = dirPath,
+  scope?: DesktopFsSessionScope
+): Promise<HermesReadDirResult> {
   if (!window.hermesDesktop) {
     return { entries: [], error: 'no-bridge' }
   }
@@ -209,13 +225,13 @@ export async function readProjectDir(dirPath: string, rootPath = dirPath): Promi
   // stay browsable in a project that opted into showing ignored files (#55169).
   const showIgnored = showsIgnoredFiles(rootPath)
   const filterSet = showIgnored ? SHOW_IGNORED_EXCLUDED : ALWAYS_EXCLUDED
-  const result = await readDesktopDir(dirPath)
+  const result = await readDesktopDir(dirPath, scope)
   const entries = (result?.entries ?? []).filter(entry => !filterSet.has(entry.name))
 
-  return { ...result, entries: showIgnored ? entries : await filterIgnored(entries, rootPath, dirPath) }
+  return { ...result, entries: showIgnored ? entries : await filterIgnored(entries, rootPath, dirPath, scope) }
 }
 
-export function clearProjectDirCache(rootPath?: string) {
+export function clearProjectDirCache(rootPath?: string, scope?: DesktopFsSessionScope) {
   if (!rootPath) {
     gitRootCache.clear()
     gitignoreCache.clear()
@@ -231,8 +247,8 @@ export function clearProjectDirCache(rootPath?: string) {
   // own key alone. A refresh (use-project-tree) clears so the re-read probes
   // underneath what is on screen, so evict every key at or under the root.
   // Match on a path boundary via isUnderPath — `/repo` must not evict `/repo2`
-  // — and only within the current connection's cache keys.
-  const cachePrefix = `${desktopFsCacheKey()}:`
+  // — and only within the current owner's cache keys.
+  const cachePrefix = `${desktopFsCacheKey(undefined, scope)}:`
   const inScope = (key: string) => key.startsWith(cachePrefix) && isUnderPath(rootPath, key.slice(cachePrefix.length))
 
   for (const key of gitRootCache.keys()) {

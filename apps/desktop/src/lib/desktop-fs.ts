@@ -11,7 +11,7 @@ import { hostHas } from '@/lib/host-capabilities'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
-  selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
+  selectPaths: (options?: HermesSelectPathsOptions, scope?: DesktopFsSessionScope) => Promise<string[]>
 }
 
 let remotePicker: DesktopFsRemotePicker | null = null
@@ -40,8 +40,23 @@ function connectionCacheKey(connection: HermesConnection | null) {
   return `${connection.mode || 'local'}:${connection.remoteKind || ''}:${connection.profile || ''}:${target}`
 }
 
-export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
-  return connectionCacheKey(connection)
+/** Identity of the backend an FS read lands on. With a session scope it is the session
+ *  owner's (see `fsRoute`), so two Bots on one connection never share cached listings. */
+export function desktopFsCacheKey(
+  connection: HermesConnection | null = $connection.get(),
+  scope?: DesktopFsSessionScope
+) {
+  const owner = scope?.sessionId ? sessionFileOwnerScope(scope.sessionId) : null
+
+  if (!owner || !connection) {
+    return connectionCacheKey(connection)
+  }
+
+  return connectionCacheKey({
+    ...connection,
+    ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+    profile: owner.profile
+  })
 }
 
 export function isDesktopFsRemoteMode() {
@@ -123,12 +138,13 @@ export class DesktopFileMissingError extends Error {
   }
 }
 
-export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
+// The listing, git-root and mkdir routes take no session id: only the owner travels.
+export async function readDesktopDir(path: string, scope?: DesktopFsSessionScope): Promise<HermesReadDirResult> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readDir(path)
   }
 
-  return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
+  return remoteFsApi<HermesReadDirResult>(fsPath('list', path), undefined, fsRoute(scope).owner)
 }
 
 export async function readDesktopFileText(
@@ -183,8 +199,8 @@ export async function writeDesktopFileText(
 
 // Create a folder on the connected backend (POST /api/files/mkdir). Remote-only:
 // in local mode the picker is the native dialog, which creates folders itself.
-export async function createRemoteDir(path: string): Promise<string> {
-  const result = await remoteFsApi<{ path?: string }>('/api/files/mkdir', { path })
+export async function createRemoteDir(path: string, scope?: DesktopFsSessionScope): Promise<string> {
+  const result = await remoteFsApi<{ path?: string }>('/api/files/mkdir', { path }, fsRoute(scope).owner)
 
   return result.path || path
 }
@@ -238,14 +254,14 @@ export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<st
   return readDesktopFileDataUrl(path)
 }
 
-export async function desktopGitRoot(path: string): Promise<string | null> {
+export async function desktopGitRoot(path: string, scope?: DesktopFsSessionScope): Promise<string | null> {
   const desktop = bridge()
 
   if (!isDesktopFsRemoteMode()) {
     return desktop.gitRoot ? desktop.gitRoot(path) : null
   }
 
-  return (await remoteFsApi<{ root: string | null }>(fsPath('git-root', path))).root
+  return (await remoteFsApi<{ root: string | null }>(fsPath('git-root', path), undefined, fsRoute(scope).owner)).root
 }
 
 export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string } | null> {
@@ -311,7 +327,11 @@ export async function desktopFileDiff(repoRoot: string, filePath: string): Promi
   return git?.fileDiff ? git.fileDiff(repoRoot, filePath) : ''
 }
 
-export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {
+/** `scope` names the chat the pick is for: a remote folder pick browses as that chat's owner. */
+export async function selectDesktopPaths(
+  options?: HermesSelectPathsOptions,
+  scope?: DesktopFsSessionScope
+): Promise<string[]> {
   const desktop = bridge()
   const profile = desktopFsProfile()
   const localOptions = profile ? { ...options, profile } : options
@@ -324,5 +344,5 @@ export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Pr
     return desktop.selectPaths(localOptions)
   }
 
-  return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []
+  return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }, scope) : []
 }

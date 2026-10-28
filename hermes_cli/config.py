@@ -2969,7 +2969,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     if known or not key:
         return known, suggestion
     from hermes_cli.config_runtime_keys import is_runtime_read_key
-    return (True, None) if is_runtime_read_key(".".join(_split_key_path(key))) else (False, suggestion)
+    return (True, None) if is_runtime_read_key(key) else (False, suggestion)
 
 
 def _validate_schema_key(key: str) -> tuple[bool, Optional[str]]:

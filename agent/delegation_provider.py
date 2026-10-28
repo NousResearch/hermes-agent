@@ -73,6 +73,13 @@ class DelegationProvider(ProviderBase):
         own = backends.get(self.name) if isinstance(backends, Mapping) else None
         return own if isinstance(own, Mapping) else {}
 
+    def snapshot_settings(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Runtime settings to pin with this session's tools. Override to omit editor-only
+        state (saved libraries, selection metadata); routes and schemas must work with only
+        this mapping in ``backends.<name>``. Returned settings are persisted in the session DB.
+        Credential references are preferable to literal secrets. Default: all own settings."""
+        return self.settings(config)
+
     @property
     def summary(self) -> str:
         """One user-facing line for backend pickers (``/delegation``); never shown to the model."""

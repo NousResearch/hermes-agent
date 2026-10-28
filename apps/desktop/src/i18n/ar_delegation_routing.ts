@@ -1,6 +1,23 @@
 import type { DelegationRoutingTranslations } from './types_delegation_routing'
 
 export const arDelegationRouting: DelegationRoutingTranslations = {
+  presets: {
+    title: 'الإعدادات المسبقة المحفوظة',
+    custom: 'مسارات مخصصة',
+    save: 'حفظ الحالي باسم…',
+    rename: 'إعادة تسمية الإعداد',
+    delete: 'حذف الإعداد',
+    next: 'استخدام للمحادثات الجديدة',
+    apply: 'تطبيق على المحادثة الحالية',
+    hint: 'تحتفظ المحادثات الحالية بمساراتها ما لم تطبق الإعداد صراحة.',
+    warning: 'تطبيق الآن؟ سيغير مخطط أدوات التفويض ويبطل ذاكرة التخزين المؤقت للمطالبة.',
+    deleteHint: 'حذف هذه النسخة؟ لن تتغير المسارات الحالية أو المحادثات الموجودة.',
+    unavailable: 'يلزم تمكين إضافة Advanced Delegation وتحديثها.',
+    failed: 'تعذر تحديث الإعدادات المسبقة',
+    applied: 'تم تطبيق الإعداد',
+    name: 'اسم الإعداد',
+    nameHint: 'من 1 إلى 64 حرفاً لاتينياً أو رقماً أو نقطة أو شرطة سفلية أو واصلة؛ يبدأ بحرف أو رقم.'
+  },
   title: 'التوجيه',
   settingsTitle: 'الإعدادات الافتراضية للوكلاء الفرعيين',
   intro: 'كيف يحصل كل وكيل فرعي على نموذجه.',

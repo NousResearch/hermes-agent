@@ -58,8 +58,10 @@ def worker_tool_names(db, conn, session_id, payload):
             raise RuntimeStoreError('invalid_params')
         # ``delegation_backend``: the backend the pinned delegate_task was built from (agent/delegation_backends.py).
         backend = pin.get('delegation_backend', '') if isinstance(pin, dict) else ''
-        if isinstance(pin, dict) and (not {'version', 'tools'} <= set(pin) <= {'version', 'tools', 'delegation_backend'}
+        if isinstance(pin, dict) and (not {'version', 'tools'} <= set(pin) <= {
+                'version', 'tools', 'delegation_backend', 'delegation_backend_config'}
                                       or not isinstance(pin['version'], str) or not isinstance(pin['tools'], list)
+                                      or not isinstance(pin.get('delegation_backend_config', {}), dict)
                                       or not isinstance(backend, str) or len(backend) > 64):
             raise RuntimeStoreError('invalid_params')
     encoded = None if pin is None else json.dumps(pin)

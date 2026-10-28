@@ -1,6 +1,23 @@
 import type { DelegationRoutingTranslations } from './types_delegation_routing'
 
 export const jaDelegationRouting: DelegationRoutingTranslations = {
+  presets: {
+    title: '保存済みプリセット',
+    custom: 'カスタムルート',
+    save: '現在の設定を保存…',
+    rename: 'プリセット名を変更',
+    delete: 'プリセットを削除',
+    next: '新規チャットで使用',
+    apply: '現在のチャットに適用',
+    hint: '明示的に適用しない限り、既存チャットのルートは維持されます。',
+    warning: '今すぐ適用しますか？委任ツールのスキーマが変更され、プロンプトキャッシュが無効になります。',
+    deleteHint: 'このスナップショットを削除しますか？現在のルートと既存チャットは変更されません。',
+    unavailable: '有効で最新の Advanced Delegation プラグインが必要です。',
+    failed: 'プリセットを更新できませんでした',
+    applied: 'プリセットを適用しました',
+    name: 'プリセット名',
+    nameHint: '英数字で始まる1〜64文字の英数字、ドット、アンダースコア、ハイフン。'
+  },
   title: 'ルーティング',
   settingsTitle: 'サブエージェントの既定値',
   intro: '各サブエージェントがどのモデルを使うかを決めます。',

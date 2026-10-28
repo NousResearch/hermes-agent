@@ -1,4 +1,21 @@
 export interface DelegationRoutingTranslations {
+  presets: {
+    title: string
+    custom: string
+    save: string
+    rename: string
+    delete: string
+    next: string
+    apply: string
+    hint: string
+    warning: string
+    deleteHint: string
+    unavailable: string
+    failed: string
+    applied: string
+    name: string
+    nameHint: string
+  }
   title: string
   settingsTitle: string
   intro: string

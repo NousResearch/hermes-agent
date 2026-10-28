@@ -314,6 +314,10 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     resolve credentials once per call (the default backend resolves exactly once)."""
     from agent.delegation_backends import pinned_backend
     if pinned := pinned_backend(parent_agent):
+        from copy import deepcopy
+        snapshot = getattr(parent_agent, "_delegation_backend_config", None)
+        if isinstance(snapshot, dict):
+            config = deepcopy(snapshot)  # a provider must not mutate the session's pin
         config = {**config, "backend": pinned}
     try:
         provider = _active_provider(config)

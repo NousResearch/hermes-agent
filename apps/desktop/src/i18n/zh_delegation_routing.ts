@@ -1,6 +1,23 @@
 import type { DelegationRoutingTranslations } from './types_delegation_routing'
 
 export const zhDelegationRouting: DelegationRoutingTranslations = {
+  presets: {
+    title: '已保存的预设',
+    custom: '自定义路由',
+    save: '将当前配置另存为…',
+    rename: '重命名预设',
+    delete: '删除预设',
+    next: '用于新聊天',
+    apply: '应用到当前聊天',
+    hint: '除非明确应用，否则现有聊天保留原有路由。',
+    warning: '立即应用？这会更改委派工具架构并使提示缓存失效。',
+    deleteHint: '删除此快照？当前路由和现有聊天不会改变。',
+    unavailable: '需要启用最新的 Advanced Delegation 插件。',
+    failed: '无法更新预设',
+    applied: '已应用预设',
+    name: '预设名称',
+    nameHint: '1–64 个英文字母、数字、点、下划线或连字符，以字母或数字开头。'
+  },
   title: '路由',
   settingsTitle: '子智能体默认设置',
   intro: '决定每个子智能体使用哪个模型。',

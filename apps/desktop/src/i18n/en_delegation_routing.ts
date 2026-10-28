@@ -1,6 +1,24 @@
 import type { DelegationRoutingTranslations } from './types_delegation_routing'
 
 export const enDelegationRouting: DelegationRoutingTranslations = {
+  presets: {
+    title: 'Saved presets',
+    custom: 'Custom routes',
+    save: 'Save current as…',
+    rename: 'Rename preset',
+    delete: 'Delete preset',
+    next: 'Use for new chats',
+    apply: 'Apply to current chat',
+    hint: 'Existing chats keep their routes unless you apply explicitly.',
+    warning:
+      'Apply this preset to the current chat now? This changes its delegation tool schema and breaks prompt caching.',
+    deleteHint: 'Delete this saved snapshot? Current routes and existing chats are unchanged.',
+    unavailable: 'Presets require an enabled, up-to-date Advanced Delegation plugin.',
+    failed: 'Could not update presets',
+    applied: 'Preset applied',
+    name: 'Preset name',
+    nameHint: '1–64 letters, numbers, dots, underscores or hyphens; start with a letter or number.'
+  },
   title: 'Routing',
   settingsTitle: 'Subagent defaults',
   intro: 'How each subagent gets its model.',

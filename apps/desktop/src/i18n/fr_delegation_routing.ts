@@ -1,6 +1,24 @@
 import type { DelegationRoutingTranslations } from './types_delegation_routing'
 
 export const frDelegationRouting: DelegationRoutingTranslations = {
+  presets: {
+    title: 'Préréglages enregistrés',
+    custom: 'Routes personnalisées',
+    save: 'Enregistrer sous…',
+    rename: 'Renommer le préréglage',
+    delete: 'Supprimer le préréglage',
+    next: 'Utiliser pour les nouveaux chats',
+    apply: 'Appliquer au chat actuel',
+    hint: 'Les chats existants conservent leurs routes sans application explicite.',
+    warning: 'Appliquer maintenant ? Cela modifie le schéma des outils de délégation et invalide le cache du prompt.',
+    deleteHint: 'Supprimer cette copie ? Les routes actuelles et les chats existants restent inchangés.',
+    unavailable: 'Advanced Delegation doit être activé et à jour.',
+    failed: 'Impossible de modifier les préréglages',
+    applied: 'Préréglage appliqué',
+    name: 'Nom du préréglage',
+    nameHint:
+      '1 à 64 lettres, chiffres, points, tirets ou traits de soulignement ; commencer par une lettre ou un chiffre.'
+  },
   title: 'Routage',
   settingsTitle: 'Paramètres par défaut des sous-agents',
   intro: 'Comment chaque sous-agent obtient son modèle.',

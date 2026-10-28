@@ -1,6 +1,23 @@
 import type { DelegationRoutingTranslations } from './types_delegation_routing'
 
 export const deDelegationRouting: DelegationRoutingTranslations = {
+  presets: {
+    title: 'Gespeicherte Vorlagen',
+    custom: 'Eigene Routen',
+    save: 'Aktuelle speichern als…',
+    rename: 'Vorlage umbenennen',
+    delete: 'Vorlage löschen',
+    next: 'Für neue Chats verwenden',
+    apply: 'Auf aktuellen Chat anwenden',
+    hint: 'Bestehende Chats behalten ihre Routen ohne ausdrückliche Anwendung.',
+    warning: 'Jetzt anwenden? Dies ändert das Delegations-Werkzeugschema und invalidiert den Prompt-Cache.',
+    deleteHint: 'Diese Kopie löschen? Aktuelle Routen und bestehende Chats bleiben unverändert.',
+    unavailable: 'Advanced Delegation muss aktiviert und aktuell sein.',
+    failed: 'Vorlagen konnten nicht aktualisiert werden',
+    applied: 'Vorlage angewendet',
+    name: 'Vorlagenname',
+    nameHint: '1–64 Buchstaben, Ziffern, Punkte, Unterstriche oder Bindestriche; mit Buchstabe oder Ziffer beginnen.'
+  },
   title: 'Routing',
   settingsTitle: 'Subagent-Standards',
   intro: 'Wie jeder Subagent sein Modell erhält.',

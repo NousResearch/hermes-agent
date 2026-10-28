@@ -1,6 +1,23 @@
 import type { DelegationRoutingTranslations } from './types_delegation_routing'
 
 export const esDelegationRouting: DelegationRoutingTranslations = {
+  presets: {
+    title: 'Preajustes guardados',
+    custom: 'Rutas personalizadas',
+    save: 'Guardar actual como…',
+    rename: 'Renombrar preajuste',
+    delete: 'Eliminar preajuste',
+    next: 'Usar en chats nuevos',
+    apply: 'Aplicar al chat actual',
+    hint: 'Los chats existentes conservan sus rutas salvo aplicación explícita.',
+    warning: '¿Aplicar ahora? Cambia el esquema de herramientas de delegación e invalida la caché del prompt.',
+    deleteHint: '¿Eliminar esta copia? Las rutas actuales y los chats existentes no cambian.',
+    unavailable: 'Se requiere Advanced Delegation activado y actualizado.',
+    failed: 'No se pudieron actualizar los preajustes',
+    applied: 'Preajuste aplicado',
+    name: 'Nombre del preajuste',
+    nameHint: 'De 1 a 64 letras, números, puntos, guiones o guiones bajos; empieza con letra o número.'
+  },
   title: 'Enrutamiento',
   settingsTitle: 'Valores predeterminados de subagentes',
   intro: 'Cómo obtiene su modelo cada subagente.',

@@ -89,7 +89,8 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
         pid, listed = out.split(" ", 1)
         assert int(pid) != os.getpid() and listed == "default,hosted-map"
         assert yaml.safe_load((home / "config.yaml").read_text())["delegation"]["backend"] == "default"
-        assert delegation_backends._rebuild_requests == {"chat-a"}
+        from hermes_constants import hermes_home_key
+        assert delegation_backends._rebuild_requests == {(hermes_home_key(home), "chat-a")}
         delegation_backends._rebuild_requests.clear()
     finally:
         manager.unload()

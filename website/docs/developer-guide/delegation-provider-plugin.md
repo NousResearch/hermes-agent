@@ -96,7 +96,26 @@ is the default route, and `self.settings(config)` is your backend's own block,
 | `task_parameters(config)` | no | `{name: json_schema}` merged into `tasks.items.properties`. Core enforces `enum` before `route_task` runs and refuses core-owned names (`goal`, `context`, `index`, `output_schema`, `images`, `group`, `role`, `toolsets`, `provider`, `model`, `base_url`, `api_key`, `api_mode`, `acp_command`, `acp_args`). |
 | `description(config)` | no | Guidance appended to the `delegate_task` description. |
 | `is_available()` | no | No network calls. `False` fails delegation closed while your backend is selected: `delegate_task` returns a tool error naming it and the fix (`/delegation default`, or `hermes config set delegation.backend default`); it never switches to `default` on its own. |
+| `snapshot_settings(config)` | no | Runtime settings to pin with the session's tools; defaults to `self.settings(config)`. Override to omit editor-only state such as saved preset libraries. The returned mapping replaces this backend's settings for routing and is persisted in the session database. |
 | `settings(config)` | inherited | `delegation.backends.<name>` as a mapping (empty when unset). Do not override. |
+
+A session keeps its selected backend's route settings alongside its tool schema, including after
+resume. Saving a new configuration affects new sessions; an explicit `--now` switch refreshes the
+calling session at its next turn, even when route names and the tool schema have not changed.
+Older sessions with only a backend-name pin capture the currently saved settings on their first
+restore; historical route values cannot be reconstructed.
+
+Keep snapshots limited to runtime settings. For a route-list backend, a projection can be:
+
+```python
+def snapshot_settings(self, config):
+    settings = self.settings(config)
+    return {key: settings[key] for key in ("options", "default") if key in settings}
+```
+
+Core deep-copies the snapshot. Do not include inactive preset libraries, UI selection metadata or
+unrelated profile settings. Literal credentials in active routes are persisted with the snapshot;
+prefer provider credential references over inline secrets.
 
 ### Routes
 

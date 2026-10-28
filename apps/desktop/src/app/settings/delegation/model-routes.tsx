@@ -9,6 +9,7 @@ import { confirm } from '@/store/confirm'
 
 import { Pill, SectionHeading } from '../primitives'
 
+import { ModelPresets } from './model-presets'
 import { ModelRouteDialog } from './model-route-dialog'
 import { removeRoute, setDefaultRoute, upsertRoute } from './routes'
 import { saveModelRoutes } from './routing-data'
@@ -57,6 +58,7 @@ export function ModelRoutesEditor({ scope, routes, providerNames }: ModelRoutesE
         icon={Box}
         title={r.modelRoutesTitle}
       />
+      <ModelPresets scope={scope} />
       {routes.options.length === 0 ? (
         <p className="py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
           {r.modelRoutesEmpty}

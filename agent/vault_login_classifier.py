@@ -318,18 +318,18 @@ _FILL_JS_TEMPLATE = """(() => {
   }
   const fills = __FILLS__;
   const nonce = __NONCE__;
-  // Stamped controls may live inside a shadow root (see the inspection script's walk): collect every
-  // stamp once, across open shadow roots, and reuse the map for the fills and the cleanup.
-  const stamped = [];
+  // Stamped controls may live inside a shadow root (see the inspection script's walk): collect the
+  // document and every open shadow root once, then look each stamp up in those roots.
+  const roots = [];
   (function walk(root) {
-    for (const n of root.querySelectorAll("[data-hermes-vault-slot]")) stamped.push(n);
+    roots.push(root);
     for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
   })(document);
-  const slots = new Map(stamped.map((n) => [n.getAttribute("data-hermes-vault-slot"), n]));
+  const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
-    const el = slots.get(nonce + ":" + f.index);
+    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
@@ -348,6 +348,6 @@ _FILL_JS_TEMPLATE = """(() => {
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  stamped.forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
   return JSON.stringify({ filled });
 })()"""

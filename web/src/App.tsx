@@ -19,6 +19,7 @@ import {
   Navigate,
   useLocation,
   useNavigate,
+  useParams,
 } from "react-router-dom";
 import {
   Activity,
@@ -153,9 +154,20 @@ const CHAT_NAV_ITEM: NavItem = {
  * the URL so /chat deep-links, browser back/forward, and nav highlight
  * keep working.
  */
+/**
+ * Redirect handler for `/projects/:id` deep-links.
+ * Converts the path param to the query-param form (`/projects?id=<id>`)
+ * that `ProjectsPage` reads, keeping internal links and page state consistent.
+ */
+function ProjectDeepLink() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/projects?id=${encodeURIComponent(id ?? "")}`} replace />;
+}
+
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/projects": ProjectsPage,
+  "/projects/:id": ProjectDeepLink,
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,

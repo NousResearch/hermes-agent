@@ -150,6 +150,10 @@ reopens the gesture-less forced-navigation class the advisory closed.
 
 ## Rendering work follows visibility and ownership
 
+- Hidden terminals stay mounted and keep parsing output. Suppress only their
+  DOM rows, not the measurable host/helpers or terminal state. Do not reduce
+  scrollback or replace parser state to save painting work. WebGL surfaces remain
+  unchanged; hidden DOM-row suppression must leave fitting and font helpers measurable.
 - Unchanged retained snapshots must not republish the terminal store. Closing
   the last mounted writer must enforce the cold agent-terminal retention budget
   even when no later output arrives.

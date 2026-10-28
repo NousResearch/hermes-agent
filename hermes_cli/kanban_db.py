@@ -2578,6 +2578,33 @@ def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str
     return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
 
 
+def _apply_completion_verification_gate(
+    conn: sqlite3.Connection, task_id: str, metadata: Optional[dict],
+) -> Optional[dict]:
+    """Require a typed contract's artifact before any acceptance or done write.
+
+    Untyped contracts pass through unchanged; an accepted report is kept in the run metadata.
+    """
+    from hermes_cli.verification_gate import CARD_TYPE_ARTIFACTS, verify_completion
+
+    task = get_task(conn, task_id)
+    contract = task.completion_contract if task else None
+    if contract not in CARD_TYPE_ARTIFACTS:
+        return metadata
+    payload = metadata.get("verification") if isinstance(metadata, dict) else None
+    report = verify_completion(payload, card_type=contract)
+    if not report["ok"]:
+        with write_txn(conn):
+            _append_event(conn, task_id, "completion_blocked_verification", {
+                "report": report,
+            })
+        raise CompletionVerificationError(task_id, report)
+    gated_metadata = dict(metadata or {})
+    gated_metadata["verification_report"] = report
+    gated_metadata.pop("verification", None)
+    return gated_metadata
+
+
 class HallucinatedCardsError(ValueError):
     """``complete_task`` refused: ``created_cards`` has ids that don't exist or
     weren't created by this worker (``.phantom``). A ``ValueError`` so tool
@@ -2602,6 +2629,16 @@ class EmptyCompletionError(ValueError):
         super().__init__(
             f"completion blocked: {task_id} has no result or summary evidence"
         )
+
+
+class CompletionVerificationError(ValueError):
+    """``complete_task`` refused: a typed contract's required artifact is missing or incomplete."""
+
+    def __init__(self, task_id: str, report: dict[str, Any]):
+        self.task_id = task_id
+        self.report = report
+        codes = ", ".join(item["code"] for item in report.get("failures", []))
+        super().__init__(f"completion blocked: artifact check failed for {task_id}: {codes}")
 
 
 class ArtifactPreservationError(RuntimeError):
@@ -2667,6 +2704,7 @@ def complete_task(
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
+    metadata = _apply_completion_verification_gate(conn, task_id, metadata)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2857,6 +2895,9 @@ def _completed_event_payload(
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
             payload["artifacts"] = cleaned
+        report = metadata.get("verification_report")
+        if isinstance(report, dict):
+            payload["verification_report"] = report
     return payload
 
 

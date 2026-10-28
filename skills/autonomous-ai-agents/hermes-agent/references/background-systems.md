@@ -18,7 +18,7 @@ Spawn a subagent with an isolated context + terminal session.
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
 - **Not durable.** A backgrounded child is still process-local — if the
   parent process exits, the child is lost. For work that must outlive
-  the process, use `cronjob` or
+  the process, use `cronjob_manage` or
   `terminal(background=True, notify_on_complete=True)`.
 
 Config: `delegation.*` in `config.yaml`.
@@ -26,7 +26,7 @@ Config: `delegation.*` in `config.yaml`.
 ### Cron (scheduled jobs)
 
 Durable scheduler — `cron/jobs.py` + `cron/scheduler.py`. Drive it via
-the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
+the `cronjob_manage` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
 `pause`, `resume`, `run`, `remove`), or the `/cron` slash command.
 
 - **Schedules:** duration (`"30m"`, `"2h"`), "every" phrase

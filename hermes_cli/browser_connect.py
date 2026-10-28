@@ -28,7 +28,7 @@ from pathlib import Path
 
 from agent.deadline import poll_until
 from agent.proxy_bypass import is_loopback_host
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, socket_safe_tmpdir
 
 logger = logging.getLogger(__name__)
 
@@ -971,6 +971,15 @@ def _chrome_debug_args(port: int) -> list[str]:
             "--no-first-run", "--no-default-browser-check"]
 
 
+def _chrome_launch_env() -> dict[str, str]:
+    """Hermes' environment with a temp root short enough for Chrome's singleton socket, as the agent
+    browser gets (``tools/browser_session.py``). Chrome binds ``$TMPDIR/<name>.XXXXXX/SingletonSocket``;
+    under the scratch dir of a long HERMES_HOME that passes the AF_UNIX path cap and Chrome exits at
+    start ("Socket path too long"). ``socket_safe_tmpdir`` keeps the scratch dir when it fits; only
+    this child's ``TMPDIR`` changes."""
+    return {**os.environ, "TMPDIR": socket_safe_tmpdir()}
+
+
 def _tcp_open(host: str, port: int, timeout: float) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -1142,7 +1151,7 @@ def launch_chrome_debug(
         try:
             with _open_launch_stderr_log(stderr_path) as stderr_file:
                 proc = subprocess.Popen(
-                    [candidate, *_chrome_debug_args(port)],
+                    [candidate, *_chrome_debug_args(port)], env=_chrome_launch_env(),
                     stdout=subprocess.DEVNULL, stderr=stderr_file, **_detach_kwargs(system))
         except Exception as exc:
             result.attempts.append(LaunchAttempt(binary=candidate, state="spawn-failed"))

@@ -327,7 +327,15 @@ def admission_display(payload):
 
 
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    """Routing-only identity of a message source: exactly the fields a session key derives
+    from (``build_session_key``). Provenance/display fields a synthetic wake cannot
+    reconstruct (``chat_name``, ``chat_topic``, ``is_bot``, ``user_name``) are deliberately
+    excluded: the persisted routing origin of an async delegation does not carry
+    ``chat_topic``, so under a full-dict comparison a wake for a NAMED Telegram forum
+    topic was unadmittable by construction (eternal ``admission_conflict`` → 48h terminal
+    drop), while only unnamed topics (``chat_topic`` absent on both sides) delivered."""
+    return {field: getattr(source, field) for field in
+            ('platform', 'chat_id', 'chat_type', 'thread_id', 'scope_id', 'profile')}
 
 
 def committed_route_envelope(authority, entry):

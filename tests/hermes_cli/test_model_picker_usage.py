@@ -15,6 +15,7 @@ from hermes_cli.model_picker_usage import (
     plan_gauge_lines,
     render_bar,
     usage_levels,
+    usage_tag_levels,
 )
 
 
@@ -567,3 +568,68 @@ def test_window_plan_feeds_the_existing_usage_chip(monkeypatch):
     other: dict = {"slug": "nous"}
     inventory._attach_nous_plan_usage(other, warm=False)
     assert other == {"slug": "nous"}
+
+
+# ── subscription-billed rows ────────────────────────────────
+
+# Picker pricing shape. The gateway marks a subscription-billed row ``billing_mode: subscription`` and gives it no
+# ``usage_level``; its listed price never applies.
+_SUBSCRIPTION_BILLED = {
+    "example/model-sub": {"prompt": "0.000005", "completion": "0.00004", "billing_mode": "subscription"},
+    "gift/m:free": {"prompt": "0", "completion": "0"},
+    "example/model-b": {"prompt": "0.000005", "completion": "0.000025", "usage_level": "top_tier", "top_tier": True},
+}
+
+
+def test_subscription_billed_rows_draw_nothing_but_carry_no_free_tag():
+    # Still ``free`` to the window: nothing dims it, and the payload level the desktop/TUI dim from stays.
+    assert usage_levels(list(_SUBSCRIPTION_BILLED), _SUBSCRIPTION_BILLED)["example/model-sub"] == "free"
+    # The tag set drops it; real $0 rows and Large rows keep theirs.
+    assert usage_tag_levels(list(_SUBSCRIPTION_BILLED), _SUBSCRIPTION_BILLED) == {
+        "gift/m:free": "free", "example/model-b": "top_tier"}
+    usage = _window_usage(day_used_bp=10_000, top_tier_used_bp=10_000).with_pricing(_SUBSCRIPTION_BILLED)
+    assert not usage.blocks("example/model-sub")
+    assert not usage.blocks("gift/m:free")
+    assert usage.blocks("example/model-b")
+    assert usage.to_payload()["subscription_model_ids"] == ["example/model-sub"]
+    # No catalog: nothing marked.
+    assert _window_usage().to_payload()["subscription_model_ids"] == []
+
+
+def test_window_picker_rows_leave_subscription_billed_rows_untagged():
+    rows = _ModelPickerRows(list(_SUBSCRIPTION_BILLED), _SUBSCRIPTION_BILLED, current_model="", sale_chrome=True,
+                            usage=_window_usage(day_used_bp=10_000))
+    assert rows.label("example/model-sub").split("example/model-sub", 1)[1].strip() == ""
+    assert rows.label("gift/m:free").split("gift/m:free", 1)[1].strip() == "Free"
+    assert rows.label("example/model-b").split("example/model-b", 1)[1].strip() == "Large"
+    assert rows.has_top_tier
+    # Dimming is unchanged: the full day stops the paid Large row only.
+    assert not rows.usage.blocks("example/model-sub") and rows.usage.blocks("example/model-b")
+
+
+def test_the_in_chat_cli_picker_leaves_subscription_billed_rows_untagged(monkeypatch):
+    from hermes_cli import model_picker_usage as mpu
+
+    monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
+    row = {"slug": "nous",
+           "plan_usage": {"kind": "usage_window", "subscription_model_ids": ["example/model-sub"]},
+           "usage_levels": {"example/model-sub": "free", "gift/m:free": "free"}}
+    rows, _line = mpu.annotate_window_plan_rows(row, ["example/model-sub", "gift/m:free"])
+    assert [r.split() for r in rows] == [["example/model-sub"], ["gift/m:free", "Free"]]
+    # An older payload without the field: unchanged (both tagged Free).
+    old = {**row, "plan_usage": {"kind": "usage_window"}}
+    assert [r.split() for r in mpu.annotate_window_plan_rows(old, ["example/model-sub"])[0]] == \
+        [["example/model-sub", "Free"]]
+
+
+def test_messaging_pickers_leave_subscription_billed_rows_untagged(monkeypatch):
+    from hermes_cli import model_picker_usage as mpu
+    from hermes_cli import model_switch_providers as msp
+    from agent import plan_limits as pl
+
+    monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage())
+    monkeypatch.setattr(pl, "cached_pricing", lambda base_url="": dict(_SUBSCRIPTION_BILLED))
+    providers = [{"slug": "nous", "api_url": "https://x/v1", "models": list(_SUBSCRIPTION_BILLED)}]
+    msp._attach_window_model_notes(providers)
+    assert providers[0]["model_labels"] == {"gift/m:free": "Free", "example/model-b": "Large"}
+    assert mpu.picker_row_suffix(providers[0], "example/model-sub") == ""

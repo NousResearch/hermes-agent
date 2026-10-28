@@ -27,6 +27,7 @@ from hermes_cli.web_routers._common import (
 )
 
 _restart_gateway_after = late("_restart_gateway_after", "hermes_cli.web_server_gateway")
+_gateway_restart_failure = late("gateway_restart_failure", "hermes_cli.web_server_gateway")
 # One Web Access change at a time in this backend (every Desktop window's pane talks to it): a
 # Start, Stop or Restart waits for the one in flight, from its build through the restart request,
 # so the Portal's callback, the config and the gateway all end on the last change asked for.
@@ -113,7 +114,10 @@ async def _restart(gateway: Optional[str], what: str) -> dict:
 
 @router.get("/api/webapp-access/status")
 async def webapp_access_status(profile: Optional[str] = None):
-    return await _scoped(profile, lambda _gateway: webapp_access.access_status())
+    """``restart_failure``: the newest restart of this gateway exited without replacing it, and why;
+    the pane waiting on that restart stops and says so instead of timing out."""
+    return await _scoped(profile, lambda gateway: {
+        **webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway)})
 
 
 @router.post("/api/webapp-access/start")

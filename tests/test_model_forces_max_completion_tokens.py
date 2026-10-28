@@ -19,6 +19,14 @@ class TestPositiveCases:
     def test_gpt_5_bare(self):
         assert model_forces_max_completion_tokens("gpt-5") is True
 
+    def test_gpt_6(self):
+        # gpt-6.x reasoning models reject max_tokens the same way as gpt-5.x
+        # (seen on Azure Foundry gpt-6.1-sol-1: 400 unsupported_parameter).
+        assert model_forces_max_completion_tokens("gpt-6") is True
+        assert model_forces_max_completion_tokens("gpt-6.1-sol-1") is True
+        assert model_forces_max_completion_tokens("gpt-6-luna-1") is True
+        assert model_forces_max_completion_tokens("openai/gpt-6.1-sol-1") is True
+
 
 
 

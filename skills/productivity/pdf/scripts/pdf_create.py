@@ -47,7 +47,7 @@ def build_pdf(spec: dict, out_path: str) -> int:
             TableStyle,
         )
     except ImportError:
-        print("Missing dependency: 'reportlab' is not importable here; install it into the persistent documents environment (pdf skill, Prerequisites) and rerun with that interpreter", file=sys.stderr)
+        print("Missing dependency: 'reportlab' is not importable here; rerun with the documents environment's interpreter: hermes pm environment documents --extra documents --extra documents-pdf", file=sys.stderr)
         return 2
 
     page_size = letter if str(spec.get("page_size", "A4")).lower() == "letter" else A4

@@ -55,24 +55,22 @@ fields, and package health checks. It does not render documents itself
 
 - Python 3.10+ with `python-docx` (import name `docx`; lxml comes with it).
 - Pick the interpreter with `terminal`. Use `python` when it already imports
-  the libraries (the Hermes Docker image ships them); otherwise use a
-  persistent side environment under the Hermes home, which survives container
-  restarts and never touches the Hermes install itself:
+  the libraries (the Hermes Docker image ships them); otherwise let Hermes
+  build its shared, pinned documents environment under the Hermes home. It
+  survives container restarts, never touches the Hermes install itself, and is
+  safe to run from several agents at once. Use this exact command in every
+  document skill so they all share one environment:
 
   ```bash
-  export PY=python
-  if ! "$PY" -c "import docx" 2>/dev/null; then
-    DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
-    PY="$DOCS_ENV/bin/python"
-    "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"  # new, or broken by a Python upgrade
-    "$PY" -c "import docx" 2>/dev/null || "$PY" -m pip install -q python-docx
-  fi
+  python -c "import docx" 2>/dev/null && PY=python || PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
+  export PY
   "$PY" scripts/docx_create.py --help
   ```
 
-  Run every helper below with `"$PY"`. On Windows the side interpreter is
-  `%HERMES_HOME%\environments\documents\Scripts\python.exe`. Never
-  `pip install` into the interpreter that runs Hermes.
+  Run every helper below with `"$PY"`. In PowerShell:
+  `$env:PY = hermes pm environment documents --extra documents --extra documents-pdf`.
+  Never `pip install` into the interpreter that runs Hermes or into this
+  environment; `hermes pm environment` owns it.
 - Comments `add` uses the native API on python-docx >= 1.2 and an XML
   fallback on older versions — both are automatic.
 - For image blocks: the image files must exist locally (PNG/JPEG).

@@ -177,14 +177,16 @@ terminal(command="tmux send-keys -t agent1 'Add rate limiting middleware' && sle
 terminal(command="tmux send-keys -t agent1 '/exit' && sleep 0.5 && tmux send-keys -t agent1 Enter && sleep 2 && tmux kill-session -t agent1", timeout=10)
 ```
 
-**No tmux** (`command -v tmux` prints nothing, e.g. an older Hermes Docker image): run Hermes as a PTY background process and drive it with `process_manage`. Stdin only exists with `pty=true`. Send the text and the Enter key (`"\r"`) as two separate `write` calls, for the same reason as with tmux; `submit` appends `"\n"`, which Hermes reads as a newline, never as Enter.
+**No tmux** (`command -v tmux` prints nothing, e.g. an older Hermes Docker image): run Hermes as a PTY background process and drive it with `process_manage`. Stdin only exists with `pty=true`. Send the text, pause, then send the Enter key (`"\r"`) as its own `write`, for the same reason as with tmux: an Enter that arrives right after the text is read as part of a paste and becomes a newline. Use `write`, not `submit`, for the Enter.
 
 ```
 terminal(command="hermes", background=true, pty=true)   # returns session_id
 process_manage(action="write", session_id="<id>", data="Build a FastAPI auth service")
+terminal(command="sleep 0.5")
 process_manage(action="write", session_id="<id>", data="\r")
 process_manage(action="log", session_id="<id>", limit=40)   # read the screen
 process_manage(action="write", session_id="<id>", data="/exit")
+terminal(command="sleep 0.5")
 process_manage(action="write", session_id="<id>", data="\r")
 ```
 

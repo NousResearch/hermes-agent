@@ -21,7 +21,7 @@ def _need(module: str, package: str):
     try:
         return __import__(module)
     except ImportError:
-        print(f"Missing dependency: '{package}' is not importable here; install it into the persistent documents environment (pdf skill, Prerequisites) and rerun with that interpreter", file=sys.stderr)
+        print(f"Missing dependency: '{package}' is not importable here; rerun with the documents environment's interpreter: hermes pm environment documents --extra documents --extra documents-pdf", file=sys.stderr)
         raise SystemExit(2)
 
 

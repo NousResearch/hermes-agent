@@ -384,6 +384,13 @@ documents = [
   "reportlab==5.1.0",
   "pypdf==6.21.2",
 ]
+# PDF text extraction and rasterization for skills/productivity/pdf. Only in
+# the skills' side environment (`hermes pm environment documents --extra
+# documents --extra documents-pdf`), never baked: ~17 MB of pdfminer/pdfium.
+documents-pdf = [
+  "pdfplumber==0.11.10",
+  "pypdfium2==5.14.0",
+]
 trace-upload = ["huggingface-hub==1.33.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.

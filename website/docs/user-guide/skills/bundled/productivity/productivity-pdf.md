@@ -50,25 +50,23 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 
 - Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`.
 - Pick the interpreter with `terminal`. Use `python` when it already imports
-  the libraries (the Hermes Docker image ships them); otherwise use a
-  persistent side environment under the Hermes home, which survives container
-  restarts and never touches the Hermes install itself:
+  the libraries (the Hermes Docker image ships them); otherwise let Hermes
+  build its shared, pinned documents environment under the Hermes home. It
+  survives container restarts, never touches the Hermes install itself, and is
+  safe to run from several agents at once. Use this exact command in every
+  document skill so they all share one environment:
 
   ```bash
-  export PY=python
-  if ! "$PY" -c "import pypdf, reportlab, pdfplumber" 2>/dev/null; then
-    DOCS_ENV="${HERMES_HOME:-$HOME/.hermes}/environments/documents"
-    PY="$DOCS_ENV/bin/python"
-    "$PY" -c "" 2>/dev/null || python -m venv --clear "$DOCS_ENV"  # new, or broken by a Python upgrade
-    "$PY" -c "import pypdf, reportlab, pdfplumber" 2>/dev/null || "$PY" -m pip install -q pypdf reportlab pdfplumber
-  fi
+  python -c "import pypdf, reportlab, pdfplumber" 2>/dev/null && PY=python || PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
+  export PY
   "$PY" scripts/pdf_create.py --help
   ```
 
-  Run every helper below with `"$PY"`. On Windows the side interpreter is
-  `%HERMES_HOME%\environments\documents\Scripts\python.exe`. Never
-  `pip install` into the interpreter that runs Hermes.
-- Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `pypdfium2` installed into that side environment (`"$DOCS_ENV/bin/python" -m pip install pypdfium2`, then use it as `$PY`), or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
+  Run every helper below with `"$PY"`. In PowerShell:
+  `$env:PY = hermes pm environment documents --extra documents --extra documents-pdf`.
+  Never `pip install` into the interpreter that runs Hermes or into this
+  environment; `hermes pm environment` owns it.
+- Page rasterization (`pdf_page_image.py`, overlay rendering) uses `pypdfium2`, which the documents environment already has (if your `python` lacks it, switch `PY` to that environment with the command above), or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
 - Each helper script checks imports lazily and prints an install hint if a dependency is missing.
 
 ## How to Run

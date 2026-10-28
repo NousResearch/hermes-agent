@@ -35,7 +35,7 @@ def main() -> int:
         from pypdf import PdfReader, PdfWriter
         from pypdf.generic import BooleanObject, NameObject
     except ImportError:
-        print("Missing dependency: 'pypdf' is not importable here; install it into the persistent documents environment (pdf skill, Prerequisites) and rerun with that interpreter", file=sys.stderr)
+        print("Missing dependency: 'pypdf' is not importable here; rerun with the documents environment's interpreter: hermes pm environment documents --extra documents --extra documents-pdf", file=sys.stderr)
         return 2
 
     with open(args.fields_json, encoding="utf-8") as fh:

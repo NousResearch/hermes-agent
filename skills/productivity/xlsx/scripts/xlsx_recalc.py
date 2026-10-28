@@ -9,7 +9,9 @@ and `--formulas`.
 Behavior:
   * soffice on PATH: converts the file to .xlsx in a temp dir (which
     recalculates all formulas) and replaces the original (or writes
-    --out). Prints {"recalculated": true, ...} and exits 0.
+    --out). Prints {"recalculated": true, ...} and exits 0; formula
+    cells whose recalculated value is an error (#NAME?, #VALUE!, ...)
+    are listed in "error_cells" — check it before trusting the values.
   * soffice absent: prints {"recalculated": false, "reason": ...} with
     installation guidance and STILL exits 0 — callers can branch on the
     JSON instead of the exit code.
@@ -34,20 +36,26 @@ from pathlib import Path
 
 
 def count_cached(path):
-    """Number of formula cells with a cached value present."""
+    """Formula cells, how many have a cached value, and which cache an error."""
     from openpyxl import load_workbook
     wb_f = load_workbook(path, data_only=False)
     wb_v = load_workbook(path, data_only=True)
     formulas = cached = 0
+    errors = []
     for name in wb_f.sheetnames:
         ws_f, ws_v = wb_f[name], wb_v[name]
         for row in ws_f.iter_rows():
             for cell in row:
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     formulas += 1
-                    if ws_v[cell.coordinate].value is not None:
+                    cached_cell = ws_v[cell.coordinate]
+                    if cached_cell.value is not None:
                         cached += 1
-    return formulas, cached
+                    # The cell's error type, not its text: a formula may
+                    # legitimately return the string "#N/A".
+                    if cached_cell.data_type == "e":
+                        errors.append(f"{name}!{cell.coordinate}={cached_cell.value}")
+    return formulas, cached, errors
 
 
 def main(argv=None):
@@ -92,13 +100,17 @@ def main(argv=None):
                               "stderr": proc.stderr.strip()[-500:]}),
                   file=sys.stderr)
             return 1
-        formulas, cached = count_cached(produced)
+        formulas, cached, errors = count_cached(produced)
         dest = Path(args.out).resolve() if args.out else src
         shutil.copyfile(produced, dest)
 
     print(json.dumps({
         "ok": True, "recalculated": True, "output": str(dest),
         "formula_cells": formulas, "with_cached_values": cached,
+        # LibreOffice evaluates some Excel formulas differently (structured
+        # table references, newer functions); name every cell it could not
+        # compute instead of reporting a clean recalculation.
+        "error_cells": errors[:50], "error_count": len(errors),
     }, ensure_ascii=False))
     return 0
 

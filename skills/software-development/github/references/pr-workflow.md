@@ -257,7 +257,8 @@ When asked to auto-fix CI, follow this loop:
 1. Check CI status → identify failures
 2. Read failure logs → understand the error
 3. Use `read_file` + `patch`/`write_file` → fix the code
-4. `git add . && git commit -m "fix: ..." && git push`
+4. `git add <the files you fixed> && git commit -m "fix: ..." && git push` (stage by path:
+   `git add .` also commits stray logs, scratch files and unrelated local edits)
 5. Wait for CI → re-check status
 6. Repeat if still failing (up to 3 attempts, then ask the user)
 

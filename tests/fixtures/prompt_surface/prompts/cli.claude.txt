@@ -86,7 +86,7 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - inspecting-hermes-desktop-dom: Read the live Hermes desktop DOM/CSS over CDP.
     - node-inspect-debugger: Debug Node.js via --inspect + Chrome DevTools Protocol CLI.
     - python-debugpy: Debug Python: pdb REPL + debugpy remote (DAP).
-    - requesting-code-review: Pre-commit review: security scan, quality gates, auto-fix.
+    - requesting-code-review: Read-only review by default; commit only if authorized.
     - simplify-code: Parallel 4-agent cleanup of recent code changes.
     - spike: Throwaway experiments to validate an idea before build.
     - systematic-debugging: 4-phase root cause debugging: understand bugs before fixing.

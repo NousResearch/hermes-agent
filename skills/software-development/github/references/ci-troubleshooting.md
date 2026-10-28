@@ -34,7 +34,9 @@ ERROR tests/test_foo.py - ModuleNotFoundError
 **Common fixes:**
 - Update assertion to match new expected behavior
 - Add missing dependency to requirements.txt / pyproject.toml
-- Fix flaky test (add retry, mock external service, fix race condition)
+- Fix a flaky test at its cause (mock the external service, wait on the real
+  condition instead of a sleep, remove the race). Do not add a retry or rerun
+  decorator: a retry hides the flake, and the race it hides ships to users
 
 ---
 

@@ -136,7 +136,11 @@ Author the JSON spec with `write_file`, inspect script JSON output with
    files fresh from openpyxl return `null` there. To materialize
    results headlessly run `xlsx_recalc.py file.xlsx` (uses
    LibreOffice; prints `{"recalculated": false, ...}` and exits 0
-   when `soffice` is absent), then reload with `--data-only`.
+   when `soffice` is absent), then reload with `--data-only`. It
+   replaces the input unless `--out` is given. Check `error_cells`
+   in its output: LibreOffice evaluates some Excel formulas
+   differently (structured table references, newer functions), and
+   those cells come back as `#VALUE!`/`#NAME?`.
 4. **Edit**: `xlsx_edit.py` applies renames/copies first, then
    structural row/column changes, then `--set`/`--append`. It edits in
    place unless `--out` is given — copy the file first if you need the

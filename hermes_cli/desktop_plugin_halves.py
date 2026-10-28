@@ -67,6 +67,14 @@ def _package_origin(package_dir: Path) -> dict:
     return {"repo": match.group(1)} if match else {}
 
 
+def _mtime_ms(st: os.stat_result) -> float:
+    """``Stats.mtimeMs`` exactly as Node computes it (seconds * 1e3 + nanoseconds / 1e6). Both
+    writers compare this number against the marker the other may have written, so a value one ulp
+    off would make each pass see the other's copy as stale and re-copy it."""
+    seconds, nanoseconds = divmod(st.st_mtime_ns, 1_000_000_000)
+    return seconds * 1e3 + nanoseconds / 1e6
+
+
 def _read_marker(folder: Path) -> dict | None:
     try:
         marker = json.loads((folder / PACKAGE_MARKER).read_text(encoding="utf-8-sig"))
@@ -127,7 +135,7 @@ def materialize_desktop_half(package_dir: Path, app_root: Path, name: str) -> Pa
     marker = {
         "package": name,
         "source": str(source_dir),
-        "sourceMtimeMs": entry_stat.st_mtime_ns / 1_000_000,
+        "sourceMtimeMs": _mtime_ms(entry_stat),
         **({"linked": True} if linked else {}),
         **_package_origin(package_dir),
     }

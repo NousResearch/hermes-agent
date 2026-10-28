@@ -315,3 +315,26 @@ class TestNewTurnGate:
         assert result is not None
         assert "draining" in result.lower()
 
+
+
+@pytest.mark.asyncio
+async def test_marker_present_at_startup_gates_restore_and_first_published_state(home, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from gateway.config import GatewayConfig
+
+    dc.write_drain_request()
+    runner = GatewayRunner(GatewayConfig(sessions_dir=home / "sessions"))
+    monkeypatch.setattr(runner, "_start_secondary_profile_adapters", AsyncMock(return_value=0))
+    monkeypatch.setattr(runner, "_start_spawn_background_watchers", MagicMock())
+    statuses = []
+    monkeypatch.setattr(runner, "_update_runtime_status", lambda state, *a, **k: statuses.append(state))
+    at_restore = []
+
+    async def finish_wiring(_count):
+        # Startup restore drains the inbound queued while adapters connected here.
+        at_restore.append((runner._external_drain_active, list(statuses)))
+
+    monkeypatch.setattr(runner, "_start_finish_wiring", finish_wiring)
+    assert await runner.start() is True
+    assert at_restore == [(True, ["draining"])]

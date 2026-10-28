@@ -27,6 +27,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
+from gateway.run_startup_drain import GatewayStartupDrainMixin
 from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
@@ -83,7 +84,7 @@ def _own_policy_envs(platform) -> Optional[tuple]:
     return (*own, authz_field(platform.value, "allow_all_env", entry))
 
 
-class GatewayStartupMixin:
+class GatewayStartupMixin(GatewayStartupDrainMixin):
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
     @staticmethod
@@ -1768,16 +1769,14 @@ class GatewayStartupMixin:
             connected_count, enabled_platform_count, startup_retryable_errors, startup_nonretryable_errors
         ):
             return True
+        drain_at_start = await self._read_startup_drain_marker()
         if await self._abort_startup_if_shutdown_requested():
             return True
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
         self._running = True
         self._install_plugin_message_injector()
-        # A boot that could not start every configured platform is not a normal run: stamp ``degraded``
-        # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
-        # line next to "Gateway running with N platform(s)".
-        self._update_runtime_status(self._serving_state())
+        self._publish_startup_state(drain_at_start)
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         from hermes_cli.observability.shared_metrics_startup import record_process_ready

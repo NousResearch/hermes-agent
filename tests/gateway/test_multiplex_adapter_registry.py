@@ -89,6 +89,26 @@ class TestCredentialFingerprint:
         assert fp(a) != fp(c)
         assert "app-1" not in fp(a)
 
+    def test_reads_api_key_zulip(self):
+        """Zulip authenticates with an API key on ``_api_key``, and its
+        PlatformConfig.token is often unset (env-driven setups), so the
+        config fallback finds nothing.
+
+        Without ``_api_key`` in the fingerprint attribute list, every Zulip
+        adapter in a multiplexed gateway returns None here and the
+        same-credential conflict check is silently skipped — N profiles
+        open event queues on the same bot, and Zulip delivers every
+        message to every queue, so each message fans out into N sessions
+        with N replies.
+        """
+        a = types.SimpleNamespace(_api_key="zlp-key-1")
+        b = types.SimpleNamespace(_api_key="zlp-key-1")
+        c = types.SimpleNamespace(_api_key="zlp-key-2")
+        fp = GatewayRunner._adapter_credential_fingerprint
+        assert fp(a) is not None and fp(a) == fp(b)
+        assert fp(a) != fp(c)
+        assert "zlp-key-1" not in fp(a)  # log-safe, never the raw credential
+
     def test_reads_config_token(self):
         """Adapters like Discord store token on `config`, not on self.
 

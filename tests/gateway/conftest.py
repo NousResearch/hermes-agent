@@ -376,9 +376,23 @@ def _ensure_discord_mock() -> None:
     sys.modules["discord.ext.commands"] = commands_mod
 
 
+def _ensure_zulip_mock() -> None:
+    """Install a minimal zulip mock in sys.modules when the SDK is absent.
+
+    The ``zulip`` extra is lazy-installable and therefore not synced into
+    the ``all``-based test environment, but the Zulip adapter tests need
+    ``zulip.Client`` importable/patchable. Idempotent — skipped when the
+    real library is installed (a sys.modules entry with ``__file__``).
+    """
+    if "zulip" in sys.modules and hasattr(sys.modules["zulip"], "__file__"):
+        return
+    sys.modules["zulip"] = MagicMock()
+
+
 # Run at collection time — before any test file's module-level imports.
 _ensure_telegram_mock()
 _ensure_discord_mock()
+_ensure_zulip_mock()
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMessagingSource, sessionSourceSearchTerms } from './session-source'
+import {
+  isMessagingSource,
+  MESSAGING_SESSION_SOURCE_IDS,
+  sessionSourceSearchTerms,
+} from './session-source'
 
 // Regression guard for #46761 / PR #47395: Photon (iMessage) must keep its own
 // sidebar section. refreshMessagingSessions() filters rows through
@@ -27,5 +31,19 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource('cli')).toBe(false)
     expect(isMessagingSource(null)).toBe(false)
     expect(isMessagingSource(undefined)).toBe(false)
+  })
+})
+
+describe('zulip messaging source registration', () => {
+  it('treats zulip as a messaging source (own sidebar section)', () => {
+    expect(isMessagingSource('zulip')).toBe(true)
+  })
+
+  it('is registered in the messaging source id list', () => {
+    expect(MESSAGING_SESSION_SOURCE_IDS).toContain('zulip')
+  })
+
+  it('exposes a Zulip search label', () => {
+    expect(sessionSourceSearchTerms('zulip')).toContain('Zulip')
   })
 })

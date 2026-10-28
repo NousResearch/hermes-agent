@@ -104,3 +104,46 @@ def test_wizard_validation_probes_the_submitted_endpoint_not_the_saved_one(isola
     assert all(url == NEW_URL for url, _ in probes), probes
     assert all((key or "") in {api_key, "no-key-required"} and key != "key-a" for _, key in probes), probes
     assert _read(isolated_home)["model"]["base_url"] == NEW_URL
+
+
+COLLIDING_URL = "http://127.0.0.1:9/v1"
+SUBMITTED_URL = "http://127.0.0.2:9/v1"
+
+
+@pytest.mark.parametrize("api_key", ["key-b", ""])
+def test_providers_custom_entry_never_lends_its_key_to_the_submitted_endpoint(isolated_home, monkeypatch, api_key):
+    """A ``providers.custom`` entry shares its key with the bare selector the wizard submits. The
+    submitted URL/key are the request's authority through validation AND persistence: the
+    entry's host is never probed and its key is never written next to the new URL."""
+    from hermes_cli import models_validate
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
+
+    cfg = {"model": {"provider": "custom", "default": "model-a"},
+           "providers": {"custom": {"base_url": COLLIDING_URL, "api_key": "key-a"}}}
+    (isolated_home / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")
+    probes = []
+
+    def record(model, provider, *, api_key=None, base_url=None, **_kw):
+        probes.append((base_url, api_key))
+        return {"accepted": True, "persist": True, "recognized": True, "message": ""}
+
+    monkeypatch.setattr(models_validate, "validate_requested_model", record)
+    result = _apply_model_assignment_sync("main", "custom", "model-b", "", SUBMITTED_URL, api_key)
+
+    assert result["base_url"] == SUBMITTED_URL
+    assert all(url == SUBMITTED_URL and key != "key-a" for url, key in probes), probes
+    model = _read(isolated_home)["model"]
+    assert (model["base_url"], model.get("api_key", "")) == (SUBMITTED_URL, api_key)
+
+
+def test_bare_custom_without_url_still_selects_the_providers_custom_entry(isolated_home):
+    """Control: with no submitted URL the ``providers.custom`` entry IS the selection, key included."""
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
+
+    cfg = {"model": {"provider": "openrouter", "default": "model-a"},
+           "providers": {"custom": {"base_url": COLLIDING_URL, "api_key": "key-a"}}}
+    (isolated_home / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")
+    _apply_model_assignment_sync("main", "custom", "model-b", "", "", "")
+
+    model = _read(isolated_home)["model"]
+    assert (model["base_url"], model.get("api_key", "")) == (COLLIDING_URL, "key-a")

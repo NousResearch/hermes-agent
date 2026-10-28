@@ -1845,6 +1845,8 @@ class BasePlatformAdapter(ABC):
     # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
     # HTTP-inbound adapters gain the prefix.
     serves_profile_prefix: bool = False
+    # False: being enabled or connected does not hold an auto-started gateway up (run_idle_exit).
+    keeps_gateway_up: bool = True
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
@@ -1866,7 +1868,6 @@ class BasePlatformAdapter(ABC):
         # Strong refs to shielded fatal-error handler tasks that outlive their carrier task
         # (asyncio keeps only weak refs); without them the loop can GC the detached handler
         # mid-flight — the "handler killed mid-flight" class (#81335).
-        # See #81335.
         self._detached_fatal_tasks: set = set()
         # Lock takeover armed only for the initial connect of ``gateway run --replace``.
         self._platform_lock_takeover_allowed = self._platform_lock_takeover_attempted = False
@@ -2118,7 +2119,6 @@ class BasePlatformAdapter(ABC):
             # cancels; unshielded, the handler died mid-flight — adapter popped from the
             # gateway map but never queued for background reconnect, leaving a zombie
             # gateway with no platforms and no pending retries (#81335).
-            # See #81335.
             task = asyncio.ensure_future(result)
             # Strong ref: asyncio only keeps weak refs to tasks ("save a reference ... to
             # avoid a task disappearing mid-execution"); matches

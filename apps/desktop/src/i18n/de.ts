@@ -3944,6 +3944,7 @@ export const deOverrides = {
     goalActive: 'Ziel aktiv',
     goalBlocked: 'Ziel blockiert',
     goalDone: 'Ziel erledigt',
+    goalInterrupted: 'Unterbrochen',
     goalPaused: 'Ziel pausiert',
     goalWaiting: 'Ziel wartet',
     subagents: count => `${count} Subagent${count === 1 ? '' : 'en'}`,

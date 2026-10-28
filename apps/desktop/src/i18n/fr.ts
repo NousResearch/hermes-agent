@@ -3953,6 +3953,7 @@ export const frOverrides = {
     goalActive: 'Objectif actif',
     goalBlocked: 'Objectif bloqué',
     goalDone: 'Objectif terminé',
+    goalInterrupted: 'Interrompu',
     goalPaused: 'Objectif en pause',
     goalWaiting: 'Objectif en attente',
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,

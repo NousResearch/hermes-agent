@@ -87,6 +87,16 @@ describe('memory layers', () => {
     expect(within(row('Built-in layer')).getByText('On by default')).toBeTruthy()
   })
 
+  it('keeps the status read on the captured Settings owner', async () => {
+    const owner = { connectionId: 'gateway-b', profile: 'memory-owner' }
+    vi.mocked(getMemoryStatus).mockResolvedValue(status('byterover'))
+
+    render(<MemoryLayersPanel profile={owner} provider="byterover" />)
+
+    await screen.findByTestId('memory-layers')
+    expect(getMemoryStatus).toHaveBeenCalledWith(owner)
+  })
+
   it('says built-in only when no external provider is configured', async () => {
     vi.mocked(getMemoryStatus).mockResolvedValue(status(''))
     render(<MaintenancePanel />)

@@ -160,6 +160,7 @@ class TestCheckpointReadopt:
                 "host_start_time": start,
                 "task_id": "t1",
                 "notify_on_complete": True,
+                "owner_pid": 999999999,  # the writer is gone, so its entries are recovery's
             }]))
             monkeypatch.setattr(
                 "tools.process_registry.CHECKPOINT_PATH", checkpoint

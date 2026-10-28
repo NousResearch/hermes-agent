@@ -500,12 +500,31 @@ async function sourceGone(name: string, entry: string): Promise<boolean> {
  *  desktop half. First home wins for a name that appears in several profiles
  *  (the default home is first). Also drops root copies whose source package
  *  is gone — an uninstalled agent package must not leave a ghost pane. */
-export function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
+export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
+  return (await reconcileDesktopHalvesReport(hermesHome, appRoot)).published
+}
+
+/** A package whose desktop half this pass did not publish, and why (the plain-tree check, an unreadable folder). */
+export interface RefusedDesktopHalf {
+  name: string
+  reason: string
+}
+
+/** `published`: the root copies written or pruned. `refused`: packages whose desktop half was not published. */
+export interface DesktopReconcileReport {
+  published: string[]
+  refused: RefusedDesktopHalf[]
+}
+
+/** `reconcileUnifiedDesktopHalves`, also naming each package it refused, so an install that just put one
+ *  down can report its desktop half as failed instead of done. */
+export function reconcileDesktopHalvesReport(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
   return withDesktopPluginsRoot(appRoot, () => reconcilePass(hermesHome, appRoot))
 }
 
-async function reconcilePass(hermesHome: string, appRoot: string): Promise<string[]> {
+async function reconcilePass(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
   const touched: string[] = []
+  const refused: RefusedDesktopHalf[] = []
   const seen = new Set<string>()
 
   for (const home of await localHomes(hermesHome)) {
@@ -526,6 +545,7 @@ async function reconcilePass(hermesHome: string, appRoot: string): Promise<strin
         // never resolve and EVERY desktop plugin would silently stop loading.
         // A desktop half refused by the plain-tree check lands here too.
         console.warn(`[desktop-plugins] skipping package ${name}: ${String(error)}`)
+        refused.push({ name, reason: error instanceof Error ? error.message : String(error) })
 
         continue
       }
@@ -552,5 +572,5 @@ async function reconcilePass(hermesHome: string, appRoot: string): Promise<strin
     }
   }
 
-  return touched
+  return { published: touched, refused }
 }

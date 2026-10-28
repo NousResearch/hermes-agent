@@ -8,6 +8,7 @@ import {
   materializeDesktopHalf,
   migrateProfileScopedDesktopPlugins,
   PACKAGE_MARKER,
+  reconcileDesktopHalvesReport,
   reconcileUnifiedDesktopHalves
 } from './desktop-plugins-root'
 
@@ -480,6 +481,32 @@ describe('desktop tree publication', () => {
 
       expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
       expect(fs.readFileSync(path.join(appRoot, 'media', 'asset.txt'), 'utf8')).toBe('checkout file')
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'names each refused package and its reason beside the halves it did publish',
+    async () => {
+      // The install dialog reads this to report a refused desktop half as failed, not installed.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const pkg = path.join(home, 'plugins', 'media')
+      write(path.join(pkg, 'assets', 'asset.txt'), 'package file')
+      write(path.join(pkg, 'desktop', 'plugin.js'), 'export default {}')
+      fs.symlinkSync('../assets/asset.txt', path.join(pkg, 'desktop', 'asset.txt'))
+      write(path.join(home, 'plugins', 'good', 'desktop', 'plugin.js'), 'export default {}')
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      try {
+        expect(await reconcileDesktopHalvesReport(home, appRoot)).toEqual({
+          published: [path.join(appRoot, 'good')],
+          refused: [
+            { name: 'media', reason: 'The desktop plugin contains a symbolic link (asset.txt); it is not installed.' }
+          ]
+        })
+      } finally {
+        warn.mockRestore()
+      }
     }
   )
 })

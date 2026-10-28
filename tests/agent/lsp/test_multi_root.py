@@ -32,6 +32,7 @@ def _make_repo(tmp_path: Path, name: str) -> Path:
     repo = tmp_path / name
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text("", encoding="utf-8")
     (repo / "x.py").write_text("print('hi')\n", encoding="utf-8")
     return repo

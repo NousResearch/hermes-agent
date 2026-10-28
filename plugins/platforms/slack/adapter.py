@@ -2766,12 +2766,18 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Set working/idle state with the status vocabulary of the selected API."""
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+            client = self._get_client(chat_id, team_id=team_id)
+            _set_status = _session_status_method(client)
+            # Agent Sessions accepts lifecycle enums, not the free-form status
+            # text (or empty clear value) accepted by the legacy Assistant API.
+            if (_sdk_supports_agent_sessions()
+                    and getattr(client, "agents_sessions_setStatus", None) is not None):
+                status = "processing" if status else "active"
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            logger.warning("[Slack] thread status %s: %s", fail_label, e)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

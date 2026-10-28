@@ -2582,11 +2582,18 @@ export interface UnassignedGroup {
   sessionCount: number;
 }
 
+export interface ProjectFolder {
+  path: string;
+  label: string | null;
+  is_primary: boolean;
+  added_at: number;
+}
+
 export interface ProjectSummary {
   id: string;
   slug: string;
   name: string;
-  folders: string[];
+  folders: ProjectFolder[];
   primary: string | null;
   board: string | null;
   sessionCount: number;

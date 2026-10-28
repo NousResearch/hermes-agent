@@ -333,11 +333,11 @@ export function ProjectsOverview({
                       <span className="text-midground/40">primary</span>
                     </div>
                   )}
-                  {openProject_.folders
-                    .filter((f) => f !== openProject_.primary)
+                {openProject_.folders
+                    .filter((f) => f.path !== openProject_.primary)
                     .map((f) => (
-                      <div key={f} className="text-midground/50">
-                        {f.replace(/^\/Users\/[^/]+/, "~")}
+                      <div key={f.path} className="text-midground/50">
+                        {f.path.replace(/^\/Users\/[^/]+/, "~")}
                       </div>
                     ))}
                 </div>

@@ -16,7 +16,8 @@ import {
   postTrainBillingState,
   postTrainSubscriptionState,
   todayBillingState,
-  todaySubscriptionState
+  todaySubscriptionState,
+  windowFixtures
 } from './fixtures.test-util'
 import { buildManageSubscriptionUrl, deriveBillingView, formatMonthlyCreditsDelta } from './use-billing-state'
 
@@ -59,6 +60,136 @@ function monthlyCapRowForSpent(spent: string) {
 
   return view.usageRows.find(row => row.id === 'monthly_cap')
 }
+
+// The account setting rides on billing.state; `credits_pay` (setting on AND a top-up balance left) rides on
+// plan_usage, which the page reads from subscription.state first.
+function withKeepGoing(
+  { billing, subscription }: (typeof windowFixtures)['window-low'],
+  { credits_pay, keep_going_on_credits }: { credits_pay: boolean; keep_going_on_credits: boolean }
+) {
+  const planUsage = subscription.ok ? subscription.data.plan_usage : null
+
+  if (!billing.ok || !subscription.ok || !planUsage) {
+    throw new Error('window fixtures are ok and carry plan_usage')
+  }
+
+  return [
+    okBilling({ ...billing.data, keep_going_on_credits, plan_usage: { ...planUsage, credits_pay } }),
+    okSubscription({ ...subscription.data, plan_usage: { ...planUsage, credits_pay } })
+  ] as const
+}
+
+describe('deriveBillingView (usage-window plans)', () => {
+  it('replaces the subscription credits row with today / week / month / large-model gauges', () => {
+    const fixture = windowFixtures['window-healthy']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.usageRows.map(row => row.id)).toEqual([
+      'window_day',
+      'window_week',
+      'window_month',
+      'window_top_tier',
+      'topup_credits'
+    ])
+    expect(view.usageRows[0]).toMatchObject({
+      bar: { state: 'ok', tone: 'window' },
+      title: 'Today',
+      value: '24% used'
+    })
+    // Fixture clocks are captured at import, so allow the boundary tick (7h → 6h, 4d 1h → 4d).
+    expect(view.usageRows[0]?.caption).toMatch(/^Resets in [67]h$/)
+    expect(view.usageRows[0]?.bar?.value).toBeCloseTo(0.24)
+    expect(view.usageRows[1]).toMatchObject({ title: 'This week', value: '7% used' })
+    expect(view.usageRows[1]?.caption).toMatch(/^Resets in 4d( 1h)?$/)
+    expect(view.usageRows[2]).toMatchObject({ title: 'This month', value: '3% used' })
+    expect(view.usageRows[2]?.caption).toMatch(/^Resets in (18|17)d/)
+    expect(view.usageRows[3]).toMatchObject({ title: 'Large models (monthly)', value: '0% used' })
+    expect(JSON.stringify(view.usageRows.slice(0, 4))).not.toMatch(/\$/)
+  })
+
+  it('shows no month row when the server sends no month gauge (older portal)', () => {
+    const fixture = windowFixtures['window-low']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.usageRows.map(row => row.id)).toEqual(['window_day', 'window_week', 'window_top_tier', 'topup_credits'])
+  })
+
+  it('colours a running-down window yellow then red, and names an exhausted large-model allowance', () => {
+    const fixture = windowFixtures['window-low']
+    // What the server sends with Keep going on credits on and a top-up balance left.
+    const view = deriveBillingView(...withKeepGoing(fixture, { credits_pay: true, keep_going_on_credits: true }))
+
+    expect(view.usageRows[0]).toMatchObject({ bar: { state: 'danger' }, value: '88% used' })
+    expect(view.usageRows[1]).toMatchObject({ bar: { state: 'warn' }, value: '59% used' })
+    expect(view.usageRows[2]).toMatchObject({
+      bar: { state: 'danger', value: 1 },
+      caption: 'Monthly allowance used up, credits cover the rest',
+      value: '100% used'
+    })
+  })
+
+  it('never says credits cover a used-up large-model allowance unless Keep going on credits is known on', () => {
+    const fixture = windowFixtures['window-low']
+
+    // Off, and unknown (a member, or an older portal: the setting is not sent).
+    for (const keep_going_on_credits of [false, null]) {
+      const billing = fixture.billing?.ok
+        ? { ...fixture.billing, data: { ...fixture.billing.data, keep_going_on_credits } }
+        : fixture.billing
+
+      const view = deriveBillingView(billing, fixture.subscription)
+
+      expect(view.usageRows[2]?.caption).toBe('Monthly allowance used up, other included models still work')
+    }
+  })
+
+  it('never says credits cover a used-up large-model allowance when no top-up balance is left', () => {
+    const fixture = windowFixtures['window-low']
+    // Keep going on credits is on, but the balance is $0: the server answers credits_pay false.
+    const view = deriveBillingView(...withKeepGoing(fixture, { credits_pay: false, keep_going_on_credits: true }))
+
+    expect(view.usageRows[2]?.caption).toBe('Monthly allowance used up, other included models still work')
+  })
+
+  it('captions every gauge as paused when the renewal payment failed', () => {
+    const fixture = windowFixtures['window-paused']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    for (const row of view.usageRows.slice(0, 3)) {
+      expect(row.caption).toBe('Paused: subscription payment failed')
+    }
+  })
+
+  it('a pause for any other reason does not claim a payment failed', () => {
+    const fixture = windowFixtures['window-paused']
+    const billing = fixture.billing.ok ? fixture.billing.data : undefined
+    const subscription = fixture.subscription.ok ? fixture.subscription.data : undefined
+    const planUsage = { ...billing!.plan_usage!, paused_reason: 'unknown' }
+
+    const view = deriveBillingView(
+      okBilling({ ...billing!, plan_usage: planUsage }),
+      okSubscription({ ...subscription!, plan_usage: planUsage })
+    )
+
+    for (const row of view.usageRows.slice(0, 3)) {
+      expect(row.caption).toBe('Paused: see Billing in the Portal')
+    }
+  })
+
+  it('names the window plan on the Usage section, and nothing on a credit-grant plan', () => {
+    const win = windowFixtures['window-healthy']
+    expect(deriveBillingView(win.billing, win.subscription).usagePlanName).toBe('Window Plan')
+    expect(
+      deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState)).usagePlanName
+    ).toBeUndefined()
+  })
+
+  it('keeps the dollar subscription row for a credit-grant plan (no plan_usage window)', () => {
+    const view = deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState))
+
+    expect(view.usageRows.map(row => row.id)).toEqual(['subscription_credits', 'topup_credits', 'monthly_cap'])
+  })
+})
 
 describe('deriveBillingView', () => {
   it.each(['zh', 'zh-hant'] as const)(

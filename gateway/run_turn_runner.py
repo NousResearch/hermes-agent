@@ -28,6 +28,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
+from hermes_cli.plugins_dispatch import stream_held
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -71,6 +72,10 @@ _LEDGER_PASSTHROUGH_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "cache_read_tokens", "cache_write_tokens",
     "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
 )
+# Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
+# so the authority's ``message.complete`` carries the same error card the TUI path builds;
+# ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
+_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
 
 
 def _finite_viewer_turn() -> bool:
@@ -137,6 +142,11 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
+    if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
+        # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
+        # the shared refusal copy names /new, never a resend.
+        from agent.turn_failure_copy import launch_credentials_copy
+        return launch_credentials_copy(exc), 'launch_credentials_unavailable', False
     if isinstance(exc, RuntimeStoreError):
         # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
         # daemon restart): keep it in the reply so clients can act on it, and do not suggest
@@ -193,8 +203,19 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def _publish_execution(self, event_type, payload):
         if self._approval_owner is not None:
             authority, session_id, generation = self._approval_owner
-            return authority.publish_execution(session_id, generation, event_type, payload)
+            return authority.publish_execution(
+                session_id, generation, event_type, self._stamp_segment(generation, event_type, payload))
         return False
+
+    def _stamp_segment(self, generation, event_type, payload):
+        """The turn's wire identity on its reply frames (tui_gateway/stream_segments.py), so a viewer
+        upserts a re-sent delta or seal instead of painting a second copy (#144609). The same
+        stamping rule as tui_gateway's ``_emit``, with one cursor per execution generation."""
+        from tui_gateway.stream_segments import TurnSegments, stamp_reply_frame
+        segments = getattr(self, "_segments", None)
+        if segments is None or segments[0] != generation:
+            segments = self._segments = (generation, TurnSegments())
+        return stamp_reply_frame(segments[1], event_type, payload)
 
     def _publish_api_tool(self, event_type, call_id, tool_name, args, result=None):
         """The retained tool payload reaches the API observers of this exact admission only;
@@ -221,12 +242,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+        # A loaded ``hold_stream`` transform rewrites this session's reply before the user may see it:
+        # no drafts, edits, native stream or commentary bubbles; the rewrite goes out as one plain
+        # final while the typing indicator runs (the agent also withholds every delta).
+        held = stream_held()
+        want_stream_deltas = not held and not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
         # A finite (`-z`, `chat -q`) viewer prints only the terminal reply, like the classic quiet
         # CLI that never wired commentary. Commentary it cannot see must not be recorded as a
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.
         want_interim_messages = (bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
-                                 and not _finite_viewer_turn())
+                                 and not held and not _finite_viewer_turn())
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -326,10 +351,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.warning_notifications import is_diagnostic_notice, render_notification
         if self._ctx.mute_notification_reply or not self._status_live():
             return
+        # A usage-window limit line repeats the turn's own reply, which carries the sentence and the
+        # switch button (a chat message cannot be cleared, so it would only pile up). The 90% heads-up
+        # is a desktop / terminal nudge; in a chat it is noise (/usage has the numbers).
+        key = str(getattr(notice, "key", "") or "")
+        if key == "credits.window_limit" or key.startswith("credits.window."):
+            return
         diagnostic = is_diagnostic_notice(notice)
         def present():
             try:
                 line = render_notice_line(notice)
+                if key.startswith("credits."):
+                    # Window plans (e.g. a paused plan's line): a chat's /topup has no credits settings.
+                    from agent.plan_limits import portal_wording
+                    line = portal_wording(line)
             except Exception:
                 logger.debug("render_notice_line failed", exc_info=True)
                 return
@@ -965,6 +1000,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 kwargs["persist_user_display_metadata"] = ctx.persist_user_display_metadata
             if ctx.moa_config is not None:
                 kwargs["moa_config"] = ctx.moa_config
+            from gateway.session_onboarding import arm_onboarding_turn
+            prelude = arm_onboarding_turn(agent, self._approval_owner, agent_history)
+            if prelude is not None and _accepts_keyword(agent.run_conversation, "prelude"):
+                kwargs["prelude"] = prelude
             if persist_user_timestamp_override is not None:
                 kwargs["persist_user_timestamp"] = persist_user_timestamp_override
             # The RAW inbound id (not event_message_id, the reply anchor) rides the persisted user
@@ -1153,13 +1192,23 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
-        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope
+        from contextlib import ExitStack
+        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, refused_turn_result
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
+        from hermes_state_runtime import RuntimeStoreError
         policy = policy_for_source(self._runner, self._ctx.source)
-        with policy_scope(policy, authority=active_authority(self._runner)), api_policy_scope():
-            bind_turn_workspace(policy, self._ctx.session_id)
-            result = self._run_sync_scoped()
+        with ExitStack() as scope:
+            try:
+                scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
+            except RuntimeStoreError as exc:
+                result = refused_turn_result(policy, exc)
+                if result is None:
+                    raise
+            else:
+                scope.enter_context(api_policy_scope())
+                bind_turn_workspace(policy, self._ctx.session_id)
+                result = self._run_sync_scoped()
             from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:
@@ -1284,7 +1333,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway.session_cli_turn import run_classic_cli_turn
             from gateway.session_secret_prompt import secret_prompt_scope
             from gateway.session_sudo_prompt import sudo_prompt_scope
-            with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent):
+            from gateway.session_vault_prompt import vault_prompt_scope
+            with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent), vault_prompt_scope(self, agent):
                 result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
                     agent, agent_history, observed_group_context, persist_msg, persist_ts))
         finally:
@@ -1316,6 +1366,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
             "model": getattr(agent, "model", None) if agent else None,
+            # Most failed results name no provider; the error card's sign-in / update-key action needs it.
+            "provider": getattr(agent, "provider", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
             # The rest of the `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS): a finite
             # viewer reads the committed result over `prompt.receipt`, so the projection must keep
@@ -1330,9 +1382,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         common = {
             "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
             "failed": result.get("failed", False), "failure_reason": result.get("failure_reason"),
+            # Usage-window limit (agent/plan_limits.py): the gateway offers the plan's model as a button.
+            "usage_limit": result.get("usage_limit"),
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),
+            **{key: result[key] for key in _FAILURE_DESCRIPTOR_KEYS if key in result},
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],

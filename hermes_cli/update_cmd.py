@@ -680,7 +680,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         git_cmd, root, branch, ["--depth", "1"] if is_shallow else [],
     )
     if fetch_result.returncode != 0:
-        _print_fetch_failure(fetch_result.stderr)
+        _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=root)
         sys.exit(1)
     if is_shallow:
         _check.repair_shallow_grafts(root)
@@ -788,6 +788,8 @@ def _complete_source_update(request: dict | None) -> None:
     from copy import deepcopy
     _completion_receipt.record_stage(
         "apply", "skipped" if request.get("completion_message") else "success", mode=request.get("apply_mode", "git"))
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Updating dependencies")  # the completion below starts with the dependency sync
     current = _completion_receipt._current.get()
     if current is not None:
         request["receipt"] = deepcopy(current.data)
@@ -1729,8 +1731,9 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
-    _windows_gateway_resume=None) -> None:
+    _windows_gateway_resume=None, held_message: str | None = None) -> None:
     """"Already up to date" path: restore stash, repair the checkout, catch up the fleet.
+    ``held_message`` replaces "Already up to date!" when the channel's release was held, not reached.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     # A parked branch the update switched off stays on the target: re-parking on the stale branch
     # recreates the incident. No other checkout left current_branch (in-place and release updates
@@ -1752,7 +1755,7 @@ def _finish_already_up_to_date(
         # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
         # (and its restarted proof), so a sibling profile's no-op update re-kills the multiplexer.
         completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
-        completion_request["completion_message"] = (
+        completion_request["completion_message"] = held_message or (
             "✓ Already up to date!" if _plan.upstream_checked
             else "✓ Up to date with your fork (official repo not checked).")
     _complete_source_update(completion_request)
@@ -1805,6 +1808,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # declare this local, so only they hand off through retired shims.
     _hermes_current_updater_frame = True
     _commit.begin_update_attempt()  # nothing an earlier update in this process armed is ours (O5)
+    from hermes_cli.update_proxy_env import prefer_dotenv_proxy_env
+    prefer_dotenv_proxy_env()  # the .env loaded at import beats a system proxy the Desktop injected
     git_operation = git_operation_in_progress(_m().PROJECT_ROOT)
     if git_operation:
         root = _m().PROJECT_ROOT
@@ -1839,6 +1844,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Downloading updates")  # a failed backup never stops the update
 
     _windows_gateway_resume = _pause_gateways_for_update(opts)
     if _windows_gateway_resume:
@@ -1916,14 +1923,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"
                       " should_include_obj' in https://hermes-agent.nousresearch.com/docs/getting-started/updating")
-            _print_fetch_failure(fetch_result.stderr)
+            _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=_m().PROJECT_ROOT)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             _record_stop("git_timeout" if fetch_result.returncode == 124 else "disk_full"
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")
             sys.exit(1)
 
+        _check.fetch_release_tag(git_cmd, _m().PROJECT_ROOT, completion_request)
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
+        held_message = None
+        if release_sha and not target_is_head:
+            channel = _update_run_channel(args)
+            held = _check.hold_channel_release_behind_runtime(git_cmd, target_ref, channel)
+            if held:
+                target_ref = held
+                held_message = f"✓ Holding at this build until a newer {channel} release ships."
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
@@ -1934,7 +1949,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
-                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume)
+                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume,
+                held_message=held_message)
             return
 
         if release_sha:

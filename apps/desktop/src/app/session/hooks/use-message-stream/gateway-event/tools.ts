@@ -11,8 +11,6 @@ import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-s
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { setupBeatResult } from '@/store/setup-beat'
 import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
-import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
-import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { clearSessionToolProgress, clearToolProgress, setToolProgress } from '@/store/tool-progress'
@@ -201,23 +199,9 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     // The agent just created/deleted/renamed a skill, which adds or removes
     // its `/name` command. Drop the composer's cached `/` list so the new
-    // skill is offerable now rather than after the hour-long TTL — and the
-    // skill-suggestion provider's index with it.
+    // skill is offerable now rather than after the hour-long TTL.
     if (payload?.name === 'skill_manage') {
       invalidateSlashCompletions()
-      invalidateSkillSuggestionIndex()
-    }
-
-    // MCP tool outcomes feed the connection-repair suggestion provider:
-    // an auth/connection-shaped failure offers a reconnect pill; a later
-    // success against the same server withdraws it.
-    if (sessionId && typeof payload?.name === 'string' && payload.name.startsWith('mcp__')) {
-      reportMcpToolResult(
-        sessionId,
-        payload.name,
-        Boolean(payload.error),
-        [payload.error, payload.result].filter(part => typeof part === 'string').join(' ')
-      )
     }
 
     // A file-mutating tool just finished — nudge the git-mirroring surfaces

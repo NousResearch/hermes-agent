@@ -138,8 +138,9 @@ def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     else:
         kwargs["start_new_session"] = True
     # `--interrupt`: the update owns this restart (drain-first, 31637312899); a live session must not
-    # strand the profile on pre-update code the way a refusal would.
-    argv = [sys.executable, "-m", "hermes_cli.main", "-p", profile, "gateway", "restart", "--interrupt"]
+    # strand the profile on pre-update code the way a refusal would. `--detach`: this bounded call
+    # must not itself become a service-less profile's gateway (killed at the timeout below).
+    argv = [sys.executable, "-m", "hermes_cli.main", "-p", profile, "gateway", "restart", "--interrupt", "--detach"]
     return _succeeded(_run_quiet(run, argv, timeout=_PROFILE_RESTART_TIMEOUT, **kwargs))
 
 

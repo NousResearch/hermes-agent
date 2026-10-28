@@ -7,7 +7,11 @@ classifier must call out rate limiting / outages explicitly, and the raw
 stderr line must always be printed alongside the diagnosis.
 """
 
-from hermes_cli import update_cmd
+import os
+import subprocess
+from pathlib import Path
+
+from hermes_cli import update_cmd, update_cmd_git
 
 
 RATE_LIMIT_STDERR = (
@@ -77,6 +81,32 @@ class TestClassifyFetchFailure:
         )
         assert "SSH authentication failed" in msg
         assert "https://github.com/NousResearch/hermes-agent.git" in msg
+
+    def test_only_a_checkout_git_rejects_gets_the_installer_repair(self, tmp_path, capsys):
+        # The updater fetches only when .git exists; git rejecting the checkout itself (here an
+        # empty .git) cannot be retried away. A remote with a dangling `.git` file makes git print
+        # the same "fatal: not a git repository" line, and reinstalling Hermes cannot fix that.
+        def fetch(cwd: Path, *source: str) -> str:
+            return subprocess.run(["git", "fetch", *source], cwd=cwd, capture_output=True, check=False,
+                                  text=True, encoding="utf-8", errors="replace",
+                                  env={**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}).stderr
+
+        damaged = tmp_path / "custom-dir" / "hermes-agent"
+        (damaged / ".git").mkdir(parents=True)
+        update_cmd_git._print_fetch_failure(fetch(damaged, "origin"), git_cmd=["git"], root=damaged)
+        out = capsys.readouterr().out
+        assert "damaged" in out and "hermes-agent.nousresearch.com/install." in out
+        assert str(damaged) in out  # the repair targets THIS checkout, not the default directory
+
+        healthy, remote = tmp_path / "healthy", tmp_path / "remote"
+        subprocess.run(["git", "init", "-q", str(healthy)], check=True)
+        remote.mkdir()
+        (remote / ".git").write_text(f"gitdir: {tmp_path / 'gone'}\n", encoding="utf-8")
+        relayed = "remote: fatal: not a git repository (or any of the parent directories): .git"
+        for stderr in (fetch(healthy, str(remote)), relayed):
+            update_cmd_git._print_fetch_failure(stderr, git_cmd=["git"], root=healthy)
+            out = capsys.readouterr().out
+            assert "damaged" not in out, out
 
     def test_ssh_host_key_failure_reports_ssh_auth(self):
         msg = update_cmd._classify_fetch_failure(

@@ -15,7 +15,7 @@ import sys
 import time
 
 from agent.managed_worker import accept_result, encode_frame, read_frame
-from gateway.session_worker_reservation import reserve_admission_worker
+from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
 # The interpreter only imports psutil before it introduces itself; a child silent this long
@@ -293,8 +293,8 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            from hermes_cli.process_identity import process_birth
-            if process_birth(proc) == self.worker[1]:
+            from hermes_cli.process_identity import worker_birth
+            if worker_birth(proc) == self.worker[1]:
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass
@@ -579,6 +579,18 @@ async def _spawn_registered_worker(authority, ref, row):
     return worker, process
 
 
+async def admit_managed(authority, ref, row, policy):
+    """The ingress route into a managed worker. A removed folder is refused before a worker exists,
+    like the in-process runner: a worker failing in its policy scope reads as a LOST execution
+    (``unknown``) and parks every follower behind it."""
+    from gateway.session_policy import workspace_ready, workspace_unavailable_result
+    if not workspace_ready(policy):
+        result = workspace_unavailable_result(policy)
+        authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
+        return result['final_response']
+    return await execute_managed(authority, ref, row, policy)
+
+
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
@@ -615,7 +627,8 @@ async def execute_managed(authority, ref, row, policy):
         # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
         from gateway.session_runtime_workers import tracked_write
         scope = await tracked_write(authority, partial(reserve_admission_worker, authority,
-                    admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello))
+                    admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello,
+                    worker_subject=owner_worker_subject()))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)

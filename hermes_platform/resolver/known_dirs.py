@@ -85,6 +85,11 @@ def windows_user_program_dirs() -> tuple[str, ...]:
     )
 
 
+def visual_studio_installer_dirs() -> tuple[str, ...]:
+    """Where the Visual Studio installer puts vswhere.exe; it is never on PATH."""
+    return ("%ProgramFiles(x86)%/Microsoft Visual Studio/Installer",) if _WIN else ()
+
+
 def mac_application_dirs() -> tuple[str, ...]:
     return ("/Applications", "~/Applications") if sys.platform == "darwin" else ()
 

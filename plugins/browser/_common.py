@@ -140,6 +140,4 @@ class CloudBrowserProvider(BrowserProvider):
             "badge": "paid",
             "tag": self.setup_tag,
             "env_vars": [dict(v) for v in self.setup_env_vars],
-            # Cloud-scoped hook: installs the agent-browser CLI only (the vendor hosts Chromium).
-            "post_setup": "browserbase",
         }

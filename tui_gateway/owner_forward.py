@@ -50,7 +50,7 @@ _RELAYED = frozenset({"message.start", "message.complete"})
 #: session row is deleted only with its admissions (``ON DELETE RESTRICT``), so that one never runs.
 _REFUSED_BEFORE_COMMIT = frozenset({
     "invalid_params", "runtime_draining", "runtime_retired", "profile_mismatch", "permission_denied",
-    "not_found", "session_superseded", "stale_epoch", "admission_conflict", "queue_full"})
+    "not_found", "stale_epoch", "admission_conflict", "queue_full"})
 
 
 class OwnerUnavailable(RuntimeError):

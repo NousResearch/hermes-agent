@@ -1,12 +1,14 @@
 """An imported foreign transcript resumes through the canonical path (#142091).
 
-``hermes_cli.foreign_sessions.import_foreign_session`` writes a LOCAL row whose provenance lives in
+The desktop importer (``hermes_cli.foreign_sessions_browser.import_browser_session`` →
+``SessionDB.import_foreign_history``) writes a LOCAL row whose provenance lives in
 ``origin_json.imported_from``; the row carries no authority receipt, and the importer's label
 (``claude-code`` / ``codex-cli``) is not a local surface. ``session.resume`` therefore fell through
 to the messaging/as-API resolution and answered ``not_found`` for a transcript the legacy TUI opened
 fine. These tests pin the adoption and the guards that keep it from becoming a bypass.
 """
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -67,7 +69,8 @@ async def test_session_resume_remaps_an_imported_foreign_row(monkeypatch):
         db=SimpleNamespace(get_session=lambda sid: _imported_row() if sid == "imported-1" else None,
                            get_compression_tip=lambda sid: None),
         sessions={"imported-1": SimpleNamespace(source=SimpleNamespace(platform=None),
-                                                route="agent:main:cli:dm:imported-1")},
+                                                route="agent:main:cli:dm:imported-1",
+                                                event_stream=None)},
         authorize=lambda *args, **kwargs: None,
         attach=AsyncMock(return_value=_attach_snapshot(SessionRef("fixture", "imported-1"))),
     )
@@ -89,16 +92,21 @@ async def test_an_imported_row_is_adopted_and_reopened_by_the_canonical_owner(tm
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Principal
     from gateway.session_local_migration import resolve_local_target
-    from hermes_cli.foreign_sessions import import_foreign_session
+    from hermes_cli import foreign_sessions_browser as browser
     from hermes_state_local import local_receipt
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Import through the desktop browser, the importer that still writes the tool label and its
+    # provenance; the CLI command now routes its import through the gateway as a plain ``cli`` row.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _claude_fixture(tmp_path)
     config = {"platform_toolsets": {"cli": []}, "model": {"model": "demo-model", "provider": "custom"}}
     monkeypatch.setattr(run, "_load_gateway_config", lambda: config)
     monkeypatch.setattr(run, "_resolve_gateway_model", lambda _config: "demo-model")
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
     db = store._db
-    sid = import_foreign_session("claude", _claude_fixture(tmp_path), db=db)
+    page = browser.list_foreign_sessions()
+    sid = browser.import_browser_session(page["sessions"][0]["id"], db, "default")["session_id"]
     assert db.get_session(sid)["source"] == "claude-code"
 
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)

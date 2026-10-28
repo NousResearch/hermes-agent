@@ -146,6 +146,11 @@ export interface JsonRpcRequestChannelOptions {
   heartbeatLiveness?: HeartbeatLiveness
   /** `setTimeout`/`setInterval` handles are `unref`'d when the runtime supports it (Node) so a pending call cannot pin the process. */
   unrefTimers?: boolean
+  /**
+   * Read at each attach: this client is the Desktop app connected to a backend on its own machine.
+   * The backend offers the welcome trial and first-run onboarding only to that client.
+   */
+  desktopLocal?: () => boolean
 }
 
 export type HeartbeatLiveness = 'any-inbound' | 'response'
@@ -215,6 +220,7 @@ export class JsonRpcRequestChannel {
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
+      desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       heartbeatLiveness: options.heartbeatLiveness ?? 'response',
@@ -242,6 +248,13 @@ export class JsonRpcRequestChannel {
     this.transport = transport
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
+
+    // First on the socket, before the owner's own requests: the backend reads frames in order, and its
+    // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
+    // backend older than the field refuses just this one (4000) and keeps server_requests.
+    if (this.options.desktopLocal()) {
+      this.request('client.capabilities', { desktop_local: true }).catch(() => undefined)
+    }
   }
 
   /** Drop the transport and fail every in-flight call with `error`. */

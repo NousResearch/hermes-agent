@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
@@ -488,11 +488,39 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
         pinned=pinned, owner="delegation")
 
 
+class ResolvedReasoning(NamedTuple):
+    """A route's FINAL reasoning config, used as-is (``None`` included = the route's own default): a profile route
+    resolves its profile's ``agent.reasoning_effort`` / ``reasoning_overrides``, so neither the launching profile's
+    ``delegation.reasoning_effort`` nor the parent's level may fill it in."""
+
+    config: Optional[dict]
+
+
+def _child_reasoning(parent_agent, delegation_cfg: dict, route_effort: Any) -> Any:
+    """Child reasoning config: a :class:`ResolvedReasoning` route value as-is, else the route's raw effort >
+    ``delegation.reasoning_effort`` > the parent's level. Keep the raw value — a YAML ``false`` must disable
+    thinking, not coerce to "" and inherit."""
+    if isinstance(route_effort, ResolvedReasoning):
+        return route_effort.config
+    child_reasoning = getattr(parent_agent, "reasoning_config", None)
+    delegation_effort = route_effort
+    if not (delegation_effort or delegation_effort is False):
+        delegation_effort = (delegation_cfg or {}).get("reasoning_effort")
+    if delegation_effort or delegation_effort is False:
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(delegation_effort)
+        if parsed is None:
+            logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
+        else:
+            child_reasoning = parsed
+    return child_reasoning
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
-    routing_cfg: Optional[dict[str, Any]] = None,
+    routing_cfg: Optional[dict[str, Any]] = None, override_reasoning_effort: Any = None,
 ) -> dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -501,7 +529,7 @@ def _resolve_child_runtime(
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     # provider/base_url are one bundle: all from the override, or all from the parent. Per-field fallback built
-    # children like an override provider pointed at the PARENT's endpoint (e.g. copilot credentials on the
+    # children like an override provider pointed at the PARENT's endpoint (e.g. one provider's credentials on the
     # parent's Codex URL), which 404s on every request and can't be rescued by the fallback chain, whose dedup
     # matches provider+model and so skips the entry as a self-loop. _inherit_parent_endpoint recovers the
     # parent's live endpoint (with its key), which is meaningless for a different provider.
@@ -543,22 +571,12 @@ def _resolve_child_runtime(
     effective_acp_args = list(
         override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or [])
     )
-    # A pinned provider must use direct API calls; inheriting the parent's ACP
-    # transport would bypass the override credentials entirely.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize CopilotACPClient, bypassing
-    # override credentials entirely (issue #16816).
+    # A pinned provider must use direct API calls; inheriting the parent's ACP transport would build the
+    # ACP client and bypass the override credentials entirely (issue #16816).
     if override_provider and not override_acp_command:
         effective_acp_command, effective_acp_args = None, []
-    # Defensive: validate trusted delegation.command exists on PATH before honoring it. An explicitly pinned
-    # transport that cannot run must fail the spawn loudly (#80450) — silently falling back to the default
-    # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
-    # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
-    if override_acp_command:
-        from providers import get_provider_profile
-        profile = get_provider_profile(effective_provider or "")
-        # A generic process command does not imply the legacy ACP protocol.
-        if profile is None or profile.auth_type != "external_process":
-            effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
+    # A pinned command arrives only with the runtime of the provider that resolved it, so the selected
+    # provider (and its api_mode) is kept as is.
 
     # A named provider identity is endpoint-scoped. Preserve it only when the
     # child inherits the exact parent route; an override owns its final identity.
@@ -568,20 +586,8 @@ def _resolve_child_runtime(
             getattr(parent_agent, "requested_provider", None) or effective_provider
         )
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
-    child_reasoning = getattr(parent_agent, "reasoning_config", None)
-    try:
-        delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is None:
-                logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
-            else:
-                child_reasoning = parsed
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    # Reasoning: the task route's effort (delegation provider) > delegation.reasoning_effort > parent.
+    child_reasoning = _child_reasoning(parent_agent, delegation_cfg, override_reasoning_effort)
 
     kwargs: dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,

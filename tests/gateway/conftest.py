@@ -40,6 +40,22 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _join_api_turn_workers():
+    """Join the API turn workers a test left running, as its loop's teardown used to.
+
+    API turns ran on the loop's default executor, which each test's loop teardown joined. They now
+    run on ``api_server_runs``' own executor, which only an adapter disconnect retires, and most
+    API-server tests never disconnect: a worker still finishing would raise the process-global
+    ``api_worker_live_count`` inside the next test (the shutdown close-gate tests read it).
+    """
+    yield
+    runs = sys.modules.get("gateway.platforms.api_server_runs")
+    executor = runs.retire_api_turn_executor() if runs is not None else None
+    for thread in list(getattr(executor, "_threads", ())):
+        thread.join(30)
+
+
 @pytest.fixture
 def private_db_probe_cleanup(tmp_path):
     """Release only this test's probe fds after its explicit SQLite-handle finalizers.

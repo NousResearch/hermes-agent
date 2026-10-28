@@ -99,14 +99,16 @@ hermes-agent/
 │   ├── process_registry.py   # Background process management
 │   ├── file_tools.py         # read_file, write_file, patch, search_files
 │   ├── web_tools.py          # web_search, web_extract
-│   ├── browser_tool.py       # Browser automation tools facade (+ browser_tool_*.py siblings)
+│   ├── browser_use_cli.py    # browser_exec — Python over CDP (browser-harness)
+│   ├── browser_session.py    # Per-task browser sessions (+ browser_session_*.py siblings)
+│   ├── browser_launcher.py   # Local Chromium launch, reuse and orphan reaping
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py      # Subagent delegation
 │   ├── mcp_tool.py           # MCP client facade (+ mcp_tool_*.py siblings)
 │   ├── credential_files.py   # File-based credential passthrough
 │   ├── env_passthrough.py    # Env var passthrough for sandboxes
 │   ├── ansi_strip.py         # ANSI escape stripping
-│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, singularity)
+│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, vercel_sandbox)
 │
 ├── gateway/                  # Messaging platform gateway
 │   ├── run.py                # GatewayRunner facade — message dispatch (+ run_*.py siblings)
@@ -215,7 +217,7 @@ A shared runtime resolver used by CLI, gateway, cron, ACP, and auxiliary calls. 
 
 ### Tool System
 
-Central tool registry (`tools/registry.py`) with 70+ registered tools across ~28 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 7 backends (local, Docker, SSH, Daytona, Modal, Singularity, Vercel Sandbox).
+Central tool registry (`tools/registry.py`) with 70+ registered tools across ~28 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 6 built-in backends (local, Docker, SSH, Daytona, Modal, Vercel Sandbox) plus plugin backends (e.g. Singularity).
 
 → [Tools Runtime](./tools-runtime.md)
 

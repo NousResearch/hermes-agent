@@ -139,7 +139,9 @@ export function ProjectsWorkbench({
     try {
       const res = await api.getProjectTree(selectedId);
       setFolders(res.folders);
-      setMissingFolders(res.missing);
+      // Aggregate per-folder missing template items into a deduplicated list
+      const allMissing = [...new Set(res.folders.flatMap((f) => f.missing))];
+      setMissingFolders(allMissing);
     } catch (e) {
       setPaneError(e instanceof Error ? e.message : "Failed to load folders");
     } finally {
@@ -455,10 +457,15 @@ export function ProjectsWorkbench({
                             <div className="font-mono text-sm">
                               {f.path.replace(/^\/Users\/[^/]+/, "~")}
                             </div>
+                            {f.label && (
+                              <div className="font-mono text-[11px] text-midground/40">
+                                {f.label}
+                              </div>
+                            )}
                           </div>
                           <span />
                           <span className="font-mono text-[10px] text-midground/40 shrink-0">
-                            {f.sessionCount} sessions
+                            {f.is_primary ? "primary" : f.exists ? "registered" : "missing"}
                           </span>
                         </div>
                       ))}

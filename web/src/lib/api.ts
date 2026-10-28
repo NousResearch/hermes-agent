@@ -2650,14 +2650,16 @@ export interface ProjectBoardResponse {
 
 export interface FolderEntry {
   path: string;
-  isPrimary: boolean;
-  sessionCount: number;
+  label: string | null;
+  is_primary: boolean;
+  exists: boolean;
+  entries: string[];
+  missing: string[];
 }
 
 export interface FolderTreeResponse {
+  id: string;
   folders: FolderEntry[];
-  missing: string[];
-  template: string;
 }
 
 export interface AgentPluginInstallRequest {

@@ -14,12 +14,12 @@ export function FolderTree({ folders, missing, onApplyTemplate }: FolderTreeProp
         {folders.map((f) => (
           <div key={f.path}>
             <span className="text-midground font-medium">{f.path}</span>
-            {f.isPrimary && (
+            {f.is_primary && (
               <span className="ml-1.5 text-midground/40">primary</span>
             )}
-            {!f.isPrimary && (
+            {!f.is_primary && (
               <span className="ml-1.5 text-midground/40">
-                {f.sessionCount} sessions
+                {f.exists ? "registered" : "missing"}
               </span>
             )}
           </div>

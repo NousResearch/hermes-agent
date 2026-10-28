@@ -509,4 +509,27 @@ describe('desktop tree publication', () => {
       }
     }
   )
+
+  it.skipIf(process.platform === 'win32')(
+    'does not report a refusal once another profile published the same package',
+    async () => {
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const pkg = path.join(home, 'plugins', 'media')
+      write(path.join(pkg, 'assets', 'asset.txt'), 'package file')
+      write(path.join(pkg, 'desktop', 'plugin.js'), 'export default {}')
+      fs.symlinkSync('../assets/asset.txt', path.join(pkg, 'desktop', 'asset.txt'))
+      write(path.join(home, 'profiles', 'workbot', 'plugins', 'media', 'desktop', 'plugin.js'), 'profile copy')
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      try {
+        expect(await reconcileDesktopHalvesReport(home, appRoot)).toEqual({
+          published: [path.join(appRoot, 'media')],
+          refused: []
+        })
+      } finally {
+        warn.mockRestore()
+      }
+    }
+  )
 })

@@ -572,5 +572,6 @@ async function reconcilePass(hermesHome: string, appRoot: string): Promise<Deskt
     }
   }
 
-  return { published: touched, refused }
+  // A same-named package in a later home that did publish owns the root copy; its refused twin is moot.
+  return { published: touched, refused: refused.filter(entry => !seen.has(entry.name)) }
 }

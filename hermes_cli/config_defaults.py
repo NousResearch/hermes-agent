@@ -5,6 +5,7 @@ docs of config.yaml.
 """
 
 from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_cli.moa_config_defaults import MOA_DEFAULTS
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -1413,37 +1414,7 @@ DEFAULT_CONFIG = {
     # Mixture of Agents — named presets used by /moa. A preset is an execution mode around the main
     # model, not a model itself: references + aggregator synthesize private guidance before each
     # main-model iteration.
-    "moa": {
-        "default_preset": "default",
-        "active_preset": "",
-        # Write each MoA turn (reference + aggregator exact input/output/usage) as JSONL to
-        # <hermes_home>/moa-traces/<session_id>.jsonl (or trace_dir) for auditing.
-        "save_traces": False,
-        # Daily spend alarm in USD; zero disables. Advisory only and never blocks a turn.
-        "daily_budget_usd": 2.0,
-        "trace_dir": "",
-        # PII/credential redaction of advisor outputs: "" off | "display" (UI reference blocks +
-        # traces only; aggregator sees raw) | "full" (also the aggregator prompt).
-        # Advisors can echo PII from the conversation (emails, formatted phone numbers) and credential
-        # shapes into reference blocks, traces, and the aggregator prompt. Modes ('' = off, the default):
-        # "display" — redact user-visible surfaces only (reference blocks shown in the UI + saved MoA trace
-        # records); the aggregator still sees raw advisor text. "full"    — additionally redact the advisor
-        # text injected into the aggregator prompt (issue #59959).
-        "privacy_filter": "",
-        "presets": {
-            "default": {
-                "reference_models": [
-                    {"provider": "openai-codex", "model": "gpt-5.5"},
-                    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
-                ],
-                "aggregator": {"provider": "anthropic", "model": "claude-sonnet-5-5", "max_tokens": 2000},
-                # None leaves reference output at provider defaults; the cap applies only to advisors.
-                "reference_max_tokens": None,
-
-                "enabled": True,
-            }
-        },
-    },
+    "moa": MOA_DEFAULTS,
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {

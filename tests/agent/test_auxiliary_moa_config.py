@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from agent.auxiliary_client import resolve_provider_client
+from agent.auxiliary_routing_policy import get_transient_retry_count
 
 
 def test_moa_reference_can_override_global_free_only_without_widening_other_tasks(monkeypatch):
@@ -41,8 +42,6 @@ def test_moa_reference_can_override_global_free_only_without_widening_other_task
 def test_real_config_scopes_paid_lane_and_retries_to_moa_tasks(tmp_path, monkeypatch):
     """Real YAML loading preserves the MoA-only exception and retry limits."""
     import hermes_yaml as yaml
-
-    from agent.auxiliary_client import _transient_retry_count
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -87,14 +86,12 @@ def test_real_config_scopes_paid_lane_and_retries_to_moa_tasks(tmp_path, monkeyp
     assert client is None
     assert model is None
     build.assert_not_called()
-    assert _transient_retry_count("moa_reference") == 0
-    assert _transient_retry_count("moa_aggregator") == 0
-    assert _transient_retry_count("title_generation") == 2
+    assert get_transient_retry_count("moa_reference") == 0
+    assert get_transient_retry_count("moa_aggregator") == 0
+    assert get_transient_retry_count("title_generation") == 2
 
 
 def test_task_scoped_transient_retry_override():
-    from agent.auxiliary_client import _transient_retry_count
-
     config = {
         "auxiliary": {
             "transient_retries": 2,
@@ -103,6 +100,22 @@ def test_task_scoped_transient_retry_override():
         }
     }
     with patch("hermes_cli.config.load_config", return_value=config):
-        assert _transient_retry_count("moa_reference") == 0
-        assert _transient_retry_count("moa_aggregator") == 0
-        assert _transient_retry_count("title_generation") == 2
+        assert get_transient_retry_count("moa_reference") == 0
+        assert get_transient_retry_count("moa_aggregator") == 0
+        assert get_transient_retry_count("title_generation") == 2
+
+
+def test_openrouter_policy_fails_closed_when_config_read_fails(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    with (
+        patch("hermes_cli.config.load_config_readonly", side_effect=OSError("config unavailable")),
+        patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+        patch("agent.auxiliary_client._create_openai_client") as build,
+    ):
+        client, model = resolve_provider_client(
+            "openrouter", model="openai/gpt-5.5", task="moa_reference"
+        )
+
+    assert client is None
+    assert model is None
+    build.assert_not_called()

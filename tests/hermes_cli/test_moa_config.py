@@ -43,6 +43,17 @@ def test_normalize_moa_config_uses_default_named_preset():
     assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
     assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
+    assert [
+        (slot["provider"], slot["model"]) for slot in DEFAULT_MOA_REFERENCE_MODELS
+    ] == [
+        ("openrouter", "deepseek/deepseek-v4-pro"),
+        ("openrouter", "openai/gpt-5.5"),
+    ]
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    preset = DEFAULT_CONFIG["moa"]["presets"][DEFAULT_MOA_PRESET_NAME]
+    assert preset["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert preset["aggregator"] == DEFAULT_MOA_AGGREGATOR
 
 
 

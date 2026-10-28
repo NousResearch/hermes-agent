@@ -113,8 +113,6 @@ class TestResolveTaskProviderModel:
         assert api_key == "resolved-token"
         assert api_mode is None
 
-
-
     def test_explicit_provider_adopts_configured_task_endpoint(self):
         """Explicit provider matching the configured one must not bypass
         auxiliary.<task>.base_url/api_key (#58515)."""

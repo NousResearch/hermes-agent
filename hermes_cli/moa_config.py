@@ -12,8 +12,9 @@ MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
 DEFAULT_MOA_PRESET_NAME = "default"
 
 DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
-    {"provider": "openai-codex", "model": "gpt-5.5"},
-    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
+    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+    {"provider": "openrouter", "model": "openai/gpt-5.5"},
+]
 
 DEFAULT_MOA_AGGREGATOR: dict[str, Any] = {
     "provider": "anthropic", "model": "claude-sonnet-5-5", "max_tokens": 2000}

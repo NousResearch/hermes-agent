@@ -323,6 +323,8 @@ def clear_session(session_key: str) -> None:
             # the prompt was withdrawn, nobody denied it.
             entry.cancelled = "the session ended before the prompt was answered"
             entry.event.set()
+    from tools.approval_tool_gate import forget_session
+    forget_session(session_key)
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
@@ -876,7 +878,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None, title: str | None = None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
@@ -908,9 +910,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, pattern_keys)
-        if spec.user_approved:
-            return _user_approved(session_key, description)
-        return _approved()
+        result = _user_approved(session_key, description) if spec.user_approved else _approved()
+        return {**result, "choice": choice}
 
     if spec.transport:
         attempt = _present_with_selected_transport(
@@ -942,7 +943,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
                 "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
+                "allow_session": not smart_denied, "title": title,
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -992,7 +993,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+                                       smart_denied=smart_denied, approval_callback=approval_callback,
+                                       title=title)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
@@ -1051,7 +1053,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
-    pattern_keys: list[str] | None = None,
+    pattern_keys: list[str] | None = None, title: str | None = None,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -1063,7 +1065,8 @@ def _run_approval_gate(
     never runs ungated.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own). ``pattern_keys``
-    (default ``[pattern_key]``) are what a session/always answer persists.
+    (default ``[pattern_key]``) are what a session/always answer persists. ``title`` overrides the
+    approval window heading.
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
@@ -1116,7 +1119,7 @@ def _run_approval_gate(
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=pattern_keys or [pattern_key], session_key=session_key,
-        approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, title=title,
     )
 
 
@@ -1252,6 +1255,9 @@ def check_all_command_guards(command: str, env_type: str,
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
         return prepared
+    from tools.approval_tool_gate import consume_gate_approved_command
+    if consume_gate_approved_command(command):
+        return _approved()
 
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":

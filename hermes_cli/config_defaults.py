@@ -1658,7 +1658,10 @@ DEFAULT_CONFIG = {
         # channel — a pending approval there just blocks for the full timeout with nobody to answer (#37284,
         # #87509): deny    — block the command instantly and let the agent find another way (default, safe;
         # mirrors cron_mode deny) approve — auto-approve all dangerous commands on unattended platforms
+        # scope: dangerous (prompt only for flagged commands/paths) | all (every tool call asks a
+        #   present human; session grants are bound to the workspace, a path or one exact command).
         "mode": "smart",
+        "scope": "dangerous",
         "timeout": 300,
         "discord_prompt_timeout": 300,  # Discord buttons stay clickable (min 30 s, cap MAX_SAFE_TIMEOUT_S)
         "cron_mode": "deny",

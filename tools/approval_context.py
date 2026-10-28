@@ -302,6 +302,12 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
 
 
+def _get_approval_scope() -> str:
+    """``approvals.scope``: 'all' gates every tool call, anything else keeps the pattern-only gate."""
+    scope = _get_approval_config().get("scope", "dangerous")
+    return "all" if isinstance(scope, str) and scope.strip().lower() == "all" else "dangerous"
+
+
 def _get_approval_timeout() -> int:
     """Read ``approvals.timeout`` (default 300s: gateway push notifications may
     not be seen for minutes; 60s failed closed before Telegram taps landed).

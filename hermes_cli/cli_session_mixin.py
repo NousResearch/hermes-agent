@@ -593,6 +593,9 @@ class CLISessionMixin:
             with contextlib.suppress(Exception):
                 self._session_db.end_session(old_session_id, "new_session")
             self._discard_session_if_empty(old_session_id)
+        if old_session_id:
+            from tools.approval import clear_session as _clear_approval_session
+            _clear_approval_session(old_session_id)
 
         self.session_start = datetime.now()
         # The gateway's new session; getattr: tests drive new_session unbound (main's mint then).

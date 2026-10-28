@@ -20,8 +20,10 @@ import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
+import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
@@ -33,6 +35,14 @@ import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton,
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 import { useSettingDeepLink } from './use-setting-deep-link'
+
+// The toast names the chord the user actually has: a browser tab and a remap
+// both differ from ⌘/Ctrl+N.
+function newSessionShortcut(): null | string {
+  const combo = bindingsFor('session.new')[0]
+
+  return combo ? formatCombo(combo) : null
+}
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
@@ -394,7 +404,7 @@ function DefaultProjectDirSetting() {
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
       applyConfiguredDefaultProjectDir(result.dir)
-      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated(newSessionShortcut()) })
     } catch (err) {
       notifyError(err, s.updateDirFailed)
     } finally {

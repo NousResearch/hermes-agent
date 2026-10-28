@@ -2262,8 +2262,8 @@ export const frOverrides = {
       defaultDirTitle: 'Répertoire de projet par défaut',
       defaultDirDesc:
         'Les nouvelles sessions commencent dans ce dossier sauf si vous en choisissez un autre. Laissez-le non défini pour utiliser votre répertoire personnel.',
-      defaultDirUpdated:
-        "Répertoire de projet par défaut mis à jour — commencez une nouvelle conversation (Ctrl/⌘+N) pour qu'il prenne effet",
+      defaultDirUpdated: shortcut =>
+        `Répertoire de projet par défaut mis à jour — commencez une nouvelle conversation${shortcut ? ` (${shortcut})` : ''} pour qu'il prenne effet`,
       defaultsTo: label => `Par défaut : ${label}.`,
       change: 'Modifier',
       choose: 'Choisir',
@@ -4124,6 +4124,8 @@ export const frOverrides = {
     versionDetailsBody:
       "Cette installation est gérée hors de l'application. Mettez-la à jour de la même manière que vous l'avez installée.",
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'Cet appareil',
+    versionDetailsBackend: 'Backend connecté',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origine de la compilation',
     versionDetailsDistribution: 'Distribution',

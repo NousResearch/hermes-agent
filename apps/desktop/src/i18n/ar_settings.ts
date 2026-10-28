@@ -936,7 +936,8 @@ export const arSettings = {
       deleteConfirm: title => `حذف "${title}" نهائياً؟ لا يمكن التراجع عن هذا.`,
       defaultDirTitle: 'مجلد المشروع الافتراضي',
       defaultDirDesc: 'تبدأ الجلسات الجديدة في هذا المجلد ما لم تختر غيره. اتركه غير مضبوط لاستخدام مجلدك الرئيسي.',
-      defaultDirUpdated: 'تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة (Ctrl/⌘+N) ليطبق التغيير',
+      defaultDirUpdated: shortcut =>
+        `تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة${shortcut ? ` (${shortcut})` : ''} ليطبق التغيير`,
       defaultsTo: label => `الافتراضي هو ${label}.`,
       change: 'تغيير',
       choose: 'اختيار',

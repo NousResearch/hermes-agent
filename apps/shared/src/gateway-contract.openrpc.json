@@ -10323,6 +10323,18 @@
             "title": "Messages",
             "type": "array"
           },
+          "messages_omitted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Messages Omitted"
+          },
           "display_messages": {
             "anyOf": [
               {
@@ -23445,7 +23457,7 @@
       },
       "MessageDeltaPayload": {
         "additionalProperties": false,
-        "description": "``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the\nreply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that\ncloses the classic CLI's reply box. Every other viewer ignores an empty chunk.",
+        "description": "``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the\nreply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that\ncloses the classic CLI's reply box. Every other viewer ignores an empty chunk.\n\nA prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code\nunits of that segment already sent): a client drops a re-sent chunk it already applied.",
         "properties": {
           "text": {
             "anyOf": [
@@ -23481,6 +23493,42 @@
             ],
             "default": null,
             "title": "Verbose"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment"
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offset"
           }
         },
         "required": [
@@ -23500,6 +23548,30 @@
           "already_streamed": {
             "title": "Already Streamed",
             "type": "boolean"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment"
           }
         },
         "required": [
@@ -23728,6 +23800,18 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
           }
         },
         "title": "MessageStartPayload",
@@ -27015,6 +27099,13 @@
               "type": "string"
             },
             "title": "Top Tier Model Ids",
+            "type": "array"
+          },
+          "subscription_model_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Model Ids",
             "type": "array"
           },
           "featured_model_ids": {

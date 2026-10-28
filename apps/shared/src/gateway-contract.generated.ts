@@ -108,6 +108,7 @@ export interface PlanUsage {
   plan?: string | null
   gauges?: PlanUsageGauge[]
   top_tier_model_ids?: string[]
+  subscription_model_ids?: string[]
   featured_model_ids?: string[]
   paused_reason?: string | null
   credits_pay?: boolean | null
@@ -4979,6 +4980,7 @@ export interface CanonicalSnapshot {
   session_id: string
   stored_session_id: string
   messages: TranscriptMessage[]
+  messages_omitted?: boolean | null
   display_messages?: TranscriptMessage[] | null
   message_count: number
   running: boolean
@@ -5626,12 +5628,16 @@ export interface MessageStartPayload {
   display_text?: string | null
   notification_category?: string | null
   text?: string | null
+  turn_id?: string | null
 }
-/** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. */
+/** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. A prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code units of that segment already sent): a client drops a re-sent chunk it already applied. */
 export interface MessageDeltaPayload {
   text: string | null
   rendered?: string | null
   verbose?: boolean | null
+  turn_id?: string | null
+  segment?: number | null
+  offset?: number | null
 }
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
@@ -5643,6 +5649,8 @@ export interface StreamDeltaPayload {
 export interface MessageInterimPayload {
   text: string
   already_streamed: boolean
+  turn_id?: string | null
+  segment?: number | null
 }
 /** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {

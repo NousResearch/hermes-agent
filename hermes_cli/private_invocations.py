@@ -91,21 +91,22 @@ class InvocationLease:
             raise PermissionError('retained delegations cannot renew or widen')
         return self._api._issuer._retain_native(origin, job_id, actions, expires_at)
 
-    def call_mcp(self, server, tool, public_args, *, operation_id):
+    def call_mcp(self, server, tool, public_args, *, operation_id, target=None):
         from tools.mcp_tool_private import PrivateCall
         origin = self._check()
         if server not in self._api._ctx._mcp_allowlist(self._api._ctx.plugin_id):
             raise PermissionError('MCP server not granted to plugin')
-        target = self._api._issuer.targets.get(server)
-        if target is None or tool != 'call':
+        target_key = server if target is None else target
+        configured = self._api._issuer.targets.get(target_key)
+        if configured is None or configured.get('server', target_key) != server or tool != 'call':
             raise PermissionError('only configured exact direct call supported')
-        action = target['action']
+        action = configured['action']
         reference = self._reference
         if reference is None:
             reference = self.retain(job_id=operation_id, actions=[action], expires_at=int(time.time()) + 60)
-        elif self._operation != (server, action, operation_id):
+        elif self._operation != (server, target_key, action, operation_id):
             raise PermissionError('rebound operation mismatch')
-        request = PrivateCall(self._api._issuer, reference, server, operation_id, action)
+        request = PrivateCall(self._api._issuer, reference, target_key, operation_id, action)
         from tools.mcp_tool_handlers import _make_tool_handler
         # Arguments enter the normal final handler/result path. No bearer in kwargs.
         raw = _make_tool_handler(server, tool, 60)(public_args, _private_call=request)
@@ -142,10 +143,15 @@ class Invocations:
         return InvocationLease(_SEAL, self, None)
 
     def rebind(self, reference, *, operation):
-        if type(reference) is not PrivateReference or set(operation) != {'server', 'action', 'operationId'}:
+        if type(reference) is not PrivateReference or set(operation) not in (
+                {'server', 'action', 'operationId'}, {'server', 'target', 'action', 'operationId'}):
             raise PermissionError('private reference and exact operation required')
-        self._issuer.rebind(reference, operation['server'], operation['action'])
-        lease = InvocationLease(_SEAL, self, reference, (operation['server'], operation['action'], operation['operationId']))
+        target = operation.get('target', operation['server'])
+        configured = self._issuer.targets.get(target)
+        if configured is None or configured.get('server', target) != operation['server']:
+            raise PermissionError('Configured target transport differs')
+        self._issuer.rebind(reference, target, operation['action'])
+        lease = InvocationLease(_SEAL, self, reference, (operation['server'], target, operation['action'], operation['operationId']))
         return lease
 
 

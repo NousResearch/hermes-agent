@@ -143,6 +143,19 @@ class Issuer:
                 raise PermissionError("retained job unavailable")
             return PrivateReference(_REFERENCE_SEAL, row['ref'])
 
+    def retained_origin(self, reference, target, action):
+        """Trusted-host recovery metadata, only after original policy validation.
+
+        Returns no reference, permit or native capability. Restored metadata
+        cannot enter current()/retain(); callers still need the private locator
+        for every rebind, and every operation revalidates current policy.
+        """
+        if type(reference) is not PrivateReference:
+            raise PermissionError("private retained reference required")
+        with self._db() as db:
+            _, origin, _ = self._load(db, reference._value, target, action)
+            return json.loads(canonical(origin))
+
     def rebind(self, reference, target, action):
         if type(reference) is not PrivateReference:
             raise PermissionError("private retained reference required")

@@ -157,6 +157,37 @@ describe('markSessionUnread', () => {
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
   })
 
+  it('does not accept a stale page matching the latest intent while queued writes are pending', async () => {
+    let resolveFirst!: (value: { ok: boolean }) => void
+
+    patch
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveFirst = resolve
+          })
+      )
+      .mockRejectedValueOnce(new Error('offline'))
+
+    watchUnreadWriteGuard()
+    const original = row('a', { connection_id: 'gateway-a', unread: false })
+
+    $sessions.set([original])
+    const older = markSessionUnread(original, true)
+    const newer = markSessionUnread(original, false).catch(error => error)
+
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+
+    // This page predates both PATCH settlements. Its value happens to equal
+    // the queued intent, so it must not be mistaken for confirmation.
+    $sessions.set([{ ...original, unread: false }])
+    resolveFirst({ ok: true })
+
+    await older
+    expect(await newer).toEqual(expect.objectContaining({ message: 'offline' }))
+    expect($sessions.get()[0]?.unread).toBe(true)
+  })
+
   it('keeps same-id writes and rollback state isolated by gateway owner', async () => {
     let resolveOwnerA!: (value: { ok: boolean }) => void
 

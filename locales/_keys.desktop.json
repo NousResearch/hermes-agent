@@ -5474,6 +5474,7 @@
     "zones.saveCurrentAs",
     "zones.showStripTab",
     "zones.showTabStrip",
+    "zones.tabActions",
     "zones.tabCount",
     "zones.templateColumns",
     "zones.templateGrid",

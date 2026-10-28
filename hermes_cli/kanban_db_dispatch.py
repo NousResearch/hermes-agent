@@ -441,6 +441,44 @@ def _sigkill(kill, pid: int) -> bool:
         return False
 
 
+def _kill_process_tree(pid: int) -> bool:
+    """Best-effort kill of ``pid`` AND its descendants (Windows).
+
+    ``os.kill`` on Windows maps to ``TerminateProcess`` — it kills only the
+    single process, never its children. A dispatcher-spawned worker is a
+    ``python -m hermes_cli.main`` process whose children (terminal tool
+    subprocesses, ``bun``/``node``/``pwsh`` shells, git, tsc, ...) survive the
+    parent's death and keep running — the "phantom worker" that makes a
+    reclaimed task look alive and lets a duplicate spawn beside it.
+
+    ``taskkill /PID <pid> /T /F`` kills the whole tree. Returns True when the
+    tree kill was issued (or the PID was already gone), False when it could
+    not be issued (no ``taskkill`` on PATH, or the PID is not a live process
+    we own). Non-Windows platforms return False — POSIX ``SIGKILL`` to the
+    process group is handled by the caller's existing signal path.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        # Verify the PID is still alive before issuing taskkill; a dead PID
+        # would make taskkill exit 128 and we'd misreport "not killed".
+        if not _kb._pid_alive(pid):
+            return True  # already gone — the tree kill is a no-op
+        # taskkill /T kills the tree, /F forces. We do NOT use /F on the
+        # first pass: the caller's SIGTERM grace period gives the worker a
+        # chance to clean up. taskkill without /F sends WM_CLOSE to GUI apps
+        # and TerminateProcess to console apps — for a python worker that is
+        # equivalent to SIGTERM.
+        subprocess.run(
+            ["taskkill", "/PID", str(int(pid)), "/T"],
+            capture_output=True,
+            timeout=10,
+        )
+        return True
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
@@ -481,6 +519,29 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    if os.name == "nt":
+        # Windows: os.kill is TerminateProcess (single process, no tree).
+        # taskkill /T kills the whole tree — the worker's children (terminal
+        # tool subprocesses, bun/node/pwsh shells, git, tsc) would otherwise
+        # survive and keep the task looking alive.
+        if _kill_process_tree(pid):
+            if _poll_worker_exit(pid, started_at):
+                info["terminated"] = True
+                return info
+            if _worker_alive(pid, started_at):
+                # Tree kill didn't take (taskkill missing, or a child
+                # ignored it). Escalate to forced tree kill.
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    info["sigkill"] = True
+                except (OSError, subprocess.TimeoutExpired, ValueError):
+                    pass
+            info["terminated"] = not _worker_alive(pid, started_at)
+            return info
     try:
         kill(int(pid), signal.SIGTERM)
     except ProcessLookupError:
@@ -694,12 +755,31 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         killed = False
         kill = _kill_fn(signal_fn)
         if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
-            # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+            if os.name == "nt":
+                # Windows: os.kill is TerminateProcess (single process, no
+                # tree). taskkill /T kills the whole tree — the worker's
+                # children (terminal tool subprocesses, bun/node/pwsh shells,
+                # git, tsc) would otherwise survive and keep the task looking
+                # alive.
+                if _kill_process_tree(pid):
+                    _poll_worker_exit(pid, started_at)
+                    if _worker_alive(pid, started_at):
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                                capture_output=True,
+                                timeout=10,
+                            )
+                            killed = True
+                        except (OSError, subprocess.TimeoutExpired, ValueError):
+                            pass
+            else:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    kill(pid, signal.SIGTERM)
+                # Short polling wait — no time.sleep on the write txn.
+                _poll_worker_exit(pid, started_at)
+                if _worker_alive(pid, started_at):
+                    killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):

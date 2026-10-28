@@ -258,7 +258,8 @@ def test_read_worker_log_tail(kanban_home):
 
 def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
-    SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
+    SIGTERM'd (POSIX) or taskkill /T'd (Windows), emits a ``timed_out`` event,
+    and goes back to ready."""
     killed = []
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
@@ -267,6 +268,20 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
     import hermes_cli.kanban_db as _kb
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+
+    # On Windows, enforce_max_runtime uses taskkill /T (not signal_fn) to kill
+    # the process tree. Stub subprocess.run so taskkill is a no-op and the
+    # test doesn't actually kill the test process.
+    import hermes_cli.kanban_db_dispatch as _kbd
+    original_run = _kbd.subprocess.run
+    if os.name == "nt":
+        def _fake_run(cmd, **kwargs):
+            class _R:
+                returncode = 0
+                stdout = b""
+                stderr = b""
+            return _R()
+        _kbd.subprocess.run = _fake_run
 
     try:
         conn = kbc.connect()
@@ -294,7 +309,14 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
 
             timed_out = kbd.enforce_max_runtime(conn, signal_fn=_signal_fn)
             assert tid in timed_out
-            assert killed and killed[0][0] == os.getpid()
+            if os.name == "nt":
+                # Windows: taskkill /T was used (not signal_fn).
+                # _pid_alive is stubbed to False, so the worker is "dead"
+                # after the tree kill — no signal_fn call expected.
+                assert killed == []
+            else:
+                # POSIX: signal_fn (SIGTERM) was called.
+                assert killed and killed[0][0] == os.getpid()
 
             task = kb.get_task(conn, tid)
             assert task.status == "ready",                 f"timed-out task should reset to ready, got {task.status}"
@@ -310,6 +332,7 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             conn.close()
     finally:
         _kb._pid_alive = original_alive
+        _kbd.subprocess.run = original_run
 
 
 
@@ -1121,6 +1144,7 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     import time
     import secrets
     import hermes_cli.kanban_db as _kb
+    import hermes_cli.kanban_db_dispatch as _kbd
     conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="stuck", assignee="broken")
@@ -1136,6 +1160,21 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
                 state["alive"] = False
 
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+
+        # On Windows, _terminate_reclaimed_worker uses taskkill /T (not
+        # signal_fn) to kill the process tree. Stub subprocess.run so
+        # taskkill is a no-op and the test doesn't actually kill anything.
+        if os.name == "nt":
+            def _fake_run(cmd, **kwargs):
+                # Simulate the worker dying after the first taskkill.
+                state["alive"] = False
+                class _R:
+                    returncode = 0
+                    stdout = b""
+                    stderr = b""
+                return _R()
+            monkeypatch.setattr(_kbd.subprocess, "run", _fake_run)
+
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
             "worker_pid=? WHERE id=?",
@@ -1177,9 +1216,169 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         assert reclaim_evs[0].get("reason") == "test reason"
         assert reclaim_evs[0].get("termination_attempted") is True
         assert reclaim_evs[0].get("terminated") is True
-        assert killed == [signal.SIGTERM]
+        if os.name == "nt":
+            # Windows: taskkill /T was used (not signal_fn).
+            assert killed == []
+        else:
+            # POSIX: signal_fn (SIGTERM) was called.
+            assert killed == [signal.SIGTERM]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Windows process-tree kill (taskkill /T)
+# ---------------------------------------------------------------------------
+
+def test_kill_process_tree_non_windows_returns_false(monkeypatch):
+    """On non-Windows, _kill_process_tree is a no-op (POSIX handles the tree)."""
+    import hermes_cli.kanban_db_dispatch as _kbd
+    monkeypatch.setattr(_kbd.os, "name", "posix")
+    assert _kbd._kill_process_tree(12345) is False
+
+
+def test_kill_process_tree_windows_uses_taskkill(monkeypatch):
+    """On Windows, _kill_process_tree calls taskkill /PID <pid> /T."""
+    import hermes_cli.kanban_db_dispatch as _kbd
+    import hermes_cli.kanban_db as _kb
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return _R()
+
+    monkeypatch.setattr(_kbd.os, "name", "nt")
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kbd.subprocess, "run", _fake_run)
+    assert _kbd._kill_process_tree(99999) is True
+    assert len(calls) == 1
+    assert calls[0] == ["taskkill", "/PID", "99999", "/T"]
+
+
+def test_kill_process_tree_windows_dead_pid_returns_true(monkeypatch):
+    """A dead PID is already gone — the tree kill is a no-op (True)."""
+    import hermes_cli.kanban_db_dispatch as _kbd
+    import hermes_cli.kanban_db as _kb
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return _R()
+
+    monkeypatch.setattr(_kbd.os, "name", "nt")
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(_kbd.subprocess, "run", _fake_run)
+    assert _kbd._kill_process_tree(99999) is True
+    assert calls == []  # no taskkill issued for a dead PID
+
+
+def test_kill_process_tree_windows_taskkill_missing_returns_false(monkeypatch):
+    """When taskkill is not on PATH (OSError), _kill_process_tree returns False."""
+    import hermes_cli.kanban_db_dispatch as _kbd
+    import hermes_cli.kanban_db as _kb
+
+    def _fake_run(cmd, **kwargs):
+        raise OSError("taskkill not found")
+
+    monkeypatch.setattr(_kbd.os, "name", "nt")
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kbd.subprocess, "run", _fake_run)
+    assert _kbd._kill_process_tree(99999) is False
+
+
+def test_terminate_reclaimed_worker_windows_tree_kill(monkeypatch):
+    """On Windows, _terminate_reclaimed_worker uses taskkill /T (not os.kill)."""
+    import hermes_cli.kanban_db_dispatch as _kbd
+    import hermes_cli.kanban_db as _kb
+    import hermes_cli.kanban_db_connect as _kbc
+    import secrets
+    import time
+
+    taskkill_calls: list[list[str]] = []
+    os_kill_calls: list[tuple[int, int]] = []
+
+    def _fake_taskkill(cmd, **kwargs):
+        taskkill_calls.append(cmd)
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return _R()
+
+    def _fake_os_kill(pid, sig):
+        os_kill_calls.append((pid, sig))
+
+    monkeypatch.setattr(_kbd.os, "name", "nt")
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)  # worker already dead
+    monkeypatch.setattr(_kbd.subprocess, "run", _fake_taskkill)
+    monkeypatch.setattr(_kbd.os, "kill", _fake_os_kill)
+
+    # Use a real claim lock so the host-local check passes.
+    lock = f"{_kb._claimer_id().split(':', 1)[0]}:{secrets.token_hex(8)}"
+    info = _kbd._terminate_reclaimed_worker(
+        12345, lock, signal_fn=_fake_os_kill, started_at=None,
+    )
+    assert info["host_local"] is True
+    assert info["termination_attempted"] is True
+    # On Windows with a dead PID, _kill_process_tree returns True (no taskkill
+    # issued), and the worker is already gone → terminated=True.
+    assert info["terminated"] is True
+    # os.kill should NOT have been called (Windows path uses taskkill).
+    assert os_kill_calls == []
+    # taskkill should NOT have been called either (PID was already dead).
+    assert taskkill_calls == []
+
+
+def test_terminate_reclaimed_worker_windows_live_pid_uses_taskkill(monkeypatch):
+    """On Windows with a live PID, _terminate_reclaimed_worker calls taskkill /T."""
+    import hermes_cli.kanban_db_dispatch as _kbd
+    import hermes_cli.kanban_db as _kb
+    import secrets
+
+    taskkill_calls: list[list[str]] = []
+    os_kill_calls: list[tuple[int, int]] = []
+    state = {"alive": True}
+
+    def _fake_taskkill(cmd, **kwargs):
+        taskkill_calls.append(cmd)
+        # Simulate the worker dying after the first taskkill.
+        state["alive"] = False
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return _R()
+
+    def _fake_os_kill(pid, sig):
+        os_kill_calls.append((pid, sig))
+
+    monkeypatch.setattr(_kbd.os, "name", "nt")
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+    monkeypatch.setattr(_kbd.subprocess, "run", _fake_taskkill)
+    monkeypatch.setattr(_kbd.os, "kill", _fake_os_kill)
+    # Speed up the poll loop.
+    monkeypatch.setattr(_kbd.time, "sleep", lambda _s: None)
+
+    lock = f"{_kb._claimer_id().split(':', 1)[0]}:{secrets.token_hex(8)}"
+    info = _kbd._terminate_reclaimed_worker(
+        12345, lock, signal_fn=_fake_os_kill, started_at=None,
+    )
+    assert info["host_local"] is True
+    assert info["termination_attempted"] is True
+    assert info["terminated"] is True
+    # taskkill /T was called (not os.kill).
+    assert len(taskkill_calls) >= 1
+    assert taskkill_calls[0] == ["taskkill", "/PID", "12345", "/T"]
+    # os.kill was NOT called (Windows path uses taskkill).
+    assert os_kill_calls == []
 
 
 

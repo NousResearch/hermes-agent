@@ -336,9 +336,21 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+    # ``limit_seconds`` is present on the dispatcher's wall-clock path
+    # (``enforce_max_runtime``) but absent on the worker's own budget-exhausted
+    # path (``turn_finalizer._record_kanban_budget_exhausted``) — that path
+    # records ``budget_used``/``budget_max`` instead. Fall back to the task's
+    # ``max_runtime_seconds`` column, then to a generic message, so the
+    # notification never renders ``max_runtime=0s``.
+    limit = payload.get("limit_seconds")
+    if not limit:
+        limit = getattr(task, "max_runtime_seconds", None)
+    if limit:
+        try:
+            return f" timed out (max_runtime={int(limit)}s); will retry"
+        except (TypeError, ValueError):
+            pass
+    return " timed out; will retry"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.

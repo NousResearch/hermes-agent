@@ -153,7 +153,7 @@ def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_pat
     # HOME and startup files (a CI runner's never read a test's ~/.profile), so the reset
     # is pinned here; the spawn env, argv and restore helper are the production ones.
     login_shell = tmp_path / "login-shell"
-    login_shell.write_text(f'#!/bin/bash\nPATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n'
+    login_shell.write_text(f'#!/usr/bin/env bash\nPATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n'
                            'exec /bin/bash --noprofile --norc -c "$2"\n', encoding="utf-8")
     login_shell.chmod(0o755)
     monkeypatch.setattr("tools.process_registry._find_shell", lambda: str(login_shell))

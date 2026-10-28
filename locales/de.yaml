@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  GEFÄHRLICHER BEFEHL: {description}"
+  tool_title: "🔐 Werkzeugfreigabe: {tool}"
+  command_title: "🔐 Befehlsfreigabe"
   choose_long: "      [o]einmal  |  [s]sitzung  |  [a]immer  |  [d]ablehnen"
   choose_short: "      [o]einmal  |  [s]sitzung  |  [d]ablehnen"
   prompt_long: "      Auswahl [o/s/a/D]: "

@@ -1784,6 +1784,10 @@ DEFAULT_CONFIG = {
         "allow_lazy_installs": True,
     },
 
+    # `hermes send`: also append each sent message to the target chat's session transcript, so the
+    # chat's agent sees it as its own reply. False keeps script and agent notifications out of the
+    # model history (cron output has the same knob, cron.mirror_delivery, off by default).
+    "send": {"mirror_delivery": True},
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by

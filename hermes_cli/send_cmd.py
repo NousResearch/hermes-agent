@@ -192,6 +192,16 @@ def _load_hermes_env() -> None:
             target[key] = str(val)
 
 
+def _mirror_delivery_enabled() -> bool:
+    """``send.mirror_delivery`` (default True): append the sent text to the target chat's session.
+    Off keeps script and agent notifications out of that chat's model history."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        return (load_config_readonly().get("send") or {}).get("mirror_delivery", True) is not False
+    except Exception:
+        return True
+
+
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
@@ -237,6 +247,8 @@ def cmd_send(args: argparse.Namespace) -> None:
     tool_args = {"action": "send", "target": target, "message": message}
     if mentions:
         tool_args["mentions"] = mentions
+    if not _mirror_delivery_enabled():
+        tool_args["mirror"] = False
     result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 

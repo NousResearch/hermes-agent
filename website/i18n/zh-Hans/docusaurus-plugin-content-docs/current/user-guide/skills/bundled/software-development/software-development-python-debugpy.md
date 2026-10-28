@@ -212,10 +212,14 @@ debugpy.breakpoint()       # 可选：附加后立即暂停
 # debugpy 注入到目标进程中，然后按以下方式连接客户端。
 ```
 
-某些内核 / 安全配置会阻止基于 ptrace 的注入（`/proc/sys/kernel/yama/ptrace_scope`）。修复方法：
-```bash
-echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
-```
+某些 Linux 安全配置会通过 `kernel.yama.ptrace_scope` 阻止基于 ptrace 的注入。
+只要可以重启进程，就优先使用模式 B。将该值设为 `0` 会削弱同一用户所拥有的
+所有进程之间的 ptrace 隔离。不要为了调试而将这一主机范围的策略降为 `0`：
+并发进程、崩溃或清理中断都可能使较弱的策略在调试结束后仍然生效。
+
+如果无法使用模式 B 重启进程，请停止并说明 PID 附加受到主机策略阻止。
+让用户在受控重启、一次性调试主机或其他调试方式之间选择，而不是更改全局
+ptrace 策略。
 
 ### 从终端连接客户端
 
@@ -345,7 +349,7 @@ set_trace(host="127.0.0.1", port=4444)   # 在你想捕获的 RPC 处理器中
 
 4. **`debugpy.listen` 仅在同时调用 `wait_for_client()` 时才会阻塞。** 不调用的话，执行会继续，你的第一个断点可能在客户端附加之前就已触发。
 
-5. **在加固内核上附加到 PID 会失败。** `ptrace_scope=1`（Ubuntu 默认值）仅允许对同用户的子进程进行 ptrace。解决方法：`echo 0 > /proc/sys/kernel/yama/ptrace_scope`（需要 root 权限），或从一开始就在 `debugpy` 下启动。
+5. **在加固内核上附加到 PID 会失败。** `ptrace_scope=1` 会限制同一用户的 ptrace。优先从一开始就在 `debugpy` 下启动；不要为了调试而将主机范围的策略降为 `0`。
 
 6. **线程。** `pdb` 只调试当前线程。对于多线程代码，使用 `debugpy`（支持线程感知的 DAP）或为每个线程设置 `threading.settrace()`。
 

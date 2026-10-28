@@ -24,6 +24,7 @@
 //   trigger) so intra-word energy dips don't reset progress.
 
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+import { startVoiceLevelMeter } from '@/lib/voice-level-meter'
 import { $voiceSilenceMs } from '@/store/voice-prefs'
 
 const CALIBRATION_MS = 400
@@ -93,7 +94,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
   let disposed = false
   let stream: MediaStream | null = null
   let context: AudioContext | null = null
-  let frame: number | null = null
+  let stopMeter: (() => void) | null = null
   let recorder: MediaRecorder | null = null
   let chunks: Blob[] = []
   let mimeType = ''
@@ -101,19 +102,19 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
   const cleanup = () => {
     disposed = true
 
-    if (frame !== null) {
-      window.cancelAnimationFrame(frame)
-      frame = null
-    }
+    stopMeter?.()
+    stopMeter = null
 
-    if (recorder && recorder.state !== 'inactive') {
+    if (recorder) {
       recorder.ondataavailable = null
       recorder.onstop = null
 
-      try {
-        recorder.stop()
-      } catch {
-        // already stopped
+      if (recorder.state !== 'inactive') {
+        try {
+          recorder.stop()
+        } catch {
+          // already stopped
+        }
       }
     }
 
@@ -173,12 +174,16 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
   }
 
   const finishCapture = () => {
+    stopMeter?.()
+    stopMeter = null
     const active = recorder
     const type = active?.mimeType || mimeType || 'audio/webm'
 
     if (!active || active.state === 'inactive') {
+      const audio = chunks.length ? new Blob(chunks, { type }) : null
+
       cleanup()
-      callbacks.onUtterance?.(chunks.length ? new Blob(chunks, { type }) : null)
+      callbacks.onUtterance?.(audio)
 
       return
     }
@@ -221,17 +226,13 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       startSegment()
 
       context = new AudioContext()
-      const analyser = context.createAnalyser()
-      analyser.fftSize = 256
-      context.createMediaStreamSource(stream).connect(analyser)
-
-      const data = new Uint8Array(analyser.fftSize)
+      const source = context.createMediaStreamSource(stream)
       const floorSamples: number[] = []
       const recentAbove: { above: boolean; at: number }[] = []
       let calibratedSince: number | null = null
       let floorLocked = false
       let quietFloor = 0
-      let segmentStartedAt = Date.now()
+      let segmentStartedAt = context.currentTime * 1_000
       let wasPlaying = false
       let playbackSeen = false
       let lastPlayingAt = 0
@@ -239,6 +240,20 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       let tripped = false
       let trippedAt = 0
       let quietSince: number | null = null
+
+      const failMeter = () => {
+        if (disposed) {
+          return
+        }
+
+        cleanup()
+
+        if (tripped) {
+          // Release the conversation's pending capture without transcribing a
+          // potentially truncated command. Explicit cancellation stays silent.
+          callbacks.onUtterance?.(null)
+        }
+      }
 
       const pushFloorSample = (level: number) => {
         floorSamples.push(level)
@@ -250,124 +265,117 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
         quietFloor = [...floorSamples].sort((a, b) => a - b)[floorSamples.length >> 1] ?? 0
       }
 
-      const tick = () => {
+      const updateTrigger = (level: number, now: number, playing: boolean) => {
+        // Calibrate from quiet samples, then hold the floor through playback.
+        if (!floorLocked) {
+          if (!playing) {
+            calibratedSince ??= now
+            pushFloorSample(level)
+          }
+
+          if (playing || (calibratedSince !== null && now - calibratedSince >= CALIBRATION_MS)) {
+            floorLocked = true
+          }
+        }
+
+        // Sentence gaps must not chain playback-onset grace windows.
+        if (playing && !wasPlaying) {
+          if (!playbackSeen || now - lastPlayingAt >= PLAYBACK_GAP_FOR_GRACE_MS) {
+            graceUntil = now + PLAYBACK_GRACE_MS
+          }
+
+          playbackSeen = true
+        }
+
+        wasPlaying = playing
+
+        if (playing) {
+          lastPlayingAt = now
+        }
+
+        let trigger = Math.max(MIN_TRIGGER_LEVEL, quietFloor * floorMultiplier)
+
+        if (playing) {
+          trigger = Math.min(Math.max(trigger, playbackMinTrigger), TRIGGER_CEILING_LEVEL)
+        }
+
+        // Track ambient drift while quiet and below trigger.
+        if (floorLocked && !playing && level < trigger) {
+          pushFloorSample(level)
+        }
+
+        return trigger
+      }
+
+      const captureLevel = (level: number, now: number, isCurrent: boolean) => {
+        // Playback/generation was already cut; silence ends the captured turn.
+        if (level >= MIN_TRIGGER_LEVEL) {
+          quietSince = null
+        } else {
+          quietSince ??= now
+        }
+
+        if (
+          isCurrent &&
+          ((quietSince !== null && now - quietSince >= $voiceSilenceMs.get()) || now - trippedAt >= UTTERANCE_MAX_MS)
+        ) {
+          finishCapture()
+        }
+      }
+
+      const onLevel = (level: number, now: number, isCurrent: boolean) => {
         if (disposed) {
           return
         }
 
-        analyser.getByteTimeDomainData(data)
+        if (tripped) {
+          captureLevel(level, now, isCurrent)
 
-        let sum = 0
-
-        for (const value of data) {
-          const centered = value - 128
-          sum += centered * centered
+          return
         }
 
-        const level = Math.min(1, Math.sqrt(sum / data.length) / 42)
-        const now = Date.now()
         const playing = callbacks.isPlaying ? callbacks.isPlaying() : true
+        const trigger = updateTrigger(level, now, playing)
+        const above = floorLocked && level >= trigger && now >= graceUntil
+        recentAbove.push({ above, at: now })
 
-        if (!tripped) {
-          // Quiet-floor calibration: quiet-phase samples only. The floor is
-          // HELD while audio plays — never recalibrated against speaker bleed.
-          if (!floorLocked) {
-            if (!playing) {
-              calibratedSince ??= now
-              pushFloorSample(level)
-            }
+        while (recentAbove.length && now - recentAbove[0].at > SUSTAINED_MS) {
+          recentAbove.shift()
+        }
 
-            if (playing || (calibratedSince !== null && now - calibratedSince >= CALIBRATION_MS)) {
-              floorLocked = true
-            }
-          }
+        const aboveCount = recentAbove.reduce((count, sample) => count + (sample.above ? 1 : 0), 0)
+        const spanMs = recentAbove.length ? now - recentAbove[0].at : 0
 
-          // Grace only when playback starts after a real gap, so flapping of
-          // the playing flag between sentences can't chain grace windows.
-          if (playing && !wasPlaying) {
-            if (!playbackSeen || now - lastPlayingAt >= PLAYBACK_GAP_FOR_GRACE_MS) {
-              graceUntil = now + PLAYBACK_GRACE_MS
-            }
+        if (
+          above &&
+          spanMs >= SUSTAINED_MS * SUSTAINED_MAJORITY &&
+          aboveCount >= recentAbove.length * SUSTAINED_MAJORITY
+        ) {
+          tripped = true
+          trippedAt = now
+          quietSince = null
+          callbacks.onSpeech()
 
-            playbackSeen = true
-          }
-
-          wasPlaying = playing
-
-          if (playing) {
-            lastPlayingAt = now
-          }
-
-          // Phase-aware trigger: quiet baseline x multiplier; playback clamps
-          // it up (bleed alone can't trip) but a ceiling keeps speech
-          // reachable even over loud playback.
-          let trigger = Math.max(MIN_TRIGGER_LEVEL, quietFloor * floorMultiplier)
-
-          if (playing) {
-            trigger = Math.min(Math.max(trigger, playbackMinTrigger), TRIGGER_CEILING_LEVEL)
-          }
-
-          // Track ambient drift while quiet and below trigger.
-          if (floorLocked && !playing && level < trigger) {
-            pushFloorSample(level)
-          }
-
-          const above = floorLocked && level >= trigger && now >= graceUntil
-
-          recentAbove.push({ above, at: now })
-
-          while (recentAbove.length && now - recentAbove[0].at > SUSTAINED_MS) {
-            recentAbove.shift()
-          }
-
-          const aboveCount = recentAbove.reduce((count, sample) => count + (sample.above ? 1 : 0), 0)
-          const spanMs = recentAbove.length ? now - recentAbove[0].at : 0
-
-          if (
-            above &&
-            spanMs >= SUSTAINED_MS * SUSTAINED_MAJORITY &&
-            aboveCount >= recentAbove.length * SUSTAINED_MAJORITY
-          ) {
-            tripped = true
-            trippedAt = now
-            quietSince = null
-            callbacks.onSpeech()
-
-            if (!callbacks.onUtterance || !recorder) {
-              cleanup()
-              callbacks.onUtterance?.(null)
-
-              return
-            }
-          } else if (!above) {
-            // Bound the pre-roll while quiet so the utterance blob doesn't
-            // accumulate the whole turn (rotating mid-speech would lose the
-            // onset — the whole point).
-            if (now - segmentStartedAt >= PRE_ROLL_RESTART_MS) {
-              rotateSegment()
-              segmentStartedAt = now
-            }
-          }
-        } else {
-          // Tripped: keep recording until the user goes quiet (endpoint).
-          // Playback/generation was already cut, so silence-vs-speech works.
-          if (level >= MIN_TRIGGER_LEVEL) {
-            quietSince = null
-          } else {
-            quietSince ??= now
-          }
-
-          if ((quietSince && now - quietSince >= $voiceSilenceMs.get()) || now - trippedAt >= UTTERANCE_MAX_MS) {
-            finishCapture()
-
+          if (disposed) {
             return
           }
-        }
 
-        frame = window.requestAnimationFrame(tick)
+          if (!callbacks.onUtterance || !recorder) {
+            cleanup()
+            callbacks.onUtterance?.(null)
+          }
+        } else if (isCurrent && !above && now - segmentStartedAt >= PRE_ROLL_RESTART_MS) {
+          // Bound quiet pre-roll only after queued speech has been considered.
+          rotateSegment()
+          segmentStartedAt = now
+        }
       }
 
-      tick()
+      stopMeter = startVoiceLevelMeter(context, source, onLevel, failMeter)
+
+      if (context.state === 'suspended') {
+        void context.resume().catch(failMeter)
+      }
     } catch {
       cleanup()
     }

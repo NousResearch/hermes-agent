@@ -40,6 +40,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { useEphemeralReveal } from "./useEphemeralReveal";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -611,7 +612,7 @@ function CustomKeysCard({
 export default function EnvPage() {
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [revealed, setRevealed] = useState<Record<string, string>>({});
+  const { revealed, reveal, hide } = useEphemeralReveal();
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
   const { toast, showToast } = useToast();
@@ -705,11 +706,7 @@ export default function EnvPage() {
         delete n[key];
         return n;
       });
-      setRevealed((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      });
+      hide(key);
       showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${errorMessage(e)}`, "error");
@@ -730,11 +727,7 @@ export default function EnvPage() {
             delete n[key];
             return n;
           });
-          setRevealed((prev) => {
-            const n = { ...prev };
-            delete n[key];
-            return n;
-          });
+          hide(key);
           showToast(`${key} ${t.common.removed}`, "success");
         } catch (e) {
           showToast(`${t.common.failedToRemove} ${key}: ${errorMessage(e)}`, "error");
@@ -743,22 +736,17 @@ export default function EnvPage() {
           setSaving(null);
         }
       },
-      [showToast, t.common.removed, t.common.failedToRemove],
+      [hide, showToast, t.common.removed, t.common.failedToRemove],
     ),
   });
 
   const handleReveal = async (key: string) => {
     if (revealed[key]) {
-      setRevealed((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      });
+      hide(key);
       return;
     }
     try {
-      const resp = await api.revealEnvVar(key);
-      setRevealed((prev) => ({ ...prev, [key]: resp.value }));
+      await reveal(key, async () => (await api.revealEnvVar(key)).value);
     } catch {
       showToast(`${t.common.failedToReveal} ${key}`, "error");
     }

@@ -11,6 +11,7 @@ import type { EnvVarInfo } from '@/types/hermes'
 import { asText, includesQuery, redactedValue, withoutKey } from './helpers'
 import { Pill } from './primitives'
 import type { EnvRowProps } from './types'
+import { useEphemeralReveal } from './use-ephemeral-reveal'
 
 // Shared filter used by every credential surface (Providers + Keys pages):
 // category gate first, then a free-text match across key name + description.
@@ -47,13 +48,13 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 // scope); undefined keeps the app-wide active profile. Request-shaped on
 // purpose: the API helpers treat an explicit `null` as "target the
 // primary/default backend", which is never what a settings page means.
-export function useEnvCredentials(profile?: string): UseEnvCredentials {
+export function useEnvCredentials(profile?: string, section?: string): UseEnvCredentials {
   const { t } = useI18n()
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
-  const [revealed, setRevealed] = useState<Record<string, string>>({})
+  const { revealed, reveal, hide, clear } = useEphemeralReveal(JSON.stringify([profile, section]))
   const [saving, setSaving] = useState<string | null>(null)
 
   // Best-effort cleanup of a retired localStorage flag (global "Show
@@ -76,7 +77,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     // now being targeted instead of the one it was typed for.
     setVars(null)
     setEdits({})
-    setRevealed({})
+    clear()
 
     void (async () => {
       try {
@@ -100,7 +101,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
   function clearLocalState(key: string, editKey = key) {
     setEdits(c => withoutKey(c, editKey))
-    setRevealed(c => withoutKey(c, key))
+    hide(key)
   }
 
   async function handleSave(key: string, editKey = key) {
@@ -176,14 +177,13 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
   async function handleReveal(key: string) {
     if (revealed[key]) {
-      setRevealed(c => withoutKey(c, key))
+      hide(key)
 
       return
     }
 
     try {
-      const result = await revealEnvVar(key, profile)
-      setRevealed(c => ({ ...c, [key]: result.value }))
+      await reveal(key, async () => (await revealEnvVar(key, profile)).value)
     } catch (err) {
       notifyError(err, toolsets.failedReveal(key))
     }

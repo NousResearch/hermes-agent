@@ -393,7 +393,7 @@ export function ProvidersSettings({
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const scopeProfile = useStore($settingsRequestProfile)
-  const { rowProps, vars } = useEnvCredentials(scopeProfile)
+  const { rowProps, vars } = useEnvCredentials(scopeProfile, view)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)

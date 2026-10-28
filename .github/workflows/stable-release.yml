@@ -594,6 +594,20 @@ jobs:
         run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.channel_releases canary
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Render the published canary downloads
+        # Publication already applied require-green. Presentation must not wait for complete's
+        # unconditional green verdict, and cannot turn a successful publication into a failure.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_CHANNEL: ${{ fromJSON(needs.admit.outputs.lanes)['desktop-channel'] }}
+        run: |
+          args=()
+          if [ "$DESKTOP_CHANNEL" != true ]; then args+=(--no-channel-page); fi
+          python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --archive "$HERMES_ARCHIVE_TAG" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
+            "${args[@]}"
 
   publication:
     name: All artifact publication succeeded
@@ -688,7 +702,7 @@ jobs:
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - name: Render the admitted candidate smoke results
-        if: fromJSON(needs.admit.outputs.lanes).bundles
+        if: needs.admit.outputs.policy == 'stable' && fromJSON(needs.admit.outputs.lanes)['bundles']
         # The builds table is presentation: a render failure warns and the release still
         # publishes (rc.14-v0.21.7 passed every gate, then died here on missing env).
         continue-on-error: true

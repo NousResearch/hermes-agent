@@ -205,3 +205,134 @@ def test_bare_tool_marker_is_not_reused_as_final_response():
         f"Expected 3 API calls (including nudge), got: {result['api_calls']}."
     )
 
+
+def test_last_resort_fallback_surfaces_prior_content_after_exhaustion():
+    """When the model narrates alongside a *substantive* tool call and then goes silent
+    through the nudge, the prefill ladder, every retry and the fallback hop, that
+    narration must be surfaced as the final response instead of "(empty)".
+
+    The housekeeping-only reuse path (`_last_content_tools_all_housekeeping`) covers a
+    different class — there the model was done.  Here it was mid-task, so the cached
+    narration is the only visible text the user ever saw; dropping it to "(empty)" loses
+    content the model already produced.
+
+    The exit reason is the already-wired ``fallback_prior_turn_content``, so the explainer
+    catalog and the turn finalizer handle it with no new plumbing.
+    """
+    with (
+        patch("model_tools.get_tool_definitions", return_value=_tool_defs("terminal")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1/",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"terminal"}
+
+    calls = {"n": 0}
+
+    def _fake_create(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Narration + substantive tool call → cached, marked NOT all-housekeeping.
+            return _response(
+                content="Let me check the config...",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("terminal", "term1")],
+            )
+        # Every later turn is empty: nudge → thinking prefill → retries → exhaustion.
+        return _response(content="", finish_reason="stop")
+
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = _fake_create
+
+    with (
+        patch("model_tools.handle_function_call", return_value="ok"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("check the server config")
+
+    assert result["final_response"] == "Let me check the config...", (
+        "Expected the prior-turn narration to be surfaced instead of \"(empty)\", "
+        f"got: {result['final_response']!r}"
+    )
+    assert result["turn_exit_reason"] == "fallback_prior_turn_content", (
+        f"Expected fallback_prior_turn_content, got: {result['turn_exit_reason']!r}"
+    )
+    # The narration was streamed as interim commentary: the client must settle the text
+    # it already painted rather than render the same content twice.
+    assert result["response_previewed"] is True
+    assert result["response_reused"] is True
+    assert calls["n"] >= 2, "the empty follow-up turns must have been attempted"
+
+
+def test_bare_marker_beside_substantive_tool_is_not_resurfaced_at_exhaustion():
+    """Over-eager-fallback guard (interaction with #78148).
+
+    A bare bracketed token (``[memory]``) beside a tool call is protocol scaffolding,
+    not an answer — ``turn_tool_round`` strips it so it is never cached.  When the
+    follow-up turns are all empty, the last-resort path must therefore fall through to
+    the ``empty_response_exhausted`` sentinel rather than resurrect the marker.
+    """
+    with (
+        patch("model_tools.get_tool_definitions", return_value=_tool_defs("terminal")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1/",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"terminal"}
+
+    calls = {"n": 0}
+
+    def _fake_create(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Bare marker + substantive tool → the marker is discarded, not cached.
+            return _response(
+                content="[memory]",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("terminal", "term1")],
+            )
+        return _response(content="", finish_reason="stop")
+
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = _fake_create
+
+    with (
+        patch("model_tools.handle_function_call", return_value="ok"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do the full task")
+
+    assert result["final_response"] != "[memory]", (
+        "the bare tool-call marker leaked through the last-resort fallback"
+    )
+    assert result["turn_exit_reason"] == "empty_response_exhausted", (
+        f"Expected empty_response_exhausted, got: {result['turn_exit_reason']!r}"
+    )
+    assert calls["n"] >= 2, "the empty follow-up turns must have been attempted"
+

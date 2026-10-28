@@ -8550,7 +8550,7 @@ def _dispatch_once_locked(
         # is capacity waiting, not a worker failure; keeping the task in ready
         # lets the next tick retry after the provider window recovers.
         try:
-            preflight_task = _remediate_provider_meter(task)
+            preflight_task = _remediate_provider_meter(task, conn)
         except Exception:
             result.skipped_quota_preflight.append(row["id"])
             continue
@@ -9276,34 +9276,236 @@ def _default_spawn(
     return proc.pid
 
 
-def _remediate_provider_meter(task: Task) -> Task:
-    """Select a live non-Nous execution override immediately before spawn."""
+def _resolve_assignee_home(assignee: str) -> Path:
+    """Return the HERMES_HOME directory for an assignee profile.
+
+    Uses the profiles root so the lookup works from any active profile
+    (matches ``_get_profiles_root()`` semantics from profiles.py).
+    """
+    try:
+        from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root
+        if not assignee or assignee.strip().lower() in ("", "default"):
+            return _get_default_hermes_home()
+        return _get_profiles_root() / assignee.strip().lower()
+    except Exception:
+        from hermes_constants import get_default_hermes_root
+        return get_default_hermes_root()
+
+
+def _read_assignee_credentials(
+    hermes_home: Path,
+) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """Read usable provider credentials from an assignee profile.
+
+    Returns a mapping of provider_name → (api_key_or_oauth_token, base_url).
+    Only providers with *non-exhausted* credentials are included.  The caller
+    should pass this to ``remediate_candidate(_credentials=...)`` so that
+    meter queries use the assignee's own credentials, not the dispatcher's.
+
+    Checked sources (in order, first non-empty wins per provider):
+      1. auth.json  ``providers.<provider>.access_token``  (OAuth)
+      2. auth.json  ``credential_pool.<provider>[]``       (pool entries)
+      3. .env       ANTHROPIC_API_KEY / OPENAI_API_KEY     (API-key auth)
+    """
+    result: dict[str, tuple[Optional[str], Optional[str]]] = {}
+
+    # --- auth.json -------------------------------------------------------
+    auth_path = hermes_home / "auth.json"
+    auth_data: dict = {}
+    if auth_path.exists():
+        try:
+            raw = auth_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                auth_data = parsed
+        except Exception:
+            pass
+
+    providers_block = auth_data.get("providers")
+    if not isinstance(providers_block, dict):
+        providers_block = {}
+    pool_block = auth_data.get("credential_pool")
+    if not isinstance(pool_block, dict):
+        pool_block = {}
+
+    # anthropic OAuth token
+    anthropic_state = providers_block.get("anthropic")
+    if isinstance(anthropic_state, dict):
+        tok = str(anthropic_state.get("access_token") or "").strip()
+        if tok:
+            result["anthropic"] = (tok, None)
+
+    # openai-codex: prefer credential_pool (pool-managed OAuth), then
+    # providers.openai-codex direct OAuth, then nothing.
+    if "openai-codex" not in result:
+        codex_entries = pool_block.get("openai-codex")
+        if isinstance(codex_entries, list):
+            for entry in codex_entries:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("last_status") == "exhausted":
+                    continue
+                tok = str(entry.get("access_token") or "").strip()
+                if tok:
+                    burl = str(entry.get("base_url") or "").strip() or None
+                    result["openai-codex"] = (tok, burl)
+                    break
+
+    if "openai-codex" not in result:
+        codex_state = providers_block.get("openai-codex")
+        if isinstance(codex_state, dict) and codex_state.get("last_status") != "exhausted":
+            tok = str(codex_state.get("access_token") or "").strip()
+            if tok:
+                result["openai-codex"] = (tok, None)
+
+    # --- .env API-key fallback -------------------------------------------
+    env_path = hermes_home / ".env"
+    if env_path.exists():
+        try:
+            for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "anthropic" not in result and line.upper().startswith("ANTHROPIC_API_KEY="):
+                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if key:
+                        result["anthropic"] = (key, None)
+                elif "openai-codex" not in result and line.upper().startswith("OPENAI_API_KEY="):
+                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if key:
+                        result["openai-codex"] = (key, None)
+        except Exception:
+            pass
+
+    return result
+
+
+def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = None) -> Task:
+    """Select a live non-Nous execution override immediately before spawn.
+
+    Corrections over the original implementation:
+
+    1. Meter queries use the *assignee* profile's credentials, not the
+       dispatcher's (defect: query subject ≠ execution subject).
+    2. Only providers with valid, non-exhausted credentials in the assignee
+       profile are eligible candidates (defect: fail-open to broken provider).
+    3. Transient HTTP errors (429, network failures) are never treated as
+       quota exhaustion — the previous good reading is reused within TTL
+       (defect: 429 mis-scored as out-of-quota).
+    4. A ``provider_meter_remediation`` event is appended to the task's
+       event log when the provider is switched or no candidate is found.
+    """
     try:
         from hermes_cli.config import load_config
         settings = (load_config() or {}).get("kanban", {}).get("provider_meter_remediation", {})
         if not isinstance(settings, Mapping) or settings.get("enabled") is not True:
             return task
         from hermes_cli.kanban_provider_meter import ProviderMeterCandidate, remediate_candidate
-        candidates = []
+
+        # ---- resolve assignee credentials --------------------------------
+        assignee = str(task.assignee or "").strip()
+        assignee_home = _resolve_assignee_home(assignee)
+        creds = _read_assignee_credentials(assignee_home)
+
+        if not creds:
+            _log.warning(
+                "kanban provider-meter remediation: no usable credentials found in assignee "
+                "profile '%s' for task %s — skipping spawn",
+                assignee or "default", task.id,
+            )
+            if conn is not None:
+                try:
+                    with write_txn(conn):
+                        _append_event(conn, task.id, "provider_meter_remediation", {
+                            "from": task.provider_override,
+                            "to": None,
+                            "reason": "no_assignee_credentials",
+                        })
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"provider-meter remediation: no usable credentials in assignee profile "
+                f"'{assignee or 'default'}' for task {task.id}"
+            )
+
+        # ---- build candidate list (assignee-credential-filtered) ---------
+        candidates: list[ProviderMeterCandidate] = []
         if task.model_override and task.provider_override:
-            candidates.append(ProviderMeterCandidate(task.provider_override, task.model_override))
+            pk = task.provider_override.strip().lower()
+            if pk in creds:
+                candidates.append(ProviderMeterCandidate(task.provider_override, task.model_override))
         # Conservative built-in candidates.  Operators can disable the policy;
         # these IDs match the models used by the configured Claude/Codex pools.
-        candidates.extend([
-            ProviderMeterCandidate("anthropic", str(settings.get("claude_model") or "claude-sonnet-4-6")),
-            ProviderMeterCandidate("openai-codex", str(settings.get("codex_model") or "gpt-5.6-luna")),
-        ])
+        claude_model = str(settings.get("claude_model") or "claude-sonnet-4-6")
+        codex_model = str(settings.get("codex_model") or "gpt-5.6-luna")
+        if "anthropic" in creds:
+            candidates.append(ProviderMeterCandidate("anthropic", claude_model))
+        if "openai-codex" in creds:
+            candidates.append(ProviderMeterCandidate("openai-codex", codex_model))
+
+        if not candidates:
+            _log.warning(
+                "kanban provider-meter remediation: no eligible candidates after "
+                "credential filtering for task %s (assignee=%s, creds=%s)",
+                task.id, assignee or "default", list(creds.keys()),
+            )
+            if conn is not None:
+                try:
+                    with write_txn(conn):
+                        _append_event(conn, task.id, "provider_meter_remediation", {
+                            "from": task.provider_override,
+                            "to": None,
+                            "reason": "no_eligible_candidates",
+                            "assignee_providers": list(creds.keys()),
+                        })
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"provider-meter remediation found no eligible candidates for task {task.id}"
+            )
+
         selected = remediate_candidate(
             candidates,
             minimum_remaining_percent=int(settings.get("minimum_remaining_percent", 10)),
+            _credentials=creds,
         )
+
         if selected is None:
+            if conn is not None:
+                try:
+                    with write_txn(conn):
+                        _append_event(conn, task.id, "provider_meter_remediation", {
+                            "from": task.provider_override,
+                            "to": None,
+                            "reason": "no_headroom",
+                            "checked_providers": list(creds.keys()),
+                        })
+                except Exception:
+                    pass
             raise RuntimeError(
                 f"provider-meter remediation found no available non-Nous provider for task {task.id}"
             )
+
         if selected.provider == task.provider_override and selected.model == task.model_override:
             return task
-        _log.info("kanban provider-meter remediation selected %s/%s for task %s", selected.provider, selected.model, task.id)
+
+        _log.info(
+            "kanban provider-meter remediation selected %s/%s for task %s (was %s/%s)",
+            selected.provider, selected.model, task.id,
+            task.provider_override, task.model_override,
+        )
+        if conn is not None:
+            try:
+                with write_txn(conn):
+                    _append_event(conn, task.id, "provider_meter_remediation", {
+                        "from": task.provider_override,
+                        "to": selected.provider,
+                        "from_model": task.model_override,
+                        "to_model": selected.model,
+                        "reason": "switched",
+                    })
+            except Exception:
+                pass
         return replace(task, model_override=selected.model, provider_override=selected.provider)
     except Exception:
         _log.warning("kanban provider-meter remediation failed closed for task %s", task.id, exc_info=True)

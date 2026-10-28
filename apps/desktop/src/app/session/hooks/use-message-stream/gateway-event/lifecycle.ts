@@ -1,8 +1,9 @@
-import type { GatewayEvent } from '@hermes/shared'
+import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { clearClarifyRequest } from '@/store/clarify'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import {
   noteGatewayReady,
   notifyCronChanged,
@@ -15,8 +16,10 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
+import { $connection } from '@/store/session'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
@@ -24,10 +27,49 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
 
-function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeSource: boolean): void {
+// Latest skin each (connection, profile) source announced. Every connected
+// source sends gateway.ready, and a skin's customCSS is global, so an inactive
+// source's announce used to overwrite the visible source's CSS (whichever
+// connected last won). Only the active source paints; the others are kept here
+// and replayed when the active source changes.
+const skinBySource = new Map<string, HermesSkin>()
+
+const activeSourceKey = (): string =>
+  registryBackendScopeKey(activeGatewayConnectionId(), $activeGatewayProfile.get() ?? null)
+
+function replayActiveSourceSkin(): void {
+  const profile = $activeGatewayProfile.get() ?? null
+  // Untagged primary events are stored under a null connection id.
+  const skin = skinBySource.get(activeSourceKey()) ?? skinBySource.get(registryBackendScopeKey(null, profile))
+
+  if (skin) {
+    ingestBackendSkin(skin, { apply: false })
+  }
+}
+
+if (typeof window !== 'undefined') {
+  // Defer a tick: the connection atom publishes before the gateway's active key moves.
+  const replayLater = () => void setTimeout(replayActiveSourceSkin, 0)
+
+  $connection.listen(replayLater)
+  $activeGatewayProfile.listen(replayLater)
+}
+
+function onGatewayReady(
+  ready: GatewayEvent<'gateway.ready'>['payload'],
+  activeSource: boolean,
+  sourceKey: string
+): void {
   // Seed the active skin into the desktop theme registry without applying,
   // so a fresh connect never overrides the user's persisted desktop theme.
-  ingestBackendSkin(ready?.skin, { apply: false })
+  if (ready?.skin) {
+    skinBySource.set(sourceKey, ready.skin as HermesSkin)
+  }
+
+  if (activeSource || !ready?.skin) {
+    ingestBackendSkin(ready?.skin, { apply: false })
+  }
+
   // Backends with the change watcher broadcast pet/cron/sessions change
   // events; consumers demote their legacy polls to slow backstops.
   setChangeEventsAvailable(Boolean(ready?.change_events))
@@ -42,7 +84,11 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
 
   if (event.type === 'gateway.ready') {
-    onGatewayReady((event as GatewayEvent<'gateway.ready'>).payload, fromActiveSource())
+    onGatewayReady(
+      (event as GatewayEvent<'gateway.ready'>).payload,
+      fromActiveSource(),
+      registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)
+    )
 
     return true
   }

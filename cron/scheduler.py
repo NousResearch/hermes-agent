@@ -43,7 +43,7 @@ from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
-from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+from hermes_cli.fallback_config import get_cron_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
@@ -103,7 +103,7 @@ def _job_fallback_chain(job: dict, cfg: Any) -> Optional[list]:
     credential-pool rotation is not the chain and still applies. Unpinned jobs inherit the chain.
     """
     return scoped_fallback_chain(
-        get_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
+        get_cron_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
 
 
 def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
@@ -119,13 +119,13 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
         )
     try:
         cfg = load_config() or {}
-        chain = get_fallback_chain(cfg)
+        chain = get_cron_fallback_chain(cfg)
     except Exception:
         return "No backup provider succeeded either."
     if chain:
         return "No backup provider succeeded either."
     return (
-        "No backup provider is configured — add one with `hermes fallback add`, "
+        "No backup provider is configured — check `cron.fallback_providers` or add a global backup with `hermes fallback add`, "
         "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
     )
 

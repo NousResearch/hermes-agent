@@ -449,6 +449,7 @@ def _no_sudo_user() -> bool:
 def _transform_sudo_command(
     command: str | None,
     sudo_nopasswd_check: Callable[[], bool] | None = None,
+    sudo_available_check: Callable[[], bool] | None = None,
 ) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
@@ -460,7 +461,11 @@ def _transform_sudo_command(
     is required". Password sources, in order: configured SUDO_PASSWORD, the session cache, then
     an interactive prompt (45s timeout, cached on success) when a UI is reachable.
     ``sudo_nopasswd_check`` (supplied by ``BaseEnvironment``) runs ``sudo -n true`` inside the
-    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely."""
+    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely.
+    ``sudo_available_check`` (also supplied by ``BaseEnvironment``) reports whether the backend
+    has a ``sudo`` binary at all; a positive "no sudo here" answer skips the prompt and the
+    ``-S`` rewrite too — no password can make a missing binary run, so the command fails
+    immediately with "sudo: command not found" instead of stalling on a human (#138514)."""
     from tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
@@ -490,6 +495,13 @@ def _transform_sudo_command(
         # prompt would otherwise fire: headless callers end up at ``(command, None)`` either
         # way. Re-probed every call so an expired sudo timestamp cannot silently block.
         if sudo_nopasswd_check is not None and sudo_nopasswd_check():
+            return command, None
+        # No sudo binary in the backend: no password can ever succeed, so neither the
+        # prompt nor the ``-S`` rewrite applies — the command runs unchanged and fails
+        # with "sudo: command not found" (#138514). The check fails open (any probe
+        # error keeps the prompt path) and runs on the same "would prompt" path as the
+        # NOPASSWD probe, so headless callers pay no extra round trip.
+        if sudo_available_check is not None and not sudo_available_check():
             return command, None
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
         if sudo_password:

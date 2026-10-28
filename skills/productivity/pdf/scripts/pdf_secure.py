@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Encrypt or decrypt a PDF with passwords (AES-256 via pypdf).
 
-Note: permission flags set at encryption time are advisory — viewers may honor
+Note: permission flags set at encryption time are advisory: viewers may honor
 them, but any PDF library can strip them. Only the user password gates content.
 """
 from __future__ import annotations

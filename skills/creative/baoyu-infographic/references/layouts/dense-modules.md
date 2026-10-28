@@ -6,7 +6,7 @@ High-density modular layout with 6-7 typed information modules packed with concr
 
 - 6-7 distinct modules per image, each serving a specific information function
 - Every module contains concrete data: brand names, numbers, percentages, parameters
-- Minimal whitespace—compact spacing prioritized over breathing room
+- Minimal whitespace: compact spacing prioritized over breathing room
 - Smaller text acceptable to maximize information density
 - Each module identified by coordinate label or section marker (e.g., MOD-1, SEC-A)
 
@@ -59,7 +59,7 @@ High-density modular layout with 6-7 typed information modules packed with concr
 
 - Every corner should contain useful information or metadata
 - No decorative-only empty space
-- Text size may be reduced to fit more content—information over font size
+- Text size may be reduced to fit more content: information over font size
 - Each module must have specific data points, not generic descriptions
 - Balance between density and readability: dense but organized
 

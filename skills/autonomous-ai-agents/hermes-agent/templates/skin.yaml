@@ -1,16 +1,16 @@
-# Hermes skin template — themes the CLI, TUI, and desktop GUI from one file.
+# Hermes skin template: themes the CLI, TUI, and desktop GUI from one file.
 # Copy to <hermes-home>/skins/<name>.yaml, edit the palette, then set
 # `display.skin: <name>` in config.yaml. Missing keys inherit the default skin.
 
 name: synthwave
-description: Neon dusk — magenta and cyan on deep indigo
+description: Neon dusk: magenta and cyan on deep indigo
 
 colors:
-  # Base surface — set this. The GUI derives its palette from it; the TUI
+  # Base surface: set this. The GUI derives its palette from it; the TUI
   # status bar and CLI chrome seed from it too.
   background: "#1a1030"
 
-  # Brand accent — buttons, focus rings, GUI primary. Keep it legible (~4.5:1)
+  # Brand accent: buttons, focus rings, GUI primary. Keep it legible (~4.5:1)
   # against `background`.
   ui_accent: "#ff5fd2"
   banner_accent: "#ff5fd2"
@@ -40,7 +40,7 @@ colors:
   session_label: "#7ef9ff"
   session_border: "#3a2a63"
 
-# Optional flavor — safe to delete.
+# Optional flavor: safe to delete.
 branding:
   agent_name: Hermes Agent
   prompt_symbol: "❯"

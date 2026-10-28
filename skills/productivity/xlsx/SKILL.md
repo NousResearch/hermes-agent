@@ -122,7 +122,7 @@ Author the JSON spec with `write_file`, inspect script JSON output with
    when `soffice` is absent), then reload with `--data-only`.
 4. **Edit**: `xlsx_edit.py` applies renames/copies first, then
    structural row/column changes, then `--set`/`--append`. It edits in
-   place unless `--out` is given — copy the file first if you need the
+   place unless `--out` is given: copy the file first if you need the
    original.
 5. **Restructure**: for insert/delete on sheets that have formulas,
    merges, tables, or filters, use `xlsx_restructure.py` instead of
@@ -158,7 +158,7 @@ LibreOffice or hand the file to the user unconverted.
   via `load_workbook(path, data_only=True)` and only when the file was
   previously saved by Excel/LibreOffice. Otherwise you get `None`.
 - **`xlsx_edit.py` insert/delete does not shift references** (raw
-  openpyxl behavior). Use `xlsx_restructure.py`, which does — but even
+  openpyxl behavior). Use `xlsx_restructure.py`, which does: but even
   it cannot move chart anchors, images, or conditional-format RULE
   formulas; read its JSON report's `not_shifted` list and
   `references/restructuring.md`.
@@ -175,7 +175,7 @@ LibreOffice or hand the file to the user unconverted.
   Re-add charts after editing, or avoid re-saving charted files.
 - **CSV locale traps**: always pass explicit encodings (the scripts
   already do) and remember European CSVs often use `;` delimiters and
-  decimal commas — use `--delimiter ';'` and expect strings like
+  decimal commas: use `--delimiter ';'` and expect strings like
   `"12,5"` to stay strings.
 - **Dates are datetimes**: Excel stores dates as serial numbers;
   openpyxl returns `datetime`/`date` objects. Dumps here emit ISO

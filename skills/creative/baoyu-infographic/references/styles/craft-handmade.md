@@ -24,7 +24,7 @@ Hand-drawn and paper craft aesthetic with warm, organic feel.
 - Character illustrations (people, personalities in cartoon form)
 - Ample whitespace, clean composition
 - Keywords and core concepts highlighted
-- **Strictly hand-drawn—no realistic or photographic elements**
+- **Strictly hand-drawn: no realistic or photographic elements**
 
 ## Style Enforcement
 

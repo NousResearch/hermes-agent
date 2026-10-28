@@ -1,7 +1,7 @@
 # Design System: Figma
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `JetBrains Mono`
@@ -15,21 +15,21 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Figma's interface is the design tool that designed itself — a masterclass in typographic sophistication where a custom variable font (figmaSans) modulates between razor-thin (weight 320) and bold (weight 700) with stops at unusual intermediates (330, 340, 450, 480, 540) that most type systems never explore. This granular weight control gives every text element a precisely calibrated visual weight, creating hierarchy through micro-differences rather than the blunt instrument of "regular vs bold."
+Figma's interface is the design tool that designed itself: a masterclass in typographic sophistication where a custom variable font (figmaSans) modulates between razor-thin (weight 320) and bold (weight 700) with stops at unusual intermediates (330, 340, 450, 480, 540) that most type systems never explore. This granular weight control gives every text element a precisely calibrated visual weight, creating hierarchy through micro-differences rather than the blunt instrument of "regular vs bold."
 
-The page presents a fascinating duality: the interface chrome is strictly black-and-white (literally only `#000000` and `#ffffff` detected as colors), while the hero section and product showcases explode with vibrant multi-color gradients — electric greens, bright yellows, deep purples, hot pinks. This separation means the design system itself is colorless, treating the product's colorful output as the hero content. Figma's marketing page is essentially a white gallery wall displaying colorful art.
+The page presents a fascinating duality: the interface chrome is strictly black-and-white (literally only `#000000` and `#ffffff` detected as colors), while the hero section and product showcases explode with vibrant multi-color gradients, electric greens, bright yellows, deep purples, hot pinks. This separation means the design system itself is colorless, treating the product's colorful output as the hero content. Figma's marketing page is essentially a white gallery wall displaying colorful art.
 
-What makes Figma distinctive beyond the variable font is its circle-and-pill geometry. Buttons use 50px radius (pill) or 50% (perfect circle for icon buttons), creating an organic, tool-palette-like feel. The dashed-outline focus indicator (`dashed 2px`) is a deliberate design choice that echoes selection handles in the Figma editor itself — the website's UI language references the product's UI language.
+What makes Figma distinctive beyond the variable font is its circle-and-pill geometry. Buttons use 50px radius (pill) or 50% (perfect circle for icon buttons), creating an organic, tool-palette-like feel. The dashed-outline focus indicator (`dashed 2px`) is a deliberate design choice that echoes selection handles in the Figma editor itself: the website's UI language references the product's UI language.
 
 **Key Characteristics:**
 - Custom variable font (figmaSans) with unusual weight stops: 320, 330, 340, 450, 480, 540, 700
-- Strictly black-and-white interface chrome — color exists only in product content
+- Strictly black-and-white interface chrome: color exists only in product content
 - figmaMono for uppercase technical labels with wide letter-spacing
 - Pill (50px) and circular (50%) button geometry
 - Dashed focus outlines echoing Figma's editor selection handles
 - Vibrant multi-color hero gradients (green, yellow, purple, pink)
 - OpenType `"kern"` feature enabled globally
-- Negative letter-spacing throughout — even body text at -0.14px to -0.26px
+- Negative letter-spacing throughout: even body text at -0.14px to -0.26px
 
 ## 2. Color Palette & Roles
 
@@ -45,7 +45,7 @@ What makes Figma distinctive beyond the variable font is its circle-and-pill geo
 - **Glass White** (`rgba(255, 255, 255, 0.16)`): Frosted glass overlay for buttons on dark/colored surfaces.
 
 ### Gradient System
-- **Hero Gradient**: A vibrant multi-stop gradient using electric green, bright yellow, deep purple, and hot pink. This gradient is the visual signature of the hero section — it represents the creative possibilities of the tool.
+- **Hero Gradient**: A vibrant multi-stop gradient using electric green, bright yellow, deep purple, and hot pink. This gradient is the visual signature of the hero section, it represents the creative possibilities of the tool.
 - **Product Section Gradients**: Individual product areas (Design, Dev Mode, Prototyping) may use distinct color themes in their showcases.
 
 ## 3. Typography Rules
@@ -70,9 +70,9 @@ What makes Figma distinctive beyond the variable font is its circle-and-pill geo
 | Mono Small | figmaMono | 12px (0.75rem) | 400 | 1.00 (tight) | 0.6px | Uppercase tiny tags |
 
 ### Principles
-- **Variable font precision**: figmaSans uses weights that most systems never touch — 320, 330, 340, 450, 480, 540. This creates hierarchy through subtle weight differences rather than dramatic jumps. The difference between 330 and 340 is nearly imperceptible but structurally significant.
+- **Variable font precision**: figmaSans uses weights that most systems never touch, 320, 330, 340, 450, 480, 540. This creates hierarchy through subtle weight differences rather than dramatic jumps. The difference between 330 and 340 is nearly imperceptible but structurally significant.
 - **Light as the base**: Most body text uses 320–340 (lighter than typical 400 "regular"), creating an ethereal, airy reading experience that matches the design-tool aesthetic.
-- **Kern everywhere**: Every text element enables OpenType `"kern"` feature — kerning is not optional, it's structural.
+- **Kern everywhere**: Every text element enables OpenType `"kern"` feature, kerning is not optional, it's structural.
 - **Negative tracking by default**: Even body text uses -0.1px to -0.26px letter-spacing, creating universally tight text. Display text compresses further to -0.96px and -1.72px.
 - **Mono for structure**: figmaMono in uppercase with positive letter-spacing (0.54px–0.6px) creates technical signpost labels.
 
@@ -178,21 +178,21 @@ What makes Figma distinctive beyond the variable font is its circle-and-pill geo
 ## 7. Do's and Don'ts
 
 ### Do
-- Use figmaSans with precise variable weights (320–540) — the granular weight control IS the design
-- Keep the interface strictly black-and-white — color comes from product content only
+- Use figmaSans with precise variable weights (320–540): the granular weight control IS the design
+- Keep the interface strictly black-and-white: color comes from product content only
 - Use pill (50px) and circular (50%) geometry for all interactive elements
-- Apply dashed 2px focus outlines — the signature accessibility pattern
+- Apply dashed 2px focus outlines: the signature accessibility pattern
 - Enable `"kern"` feature on all text
 - Use figmaMono in uppercase with positive letter-spacing for labels
 - Apply negative letter-spacing throughout (-0.1px to -1.72px)
 
 ### Don't
-- Don't add interface colors — the monochrome palette is absolute
-- Don't use standard font weights (400, 500, 600, 700) — use the variable font's unique stops (320, 330, 340, 450, 480, 540)
-- Don't use sharp corners on buttons — pill and circular geometry only
-- Don't use solid focus outlines — dashed is the signature
-- Don't increase body font weight above 450 — the light-weight aesthetic is core
-- Don't use positive letter-spacing on body text — it's always negative
+- Don't add interface colors: the monochrome palette is absolute
+- Don't use standard font weights (400, 500, 600, 700): use the variable font's unique stops (320, 330, 340, 450, 480, 540)
+- Don't use sharp corners on buttons: pill and circular geometry only
+- Don't use solid focus outlines: dashed is the signature
+- Don't increase body font weight above 450: the light-weight aesthetic is core
+- Don't use positive letter-spacing on body text: it's always negative
 
 ## 8. Responsive Behavior
 
@@ -227,7 +227,7 @@ What makes Figma distinctive beyond the variable font is its circle-and-pill geo
 
 ### Iteration Guide
 1. Use variable font weight stops precisely: 320, 330, 340, 450, 480, 540, 700
-2. Interface is always black + white — never add colors to chrome
+2. Interface is always black + white: never add colors to chrome
 3. Dashed focus outlines, not solid
 4. Letter-spacing is always negative on body, always positive on mono labels
 5. Pill (50px) for buttons/tabs, circle (50%) for icon buttons

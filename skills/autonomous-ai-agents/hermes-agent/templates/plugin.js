@@ -6,7 +6,7 @@
  * check the app's Settings → Plugins folder path) if unsure which is active.
  * Then run "Reload desktop plugins" from ⌘K in the desktop app.
  *
- * Plain ESM, loaded uncompiled — UI is jsx() calls, not JSX syntax.
+ * Plain ESM, loaded uncompiled: UI is jsx() calls, not JSX syntax.
  * Only these imports resolve: @hermes/plugin-sdk, react, react/jsx-runtime.
  */
 
@@ -57,24 +57,24 @@ export default {
   id: ID, // must match the folder name
   name: 'My Plugin',
   register(ctx) {
-    // Register locale bundles — scoped to this plugin, torn down on reload.
+    // Register locale bundles: scoped to this plugin, torn down on reload.
     // Values are literals or interpolators (`arg => `…${arg}…``).
     ctx.i18n.register({
       en: {
         paneTitle: 'My Plugin Pane',
         gateway: state => `gateway: ${state}`,
-        chipTip: 'My plugin — click me',
+        chipTip: 'My plugin: click me',
         hello: 'Hello from my plugin!'
       },
       ja: {
         paneTitle: 'マイプラグイン',
         gateway: state => `ゲートウェイ: ${state}`,
-        chipTip: 'マイプラグイン — クリック',
+        chipTip: 'マイプラグイン: クリック',
         hello: 'マイプラグインからこんにちは！'
       }
     })
 
-    // A layout pane — auto-placed by the placement hint; user can drag it.
+    // A layout pane: auto-placed by the placement hint; user can drag it.
     // To land on a specific edge instead of stacking, add a dock gesture,
     // e.g. below the conversation:
     //   data: { placement: 'bottom', dock: { pane: 'workspace', pos: 'bottom' }, height: '200px' }

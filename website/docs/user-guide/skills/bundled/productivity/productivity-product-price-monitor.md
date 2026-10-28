@@ -43,7 +43,7 @@ Monitor a concrete purchasable item and alert on a normalized all-in price or av
 
 Don't use for: one-off "what does this cost right now" lookups (use `web_search`/`web_extract` directly).
 
-## Procedure — Setup (foreground, once)
+## Procedure: Setup (foreground, once)
 
 ### 1. Define the exact item
 
@@ -66,7 +66,7 @@ cronjob(action="create",
 
 Pick a cadence that respects rate limits and site terms. Done when the baseline matches the exact item contract and the job exists.
 
-## Procedure — Tick (each scheduled run)
+## Procedure: Tick (each scheduled run)
 
 ### 4. Fetch and normalize
 
@@ -78,7 +78,7 @@ Alert on threshold entry, qualifying availability, material lower price, or reco
 
 ### 6. Deliver or stay silent
 
-When a condition is met, the alert includes: exact item/variant, observed all-in price and source currency, availability/terms, threshold, retrieval timestamp, source link, and important uncertainty. Never claim inventory is reserved. When nothing qualifies, stay silent — no "still watching" noise unless a periodic all-clear was requested. Done when the state file reflects this run.
+When a condition is met, the alert includes: exact item/variant, observed all-in price and source currency, availability/terms, threshold, retrieval timestamp, source link, and important uncertainty. Never claim inventory is reserved. When nothing qualifies, stay silent, no "still watching" noise unless a periodic all-clear was requested. Done when the state file reflects this run.
 
 ## Pitfalls
 

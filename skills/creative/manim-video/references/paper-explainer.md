@@ -4,7 +4,7 @@ How to turn a research paper into an animated explainer video.
 
 ## Why animate a paper?
 
-A research paper is optimized for precision and completeness. A video is optimized for understanding and retention. The translation is NOT "read the paper aloud with pictures" — it's "extract the core insight and make it feel obvious through visual storytelling."
+A research paper is optimized for precision and completeness. A video is optimized for understanding and retention. The translation is NOT "read the paper aloud with pictures": it's "extract the core insight and make it feel obvious through visual storytelling."
 
 The paper has one job: prove the claim is true. The video has a different job: make the viewer understand WHY the claim is true, and WHY it matters.
 
@@ -56,7 +56,7 @@ Write the full narration before any code. Every sentence maps to a visual beat. 
 ```markdown
 ## Hook (30s)
 "What if I told you that a model with 7 billion parameters can outperform
-one with 70 billion — if you train it on the right data?"
+one with 70 billion: if you train it on the right data?"
 
 ## Problem (60s)
 "The standard approach is to scale up. More parameters, more compute.
@@ -69,12 +69,12 @@ But Chinchilla showed us that most models are undertrained..."
 After the narration, break it into scenes. Each scene is one Manim class.
 
 ```markdown
-Scene 1: Hook — surprising stat with animated counter
-Scene 2: Problem — model size bar chart growing
-Scene 3: Key insight — training data vs parameters, animated 2D plot
-Scene 4: Method — pipeline diagram building left to right
-Scene 5: Results — before/after comparison with animated bars
-Scene 6: Closing — implications text
+Scene 1: Hook: surprising stat with animated counter
+Scene 2: Problem: model size bar chart growing
+Scene 3: Key insight: training data vs parameters, animated 2D plot
+Scene 4: Method: pipeline diagram building left to right
+Scene 5: Results: before/after comparison with animated bars
+Scene 6: Closing: implications text
 ```
 
 ### Gate 3: Style constants
@@ -82,7 +82,7 @@ Scene 6: Closing — implications text
 Before coding scenes, define the visual language:
 
 ```python
-# style.py — import in every scene file
+# style.py: import in every scene file
 BG = "#0D1117"
 PRIMARY = "#58C4DD"
 SECONDARY = "#83C167"
@@ -99,7 +99,7 @@ RESULT_COLOR = ACCENT      # "our result"
 
 ## First-principles equation explanation
 
-When the paper has a key equation, don't just show it — build it from intuition:
+When the paper has a key equation, don't just show it: build it from intuition:
 
 ### The "what would you do?" pattern
 
@@ -107,7 +107,7 @@ When the paper has a key equation, don't just show it — build it from intuitio
 2. Ask what the simplest solution would be
 3. Show why it doesn't work (animate the failure)
 4. Introduce the paper's solution as the fix
-5. THEN show the equation — it now feels earned
+5. THEN show the equation: it now feels earned
 
 ```python
 # Scene: Why we need attention (for a Transformer paper)
@@ -115,7 +115,7 @@ When the paper has a key equation, don't just show it — build it from intuitio
 # Step 2: Show naive approach (fully connected = O(n²) everything)
 # Step 3: Show it breaks (information overload, no selectivity)
 # Step 4: "What if each word could CHOOSE which words to attend to?"
-# Step 5: Show attention equation — Q, K, V now mean something
+# Step 5: Show attention equation: Q, K, V now mean something
 ```
 
 ### Equation reveal strategy

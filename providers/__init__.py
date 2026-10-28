@@ -831,6 +831,10 @@ def bundled_profiles() -> list[ProviderProfile]:
     order), WITHOUT config and without touching the registry: each bundled plugin is executed into
     a private module whose registrations are collected. For descriptive catalogs, which must not
     depend on config or on discovery having run."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():  # a safe worker loads no plugin code, bundled included (as list_providers)
+        return []
     collected: list[ProviderProfile] = []
     token = _COLLECT.set(collected)
     try:

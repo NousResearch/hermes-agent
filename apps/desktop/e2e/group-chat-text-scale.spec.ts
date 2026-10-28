@@ -53,6 +53,17 @@ createRoot(document.getElementById('root')).render(
         builder.onResolve({ filter: /^@hermes\/plugin-sdk$/ }, () => ({ path: 'sdk', namespace: 'fixture' }))
         builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({
           resolveDir: process.cwd(), loader: 'tsx', contents: `
+export { ConfirmDialog } from './src/components/ui/confirm-dialog'
+export { Input } from './src/components/ui/input'
+export { Codicon } from './src/components/ui/codicon'
+export { RowButton } from './src/components/ui/row-button'
+export { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from './src/components/ui/context-menu'
+export { cn } from './src/lib/utils'
+export { useStore as useValue } from '@nanostores/react'
+export { useQuery } from '@tanstack/react-query'
+export { queryClient } from './src/lib/query-client'
+export { APPROVAL_RESPOND_TIMEOUT_MS, randomUuid } from '@hermes/shared'
+export const forgetSessionUnread = () => {}
 export { Button } from './src/components/ui/button'
 export { Textarea } from './src/components/ui/textarea'
 export { MessageTextContent } from './src/components/assistant-ui/markdown-text'

@@ -4,7 +4,9 @@ A turn lost across an owner restart is fenced ``unknown`` and pauses its session
 only the person who sent it knows whether to resend it. An automation delivery has no such person:
 a cron run (``CRON_PRINCIPAL_ID``), a process completion or heartbeat (``automation:<route>``,
 ``local_automation_v1``, a native envelope's ``automation`` block) or a webhook delivery
-(``webhook_delivery``) or a Kanban card attempt (``kanban_card_v1``, set by the dispatcher). Pausing on it stalls every message queued behind it until an operator
+(``webhook_delivery``) or a Kanban card attempt (``kanban_card_v1``, set by the dispatcher) or a
+``-z`` one-shot turn (``unattended``, where no user is available to answer a prompt either). Pausing on
+it stalls every message queued behind it until an operator
 notices (a Bot Chat sat ten hours behind one).
 
 Such a row settles through the same fenced resolution a person's Discard uses
@@ -30,7 +32,10 @@ def is_unattended(row) -> bool:
     # A webhook delivery: the provider already got its 202 and nobody can be asked to resend it.
     # A Kanban card attempt (#134889 KB-8): the dispatcher's marker, committed only by
     # ``SessionAuthority.submit(_kanban_card=...)``; a card row main minted without it still pauses.
+    # A ``-z`` one-shot (``unattended``, committed by ``session_finite.admit_finite``): its contract is
+    # that no user is available to answer a prompt, so pausing it asks a person who is not there.
     return ('local_automation_v1' in payload or 'kanban_card_v1' in payload
+            or payload.get('unattended') is True
             or 'automation' in native or 'webhook_delivery' in native)
 
 

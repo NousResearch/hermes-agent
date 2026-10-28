@@ -2321,17 +2321,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return self._stdin_op(session_id, via_pty, via_pipe, {"status": "ok", "bytes_written": len(data)})
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + Enter to stdin (like pressing Enter).
-        On a PTY, Enter is a carriage return, the byte a keyboard sends: raw-mode TUIs
-        (prompt_toolkit, Ink, vim) read ``\\n`` as Ctrl+J (a newline in Hermes's own prompt),
-        and canonical-mode children still get ``\\n`` through the tty's ICRNL mapping. On a
-        Windows PTY ConPTY treats ``\\r`` as end-of-line and a bare ``\\n`` through pywinpty
-        is NOT a line terminator, so a blocking line read (``readline()``, Go
-        ``bufio.Scanner``) would hang; ``\\r\\n`` gives it both. Pipes keep ``\\n``."""
+        """Send data + Enter. On a PTY Enter is the CR a keyboard sends: raw-mode TUIs (prompt_toolkit,
+        Ink) read ``\\n`` as Ctrl+J and canonical children still get ``\\n`` via ICRNL; a Windows PTY
+        gets ``\\r\\n`` (a bare ``\\n`` through pywinpty never ends a ConPTY line read). Pipes keep ``\\n``."""
         session = self.get(session_id)
-        if session is not None and session._pty:
-            return self.write_stdin(session_id, data + ("\r\n" if _IS_WINDOWS else "\r"))
-        return self.write_stdin(session_id, data + "\n")
+        pty_enter = "\r\n" if _IS_WINDOWS else "\r"
+        return self.write_stdin(session_id, data + (pty_enter if session is not None and session._pty else "\n"))
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close this process's read-only terminal tab. Does NOT

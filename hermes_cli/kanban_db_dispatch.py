@@ -521,10 +521,12 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         info["pid_recycled"] = True
         return info
-    if not _worker_is_signal_eligible(pid, started_at):
+    if _kb._pid_alive(pid) and not _worker_is_signal_eligible(pid, started_at):
         # Live but its birth cannot be re-read: signalling by bare number is refused (missing
         # identity is refusal, not permission — #99558). Reported as surviving so the reclaim sweep
         # HOLDS the claim (and confirms across two probes) instead of killing a possible stranger.
+        # A pid that is verifiably NOT in the process table takes the pre-existing fall-through
+        # below: the kill raises ProcessLookupError and the reclaim proceeds exactly as before.
         info["signal_refused"] = True
         info["identity_unreadable"] = True
         return info

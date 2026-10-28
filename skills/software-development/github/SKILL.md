@@ -1,7 +1,7 @@
 ---
 name: github
 description: "GitHub via gh CLI: PRs, issues, reviews, repos, auth."
-version: 2.0.0
+version: 2.1.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -30,6 +30,7 @@ starting that workflow, the body below only routes.
 | Carry an ISSUE to a verified PR (full delivery loop) | `references/issue-to-pr.md` |
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
+| Merge conflicts, bisect, history rewrite, stacked-branch restack, force-push | `references/git-repair.md` |
 
 Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
 (auth helpers), `templates/` (PR bodies, bug report, feature request),

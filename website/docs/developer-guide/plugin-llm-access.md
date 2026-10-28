@@ -224,6 +224,7 @@ result = ctx.llm.complete(
     profile=None,          # optional, gated — explicit auth-profile name
     purpose="optional-audit-string",
     task=None,             # optional — a plugin-registered auxiliary slot
+    allow_fallback=True,   # False keeps the resolved provider/model route
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -262,6 +263,7 @@ result = ctx.llm.complete_structured(
     profile=None,
     purpose=None,
     task=None,             # optional — a plugin-registered auxiliary slot
+    allow_fallback=True,
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -290,6 +292,34 @@ result = await ctx.llm.acomplete_structured(
 Same arguments and result types as their sync counterparts. Use
 these from gateway adapters, async hooks, or any plugin code
 already running on an asyncio loop.
+
+### Strict provider/model routing
+
+All four methods accept the keyword-only boolean `allow_fallback=True`.
+Omitting it (or passing `True`) preserves normal host fallback behavior.
+Use `False` when a call must fail rather than try another provider or model:
+
+```python
+result = ctx.llm.complete(messages=[...], task="classifier", allow_fallback=False)
+```
+
+Trust and task gates still apply. After route resolution, strict calls do not
+use another provider/model via task or automatic fallback chains, main-model
+rescue, or model substitution. An unavailable route fails before transport;
+provider errors and exhausted timeouts propagate from the auxiliary client.
+Non-boolean values (including `"false"`, `0`, and `None`) raise `TypeError`
+before transport.
+
+Strict routing does **not** disable same-route transient retries, credential
+refresh or pool rotation, or request-parameter repair. It pins provider/model
+identity, **not** an endpoint host or API key: a credential refresh can change
+the endpoint, and pool rotation can change the key. A supplied `timeout=` keeps
+its usual per-request meaning, not a total retry deadline.
+
+For structured calls, parameter repair or capability handling may remove
+`response_format`; strict routing does not guarantee provider-enforced JSON.
+Local parsing/schema validation and `content_type` retain their usual behavior.
+It also does not establish session/profile routing or reasoning equivalence.
 
 ### Task-routed auxiliary calls
 
@@ -492,7 +522,7 @@ don't have to:
   configured vision model automatically.
 * **Fallback chain.** If the user's primary provider 5xxs or 429s,
   the request goes through Hermes' usual aggregator-aware fallback
-  before it returns an error to the plugin.
+  before it returns an error to the plugin, unless `allow_fallback=False`.
 * **Timeout.** Honours your `timeout=` argument, falling back to
   `auxiliary.<task>.timeout` config or the global aux default.
 * **JSON shaping.** Sends `response_format` to the provider when

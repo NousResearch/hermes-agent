@@ -13,12 +13,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 import gateway.drain_control as dc
+import gateway.session_runtime_workers as runtime_workers
+from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
+from gateway.session_authority import LiveSession, SessionAuthority
+from gateway.session_contract import Principal, SessionRef, Submission
+from hermes_state import SessionDB
+from hermes_state_runtime import (
+    RuntimeStoreError,
+    admit_session_input,
+    begin_runtime_epoch,
+    find_session_admission,
+    get_session_admission,
+    settle_session_input,
+)
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 from datetime import UTC
 
@@ -315,3 +330,208 @@ class TestNewTurnGate:
         assert result is not None
         assert "draining" in result.lower()
 
+
+def _real_admission_authority(tmp_path, *, draining=False, restart_wait=False):
+    """Build a real gateway authority over a temporary SQLite admission ledger."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s", source="telegram")
+    runner = SimpleNamespace(
+        _draining=draining,
+        _external_drain_active=False,
+        _running=True,
+        session_runtime_descriptor={
+            "state": "draining" if draining else "ready",
+            "drain_reason": "restart_wait" if restart_wait else None,
+        },
+        config=SimpleNamespace(multiplex_profiles=False),
+        _adapter_for_source=lambda source: None,
+        _handle_message=lambda event: None,
+    )
+    authority = SessionAuthority(
+        runner,
+        profile_id="p",
+        instance_id="owner",
+        db=db,
+        epoch=begin_runtime_epoch(db, instance_id="owner"),
+    )
+    authority.sessions["s"] = LiveSession(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="human"),
+        "route",
+    )
+    # The regression concerns admission durability; no execution worker should consume the row.
+    authority._schedule = lambda ref: None
+    return db, runner, authority
+
+
+@pytest.mark.asyncio
+async def test_external_drain_race_refuses_before_sqlite_admission_commit(tmp_path, monkeypatch):
+    """A drain that starts after loop preflight still blocks the transaction's authorizer."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db, runner, authority = _real_admission_authority(tmp_path)
+    original_execute_write = db._execute_write
+
+    def race_execute_write(write, patience_s=None):
+        # This is the scheduler race: the loop-side preflight has passed, then an external
+        # drain becomes active immediately before the real SQLite callback invokes its gate.
+        def drain_before_authorize(conn):
+            runner._external_drain_active = True
+            return write(conn)
+
+        return original_execute_write(drain_before_authorize, patience_s=patience_s)
+
+    db._execute_write = race_execute_write
+    request = Submission("race-1", SessionRef("p", "s"), {"text": "hello"}, "queue")
+    try:
+        with pytest.raises(RuntimeStoreError, match="runtime_draining"):
+            await authority.submit(
+                Principal("human", "p", frozenset({"session:submit"}), "test"), request
+            )
+        assert find_session_admission(
+            db, principal_id="human", session_id="s", request_id="race-1"
+        ) is None
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_wait_queue_only_admits_during_ordinary_restart(tmp_path, monkeypatch):
+    """The restart after-turn wait retains its explicit queued-input exception."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db, _, authority = _real_admission_authority(tmp_path, draining=True, restart_wait=True)
+    request = Submission("restart-1", SessionRef("p", "s"), {"text": "hello"}, "queue")
+    try:
+        receipt = await authority.submit(
+            Principal("human", "p", frozenset({"session:submit"}), "test"),
+            request,
+            queue_while_restarting=True,
+        )
+        assert receipt.status == "queued"
+        row = find_session_admission(
+            db, principal_id="human", session_id="s", request_id="restart-1"
+        )
+        assert row is not None and row["status"] == "queued"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_admission_claims_and_settles_during_external_drain(tmp_path, monkeypatch):
+    """External drain refuses new input but does not strand an already durable FIFO head."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db, runner, authority = _real_admission_authority(tmp_path)
+    request = Submission("claim-1", SessionRef("p", "s"), {"text": "hello"}, "queue")
+    ref = SessionRef("p", "s")
+    try:
+        receipt = await authority.submit(
+            Principal("human", "p", frozenset({"session:submit"}), "test"), request
+        )
+        assert receipt.status == "queued"
+        runner._external_drain_active = True
+
+        row, first = await authority._claim_next(ref, authority.sessions["s"])
+        assert first["admission_id"] == receipt.admission_id
+        assert row["status"] == "started"
+        settled = settle_session_input(
+            db,
+            epoch=authority.epoch,
+            admission_id=row["admission_id"],
+            generation=row["generation"],
+            outcome="completed",
+            result={"final_response": "done"},
+        )
+        assert settled["status"] == "terminal"
+        assert get_session_admission(db, admission_id=receipt.admission_id)["outcome"] == "completed"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_external_drain_overrides_restart_wait_for_new_input(tmp_path, monkeypatch):
+    """An external drain still refuses new writes even during restart's queue-only wait."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db, runner, authority = _real_admission_authority(tmp_path, draining=True, restart_wait=True)
+    runner._external_drain_active = True
+    request = Submission("external-restart-1", SessionRef("p", "s"), {"text": "hello"}, "queue")
+    try:
+        with pytest.raises(RuntimeStoreError, match="runtime_draining"):
+            await authority.submit(
+                Principal("human", "p", frozenset({"session:submit"}), "test"),
+                request,
+                queue_while_restarting=True,
+            )
+        assert find_session_admission(
+            db, principal_id="human", session_id="s", request_id="external-restart-1"
+        ) is None
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_stop_still_refuses_existing_claim(tmp_path, monkeypatch):
+    """An ordinary owner stop still pauses a durable head rather than claiming it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db, runner, authority = _real_admission_authority(tmp_path)
+    request = Submission("stop-1", SessionRef("p", "s"), {"text": "hello"}, "queue")
+    ref = SessionRef("p", "s")
+    try:
+        receipt = await authority.submit(
+            Principal("human", "p", frozenset({"session:submit"}), "test"), request
+        )
+        runner._draining = True
+        with pytest.raises(RuntimeStoreError, match="runtime_draining"):
+            await authority._claim_next(ref, authority.sessions["s"])
+        assert get_session_admission(db, admission_id=receipt.admission_id)["status"] == "queued"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_claim_preflight_retries_head_committed_before_external_drain(tmp_path, monkeypatch):
+    """A head committed after an empty preflight is re-read and drained during external quiescence."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db, runner, authority = _real_admission_authority(tmp_path)
+    ref = SessionRef("p", "s")
+    live = authority.sessions["s"]
+    original_tracked_write = runtime_workers.tracked_write
+    injected = False
+    observed_claim_results = []
+
+    async def race_tracked_write(authority_arg, write, then=None, *, ordered=False, after=None):
+        nonlocal injected
+        if not injected:
+            injected = True
+            admit_session_input(
+                db,
+                epoch=authority.epoch,
+                principal_id="native-race",
+                session_id="s",
+                request_id="empty-preflight-1",
+                payload={"text": "arrived during claim"},
+            )
+            runner._external_drain_active = True
+        result = await original_tracked_write(
+            authority_arg, write, then=then, ordered=ordered, after=after
+        )
+        observed_claim_results.append(result)
+        return result
+
+    monkeypatch.setattr(runtime_workers, "tracked_write", race_tracked_write)
+
+    async def execute_claimed(_ref, _live, _row):
+        return "done", "completed"
+
+    authority._execute_claimed = execute_claimed
+    try:
+        await authority._drain(ref)
+        row = find_session_admission(
+            db,
+            principal_id="native-race",
+            session_id="s",
+            request_id="empty-preflight-1",
+        )
+        assert row is not None and row["status"] == "terminal"
+        assert row["outcome"] == "completed"
+        assert observed_claim_results and observed_claim_results[0] is False
+        assert live.pause_notified is False
+    finally:
+        db.close()

@@ -29,7 +29,8 @@ export function useMediaPlaybackSrc(path: string) {
 
   // A transcript in a background tile streams through the tile's owner, not the foreground.
   const owner = useMemo(
-    () => (scope.connectionId || scope.profile ? { connectionId: scope.connectionId, profile: scope.profile } : undefined),
+    () =>
+      scope.connectionId || scope.profile ? { connectionId: scope.connectionId, profile: scope.profile } : undefined,
     [scope.connectionId, scope.profile]
   )
 
@@ -107,8 +108,7 @@ export function useMediaPlaybackSrc(path: string) {
       const element = event.currentTarget
       const failing = element.getAttribute('src') ?? ''
 
-      const fail = () =>
-        setMedia(current => (current.src === failing ? { ...current, failed: true } : current))
+      const fail = () => setMedia(current => (current.src === failing ? { ...current, failed: true } : current))
 
       const neverLoaded = loadedSrc.current !== failing
       // A source that never loaded can only have expired if its element waited to fetch it

@@ -12108,6 +12108,9 @@ def _open_kanban_for_board(board_slug: Optional[str]):
         return None, None
 
 
+_ZERO_BOARD_COUNTS = {"todo": 0, "doing": 0, "review": 0, "blocked": 0, "done": 0}
+
+
 def _board_counts(board_slug: Optional[str]) -> dict:
     """Quick {todo,doing,review,blocked,done} counts from the bound board."""
     conn, _ = _open_kanban_for_board(board_slug)
@@ -12207,18 +12210,23 @@ def get_projects():
 
         scoped = set(tree.get("scoped_session_ids", []))
 
-        # Enrich explicit (non-auto) projects with board data.
+        # Enrich explicit (non-auto) projects with board data + brief contract fields.
+        projects_by_id = {p["id"]: p for p in projects}
         result_projects = []
-        project_ids = {p["id"] for p in projects}
         for node in tree.get("projects", []):
             if node.get("isAuto"):
                 continue  # skip auto-detected; unregistered folders go to unassigned
-            board_slug = next(
-                (p.get("board_slug") for p in projects if p["id"] == node["id"]),
-                None,
-            )
+            pdata = projects_by_id.get(node["id"], {})
+            board_slug = pdata.get("board_slug")
             node["boardCounts"] = _board_counts(board_slug)
             node["lastEvent"] = _board_last_event(board_slug)
+            # Brief contract fields from projects_db (may be absent on auto nodes
+            # but we skip those above, so this is always a registered project).
+            node.setdefault("slug", pdata.get("slug"))
+            node.setdefault("name", pdata.get("name"))
+            node.setdefault("folders", pdata.get("folders", []))
+            node.setdefault("primary", pdata.get("primary_path"))
+            node.setdefault("board", board_slug)
             result_projects.append(node)
 
         # Unassigned: sessions not claimed by any project.
@@ -12350,7 +12358,7 @@ def get_project_sessions(
                 "source": s.get("source"),
                 "started_at": s.get("started_at"),
                 "ended_at": s.get("ended_at"),
-                "last_active": s.get("last_active"),
+                "lastActive": s.get("last_active"),
                 "message_count": s.get("message_count", 0),
                 "endReason": s.get("end_reason"),
                 "cwd": rel,
@@ -12377,14 +12385,22 @@ def get_project_board(project_id: str):
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         if not project.board_slug:
-            return {"tasks": [], "counts": {}}
+            return {"tasks": [], "counts": {**_ZERO_BOARD_COUNTS}}
 
         board_conn, _ = _open_kanban_for_board(project.board_slug)
         if board_conn is None:
-            return {"tasks": [], "counts": {}}
+            return {"tasks": [], "counts": {**_ZERO_BOARD_COUNTS}}
         try:
             tasks = kanban_db.list_tasks(board_conn)
             stats = kanban_db.board_stats(board_conn)
+            by_s = stats.get("by_status", {})
+            counts = {
+                "todo": by_s.get("todo", 0),
+                "doing": by_s.get("doing", 0),
+                "review": by_s.get("review", 0),
+                "blocked": by_s.get("blocked", 0),
+                "done": by_s.get("done", 0),
+            }
             return {
                 "tasks": [
                     {
@@ -12393,11 +12409,11 @@ def get_project_board(project_id: str):
                         "status": t.status,
                         "assignee": t.assignee,
                         "session_id": t.session_id,
-                        "updated_at": t.completed_at or t.started_at or t.created_at,
+                        "updated": t.completed_at or t.started_at or t.created_at,
                     }
                     for t in tasks
                 ],
-                "counts": stats.get("by_status", {}),
+                "counts": counts,
             }
         finally:
             try:

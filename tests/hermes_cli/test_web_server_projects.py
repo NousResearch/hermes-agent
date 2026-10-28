@@ -111,6 +111,15 @@ def test_get_projects_returns_project_list(projects_env):
     assert "boardCounts" in project
     assert "lastEvent" in project  # may be None — just must be present
 
+    # Brief contract fields from projects_db
+    assert "slug" in project, "project missing 'slug'"
+    assert "name" in project, "project missing 'name'"
+    assert "folders" in project, "project missing 'folders'"
+    assert "primary" in project, "project missing 'primary'"
+    assert "board" in project, "project missing 'board'"
+    assert project["slug"] == "project-alpha"
+    assert project["name"] == "Project Alpha"
+
     # unassigned is a dict with the right keys
     unassigned = data["unassigned"]
     assert "sessionCount" in unassigned
@@ -161,7 +170,7 @@ def test_get_project_sessions_session_shape(projects_env):
     assert resp.status_code == 200
     sessions = resp.json()["sessions"]
     for s in sessions:
-        for key in ("id", "title", "model", "endReason", "cwd", "task", "last_active"):
+        for key in ("id", "title", "model", "endReason", "cwd", "task", "lastActive"):
             assert key in s, f"session row missing key {key!r}"
 
 
@@ -184,20 +193,77 @@ def test_get_project_sessions_404_for_unknown_project(projects_env):
 
 
 def test_get_project_board_no_board_slug(projects_env):
-    """A project with no bound board returns empty tasks + counts."""
+    """A project with no bound board returns empty tasks + consistent zero counts."""
     client = projects_env["client"]
     pid = projects_env["project_id"]
     resp = client.get(f"/api/projects/{pid}/board")
     assert resp.status_code == 200
     data = resp.json()
     assert data["tasks"] == []
-    assert isinstance(data["counts"], dict)
+    counts = data["counts"]
+    assert isinstance(counts, dict)
+    # Counts shape must be consistent: all five status keys present as ints
+    for key in ("todo", "doing", "review", "blocked", "done"):
+        assert key in counts, f"counts missing key {key!r}"
+        assert isinstance(counts[key], int)
 
 
 def test_get_project_board_404_for_unknown_project(projects_env):
     client = projects_env["client"]
     resp = client.get("/api/projects/no-such-id/board")
     assert resp.status_code == 404
+
+
+def test_get_project_board_task_updated_field(projects_env):
+    """When a board has tasks, each task shape uses 'updated' not 'updated_at'."""
+    import hermes_cli.kanban_db as kdb
+
+    client = projects_env["client"]
+    pid = projects_env["project_id"]
+
+    # Bind a fake board slug to the project.
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as pconn:
+        pconn.execute(
+            "UPDATE projects SET board_slug = ? WHERE id = ?",
+            ("fake-board", pid),
+        )
+        pconn.commit()
+
+    fake_task = kdb.Task(
+        id="t1",
+        title="Test task",
+        body=None,
+        assignee="alice",
+        status="done",
+        priority=0,
+        created_by="alice",
+        created_at=1000,
+        started_at=1001,
+        completed_at=1002,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    fake_stats = {"by_status": {"done": 1, "todo": 0, "doing": 0, "review": 0, "blocked": 0}}
+
+    import sqlite3 as _sqlite3
+
+    with patch("hermes_cli.web_server._open_kanban_for_board",
+               return_value=(_sqlite3.connect(":memory:"), "fake-board")), \
+         patch("hermes_cli.kanban_db.list_tasks", return_value=[fake_task]), \
+         patch("hermes_cli.kanban_db.board_stats", return_value=fake_stats):
+        resp = client.get(f"/api/projects/{pid}/board")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["tasks"]) == 1
+    task = data["tasks"][0]
+    assert "updated" in task, "board task shape must use 'updated' not 'updated_at'"
+    assert "updated_at" not in task, "deprecated 'updated_at' must not appear"
+    assert task["updated"] == 1002  # completed_at value
 
 
 # ---------------------------------------------------------------------------

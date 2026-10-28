@@ -165,6 +165,9 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
     if proven_session_id:
         metadata["gateway_proven_session_id"] = proven_session_id
+    requester_user_id = str(evt.get("user_id") or "").strip()
+    if requester_user_id:
+        metadata["requester_user_id"] = requester_user_id
     if completion_ids := evt.get("completion_ids"):
         metadata["gateway_completion_ids"] = list(completion_ids)
     return metadata

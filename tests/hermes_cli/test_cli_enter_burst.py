@@ -187,6 +187,7 @@ class _StallingSelector(selectors.DefaultSelector):
         return super().select(timeout)
 
 
+@pytest.mark.platforms("posix")  # Windows selectors cannot watch an os.pipe() descriptor
 def test_chunk_waiting_through_an_event_loop_stall_is_read_before_the_quiet_window_ends(clock):
     """Under host load the loop can stall past the quiet window while the rest of a paste already
     waits in stdin, and reach the quiet-window timer before reading it. The waiting text keeps the

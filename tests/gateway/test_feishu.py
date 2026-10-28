@@ -305,6 +305,16 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(settings.ws_reconnect_nonce, 30)
         self.assertEqual(settings.ws_reconnect_interval, 120)
 
+    def test_load_settings_reads_other_bot_open_ids(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {"other_bot_open_ids": ["ou_aaa111", " ou_bbb222 "]}
+        )
+        self.assertEqual(settings.other_bot_open_ids, frozenset({"ou_aaa111", "ou_bbb222"}))
+        # Unset → empty set, so no message is ever skipped for this reason.
+        self.assertEqual(FeishuAdapter._load_settings({}).other_bot_open_ids, frozenset())
+
     def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
         import sys
         from types import ModuleType
@@ -1419,6 +1429,93 @@ class TestAdapterBehavior(unittest.TestCase):
                 [{"tag": "md", "text": "后续说明仍应保留。"}],
             ],
         )
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+class TestFeishuThreadSendRouting(unittest.TestCase):
+    """A topic (thread) send must ride the reply API.
+
+    The create-message API has no ``thread_id`` receive_id_type — asking for one returns
+    99992402 "field validation failed" and the message is never delivered. Cron jobs whose
+    origin is a topic (no reply anchor) hit exactly that path, so every delivery from them
+    silently failed. A thread send therefore anchors on the thread's own last message and
+    replies inside it, and falls back to a chat-level send when the thread is gone.
+    """
+
+    def _adapter(self, *, thread_items, reply_succeeds, create_succeeds=True):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured: Dict[str, list] = {"create": [], "reply": []}
+
+        class _MessageAPI:
+            def list(self, request):
+                captured["list"] = request
+                items = [SimpleNamespace(message_id=m) for m in thread_items]
+                return SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=items))
+
+            def reply(self, request):
+                captured["reply"].append(request)
+                if reply_succeeds:
+                    return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_reply"))
+                return SimpleNamespace(success=lambda: False, code=99992402, msg="field validation failed")
+
+            def create(self, request):
+                captured["create"].append(request)
+                ok = create_succeeds
+                return SimpleNamespace(success=lambda: ok, data=SimpleNamespace(message_id="om_created"))
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+        return adapter, captured
+
+    @staticmethod
+    def _send(adapter, **kwargs):
+        async def _direct(func, *args, **kw):
+            return func(*args, **kw)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            return asyncio.run(adapter.send(chat_id="oc_chat", content="官费更新", metadata={"thread_id": "omt-thread"}, **kwargs))
+
+    def test_thread_send_without_anchor_replies_into_thread(self):
+        adapter, captured = self._adapter(thread_items=["om_thread_root"], reply_succeeds=True)
+
+        result = self._send(adapter)
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured["reply"]), 1)
+        self.assertEqual(captured["reply"][0].message_id, "om_thread_root")
+        self.assertTrue(captured["reply"][0].request_body.reply_in_thread)
+        self.assertEqual(captured["create"], [])
+
+    def test_no_thread_id_receive_id_type_is_ever_sent(self):
+        adapter, captured = self._adapter(thread_items=["om_thread_root"], reply_succeeds=True)
+
+        self._send(adapter)
+
+        for request in list(captured["create"]) + list(captured["reply"]):
+            self.assertNotEqual(getattr(request, "receive_id_type", None), "thread_id")
+
+    def test_rejected_thread_reply_falls_back_to_chat_level_send(self):
+        adapter, captured = self._adapter(thread_items=["om_thread_root"], reply_succeeds=False)
+
+        result = self._send(adapter)
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured["reply"]), 1)
+        self.assertEqual(len(captured["create"]), 1)
+        self.assertEqual(captured["create"][0].receive_id_type, "chat_id")
+        self.assertEqual(captured["create"][0].request_body.receive_id, "oc_chat")
+
+    def test_thread_without_anchor_falls_back_to_chat_level_send(self):
+        adapter, captured = self._adapter(thread_items=[], reply_succeeds=True)
+
+        result = self._send(adapter)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["reply"], [])
+        self.assertEqual(len(captured["create"]), 1)
+        self.assertEqual(captured["create"][0].receive_id_type, "chat_id")
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestPendingInboundQueue(unittest.TestCase):

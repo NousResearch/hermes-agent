@@ -387,6 +387,14 @@ def _sibling_sessions(authority, reader):
     return fields
 
 
+def _profile_has_avatar(home):
+    """Cheap existence flag so rosters skip a get_asset probe per paint; every row carries it,
+    not just the authority's own — the Desktop's pull path (pullServerAvatars) fetches art for
+    exactly the rows the flag marks, and a sibling without it gets the renderer's face-raster
+    backfill pushed over any art the profile actually owns."""
+    return any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
+
+
 def _profiles(authority, actor, home, params, siblings=()):
     """The Bots roster: this profile's row, then every profile it can name. ``siblings`` is
     ``_roster_siblings``' snapshot; a sibling with a reader carries the same session fields."""
@@ -410,7 +418,7 @@ def _profiles(authority, actor, home, params, siblings=()):
                               if type(v) is int} if isinstance(revisions, dict) else {}
     if isinstance(meta.get('ui_meta'), dict):
         row['ui_meta'] = meta['ui_meta']
-    row['has_avatar'] = any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
+    row['has_avatar'] = _profile_has_avatar(home)
     if include_sessions:
         row.update(_bot_sessions(authority, actor))
     profiles = [row]
@@ -424,7 +432,7 @@ def _profiles(authority, actor, home, params, siblings=()):
         seen.add(target.resolve())
         entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
                  'model': '', 'provider': '', 'description': '', 'display_name': configured,
-                 'skill_count': 0}
+                 'skill_count': 0, 'has_avatar': _profile_has_avatar(target)}
         if include_sessions and reach is not None:
             entry.update(_sibling_sessions(*reach))
         meta = _discovered_profile_meta(configured, target / 'profile.yaml')

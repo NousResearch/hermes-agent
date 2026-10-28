@@ -714,6 +714,22 @@ def test_service_derives_room_deadline_from_agent_timeout(tmp_path: Path, monkey
     assert service.runtime.turn_timeout_seconds == 120.0
 
 
+def test_service_zero_agent_timeout_disables_room_deadline(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0")
+
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+
+    assert service.runtime.turn_timeout_seconds is None
+
+
+def test_service_invalid_agent_timeout_keeps_default_room_deadline(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "not-a-number")
+
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+
+    assert service.runtime.turn_timeout_seconds == 1830.0
+
+
 def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
     tmp_path: Path,
 ):

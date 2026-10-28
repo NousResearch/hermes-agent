@@ -143,21 +143,24 @@ def read_launchd_exit_timeout_s(
         if getuid is None:
             return None
         uid = getuid()
-    domain = "system" if uid == 0 else f"gui/{uid}"
-    try:
-        proc = run(
-            ["launchctl", "print", f"{domain}/{label}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    if proc.returncode != 0:
-        return None
-    return parse_launchd_exit_timeout(proc.stdout)
+    # ``hermes gateway install`` loads the job into gui/<uid> (Aqua) or user/<uid> (Background/SSH,
+    # the default on macOS 26+); probe both, like hermes_cli.gateway_launchd does.
+    domains = ("system",) if uid == 0 else (f"gui/{uid}", f"user/{uid}")
+    for domain in domains:
+        try:
+            proc = run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        if proc.returncode == 0:
+            return parse_launchd_exit_timeout(proc.stdout)
+    return None
 
 
 def resolve_launchd_capped_drain(

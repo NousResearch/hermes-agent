@@ -755,12 +755,15 @@ def _terminate(pid: Optional[int], start_time: Optional[int], proc: Optional[sub
             proc.kill()
 
 
-def stop_browser(key: str) -> None:
+def stop_browser(key: str, *, expected: Optional[LaunchedBrowser] = None) -> None:
     """Let go of ``key``'s browser. A throwaway one this process launched is stopped. A shared-profile one is
     stopped only by its LAST holder across Hermes processes (:func:`_last_holder_out`); one a human started is
     never stopped. Holds ``key``'s launch lock: a relaunch of ``key`` waits for this stop instead of
     registering a replacement on the dir it is about to delete."""
     with _key_lock(key):
+        with _lock:
+            if expected is not None and _browsers.get(key) is not expected:
+                return
         _stop_locked(key)
 
 

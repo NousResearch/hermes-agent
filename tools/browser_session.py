@@ -19,7 +19,6 @@ import uuid
 from typing import Any, Callable, Optional
 
 from hermes_cli.config import DEFAULT_CONFIG
-from hermes_constants import hermes_home_key
 from utils import env_int
 
 logger = logging.getLogger(__name__)
@@ -41,6 +40,8 @@ BROWSER_ORPHAN_REAP_INTERVAL = 300
 MAX_INACTIVITY_CLEANUP_FAILURES = 3
 
 _active_sessions: dict[str, dict[str, Any]] = {}
+_session_lifetimes: dict[str, Any] = {}
+_retired_sessions: dict[str, list[dict[str, Any]]] = {}
 _session_last_activity: dict[str, float] = {}
 # Owner Hermes home per session: the janitor is one process-global thread, so each teardown re-enters the
 # OWNING profile's scope (#86402).
@@ -204,7 +205,7 @@ def _create_chromium_session(cache_key: str) -> dict[str, Any]:
     if browser is None:
         raise RuntimeError(err or "the local browser could not be started")
     info = _session_record("h", browser.cdp_url, {"local": True})
-    info.update(launcher_key=launcher_key, shared_profile=shared)
+    info.update(launcher_key=launcher_key, shared_profile=shared, _launcher_browser=browser)
     logger.info("Created local browser session %s for %s (Chromium pid %s)", info["session_name"], cache_key, browser.pid)
     return info
 
@@ -264,6 +265,7 @@ def _create_cloud_session_or_fallback(cache_key: str, provider) -> dict[str, Any
                                f"fallback also failed ({local_error})") from e
         return {**local, "fallback_from_cloud": True, "fallback_reason": str(e), "fallback_provider": provider_name}
     session_info = dict(session_info)
+    session_info["_provider"] = provider
     if session_info.get("cdp_url"):
         session_info["cdp_url"] = resolve_cdp_override(str(session_info["cdp_url"]))
     return session_info
@@ -307,22 +309,6 @@ def _backend_dead(session_info: dict[str, Any]) -> bool:
     return False
 
 
-def _reuse_or_evict(cache_key: str) -> Optional[dict[str, Any]]:
-    from tools import browser_session_lifecycle as _lifecycle
-    with _cleanup_lock:
-        existing = _active_sessions.get(cache_key)
-    if existing is None:
-        return None
-    if not _lifecycle.session_has_expired(existing) and not _backend_dead(existing):
-        return existing
-    logger.info("Replacing expired or dead browser session for %s", cache_key)
-    _lifecycle.cleanup_single_session(cache_key)
-    _lifecycle.update_session_activity(cache_key)  # teardown dropped the entry; track the replacement
-    with _cleanup_lock:
-        replacement = _active_sessions.get(cache_key)  # another thread may already have rebuilt it
-    return replacement if replacement is not None and replacement is not existing else None
-
-
 def _publish(cache_key: str, session_info: dict[str, Any], home_key: str) -> dict[str, Any]:
     session_info = dict(session_info)
     session_info.setdefault("session_key", cache_key)
@@ -333,45 +319,9 @@ def _publish(cache_key: str, session_info: dict[str, Any], home_key: str) -> dic
 
 
 def get_session_info(cache_key: Optional[str] = None) -> dict[str, Any]:
-    """Get or create the session for ``cache_key`` (thread-safe); starts the inactivity janitor and touches
-    activity. A ``::local`` key forces a local browser even with a cloud provider configured."""
-    from tools import browser_session_lifecycle as _lifecycle
-    from tools.browser_session_cdp import ensure_cdp_supervisor, live_cdp_generation
-    key = cache_key or "default"
-    _lifecycle.start_cleanup_thread()
-    _lifecycle.update_session_activity(key)
-    reused = _reuse_or_evict(key)
-    if reused is not None:
-        return reused
-
-    force_local = is_local_sidecar_key(key)
-    home_key = hermes_home_key()
-    for attempt in range(_STALE_ENDPOINT_RETRIES + 1):
-        generation = live_cdp_generation(home_key)
-        session_info = _create_session_for_key(key, force_local)
-        with _cleanup_lock:
-            if key in _active_sessions:  # created concurrently during the launch: don't leak ours
-                winner = _active_sessions[key]
-                stale_ours = session_info
-                session_info = None
-            else:
-                winner = stale_ours = None
-                # A /browser connect publish while ours was built may mean it resolved the old endpoint:
-                # never publish it (a concurrent caller would get a browser being closed); rebuild.
-                if live_cdp_generation(home_key) == generation or attempt == _STALE_ENDPOINT_RETRIES:
-                    session_info = _publish(key, session_info, home_key)
-                    break
-        if winner is not None:
-            _lifecycle.release_session_backend(key, stale_ours)
-            return winner
-        logger.info("Browser endpoint changed during session creation for %s; recreating", key)
-        _lifecycle.release_session_backend(key, session_info)
-
-    # Cloud / CDP-override sessions get the supervisor here (dialogs, frame tree, vault fill). Local
-    # browsers are attached by browser_exec per call under the task id.
-    if not (session_info.get("features") or {}).get("local"):
-        ensure_cdp_supervisor(key)
-    return session_info
+    """Get a current session; cleanup fences creations already resolving or launching."""
+    from tools.browser_session_owned import get_owned_session
+    return get_owned_session(cache_key or "default")
 
 
 def _atexit_cleanup() -> None:

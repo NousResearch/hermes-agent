@@ -160,14 +160,22 @@ Headed mode does two things:
 
 1. **Launches Chromium with a visible window**, so you can watch the agent work
    and step in manually (sign-in challenges, CAPTCHAs).
-2. **Keeps the browser open between turns.** Normally the browser is cleaned up
-   after every agent reply; in headed mode the per-turn cleanup is skipped so
-   login state stays warm across the conversation.
+2. **Keeps Hermes-launched local browsers open between turns**, preserving their
+   login state. Cloud sessions and shared CDP connections still release the
+   completed task's resources. A shared browser loses only the exact tab that
+   task created; its other tabs remain open.
 
 Idle browsers are still reaped after `browser.inactivity_timeout`, and all of
 them close on shutdown. On a display-less host (servers, CI) the browser always
 runs headless. Headed mode only affects local browsers — cloud sessions are
 unaffected.
+
+Each task on a shared CDP browser starts on its own tab. The Browser Use harness
+and the CDP supervisor both bind to that tab's exact target ID. Task cleanup
+invalidates pending connections before releasing resources, so a delayed
+connection cannot reopen a completed task. Explicitly named sessions retain
+their existing persistence across calls and are released by inactivity or
+profile cleanup.
 
 ## Cloud browsers
 

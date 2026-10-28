@@ -71,10 +71,10 @@ def update_session_activity(cache_key: str) -> None:
 
 
 @contextlib.contextmanager
-def _session_owner_scope(cache_key: str):
+def _session_owner_scope(cache_key: str, *, owner_home: Optional[str] = None):
     """Run under the Hermes home + secret scope owning ``cache_key``'s session (no-op when unrecorded); the
     janitor is process-global, so each teardown re-enters ITS profile, never ``os.environ``."""
-    owner_home = _bs()._session_owner_homes.get(cache_key)
+    owner_home = owner_home or _bs()._session_owner_homes.get(cache_key)
     if owner_home is None:
         yield
         return
@@ -116,14 +116,10 @@ def _close_cloud_session(session_info: dict[str, Any]) -> None:
     bb_session_id = session_info.get("bb_session_id")
     if not bb_session_id:
         return
-    from tools.browser_session_cloud import get_cloud_provider
-    provider = get_cloud_provider()
+    provider = session_info.get("_provider")
     if provider is None:
-        return
-    try:
-        provider.close_session(bb_session_id)
-    except Exception as e:  # health: allow BLE001 -- a provider error must never abort the rest of the teardown
-        logger.warning("Could not close cloud browser session: %s", e)
+        raise RuntimeError("The cloud browser session has no owning provider for cleanup.")
+    provider.close_session(bb_session_id)
 
 
 def release_session_backend(cache_key: str, session_info: dict[str, Any]) -> None:
@@ -134,64 +130,120 @@ def release_session_backend(cache_key: str, session_info: dict[str, Any]) -> Non
         from tools.browser_lightpanda import stop_lightpanda
         stop_lightpanda(session_info.get("session_name", ""))
     launcher_key = session_info.get("launcher_key")
-    if not launcher_key or _launcher_key_in_use(launcher_key, session_info):
+    if not launcher_key or session_info.get("shared_profile") or _launcher_key_in_use(launcher_key, session_info):
         return  # nothing launched for it, or a shared browser another live session still uses
     if features.get("sandbox"):
         from tools.browser_session_sandbox import stop_sandbox_browser
         stop_sandbox_browser(session_info)
     elif not features.get("real_profile"):  # outlives its sessions: stopped at exit / on consent-off
         from tools.browser_launcher import stop_browser
-        stop_browser(launcher_key)
+        stop_browser(launcher_key, expected=session_info.get("_launcher_browser"))
 
 
-def cleanup_single_session(cache_key: str) -> None:
-    """Tear down one session by its exact key."""
-    from tools.browser_session_cdp import stop_cdp_supervisor
-    stop_cdp_supervisor(cache_key)  # close our WebSocket BEFORE the backend tears the endpoint down
+def cleanup_single_session(cache_key: str, *, expected: Optional[dict[str, Any]] = None,
+                           preserve_lifetime: bool = False) -> None:
+    """Fence pending creation, then dispose exact captured resources; retain failures for retry."""
     bs = _bs()
     with bs._cleanup_lock:
-        session_info = bs._active_sessions.pop(cache_key, None)
-    _forget_session_tracking(cache_key)
-    if session_info:
-        release_session_backend(cache_key, session_info)
+        if expected is not None and bs._active_sessions.get(cache_key) is not expected:
+            return
+        retired = _detach_locked(cache_key, preserve_lifetime=preserve_lifetime)
+    _dispose_retired(cache_key, retired)
+
+
+def _detach_locked(cache_key: str, *, preserve_lifetime: bool = False) -> list[dict[str, Any]]:
+    """Called under the browser state lock; retiring a group is one atomic state change."""
+    bs = _bs()
+    if not preserve_lifetime:
+        bs._session_lifetimes.pop(cache_key, None)
+    session_info = bs._active_sessions.pop(cache_key, None)
+    if session_info is not None:
+        bs._retired_sessions.setdefault(cache_key, []).append(session_info)
+    retired = list(bs._retired_sessions.get(cache_key, ()))
+    if not preserve_lifetime:
+        bs._session_last_activity.pop(cache_key, None)
+        bs._session_owner_homes.pop(cache_key, None)
+        bs._cleanup_failures.pop(cache_key, None)
+    return retired
+
+
+def _dispose_retired(cache_key: str, retired: list[dict[str, Any]]) -> None:
+    from tools.browser_session_owned import dispose_owned_binding
+    bs = _bs()
+    for info in retired:
+        # A new incarnation may already exist under this key. The captured object owns every release.
+        with info["_lifetime"].lock:
+            with bs._cleanup_lock:
+                if not any(item is info for item in bs._retired_sessions.get(cache_key, ())):
+                    continue
+            with _session_owner_scope(cache_key, owner_home=info.get("_owner_home")):
+                dispose_owned_binding(info)
+                release_session_backend(cache_key, info)
+            with bs._cleanup_lock:
+                pending = bs._retired_sessions.get(cache_key, [])
+                bs._retired_sessions[cache_key] = [item for item in pending if item is not info]
+                if not bs._retired_sessions[cache_key]:
+                    bs._retired_sessions.pop(cache_key)
         logger.debug("Closed browser session %s", cache_key)
 
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None) -> bool:
     """Close the sessions serving ``task_id``: its exact key, its hybrid ``::local`` sidecar, and the
     served-profile-tagged keys browser_exec builds for it (``<task>@<home>``). Per-turn cleanup calls this
     with the bare task id."""
     task = task_id or "default"
     bs = _bs()
     with bs._cleanup_lock:
+        tracked = set(bs._active_sessions) | set(bs._session_lifetimes) | set(bs._retired_sessions)
         if bs.is_local_sidecar_key(task):
-            keys = [task] if task in bs._active_sessions else []
+            keys = [task] if task in tracked else []
         else:
-            keys = [key for key in bs._active_sessions if key == task or bs.owner_task_id(key) == task]
-    for key in keys:
-        cleanup_single_session(key)
-    if not keys:
-        _forget_session_tracking(task)
+            keys = [key for key in tracked if key == task or bs.owner_task_id(key) == task]
+        retired = [(key, _detach_locked(key)) for key in keys]
+    for key, infos in retired:
+        _dispose_retired(key, infos)
+    return True
+
+
+def cleanup_browser_for_turn(task_id: str) -> bool:
+    """Keep only Hermes-owned local headed browsers across turns; retire shared CDP/cloud bindings."""
+    from tools.browser_session_cloud import is_headed_mode
+    bs = _bs()
+    headed = is_headed_mode()
+    with bs._cleanup_lock:
+        tracked = set(bs._active_sessions) | set(bs._session_lifetimes) | set(bs._retired_sessions)
+        keys = [key for key in tracked if key == task_id or bs.owner_task_id(key) == task_id]
+        keep = {key for key in keys if headed and (bs._active_sessions.get(key, {}).get("features") or {}).get("local")
+                and not (bs._active_sessions[key].get("features") or {}).get("cdp_override")}
+        retired = [(key, _detach_locked(key)) for key in keys if key not in keep]
+    for key, infos in retired:
+        _dispose_retired(key, infos)
+    return True
 
 
 def cleanup_profile_browsers(home_key: str) -> None:
     """Close one profile home's sessions, CDP supervisors and harness daemons, and drop its cached config
     (``/browser connect`` on a multiplexed gateway). Other profiles' browsers stay."""
     bs = _bs()
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_use_cli import _driven_daemons, _driven_daemons_lock, _reload_daemons
+    with SUPERVISOR_REGISTRY._lock:
+        supervisor_keys = [key for key, home in SUPERVISOR_REGISTRY._home_by_task.items() if home == home_key]
+        supervisors = [item for key in supervisor_keys for item in SUPERVISOR_REGISTRY._retire_locked(key)]
+    with _driven_daemons_lock:
+        daemons = [key for key, home in _driven_daemons.items() if home == home_key]
+        for key in daemons:
+            _driven_daemons.pop(key)
     with bs._cleanup_lock:
-        keys = [key for key, info in bs._active_sessions.items() if info.get("home_key") == home_key]
-    for key in keys:
-        cleanup_single_session(key)
-
-    def _stop_supervisors():
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-        SUPERVISOR_REGISTRY.stop_home(home_key)
-    _best_effort("CDP supervisor stop", _stop_supervisors)
-
-    def _stop_harness():
-        from tools.browser_use_cli import stop_harness_daemons
-        stop_harness_daemons(home_key)
-    _best_effort("Browser Use harness daemon stop", _stop_harness)
+        keys = {key for key, info in bs._active_sessions.items() if info.get("home_key") == home_key}
+        keys.update(key for key, lifetime in bs._session_lifetimes.items() if lifetime.home_key == home_key)
+        keys.update(key for key, infos in bs._retired_sessions.items()
+                    if any(info.get("home_key") == home_key for info in infos))
+        retired = [(key, _detach_locked(key)) for key in keys]
+    SUPERVISOR_REGISTRY._stop_supervisors(supervisors)
+    for key, infos in retired:
+        _dispose_retired(key, infos)
+    _reload_daemons(daemons)
     from tools.browser_session_cloud import reset_caches
     reset_caches(home_key)
 
@@ -207,7 +259,7 @@ def cleanup_all_browsers() -> None:
     provider and credentials."""
     bs = _bs()
     with bs._cleanup_lock:
-        keys = list(bs._active_sessions)
+        keys = set(bs._active_sessions) | set(bs._session_lifetimes) | set(bs._retired_sessions)
     for key in keys:
         _best_effort(f"browser cleanup for {key}", lambda key=key: _cleanup_in_owner_scope(key))
 
@@ -246,6 +298,7 @@ def emergency_cleanup_all_sessions() -> None:
     _best_effort("Browser cleanup on exit", cleanup_all_browsers)
     with bs._cleanup_lock:
         bs._active_sessions.clear()
+        bs._session_lifetimes.clear()
         bs._session_last_activity.clear()
         bs._session_owner_homes.clear()
         bs._cleanup_failures.clear()
@@ -282,15 +335,8 @@ def _human_holds_shared_browser(cache_key: str) -> bool:
 
 
 def _force_reap(cache_key: str) -> None:
-    """Janitor last resort after repeated failures (#100738): drop the record, release the backend."""
-    from tools.browser_session_cdp import stop_cdp_supervisor
-    stop_cdp_supervisor(cache_key)
-    bs = _bs()
-    with bs._cleanup_lock:
-        session_info = bs._active_sessions.get(cache_key)
-    _forget_session_tracking(cache_key, session=True)  # untracked even if the release below fails
-    if session_info:
-        release_session_backend(cache_key, session_info)
+    """Retry exact retired resources without discarding a failed cleanup record."""
+    cleanup_single_session(cache_key)
 
 
 def _cleanup_one_inactive(cache_key: str, elapsed: int) -> None:
@@ -323,6 +369,7 @@ def cleanup_inactive_sessions() -> None:
     with bs._cleanup_lock:
         idle = [(key, int(now - last)) for key, last in bs._session_last_activity.items()
                 if now - last > bs.BROWSER_SESSION_INACTIVITY_TIMEOUT]
+        idle.extend((key, 0) for key in bs._retired_sessions if key not in dict(idle))
     for key, elapsed in idle:
         with _session_owner_scope(key):
             if _human_holds_shared_browser(key):

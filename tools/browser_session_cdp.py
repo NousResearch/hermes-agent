@@ -130,24 +130,10 @@ def get_dialog_policy_config() -> tuple[str, float]:
 
 
 def ensure_cdp_supervisor(task_id: str) -> None:
-    """Start the CDP supervisor for ``task_id`` when an endpoint is reachable (idempotent; restarts on a
-    URL change). URL precedence: the CDP override, then the session's own ``cdp_url``. A failed attach
-    never breaks the session."""
-    cdp_url = get_cdp_override()
-    if not cdp_url:
-        from tools import browser_session as _bs
-        with _bs._cleanup_lock:
-            session_cdp = str((_bs._active_sessions.get(task_id) or {}).get("cdp_url") or "")
-        cdp_url = resolve_cdp_override(session_cdp) if session_cdp else ""
-    if not cdp_url:
-        return
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-        policy, timeout_s = get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy,
-                                         dialog_timeout_s=timeout_s)
-    except Exception as exc:  # health: allow BLE001 -- a failed supervisor attach must not break the session
-        logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
+    """Attach to this session's exact owned target; propagate a failed binding."""
+    from tools.browser_session import get_session_info
+    from tools.browser_session_owned import bind_owned_target
+    bind_owned_target(task_id, get_session_info(task_id), task_id)
 
 
 def stop_cdp_supervisor(task_id: str) -> None:

@@ -11,6 +11,7 @@ from contextlib import suppress
 from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
+from agent.browser_turn_cleanup import browser_turn_cleanup_boundary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -76,6 +77,8 @@ class TurnFacadeMixin:
         token = affinity_token = acct_token = None
         task_started = task_finished = False
         relay_outcome = "failed"
+        browser_cleanup_scope = browser_turn_cleanup_boundary(effective_task_id)
+        browser_cleanup_scope.__enter__()
 
         try:
             # First statement of the try so the finally's note_turn_finished balances every exit.
@@ -196,26 +199,29 @@ class TurnFacadeMixin:
                     if relay_lease is not None:
                         relay_runtime.SESSION_COORDINATOR.release_conversation(relay_lease)
                 finally:
-                    if lease is not None:
-                        lease.stop_refresher()
-                        lease.join_threads()
-                        lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
-                        lease.release()
-                    # Always clear mid-turn labels on exit — including interrupted early returns
-                    # that skip finalize_turn. Keep ts.
-                    with suppress(Exception):
-                        self._reset_activity_labels_after_turn()
-                    if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
-                        self._relay_pending_turn_id = None
-                    if acct_token is not None:
-                        reset_accounting_context(acct_token)
-                    if token is not None:
-                        reset_conversation_context(token)
-                    if affinity_token is not None:
-                        reset_affinity_scope(affinity_token)
-                    # Balance note_turn_started so the idle queue's live-turn count cannot leak.
-                    with suppress(Exception):
-                        _review_queue.note_turn_finished()
+                    try:
+                        browser_cleanup_scope.__exit__(None, None, None)
+                    finally:
+                        if lease is not None:
+                            lease.stop_refresher()
+                            lease.join_threads()
+                            lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
+                            lease.release()
+                        # Always clear mid-turn labels on exit — including interrupted early returns
+                        # that skip finalize_turn. Keep ts.
+                        with suppress(Exception):
+                            self._reset_activity_labels_after_turn()
+                        if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
+                            self._relay_pending_turn_id = None
+                        if acct_token is not None:
+                            reset_accounting_context(acct_token)
+                        if token is not None:
+                            reset_conversation_context(token)
+                        if affinity_token is not None:
+                            reset_affinity_scope(affinity_token)
+                        # Balance note_turn_started so the idle queue's live-turn count cannot leak.
+                        with suppress(Exception):
+                            _review_queue.note_turn_finished()
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""

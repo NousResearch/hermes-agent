@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.i18n import t
 from gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
@@ -64,6 +65,41 @@ async def test_exec_approval_content_stays_within_discord_cap_for_long_reason():
     assert len(sent["content"]) <= adapter.MAX_MESSAGE_LENGTH
     assert "xxx" in sent["content"]  # the command preview is not starved to zero
 
+
+@pytest.mark.asyncio
+async def test_reason_content_past_the_old_clip_still_renders():
+    """A context-first reason must not render as header-only: its decisive content can sit past
+    the old 300-char clip, and the operator needs it to judge what they are approving."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    reason = ("task: nightly digest review | profile: media | model: local | " + "meta " * 60
+              + "DECISIVE-INSTRUCTION: check the payload before approving")
+
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="ls -la", session_key="discord:555", description=reason)
+
+    content = sent["content"]
+    assert result.success is True
+    assert "DECISIVE-INSTRUCTION" in content
+    assert len(content) <= adapter.MAX_MESSAGE_LENGTH
+
+
+@pytest.mark.asyncio
+async def test_every_cut_is_labelled_with_the_catalogued_marker():
+    """A bare "..." reads as a render glitch; each cut — the reason and the command preview —
+    carries the catalogued marker, and the content still fits the cap."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    await adapter.send_exec_approval(
+        chat_id="555", command="c" * 5000, session_key="discord:555",
+        description="r" * 1400 + "REASON-TAIL-Z")
+
+    content = sent["content"]
+    assert "REASON-TAIL-Z" not in content  # the reason was cut past its budget...
+    assert content.count(t("platform.discord.prompt.truncated_marker")) >= 2  # ...and both cuts say so
+    assert len(content) <= adapter.MAX_MESSAGE_LENGTH
 
 
 def _embed_text(embed):

@@ -117,7 +117,7 @@ def _kill_processes_for_session_reset(process_ids: tuple[str, ...]) -> int:
             logger.warning("Failed to clean background process %s during session reset",
                            process_id, exc_info=True)
             continue
-        if result.get("status") in {"killed", "already_exited"}:
+        if result.get("status") in {"killed", "already_exited"} and "scope_stop_failed" not in result:
             killed += 1
     return killed
 

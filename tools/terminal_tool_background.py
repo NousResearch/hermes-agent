@@ -160,10 +160,11 @@ def _abort_interrupted_background_spawn(process_registry, proc_session) -> None:
     )
     kill_status = kill_result.get("status")
     failed_start = kill_status == "not_found" and bool(getattr(proc_session, "exited", False))
-    if kill_status not in {"killed", "already_exited"} and not failed_start:
+    scope_failure = kill_result.get("scope_stop_failed")
+    if scope_failure or (kill_status not in {"killed", "already_exited"} and not failed_start):
         raise RuntimeError(
             "interrupt arrived after background spawn but cleanup failed: "
-            f"{kill_result.get('error') or kill_status or 'unknown error'}"
+            f"{kill_result.get('error') or scope_failure or kill_status or 'unknown error'}"
         )
 
 

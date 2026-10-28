@@ -2491,12 +2491,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return frozenset(s.id for s in self.running_owned_by(task_id))
 
     def snapshot_running_ids_for_session(self, session_key: str) -> tuple[str, ...]:
-        """Capture non-persisted running process IDs for a gateway session key."""
+        """Capture non-persisted running processes and unfinished scopes for one session."""
         if not session_key:
             return ()
         with self._lock:
-            return tuple(s.id for s in self._running.values()
-                         if s.session_key == session_key and not s.exited and not s.persist_on_release)
+            return tuple(s.id for s in (*self._running.values(), *self._finished.values())
+                         if s.session_key == session_key and not s.persist_on_release
+                         and (not s.exited or s._scope_stop_pending))
 
     # Kill sources that are agent-lifecycle cleanup (session end / compression / error
     # recovery / turn abandon), not a deliberate stop: those must skip persist_on_release

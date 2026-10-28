@@ -39,6 +39,7 @@ from agent.conversation_compression_telemetry import (
 )
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.tool_guardrails import reset_after_context_boundary
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
 from hermes_state_ids import new_session_id as mint_session_id
@@ -1635,6 +1636,10 @@ def _adopt_live_compression_child(
             agent._memory_manager.on_session_switch(
                 child_session_id, parent_session_id=parent_session_id, reset=False, reason="compression"
             )
+    # Adopting the child swaps the live transcript for the compacted one, so the guard's window
+    # evidence now describes calls whose results are no longer there — the same boundary as a
+    # commit, reached without passing through _finish_compaction_boundary (#146217).
+    reset_after_context_boundary(agent)
     return recovered
 
 
@@ -3366,6 +3371,15 @@ def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
         reset_skill_view_dedup(task_id)
 
 
+def note_context_boundary(agent: Any, task_id: str) -> None:
+    """One committed content-loss boundary (compaction, prune, micro-compaction defrag): rewrite the
+    repeat-read dedup generation AND drop the tool-loop guard's window evidence. Both describe messages
+    the boundary just removed, so keeping only the first half makes the reload the boundary marker asks
+    for count as a replay until the hard stop ends the turn (#146217)."""
+    _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
+    reset_after_context_boundary(agent)
+
+
 def _finish_compaction_boundary(
     agent: Any, compressed: list, *, new_system_prompt: str, old_session_id: Optional[str], in_place: bool,
     compacted_in_place: bool, session_commit_succeeded: bool, defer_context_engine_notification: bool,
@@ -3456,7 +3470,7 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    note_context_boundary(agent, task_id)
     return _compressed_est
 
 

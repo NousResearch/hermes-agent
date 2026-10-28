@@ -29,6 +29,6 @@ def resolve_authoritative_context_length(
     try:
         context = profile.live_context_length(model, api_key=api_key, base_url=base_url)
     except Exception:
-        logger.debug("Provider live context lookup failed for %s", effective_provider)
+        logger.debug("Provider live context lookup failed for %s", effective_provider, exc_info=True)
         return None
     return context if type(context) is int and context > 0 else None

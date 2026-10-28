@@ -1,4 +1,8 @@
+// Loaded by src/entry.ts once the machine's shared UI preferences hydrated.
 import './styles.css'
+// Install the loopback browser host before any store/App modules evaluate.
+// Electron preload remains authoritative when its bridge already exists.
+import './lib/browser-desktop-bridge-install'
 // Side-effect: reports in-flight turns to the main process for the quit guard.
 import './store/active-work'
 // Side-effect: mirrors the machine's AC/battery state for poll demotion.
@@ -34,6 +38,8 @@ import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
 import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
+import { startUiPreferencesSync } from './lib/ui-preferences/sync'
+import { installBrowserTabTitle } from './store/browser-tab-title'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -41,6 +47,10 @@ installClipboardShim()
 // theme's computed colors inlined; without this guard a dark-theme selection
 // pastes as near-white text into light-background targets.
 installSelectionCopyColorGuard()
+// Browser host only: the tab carries session status while the user is away.
+installBrowserTabTitle()
+// One preferences store per machine, shared by native Desktop and its Webapp (#145213).
+startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 
 // The perf probe ships in dev, and in a production build ONLY when explicitly
 // opted in (VITE_PERF_PROBE=1) — this lets the perf harness measure a real,

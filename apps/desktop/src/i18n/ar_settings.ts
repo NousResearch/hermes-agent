@@ -1,4 +1,5 @@
 import { arDelegationRouting } from './ar_delegation_routing'
+import { arMemoryLayers } from './ar_memory_layers'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -13,6 +14,7 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    memoryLayers: arMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -646,6 +648,9 @@ export const arSettings = {
       loading: 'جار تحميل إعدادات البوابة...',
       unavailableTitle: 'إعدادات البوابة غير متاحة',
       unavailableDesc: 'جسر IPC في سطح المكتب لا يوفّر إعدادات البوابة.',
+      webappHostTitle: 'مضيف Hermes',
+      webappHostDesc:
+        'يستخدم Webapp دائمًا مضيف Hermes الذي يقدّمه. لتبديل البوابة أو تسجيل الدخول إلى Hermes Cloud أو إدارة الاتصالات المحفوظة، استخدم تطبيق Hermes Desktop.',
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:
@@ -704,7 +709,40 @@ export const arSettings = {
       signOutFailed: 'فشل تسجيل الخروج',
       testFailed: 'فشل اختبار البوابة البعيدة',
       applyFailed: 'تعذر تطبيق إعدادات البوابة',
-      saveFailed: 'تعذر حفظ إعدادات البوابة'
+      saveFailed: 'تعذر حفظ إعدادات البوابة',
+      webAccess: {
+        title: 'الوصول عبر الويب',
+        intro: 'افتح Hermes الموجود على هذا الحاسوب من هاتفك أو من حاسوب آخر، مع تسجيل الدخول بحساب Nous. من يسجّل الدخول يمكنه تشغيل الأوامر على هذا الحاسوب.',
+        failed: 'تعذّر تغيير الوصول عبر الويب',
+        running: 'قيد التشغيل',
+        stopped: 'متوقف',
+        starting: 'جارٍ البدء',
+        stopping: 'جارٍ الإيقاف',
+        restartNeeded: 'يلزم إعادة التشغيل',
+        unavailable: 'غير متاح',
+        notRunningDetail: 'شغّله لفتح Hermes من جهاز آخر.',
+        needsNous: 'سجّل الدخول إلى حساب Nous من قسم المزوّدين أولًا.',
+        runningLan: 'افتح هذا العنوان على جهاز في الشبكة نفسها.',
+        runningPublic: 'يُقدَّم عبر عنوانك.',
+        runningLocal: 'يمكن فتحه من هذا الحاسوب فقط. أوقفه ثم شغّله من جديد لفتحه من أجهزة أخرى.',
+        pendingOn: 'تم الحفظ. ستقدّم البوابة تطبيق الويب بعد إعادة تشغيلها.',
+        pendingOff: 'تم الإيقاف، لكن البوابة تواصل تقديم تطبيق الويب حتى إعادة تشغيلها.',
+        unavailableDetail: reason => `تعذّر على البوابة تقديم تطبيق الويب: ${reason}`,
+        restartBusy: 'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
+        restartFailed: 'تم الحفظ، لكن تعذّرت إعادة تشغيل البوابة. اختر «إعادة تشغيل البوابة» للمحاولة مجددًا.',
+        restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
+        startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
+        stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
+        start: 'تشغيل',
+        stop: 'إيقاف',
+        restartGateway: 'إعادة تشغيل البوابة',
+        modeLan: 'هذه الشبكة',
+        modeLanDetail: url => `تفتح الأجهزة على شبكة Wi-Fi العنوان ${url}. استخدمه على شبكة تثق بها فقط.`,
+        lanUnencrypted: 'الاتصال غير مشفّر: يمكن لآخرين على هذه الشبكة قراءة ما ترسله وتستقبله.',
+        noLan: 'لا يملك هذا الحاسوب عنوان شبكة يمكن للأجهزة الأخرى الوصول إليه.',
+        modePublic: 'عنواني الخاص',
+        modePublicDetail: port => `عنوان HTTPS تديره بالفعل، مثل Tailscale Serve أو نفق، يحوّل إلى http://127.0.0.1:${port}.`
+      }
     },
     keys: {
       loading: 'جار تحميل مفاتيح API وبيانات الاعتماد...',
@@ -901,7 +939,8 @@ export const arSettings = {
       deleteConfirm: title => `حذف "${title}" نهائياً؟ لا يمكن التراجع عن هذا.`,
       defaultDirTitle: 'مجلد المشروع الافتراضي',
       defaultDirDesc: 'تبدأ الجلسات الجديدة في هذا المجلد ما لم تختر غيره. اتركه غير مضبوط لاستخدام مجلدك الرئيسي.',
-      defaultDirUpdated: 'تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة (Ctrl/⌘+N) ليطبق التغيير',
+      defaultDirUpdated: shortcut =>
+        `تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة${shortcut ? ` (${shortcut})` : ''} ليطبق التغيير`,
       defaultsTo: label => `الافتراضي هو ${label}.`,
       change: 'تغيير',
       choose: 'اختيار',

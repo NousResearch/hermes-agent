@@ -1,5 +1,6 @@
 import { type BillingBlock, mergeUsage } from '@hermes/shared'
 
+import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
@@ -22,6 +23,8 @@ import { $sessionStates } from '@/store/session-states'
 import { lightDesktopMessagingCompletion } from '@/store/session-unread'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
+
+import { segmentStamp } from '../segment-identity'
 
 import type { GatewayEventContext } from './types'
 
@@ -124,6 +127,105 @@ function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefine
   lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get(), profile)
 }
 
+/** message.start: arm the session for a new turn, unless it re-sends the current one. */
+function handleMessageStart(ctx: GatewayEventContext): boolean {
+  const { deps, payload, sessionId, isActiveEvent } = ctx
+  const { compactedTurnRef, flushQueuedDeltas, dropQueuedDeltas, nativeSubagentSessionsRef } = deps
+  const { sessionStateByRuntimeIdRef, updateSessionState } = deps
+
+  if (!sessionId) {
+    return true
+  }
+
+  const turnId = typeof payload?.turn_id === 'string' ? payload.turn_id : ''
+
+  // A re-sent start of the turn this session already has (reconnect replay,
+  // a superseded attempt) is not a new occurrence: resetting here would let
+  // the turn's re-sent segment paint as a second copy (#144609).
+  if (turnId && sessionStateByRuntimeIdRef.current.get(sessionId)?.streamTurnId === turnId) {
+    return true
+  }
+
+  // Turn-boundary orphan drop (#119543): when no turn is live, anything
+  // still queued belongs to a turn that already ended (a delta reordered
+  // behind its own complete or heartbeat). Flushing it would seed a bubble
+  // the new turn inherits, painting a stale duplicate of the previous
+  // reply. A still-live previous turn (steer) keeps the flush: those bytes
+  // are real output of the bubble on screen.
+  if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
+    flushQueuedDeltas(sessionId)
+  } else {
+    dropQueuedDeltas(sessionId)
+  }
+
+  pruneFinishedSessionSubagents(sessionId)
+  setSessionCompacting(sessionId, false)
+  compactedTurnRef.current.delete(sessionId)
+  nativeSubagentSessionsRef.current.delete(sessionId)
+  // A fresh turn on this session optimistically clears its billing wall;
+  // if credits are still exhausted the next failure re-raises it.
+  clearBillingBlock(sessionId)
+
+  if (isActiveEvent) {
+    triggerHaptic('streamStart')
+  }
+
+  // Submit→accept latency: seedOptimistic armed the clock at Enter; this
+  // event is the backend accepting the turn. Debug-only visibility into
+  // how long the arm actually took (the "no progress box for seconds"
+  // complaint) — reads the pre-update cache, costs nothing when clean.
+  const seededAt = sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt
+
+  if (typeof seededAt === 'number') {
+    console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
+  }
+
+  updateSessionState(sessionId, state => {
+    // If the user clicked Stop (cancelRun set interrupted=true), don't
+    // let a stale message.start from a chained turn (goal follow-up,
+    // completion drain) or an in-flight LLM response re-arm busy.
+    // The interrupt is user intent — the backend's cooperative cancel
+    // may not have propagated yet, so its events are stale. The turn's
+    // finally block will emit session.info with running=false to clear
+    // busy for real once the agent loop actually exits.
+    if (state.interrupted) {
+      return state
+    }
+
+    return {
+      ...state,
+      busy: true,
+      awaitingResponse: true,
+      sawAssistantPayload: false,
+      interrupted: false,
+      interimBoundaryPending: false,
+      // Backend accepted the turn — the no-payload settle gate below may
+      // now treat a running=false heartbeat as a real turn end.
+      turnLive: true,
+      // A new turn is a new occurrence: the previous turn's late terminal
+      // frame (#119569) can no longer claim its heartbeat-settled bubble.
+      heartbeatSettledStreamId: null,
+      streamTurnId: turnId || null,
+      // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
+      // here would hide the submit→accept round trip from the timer.
+      // Backend-originated turns (queue drain elsewhere, goal follow-up)
+      // have no seed and arm here.
+      turnStartedAt: state.turnStartedAt ?? Date.now()
+    }
+  })
+
+  if (isActiveEvent) {
+    // Belt-and-suspenders mirror of the ACTIVE session's per-session
+    // clock (the load-bearing mirror is the view-sync flush in
+    // use-session-state-cache). Mirror the seeded value, not Date.now():
+    // resetting to accept-time here would visibly snap the timer back
+    // after the submit-time seed above already started it.
+    setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
+  }
+
+  return true
+}
+
 // health: allow CC -- usage-window limit: one guard so the error card, not a second billing toast, says it; this event switch was over target on main
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
@@ -142,92 +244,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'message.start') {
-    if (!sessionId) {
-      return true
-    }
-
-    // Turn-boundary orphan drop (#119543): when no turn is live, anything
-    // still queued belongs to a turn that already ended (a delta reordered
-    // behind its own complete or heartbeat). Flushing it would seed a bubble
-    // the new turn inherits, painting a stale duplicate of the previous
-    // reply. A still-live previous turn (steer) keeps the flush: those bytes
-    // are real output of the bubble on screen.
-    if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
-      flushQueuedDeltas(sessionId)
-    } else {
-      dropQueuedDeltas(sessionId)
-    }
-
-    pruneFinishedSessionSubagents(sessionId)
-    setSessionCompacting(sessionId, false)
-    compactedTurnRef.current.delete(sessionId)
-    nativeSubagentSessionsRef.current.delete(sessionId)
-    // A fresh turn on this session optimistically clears its billing wall;
-    // if credits are still exhausted the next failure re-raises it.
-    clearBillingBlock(sessionId)
-
-    if (isActiveEvent) {
-      triggerHaptic('streamStart')
-    }
-
-    // Submit→accept latency: seedOptimistic armed the clock at Enter; this
-    // event is the backend accepting the turn. Debug-only visibility into
-    // how long the arm actually took (the "no progress box for seconds"
-    // complaint) — reads the pre-update cache, costs nothing when clean.
-    const seededAt = sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt
-
-    if (typeof seededAt === 'number') {
-      console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
-    }
-
-    updateSessionState(sessionId, state => {
-      // If the user clicked Stop (cancelRun set interrupted=true), don't
-      // let a stale message.start from a chained turn (goal follow-up,
-      // completion drain) or an in-flight LLM response re-arm busy.
-      // The interrupt is user intent — the backend's cooperative cancel
-      // may not have propagated yet, so its events are stale. The turn's
-      // finally block will emit session.info with running=false to clear
-      // busy for real once the agent loop actually exits.
-      if (state.interrupted) {
-        return state
-      }
-
-      return {
-        ...state,
-        busy: true,
-        awaitingResponse: true,
-        sawAssistantPayload: false,
-        interrupted: false,
-        interimBoundaryPending: false,
-        // Backend accepted the turn — the no-payload settle gate below may
-        // now treat a running=false heartbeat as a real turn end.
-        turnLive: true,
-        // A new turn is a new occurrence: the previous turn's late terminal
-        // frame (#119569) can no longer claim its heartbeat-settled bubble.
-        heartbeatSettledStreamId: null,
-        // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
-        // here would hide the submit→accept round trip from the timer.
-        // Backend-originated turns (queue drain elsewhere, goal follow-up)
-        // have no seed and arm here.
-        turnStartedAt: state.turnStartedAt ?? Date.now()
-      }
-    })
-
-    if (isActiveEvent) {
-      // Belt-and-suspenders mirror of the ACTIVE session's per-session
-      // clock (the load-bearing mirror is the view-sync flush in
-      // use-session-state-cache). Mirror the seeded value, not Date.now():
-      // resetting to accept-time here would visibly snap the timer back
-      // after the submit-time seed above already started it.
-      setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
-    }
-
-    return true
+    return handleMessageStart(ctx)
   }
 
   if (event.type === 'message.delta') {
     if (sessionId) {
-      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
+      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt, segmentStamp(payload))
     }
 
     return true
@@ -243,7 +265,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       const text = coerceGatewayText(payload?.text)
 
       if (text) {
-        finalizeInterimAssistantMessage(sessionId, text, occurredAt)
+        finalizeInterimAssistantMessage(sessionId, text, occurredAt, segmentStamp(payload))
       }
     }
 
@@ -387,6 +409,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
+    noteTurnSettled(sessionId)
     completeAssistantMessage(
       sessionId,
       finalText,

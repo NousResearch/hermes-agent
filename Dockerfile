@@ -195,10 +195,11 @@ WORKDIR /opt/hermes
 # here rather than by `npx playwright install`,
 # which fetched whatever revision the npm-resolved playwright wanted,
 # unverified, and recorded no fact. The resolved browser binary path is
-# baked to /etc/hermes/agent-browser-executable-path for stage2-hook.sh:
-# the layout differs per arch (chrome-linux64/chrome on amd64,
-# chromium-linux-arm64/chromium on arm64), so it is resolved at build time
-# and never hunted at boot.
+# baked to /etc/hermes/chromium-executable-path: the layout differs per
+# arch (chrome-linux64/chrome on amd64, chromium-linux-arm64/chromium on
+# arm64), so it is resolved at build time and never hunted at boot.
+# hermes_cli/browser_runtime.py reads it when a volume over the runtime dir
+# hides pm's facts; stage2-hook.sh checks it still names a binary.
 ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
 COPY pm/ pm/
 # pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
@@ -219,7 +220,7 @@ RUN set -eu; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
     mkdir -p /etc/hermes; \
-    printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
+    printf '%s' "$browser_bin" > /etc/hermes/chromium-executable-path
 
 # PM is resident too: never borrow application libraries or create its worker
 # environment under /root (unreachable to the runtime UID).
@@ -321,6 +322,22 @@ COPY --from=icons /tmp/hermes-icons /tmp/hermes-icons
 RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
     node scripts/build/web.mjs --source /opt/hermes --icons /tmp/hermes-icons --out /opt/products/web
 
+# The Webapp (the browser-hosted Desktop) builds through its source recipe,
+# which installs Desktop's dependencies in a private workspace. A stage of its
+# own so Desktop changes leave the TUI and dashboard layers cached.
+FROM runtime_base AS webapp_build
+COPY package.json package-lock.json .npmrc ./
+COPY apps/desktop/package.json apps/desktop/
+COPY apps/desktop/scripts/build-webapp.mjs apps/desktop/scripts/
+COPY apps/shared/package.json apps/shared/
+COPY scripts/build/*.mjs scripts/build/
+ENV npm_config_install_links=false
+# Dependencies first, keyed only by the manifests and the recipe, so a source
+# change reuses this layer and the build below reuses its install.
+RUN node apps/desktop/scripts/build-webapp.mjs --deps-only
+COPY apps/ apps/
+RUN node apps/desktop/scripts/build-webapp.mjs
+
 FROM python_deps AS runtime
 # Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
 COPY --from=frontend_build /opt/hermes/node_modules/typescript /opt/hermes/node_modules/typescript
@@ -346,6 +363,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
 COPY --from=frontend_build /opt/products/web /opt/hermes/hermes_cli/web_dist
+COPY --from=webapp_build /opt/hermes/apps/desktop/dist-webapp /opt/hermes/apps/desktop/dist-webapp
 # ---------- Bot Screen X socket directory ----------
 # Xvnc would create this itself (/tmp is 1777); pre-creating it keeps ownership
 # deterministic when HERMES_UID is remapped between boots.

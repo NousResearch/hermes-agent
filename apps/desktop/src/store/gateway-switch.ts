@@ -67,6 +67,11 @@ export type GatewaySwitchToken = number
 
 let latestSwitchToken = 0
 
+/** Capture the switch generation so async work cannot release a newer wipe's barrier. */
+export function currentGatewaySwitchToken(): GatewaySwitchToken {
+  return latestSwitchToken
+}
+
 /** True only while token owns the latest connection-switch lifecycle. */
 export function isCurrentGatewaySwitch(token: GatewaySwitchToken): boolean {
   return token === latestSwitchToken

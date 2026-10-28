@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from tools.registry import registry, tool_error
 
@@ -134,28 +134,27 @@ def _blocked(message: str, method: str) -> str:
     return tool_error(message, method=method, cdp_docs=CDP_DOCS_URL)
 
 
-def _expression_private_target(params: dict[str, Any]) -> Optional[str]:
+def _expression_private_target(params: dict[str, Any], blocked: Callable[[str], bool]) -> Optional[str]:
     from tools.browser_url_policy import expression_targets_private_url
-    return expression_targets_private_url(str(params.get("expression") or ""))
+    return expression_targets_private_url(str(params.get("expression") or ""), blocked=blocked)
 
 
-def _navigate_private_target(params: dict[str, Any]) -> Optional[str]:
+def _navigate_private_target(params: dict[str, Any], blocked: Callable[[str], bool]) -> Optional[str]:
     """Blocked URL literal for ``Page.navigate`` params, else ``None``."""
-    from tools.browser_url_policy import url_blocked
     target_url = str(params.get("url") or "").strip()
-    return target_url if target_url and url_blocked(target_url) else None
+    return target_url if target_url and blocked(target_url) else None
 
 
-def _new_tab_private_target(params: dict[str, Any]) -> Optional[str]:
+def _new_tab_private_target(params: dict[str, Any], blocked: Callable[[str], bool]) -> Optional[str]:
     """``Target.createTarget``: a blank tab (``about:blank``, Chrome's default for no url) reaches nothing, so
     it opens before scripts are installed or a page is chosen; any other url is held to ``Page.navigate``'s
     rule (``url_blocked`` refuses every other non-http scheme)."""
     if str(params.get("url") or "").strip().lower() == "about:blank":
         return None
-    return _navigate_private_target(params)
+    return _navigate_private_target(params, blocked)
 
 
-# method → (probe(params) -> blocked literal | None, error template)
+# method → (probe(params, blocked) -> blocked literal | None, error template)
 _METHOD_PARAM_GUARDS = {
     "Page.navigate": (_navigate_private_target,
                       "Blocked: CDP Page.navigate target is a private or internal address ({})."),
@@ -205,20 +204,20 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     Raw CDP shares the cloud/private-network boundary of ``browser_exec``'s URL policy and must not become
     its bypass, so a page whose URL cannot be verified as public refuses page-reading methods.
     """
-    from tools.browser_url_policy import eval_ssrf_guard_active
-    if not eval_ssrf_guard_active():
-        # The cloud-metadata floor stays unconditional, as in browser_exec's _url_policy_error (#16234).
-        target_url = str((params or {}).get("url") or "").strip()
-        if method in ("Page.navigate", "Target.createTarget") and target_url:
-            from tools.url_safety import is_always_blocked_url
-            if is_always_blocked_url(target_url):
-                return _blocked(f"Blocked: CDP {method} url targets a cloud metadata endpoint ({target_url}).",
-                                method)
-        return None
+    from tools.browser_url_policy import eval_ssrf_guard_active, url_blocked
     guard = _METHOD_PARAM_GUARDS.get(method)
+    if not eval_ssrf_guard_active():
+        # The cloud-metadata floor stays unconditional, as in browser_exec's _url_policy_error (#16234):
+        # every guarded method's probe, plus the ``url`` param any other method takes
+        # (Network.loadNetworkResource, Fetch.continueRequest).
+        from tools.url_safety import is_always_blocked_url
+        probe = guard[0] if guard is not None else _navigate_private_target
+        literal = probe(params or {}, is_always_blocked_url)
+        return _blocked(f"Blocked: CDP {method} targets a cloud metadata endpoint ({literal}).",
+                        method) if literal else None
     if guard is not None:
         probe, template = guard
-        literal = probe(params or {})
+        literal = probe(params or {}, url_blocked)
         if literal:
             return _blocked(template.format(literal), method)
     if method not in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:

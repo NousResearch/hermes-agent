@@ -93,6 +93,11 @@ def test_raw_cdp_keeps_the_metadata_floor_when_the_private_guard_is_off(monkeypa
     monkeypatch.setattr(browser_session_cloud, "is_local_backend", lambda: local_backend)
     monkeypatch.setattr(browser_session_cloud, "allow_private_urls", lambda: allow_private)
     guard = browser_cdp_tool._browser_cdp_private_guard
-    for method in ("Page.navigate", "Target.createTarget"):
+    for method in ("Page.navigate", "Target.createTarget", "Network.loadNetworkResource", "Fetch.continueRequest"):
         assert "cloud metadata" in guard(method=method, params={"url": "http://169.254.169.254/latest/meta-data/"})
         assert guard(method=method, params={"url": "http://192.168.1.5/"}) is None
+    for template in ("location.href='{}'", "fetch('{}').then(r => r.text())"):
+        metadata = {"expression": template.format("http://169.254.169.254/latest/meta-data/")}
+        assert "cloud metadata" in guard(method="Runtime.evaluate", params=metadata)
+        lan = {"expression": template.format("http://192.168.1.5/")}
+        assert guard(method="Runtime.evaluate", params=lan) is None

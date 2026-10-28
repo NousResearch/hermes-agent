@@ -13,7 +13,7 @@ import logging
 import re
 import socket
 import urllib.parse
-from typing import Optional
+from typing import Callable, Optional
 
 from tools.url_safety import (
     _is_declared_fake_ip,
@@ -136,7 +136,7 @@ def url_blocked(url: str) -> bool:
     return is_always_blocked_url(url) or not is_safe_url(url)
 
 
-def expression_targets_private_url(expression: str) -> Optional[str]:
-    """The first private/always-blocked ``http(s)://`` literal in a JS expression (best-effort), else None."""
+def expression_targets_private_url(expression: str, *, blocked: Callable[[str], bool] = url_blocked) -> Optional[str]:
+    """The first ``http(s)://`` literal in a JS expression that ``blocked`` refuses (best-effort), else None."""
     literals = _JS_URL_LITERAL_RE.findall(expression) if isinstance(expression, str) else []
-    return next((c for c in (m.rstrip(".,;") for m in literals) if url_blocked(c)), None)
+    return next((c for c in (m.rstrip(".,;") for m in literals) if blocked(c)), None)

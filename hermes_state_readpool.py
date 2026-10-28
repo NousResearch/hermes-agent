@@ -117,13 +117,14 @@ def _fd_headroom_ok() -> bool:
         return True
     global _fd_usage_cache
     now = time.monotonic()
+    # Single-flight: refresh under the lock and re-check freshness there. Checking outside
+    # the lock let every thread that saw a stale stamp list the fd table at once; with a few
+    # hundred hosted-room threads and thousands of descriptors that was most of the gateway's CPU.
     with _fd_usage_lock:
         stamp, cached = _fd_usage_cache
-        fresh = cached is not None and (now - stamp) < _FD_USAGE_CACHE_SECONDS
-    if not fresh:
-        cached = _open_fd_count()
-        with _fd_usage_lock:
-            _fd_usage_cache = (now, cached)
+        if cached is None or (now - stamp) >= _FD_USAGE_CACHE_SECONDS:
+            cached = _open_fd_count()
+            _fd_usage_cache = (time.monotonic(), cached)
     if cached is None:
         return True
     return cached >= 0 and (soft - cached) > _FD_HEADROOM_RESERVE

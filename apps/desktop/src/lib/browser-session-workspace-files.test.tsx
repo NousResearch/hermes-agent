@@ -154,7 +154,14 @@ describe('text previews in a session sandbox', () => {
       {
         id: 'file:note',
         sessionId: 'stored-1',
-        target: { kind: 'file', label: 'note.txt', path: NOTE, previewKind: 'text', source: NOTE, url: `file://${NOTE}` }
+        target: {
+          kind: 'file',
+          label: 'note.txt',
+          path: NOTE,
+          previewKind: 'text',
+          source: NOTE,
+          url: `file://${NOTE}`
+        }
       }
     ])
 
@@ -191,7 +198,14 @@ describe('Save in a session sandbox', () => {
         <LocalFilePreview
           reloadKey={0}
           sessionId="stored-1"
-          target={{ kind: 'file', label: 'note.txt', path: NOTE, previewKind: 'text', source: NOTE, url: `file://${NOTE}` }}
+          target={{
+            kind: 'file',
+            label: 'note.txt',
+            path: NOTE,
+            previewKind: 'text',
+            source: NOTE,
+            url: `file://${NOTE}`
+          }}
         />
       )
 

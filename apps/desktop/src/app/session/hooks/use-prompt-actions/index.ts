@@ -681,6 +681,7 @@ export function usePromptActions({
     copy,
     createBackendSessionForSend,
     getRoutedStoredSessionId,
+    getRouteToken,
     getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,

@@ -55,6 +55,7 @@ export function Harness({
   seedStreamId,
   seedTurnStartedAt,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
+  startFreshSessionDraft,
   storedSessionId,
   activeSessionId,
   createBackendSessionForSend
@@ -80,6 +81,7 @@ export function Harness({
   seedStreamId?: null | string
   seedTurnStartedAt?: null | number
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
+  startFreshSessionDraft?: () => void
   storedSessionId?: null | string
   activeSessionId?: null | string
   createBackendSessionForSend?: (preview?: null | string) => Promise<null | string>
@@ -132,7 +134,7 @@ export function Harness({
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
-    startFreshSessionDraft: () => undefined,
+    startFreshSessionDraft: startFreshSessionDraft ?? (() => undefined),
     sttEnabled: false,
     updateSessionState: (sessionId, updater, storedSessionId) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.

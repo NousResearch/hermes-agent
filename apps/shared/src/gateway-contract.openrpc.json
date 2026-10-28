@@ -1195,6 +1195,24 @@
       }
     },
     {
+      "name": "groups.discard",
+      "summary": "Discard one indeterminate room task after explicit user confirmation.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsDiscardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsDiscardResult"
+        }
+      }
+    },
+    {
       "name": "groups.list",
       "summary": "List rooms hosted by this gateway, most recently changed first.",
       "params": [

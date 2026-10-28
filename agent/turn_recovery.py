@@ -399,25 +399,44 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
 
 
 def _refresh_credentials_after_401(
-    agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
+    agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int],
+    error_context: Any = None,
 ) -> bool:
     """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, a profile's
     ``refresh_runtime_credentials``, anthropic), printing user-facing diagnostics when the
-    nous/anthropic refresh fails. Returns True when a refresh succeeded and the call should be retried."""
-    from agent.conversation_loop import _credential_refresh_profile
+    nous/anthropic refresh fails. Returns True when a refresh succeeded and the call should be retried.
 
-    if status_code != 401:
+    xai-oauth is the one provider whose token-expiry signal is a 403 (with the #29344
+    body signatures), so the codex/xai arm also fires for that shape (PR #98133)."""
+    from agent.conversation_loop import _credential_refresh_profile
+    from agent.agent_runtime_helpers import is_xai_stale_oauth_error
+
+    # xAI expires OAuth access tokens with a 403, not a 401. Gating this arm on 401 alone
+    # meant the singleton refresh never fired for xai-oauth: a long-running gateway kept
+    # re-presenting a token that died ~6h earlier until the process was restarted, so
+    # `hermes update` appeared to "fix Grok" for exactly one token lifetime at a time.
+    # The pool arm already makes this distinction; reuse its predicate rather than a copy.
+    _xai_stale_oauth = (
+        agent.provider == "xai-oauth"
+        and is_xai_stale_oauth_error(error_context, status_code)
+    )
+    if status_code != 401 and not _xai_stale_oauth:
         return False
     if (
         agent.api_mode == "codex_responses"
         and agent.provider in {"openai-codex", "xai-oauth"}
+        and (status_code == 401 or _xai_stale_oauth)
         and not _retry.codex_auth_retry_attempted
     ):
         _retry.codex_auth_retry_attempted = True
         if agent._try_refresh_codex_client_credentials(force=True):
             _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-            agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
+            _seen = status_code if status_code is not None else 401
+            agent._buffer_vprint(f"🔐 {_label} auth refreshed after {_seen}. Retrying request...")
             return True
+    if status_code != 401:
+        # The stale-403 shape belongs to the codex/xai arm only.
+        return False
     if agent.api_mode == "chat_completions" and agent.provider == "vertex" and not _retry.vertex_auth_retry_attempted:
         _retry.vertex_auth_retry_attempted = True
         if agent._try_refresh_vertex_client_credentials():
@@ -797,7 +816,7 @@ def recover_after_classification(
             _vlines(agent, "🔕 OAuth subscription doesn't support the 1M-context beta — disabled for this session and retrying...")
             return True, recovered_with_pool
 
-    if _refresh_credentials_after_401(agent, api_error, _retry, status_code):
+    if _refresh_credentials_after_401(agent, api_error, _retry, status_code, error_context=error_context):
         return True, recovered_with_pool
 
     if _recover_format_errors(agent, api_error, classified, _retry, messages, api_messages):

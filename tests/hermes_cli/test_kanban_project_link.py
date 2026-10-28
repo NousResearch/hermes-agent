@@ -11,6 +11,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_project_link as kbpl
 from hermes_cli import projects_db as pdb
 
 
@@ -292,7 +293,7 @@ def test_project_from_board_recovers_worktree_paths_from_any_host(kanban_conn, t
     tid = kb.create_task(kanban_conn, title="worktree card")
     _stamp_worktree_row(kanban_conn, tid, template.format(tid=tid))
 
-    proj_obj, proj_repo, recovered_from = kb._project_from_board(
+    proj_obj, proj_repo, recovered_from = kbpl._project_from_board(
         kanban_conn, pdb, "proj_x", None)
 
     assert recovered_from == tid
@@ -315,4 +316,4 @@ def test_project_from_board_rejects_non_canonical_worktree_paths(kanban_conn, te
     tid = kb.create_task(kanban_conn, title="worktree card")
     _stamp_worktree_row(kanban_conn, tid, template.format(tid=tid))
 
-    assert kb._project_from_board(kanban_conn, pdb, "proj_x", None) == (None, None, None)
+    assert kbpl._project_from_board(kanban_conn, pdb, "proj_x", None) == (None, None, None)

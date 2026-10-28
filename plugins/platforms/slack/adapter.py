@@ -1765,6 +1765,13 @@ class SlackAdapter(BasePlatformAdapter):
         team_id = auth_response.get("team_id", "")
         bot_user_id = auth_response.get("user_id", "")
         bot_name = auth_response.get("user", "unknown")
+        # Slack pins the installed bot's *username* at install time; later app
+        # renames / workspace display-name changes never propagate to auth.test.
+        # An explicit display_name override makes the identity prompt match the
+        # handle users actually @-mention when it differs from the pinned name.
+        _display = str((self.config.extra or {}).get("display_name") or "").strip()
+        if _display:
+            bot_name = _display
         team_name = auth_response.get("team", "unknown")
         self._team_clients[team_id] = client
         self._team_bot_user_ids[team_id] = bot_user_id

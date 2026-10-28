@@ -1081,7 +1081,12 @@ native Desktop; messages the guest posts to `parent` arrive with
 reach the guest, and `onLoad` fires when the guest document has loaded (the
 shell announces that with one `{type: 'hermes-guest-loaded'}` message from the
 same window, so filter guest messages by type). Post
-to `parent`, not `top`: the shell sits between them.
+to `parent`, not `top`: the shell sits between them. Changing `sandbox` after
+mount gives the Webapp a fresh frame (a new `ref.current`, the guest restarts
+with the new tokens, `onLoad` fires again), so read `ref.current` when you need
+the frame rather than keeping the first one. A direct frame on native Desktop
+keeps the element and its current document, and the new tokens apply from its
+next navigation.
 
 *Teardown:* it is a plain React element — unmounting your pane/page removes the
 frame and its realm; nothing is registered app-side for it (the Webapp routes

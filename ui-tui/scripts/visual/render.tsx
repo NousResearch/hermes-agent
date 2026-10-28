@@ -13,8 +13,6 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { PassThrough } from 'stream'
 
-import { visualOutDir } from './paths.mjs'
-
 import { Box, renderSync, Text } from '@hermes/ink'
 import React, { type ReactElement } from 'react'
 
@@ -23,8 +21,11 @@ import { patchOverlayState, resetOverlayState } from '../../src/app/overlayStore
 import { patchUiState, resetUiState } from '../../src/app/uiStore.js'
 import { FloatingOverlays } from '../../src/components/appOverlays.js'
 import { Banner, SessionPanel } from '../../src/components/branding.js'
+import { TurnAnchorBar } from '../../src/components/turnAnchorBar.js'
 import { fromSkin, type Theme } from '../../src/theme.js'
 import type { SessionInfo } from '../../src/types.js'
+
+import { visualOutDir } from './paths.mjs'
 
 const noop = () => {}
 const pending = () => new Promise<never>(() => {})
@@ -283,6 +284,27 @@ for (const scene of scenes) {
     88
   )
 
+  const turnAnchor = renderAnsi(
+    <Box flexDirection="column" width={88}>
+      <TurnAnchorBar
+        anchor={{ msg: { id: 'u9', role: 'user', text: 'refactor the auth middleware and add tests' } as never, mode: 'live', turnIndex: 8 }}
+        cols={88}
+        t={scene.theme}
+      />
+      <Box flexDirection="column" height={4}>
+        <Text color={scene.theme.color.tool}>● terminal — ran npm test (12s)</Text>
+        <Text color={scene.theme.color.tool}>● read_file — src/auth/middleware.ts (0.4s)</Text>
+        <Text color={scene.theme.color.muted}>…streaming answer…</Text>
+      </Box>
+      <TurnAnchorBar
+        anchor={{ msg: { id: 'u3', role: 'user', text: 'first: summarize the login flow' } as never, mode: 'history', turnIndex: 3 }}
+        cols={88}
+        t={scene.theme}
+      />
+    </Box>,
+    88
+  )
+
   const statusLine = renderAnsi(
     <Box flexDirection="column">
       <Text>
@@ -303,6 +325,7 @@ for (const scene of scenes) {
   page += `<pre style="margin:0;white-space:pre">${ansiToHtml(intro, scene.fg, scene.bg)}</pre>`
   page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(comps, scene.fg, scene.bg)}</pre>`
   page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(statusLine, scene.fg, scene.bg)}</pre>`
+  page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(turnAnchor, scene.fg, scene.bg)}</pre>`
   page += `</div>`
 }
 

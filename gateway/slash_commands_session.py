@@ -996,6 +996,132 @@ class GatewaySessionCommandsMixin:
             logger.debug("Failed to rename Telegram topic from /title", exc_info=True)
         return t("gateway.title.set_to", title=sanitized)
 
+    # -------------------------------------------------------------- /project
+
+    def _resolve_project_token(self, conn, token: str):
+        """Project by exact id/slug/name, then case-insensitive slug/name (mirrors tools/project_tools)."""
+        from hermes_cli import projects_db as pdb
+        token = (token or "").strip()
+        if not token:
+            return None
+        projects = pdb.list_projects(conn, include_archived=True)
+        for proj in projects:
+            if token in (proj.id, proj.slug) or proj.name == token:
+                return proj
+        low = token.lower()
+        for proj in projects:
+            if proj.slug.lower() == low or proj.name.lower() == low:
+                return proj
+        return None
+
+    @staticmethod
+    def _project_primary_path(proj):
+        if getattr(proj, "primary_path", None):
+            return proj.primary_path
+        for folder in getattr(proj, "folders", ()):
+            if getattr(folder, "is_primary", False):
+                return folder.path
+        folders = getattr(proj, "folders", ())
+        return folders[0].path if folders else None
+
+    async def _handle_project_command(self, event: MessageEvent) -> str:
+        """Handle /project [name] — list projects or move THIS session into one (the desktop's
+        'Move to project' for messaging surfaces: updates the stored session row's cwd + git
+        metadata and re-anchors the live agent)."""
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+
+        profile_home = await asyncio.to_thread(self._resolve_profile_home_for_source, source)
+        token = event.get_command_args().strip()
+
+        def _list_and_status():
+            from hermes_cli import projects_db as pdb
+            with pdb.connect_closing() as conn:
+                projects = pdb.list_projects(conn)
+                current = pdb.project_for_path(conn, current_cwd) if current_cwd else None
+            return projects, (current.id if current else None)
+
+        current_row = None
+        with contextlib.suppress(Exception):
+            current_row = await self._session_db.get_session(session_id)
+        current_cwd = str((current_row or {}).get("cwd") or "").strip()
+
+        if not token:
+            try:
+                projects, current_id = await asyncio.to_thread(_list_and_status)
+            except Exception as e:
+                return t("gateway.project.list_failed", error=e)
+            if not projects:
+                return t("gateway.project.none")
+            lines = [t("gateway.project.list_header")]
+            for p in projects:
+                marker = " ✅" if p.id == current_id else ""
+                lines.append(f"• `{p.slug}` — {p.name} ({self._project_primary_path(p)}){marker}")
+            lines.append(t("gateway.project.list_footer"))
+            return "\n".join(lines)
+
+        def _resolve():
+            from hermes_cli import projects_db as pdb
+            with pdb.connect_closing() as conn:
+                return self._resolve_project_token(conn, token)
+
+        try:
+            proj = await asyncio.to_thread(_resolve)
+        except Exception as e:
+            return t("gateway.project.list_failed", error=e)
+        if proj is None:
+            return t("gateway.project.not_found", name=token)
+        if getattr(proj, "archived", False):
+            return t("gateway.project.archived", name=proj.name)
+        target = self._project_primary_path(proj)
+        if not target:
+            return t("gateway.project.no_folder", name=proj.name)
+
+        from hermes_constants import translate_cwd_for_wsl_backend
+        resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(str(target))))
+        named_ssh = False
+        with contextlib.suppress(Exception):
+            from tools.terminal_scope import build_profile_terminal_scope
+            named_ssh = str(build_profile_terminal_scope(profile_home).get("TERMINAL_ENV") or "").strip().lower() == "ssh"
+        if not named_ssh and not os.path.isdir(resolved):
+            return t("gateway.project.bad_path", name=proj.name, path=resolved)
+
+        branch = root = ""
+        if not named_ssh:
+            with contextlib.suppress(Exception):
+                from tui_gateway import git_probe
+                branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
+
+        # A session that only exists in session_store gets its row now (same as /title), so the
+        # workspace lands durably instead of waiting for first activity.
+        if current_row is None:
+            with contextlib.suppress(Exception):  # may already exist
+                await self._session_db.create_session(
+                    session_id=session_id,
+                    source=source.platform.value if source.platform else "unknown",
+                    user_id=source.user_id, chat_id=source.chat_id, chat_type=source.chat_type,
+                    thread_id=source.thread_id)
+        try:
+            generation = await self._session_db.update_session_cwd(
+                session_id, resolved, branch or None, root or None, replace_git_meta=True)
+        except Exception as e:
+            return t("gateway.project.move_failed", error=e)
+        if generation is None:
+            return t("gateway.project.move_failed", error=t("gateway.resume.not_found", name=session_id))
+
+        # Re-anchor the live agent so the NEXT turn's terminal/file tools start in the project.
+        # Evicting forces a rebuild with the stored cwd (agent.session_cwd feeds agent_init);
+        # register_task_env_overrides covers the pre-eviction window.
+        with contextlib.suppress(Exception):
+            from tools.terminal_tool import register_task_env_overrides
+            register_task_env_overrides(session_key, {"cwd": resolved, "cwd_source": "session"})
+        self._evict_cached_agent(session_key)
+        return t("gateway.project.moved", name=proj.name, path=resolved)
+
     # -------------------------------------------------------------- /resume, /sessions
 
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:

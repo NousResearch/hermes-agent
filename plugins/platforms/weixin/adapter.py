@@ -405,11 +405,11 @@ async def _download_and_decrypt_media(
     session: aiohttp.ClientSession, *, cdn_base_url: str, encrypted_query_param: Optional[str], aes_key_b64: Optional[str],
     full_url: Optional[str], timeout_seconds: float,
 ) -> bytes:
-    if encrypted_query_param:
-        url = f"{cdn_base_url.rstrip('/')}/download?encrypted_query_param={quote(encrypted_query_param, safe='')}"
-    elif full_url:
+    if full_url:
         _assert_weixin_cdn_url(full_url)
         url = full_url
+    elif encrypted_query_param:
+        url = f"{cdn_base_url.rstrip('/')}/download?encrypted_query_param={quote(encrypted_query_param, safe='')}"
     else:
         raise RuntimeError("media item had neither encrypt_query_param nor full_url")
     raw = await _download_bytes(session, url=url, timeout_seconds=timeout_seconds)

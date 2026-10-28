@@ -2,14 +2,19 @@
 
 ``subprocess`` gives such a child a duplicate of the process's standard input, so the gateway
 reads RPC from a private handle and leaves NUL as standard input (``_private_rpc_stdin_windows``).
+The TUI keeps the pipe open while the gateway works, so a child holding that duplicate blocks
+on it instead of seeing EOF: the test keeps its writer open the same way.
 """
 
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -25,7 +30,7 @@ _GATEWAY = textwrap.dedent("""
     try:
         child = subprocess.run(
             [sys.executable, "-c", "import sys; sys.stdout.write(repr(sys.stdin.read()))"],
-            capture_output=True, text=True, timeout=20)
+            capture_output=True, text=True, timeout=10)
         seen = child.stdout
     except subprocess.TimeoutExpired:
         seen = "TIMEOUT"
@@ -34,18 +39,50 @@ _GATEWAY = textwrap.dedent("""
 """)
 
 
-def test_child_without_stdin_gets_nul_and_the_gateway_keeps_its_requests(tmp_path: Path) -> None:
+def _next_line(lines: queue.Queue, prefix: str, transcript: list[str], timeout: float) -> str:
+    deadline = time.monotonic() + timeout
+    while (left := deadline - time.monotonic()) > 0:
+        try:
+            line = lines.get(timeout=left)
+        except queue.Empty:
+            break
+        if line is None:
+            break
+        transcript.append(line)
+        if line.startswith(prefix):
+            return line.rstrip("\n")
+    pytest.fail(f"no {prefix!r} line from the gateway:\n{''.join(transcript)[-3000:]}")
+
+
+def test_child_without_stdin_sees_nul_while_the_rpc_pipe_stays_open(tmp_path: Path) -> None:
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT), "HERMES_HOME": str(tmp_path / "home")}
-    proc = subprocess.Popen([sys.executable, "-c", _GATEWAY], cwd=tmp_path, env=env,
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    assert proc.stdin is not None
-    proc.stdin.write('{"id": "req-1"}\n')
-    proc.stdin.flush()  # the pipe stays open, as the TUI's does
+    # Importing the gateway points sys.stdout at stderr (stdout is its RPC channel): merge them.
+    proc = subprocess.Popen([sys.executable, "-c", _GATEWAY], cwd=tmp_path, env=env, text=True,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert proc.stdin is not None and proc.stdout is not None
+    out = proc.stdout
+    lines: queue.Queue = queue.Queue()
+
+    def pump() -> None:
+        for line in out:
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+    transcript: list[str] = []
     try:
-        out, err = proc.communicate(timeout=90)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, err = proc.communicate()
-    seen = out + err  # importing the gateway points sys.stdout at stderr: stdout is its RPC channel
-    assert "child saw: ''" in seen, f"a child without stdin= read the RPC pipe:\n{seen[-3000:]}"
-    assert "gateway read: '{\"id\": \"req-1\"}\\n'" in seen, f"the gateway lost its request:\n{seen[-3000:]}"
+        # No request written yet and the writer open: a child holding the RPC pipe blocks here.
+        saw = _next_line(lines, "child saw:", transcript, timeout=60)
+        assert saw == "child saw: ''", f"a child without stdin= held the RPC pipe:\n{''.join(transcript)}"
+
+        proc.stdin.write('{"id": "req-1"}\n')
+        proc.stdin.flush()
+        read = _next_line(lines, "gateway read:", transcript, timeout=30)
+        assert read == "gateway read: '{\"id\": \"req-1\"}\\n'", f"the gateway lost its request:\n{''.join(transcript)}"
+
+        proc.stdin.close()
+        assert proc.wait(timeout=30) == 0, "".join(transcript)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()

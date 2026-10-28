@@ -1937,6 +1937,27 @@ page's intro-splash switch becomes `host.settings.subscribe('intro-splash.v1', f
 is the keybind-map row above: contribute the default through `KEYBINDS_AREA` and
 keep the user's override in `ctx.storage`, not in the app's map.
 
+### Locale changes — `host.i18n`
+
+```ts
+host.i18n.locale(): Locale
+host.i18n.subscribeLocale(fn: (locale: Locale) => void): () => void
+host.i18n.languageOptions(): LanguageOption[]
+host.i18n.registerAppLocale(id, registration): () => void
+```
+
+`locale()` is what the app is rendering in **right now**; `subscribeLocale`
+emits it immediately and then after every switch (the user picking a language,
+a profile's saved language taking effect, a pack arriving late). Retire it with
+`ctx.onDispose`.
+
+Use this instead of observing `<html lang>`: the attribute is a rendering
+side effect, and a plugin watching it cannot tell a language switch from a
+direction flip or a re-mount. Note two signals that are **not** locale changes:
+`$appLocaleVersion` bumps when a language *pack* is registered or dropped, and
+`$requestedLocale` is what the profile asked for (`null` = OS inference), not
+what the app resolved.
+
 ### Typed capabilities bridge — `host.skills`, `host.toolsets`, `host.profiles`, `host.pluginDecisions`
 
 ```ts

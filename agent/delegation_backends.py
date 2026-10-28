@@ -16,13 +16,17 @@ agent's session id.
 from __future__ import annotations
 
 import threading
-from dataclasses import asdict, dataclass
+import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status, configured_backend
 from agent.provider_registry import lower_key
 
-_rebuild_requests: set[str] = set()
+_rebuild_requests: set[tuple[str, str]] = set()
 _lock = threading.Lock()
 
 
@@ -56,16 +60,82 @@ def saved_backend() -> str:
     return configured_backend(_load_config())
 
 
+def saved_backend_config(*, backend: str = "", config: dict | None = None) -> dict[str, Any]:
+    """Detached delegation settings for the tools and routes built in this profile."""
+    from agent.delegation_provider import ROUTE_KEYS
+    from tools.delegate_tool_config import _load_config
+    config = _load_config() if config is None else config
+    backend = backend or configured_backend(config)
+    provider, _ = backend_status(backend)
+    settings = provider.snapshot_settings(config) if provider else {}
+    return deepcopy({**{k: v for k, v in config.items() if k in ROUTE_KEYS}, "backend": backend,
+                     "backends": {backend: dict(settings)}})
+
+
+@dataclass(frozen=True)
+class DelegationConfigSnapshot:
+    """Immutable build input. Readers get detached values, never the captured object.
+
+    Includes explicit inline credentials selected for runtime use: session pins deliberately
+    retain those values to preserve route semantics across edits/restarts.
+    """
+
+    serialized: str = field(repr=False)
+
+    def config(self) -> dict[str, Any]:
+        return json.loads(self.serialized)
+
+    def runtime_config(self) -> dict[str, Any]:
+        from agent.delegation_provider import ROUTE_KEYS
+        return {k: v for k, v in self.config().items() if k in ROUTE_KEYS or k in {"backend", "backends"}}
+
+
+_schema_config: ContextVar[DelegationConfigSnapshot | None] = ContextVar("delegation_schema_config", default=None)
+
+
+@contextmanager
+def delegation_schema_config(snapshot: DelegationConfigSnapshot):
+    token = _schema_config.set(snapshot)
+    try:
+        yield
+    finally:
+        _schema_config.reset(token)
+
+
+def current_schema_config() -> dict[str, Any] | None:
+    snapshot = _schema_config.get()
+    return snapshot.config() if snapshot is not None else None
+
+
+def saved_backend_snapshot() -> DelegationConfigSnapshot:
+    """Capture after provider discovery, once for both schema and routing."""
+    from tools.delegate_tool_config import _load_config
+    config = deepcopy(_load_config())
+    runtime = saved_backend_config(config=config)
+    return DelegationConfigSnapshot(json.dumps({**config, **runtime}))
+
+
+def _request_key(session_key: str) -> tuple[str, str]:
+    from hermes_constants import get_hermes_home, hermes_home_key
+    return hermes_home_key(get_hermes_home()), session_key
+
+
 def _delegate_def(tools: Any) -> Any:
     return next((t for t in tools or () if isinstance(t, dict)
                  and (t.get("function") or {}).get("name") == "delegate_task"), None)
 
 
-def adopt_built_backend(agent: Any, defs: Any, backend: str) -> None:
+def adopt_built_backend(agent: Any, defs: Any, backend: str, config: Any = None) -> None:
     """Record ``backend`` as the session's when the agent's ``delegate_task`` is the one ``defs`` carries (built
     from ``backend``, or pinned with it); a kept older definition keeps the backend it was built from."""
-    if _delegate_def(getattr(agent, "tools", None)) == _delegate_def(defs):
+    current = _delegate_def(getattr(agent, "tools", None))
+    if current is None:
+        agent._delegation_backend = ""
+        agent.__dict__.pop("_delegation_backend_config", None)
+    elif current == _delegate_def(defs):
         agent._delegation_backend = backend
+        if isinstance(config, dict):
+            agent._delegation_backend_config = deepcopy(config)
 
 
 def pinned_backend(agent: Any) -> str:
@@ -102,7 +172,7 @@ def set_global_backend(name: str, *, session_key: str = "", apply_now: bool = Fa
     atomic_config_write(path, user_config)
     if apply_now:
         with _lock:
-            _rebuild_requests.add(session_key)
+            _rebuild_requests.add(_request_key(session_key))
 
 
 def _current_session_key(agent: Any) -> str:
@@ -117,7 +187,7 @@ def apply_requested_tool_rebuild(agent: Any) -> bool:
     subagents share the session's key but never take its request."""
     if getattr(agent, "_turn_origin", None) or getattr(agent, "_delegate_depth", 0):
         return False
-    key = _current_session_key(agent)
+    key = _request_key(_current_session_key(agent))
     with _lock:
         if key not in _rebuild_requests:
             return False

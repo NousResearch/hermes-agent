@@ -210,7 +210,8 @@ def _clear_tool_defs_cache() -> None:
 
 
 def get_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
-                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> list[dict[str, Any]]:
+                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False,
+                         delegation_config=None) -> list[dict[str, Any]]:
     """Tool definitions for model API calls, filtered by toolset.
 
     enabled_toolsets None = all; disabled_toolsets are subtracted after enabling.
@@ -221,6 +222,12 @@ def get_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disabled_
     def compute():
         return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                          skip_tool_search_assembly=skip_tool_search_assembly)
+    if delegation_config is not None:
+        # Explicit immutable build input must not hit a memo keyed on the CURRENT file.
+        # Do not retain runtime credentials in the process-wide tool-definition cache.
+        from agent.delegation_backends import delegation_schema_config
+        with delegation_schema_config(delegation_config):
+            return compute()
     if not quiet_mode:
         return compute()
     cache_key = _tool_defs_cache_key(enabled_toolsets, disabled_toolsets, skip_tool_search_assembly)

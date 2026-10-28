@@ -2,9 +2,10 @@
 routes under ``delegation.backends.<name>``.
 
 The settings shapes are the ones the official advanced-delegation plugin reads (``model_map``:
-named model routes; ``profile_routes``: Hermes profiles subagents may run as). Writes replace one
-backend's block wholesale through the same profile scope + config lock every config route uses, so
-deleting a route really deletes it (``PUT /api/config`` deep-merges and cannot drop a key).
+named model routes; ``profile_routes``: Hermes profiles subagents may run as). Writes replace the
+editor-owned route fields through the same profile scope + config lock every config route uses,
+preserving plugin-owned metadata such as saved presets, while deleting a route really deletes it
+(``PUT /api/config`` deep-merges and cannot drop a key).
 """
 
 from __future__ import annotations
@@ -207,7 +208,10 @@ def _write_backend_block(profile: Optional[str], backend: str, build: Callable[[
         config = load_config()
         blocks = _section(_section(config, "delegation"), "backends")
         block = build(_mapping(blocks, backend))
-        blocks[backend] = block
+        # Replace the editor-owned fields, not plugin-owned metadata such as
+        # model_map.presets/active_preset (which may contain stored credentials).
+        owned = {"options", "default"} if backend == MODEL_MAP else {"profiles", "default"}
+        blocks[backend] = {**{k: v for k, v in _mapping(blocks, backend).items() if k not in owned}, **block}
         save_config(config)
         return block
 

@@ -1842,17 +1842,7 @@ def read_raw_config() -> dict[str, Any]:
     return _read_raw_config_impl(want_deepcopy=True)
 
 
-def read_user_config_raw(config_path: Optional[Path] = None) -> dict[str, Any]:
-    """Read a user ``config.yaml`` EXACTLY as written (no defaults/overlay/expansion, no cache).
-    ONLY legal for write-back round-trips and raw-file diagnostics — behavioral reads must use
-    load_config()/load_config_readonly()."""
-    if config_path is None:
-        config_path = get_config_path()
-    try:
-        data = read_config_doc(config_path) or {}
-    except FileNotFoundError:
-        return {}
-    return data if isinstance(data, dict) else {}
+from hermes_cli.config_transaction import read_user_config_raw, update_user_config
 
 
 def read_raw_config_readonly() -> dict[str, Any]:

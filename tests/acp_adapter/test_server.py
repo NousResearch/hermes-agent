@@ -708,13 +708,18 @@ class TestRegisterSessionMcpServers:
              patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
+        from agent.delegation_backends import DelegationConfigSnapshot
+        snapshot = mock_defs.call_args.kwargs["delegation_config"]
+        assert isinstance(snapshot, DelegationConfigSnapshot)
         mock_defs.assert_called_once_with(
             enabled_toolsets=["hermes-acp", "mcp-srv"],
             disabled_toolsets=None,
             quiet_mode=True,
+            delegation_config=snapshot,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools is fake_tools
+        assert state.agent.tools[:3] == fake_tools
+        assert state.agent.tools is not fake_tools  # staged rebuild must not mutate shared definitions
         assert state.agent.tools[-1] == {
             "type": "function",
             "function": {

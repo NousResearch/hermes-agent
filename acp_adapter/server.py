@@ -444,7 +444,6 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return
         try:
-            from model_tools import get_tool_definitions
             from agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent
@@ -452,13 +451,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
-            from agent.delegation_backends import saved_backend
-            agent._delegation_backend = saved_backend()  # the session routes on what its delegate_task is built from
-            agent.tools = get_tool_definitions(
-                enabled_toolsets=agent.enabled_toolsets,
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
-            )
-            agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools or []}
+            from tools.mcp_tool_agent import refresh_agent_mcp_tools
+            refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)
             inject_memory_provider_tools(agent)
             if callable(invalidate := getattr(agent, "_invalidate_system_prompt", None)):
                 invalidate()

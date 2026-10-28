@@ -448,6 +448,9 @@ def _load_config() -> dict:
     (follows HERMES_HOME/profile; no deepcopy, since this runs on every get_definitions() rebuild) over the legacy
     ``cli.CLI_CONFIG``, which can hide user-set keys — except that ``HERMES_IGNORE_USER_CONFIG=1`` is only honored
     by the legacy loader, so it stays authoritative when that flag is set."""
+    from agent.delegation_backends import current_schema_config
+    if (snapshot := current_schema_config()) is not None:
+        return snapshot
     if os.environ.get("HERMES_IGNORE_USER_CONFIG") != "1":
         try:
             from hermes_cli.config import load_config_readonly

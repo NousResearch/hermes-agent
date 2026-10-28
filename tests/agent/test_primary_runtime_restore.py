@@ -403,13 +403,6 @@ class TestRestorePrimaryRuntime:
 
         fallback_pool = MagicMock()
         fallback_pool.provider = "openrouter"
-        agent = _make_agent(
-            provider="custom:gemini-no-filter",
-            base_url="https://generativelanguage.googleapis.com/v1beta",
-        )
-        agent._fallback_activated = True
-        agent._credential_pool = fallback_pool
-        agent._swap_credential = MagicMock()
         config = {
             "custom_providers": [
                 {
@@ -424,6 +417,15 @@ class TestRestorePrimaryRuntime:
                 }
             },
         }
+        # The session was built on this config: its snapshot records the entry as the owner.
+        with patch("agent.credential_pool._load_config_safe", return_value=config):
+            agent = _make_agent(
+                provider="custom:gemini-no-filter",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+            )
+        agent._fallback_activated = True
+        agent._credential_pool = fallback_pool
+        agent._swap_credential = MagicMock()
 
         with (
             patch("agent.credential_pool._load_config_safe", return_value=config),

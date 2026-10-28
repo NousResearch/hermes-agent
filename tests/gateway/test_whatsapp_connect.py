@@ -174,7 +174,7 @@ class TestConnectCleanup:
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
              patch("subprocess.run", return_value=install_result), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
+             patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False

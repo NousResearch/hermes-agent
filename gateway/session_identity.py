@@ -15,6 +15,8 @@ receiving bot's own profile — so nothing here changes the wire format or any h
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import logging
 from contextlib import suppress
 import weakref
@@ -97,7 +99,7 @@ def clear_identity(source: Any) -> None:
     guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
     per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
     short-circuits the route and the new speaker runs as the old one."""
-    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home"):
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home", "_rejected_route_profile"):
         with suppress(AttributeError):
             delattr(source, attr)
     with suppress(AttributeError):
@@ -256,6 +258,7 @@ def resolve_identity(
                 else runner._profile_name_for_source(source, adapter_profile=adapter_profile))
         except ProfileRouteRejected as exc:
             source.profile_route_rejected = True
+            source._rejected_route_profile = exc.profile  # a parked target is retried (producer_scope)
             raise IdentityUnresolved(f"{where}: {exc}") from exc
         source.profile = routed or adapter_profile
 
@@ -271,3 +274,56 @@ def resolve_identity(
         multiplexed=True, transport=transport_ref, transport_inferred=transport_inferred)
     setattr(source, _IDENTITY_ATTR, identity)
     return identity
+
+
+AUTH_SUBJECT_PREFIX = 'auth:v1:'
+
+
+def parse_authenticated_subject(subject):
+    """``(provider, issuer, user)`` of an :func:`authenticated_subject` login form
+    ``auth:v1:[provider, issuer, user]``, else None. The one parser for that format: callers
+    apply their own policy (which logins may be forwarded, which map to a label) to the result."""
+    if not isinstance(subject, str) or not subject.startswith(AUTH_SUBJECT_PREFIX):
+        return None
+    try:
+        parts = json.loads(subject[len(AUTH_SUBJECT_PREFIX):])
+    except ValueError:
+        return None
+    if not (isinstance(parts, list) and len(parts) == 3 and all(isinstance(p, str) for p in parts)):
+        return None
+    return tuple(parts)
+
+
+def authenticated_subject(identity):
+    """Keep private native receipts stable; namespace every dashboard identity.
+
+    Only the private bootstrap stamps profile/instance/capabilities. A dashboard
+    provider named 'local' (or a subject resembling a UID) is not native provenance.
+    Historical remote bare-subject receipts cannot be assigned to a first caller.
+    """
+    subject = str(identity.get('user_id') or 'unbound')
+    if (identity.get('provider') == 'local' and identity.get('profile_id')
+            and identity.get('instance_id') and 'capabilities' in identity):
+        return subject
+    return AUTH_SUBJECT_PREFIX + json.dumps(
+        [identity.get('provider') or '', identity.get('issuer') or '', subject],
+        separators=(',', ':'), ensure_ascii=True)
+
+
+def is_authenticated_identity(identity: object) -> bool:
+    """True for a server-minted, non-internal ``{user_id, provider}`` WS-upgrade identity."""
+    from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
+    if not isinstance(identity, dict):
+        return False
+    user_id, provider = identity.get("user_id"), identity.get("provider")
+    if not isinstance(user_id, str) or not user_id.strip():
+        return False
+    if not isinstance(provider, str) or not provider.strip():
+        return False
+    return not (user_id == INTERNAL_USER_ID and provider == INTERNAL_PROVIDER)
+
+
+def authenticated_principal_digest(identity: dict) -> str:
+    """Server-derived principal id: stable per login, unspoofable without the minted identity."""
+    raw = authenticated_subject(identity)
+    return f"principal:dashboard:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]}"

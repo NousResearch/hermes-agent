@@ -1,5 +1,6 @@
 """Exercise the passive checker with real linked worktrees and loopback HTTP."""
 import json
+import shutil
 import subprocess
 import threading
 import urllib.request
@@ -89,7 +90,7 @@ def installation(tmp_path, monkeypatch):
 
     def local(request, *args, **kwargs):
         url = urlsplit(request.full_url)
-        assert url.hostname in {"api.github.com", "hermes-assets.nousresearch.com"}
+        assert url.hostname in {"api.github.com", "hermes-assets.nousresearch.com", "raw.githubusercontent.com"}
         rewritten = urllib.request.Request(
             f"http://127.0.0.1:{server.server_port}{url.path}" + (f"?{url.query}" if url.query else ""),
             headers=dict(request.header_items()))
@@ -135,11 +136,32 @@ def test_target_worktree_owns_admission_and_fork_comparison(installation, monkey
     assert status["behind"] == 3
     assert status["hermesRoot"] == str(linked)
     assert check_for_updates(install_root=root, home=home, cache_path=cache)["supported"] is False
-    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/feature%2Fgui",
+    assert requests == ["/repos/fixture/fork/commits/feature%2Fgui",
                         f"/repos/fixture/fork/compare/{head}...{target}"]
     assert all(not any(arg in {"fetch", "checkout", "reset", "update-ref", "stash"} for arg in cmd) for cmd in commands)
     assert git("rev-parse", "HEAD", cwd=linked) == head
     assert {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()} == before
+
+
+def test_bare_git_off_path_reads_through_the_updaters_git(installation, monkeypatch, tmp_path):
+    """Desktop passes a bare ``git`` when it found none; a Windows install's only git is PM's
+    store copy, off PATH outside ``hermes update``. The check must read HEAD through that git."""
+    import shutil
+
+    from hermes_cli import update_pause_record
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, _base, head, responses, _requests, _git = installation
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    store_git = shutil.which("git")
+    empty = tmp_path / "no-git-on-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(update_pause_record, "_git_executable", lambda: store_git)
+    status = check_for_updates(install_root=root, home=home, git="git", force=True)
+    assert status.get("error") is None, status
+    assert status["currentSha"] == head
+    assert status["behind"] == 0
 
 
 @pytest.mark.parametrize("tip_kind,compare,expected", [
@@ -158,7 +180,7 @@ def test_counts_are_honest_without_fetch(installation, tip_kind, compare, expect
     assert status["behind"] == expected
     assert status["updateAvailable"] is (expected != 0)
     if tip_kind != "unknown":
-        assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main"]
+        assert requests == ["/repos/fixture/fork/commits/main"]
 
 
 def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
@@ -177,26 +199,26 @@ def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
     responses[url] = (503, {})
     (root / "dirty.txt").write_text("carried work")
     assert check()["dirty"] is True
-    assert requests.count(url) == requests.count(MAIN_CHANNEL) == 1
+    assert requests.count(url) == 1
     assert check(force=True)["error"] == "fetch-failed"
     clock[0] += 3599
     assert check()["error"] == "fetch-failed"
-    assert requests.count(url) == requests.count(MAIN_CHANNEL) == 2
+    assert requests.count(url) == 2
     clock[0] += 2
     responses[url] = (200, head)
     assert check()["behind"] == 0
-    assert requests.count(url) == requests.count(MAIN_CHANNEL) == 3
+    assert requests.count(url) == 3
     clock[0] += 86401
     assert check()["behind"] == 0
-    assert requests.count(url) == requests.count(MAIN_CHANNEL) == 4
+    assert requests.count(url) == 4
     (home / "config.yaml").write_text("updates: {check: false}")
     assert check(passive=True)["behind"] is None
     assert check()["behind"] == 0
-    assert requests.count(url) == requests.count(MAIN_CHANNEL) == 4
+    assert requests.count(url) == 4
     git("commit", "--allow-empty", "-m", "moved")
     responses[url] = (200, git("rev-parse", "HEAD"))
     assert check()["behind"] == 0
-    assert requests.count(url) == requests.count(MAIN_CHANNEL) == 5
+    assert requests.count(url) == 5
 
 
 def test_explicit_and_current_branch_heal_only_after_confirmed_absence(installation, monkeypatch):
@@ -212,7 +234,7 @@ def test_explicit_and_current_branch_heal_only_after_confirmed_absence(installat
     assert failed["branch"] == "deleted"
     assert failed["error"] == "fetch-failed"
     assert git("branch", "--show-current", cwd=linked) == "feature/gui"
-    assert requests == [MAIN_CHANNEL]
+    assert requests == []
 
 
 @pytest.mark.parametrize("selection", ["explicit", "configured", "current", "detached"])
@@ -285,14 +307,14 @@ def test_channel_failure_never_probes_or_heals_a_branch(installation, name, fail
     assert json.loads(branch_file.read_text())["branch"] == "deleted"
 
 
-def test_unpublished_main_record_follows_the_branch(installation):
-    """A 404 for main.json keeps a checkout updating via git: the configured
-    branch is probed exactly as for a published source-branch channel, and the
-    Desktop branch setting is left alone."""
+def test_main_follows_the_branch_without_reading_a_channel_record(installation):
+    """main IS the git branch: no R2 record is requested (a regional WAF can answer
+    it 403), the configured branch is probed, and the Desktop branch setting is left alone."""
     from hermes_cli.source_check import check_for_updates
 
     _root, linked, home, _base, head, responses, requests, _git = installation
-    responses[MAIN_CHANNEL] = (404, source_channel("main", "fixture/fork"))
+    # Even a record that would answer is never read.
+    responses[MAIN_CHANNEL] = (403, {"message": "blocked by WAF"})
     branch_path = "/repos/fixture/fork/commits/desktop-choice"
     responses[branch_path] = (200, head)
     branch_file = home / "desktop-update.json"
@@ -303,7 +325,7 @@ def test_unpublished_main_record_follows_the_branch(installation):
     assert status.get("branch") == "desktop-choice", status
     assert status.get("targetSha") == head, status
     assert status["behind"] == 0
-    assert requests == [MAIN_CHANNEL, branch_path]
+    assert requests == [branch_path]
     assert json.loads(branch_file.read_text())["branch"] == "desktop-choice"
 
 
@@ -379,7 +401,7 @@ def test_never_pushed_branch_keeps_its_pin(installation, pinned_by):
         assert json.loads(branch_file.read_text()) == {"branch": "local-work"}
     else:
         assert not branch_file.exists()
-    assert requests == [MAIN_CHANNEL]
+    assert requests == []
 
 
 @pytest.mark.parametrize("merge", ["fast-forward", "rebase", "unmerged"])
@@ -436,7 +458,7 @@ def test_source_admission_is_stamp_owned_not_path_owned(installation, mechanism)
     responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, head)
     status = check_for_updates(install_root=linked, home=home)
     assert status["supported"] is (mechanism in ("self", None))
-    assert requests == ([MAIN_CHANNEL, "/repos/fixture/fork/commits/feature%2Fgui"]
+    assert requests == (["/repos/fixture/fork/commits/feature%2Fgui"]
                         if status["supported"] else [])
     empty = home / "no-source"
     empty.mkdir()
@@ -483,7 +505,7 @@ def test_malformed_optional_changelog_and_cache_do_not_hide_the_update(installat
     data["status"] = None
     cache.write_text(json.dumps(data))
     assert check_for_updates(install_root=root, home=home, cache_path=cache)["behind"] == 2
-    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main",
+    assert requests == ["/repos/fixture/fork/commits/main",
                         f"/repos/fixture/fork/compare/{head}...{'a' * 40}"] * 2
 
 
@@ -545,3 +567,225 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+@pytest.mark.parametrize("on,release,rollback", [("head", "base", True), ("base", "head", False)])
+def test_stable_release_the_checkout_already_contains_is_a_rollback(installation, tmp_path, on, release, rollback):
+    """A release HEAD contains is a move back (#137714); an older checkout is a real update."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, base, head, responses, _requests, git = installation
+    shas = {"base": base, "head": head}
+    bare = tmp_path / "origin.git"
+    git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
+    git("tag", "v1.2.3", shas[release], cwd=bare)
+    git("remote", "set-url", "origin", str(bare))
+    git("checkout", "-q", "--detach", shas[on])
+    api = "/repos/NousResearch/hermes-agent"
+    responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
+    responses[f"{api}/commits/v1.2.3"] = (200, {"sha": shas[release]})
+
+    status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
+
+    assert status.get("targetSha") == shas[release], status
+    assert status["updateAvailable"] is True
+    assert status["rollback"] is rollback
+
+
+@pytest.mark.parametrize("ledgered", [True, False])
+@pytest.mark.parametrize("divergent", [True, False], ids=["beside-history", "in-history"])
+def test_stable_release_the_updater_refuses_is_held_not_offered(
+        installation, tmp_path, monkeypatch, capsys, ledgered, divergent):
+    """A pre-runtime release is held while a store has runtime history (#139099), even when the
+    checkout already contains it: neither an update offer nor a rollback promise is valid."""
+    from hermes_cli import _startup_fast
+    from hermes_cli.source_check import check_for_updates
+    from tests.hermes_cli.test_update_downgrade_guard import _ledgered_store
+
+    root, _linked, home, base, _head, responses, requests, git = installation
+    sibling = tmp_path / "sibling"
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [("sibling", sibling)])
+    git("checkout", "-q", "-b", "release-line", base)
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
+    git("add", "hermes_state_common.py")
+    git("commit", "-q", "-m", "release from the older line")
+    release = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    if not divergent:
+        git("merge", "--no-ff", "-qm", "release on main's history", "release-line")
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
+    git("add", "hermes_state_common.py")
+    git("commit", "-q", "-m", "gateway runtime")
+    bare = tmp_path / "origin.git"
+    git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
+    git("tag", "v1.2.3", release, cwd=bare)
+    git("remote", "set-url", "origin", str(bare))
+    git("checkout", "-q", "main")
+    if ledgered:
+        _ledgered_store(sibling)
+    api = "/repos/NousResearch/hermes-agent"
+    responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
+    responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
+
+    status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
+
+    assert status.get("targetSha") == release, status
+    assert status["updateAvailable"] is not ledgered
+    assert status.get("held") == ("downgrade" if ledgered else None)
+    held_status = status
+
+    if not ledgered:
+        # The first runtime turn lands after an offer was cached: the next passive check holds it.
+        _ledgered_store(sibling)
+        held_status = check_for_updates(install_root=root, home=home, channel="stable")
+        assert held_status["updateAvailable"] is False and held_status.get("held") == "downgrade", held_status
+
+    # --version consumes this status too, and checks rollback before the behind count.
+    with monkeypatch.context() as version:
+        version.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: held_status)
+        _startup_fast.print_fast_version_info()
+    assert "moves back to it" not in capsys.readouterr().out
+    assert held_status["rollback"] is False
+
+    # Removing the only ledgered profile clears a cached hold without re-resolving the release.
+    shutil.rmtree(sibling)
+    seen = list(requests)
+    allowed = check_for_updates(install_root=root, home=home, channel="stable")
+    assert allowed["updateAvailable"] is True and allowed["behind"] == -1, allowed
+    assert allowed["rollback"] is not divergent
+    assert "held" not in allowed and allowed["fetchedAt"] == status["fetchedAt"]
+    assert requests == seen
+
+
+@pytest.mark.parametrize("ledgered", [True, False])
+def test_an_unfetched_release_is_judged_from_github(installation, tmp_path, monkeypatch, ledgered):
+    """The usual install tracks only ``main``, so a release cut beside it is absent until `hermes
+    update` fetches it, and a local probe proves nothing. The check reads the release's state modules
+    from GitHub instead, so it still holds what the update would refuse (#140215 review)."""
+    from hermes_cli.source_check import check_for_updates
+    from tests.hermes_cli.test_update_downgrade_guard import _ledgered_store
+
+    root, _linked, home, base, _head, responses, requests, git = installation
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    # The release lives on origin only: cut in a scratch clone, pushed there, never fetched here.
+    bare, cut = tmp_path / "origin.git", tmp_path / "cut"
+    git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
+    git("clone", "-q", "--no-local", str(bare), str(cut), cwd=tmp_path)
+    git("checkout", "-q", "-b", "release-line", base, cwd=cut)
+    git("commit", "-q", "--allow-empty", "-m", "release from the older line", cwd=cut)
+    release = git("rev-parse", "HEAD", cwd=cut)
+    git("tag", "v1.2.3", release, cwd=cut)
+    git("push", "-q", "origin", "v1.2.3", cwd=cut)
+    git("remote", "set-url", "origin", str(bare))
+    assert subprocess.run(["git", "cat-file", "-e", f"{release}^{{commit}}"], cwd=root,
+                          stderr=subprocess.DEVNULL, check=False).returncode != 0
+    api = "/repos/NousResearch/hermes-agent"
+    responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
+    responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
+    responses[f"{api}/compare/{git('rev-parse', 'HEAD')}...{release}"] = (200, {"status": "diverged"})
+    responses[f"{api}/git/trees/{release}"] = (200, {"truncated": False, "tree": [
+        {"path": "hermes_state.py", "type": "blob"}, {"path": "hermes_state_common.py", "type": "blob"},
+        {"path": "run_agent.py", "type": "blob"}]})
+    responses[f"/NousResearch/hermes-agent/{release}/hermes_state.py"] = (200, "from hermes_state_common import *\n")
+    responses[f"/NousResearch/hermes-agent/{release}/hermes_state_common.py"] = (
+        200, "SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
+    if ledgered:
+        _ledgered_store(home)
+
+    status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
+
+    assert status.get("targetSha") == release, status
+    assert status["updateAvailable"] is not ledgered
+    assert status.get("held") == ("downgrade" if ledgered else None)
+    # Only a store with runtime history pays for the lookup, and a release tree is read once.
+    trees = [p for p in requests if "/git/trees/" in p]
+    assert len(trees) == int(ledgered)
+    if ledgered:
+        check_for_updates(install_root=root, home=home, channel="stable", force=True)
+        assert len([p for p in requests if "/git/trees/" in p]) == 1
+
+
+@pytest.mark.parametrize("blocked", ["tree", "modules"])
+def test_runtime_lookup_has_one_deadline_with_bounded_parallel_reads(installation, monkeypatch, blocked):
+    from hermes_cli import source_check
+
+    _root, _linked, home, _base, sha, responses, _requests, _git = installation
+    tree = f"/repos/fixture/fork/git/trees/{sha}"
+    paths = [f"hermes_state_{i}.py" for i in range(12)]
+    responses[tree] = (200, {"tree": [{"path": path, "type": "blob"} for path in paths]})
+    release = threading.Event()
+    overlapped = threading.Event()
+    finished = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+    verdicts = []
+
+    def stalled(_handler):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 4:
+                overlapped.set()
+        try:
+            release.wait(20)
+            return 200, "SCHEMA_SQL = 'old schema'"
+        finally:
+            with lock:
+                active -= 1
+
+    if blocked == "tree":
+        responses[tree] = stalled
+    for path in paths:
+        responses[f"/fixture/fork/{sha}/{path}"] = stalled
+    monkeypatch.setattr(source_check, "_RUNTIME_LOOKUP_SECONDS", 3.0)
+
+    def check():
+        try:
+            verdicts.append(source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json"))
+        finally:
+            finished.set()
+
+    checker = threading.Thread(target=check, daemon=True)
+    checker.start()
+    try:
+        if blocked == "modules":
+            assert overlapped.wait(5), "independent schema reads must overlap"
+        assert finished.wait(5), "a slow successful response must not extend the whole lookup deadline"
+        assert verdicts == [None]
+        assert peak <= 4
+    finally:
+        release.set()
+        checker.join(5)
+
+
+@pytest.mark.parametrize("failure", ["tree", "module"])
+@pytest.mark.parametrize("runtime", [True, False])
+def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installation, monkeypatch, failure, runtime):
+    from hermes_cli import source_check
+
+    _root, _linked, home, _base, sha, responses, requests, _git = installation
+    clock = [1000000.0]
+    monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
+    tree = f"/repos/fixture/fork/git/trees/{sha}"
+    module = f"/fixture/fork/{sha}/hermes_state_common.py"
+    responses[tree] = (200, {"tree": [{"path": "hermes_state_common.py", "type": "blob"}]})
+    from hermes_state_common import SCHEMA_SQL
+    responses[module] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
+    failed_path = tree if failure == "tree" else module
+    good = responses[failed_path]
+    responses[failed_path] = (503, {})
+    check = lambda: source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json")
+
+    assert check() is None
+    seen = list(requests)
+    responses[failed_path] = good
+    assert check() is None
+    assert requests == seen, "cache hits must not retry an unreachable GitHub"
+    clock[0] += source_check._UPDATE_CHECK_FAILURE_CACHE_SECONDS + 1
+    assert check() is not runtime
+    seen = list(requests)
+    clock[0] += 10 * source_check._UPDATE_CHECK_CACHE_SECONDS
+    assert check() is not runtime
+    assert requests == seen

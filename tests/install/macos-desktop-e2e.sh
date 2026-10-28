@@ -268,6 +268,14 @@ phase_install() {
       }
     }
   }' "$installed_bin" || fail "installed app did not close normally; no smoke launch attempted"
+  # One journey mock from the first checkpoint on, as installer-script-e2e.sh does: the gateway
+  # this checkpoint starts is detached, survives this step, and keeps the provider URL it read
+  # at boot; phase_update's mock_start rebinds that URL's port. Without it the smoke starts a
+  # private mock whose port nothing can reclaim.
+  # shellcheck source=../install/e2e-assets/mock-provider.sh
+  source "$ASSETS/mock-provider.sh"
+  PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
+  trap mock_stop EXIT
   desktop_checkpoint old "$OLD_SHA" desktop-installer@latest
 }
 
@@ -292,6 +300,9 @@ phase_update() {
   # shellcheck disable=SC1090
   . "$STATE"
   arm_redirect
+  local pin_hermes
+  pin_hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed command to record the update channel"
+  source_build_env pin_source_main_channel "$pin_hermes" || fail "could not record the main update channel"
   # Snapshot every plugin tree BEFORE the upgrade moves anything: fixtures
   # seeded here must survive through the verify after the update lands.
   preserve_before_upgrade

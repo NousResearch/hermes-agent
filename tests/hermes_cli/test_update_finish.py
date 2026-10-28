@@ -87,7 +87,7 @@ def completion(tmp_path, monkeypatch):
                NPM_CONFIG_OFFLINE="true", NPM_CONFIG_CACHE=str(tmp_path / "npm-cache"))
     probe = subprocess.run([str(python), "-I", "-c",
                             "import importlib.util; assert importlib.util.find_spec('yaml') is None"],
-                           env=env, capture_output=True, text=True)
+                           env=env, capture_output=True, text=True, check=False)
     assert probe.returncode == 0, probe.stderr
     request = {
         "root": str(source), "desktop": False, "assume_yes": True, "gateway_mode": False,
@@ -196,6 +196,9 @@ def completion(tmp_path, monkeypatch):
                     macos_tcc_anchor.ensure_tcc_anchor = lambda: None
                     maint._print_post_update_notices_and_self_heals = lambda: None
                     maint._sync_profiles_after_update = lambda: None
+                    # A detached git writer would outlive the test in its deleted tmp checkout.
+                    from hermes_cli import git_commit_graph
+                    git_commit_graph.spawn_commit_graph_refresh = lambda root: False
                     maint._print_bundled_skills_sync_report = lambda: None
                     fleet_verify._print_legacy_units_warning = lambda: None
                     maint._refresh_dashboard_after_update = lambda **kwargs: None
@@ -243,7 +246,7 @@ def completion(tmp_path, monkeypatch):
     '''))
     def run(fault=""):
         return subprocess.run([str(python), "-I", "-B", str(runner), str(context), str(result), fault],
-                              cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
+                              cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90, check=False)
     return source, home / ".hermes", request, context, result, run
 
 
@@ -379,7 +382,7 @@ def _npm_graph(source):
     assert node, "source completion acceptance requires Node and npm"
     for name in ("esbuild", "typescript", "vite"):
         probe = subprocess.run([node, "-p", f"require.resolve('{name}/package.json')"],
-                               cwd=ROOT, capture_output=True, text=True)
+                               cwd=ROOT, capture_output=True, text=True, check=False)
         if probe.returncode:
             # The Python lane runs without `npm ci`. The real completion path runs in the
             # install E2E workflow (source updates rebuild the products there).

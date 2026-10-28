@@ -290,17 +290,21 @@ def _config_profile_scope(profile: Optional[str]):
 
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
+    None/""/"current" mean the request's EFFECTIVE home: a task-local override (a secondary
+    profile's native ticket, ``native_profile_scope``) is that profile, so it gets that profile's
+    secret scope rather than the launch profile's.
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_constants import get_hermes_home, get_hermes_home_override
     from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
     process_home = get_process_hermes_home()
     if _is_current_profile(profile):
-        profile_dir, scoped = None, None  # the dashboard's own profile: no home override
+        profile_dir = get_hermes_home() if get_hermes_home_override() else None
     else:
         profile_dir = _resolve_profile_dir(profile.strip())
-        scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
+    scoped = None if profile_dir is None or profile_dir.resolve() == process_home.resolve() else profile_dir
     if scoped is not None:
         activate_multi_profile_hosting()
         hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch
@@ -334,8 +338,6 @@ _TERMINAL_BACKENDS: list[dict[str, str]] = [
         ("local", "Local", "Run commands directly on this machine. No isolation."),
         ("docker", "Docker / Podman",
          "Run commands in an isolated Docker or Podman container with a persistent workspace."),
-        ("singularity", "Singularity / Apptainer",
-         "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),
         ("daytona", "Daytona", "Run commands in a Daytona cloud sandbox."),
         ("ssh", "SSH", "Run commands on a remote host over SSH."))]
@@ -463,8 +465,13 @@ def _hub_action_name(verb: str, key: str) -> str:
 
 def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """identifier -> installed lock entry for hub-installed skills (UI marks installed search
-    results). Scoped to ``profile``'s skills/.hub/lock.json when given — HubLockFile takes an
-    explicit path, sidestepping the import-time LOCK_FILE binding. {} when unreadable."""
+    results and catalog cards). Scoped to ``profile``'s skills/.hub/lock.json when given —
+    HubLockFile takes an explicit path, sidestepping the import-time LOCK_FILE binding. {} when
+    unreadable.
+
+    Keyed by ``HubLockFile.by_identifier``, so a ClawHub install also answers to the
+    ``clawhub/<slug>`` id a catalog card installs. Search lists a ClawHub skill by its bare
+    slug; a client looks such a hit up under that card id, going by the hit's source."""
     try:
         from tools.skills_hub import HubLockFile
         if _is_current_profile(profile):
@@ -473,8 +480,8 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
             profile_dir = _resolve_profile_dir(profile.strip())
             lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
         keys = ("name", "trust_level", "scan_verdict")
-        return {entry["identifier"]: {k: entry.get(k) for k in keys}
-                for entry in lock.list_installed() if entry.get("identifier")}
+        return {identifier: {k: entry.get(k) for k in keys}
+                for identifier, entry in lock.by_identifier().items()}
     except HTTPException:
         raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:

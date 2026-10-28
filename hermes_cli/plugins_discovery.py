@@ -205,7 +205,7 @@ def collect_directory_manifests() -> list[PluginManifest]:
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
-          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use"})
+          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends"})
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
@@ -254,6 +254,17 @@ class ManifestGate:
     log: Optional[tuple] = None  # (level, message, *args)
 
 
+IN_BOTH_LISTS = "listed in both plugins.enabled and plugins.disabled — disabled wins"
+
+
+def plugins_in_both_lists() -> list[str]:
+    """Keys of the plugins the loader skips because both lists name them, by the loader's own
+    config read and name matching (path key, bare leaf, manifest name)."""
+    winners = resolve_manifest_winners(collect_directory_manifests())
+    disabled, enabled = _get_disabled_plugins(), _get_enabled_plugins()
+    return [key for key, manifest in winners.items() if gate_manifest(manifest, disabled, enabled).error == IN_BOTH_LISTS]
+
+
 def gate_manifest(
     manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]]
 ) -> ManifestGate:
@@ -261,7 +272,9 @@ def gate_manifest(
     category-owned kinds (exclusive / model-provider), bundled auto-loads (backend now, platform deferred),
     then ``plugins.enabled`` opt-in (path-derived key or legacy bare name)."""
     lookup_key = manifest_key(manifest)
-    names = {lookup_key, manifest.name}
+    from hermes_cli.left_core_migration import legacy_plugin_keys
+    # A bundled key that left core (``observability/langfuse``) keeps selecting its catalog plugin.
+    names = {lookup_key, manifest.name, *legacy_plugin_keys(lookup_key)}
 
     def _placeholder(error: Optional[str], level: int, message: str, *args, enabled: bool = False) -> ManifestGate:
         return ManifestGate("placeholder", enabled=enabled, error=error, log=(level, message, lookup_key, *args))
@@ -274,6 +287,15 @@ def gate_manifest(
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
     if names & disabled:
+        if enabled and names & enabled:
+            # Contradictory config (#131980): the disable wins, but a silent DEBUG skip hides the
+            # conflict — the plugin "loads nowhere" while plugins.enabled still lists it. Fail loud.
+            return _placeholder(
+                IN_BOTH_LISTS,
+                logging.WARNING,
+                "Plugin '%s' is listed in both plugins.enabled and plugins.disabled; the disable "
+                "wins and it will not load — remove it from one of the two lists",
+            )
         return _placeholder("disabled via config", logging.DEBUG, "Skipping disabled plugin '%s'")
     # Exclusive plugins (memory providers) have their own activation path; record only.
     if manifest.kind == "exclusive":

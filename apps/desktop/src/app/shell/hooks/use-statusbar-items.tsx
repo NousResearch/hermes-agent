@@ -1,3 +1,4 @@
+import { gaugeTitle } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router'
@@ -9,7 +10,9 @@ import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +37,8 @@ import {
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { rollbackSentence } from '@/lib/update-copy'
+import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -57,8 +62,7 @@ import {
   $sessionStartedAt,
   $tileSessionFocusStartedAt,
   $turnStartedAt,
-  idsShareLineage,
-  sessionMatchesStoredId
+  idsShareLineage
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
@@ -73,7 +77,7 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
-import type { StatusResponse, UsageStats } from '@/types/hermes'
+import type { FreeTierStatus, StatusResponse, UsageStats } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
@@ -82,6 +86,7 @@ const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
+  changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
   chatOpen: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
@@ -96,8 +101,38 @@ interface StatusbarItemsOptions {
   toggleCommandCenter: () => void
 }
 
+/** The statusbar row for one update target: the client, or the connected backend. */
+function versionItem(
+  target: 'backend' | 'client',
+  status: ReturnType<typeof resolveVersionStatus>,
+  applying: boolean,
+  toggleLabel: string
+): StatusbarItem {
+  return {
+    className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+    hidden: status.unknown,
+    icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
+    id: `version-${target}`,
+    label: status.label,
+    // Update state is not a preference: hiding it is how a user misses that
+    // they are behind. Listed in the menu, but locked on.
+    lockedVisible: true,
+    onSelect: () => openUpdateOverlayFor(target),
+    title: status.tooltip,
+    toggleLabel,
+    variant: 'action'
+  }
+}
+
+/** The free model a trial runs on, named on the Sign in chip; null for a guest without the trial. */
+function freeTierTrialModel(status: FreeTierStatus | null): string | null {
+  return status?.available ? status.model || FREE_TIER_MODEL : null
+}
+
+// health: allow CC FUNC_LINES -- usage-window plans: one status-bar gauge item, hidden for every other account; this hook was over both targets on main
 export function useStatusbarItems({
   agentsOpen,
+  changeSessionCwd,
   chatOpen,
   commandCenterOpen,
   extraLeftItems,
@@ -162,6 +197,7 @@ export function useStatusbarItems({
   // setup is running, so the chat the user is in has no second call to action,
   // and comes back when the setup ends.
   const freeTierSignInOpen = useStore($freeTierSignInOpen)
+  const trialModel = freeTierTrialModel(freeTier)
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const backendUpdateStatus = useStore($backendUpdateStatus)
@@ -214,34 +250,8 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's stored row supplies the cold/fallback session-start and cwd when
-  // no focused runtime value is available. Only these scalars are read off
-  // `$sessions`, so select them — a whole-list `useStore` re-ran this hook on
-  // every session-list write (title updates, poll refreshes, archives).
-  const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
-    focusedStoredSessionId
-      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
-      : null
-  )
-
-  const focusedRowCwd = useStoreSelector($sessions, sessions => {
-    if (!focusedStoredSessionId) {
-      return ''
-    }
-
-    const row = sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
-
-    return row?.cwd?.trim() || ''
-  })
-
-  // Which backend the focused row runs on: a Connections-tagged row names its
-  // gateway; an untagged one is the window's primary. Decides whether the OS
-  // file manager on this computer can show its workspace at all.
-  const focusedRowConnectionId = useStoreSelector($sessions, sessions =>
-    focusedStoredSessionId
-      ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || ''
-      : ''
-  )
+  // A tile's stored row: cold/fallback start and cwd, and which backend it runs on.
+  const { focusedRowConnectionId, focusedRowCwd, focusedRowStartedAt } = useFocusedSessionRow(focusedStoredSessionId)
 
   const offerLocalReveal = shouldOfferLocalReveal(focusedRowConnectionId, connection?.mode === 'remote')
 
@@ -284,6 +294,12 @@ export function useStatusbarItems({
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
+  const changeWorkspaceItem = useChangeWorkspaceItem(changeSessionCwd, currentCwd, busy, {
+    focusedRowConnectionId,
+    focusedRuntimeId,
+    primaryFocused
+  })
+
   const sessionStartedAt = resolveSessionTimerSince({
     focusedStoredSessionId,
     primaryFocused,
@@ -315,26 +331,35 @@ export function useStatusbarItems({
   // and the store merges rather than replaces, so the PREVIOUS session's gauge
   // numbers survive the switch. Mid-turn useContextBreakdown returns null (the
   // snapshot is pre-turn), so the streamed usage carries the gauge.
-  const gaugeUsage = useMemo<UsageStats>(
-    () =>
-      contextBreakdown
-        ? {
-            ...currentUsage,
-            context_estimated: contextBreakdown.context_estimated,
-            context_source: contextBreakdown.context_source,
-            context_max: contextBreakdown.context_max,
-            context_percent: contextBreakdown.context_percent,
-            context_used: contextBreakdown.context_used
-          }
-        : currentUsage,
-    [contextBreakdown, currentUsage]
-  )
+  //
+  // An agentless breakdown (no resident agent) knows no window: it carries
+  // categories for the popover but zeroed header figures. The header then
+  // stays this session's own streamed reading — never the merged global,
+  // which can still hold the previous session's numbers.
+  const gaugeUsage = useMemo<UsageStats>(() => {
+    if (!contextBreakdown) {
+      return currentUsage
+    }
+
+    const reading = contextBreakdown.context_max > 0 ? contextBreakdown : (focusedUsage ?? EMPTY_USAGE)
+
+    return {
+      ...currentUsage,
+      context_estimated: reading.context_estimated,
+      context_source: reading.context_source,
+      context_max: reading.context_max,
+      context_percent: reading.context_percent,
+      context_used: reading.context_used
+    }
+  }, [contextBreakdown, currentUsage, focusedUsage])
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
   // Both ride the same usage payload the context meter does (session.usage
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
+  const planGauge = currentUsage.plan_gauge
+  const planUsed = planGauge ? Math.min(1, Math.max(0, planGauge.used_bp / 10_000)) : 0
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
   // Dial the viewed profile directly: the ambient `requestGateway` is the
@@ -345,7 +370,7 @@ export function useStatusbarItems({
     [activeGatewayProfile]
   )
 
-  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway)
+  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway, gatewayState)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(
@@ -394,6 +419,8 @@ export function useStatusbarItems({
       ? 'text-amber-600 hover:text-amber-600'
       : 'text-destructive hover:text-destructive'
 
+  const rollbackBody = t.settings.about.channel.rollbackBody
+
   const clientVersionItem = useMemo<StatusbarItem>(() => {
     const applying = updateApply.applying || updateApply.stage === 'restart'
 
@@ -402,29 +429,19 @@ export function useStatusbarItems({
       applyMessage: updateApply.message,
       behind: updateStatus?.behind ?? 0,
       branch: updateStatus?.branch,
+      channel: updateStatus?.channel === 'stable' ? 'stable' : 'main',
       copy,
+      latestTag: updateStatus?.latestTag,
       remote: connection?.mode === 'remote',
       restarting: updateApply.stage === 'restart',
+      rollback: rollbackSentence(updateStatus, rollbackBody),
       sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
       target: 'client',
       updateAvailable: updateStatus?.updateAvailable,
       version: desktopVersion?.appVersion
     })
 
-    return {
-      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
-      hidden: status.unknown,
-      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
-      id: 'version-client',
-      label: status.label,
-      // Update state is not a preference: hiding it is how a user misses that
-      // their client is behind. Listed in the menu, but locked on.
-      lockedVisible: true,
-      onSelect: () => openUpdateOverlayFor('client'),
-      title: status.tooltip,
-      toggleLabel: copy.toggleVersion,
-      variant: 'action'
-    }
+    return versionItem('client', status, applying, copy.toggleVersion)
   }, [
     desktopVersion?.appVersion,
     connection?.mode,
@@ -432,10 +449,8 @@ export function useStatusbarItems({
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
-    updateStatus?.behind,
-    updateStatus?.branch,
-    updateStatus?.currentSha,
-    updateStatus?.updateAvailable
+    updateStatus,
+    rollbackBody
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -452,28 +467,18 @@ export function useStatusbarItems({
       copy,
       remote: true,
       restarting: backendUpdateApply.stage === 'restart',
+      rollback: rollbackSentence(backendUpdateStatus, rollbackBody),
       target: 'backend',
       updateAvailable: backendUpdateStatus?.updateAvailable,
       version: statusSnapshot?.version
     })
 
-    return {
-      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
-      hidden: status.unknown,
-      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
-      id: 'version-backend',
-      label: status.label,
-      lockedVisible: true,
-      onSelect: () => openUpdateOverlayFor('backend'),
-      title: status.tooltip,
-      toggleLabel: copy.toggleBackendVersion,
-      variant: 'action'
-    }
+    return versionItem('backend', status, applying, copy.toggleBackendVersion)
   }, [
     connection?.mode,
     statusSnapshot?.version,
-    backendUpdateStatus?.behind,
-    backendUpdateStatus?.updateAvailable,
+    backendUpdateStatus,
+    rollbackBody,
     backendUpdateApply.applying,
     backendUpdateApply.message,
     backendUpdateApply.stage,
@@ -533,9 +538,7 @@ export function useStatusbarItems({
         // solid and set off by a gap instead of touching the label.
         detail: (
           <span className="inline-flex items-center gap-2">
-            <span className="font-mono text-[0.625rem] text-muted-foreground/70">
-              {freeTier?.model ?? FREE_TIER_MODEL}
-            </span>
+            {trialModel && <span className="font-mono text-[0.625rem] text-muted-foreground/70">{trialModel}</span>}
             {/* The class merger drops Badge's own leading-none behind the size's
                 font-size class, so the badge grows to the inherited 1.5 leading and
                 overhangs an 11px label. Restating it here keeps it 11.6px tall. */}
@@ -544,15 +547,14 @@ export function useStatusbarItems({
             </Badge>
           </span>
         ),
-        // Shown while a free-tier identity exists and the tier is on: it names the
-        // identity that carries the connectors (and inference when nothing else
-        // does), and it is the persistent way in to the sign-in.
+        // Shown while a guest identity exists (the trial, or apps without it): the
+        // identity carrying the connectors, and the persistent way in to the sign-in.
         hidden: !freeTierSignInOpen,
         icon: <Codicon name="account" size="0.75rem" />,
         id: 'free-tier',
         label: freeTierCopy.providerName,
         onSelect: () => openFreeTierSignIn(),
-        title: freeTierCopy.statusLabel(freeTier?.model ?? FREE_TIER_MODEL),
+        title: trialModel ? freeTierCopy.statusLabel(trialModel) : freeTierCopy.providerName,
         toggleLabel: copy.toggleFreeTier,
         variant: 'action'
       },
@@ -566,6 +568,7 @@ export function useStatusbarItems({
         label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
+              changeWorkspaceItem,
               {
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
@@ -644,6 +647,7 @@ export function useStatusbarItems({
     [
       agentsOpen,
       botsShowing,
+      changeWorkspaceItem,
       commandCenterOpen,
       copy,
       currentCwd,
@@ -653,7 +657,7 @@ export function useStatusbarItems({
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
       offerLocalReveal,
-      freeTier?.model,
+      trialModel,
       freeTierSignInOpen,
       gatewayMenuContent,
       gatewayClassName,
@@ -727,6 +731,28 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleSessionTimer,
         variant: 'text'
       },
+      {
+        // Window plans only: today's allowance (else the one that binds) at a glance; opens Billing.
+        className:
+          planUsed >= 0.8
+            ? 'text-red-600 dark:text-red-400'
+            : planUsed >= 0.5
+              ? 'text-amber-600 dark:text-amber-400'
+              : undefined,
+        hidden: !planGauge,
+        icon: <Activity className="size-3" />,
+        id: 'plan-usage',
+        label: planGauge
+          ? `${gaugeTitle({ label: planGauge.id, title: planGauge.label }, { day: t.modelPicker.today, month: t.modelPicker.month, top_tier: t.modelPicker.topTier, week: t.modelPicker.week })} ${formatPercentUsed(planUsed)}`
+          : undefined,
+        title: planGauge
+          ? copy.planUsageTitle(formatPercentUsed(planUsed), formatResetsIn(planGauge.resets_at_ms) ?? '')
+          : undefined,
+        to: `${SETTINGS_ROUTE}?tab=billing`,
+        // Listed in the bar's show/hide menu only for window plans; everyone else never sees the entry.
+        toggleLabel: planGauge ? copy.togglePlanUsage : undefined,
+        variant: 'link'
+      },
       systemResourcesItem,
       {
         ...approvalModeItem,
@@ -763,7 +789,10 @@ export function useStatusbarItems({
       gaugeUsage,
       sessionStartedAt,
       gatewayState,
+      planGauge,
+      planUsed,
       systemResourcesItem,
+      t.modelPicker,
       terminalShowing,
       tokensPerSecond,
       turnStartedAt

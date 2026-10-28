@@ -90,6 +90,7 @@ Your plugin implements the `MemoryProvider` abstract base class from `agent/memo
 
 ```python
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -98,7 +99,7 @@ class MyMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Check if this provider can activate. NO network calls."""
-        return bool(os.environ.get("MY_API_KEY"))
+        return bool(get_secret("MY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Called once at agent startup.
@@ -106,7 +107,7 @@ class MyMemoryProvider(MemoryProvider):
         kwargs always includes:
           hermes_home (str): Active HERMES_HOME path. Use for storage.
         """
-        self._api_key = os.environ.get("MY_API_KEY", "")
+        self._api_key = get_secret("MY_API_KEY") or ""
         self._session_id = session_id
 
     # ... implement remaining methods
@@ -427,13 +428,25 @@ workspace data.
 All storage paths **must** use the `hermes_home` kwarg from `initialize()`, not hardcoded `~/.hermes`:
 
 ```python
-# CORRECT — profile-scoped
-from hermes_constants import get_hermes_home
-data_dir = get_hermes_home() / "my-provider"
+# CORRECT — profile-scoped, bound on the instance
+def initialize(self, session_id, **kwargs):
+    self._data_dir = Path(kwargs["hermes_home"]) / "my-provider"
 
 # WRONG — shared across all profiles
 data_dir = Path("~/.hermes/my-provider").expanduser()
 ```
+
+### Multiplexed gateways
+
+One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
+
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
+- **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
+
+The manager enforces the other half. It runs tool calls and every lifecycle hook (`prefetch`, `queue_prefetch`, `sync_turn`, `on_memory_write`, `on_session_end`, …) only from the profile the instance was initialized for. On a multiplexed gateway a caller that names no profile is refused, and the refusal is logged as `memory_caller_profile_unresolved` in the profile's `errors.log` (`hermes logs errors`) and in `gateway.log`. Background hooks run under the owning profile's `HERMES_HOME`. `handle_tool_call(..., **kwargs)` also receives `hermes_home`, `agent_identity` and `caller_gsk`. They name the profile your instance is already bound to, so you can assert on them, but don't rebind from them.
+
+Hermes can't verify a provider's internals. A provider that keeps a process-wide binding still mixes profiles' memories, even with these checks in place.
 
 ## Testing
 

@@ -47,6 +47,15 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+class WorkerRPCRefused(WorkerPersistenceError):
+    """Refused before the request left this process, so nothing reached the owner.
+
+    No ordering or receipt state was touched, so the store may re-probe such a failure on a
+    later call instead of carrying it. Every other failure (receipt timeout, journal write)
+    has an outcome the store cannot re-derive and stays sticky until retry or adoption.
+    """
+
+
 def _caller_summary(limit=8):
     """module:function:line of the frames above this store (its own frames skipped), never
     locals or argument values: best-effort callers swallow the guard's raise (#139029)."""
@@ -63,8 +72,8 @@ def call_off_event_loop(fn, *args, **kwargs):
     """Call ``fn`` here, or on a worker thread when this thread is running an event loop.
 
     For synchronous best-effort writers that can run inside a callback Relay drives on its private
-    loop (provider/tool callbacks): there ``WorkerRPC`` refuses the call (``synchronous_rpc_on_event_loop``,
-    sticky for the rest of the turn; #139029). The callback already blocks that loop, so waiting for the
+    loop (provider/tool callbacks): there ``WorkerRPC`` refuses the call (``synchronous_rpc_on_event_loop``;
+    #139029). The callback already blocks that loop, so waiting for the
     thread costs it nothing; the context is copied so session-scoped state survives the hop, and errors
     re-raise here. Async code awaits ``asyncio.to_thread`` instead.
     """
@@ -177,7 +186,7 @@ class WorkerRPC:
         else:
             logger.warning('synchronous_rpc_on_event_loop: %s on thread %s; caller: %s',
                            method, threading.current_thread().name, _caller_summary())
-            raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
+            raise WorkerRPCRefused('synchronous_rpc_on_event_loop')
         from websockets.exceptions import ConnectionClosed
         with self.lock:
             self.request_id += 1
@@ -219,6 +228,11 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     A failed write remains pending, and failure is sticky until explicit retry or
     adoption. Local queue acceptance is never returned as canonical commit.
     Pending journals live outside age-pruned cache trees.
+
+    One class is not sticky: a refusal raised before the request left the process
+    (``WorkerRPCRefused``) touched no ordering state, so the next call from a thread that can
+    run the RPC re-probes the pending entry instead of the refusal killing the worker for the
+    rest of the turn (#139029).
     """
     # The process's async-delegation ledger belongs to the adopted execution, never a reserved child.
     binds_delegation_ledger = True
@@ -229,6 +243,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self.max_bytes = max_bytes
         self.lock = threading.RLock()
         self.failure = None
+        self._failure_retryable = False
         self.path = Path(outbox_dir) / 'pending.json'
         make_user_dir(self.path.parent, mode=0o700, parents=True, exist_ok=True)
         if self.path.parent.is_symlink() or self.path.is_symlink():
@@ -302,7 +317,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             raise WorkerPersistenceError('outbox_closed')
         encoded = json.dumps(journal, ensure_ascii=True, allow_nan=False, separators=(',', ':')).encode()
         if len(encoded) > self.max_bytes:
-            self.failure = 'outbox_full'
+            self._record_failure('outbox_full')
             raise WorkerPersistenceError(self.failure)
         from utils import atomic_write_bytes
         # Owner-only journal (the dir is 0700 too); the rename and its directory entry are durable.
@@ -312,10 +327,29 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         if session_id != self.scope['session_id']:
             raise WorkerPersistenceError('permission_denied')
 
+    def _record_failure(self, exc):
+        """Remember why writes stopped and whether a later call may re-probe (exc or its message)."""
+        self.failure = str(exc)
+        self._failure_retryable = isinstance(exc, WorkerRPCRefused)
+
+    def _raise_if_failed(self):
+        """Stop every later write on a failure, except one the store can re-derive (see class doc).
+
+        A receipt timeout or journal write has an unknown outcome, so the pending entry must not
+        be overtaken: that failure stays sticky until ``retry_pending``, ``adopt`` or a successor
+        replays the journal. A guard refusal is the calling thread's loop rather than the store's
+        fault, and the pending entry is still exactly the next thing that must land, so a later
+        call re-probes it here instead of poisoning the worker (#139029).
+        """
+        if not self.failure:
+            return
+        if not self._failure_retryable:
+            raise WorkerPersistenceError(self.failure)
+        self.retry_pending()
+
     def _apply(self, operation, payload):
         with self.lock:
-            if self.failure:
-                raise WorkerPersistenceError(self.failure)
+            self._raise_if_failed()
             if self.journal['pending']:
                 raise WorkerPersistenceError('pending_receipt')
             entry = {'sequence': self.journal['next_sequence'], 'operation': operation, 'payload': payload}
@@ -325,7 +359,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             try:
                 self._save(candidate)
             except Exception as exc:
-                self.failure = str(exc)
+                self._record_failure(exc)
                 raise
             self.journal = candidate
             return self.retry_pending()[0]
@@ -344,9 +378,10 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                     self.journal = candidate
                     results.append(result)
             except Exception as exc:
-                self.failure = str(exc)
+                self._record_failure(exc)
                 raise
             self.failure = None
+            self._failure_retryable = False
             return results
 
     def adopt(self, epoch):
@@ -357,6 +392,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             self.scope = candidate['scope']
             self.journal = candidate
             self.failure = None
+            self._failure_retryable = False
 
     def append_messages_batch(self, session_id, messages, compression_lock_holder=None,
                               turn_lease_holder=None, chunk_rows=None, turn_lease_ttl_seconds=300.0):
@@ -406,8 +442,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
 
     def flush_token_counts(self, timeout=5.0):
         with self.lock:
-            if self.failure:
-                raise WorkerPersistenceError(self.failure)
+            self._raise_if_failed()
             if self.journal['pending']:
                 raise WorkerPersistenceError('pending_receipt')
             return True

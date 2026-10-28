@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Installed as /etc/profile.d/hermes.sh. Debian's /etc/profile resets PATH for
 # every login shell (`bash -l`, `docker exec <c> bash -l`, ssh, the terminal
 # tool's background `bash -lic`), dropping the image's ENV PATH dirs, so bare

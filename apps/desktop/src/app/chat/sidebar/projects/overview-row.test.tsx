@@ -136,6 +136,42 @@ describe('ProjectOverviewRow', () => {
     expect(screen.queryByText(/Show .* more in Test D/)).toBeNull()
   })
 
+  // Collapse is a reset, not a minimize: a reopened project goes back to the
+  // short preview with its "Show all N" row instead of restoring the hydrated
+  // list it had been drilled down to.
+  it('forgets the drill-down when the project collapses and reopens on the short preview', async () => {
+    workspaceOpen.value = true
+    const five = Array.from({ length: 5 }, (_, index) => session(`s${index + 1}`, 500 - index))
+    const busy = { ...project, sessionCount: 5 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: five }] }]
+    } as unknown as SidebarProjectTree)
+
+    const row = () => (
+      <ProjectOverviewRow
+        previewSessions={five.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    const view = render(row())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 5 sessions' }))
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
+
+    // A fresh element per rerender: the same reference makes React bail out of
+    // re-rendering, and the collapse transition would never be seen.
+    workspaceOpen.value = false
+    view.rerender(row())
+    workspaceOpen.value = true
+    view.rerender(row())
+
+    expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3')
+    expect(screen.getByRole('button', { name: 'Show all 5 sessions' })).toBeTruthy()
+  })
+
   // The hydrated lanes are the raw backend payload: pinned, filtered-out and
   // just-deleted sessions must go through the same exclusion the previews did,
   // and N must not promise rows the view hides.

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
@@ -136,6 +136,18 @@ export function ProjectOverviewRow({
   // rather than widening every project's preview window.
   const [expanded, setExpanded] = useState<SidebarProjectTree | null>(null)
   const [expanding, setExpanding] = useState(false)
+  // Collapsing throws the drill-down away: reopening goes back to the short
+  // preview with its "Show all N" row instead of restoring the hydrated list.
+  // The reset watches the open STATE, not the toggle — the filter menu's 全部折叠
+  // closes rows behind the same door — and the ref keeps a fetch that lands
+  // mid-collapse from resurrecting the long list on reopen.
+  const openRef = useRef(open)
+  openRef.current = open
+  useEffect(() => {
+    if (!open) {
+      setExpanded(null)
+    }
+  }, [open])
   const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
   const fetched = (previewSessions ?? []).slice(0, limit)
   const recent = fetched.length ? fetched : latestProjectSessions(project, limit)
@@ -145,7 +157,7 @@ export function ProjectOverviewRow({
   const preview = renderRows ? (visible ? expandedProjectSessions(recent, visible) : recent) : []
   // Once hydrated, the whole project is reachable but mounts a page at a time
   // (a project can hold thousands of chats; the collapsed preview stays 3).
-  const page = useRevealedRows(preview, PROJECT_SESSION_PAGE)
+  const page = useRevealedRows(preview, PROJECT_SESSION_PAGE, open)
   const rows = expanded ? page.shown : preview
   const total = project.sessionCount - hiddenSessionCount
   const hiddenCount = total - preview.length
@@ -172,7 +184,7 @@ export function ProjectOverviewRow({
 
     setExpanding(true)
     fetchProjectSessions(project.id, { supersedable: false })
-      .then(tree => void (tree && setExpanded(tree)))
+      .then(tree => void (tree && openRef.current && setExpanded(tree)))
       .catch(() => onEnter?.(project.id))
       .finally(() => setExpanding(false))
   }

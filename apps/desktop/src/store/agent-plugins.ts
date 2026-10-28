@@ -219,7 +219,8 @@ export async function toggleAgentPlugin(
   key: string,
   enable: boolean,
   failMessage: string,
-  profile?: string | null
+  profile?: string | null,
+  ownerIdentity?: string | null
 ): Promise<boolean> {
   $agentPluginBusy.set(key)
 
@@ -242,13 +243,18 @@ export async function toggleAgentPlugin(
 
     const refreshed = result.plugin
 
-    // Patch only a list loaded for the profile this toggle targeted.
-    if (refreshed && $agentPluginsProfile.get() === (profile ?? null)) {
+    // Patch only the exact list this toggle targeted. Two gateways may expose
+    // the same profile name, so profile equality alone is not ownership.
+    const ownsList =
+      $agentPluginsProfile.get() === (profile ?? null) &&
+      (ownerIdentity === undefined || $agentPluginsOwner.get() === ownerIdentity)
+
+    if (refreshed && ownsList) {
       const snapshot = normalizeAgentPluginRow(refreshed)
 
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
-    } else {
-      await loadAgentPlugins(request, profile)
+    } else if (ownsList) {
+      await loadAgentPlugins(request, profile, ownerIdentity ?? profile ?? null)
     }
 
     return true

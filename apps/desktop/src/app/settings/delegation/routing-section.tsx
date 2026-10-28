@@ -1,15 +1,20 @@
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useCallback } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { DelegationRouting, ProfileScope } from '@/hermes'
+import { type DelegationRouting, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { DelegationRoutingTranslations } from '@/i18n/types_delegation_routing'
 import { AlertTriangle, Check, GitFork, Plug, SlidersHorizontal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { requestGatewayForAgent } from '@/store/gateway'
+import {
+  $settingsRequestProfile,
+  $settingsScopeProfile,
+  settingsGatewayRequestOwnership
+} from '@/store/settings-scope'
 
 import { useOwnerCatalog } from '../delegation-model-provider-field'
 import { Pill, SectionHeading, SettingsSection } from '../primitives'
@@ -34,20 +39,24 @@ interface DelegationRoutingSlotProps {
   subpage?: string
   /** The config page's owner: the read origin once the config loaded, else the Applies-to profile. */
   writeScope?: ProfileScope
+  /** Exact Settings owner, including the selected profile descriptor used by gateway RPC ownership checks. */
+  ownerScope?: ProfileScope
   readScope?: string
 }
 
 /** The Routing section on the page that owns `delegation.*` (Model › Subagents); nothing elsewhere. */
-export function DelegationRoutingSlot({ sectionId, subpage, writeScope, readScope }: DelegationRoutingSlotProps) {
+export function DelegationRoutingSlot({ sectionId, subpage, writeScope, ownerScope, readScope }: DelegationRoutingSlotProps) {
   if (sectionId !== 'model' || (subpage !== undefined && subpage !== 'delegation')) {
     return null
   }
 
-  return <DelegationRoutingSection scope={writeScope ?? readScope} />
+  const scope = writeScope ?? readScope
+
+  return <DelegationRoutingSection ownerScope={ownerScope ?? scope} scope={scope} />
 }
 
 /** Settings › Model › Subagents: how each subagent gets its model, and the routes of the chosen mode. */
-export function DelegationRoutingSection({ scope }: { scope: ProfileScope }) {
+export function DelegationRoutingSection({ scope, ownerScope = scope }: { scope: ProfileScope; ownerScope?: ProfileScope }) {
   const { t } = useI18n()
   const r = t.settings.model.subagents.routing
   const query = useDelegationRouting(scope)
@@ -62,7 +71,7 @@ export function DelegationRoutingSection({ scope }: { scope: ProfileScope }) {
       <SettingsSection icon={GitFork} title={r.title}>
         <p className="mb-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{r.intro}</p>
         {routing ? (
-          <RoutingBody routing={routing} scope={scope} />
+          <RoutingBody ownerScope={ownerScope} routing={routing} scope={scope} />
         ) : query.isError ? (
           <div className="flex items-center gap-2" role="status">
             <p className="text-xs text-muted-foreground">{r.loadFailed}</p>
@@ -83,7 +92,7 @@ export function DelegationRoutingSection({ scope }: { scope: ProfileScope }) {
   )
 }
 
-function RoutingBody({ routing, scope }: { routing: DelegationRouting; scope: ProfileScope }) {
+function RoutingBody({ routing, scope, ownerScope }: { routing: DelegationRouting; scope: ProfileScope; ownerScope: ProfileScope }) {
   const { t } = useI18n()
   const r = t.settings.model.subagents.routing
   const mode = routing.configured
@@ -107,7 +116,9 @@ function RoutingBody({ routing, scope }: { routing: DelegationRouting; scope: Pr
           />
         ))}
       </div>
-      {pluginNeeded ? <AdvancedDelegationStatus blocked={blocked && isPluginMode(mode)} scope={scope} /> : null}
+      {pluginNeeded ? (
+        <AdvancedDelegationStatus blocked={blocked && isPluginMode(mode)} ownerScope={ownerScope} scope={scope} />
+      ) : null}
       {blocked && !isPluginMode(mode) && <BlockedBanner message={thirdPartyBlockedMessage(routing, r)} scope={scope} />}
       {mode === 'model_map' && (
         <div className="mt-6">
@@ -246,12 +257,42 @@ function BlockedBanner({ message, action, scope }: { message: string; action?: R
 
 /** Where the Advanced Delegation plugin stands for the owner: a hint under the picker, or, when the saved mode
  *  is one of its own, the blocked banner with the fix (Install / Turn on / restart). */
-function AdvancedDelegationStatus({ blocked, scope }: { blocked: boolean; scope: ProfileScope }) {
+function AdvancedDelegationStatus({
+  blocked,
+  scope,
+  ownerScope
+}: {
+  blocked: boolean
+  scope: ProfileScope
+  ownerScope: ProfileScope
+}) {
   const { t } = useI18n()
   const r = t.settings.model.subagents.routing
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway: ambientRequest } = useGatewayRequest()
   const owner = useStore($settingsRequestProfile) ?? null
-  const { row, state } = useAdvancedDelegationPlugin(requestGateway, owner)
+  const scopeKey = useStore($settingsScopeProfile)
+  const ownerIdentity = ownerScope ? `${profileScopeKey(ownerScope)}::settings:${scopeKey}` : undefined
+
+  const requestGateway = useCallback(
+    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      const target = ownerScope && typeof ownerScope === 'object' ? ownerScope : null
+
+      return target
+        ? requestGatewayForAgent<T>(
+            target.connectionId ?? null,
+            target.profile?.trim() || 'custom',
+            method,
+            params,
+            timeoutMs,
+            undefined,
+            settingsGatewayRequestOwnership(target)
+          )
+        : ambientRequest<T>(method, params, timeoutMs)
+    },
+    [ambientRequest, ownerScope]
+  )
+
+  const { row, state } = useAdvancedDelegationPlugin(requestGateway, owner, ownerIdentity)
 
   if (state === 'loading') {
     return blocked ? <BlockedBanner message={r.blockedMissing} scope={scope} /> : null
@@ -265,7 +306,7 @@ function AdvancedDelegationStatus({ blocked, scope }: { blocked: boolean; scope:
     ) : state === 'disabled' && row?.key ? (
       <Button
         onClick={() =>
-          void enableAdvancedDelegation(requestGateway, row.key!, owner, r.enableFailed).then(ok => {
+          void enableAdvancedDelegation(requestGateway, row.key!, owner, ownerIdentity, r.enableFailed).then(ok => {
             if (ok) {
               void refreshDelegationRouting(scope)
             }

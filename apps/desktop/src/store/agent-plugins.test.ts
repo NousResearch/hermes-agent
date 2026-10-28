@@ -12,7 +12,8 @@ import {
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  toggleAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -237,6 +238,24 @@ describe('loadAgentPlugins owner settlements', () => {
     await loadAgentPlugins(vi.fn(async () => ({ plugins: [] })) as never, null, 'gateway-a')
     expect($agentPluginsOwner.get()).toBe('gateway-a')
     expect($agentPluginsErrorOwner.get()).toBeUndefined()
+  })
+
+  it('does not let a same-profile toggle repaint a replacement gateway owner', async () => {
+    $agentPlugins.set([row({ key: 'advanced-delegation', status: 'disabled', source: 'user' })])
+    $agentPluginsProfile.set('default')
+    $agentPluginsOwner.set('gateway-b')
+
+    const request = vi.fn(async () => ({
+      ok: true,
+      plugin: row({ key: 'advanced-delegation', status: 'enabled', source: 'user' })
+    }))
+
+    expect(await toggleAgentPlugin(request as never, 'advanced-delegation', true, 'failed', 'default', 'gateway-a')).toBe(
+      true
+    )
+    expect($agentPlugins.get()[0].status).toBe('disabled')
+    expect($agentPluginsOwner.get()).toBe('gateway-b')
+    expect(request).toHaveBeenCalledTimes(1)
   })
 })
 

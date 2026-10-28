@@ -1,13 +1,22 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DelegationRouting } from '@/api/delegation'
 import type { HermesApiRequest } from '@/global'
+import type { ProfileScope } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import { $agentPlugins, $agentPluginsOwner, $agentPluginsProfile, $agentPluginsStatus } from '@/store/agent-plugins'
 
 import { DelegationRoutingSection } from './routing-section'
 import { SubagentModelGate } from './subagent-model-gate'
+
+const { requestGatewayForAgent } = vi.hoisted(() => ({ requestGatewayForAgent: vi.fn() }))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
+}))
 
 // A stateful stand-in for the backend's /api/delegation routes (same shapes, same refusal).
 let routing: DelegationRouting
@@ -27,6 +36,11 @@ function backend(names: string[]): DelegationRouting['backends'] {
 beforeEach(() => {
   queryClient.clear()
   writes.length = 0
+  requestGatewayForAgent.mockReset()
+  $agentPlugins.set([])
+  $agentPluginsOwner.set(undefined)
+  $agentPluginsProfile.set(undefined)
+  $agentPluginsStatus.set('idle')
   routing = {
     configured: 'default',
     blocked_reason: null,
@@ -66,11 +80,11 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-function mount() {
+function mount(scope: ProfileScope = 'work', ownerScope: ProfileScope = scope) {
   return render(
     <QueryClientProvider client={queryClient}>
-      <DelegationRoutingSection scope="work" />
-      <SubagentModelGate scope="work">
+      <DelegationRoutingSection ownerScope={ownerScope} scope={scope} />
+      <SubagentModelGate scope={scope}>
         <div data-testid="subagent-model-row">Subagent Model</div>
       </SubagentModelGate>
     </QueryClientProvider>
@@ -80,6 +94,59 @@ function mount() {
 const radio = (name: RegExp) => screen.getByRole('radio', { name }) as HTMLButtonElement
 
 describe('Subagents routing', () => {
+  it('reloads Advanced Delegation for the exact gateway when two owners share a profile name', async () => {
+    const plugin = {
+      description: '',
+      key: 'advanced-delegation',
+      name: 'advanced-delegation',
+      source: 'user',
+      status: 'disabled',
+      version: '1.0.0'
+    }
+
+    const sourceOwner = { baseUrl: 'https://foreground.example', mode: 'remote' as const, token: 'synthetic-source' }
+
+    const owner = (connectionId: string, token: string) => ({
+      cacheOwner: { baseUrl: `https://${connectionId}.example`, mode: 'remote' as const, token },
+      connectionId,
+      connectionOwner: sourceOwner,
+      connectionOwnerProfile: 'foreground',
+      profile: 'default'
+    })
+
+    const requestScope = ({ cacheOwner: _cacheOwner, ...scope }: ReturnType<typeof owner>): ProfileScope => scope
+
+    requestGatewayForAgent.mockImplementation(async (connectionId, _profile, method, params) => {
+      if (method === 'plugins.manage' && params?.action === 'list') {
+        return { plugins: connectionId === 'gateway-a' ? [plugin] : [] }
+      }
+
+      throw new Error('Unexpected gateway request')
+    })
+
+    const gatewayA = owner('gateway-a', 'synthetic-token-a')
+    const gatewayB = owner('gateway-b', 'synthetic-token-b')
+    const view = mount(requestScope(gatewayA), gatewayA)
+
+    await screen.findByText('Advanced Delegation is installed but turned off for this profile.')
+    expect(screen.getByRole('button', { name: 'Turn on' })).toBeTruthy()
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DelegationRoutingSection ownerScope={gatewayB} scope={requestScope(gatewayB)} />
+      </QueryClientProvider>
+    )
+
+    await screen.findByText('Model routes and Profile routes come from the Advanced Delegation plugin.')
+    expect(screen.queryByRole('button', { name: 'Turn on' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Install plugin' })).toBeTruthy()
+    expect(requestGatewayForAgent.mock.calls.map(([connectionId]) => connectionId)).toEqual(['gateway-a', 'gateway-b'])
+    expect(requestGatewayForAgent.mock.calls.map(([, , , , , , options]) => options)).toEqual([
+      expect.objectContaining({ expectedConnectionOwner: gatewayA.cacheOwner, expectedOwner: { profile: 'foreground', connectionOwner: sourceOwner } }),
+      expect.objectContaining({ expectedConnectionOwner: gatewayB.cacheOwner, expectedOwner: { profile: 'foreground', connectionOwner: sourceOwner } })
+    ])
+  })
+
   it('shows plugin modes with an install hint, never as choosable, until their backend registers', async () => {
     mount()
     await screen.findByText('Model routes and Profile routes come from the Advanced Delegation plugin.')

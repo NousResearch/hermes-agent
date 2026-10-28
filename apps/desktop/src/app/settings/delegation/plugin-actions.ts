@@ -5,7 +5,8 @@ import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import type { GatewayRequest } from '@/store/agent-plugins'
 import {
   $agentPlugins,
-  $agentPluginsProfile,
+  $agentPluginsErrorOwner,
+  $agentPluginsOwner,
   $agentPluginsStatus,
   loadAgentPlugins,
   toggleAgentPlugin
@@ -19,24 +20,29 @@ import { ADVANCED_DELEGATION_PLUGIN } from './routing-data'
 export type PluginState = 'disabled' | 'loading' | 'missing' | 'not_loaded'
 
 /** The Advanced Delegation plugin's state for `owner` (the Settings "Applies to" profile; null = launch profile). */
-export function useAdvancedDelegationPlugin(request: GatewayRequest, owner: null | string) {
+export function useAdvancedDelegationPlugin(
+  request: GatewayRequest,
+  owner: null | string,
+  ownerIdentity: string | undefined
+) {
   const rows = useStore($agentPlugins)
-  const loadedFor = useStore($agentPluginsProfile)
+  const loadedFor = useStore($agentPluginsOwner)
+  const errorFor = useStore($agentPluginsErrorOwner)
   const status = useStore($agentPluginsStatus)
-  const owned = loadedFor === owner
+  const owned = loadedFor === ownerIdentity
 
   useEffect(() => {
-    if (!owned) {
-      void loadAgentPlugins(request, owner)
+    if (ownerIdentity !== undefined && !owned) {
+      void loadAgentPlugins(request, owner, ownerIdentity)
     }
-  }, [owned, owner, request])
+  }, [owned, owner, ownerIdentity, request])
 
   const row = owned
     ? rows.find(r => r.name === ADVANCED_DELEGATION_PLUGIN || r.key === ADVANCED_DELEGATION_PLUGIN)
     : undefined
 
   const state: PluginState = !owned
-    ? status === 'error'
+    ? status === 'error' && errorFor === ownerIdentity
       ? 'missing'
       : 'loading'
     : !row
@@ -65,7 +71,8 @@ export function enableAdvancedDelegation(
   request: GatewayRequest,
   key: string,
   owner: null | string,
+  ownerIdentity: string | undefined,
   failMessage: string
 ) {
-  return toggleAgentPlugin(request, key, true, failMessage, owner)
+  return toggleAgentPlugin(request, key, true, failMessage, owner, ownerIdentity)
 }

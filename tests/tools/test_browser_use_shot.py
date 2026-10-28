@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -61,6 +62,7 @@ _FAKE_TRANSPORT = textwrap.dedent("""\
     import browser_harness.admin as admin, browser_harness.telemetry as telemetry
     admin.ensure_daemon = admin.print_update_banner = lambda *a, **k: None
     admin.daemon_alive = lambda *a, **k: True
+    admin.daemon_browser_kind = lambda *a, **k: os.environ.get("FAKE_DAEMON_KIND") or None
     telemetry.is_enabled = lambda: False
     telemetry.capture_cli_event = lambda *a, **k: None
 """)
@@ -85,8 +87,14 @@ def run_exec(monkeypatch, tmp_path):
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: [sys.executable, "-m", "browser_harness.run"])
     log = tmp_path / "cdp.jsonl"
 
-    def run(activate_works: bool, cloud: bool = False, code: str = "print(capture_screenshot({shot!r}))"):
+    def run(activate_works: bool, cloud: bool = False, code: str = "print(capture_screenshot({shot!r}))",
+            autospawn_daemon_kind: str = ""):
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", (lambda: object()) if cloud else (lambda: None))
+        if autospawn_daemon_kind:  # direct-API Browser Use config: the harness picks its own browser
+            monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: SimpleNamespace(name="browser-use"))
+            monkeypatch.setattr(bu_cli, "_use_gateway", lambda cfg: False)
+            monkeypatch.setattr(bu_cli, "_browser_use_api_key_set", lambda: True)
+        monkeypatch.setenv("FAKE_DAEMON_KIND", autospawn_daemon_kind)
         monkeypatch.setattr(bs, "get_session_info",
                             lambda key: {"cdp_url": f"ws://127.0.0.1:47000/devtools/browser/{key}",
                                          "features": {} if cloud else {"local": True}})
@@ -151,3 +159,15 @@ def test_cloud_new_tab_survives_a_provider_rejecting_activation(run_exec):
     assert result.get("success") is True, result.get("stderr") or result
     assert "TAB T2" in result.get("output", "") + result.get("stdout", ""), result
     assert [c["targetId"] for c in calls if c["method"] == "Target.activateTarget"] == ["T2"]
+
+
+@pytest.mark.parametrize("daemon_kind", ["local", "cloud"])
+def test_autospawn_route_activates_only_when_the_harness_actually_reached_cloud(run_exec, daemon_kind):
+    # BU_AUTOSPAWN attaches to a local Chrome that is already listening instead of provisioning a cloud
+    # browser: the configured cloud intent says nothing about which browser the daemon is driving.
+    code = "print(capture_screenshot({shot!r})); print('TAB', new_tab())"
+    result, _, calls = run_exec(True, code=code, autospawn_daemon_kind=daemon_kind)
+
+    assert result.get("success") is True, result.get("stderr") or result
+    activations = [c["targetId"] for c in calls if c["method"] == "Target.activateTarget"]
+    assert activations == (["T1", "T2"] if daemon_kind == "cloud" else []), calls

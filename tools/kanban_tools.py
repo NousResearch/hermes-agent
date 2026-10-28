@@ -424,7 +424,14 @@ _TASK_FIELDS = tuple(
     "provider_override completion_contract last_failure_error".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
-    "created_at started_at completed_at current_run_id model_override provider_override".split())
+    "created_at started_at completed_at current_run_id model_override provider_override "
+    # ``block_kind`` already lives on the task row (VALID_BLOCK_KINDS or None), so a
+    # listing can say WHY a card waits without a per-card ``kanban_show``: a short
+    # enum is enough to route, and it is the difference between a ``dependency``
+    # block (self-resolving) and ``needs_input``/``capability`` (a human owes an
+    # answer). The full ``reason`` text stays out — one kb per blocked card is what
+    # makes a listing unusable, and ``kanban_show`` still carries it.
+    "block_kind".split())
 _RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
 _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")

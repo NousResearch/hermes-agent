@@ -154,6 +154,29 @@ def _verify_access_token(
         phase="verify" if audit else "bearer verify", log=_log, on_unreachable=_audit_unreachable)
 
 
+def peek_session(request: Request):
+    """The verified Session a request to a PUBLIC path carries, or ``None``, with the gate's own
+    checks (Webapp sign-in binding, bearers only a native app was given) and none of its side
+    effects: no refresh, no cookie writes, no audit records, no 401. A public route uses it to
+    decide how much to show; an expired or unverifiable session reads as signed out."""
+    bearer = _extract_bearer(request)
+    if bearer:
+        if not webapp_sign_in.token_works_alone(request, bearer):
+            return None
+        access_token, provider_hint = bearer, None
+    else:
+        gateway = webapp_sign_in.cookie_gateway(request)
+        access_token, _rt = read_session_cookies(request, gateway)
+        if not access_token or (webapp_sign_in.applies(request) and not webapp_sign_in.check(request)):
+            return None
+        provider_hint = read_session_provider(request, gateway)
+    try:
+        return _verify_access_token(
+            request, access_token=access_token, provider_hint=provider_hint, audit=False)
+    except ProviderError:
+        return None
+
+
 async def _serve_refreshed(request: Request, call_next, new_session, provider: str) -> Response:
     """Serve the request under a just-rotated session and write the rotated cookies back. Writing
     the ROTATED RT is mandatory: Portal runs reuse detection, so replaying the stale RT would

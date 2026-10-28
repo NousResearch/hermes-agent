@@ -228,6 +228,12 @@ npm run test:desktop:platforms
 Run `npm run test:desktop:all` for install, boot, update, packaging, or other
 release-path changes.
 
+`npm run typecheck` raises V8's old-space ceiling to 4096 MB automatically
+(`scripts/typecheck.mjs`), as the renderer program (`tsc -p . --noEmit`) peaks
+around 2.6 GiB and exceeds Node's ~2 GiB default heap on 8 GB machines; pass
+`NODE_OPTIONS=--max-old-space-size=8192` if invoking `npx tsc` directly or to
+raise the ceiling further.
+
 ### Troubleshooting
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.

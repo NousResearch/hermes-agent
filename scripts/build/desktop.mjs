@@ -7,6 +7,7 @@ import { bundleElectronMain, electronOutputs } from '../../apps/desktop/scripts/
 import { checkDistBuilt } from '../../apps/desktop/scripts/assert-dist-built.mjs'
 import { classifyNativeBinary } from '../../apps/desktop/scripts/stage-native-deps.mjs'
 import { copyNativeTree } from '../../apps/desktop/scripts/prepared-native-deps.mjs'
+import { typecheckNodeOptions } from '../../apps/desktop/scripts/typecheck.mjs'
 import { frontendArgs, isMain, productOutput, withProduct, workspaceTool } from './frontend-common.mjs'
 import { recordProduct, buildInputs, rendererCurrent } from './freshness.mjs'
 
@@ -74,7 +75,11 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
     if (typecheck) {
       const ts = workspaceTool(source, app, 'typescript')
       execFileSync(process.execPath, [join(dirname(ts), 'tsc.js'), '-p', join(source, app, 'tsconfig.json'),
-        '--noEmit', '--incremental', '--tsBuildInfoFile', join(scratch, 'renderer.tsbuildinfo')], { cwd: join(source, app), stdio: 'inherit' })
+        '--noEmit', '--incremental', '--tsBuildInfoFile', join(scratch, 'renderer.tsbuildinfo')], {
+        cwd: join(source, app),
+        stdio: 'inherit',
+        env: { ...process.env, NODE_OPTIONS: typecheckNodeOptions() },
+      })
     }
     const { build } = await import(pathToFileURL(workspaceTool(source, app, 'vite')).href)
     await build({

@@ -13,7 +13,7 @@ import sys
 import sysconfig
 from typing import NamedTuple
 
-from hermes_platform.host import darwin_pci
+from hermes_platform.host import darwin_hostname, darwin_pci
 
 _ARCH_NAMES = {
     "amd64": "amd64", "x86_64": "amd64", "x64": "amd64",
@@ -422,8 +422,20 @@ def interactive_session() -> bool:
     return True
 
 
+@functools.cache
+def bonjour_hostname() -> str:
+    """``<LocalHostName>.local`` on macOS, else ``""``.
+
+    Unlike ``gethostname()``, it does not change with the network: a Mac with no ``HostName``
+    reports ``Mac``, ``Mac.localdomain`` or ``<name>.local`` depending on DHCP and reverse DNS."""
+    if sys.platform != "darwin":
+        return ""
+    name = darwin_hostname.local_hostname()
+    return f"{name}.local" if name else ""
+
+
 def clear_caches() -> None:
     """Clear every cached host fact."""
     for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
-                 nvidia_gpus, _windows_display_adapters):
+                 nvidia_gpus, _windows_display_adapters, bonjour_hostname):
         fact.cache_clear()

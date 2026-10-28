@@ -459,7 +459,7 @@ def _terminate_reclaimed_worker(
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
-    if not str(claim_lock).startswith(_kb._host_prefix()):
+    if not _kb._is_local_lock(claim_lock):
         return info
     info["host_local"] = True
 
@@ -515,11 +515,10 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
         "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
         (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
     ).fetchall()
-    host_prefix = _kb._host_prefix()
     reaped: list[str] = []
     for row in rows:
         try:
-            _reap_terminal_worker_row(conn, row, host_prefix, signal_fn, reaped)
+            _reap_terminal_worker_row(conn, row, signal_fn, reaped)
         except Exception:
             _kb._log.debug(
                 "kanban dispatch: terminal worker reap failed for run %s (task %s)",
@@ -528,9 +527,9 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
     return reaped
 
 
-def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
+def _reap_terminal_worker_row(conn, row, signal_fn, reaped: list[str]) -> None:
     pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
-    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+    if pid == os.getpid() or not _kb._is_local_lock(row["claim_lock"]):
         return
     if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
         return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
@@ -652,7 +651,6 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     """
     timed_out: list[str] = []
     now = int(time.time())
-    host_prefix = _kb._host_prefix()
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, "
@@ -668,8 +666,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     for row in rows:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
-        lock = row["claim_lock"] or ""
-        if not lock.startswith(host_prefix):
+        if not _kb._is_local_lock(row["claim_lock"]):
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
@@ -1172,11 +1169,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
-        host_prefix = _kb._host_prefix()
         from hermes_cli.kanban_owner_recovery import managed_run_exit_code, owner_reclaim_blocked
         for row in rows:
             lock = row["claim_lock"] or ""
-            if not lock.startswith(host_prefix):
+            if not _kb._is_local_lock(lock):
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
             # before its PID is visible on /proc.
@@ -1529,7 +1525,7 @@ def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: i
         if row is None or row["status"] != "running" or row["current_run_id"] != int(run_id):
             return False
         # Liveness checks are host-local: a pid from another host (or pid namespace) proves nothing here.
-        if row["worker_pid"] is None and (row["claim_lock"] or "").startswith(_kb._host_prefix()):
+        if row["worker_pid"] is None and _kb._is_local_lock(row["claim_lock"]):
             conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                          (int(pid), started_at, task_id))
             conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",

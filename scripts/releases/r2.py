@@ -983,6 +983,12 @@ def prune(
             raise RuntimeError(f"Cannot read the live canary from {pointer_key}; refusing to prune")
         protected.update(key for key in keys if live in key)
 
+    # A desktop-only canary can advance that pointer without replacing the live APT index.
+    from .r2_apt import live_pool_keys
+
+    protected.update(live_pool_keys(
+        keys, lambda key: get_object(creds, base, bucket, key, now, fetcher=fetcher)))
+
     doomed = [
         key
         for key in [

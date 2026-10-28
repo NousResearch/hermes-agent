@@ -84,6 +84,7 @@ _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-sessi
 _backends: dict[str, ComputerUseBackend] = {}
 _backend_call_locks: dict[str, threading.RLock] = {}
 _backend_permission_modes: dict[str, str] = {}
+_backend_selection_identities: dict[str, tuple[Any, ...]] = {}
 _backend_displays: dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
 # Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
 # gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
@@ -160,6 +161,13 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
     from plugins.computer_use import get_active_provider
     return get_active_provider().create_backend(permission_mode=permission_mode)
 
+def _current_backend_selection_identity() -> tuple[Any, ...]:
+    from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name
+    from tools.computer_use.cua_backend_driver import computer_use_selection_identity
+    name = configured_backend_name()
+    return (name, *computer_use_selection_identity()) if name == DEFAULT_BACKEND else (name,)
+
+
 def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
@@ -167,6 +175,7 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     from tools.computer_use.cua_backend import desktop_identity
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
     _backend_displays[sid] = desktop_identity()
+    _backend_selection_identities[sid] = _current_backend_selection_identity()
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
@@ -176,6 +185,7 @@ def _detach_locked(sid: str) -> tuple[Optional[ComputerUseBackend], Optional[thr
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
     global _backend
     _backend_permission_modes.pop(sid, None), _backend_displays.pop(sid, None)
+    _backend_selection_identities.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
     if sid == "":
         backend = _backend if backend is None else backend
@@ -214,7 +224,8 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                 return _install_backend(sid, backend, permission_mode)
             from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
             if (_backend_permission_modes.get(sid, "standard") == permission_mode
-                    and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
+                    and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())
+                    and _backend_selection_identities.get(sid) == _current_backend_selection_identity()):
                 return cached
             # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that started
             # (or moved) after this backend was cached, replaces only this session's backend.
@@ -246,7 +257,8 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
                 # A queued call can outlive a display/config change even when
                 # no other caller has replaced the cached backend yet.
                 if (_backend_permission_modes.get(sid) != _cua_permission_mode(str(session_id or ""))
-                        or backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
+                        or backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())
+                        or _backend_selection_identities.get(sid) != _current_backend_selection_identity()):
                     continue
             yield backend
             return
@@ -282,7 +294,7 @@ def _shutdown_backend_atexit() -> None:
         if _backend is not None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
-        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
+        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear(), _backend_selection_identities.clear()
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -332,7 +344,9 @@ def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
         admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
-    _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
+    from tools.computer_use.cua_backend_driver import computer_use_target, is_windows_driver, resolve_cua_driver_cmd
+    if computer_use_target() != "windows" and not is_windows_driver(resolve_cua_driver_cmd()):
+        _bd_ensure_started()  # headless guest profiles keep the existing Xvnc path
     if (err := _reject_unsafe(action, args)) is not None:
         return err
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (

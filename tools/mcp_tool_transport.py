@@ -261,6 +261,8 @@ class MCPServerTransportMixin:
         if mark_lifecycle:
             self._mark_lifecycle_started()
         await self._discover_tools()
+        from tools.mcp_skills_lifecycle import publish_transport_catalogs, retire_transport_catalogs
+        await publish_transport_catalogs(self)
         self._ready.set()
         self._ever_connected = True
         _core._reset_server_error(self.name)
@@ -286,6 +288,9 @@ class MCPServerTransportMixin:
         finally:
             if events_task is not None:
                 events_task.cancel()
+            # The catalog this connection published leaves with it: a served row that outlived its
+            # connection would be loaded from a server the transport no longer reaches.
+            retire_transport_catalogs(self)
         if label and reason == "reconnect":
             logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
         return reason

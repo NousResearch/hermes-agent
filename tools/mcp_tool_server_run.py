@@ -358,6 +358,8 @@ class MCPServerRunMixin:
                 if not await self._on_clean_return(await run_transport(config), budget):
                     break
             except asyncio.CancelledError:
+                from tools.mcp_skills_lifecycle import retire_transport_catalogs
+                retire_transport_catalogs(self)
                 # Not a connection failure: re-raise so shutdown()'s ``await self._task`` completes.
                 # Task was cancelled (shutdown, gateway restart, explicit task.cancel()). Don't treat this
                 # as a connection failure — CancelledError inherits from BaseException (not Exception) in
@@ -367,6 +369,8 @@ class MCPServerRunMixin:
                 self.session = None
                 raise
             except Exception as exc:
+                from tools.mcp_skills_lifecycle import retire_transport_catalogs
+                retire_transport_catalogs(self)
                 self.session = None
                 if not await self._on_transport_error(exc, budget):
                     break

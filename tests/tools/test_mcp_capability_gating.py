@@ -16,6 +16,7 @@ servers like Unreal Engine's editor MCP). Its cadence is configurable via
 Discovery gating ported from anomalyco/opencode#31271.
 """
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -405,3 +406,59 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
 
+
+@pytest.mark.asyncio
+class TestKeepaliveFailureLogging:
+    """Keepalive reconnect warnings must name arg-less exceptions (#65787)."""
+
+    async def _keepalive_failure_message(self, task, caplog):
+        async def fake_wait(tasks, timeout=None, return_when=None):
+            return set(), set(tasks)
+
+        import tools.mcp_tool as mcp_mod
+
+        orig = mcp_mod.asyncio.wait
+        mcp_mod.asyncio.wait = fake_wait
+        try:
+            with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                reason = await task._wait_for_lifecycle_event()
+        finally:
+            mcp_mod.asyncio.wait = orig
+
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if "keepalive failed" in r.getMessage() and "triggering reconnect" in r.getMessage()
+        ]
+        assert len(messages) == 1
+        return reason, messages[0]
+
+    def _task_whose_ping_raises(self, exc):
+        task = MCPServerTask("test")
+        task._config = {"url": "https://example.test/mcp"}
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=exc),
+            list_tools=AsyncMock(side_effect=exc),
+        )
+        return task
+
+    async def test_timeout_failure_names_the_exception(self, caplog):
+        task = self._task_whose_ping_raises(asyncio.TimeoutError())
+        reason, message = await self._keepalive_failure_message(task, caplog)
+        assert reason == "reconnect"
+        assert "TimeoutError" in message
+        assert not message.rstrip().endswith(("reconnect:", "degraded):"))
+
+    async def test_connection_reset_failure_names_the_exception(self, caplog):
+        task = self._task_whose_ping_raises(ConnectionResetError())
+        reason, message = await self._keepalive_failure_message(task, caplog)
+        assert reason == "reconnect"
+        assert "ConnectionResetError" in message
+        assert not message.rstrip().endswith(("reconnect:", "degraded):"))
+
+    async def test_message_bearing_exception_keeps_its_text(self, caplog):
+        task = self._task_whose_ping_raises(RuntimeError("boom-reason"))
+        reason, message = await self._keepalive_failure_message(task, caplog)
+        assert reason == "reconnect"
+        assert "boom-reason" in message

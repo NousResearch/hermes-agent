@@ -14,6 +14,7 @@ import pytest
 
 import tools.browser_use_cli as bu_cli
 from tools import browser_harness_dirs as harness_dirs
+from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
 from tools import browser_session as bs
 
 
@@ -92,3 +93,37 @@ def test_a_socket_that_already_binds_keeps_its_path_and_a_long_name_is_judged_by
     assert seen["runtime"] == "" and claimed == []
     seen, claimed = harness_env("/home/alexander.smith", session="n" * 64)
     assert seen["runtime"] and _kernel_accepts(_bound_socket(seen)), _bound_socket(seen)
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_root_is_the_users_private_xdg_dir_else_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness_dirs, "claim_private_dir", _REAL_CLAIM)
+    private, open_dir, link = tmp_path / "rt-private", tmp_path / "rt-open", tmp_path / "rt-link"
+    private.mkdir(mode=0o700)
+    open_dir.mkdir()
+    open_dir.chmod(0o755)
+    link.symlink_to(private)
+    for raw, expected in ((private, str(private)), (open_dir, None), (link, None),
+                          ("relative/rt", None), (tmp_path / "missing", None)):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(raw))
+        assert harness_dirs.private_user_runtime_dir() == expected, raw
+    # The short dir lands under the private runtime root when one exists.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(private))
+    short = harness_dirs._claim_short_dir("deep-home\0tag", None)
+    assert short and os.path.dirname(short) == str(private)
+    assert stat.S_IMODE(os.lstat(short).st_mode) == 0o700
+
+
+@pytest.mark.platforms("posix")
+def test_an_existing_short_dir_is_claimed_only_when_private_and_real(tmp_path):
+    claim = _REAL_CLAIM
+    ok, loose, target = tmp_path / "hbh-ok", tmp_path / "hbh-loose", tmp_path / "elsewhere"
+    ok.mkdir(mode=0o700)
+    loose.mkdir()
+    loose.chmod(0o755)
+    target.mkdir(mode=0o700)
+    (tmp_path / "hbh-link").symlink_to(target)
+    assert claim(str(tmp_path / "hbh-new"))
+    assert claim(str(ok))
+    assert not claim(str(loose))
+    assert not claim(str(tmp_path / "hbh-link"))

@@ -157,6 +157,48 @@ class TestRegister:
 
 
 # ---------------------------------------------------------------------------
+# dashboard.session_token_auth through the REAL config loader
+# ---------------------------------------------------------------------------
+
+
+class TestRealConfigLoader:
+    """The opt-out key is read from an actual config.yaml under a temp HERMES_HOME via the same
+    ``load_config_section`` path the plugin uses — no loader patch, so a misspelled section or
+    key path fails here."""
+
+    @pytest.fixture
+    def home(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", _token())
+        return home
+
+    def _register(self, plugin):
+        ctx = MagicMock()
+        plugin.register(ctx)
+        return ctx
+
+    def test_enabled_false_in_config_yaml_skips_registration(self, plugin, home):
+        (home / "config.yaml").write_text(
+            "dashboard:\n  session_token_auth:\n    enabled: false\n", encoding="utf-8")
+        ctx = self._register(plugin)
+        ctx.register_dashboard_auth_provider.assert_not_called()
+        assert "enabled is false" in plugin.LAST_SKIP_REASON
+
+    def test_enabled_true_in_config_yaml_registers(self, plugin, home):
+        (home / "config.yaml").write_text(
+            "dashboard:\n  session_token_auth:\n    enabled: true\n", encoding="utf-8")
+        ctx = self._register(plugin)
+        ctx.register_dashboard_auth_provider.assert_called_once()
+
+    def test_absent_section_defaults_to_enabled(self, plugin, home):
+        (home / "config.yaml").write_text("dashboard:\n  theme: default\n", encoding="utf-8")
+        ctx = self._register(plugin)
+        ctx.register_dashboard_auth_provider.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Interactive surfaces honour interactive_login=False
 # ---------------------------------------------------------------------------
 

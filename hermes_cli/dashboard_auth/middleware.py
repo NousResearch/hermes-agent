@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import webapp_sign_in
-from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth import list_interactive_providers, list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError
 from hermes_cli.dashboard_auth.cookies import (
@@ -123,8 +123,7 @@ def _auto_sso_response(request: Request) -> Response | None:
         resp = _unauth_response(request, reason="no_cookie")
         clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request), gateway=gateway)
         return resp
-    providers = [
-        p for p in list_session_providers() if getattr(p, "interactive_login", True)]
+    providers = list_interactive_providers()
     if len(providers) != 1 or getattr(providers[0], "supports_password", False):
         return None
     provider = providers[0]

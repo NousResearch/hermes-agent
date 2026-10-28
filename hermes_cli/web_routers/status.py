@@ -385,18 +385,20 @@ def _auth_gate_status() -> dict[str, Any]:
     native-app capability advertisement ``auth_flows`` the desktop reads to pick the
     system-browser + loopback + PKCE flow over the embedded-webview cookie flow. "cookie" is
     always available in gated mode; "native_pkce" when at least one interactive session
-    provider is registered (token-only credentials such as drain don't count). Missing
+    provider is registered (token-only credentials such as drain, and provisioned-credential
+    session providers such as session-token, don't count). Missing
     "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically."""
     auth_required = bool(getattr(app.state, "auth_required", False))
     auth_providers: list[str] = []
     auth_flows: list[str] = []
     try:
         from hermes_cli.dashboard_auth import (
-            list_providers as _list_providers, list_session_providers as _list_session_providers)
+            list_interactive_providers as _list_interactive_providers,
+            list_providers as _list_providers)
         auth_providers = [p.name for p in _list_providers()]
         if auth_required:
             auth_flows.append("cookie")
-            if _list_session_providers():
+            if _list_interactive_providers():
                 auth_flows.append("native_pkce")
     except Exception:
         # Module not importable yet (early startup) — leave as [].

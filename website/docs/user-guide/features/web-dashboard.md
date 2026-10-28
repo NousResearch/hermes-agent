@@ -886,7 +886,7 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 # ["session-token"]
 
 curl -s -o /dev/null -w '%{http_code}\n' \
-  -H "Authorization: Bearer $TOKEN" http://<host>:9119/api/me
+  -H "Authorization: Bearer $TOKEN" http://<host>:9119/api/auth/me
 # 200
 ```
 

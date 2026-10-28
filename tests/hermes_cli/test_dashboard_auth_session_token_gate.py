@@ -94,20 +94,23 @@ class TestGateEngagement:
 
 
 class TestRestBearerLeg:
+    # /api/auth/me is the real identity route: an exact 200 + provider proves the bearer was
+    # verified BY this provider (a mere "not 401" would also pass on an unrouted 404).
     def test_provisioned_token_passes_the_gate(self, gated_token_app, token):
-        r = gated_token_app.get("/api/session", headers={"Authorization": f"Bearer {token}"})
-        assert r.status_code not in (401, 403, 503), r.status_code
+        r = gated_token_app.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert r.json().get("provider") == "session-token"
 
     def test_foreign_token_is_401(self, gated_token_app, token):
         r = gated_token_app.get(
-            "/api/session", headers={"Authorization": f"Bearer {secrets.token_urlsafe(32)}"})
+            "/api/auth/me", headers={"Authorization": f"Bearer {secrets.token_urlsafe(32)}"})
         assert r.status_code == 401
 
     def test_the_desktops_stale_copy_is_401(self, gated_token_app, token):
         """The incident's trap: a token from BEFORE a secret rotation must not verify."""
         stale = secrets.token_urlsafe(32)
         assert stale != token
-        r = gated_token_app.get("/api/session", headers={"Authorization": f"Bearer {stale}"})
+        r = gated_token_app.get("/api/auth/me", headers={"Authorization": f"Bearer {stale}"})
         assert r.status_code == 401
 
 
@@ -127,3 +130,75 @@ class TestWsUpgradeLeg:
         reason, credential = _web_server_chat._ws_auth_reason(_fake_ws(query={}))
         assert reason == "no_credential"
         assert credential == "none"
+
+
+# ---------------------------------------------------------------------------
+# Login surfaces never select a provisioned-credential provider (review P1)
+# ---------------------------------------------------------------------------
+
+
+def _password_provider():
+    """A real interactive password provider (protocol-compliant subclass) to sit beside the
+    session-token provider; only its routing flags matter to these tests."""
+    cls = type("StubPasswordProvider", (session_token_plugin.SessionTokenProvider,), {
+        "name": "basic", "display_name": "Username & Password",
+        "supports_password": True, "interactive_login": True})
+    return cls(token=secrets.token_urlsafe(32))
+
+
+_NATIVE = {
+    "code_challenge": "x" * 43, "code_challenge_method": "S256",
+    "redirect_uri": "http://127.0.0.1:53682/callback", "state": "client-state",
+}
+
+
+class TestNativeAuthorize:
+    def _pending_count(self):
+        from hermes_cli.dashboard_auth import native_flow
+        return len(native_flow._pending)
+
+    def test_unnamed_request_auto_selects_the_one_interactive_provider(self, gated_token_app):
+        """session-token + one password provider: the password provider is the ONLY interactive
+        one, so an unnamed request selects it (was: 404, because both were counted)."""
+        register_provider(_password_provider())
+        r = gated_token_app.get("/auth/native/authorize", params=_NATIVE, follow_redirects=False)
+        assert r.status_code == 302, (r.status_code, r.text)
+        assert r.headers["location"].endswith("/login")
+
+    def test_token_only_deployment_never_reaches_start_login(self, gated_token_app):
+        """Only session-token registered: no interactive provider, a clean 4xx — never the
+        NotImplementedError from its start_login stub, and no pending broker state."""
+        before = self._pending_count()
+        r = gated_token_app.get("/auth/native/authorize", params=_NATIVE, follow_redirects=False)
+        assert 400 <= r.status_code < 500, (r.status_code, r.text)
+        assert self._pending_count() == before
+
+    def test_explicitly_named_token_provider_is_rejected_before_pending_state(
+            self, gated_token_app):
+        before = self._pending_count()
+        r = gated_token_app.get(
+            "/auth/native/authorize", params={**_NATIVE, "provider": "session-token"},
+            follow_redirects=False)
+        assert r.status_code == 400, (r.status_code, r.text)
+        assert self._pending_count() == before
+
+    def test_browser_login_route_rejects_the_token_provider(self, gated_token_app):
+        r = gated_token_app.get(
+            "/auth/login", params={"provider": "session-token"}, follow_redirects=False)
+        assert r.status_code == 404
+
+
+class TestStatusAdvertisement:
+    def _flows(self, client):
+        return client.get("/api/status").json()["auth_flows"]
+
+    def test_token_only_deployment_does_not_advertise_native_pkce(self, gated_token_app):
+        """Desktop picks the native browser flow off native_pkce; a token-only gate has no
+        browser sign-in, so advertising it would send the desktop down a dead end."""
+        flows = self._flows(gated_token_app)
+        assert "cookie" in flows
+        assert "native_pkce" not in flows
+
+    def test_native_pkce_returns_with_an_interactive_provider(self, gated_token_app):
+        register_provider(_password_provider())
+        assert "native_pkce" in self._flows(gated_token_app)

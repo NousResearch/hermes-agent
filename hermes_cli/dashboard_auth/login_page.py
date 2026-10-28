@@ -14,7 +14,7 @@ from __future__ import annotations
 import html
 from urllib.parse import quote, urlencode
 
-from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth import list_interactive_providers, list_session_providers
 
 # Single curly braces are ``str.format`` placeholders; CSS curlies are doubled.
 _LOGIN_HTML_TEMPLATE = """\
@@ -533,7 +533,7 @@ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
-    interactive = [p for p in providers if getattr(p, "interactive_login", True)]
+    interactive = list_interactive_providers()
     if not interactive:
         # A deployment authenticated by a provisioned credential (e.g. the
         # session-token provider): there is nothing to click. Say so instead of

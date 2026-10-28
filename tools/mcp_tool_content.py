@@ -3,12 +3,14 @@ capping, _meta filtering, image/audio caching to MEDIA tags, resource links and
 embedded resources."""
 
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
 from typing import Any, Dict, List, Optional, Tuple
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import mcp_field
+from tools.mcp_tool_artifacts import MCPResourceArtifact, get_artifacts, with_artifacts
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
 from tools.tool_output_truncate import truncate_head_tail
 
@@ -224,15 +226,15 @@ def _mcp_result_with_native_images(text: str, image_paths: list[str]) -> Any:
         try:
             payload = json.loads(text)
             payload["result"] = f"{payload.get('result') or ''}{notes}"
-            return json.dumps(payload, ensure_ascii=False)
+            return with_artifacts(json.dumps(payload, ensure_ascii=False), get_artifacts(text))
         except (TypeError, ValueError, AttributeError):
-            return text + notes
+            return with_artifacts(text + notes, get_artifacts(text))
     # The header and the scale notes are their own short part: an oversized tool text gets spilled to a file and
     # replaced by its head, and the coordinate map must survive that next to the resized screenshot it describes.
     header = "The image(s) from this call are attached — inspect them with your native vision."
-    return {"_multimodal": True,
+    return with_artifacts({"_multimodal": True,
             "content": [{"type": "text", "text": text}, {"type": "text", "text": header + notes}, *attached],
-            "text_summary": text}
+            "text_summary": text}, get_artifacts(text))
 
 
 def _cache_mcp_audio_block(block) -> str:
@@ -290,7 +292,7 @@ def _render_mcp_dropped_block_notice(block, block_type: str) -> str:
     return f"[MCP content dropped: unsupported block ({', '.join(details)})]"
 
 
-def _render_mcp_resource_block(block, server_name: str = "") -> str:
+def _render_mcp_resource_block(block, server_name: str = "", *, tool_name: str = "") -> str:
     """Render a ``ResourceLink`` or ``EmbeddedResource`` block as text: embedded text → the
     text; embedded blob → decoded (size-capped) into the document cache with a path marker;
     link → the URI plus a pointer at the server's read_resource tool (no fetch here — links
@@ -329,4 +331,9 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
         failed=f"[MCP embedded resource could not be cached: {mime or uri}]")
     if path is None:
         return err
-    return f"[MCP resource saved to {path} ({kind}, {len(raw_bytes)} bytes) — read it with read_file or terminal tools]"
+    artifact = MCPResourceArtifact(server_name, tool_name, uri, str(path), mime, len(raw_bytes),
+                                   hashlib.sha256(raw_bytes).hexdigest())
+    return with_artifacts(
+        f"[MCP resource saved to {path} ({kind}, {len(raw_bytes)} bytes) — read it with read_file or terminal tools]",
+        (artifact,),
+    )

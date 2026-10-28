@@ -184,6 +184,17 @@ Tool hooks describe individual tool calls:
 `post_tool_call` includes the same identity fields plus `result`,
 `duration_ms`, `status`, `error_type`, and `error_message`.
 
+`transform_tool_result` also receives `tool_artifacts`, a tuple of frozen
+`tools.mcp_tool_artifacts.MCPResourceArtifact` records for binary MCP resources
+Hermes decoded and cached during that call (including `resources/read`). Each
+record exposes `server_name`, native `tool_name`, `uri`, `path`, `mime_type`,
+`size`, and `sha256`. These process-local facts let source-inventory plugins
+associate actual bytes with a tool result without parsing saved-file markers.
+They are separate from the model-facing JSON and are empty for text-only,
+failed, or uncached resources; server text and `_meta` cannot supply them.
+Consumers should still validate the cached bytes before using them. Hook
+callbacks that do not accept this optional argument continue to work.
+
 `status` is the observer-grade lifecycle outcome. Common values include:
 
 | Status | Meaning |

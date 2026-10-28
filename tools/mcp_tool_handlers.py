@@ -17,6 +17,7 @@ from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
+from tools.mcp_tool_artifacts import get_artifacts, with_artifacts
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
@@ -565,7 +566,7 @@ def _error_result_text(result) -> str:
     return "".join(str(t) for t in texts if t)
 
 
-def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str]]:
+def _render_content_blocks(result, server_name: str, *, tool_name: str = "") -> tuple[str, int, list[str]]:
     """Text passes through; image/audio blocks are cached (MEDIA: tags); resource blocks are
     materialized rather than silently dropped; unsupported blocks become an inline drop notice
     (kimi-code#3227). Returns ``(text, usable_parts, image_paths)``: ``usable_parts`` counts REAL
@@ -575,6 +576,7 @@ def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str
     parts: list[str] = []
     usable_parts = 0
     image_paths: list[str] = []
+    artifacts = []
     # MCP tool results can also include ImageContent blocks (screenshot / Blockbench / Playwright etc.);
     # cache those via the gateway's image-cache helper so they flow through Hermes' MEDIA: tag convention
     # and out to messaging adapters that render images natively. Without this, image blocks were silently
@@ -590,8 +592,10 @@ def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str
         image = _cache_mcp_image_block(block)
         if image.startswith("MEDIA:"):
             image_paths.append(image[len("MEDIA:"):])
-        rendered = image or _cache_mcp_audio_block(block) or _render_mcp_resource_block(block, server_name)
+        rendered = image or _cache_mcp_audio_block(block) or _render_mcp_resource_block(
+            block, server_name, tool_name=tool_name)
         if rendered:
+            artifacts.extend(get_artifacts(rendered))
             parts.append(rendered)
             usable_parts += 1
             continue
@@ -604,7 +608,7 @@ def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str
             # believing the tool returned less than it did, with no way to recover.
             parts.append(_render_mcp_dropped_block_notice(block, block_type))
     # Hard-cap pathological payloads; ordinary large results pass to spillover.
-    return _truncate_mcp_text_result("\n".join(parts)), usable_parts, image_paths
+    return with_artifacts(_truncate_mcp_text_result("\n".join(parts)), artifacts), usable_parts, image_paths
 
 
 def _capped_structured_content(result):
@@ -648,7 +652,8 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
+def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None,
+                             *, tool_name: str = "") -> str:
     """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
     call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
@@ -662,7 +667,7 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
-    text_result, usable_parts, cached_images = _render_content_blocks(result, server_name)
+    text_result, usable_parts, cached_images = _render_content_blocks(result, server_name, tool_name=tool_name)
     if image_paths is not None:
         image_paths.extend(cached_images)
     structured = _capped_structured_content(result)
@@ -672,7 +677,7 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
         structured = None
     if structured is None and meta is None:
-        return json.dumps({"result": text_result}, ensure_ascii=False)
+        return with_artifacts(json.dumps({"result": text_result}, ensure_ascii=False), get_artifacts(text_result))
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
     payload: dict[str, Any] = {"result": text_result} if text_result else {}
     # Cap structuredContent too — a malicious server could flood context via a multi-MB JSON payload
@@ -684,9 +689,9 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
         payload["_meta"] = meta
     payload.setdefault("result", text_result)
     try:
-        return json.dumps(payload, ensure_ascii=False)
+        return with_artifacts(json.dumps(payload, ensure_ascii=False), get_artifacts(text_result))
     except (TypeError, ValueError):  # Non-serializable metadata: drop the extras, keep the call.
-        return json.dumps({"result": text_result}, ensure_ascii=False)
+        return with_artifacts(json.dumps({"result": text_result}, ensure_ascii=False), get_artifacts(text_result))
 
 
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
@@ -732,7 +737,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()
-            return _render_call_tool_result(result, server_name, image_paths)
+            return _render_call_tool_result(result, server_name, image_paths, tool_name=tool_name)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
@@ -763,7 +768,8 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
             async def _call():
                 async with server._rpc_lock:
                     result = await rpc(server.session, args, server_name)
-                return json.dumps(render(result, server_name), ensure_ascii=False)
+                rendered = render(result, server_name)
+                return with_artifacts(json.dumps(rendered, ensure_ascii=False), get_artifacts(rendered))
             return _dispatch(
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
@@ -798,13 +804,16 @@ def _render_resource_list(all_resources, server_name: str) -> dict:
 
 def _render_read_resource(result, server_name: str) -> dict:
     parts: list[str] = []
+    artifacts = []
     for block in getattr(result, "contents", []):
         if getattr(block, "text", None) is not None:
             parts.append(strip_unicode_tags(block.text))
         elif getattr(block, "blob", None) is not None:  # binary -> document cache, like EmbeddedResource blocks
-            rendered = _render_mcp_resource_block(SimpleNamespace(type="resource", resource=block), server_name)
+            rendered = _render_mcp_resource_block(SimpleNamespace(type="resource", resource=block), server_name,
+                                                   tool_name="read_resource")
+            artifacts.extend(get_artifacts(rendered))
             parts.append(rendered or f"[binary data, {len(block.blob)} bytes]")
-    return {"result": "\n".join(parts)}
+    return with_artifacts({"result": "\n".join(parts)}, artifacts)
 
 
 def _render_prompt_list(all_prompts, server_name: str) -> dict:

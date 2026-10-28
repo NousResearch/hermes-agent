@@ -849,9 +849,11 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("transform_tool_result"):
+            from tools.mcp_tool_artifacts import get_artifacts
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
             hook_results = invoke_hook("transform_tool_result", tool_name=function_name, args=function_args,
                                        result=result, **ids.hook_kwargs(), duration_ms=duration_ms,
+                                       tool_artifacts=get_artifacts(result),
                                        status=status, error_type=error_type, error_message=error_message)
             return next((r for r in hook_results if isinstance(r, str)), result)
     except Exception as _hook_err:

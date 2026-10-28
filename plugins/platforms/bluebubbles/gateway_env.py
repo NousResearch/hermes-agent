@@ -5,7 +5,7 @@ from gateway.platform_env import EnvCred, home_step, int_or, mention_patterns, s
 from utils import is_truthy_value
 
 ENV_ENABLE_CREDENTIALS = ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD")
-# ``require_mention`` is always written: an unset env reads as "" -> False.
+# ``require_mention`` is optional so an unset env leaves the config.yaml value in place.
 ENV_OVERRIDES = (
     EnvCred(
         Platform.BLUEBUBBLES, ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
@@ -15,9 +15,11 @@ ENV_OVERRIDES = (
             ("webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", "", int_or(8645)),
             ("webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             ("send_read_receipts", "BLUEBUBBLES_SEND_READ_RECEIPTS", "true", is_truthy_value),
-            ("require_mention", "BLUEBUBBLES_REQUIRE_MENTION", "", truthy_token),
         ),
-        optional=(("mention_patterns", "BLUEBUBBLES_MENTION_PATTERNS", mention_patterns),),
+        optional=(
+            ("require_mention", "BLUEBUBBLES_REQUIRE_MENTION", truthy_token),
+            ("mention_patterns", "BLUEBUBBLES_MENTION_PATTERNS", mention_patterns),
+        ),
     ),
     home_step(Platform.BLUEBUBBLES, "BLUEBUBBLES_HOME_CHANNEL"),
 )

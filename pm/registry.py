@@ -26,8 +26,9 @@ def _builtins_loaded() -> dict[str, Package]:
     pre-import files.
     """
     for module in _BUILTIN_MODULES:
-        if module not in sys.modules:
-            importlib.import_module(module)
+        # Not a sys.modules check: a module is there while another thread still runs its body (and
+        # registers its packages); import_module waits for that import and is cheap once it is done.
+        importlib.import_module(module)
     return _packages
 
 

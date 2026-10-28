@@ -126,10 +126,17 @@ def _task_publishes_pr(conn: sqlite3.Connection, task_id: str, row: sqlite3.Row)
 
     ``completion_contract`` is the card's own declaration: an unset/empty value
     stays PR-bearing for compatibility with legacy cards (fail closed); anything
-    other than exactly ``local-only`` (a repo slug or a PR URL) is PR-bearing;
+    other than exactly ``local-only`` (a repo slug or a PR URL) is PR-bearing.
     ``local-only`` is the report/notify exemption — unless one of the card's runs
     actually recorded ``published_pr``, which makes it implementer work whatever
     it declared.
+
+    A stored ``local-only`` alone is not proof of the declaration:
+    ``validate_contract`` folds an *omitted* contract into the same value, so
+    the exemption also requires the ``created`` event to record
+    ``local-only`` as the raw creation argument. Every other ``local-only``
+    row — legacy cards created before the argument was recorded, decompose
+    sub-cards, a missing or unparseable payload — fails closed to guarded.
     """
     from hermes_cli import kanban_db as _kb
 
@@ -141,7 +148,19 @@ def _task_publishes_pr(conn: sqlite3.Connection, task_id: str, row: sqlite3.Row)
     ):
         if _kb._json_dict(run["metadata"]).get("published_pr"):
             return True
-    return False
+    # Only a card that explicitly declared ``local-only`` at creation time is
+    # exempt; one indexed SELECT, reached solely on this no-published_pr
+    # local-only path. Anything else stays guarded (fail closed).
+    created = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created' "
+        "ORDER BY id LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if created is not None and _kb._json_dict(created["payload"]).get(
+        "completion_contract"
+    ) == "local-only":
+        return False
+    return True
 
 
 def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:

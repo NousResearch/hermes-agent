@@ -1185,6 +1185,13 @@ def create_task(
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
+    # Capture the RAW argument before normalisation: ``validate_contract``
+    # folds an omitted (None) contract into "local-only", so the stored column
+    # cannot distinguish a declared report card from one that never said. The
+    # created event records the raw value, and the ``active_pr`` guard
+    # (``kanban_db_pr_guard``) reads it back as the authority on whether
+    # "local-only" was an explicit declaration.
+    raw_contract = completion_contract
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
@@ -1298,6 +1305,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "completion_contract": raw_contract,
                     },
                 )
                 if task_status == "blocked":

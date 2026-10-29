@@ -1,13 +1,13 @@
 name: honcho
 repo: https://github.com/plastic-labs/honcho
-sha: f8d1fc9fe52556a86b70c7115f35ca420dee2abd
+sha: 7dd3702933d5cc1ce1f0a44bba6525cc61ee6e16
 subdir: hermes-plugin-honcho
-version: "1.0.0"
+version: "1.1.0"
 description: "Honcho is memory infrastructure for building stateful agents that understand changing people, agents, groups, projects, and ideas over time. Store messages and events, let Honcho reason in the background, then query peer representations, session context, search results, or natural-language insights from any model or framework. Use it managed at api.honcho.dev, run a local stack with the honcho CLI, or self-host the server yourself. Maintained by Plastic Labs; the same provider that shipped in-tree. Disclosure — conversation turns, derived conclusions and peer/session ids are sent to the Honcho API (api.honcho.dev by default, or the self-hosted base_url you configure) under your HONCHO_API_KEY; every request also carries X-Honcho-Host (Hermes version and OS platform) and X-Honcho-Plugin (plugin version) headers that Honcho records for usage attribution. Links the plugin opens or prints to app.honcho.dev and docs.honcho.dev carry static utm_source=hermes, utm_medium=plugin and utm_content=<placement> parameters; nothing user-, machine- or session-identifying is added."
 maintainer: plastic-labs
 tier: community
 category: memory
-image: https://raw.githubusercontent.com/plastic-labs/honcho/f8d1fc9fe52556a86b70c7115f35ca420dee2abd/hermes-plugin-honcho/docs/banner.png
+image: https://raw.githubusercontent.com/plastic-labs/honcho/7dd3702933d5cc1ce1f0a44bba6525cc61ee6e16/hermes-plugin-honcho/docs/banner.png
 docs_url: https://docs.honcho.dev/v3/guides/integrations/hermes
 capabilities:
   provides_tools: []

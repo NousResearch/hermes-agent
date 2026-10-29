@@ -120,6 +120,7 @@ export const zhHantChrome = {
       home: '主頁',
       autoDiscovered: '自動探索',
       showAllCount: count => `顯示全部 ${count} 個工作階段`,
+      showFewer: '顯示更少',
       newButton: '新增專案',
       createTitle: '新增專案',
       createDesc: '為工作區命名並新增一個或多個資料夾。',

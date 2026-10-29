@@ -29,6 +29,7 @@ vi.mock('@/i18n', () => ({
           reorder: (label: string) => `Reorder ${label}`,
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
           showAllCount: (count: number) => `Show all ${count} sessions`,
+          showFewer: 'Show fewer',
           autoDiscovered: 'Auto-discovered'
         },
         showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
@@ -104,6 +105,39 @@ describe('ProjectOverviewRow', () => {
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
   })
 
+  // #136091: "Show all N sessions" used to be one-way — once hydrated, the
+  // project could never return to its 3-row preview without restarting the
+  // app. The expanded state needs its own way back.
+  it('collapses the hydrated project back to its preview with a "Show fewer" row', async () => {
+    workspaceOpen.value = true
+    const five = Array.from({ length: 5 }, (_, index) => session(`s${index + 1}`, 500 - index))
+    const busy = { ...project, sessionCount: 5 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: five }] }]
+    } as unknown as SidebarProjectTree)
+
+    render(
+      <ProjectOverviewRow
+        previewSessions={five.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 5 sessions' }))
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
+
+    // The way back sits at the end of the hydrated list.
+    expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
+    fireEvent.click(screen.getByText('Show fewer'))
+
+    expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3')
+    expect(projectsStore.fetchProjectSessions).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Show all 5 sessions' })).not.toBeNull()
+    expect(screen.queryByText('Show fewer')).toBeNull()
+  })
+
   // A project with hundreds of chats hydrates them all, but the overview must
   // not mount every row at once: it reveals them a page at a time, with a
   // labeled row to the next page, until every session is on screen (#70421).
@@ -134,6 +168,15 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByText('Show 20 more in Test D'))
     expect(shown()).toBe(120)
     expect(screen.queryByText(/Show .* more in Test D/)).toBeNull()
+
+    // #136091: collapsing must also reset the paging progress. The revealed
+    // count survives the round trip otherwise, so a re-expand mounts every
+    // row at once — the cliff this paging exists to prevent.
+    fireEvent.click(screen.getByText('Show fewer'))
+    expect(shown()).toBe(3)
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 120 sessions' }))
+    await waitFor(() => expect(shown()).toBe(50))
+    expect(screen.getByText('Show 50 more in Test D')).not.toBeNull()
   })
 
   // The hydrated lanes are the raw backend payload: pinned, filtered-out and

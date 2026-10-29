@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
+from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -1375,6 +1376,12 @@ def abort_turn_on_interrupt(
     """Announce ``abort_message``, close any open tool sequence with ``interrupt_text``,
     persist, clear the interrupt and return the ``interrupted`` result dict."""
     _vlines(agent, f"⚡ {abort_message}")
+    # Read WHO stopped the turn BEFORE ``clear_interrupt`` wipes ``_tool_interrupt_reason``: this
+    # early return bypasses ``finalize_turn``, so the dict below is the only carrier of the exit
+    # reason. Without it a lease/watchdog abort surfaces as whichever retry placeholder happened to
+    # be in flight ("Operation interrupted: retrying API call after error (retry 1/3)"), is booked
+    # as a user stop in metrics, and never produces a "Turn ended: reason=..." line.
+    _turn_exit_reason = interrupted_during_api_call_reason(agent)
     # Empty-response recovery can leave a synthetic assistant+nudge pair after an
     # already-executed tool result. Strip only that request-local scaffold before
     # closing, so this exit owner can persist its specific interrupt reason.
@@ -1386,7 +1393,7 @@ def abort_turn_on_interrupt(
     agent.clear_interrupt(hard_cancel=True)
     return {
         "final_response": interrupt_text, "messages": messages, "api_calls": api_call_count,
-        "completed": False, "interrupted": True,
+        "completed": False, "interrupted": True, "turn_exit_reason": _turn_exit_reason,
     }
 
 

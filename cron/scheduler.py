@@ -2071,6 +2071,21 @@ def _run_agent_with_watchdog(
     return result
 
 
+def _failure_text(result: dict, turn_exit_reason: str, final_response_text: str) -> str:
+    """``last_status`` text for a failed turn: the error it reported, plus WHY the turn ended.
+
+    A turn stopped by a system producer (turn-lease watchdog, inactivity monitor) reports the phase
+    text that happened to be in flight — often a retry placeholder such as
+    "Operation interrupted: retrying API call after error (retry 1/3)" — which names the symptom and
+    hides the cause. ``turn_exit_reason`` carries it, e.g.
+    ``interrupted_during_api_call(session_turn_lease_lost)``, so keep both."""
+    text = str(result.get("error") or final_response_text or "agent reported failure")
+    reason = (turn_exit_reason or "").strip()
+    if reason and reason not in text:
+        return f"{text} (turn exited: {reason})"
+    return text
+
+
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
@@ -2084,7 +2099,9 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-        raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        raise RuntimeError(
+            _failure_text(result, turn_exit_reason, final_response_text)
+        )
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

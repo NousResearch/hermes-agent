@@ -35,7 +35,7 @@ def test_profile_extraction_ignores_a_hermes_cli_package_in_the_launch_directory
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.chdir(launch_dir)
 
-    profiles = load_hosted_profiles(plugin_dir, "_hermes_test_cwdprobe")
+    profiles, _in_process = load_hosted_profiles(plugin_dir, "_hermes_test_cwdprobe")
 
     assert not (launch_dir / "shadow-imported.txt").exists()
     assert [p.name for p in profiles] == ["cwdprobe"]

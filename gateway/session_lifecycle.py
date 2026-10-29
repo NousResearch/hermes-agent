@@ -80,6 +80,12 @@ class SessionLifecycleMixin:
         after the self-heal re-homes the key, the id has no owner and would resolve to the launch
         store, which never holds a routed profile's rows (#118862).
         """
+        with self._lock:
+            if session_id in self._rows_pending:
+                # A route transition published this id and has not inserted/reopened its row yet
+                # (a /new racing a turn that resolves the route as it finishes): healing it here
+                # would hand the route back to the conversation the user just left.
+                return False
         db = self._db_for_key(session_key) if session_key else self._db_for_session_id(session_id)
         if not db or not session_id:
             return False

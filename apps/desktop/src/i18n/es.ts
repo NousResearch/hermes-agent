@@ -11,6 +11,7 @@ import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esGatewayHost } from './es_gateway_host'
 import { esLocalModels } from './es_local_models'
+import { esMemoryLayers } from './es_memory_layers'
 import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
@@ -684,6 +685,7 @@ export const esOverrides = {
     noResults: 'No se encontraron idiomas'
   },
   settings: {
+    memoryLayers: esMemoryLayers,
     subpages: {
       appearanceTheme: 'Tema',
       appearanceTypography: 'Tipografía',
@@ -843,6 +845,17 @@ export const esOverrides = {
         versionLabel: 'Versión',
         reviewedPin: sha => (sha ? `Pin revisado ${sha}` : 'Pin revisado'),
         latestCommit: 'Último commit',
+        sourceMoved: sha =>
+          sha
+            ? `El repositorio cambió desde que lo revisaste. Revisa la nueva versión (commit ${sha}) antes de instalarla.`
+            : 'El repositorio cambió desde que lo revisaste. Leyendo la nueva versión…',
+        legacyBackendConfirm:
+          'Este backend es más antiguo que esta aplicación y no puede garantizar que se instale la versión que revisaste: si el repositorio cambió desde entonces, se instala la versión más nueva. Actualiza el backend para tener esa garantía.',
+        installAnyway: 'Instalar de todos modos',
+        partialInstall: sha =>
+          sha
+            ? `El plugin solo se instaló en parte: la parte del agente está instalada en el commit ${sha}, pero la parte de escritorio no pudo seguirla porque el repositorio cambió desde que lo revisaste. Activa Forzar reinstalación en Avanzado para reemplazar ambas partes por la versión mostrada, o cancela para quedarte solo con la parte del agente.`
+            : 'El plugin solo se instaló en parte: la parte del agente está instalada, pero la parte de escritorio no pudo seguirla porque el repositorio cambió desde que lo revisaste. Activa Forzar reinstalación en Avanzado para reemplazar ambas partes por la versión mostrada, o cancela para quedarte solo con la parte del agente.',
         nothingToInstall: 'Este paquete no tiene nada que instalar aquí.'
       }
     },
@@ -2245,8 +2258,8 @@ export const esOverrides = {
       defaultDirTitle: 'Directorio de proyecto predeterminado',
       defaultDirDesc:
         'Las sesiones nuevas empiezan en esta carpeta salvo que elijas otra. Déjala sin definir para usar tu directorio de inicio.',
-      defaultDirUpdated:
-        'Directorio de proyecto predeterminado actualizado; inicia un chat nuevo (Ctrl/⌘+N) para que el cambio surta efecto.',
+      defaultDirUpdated: shortcut =>
+        `Directorio de proyecto predeterminado actualizado; inicia un chat nuevo${shortcut ? ` (${shortcut})` : ''} para que el cambio surta efecto.`,
       defaultsTo: label => `Predeterminado: ${label}.`,
       change: 'Cambiar',
       choose: 'Elegir',
@@ -2850,9 +2863,6 @@ export const esOverrides = {
       resume: 'Reanudar',
       runNow: 'Ejecutar ahora',
       memoryData: 'Datos de memoria',
-      memoryDataDesc: 'Archivos de memoria integrados que se incluyen en cada sesión',
-      memoryProvider: name => `Proveedor activo: ${name}`,
-      builtinMemory: 'integrada',
       memoryFile: 'Memoria del agente (MEMORY.md)',
       userFile: 'Perfil de usuario (USER.md)',
       bytes: size => size,
@@ -3197,6 +3207,7 @@ export const esOverrides = {
     exportNeedsHost: name => `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
     allProfiles: 'Todos los perfiles',
     showAllProfiles: 'Mostrar todos los perfiles',
+    notServedHere: 'No se ofrece aquí',
     switchToProfile: name => `Cambiar a ${name}`,
     switchToConnection: name => `Cambiar a ${name}`,
     switchConnectionFailed: name => `No se pudo conectar a ${name}`,
@@ -4103,6 +4114,8 @@ export const esOverrides = {
     versionDetailsBody:
       'Esta instalación se administra fuera de la app. Actualízala de la misma forma en que la instalaste.',
     versionDetailsVersion: 'Versión',
+    versionDetailsClient: 'Este dispositivo',
+    versionDetailsBackend: 'Backend conectado',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origen de la compilación',
     versionDetailsDistribution: 'Distribución',
@@ -4770,7 +4783,8 @@ export const esOverrides = {
     saveApply: 'Guardar y aplicar',
     notExpressible: 'esta disposición se entrelaza (en molinete) y aún no puede expresarse como divisiones anidadas',
     zoneCount: count => `${count} zonas`,
-    tabCount: count => `${count} pestañas`
+    tabCount: count => `${count} pestañas`,
+    tabActions: title => `Acciones de ${title}`
   },
   contextMenu: {
     link: {

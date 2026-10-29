@@ -1871,10 +1871,19 @@ export interface McpCatalogResponse {
   diagnostics: { name: string; kind: string; message: string }[]
 }
 
+export type MemoryProviderStatus = 'missing' | 'needs_config' | 'ready' | 'unavailable'
+
 /** `GET /api/memory` — active provider + built-in memory file sizes. */
 export interface MemoryStatusResponse {
+  /** Configured external provider; `''` = built-in memory only. */
   active: string
-  providers: { name: string; description: string; configured: boolean }[]
+  providers: {
+    name: string
+    description: string
+    available: boolean
+    configured: boolean
+    status: MemoryProviderStatus
+  }[]
   builtin_files: { memory: number; user: number }
 }
 

@@ -3774,7 +3774,8 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             thread_id=thread_ts,
             chat_topic=metadata.get("context_channel_id") or None,
-            scope_id=metadata.get("team_id") or None)
+            scope_id=metadata.get("team_id") or None,
+            parent_chat_id=channel_id if thread_ts else None)
         try:
             session_store.get_or_create_session(source)
         except Exception:
@@ -4174,7 +4175,7 @@ class SlackAdapter(BasePlatformAdapter):
         if decision is None and user_id and callable(auth_fn):
             source = self.build_source(
                 chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name="",
-                thread_id=thread_id)
+                thread_id=thread_id, parent_chat_id=channel_id if thread_id else None)
             decision = bool(auth_fn(source))
         if decision is False:
             logger.warning(
@@ -4715,6 +4716,9 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,
+            # A Slack thread lives inside its channel: the route anchor the notifier and the
+            # profile_routes matcher read for thread-shaped sources (same shape as Matrix threads).
+            parent_chat_id=channel_id if thread_ts else None,
             message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
@@ -6092,7 +6096,8 @@ class SlackAdapter(BasePlatformAdapter):
             return
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
-            thread_id=thread_id, scope_id=team_id or None)
+            thread_id=thread_id, scope_id=team_id or None,
+            parent_chat_id=channel_id if thread_id else None)
         from gateway.platforms.base import resolve_channel_skills
         event = MessageEvent(
             text=text,
@@ -6173,7 +6178,7 @@ class SlackAdapter(BasePlatformAdapter):
         # like the message that started the thread.
         return self.build_source(
             chat_id=channel_id, chat_type=chat_type, user_id=user_id, thread_id=thread_ts,
-            scope_id=team_id or None)
+            scope_id=team_id or None, parent_chat_id=channel_id if thread_ts else None)
 
     def _thread_rehydration_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:

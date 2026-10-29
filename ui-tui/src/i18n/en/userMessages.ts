@@ -43,6 +43,8 @@ export const userMessagesEn = {
       /** shellBackendRefused when the gateway did not name the backend (older gateways). */
       shellBackendRefusedUnnamed:
         "!commands run on the gateway host, but this session's terminal backend isn't local, so the command was not run. Ask the agent to run it instead.",
+      /** `{0}` = the JSON-RPC method name the backend does not serve. Not a version claim. */
+      methodUnavailable: (method: string) => `This Hermes backend does not provide ${method}, so that was not done.`,
       versionSkew:
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:

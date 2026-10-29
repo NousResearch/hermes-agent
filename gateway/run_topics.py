@@ -85,10 +85,14 @@ class GatewayTopicThreadsMixin:
         )
 
     def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
-        """True for a user-created Telegram private-chat topic lane."""
+        """True for a user-created Telegram private-chat topic lane. Never a conversation its chat
+        moved past (gateway/session_detached.py): its turns neither heal nor rewrite the topic's
+        binding, nor rename the topic, which belong to the chat's current conversation."""
+        from gateway.session_detached import detached_route_of
         tid = str(source.thread_id or "")
         return (
-            self._is_telegram_dm(source) and self._telegram_topic_mode_enabled(source)
+            detached_route_of(source) is None
+            and self._is_telegram_dm(source) and self._telegram_topic_mode_enabled(source)
             and bool(tid) and tid not in self._TELEGRAM_GENERAL_TOPIC_IDS
         )
 

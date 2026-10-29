@@ -1819,7 +1819,7 @@ syncPreviewScope()
 /** The mode of the backend that serves `owner`: the route's own `mode`, else
  *  its registry connection's kind, else the socket already dialed for it (a
  *  bare profile rides the primary or its own pool secondary). Null = unknown. */
-function ownerConnectionMode(owner: SessionOwnerScope): 'local' | 'remote' | null {
+export function ownerConnectionMode(owner: SessionOwnerScope): 'local' | 'remote' | null {
   if (!owner) {
     return null
   }

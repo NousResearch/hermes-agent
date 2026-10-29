@@ -1,0 +1,17 @@
+name: hermes-pr-studio
+repo: https://github.com/Murali-lns/hermes-pr-studio
+sha: b9ba1c6bb567a8aeeff60fb4cfd17abebc0fa95f
+description: "Review GitHub pull requests in Hermes Desktop — inbox of your open PRs across repos, diffs with inline threads, line comments and reviews, private-repo images, watched PRs, and one-click Send to Hermes for any comment. Disclosure — shells out to your logged-in gh CLI (and `git remote get-url origin` in the open project); GitHub writes only on explicit click, reviews confirmed; \"Send to Hermes\" and \"review in new chat\" submit the PR comment text (written by other GitHub users) to your chat as a prompt immediately; polls watched PRs every 60 s while Desktop is open; no stored credentials, no telemetry. Independent codebase, not derived from githermes."
+maintainer: Murali-lns
+tier: community
+category: desktop
+requires_hermes: ">=0.22.1"
+docs_url: https://github.com/Murali-lns/hermes-pr-studio#readme
+version: "0.3.0"
+title: PR Studio
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

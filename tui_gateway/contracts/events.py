@@ -142,6 +142,9 @@ class MessageStartPayload(Payload):
     display_text: str | None = None
     notification_category: str | None = None
     text: str | None = None
+    #: ``stream_segments.TurnSegments`` identity of the prompt turn; a client that sees the same id again is
+    #: looking at a re-sent frame of the turn it already has, not a new turn.
+    turn_id: str | None = None
 
 
 event("message.start", MessageStartPayload,
@@ -161,9 +164,15 @@ class StreamDeltaPayload(Payload):
 class MessageDeltaPayload(StreamDeltaPayload):
     """``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the
     reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that
-    closes the classic CLI's reply box. Every other viewer ignores an empty chunk."""
+    closes the classic CLI's reply box. Every other viewer ignores an empty chunk.
+
+    A prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code
+    units of that segment already sent): a client drops a re-sent chunk it already applied."""
 
     text: str | None
+    turn_id: str | None = None
+    segment: int | None = None
+    offset: int | None = None
 
 
 event("message.delta", MessageDeltaPayload, doc="One streamed chunk of the assistant reply (null text: segment boundary).")
@@ -177,6 +186,9 @@ class MessageInterimPayload(Payload):
 
     text: str
     already_streamed: bool
+    #: The turn and segment this seal closes; a re-sent seal of a closed segment is not a new bubble.
+    turn_id: str | None = None
+    segment: int | None = None
 
 
 event("message.interim", MessageInterimPayload,

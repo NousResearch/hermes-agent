@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, NamedTuple, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
@@ -111,6 +113,48 @@ def _get_independent_completions() -> bool:
     """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
+
+# delegation.gateway_mode: "background" (alias "async") always detaches; "inline" joins in the turn; anything else is
+# "auto". Read from the gateway turn's own (profile-scoped) user config, not from this process's config.
+_GATEWAY_MODES = {"inline": True, "background": False, "async": False}
+
+def gateway_delegation_inline(user_config: Any, platform_key: str, *, interim_enabled: bool) -> bool:
+    """Whether a gateway session joins its top-level delegations inside the turn (``delegation.gateway_mode``).
+
+    ``auto`` (default) joins on a human chat whose interim assistant messages are off (the gateway's resolved
+    ``display.interim_assistant_messages``, platform overrides included): there the "status, end your turn" reply
+    the background path asks for would be delivered as the turn's answer, then the real answer as a second message.
+    API, local and webhook surfaces keep the background path under ``auto``."""
+    from gateway.session_context import NON_MESSAGING_SESSION_SURFACES
+    section = user_config.get("delegation") if isinstance(user_config, dict) else None
+    mode = str(section.get("gateway_mode") or "auto").strip().lower() if isinstance(section, dict) else "auto"
+    if mode in _GATEWAY_MODES:
+        return _GATEWAY_MODES[mode]
+    return not interim_enabled and str(platform_key or "").lower() not in NON_MESSAGING_SESSION_SURFACES
+
+# Set by the gateway around building a session's agent; read once by that agent's first tool build.
+_GATEWAY_DELEGATION_INLINE: ContextVar[bool] = ContextVar("hermes_gateway_delegation_inline", default=False)
+
+@contextmanager
+def gateway_delegation_inline_scope(inline: bool) -> Iterator[None]:
+    """Build an agent whose tools carry the joined ``delegate_task`` variant (frozen on the agent by
+    :func:`agent_joins_delegation`). Dispatch reads the variant the session carries, not this flag."""
+    token = _GATEWAY_DELEGATION_INLINE.set(bool(inline))
+    try:
+        yield
+    finally:
+        _GATEWAY_DELEGATION_INLINE.reset(token)
+
+def agent_joins_delegation(agent: Any) -> bool:
+    """The gateway's inline decision, frozen on *agent* at its first tool build (like ``agent_is_oneshot``) and
+    re-frozen from a restored tools[] pin (``tools.delegate_tool.adopt_session_delegation_mode``), so later rebuilds
+    outside the build scope keep the session's ``delegate_task`` bytes. Dispatch does not read this: it follows the
+    schema the session carries (``tools.delegate_tool.session_joins_delegation``)."""
+    cached = getattr(agent, "_delegation_inline", None)
+    if not isinstance(cached, bool):
+        cached = _GATEWAY_DELEGATION_INLINE.get()
+        agent._delegation_inline = cached
+    return cached
 
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own

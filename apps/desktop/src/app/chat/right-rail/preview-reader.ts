@@ -10,9 +10,12 @@
  * a registered reader answers with the live page's text;
  * a tab with no reader (a file peek, an artifact) still answers with its
  * identity and a note pointing the agent at the tool that reads that content
- * directly (read_file / the conversation's artifact).
+ * directly (read_file / the conversation's artifact). A browser-hosted
+ * Desktop renders URLs in a sandboxed iframe it can never read, so its URL
+ * tabs answer `surface: 'iframe'` with a note naming web_extract instead.
  */
 
+import { hostHas } from '@/lib/host-capabilities'
 import { type PreviewTab, previewTabsFor } from '@/store/preview'
 import type { PreviewOwner } from '@/store/preview-ownership'
 
@@ -41,6 +44,9 @@ export interface PreviewReadResult {
   note?: string
   path?: string
   start: number
+  /** Set to 'iframe' when the page renders in the browser-hosted Desktop's
+   *  sandboxed iframe, whose text this renderer cannot read. */
+  surface?: 'iframe'
   /** Open preview tabs, set when more than one is mounted. */
   tabs?: PreviewReadTabSummary[]
   text: string
@@ -57,6 +63,11 @@ interface PreviewPage {
 }
 
 type PageReader = () => Promise<PreviewPage>
+
+/** A browser host mounts URL previews in a sandboxed (opaque-origin) iframe:
+ *  no page reader can ever register, so waiting would never help. */
+const IFRAME_UNREADABLE_NOTE =
+  "Page text isn't readable in browser-hosted Desktop: the page renders in a sandboxed cross-origin iframe. Read this URL with web_extract or browser_exec instead."
 
 /** Default + hard cap on one read — a page's innerText can be megabytes, and
  *  this crosses the gateway into model context. Page with start/count. */
@@ -158,15 +169,19 @@ export async function readActivePreview(
     }
   }
 
-  // No live webview behind the tab (a file peek, an artifact, or a page still
-  // booting): answer with the tab's identity so the agent knows what's on
-  // screen and which of its own tools reads the content directly.
+  // No live webview behind the tab (a file peek, an artifact, a page still
+  // booting, or a browser host's iframe): answer with the tab's identity so the
+  // agent knows what's on screen and which of its own tools reads the content.
+  const iframe = target.kind === 'url' && !hostHas('webviewPreview')
+
   const identity =
     target.kind === 'file'
       ? 'File preview — read the file itself with read_file.'
       : target.kind === 'artifact'
         ? 'Generated artifact — its content is in the conversation that produced it.'
-        : 'The page has not finished loading — retry in a moment.'
+        : iframe
+          ? IFRAME_UNREADABLE_NOTE
+          : 'The page has not finished loading — retry in a moment.'
 
   return windowText(
     {
@@ -174,6 +189,7 @@ export async function readActivePreview(
       kind: target.kind,
       note: withMultiNote(identity, multi),
       path: target.path,
+      ...(iframe ? { surface: 'iframe' as const } : {}),
       title: target.label,
       url: target.url
     },

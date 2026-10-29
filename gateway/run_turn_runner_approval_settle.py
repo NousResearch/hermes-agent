@@ -12,9 +12,11 @@ Best-effort by design: a failed notice is logged at debug — the approval alrea
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from gateway.platforms.base import fit_prefix
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_timed_out_notice
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,9 @@ def register_timeout_notice(
     session_key = runner._ctx.session_key or ""
     if not request_id or not session_key:
         return
-    timeout_s = approval_timeout_seconds()
+    timeout_s = approval_data.get("timeout_s")
+    if timeout_s is None:
+        timeout_s = approval_timeout_seconds()
 
     def settle(reason: str) -> None:
         if reason != "timeout":
@@ -62,22 +66,36 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
     metadata = _interim_metadata(ctx._status_thread_metadata)
     try:
         # Plain markdown, not the card's platform markup: ``edit_message`` re-formats it itself.
-        if card_message_id and await _edit_card(
-                adapter, ctx._status_chat_id, card_message_id,
-                t("gateway.exec_approval.timed_out_card_body", notice=notice, command=command)):
+        if card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, notice, command):
             return
         await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
     except Exception:
         logger.debug("Approval timeout notice failed", exc_info=True)
 
 
-async def _edit_card(adapter, chat_id: str, message_id: str, content: str) -> bool:
-    """Edit the card in place (drops the buttons on platforms whose edit replaces the markup)."""
+def _timed_out_card_body(adapter, chat_id: str, notice: str, command: str) -> str:
+    """The notice plus the command, which is now the card's only record of it. It must fit one
+    message in the platform's own units (Telegram counts UTF-16), or the edit is truncated in
+    place behind a dangling "(1/N)" and keeps streaming-preview state. A run of backticks in the
+    command would close the card's fence and let the platform's formatter rewrite, and grow,
+    the rest, so it is split with zero-width spaces (which also ride along in a copy)."""
+    command = re.sub(r"`{3,}", lambda run: "\u200b".join(run.group()), command)
+    measure, suffix = adapter.message_len_fn_for_chat(chat_id), "..."
+    frame = measure(t("gateway.exec_approval.timed_out_card_body", notice=notice, command=""))
+    budget = adapter.max_message_length_for_chat(chat_id) - frame - measure(suffix)
+    return t("gateway.exec_approval.timed_out_card_body", notice=notice,
+             command=fit_prefix(command, max(0, budget), measure, suffix))
+
+
+async def _edit_card(adapter, chat_id: str, message_id: str, notice: str, command: str) -> bool:
+    """Edit the card in place to the timed-out body; False sends the notice as a new message.
+    Platforms whose edit replaces the markup drop the buttons here; Discord's edit keeps them,
+    and its card's settle observer removes them."""
     edit: Optional[Callable[..., Any]] = getattr(adapter, "edit_message", None)
     if edit is None:
         return False
     try:
-        result = await edit(chat_id, message_id, content)
+        result = await edit(chat_id, message_id, _timed_out_card_body(adapter, chat_id, notice, command))
     except Exception:
         logger.debug("Approval card edit failed; sending the notice as a new message", exc_info=True)
         return False

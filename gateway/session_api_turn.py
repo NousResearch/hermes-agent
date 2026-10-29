@@ -86,6 +86,10 @@ def api_session_vars():
 
 def check_api_settings(adapter, settings):
     dispatch = settings.get('room_dispatch')
+    # A room policy is only ever issued with the dispatch it was verified for; a policy-only
+    # blob (e.g. queued by an older build) would otherwise widen the operator's API config.
+    if dispatch is None and settings.get('room_execution_policy') is not None:
+        raise RuntimeStoreError('permission_denied')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
         from gateway.platforms.api_server_room_grants import _local_room_catalog

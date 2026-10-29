@@ -6,16 +6,19 @@ import { useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
-import { $settledClarifyResults, sessionClarifyRequest } from '@/store/clarify'
+import type { TimelinePartMetadata } from '@/lib/chat-messages'
+import { $settledClarifyResults, type ClarifyRequest, sessionClarifyRequest } from '@/store/clarify'
 
 import { selectMessageRunning } from '../tool/fallback-model'
 
-import { readClarifyArgs } from './parse'
+import { type ClarifyArgs, readClarifyArgs } from './parse'
 import { ClarifyToolPending } from './pending'
 import { ClarifyToolSettled } from './settled'
 import { useUndeliveredClarify } from './use-undelivered'
 
-export const ClarifyTool = (props: ToolCallMessagePartProps) => {
+type ClarifyToolProps = ToolCallMessagePartProps & Pick<TimelinePartMetadata, 'clarifyRequestId'>
+
+export const ClarifyTool = (props: ClarifyToolProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
     return <ClarifyToolSettled {...props} />
@@ -31,7 +34,27 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
 // would show a later card the answer of an earlier one.
 const requestIdByToolCall = new Map<string, string>()
 
-function ClarifyToolLive(props: ToolCallMessagePartProps) {
+// Whether this row renders the session's live request. The transcript re-arm
+// ties each request to one row (`clarifyRequestId`): that row follows it, even
+// when the gateway asks a batch one card per question on the same row. Every
+// other row it saw is history, including an earlier call or a duplicated copy
+// that asks the same question. A row no re-arm has seen follows a request its
+// own args cover.
+function ownsRequest(request: ClarifyRequest | null, row: ClarifyToolProps, args: ClarifyArgs): boolean {
+  if (!request) {
+    return false
+  }
+
+  if (row.clarifyRequestId !== undefined) {
+    return row.clarifyRequestId === request.requestId
+  }
+
+  const asked = new Set((args.questions ?? []).map(entry => entry.question.trim()))
+
+  return asked.size > 0 && request.questions.every(question => asked.has(question.question.trim()))
+}
+
+function ClarifyToolLive(props: ClarifyToolProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
@@ -46,17 +69,30 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
   const settledResults = useStore($settledClarifyResults)
-  const requestId = requestIdByToolCall.get(rowKey)
-  const settledResult = requestId && request?.requestId !== requestId ? settledResults[requestId] : undefined
+  const owner = ownsRequest(request, props, fromArgs)
 
-  if (request && !settledResult && request.requestId !== requestId) {
+  if (request && owner) {
     requestIdByToolCall.set(rowKey, request.requestId)
   }
+
+  // The chat bar and Skip store an answer before `tool.complete`. It shows
+  // until this row's next live request: the gateway asks a batch one card per
+  // question, and a stored answer that outlived its card would hide the next
+  // question while the chat bar answered it.
+  const requestId = requestIdByToolCall.get(rowKey)
+  const settledResult = !owner && requestId ? settledResults[requestId] : undefined
 
   const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered && !settledResult)
 
   if (settledResult) {
     return <ClarifyToolSettled {...props} result={settledResult} />
+  }
+
+  // A row that does not own the live question (an earlier call, a duplicated
+  // copy) is history: it renders its own args as a plain tool row, never as
+  // the session's one interactive card.
+  if (request && !owner && !answered) {
+    return <ToolFallback {...props} />
   }
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
@@ -67,11 +103,13 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
+  // A row answered from its own card waits for `tool.complete` with its own
+  // args. A live request it does not own belongs to another row.
   return (
     <ClarifyToolPending
       fromArgs={fromArgs}
       onAnswered={() => setAnswered(true)}
-      request={request}
+      request={owner ? request : null}
       undelivered={undelivered}
     />
   )

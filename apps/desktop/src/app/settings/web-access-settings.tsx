@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { type ReactElement, useState } from 'react'
+import { type ReactElement, useEffect, useState } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
 import { Button } from '@/components/ui/button'
@@ -18,8 +18,8 @@ import {
 import { useI18n } from '@/i18n'
 import type { WebAccessTranslations } from '@/i18n/types_gateway_host'
 import { ExternalLink } from '@/lib/external-link'
+import { hostHas } from '@/lib/host-capabilities'
 import { Globe, Loader2, Network } from '@/lib/icons'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
@@ -28,6 +28,10 @@ import { ListRow, Pill, SectionHeading, SettingsContent, SettingsSection, Settin
 
 const RESTART_POLL_MS = 1500
 const RESTART_TIMEOUT_MS = 90_000
+// `hermes config set webapp.*` and a gateway restarted elsewhere change the status behind the pane's
+// back: re-read it when the window regains focus or comes back into view, and on a slow poll while
+// it is visible (react-query pauses the interval in the background).
+const STATUS_POLL_MS = 10_000
 
 /**
  * The config says what the gateway serves from its next start; the gateway says what it serves now.
@@ -73,13 +77,27 @@ function appliesConfig(status: WebAccessStatus): boolean {
   return phase !== 'pendingOn' && phase !== 'pendingOff'
 }
 
+/** The restart the pane waits on exited without replacing the gateway; `reason` is its last line. */
+class RestartFailed extends Error {
+  constructor(readonly reason: string) {
+    super(reason)
+  }
+}
+
 /** Poll until the restarted gateway applies the saved config. Start, Stop and Restart all wait here:
- *  until the old gateway exits it still answers with what it served before. */
-async function waitForRestart(): Promise<WebAccessStatus> {
+ *  until the old gateway exits it still answers with what it served before. A restart (`restartPid`)
+ *  that exits first leaves the old gateway serving, so the wait ends there with its reason. */
+async function waitForRestart(restartPid?: number): Promise<WebAccessStatus> {
   for (const deadline = Date.now() + RESTART_TIMEOUT_MS; Date.now() < deadline; ) {
     await new Promise(resolve => setTimeout(resolve, RESTART_POLL_MS))
     // The backend answering this may be the gateway being restarted.
     const status = await getWebAccessStatus().catch(() => null)
+
+    // Before the config check: a Stop of a web app the gateway could not serve reads as applied
+    // while the restart the user asked for failed.
+    if (restartPid !== undefined && status?.restart_failure?.pid === restartPid) {
+      throw new RestartFailed(status.restart_failure.reason)
+    }
 
     if (status && appliesConfig(status)) {
       return status
@@ -93,7 +111,7 @@ async function waitForRestart(): Promise<WebAccessStatus> {
 export function useWebAccessAvailable(): boolean {
   const connection = useStore($connection)
 
-  return !isBrowserHostedDesktop() && connection?.mode !== 'remote'
+  return hostHas('webAccessHost') && connection?.mode !== 'remote'
 }
 
 export function WebAccessSettings(): ReactElement | null {
@@ -104,12 +122,29 @@ export function WebAccessSettings(): ReactElement | null {
   // backend nor shows anything.
   const available = useWebAccessAvailable()
 
-  const { data: status, error } = useQuery({
+  const { data: status, error, refetch } = useQuery({
     enabled: available,
     queryFn: getWebAccessStatus,
     queryKey: key,
-    retry: false
+    refetchInterval: STATUS_POLL_MS,
+    refetchOnWindowFocus: true,
+    retry: false,
+    // Reopening the pane reads at once instead of showing the shared client's cached answer.
+    staleTime: 0
   })
+
+  // react-query's own focus refetch follows `visibilitychange` only, which a native window losing
+  // focus to the terminal (where the config was edited) never fires.
+  useEffect(() => {
+    if (!available) {
+      return
+    }
+
+    const onFocus = () => void refetch()
+    window.addEventListener('focus', onFocus)
+
+    return () => window.removeEventListener('focus', onFocus)
+  }, [available, refetch])
 
   if (!available) {
     return null
@@ -124,6 +159,11 @@ export function WebAccessSettings(): ReactElement | null {
 
 type FormProps = { queryKey: readonly unknown[]; status: WebAccessStatus; w: WebAccessTranslations }
 
+/** Where a start would serve the web app, as the saved config says: LAN unless it names a public URL. */
+function draftModeOf(status: WebAccessStatus): WebAccessMode {
+  return status.mode === 'public' ? 'public' : 'lan'
+}
+
 /** The address the pane shows for the configured web app. */
 function addressOf(status: WebAccessStatus, lanUrl: null | string): string {
   if (status.mode === 'public') {
@@ -137,6 +177,25 @@ function addressOf(status: WebAccessStatus, lanUrl: null | string): string {
   return lanUrl ?? ''
 }
 
+/** Until web access starts, the address is the one being chosen: an own URL not typed yet has none,
+ *  not the LAN address. A web app on this computer only has no choice to show. */
+function chosenAddress(status: WebAccessStatus, lanUrl: null | string, mode: WebAccessMode, publicUrl: string): string {
+  if (status.mode === 'local') {
+    return addressOf(status, lanUrl)
+  }
+
+  return mode === 'public' ? publicUrl.trim() : (lanUrl ?? '')
+}
+
+/** A restart that exited says why; otherwise the wait timed out. */
+function restartError(err: unknown, change: WebAccessChange, w: WebAccessTranslations): Error {
+  if (err instanceof RestartFailed) {
+    return new Error(w.restartFailedBecause(err.reason))
+  }
+
+  return new Error(change.enabled ? w.startTimedOut : w.stopTimedOut)
+}
+
 /** A change saved but not applied yet is not a failure: the pane shows it waiting for the restart,
  *  and the notice says why, without the CLI's refusal text. */
 function notifyRestartHeld(result: WebAccessChange, w: WebAccessTranslations): void {
@@ -146,11 +205,22 @@ function notifyRestartHeld(result: WebAccessChange, w: WebAccessTranslations): v
 function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState<Busy>(null)
-  const [mode, setMode] = useState<WebAccessMode>(status.mode === 'public' ? 'public' : 'lan')
+  const [mode, setMode] = useState<WebAccessMode>(draftModeOf(status))
   const [publicUrl, setPublicUrl] = useState(status.public_url)
+  // The choice follows the saved config when it changes underneath the pane (a CLI edit picked up
+  // by a refetch); an unsaved choice survives refetches that leave the config as it was.
+  const saved = `${status.mode}\n${status.public_url}`
+  const [seenSaved, setSeenSaved] = useState(saved)
+
+  if (seenSaved !== saved) {
+    setSeenSaved(saved)
+    setMode(draftModeOf(status))
+    setPublicUrl(status.public_url)
+  }
+
   const phase = phaseOf(status)
   const lanUrl = status.lan_address ? `http://${status.lan_address}:${status.port}` : null
-  const url = addressOf(status, lanUrl)
+  const url = phase === 'off' ? chosenAddress(status, lanUrl, mode, publicUrl) : addressOf(status, lanUrl)
   const ready = status.nous_signed_in && (mode === 'lan' ? Boolean(lanUrl) : publicUrl.trim().startsWith('https://'))
 
   const apply = (next: WebAccessStatus): void => {
@@ -171,8 +241,7 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
         return
       }
 
-      const timedOut = result.enabled ? w.startTimedOut : w.stopTimedOut
-      apply(await waitForRestart().catch(() => Promise.reject(new Error(timedOut))))
+      apply(await waitForRestart(result.restart_pid).catch(err => Promise.reject(restartError(err, result, w))))
     } catch (err) {
       notifyError(err, w.failed)
     } finally {

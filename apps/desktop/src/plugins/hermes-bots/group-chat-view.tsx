@@ -24,7 +24,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  gatewayActivationEpoch,
   host,
   Input,
   queryClient,
@@ -32,6 +31,7 @@ import {
   RowButton,
   Tip,
   ToggleRow,
+  useGatewayActivationEpoch,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -603,7 +603,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
-  const activationEpoch = gatewayActivationEpoch()
+  const activationEpoch = useGatewayActivationEpoch()
   const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
   const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
   const mode = capability?.source === source ? capability.mode : 'checking'

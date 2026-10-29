@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { JsonRpcGatewayError } from '@hermes/shared'
+import { describe, expect, it, vi } from 'vitest'
 
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -668,6 +669,128 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     expect(submit?.params?.confirm_empty_truncate).toBe(true)
     expect(submit?.params?.truncate_before_row_id).toBe(13)
     expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('retries once without confirm_deep_truncate when an older backend rejects only that field', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new JsonRpcGatewayError(
+          'invalid params for prompt.submit: confirm_deep_truncate: Extra inputs are not permitted',
+          { code: 4000 }
+        )
+      )
+      .mockResolvedValueOnce({ status: 'streaming' })
+
+    await runRewindSubmit(
+      request as never,
+      'sid',
+      'fixed prompt',
+      1,
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt',
+      undefined,
+      true
+    )
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls[0][1]).toMatchObject({
+      confirm_deep_truncate: true,
+      confirm_truncate: true,
+      truncate_before_row_id: 13
+    })
+    expect(request.mock.calls[1][1]).toMatchObject({
+      confirm_truncate: true,
+      truncate_before_row_id: 13
+    })
+    expect(request.mock.calls[1][1]).not.toHaveProperty('confirm_deep_truncate')
+  })
+
+  it('does not retry a different 4000 admission failure', async () => {
+    const failure = new JsonRpcGatewayError(
+      'invalid params for prompt.submit: some_other_field: Extra inputs are not permitted',
+      { code: 4000 }
+    )
+
+    const request = vi.fn().mockRejectedValue(failure)
+
+    await expect(
+      runRewindSubmit(
+        request as never,
+        'sid',
+        'fixed prompt',
+        1,
+        undefined,
+        false,
+        undefined,
+        13,
+        'typo prompt',
+        undefined,
+        true
+      )
+    ).rejects.toBe(failure)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  const DEEP_CONFIRM_REJECTED =
+    'invalid params for prompt.submit: confirm_deep_truncate: Extra inputs are not permitted'
+
+  it.each([
+    ['another code with the same message', DEEP_CONFIRM_REJECTED, 4018, true],
+    ['a 4000 that only mentions the field', 'prompt.submit failed near confirm_deep_truncate', 4000, true],
+    ['a submit that never sent the field', DEEP_CONFIRM_REJECTED, 4000, false]
+  ])('does not retry %s', async (_label, message, code, confirmDeep) => {
+    const failure = new JsonRpcGatewayError(message, { code })
+    const request = vi.fn().mockRejectedValue(failure)
+
+    await expect(
+      runRewindSubmit(
+        request as never,
+        'sid',
+        'fixed prompt',
+        1,
+        undefined,
+        false,
+        undefined,
+        13,
+        'typo prompt',
+        undefined,
+        confirmDeep
+      )
+    ).rejects.toBe(failure)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('a busy retry after the fallback leaves the rejected field out', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new JsonRpcGatewayError(DEEP_CONFIRM_REJECTED, { code: 4000 }))
+      .mockRejectedValueOnce(new JsonRpcGatewayError('session busy', { code: 4009 }))
+      .mockResolvedValue({ status: 'streaming' })
+
+    await runRewindSubmit(
+      request as never,
+      'sid',
+      'fixed prompt',
+      1,
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt',
+      undefined,
+      true
+    )
+
+    // Field rejected, then busy without it, then accepted: no second rejected round trip.
+    const submits = request.mock.calls.filter(([method]) => method === 'prompt.submit').map(([, params]) => params)
+
+    expect(submits).toHaveLength(3)
+    expect(submits[2]).toMatchObject({ confirm_truncate: true, truncate_before_row_id: 13 })
+    expect(submits[2]).not.toHaveProperty('confirm_deep_truncate')
   })
 })
 

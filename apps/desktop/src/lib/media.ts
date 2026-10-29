@@ -4,8 +4,8 @@ import { capabilityScoped, hermesApi, type OwnerScope, sessionFileOwnerScope } f
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { hostHas } from '@/lib/host-capabilities'
 import { LruCache } from '@/lib/lru-cache'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -122,7 +122,7 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   // profile; it takes the owner-pinned read below.
   if (
     owner?.connectionId === LOCAL_CONNECTION_ID &&
-    !isBrowserHostedDesktop() &&
+    hostHas('nativeHostFiles') &&
     window.hermesDesktop?.readFileDataUrl
   ) {
     const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
@@ -283,7 +283,7 @@ export function mediaExternalUrl(path: string): string {
   if (isRemoteGateway()) {
     const conn = $connection.get()
 
-    if (conn?.baseUrl && conn.token && !isBrowserHostedDesktop()) {
+    if (conn?.baseUrl && conn.token && hostHas('urlTokenAuth')) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
 
       return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`

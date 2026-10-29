@@ -29,14 +29,15 @@ except ImportError:  # pragma: no cover — SDK required in CI; module must stil
 
 @dataclass
 class _ProviderEntry:
-    """Per-server OAuth state. ``last_mtime_ns``: last-seen tokens-file mtime (0 = never read)
-    for external-refresh detection; ``lock`` binds to the first asyncio loop awaiting it (the MCP
+    """Per-server OAuth state. ``last_mtime_ns``: last-seen tokens-file mtime (0 = never read),
+    ``last_version`` its ``file_cache_version``, for external-refresh detection; ``lock`` binds to the first asyncio loop awaiting it (the MCP
     loop); ``pending_401`` dedupes thundering-herd 401s by failed access_token."""
 
     server_url: str
     oauth_config: Optional[dict]
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
+    last_version: tuple = ()
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_401: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
 
@@ -382,16 +383,21 @@ class MCPOAuthManager:
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
         """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh); True if so."""
         from tools.mcp_oauth import _get_token_dir, _safe_filename
+        from utils import file_cache_version
         entry = self._entries.get(self._key(server_name, hermes_home))
         if entry is None or entry.provider is None:
             return False
         async with entry.lock:
             try:
-                mtime_ns = (_get_token_dir(hermes_home) / f"{_safe_filename(server_name)}.json").stat().st_mtime_ns
+                # Hashed every time: a refresh atomically replaced in the same tick keeps the mtime,
+                # and a racy digest going empty later would read as a change and tear the session down.
+                version = file_cache_version(_get_token_dir(hermes_home) / f"{_safe_filename(server_name)}.json",
+                                             always_digest=True)
             except OSError:
                 return False
-            if mtime_ns == entry.last_mtime_ns:
+            if version == entry.last_version:
                 return False
+            mtime_ns, entry.last_version = version[0], version
             old, entry.last_mtime_ns = entry.last_mtime_ns, mtime_ns
             if old == 0 and getattr(getattr(entry.provider, "context", None), "current_tokens", None) is not None:
                 # First observation with tokens already in memory only seeds the

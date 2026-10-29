@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools import approval_context
 from tui_gateway import server
 
 FALLBACK = [{"provider": "xai-oauth", "model": "grok-4.6"}]
@@ -48,8 +49,15 @@ def _admit_turn(monkeypatch, tmp_path, session, config_text: str) -> None:
 
     monkeypatch.setattr(server, "_sync_bot_capabilities", stop)
     st = server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=False)
-    with pytest.raises(_StopAfterSync):
-        server._prepare_turn_input("sid", session, st, "hello", [])
+    # Admission binds the approval session key on THIS thread; production unwinds it in run_body's
+    # finally, so run that same release or the key outlives the test and every later approval or
+    # human-input hook in the process reads "session-95066".
+    try:
+        with pytest.raises(_StopAfterSync):
+            server._prepare_turn_input("sid", session, st, "hello", [])
+    finally:
+        server._release_turn_scopes("sid", session, st)
+    assert approval_context.get_current_session_key(default="") == ""
 
 
 def test_chain_added_after_open_reaches_the_live_agent_at_turn_admission(monkeypatch, tmp_path):

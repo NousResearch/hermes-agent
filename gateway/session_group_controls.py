@@ -341,7 +341,8 @@ def _read_bot_sessions(db, subject, operator):
         # The named registry is not a recency window and canonical chats are hidden.
         canonical = conn.execute(f'SELECT * FROM sessions WHERE title=? AND {_LOCAL_CHAT}',
                                  ('Bot Chat', LEGACY_PREFIX)).fetchone()
-        if canonical and (canonical['user_id'] == subject or operator) and not canonical['archived']:
+        from gateway.owner_identity import same_owner
+        if canonical and (same_owner(canonical['user_id'], subject) or operator) and not canonical['archived']:
             fields['canonical_session'] = summary(canonical)
         # The newest conversation a picker shows: a hidden row (a Bot Chat, group member plumbing)
         # never wins, as in the pre-unified roster's listing.

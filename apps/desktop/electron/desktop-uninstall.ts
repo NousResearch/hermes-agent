@@ -28,6 +28,7 @@
 import path from 'node:path'
 
 import type { InstallStamp } from './install-stamp'
+import { ownAppImage } from './relaunch-target'
 
 export interface UninstallSummaryDetails {
   hermes_home: string
@@ -263,7 +264,7 @@ function modeRemovesUserData(mode: string) {
  *
  *   macOS:   …/Hermes.app/Contents/MacOS/Hermes  → …/Hermes.app
  *   Windows: …\Hermes\Hermes.exe                 → …\Hermes  (install dir)
- *   Linux:   AppImage → the APPIMAGE env path; unpacked → the *-unpacked dir
+ *   Linux:   AppImage → APPIMAGE when we run from it; unpacked → the *-unpacked dir
  *
  * Returns null when we can't confidently identify a removable bundle (e.g.
  * running from a dev checkout, or a system-package install we must not rmtree).
@@ -304,9 +305,12 @@ function resolveRemovableAppPath(execPath, platform, env: any = {}) {
     return null
   }
 
-  // Linux: an AppImage exposes its own path via the APPIMAGE env var.
-  if (env.APPIMAGE) {
-    return env.APPIMAGE
+  // Linux: an AppImage exposes its own path via APPIMAGE, but only trust it
+  // when this executable runs from that image (it leaks from AppImage parents).
+  const appImage = ownAppImage(exe, env)
+
+  if (appImage) {
+    return appImage
   }
 
   // Unpacked electron-builder tree: …/linux-unpacked/hermes

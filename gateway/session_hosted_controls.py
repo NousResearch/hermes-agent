@@ -2,6 +2,7 @@
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
 from tui_gateway.hosted_room_driver import HostedRoomBinding
+from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
 
@@ -47,6 +48,10 @@ class HostedControls:
             return result
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
+        if isinstance(task_id, str) and task_id.startswith(RETRY_TASK_PREFIX):
+            # A stalled room preparation, not an attempt: the shared service retries it.
+            return super().retry_room_task(
+                room_id, task_id=task_id, member_id=member_id, execution_generation=execution_generation)
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             # Unknown is not non-admission. Never advance its hosted generation
@@ -69,7 +74,8 @@ class HostedControls:
         result = super().status(room_id)
         if room_id is None:
             return result
-        actions = [a for a in result['pending_actions'] if a['kind'] != 'retry']
+        actions = [a for a in result['pending_actions']
+                   if a['kind'] != 'retry' or str(a.get('task_id', '')).startswith(RETRY_TASK_PREFIX)]
         for task in tasks.list_tasks(self.db_path, room_id=room_id):
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue

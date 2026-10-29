@@ -95,12 +95,12 @@ def _session_mutation_context(request, profile):
     if native is not None:
         subject = native['subject']
     elif session is not None:
-        from gateway.session_identity import authenticated_subject
-        subject = authenticated_subject({"user_id": session.user_id,
+        from gateway.owner_identity import principal_subject
+        subject = principal_subject({"user_id": session.user_id,
             "provider": session.provider, "issuer": session.issuer})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
-        from gateway.session_identity import authenticated_subject
-        subject = authenticated_subject({'user_id': 'legacy-token-owner', 'provider': 'session-token'})
+        from gateway.owner_identity import host_owner_subject
+        subject = host_owner_subject()
     else:
         raise HTTPException(status_code=401, detail='Unauthorized')
     authority = getattr(request.app.state, 'session_authority', None)
@@ -243,8 +243,13 @@ async def _mutate_via_gateway_owner(profile, actor, params):
             ('session_id', 'request_id', 'expected_revision', 'operation', 'payload') if key in params}
     if params.get('expected_generation') is not None:
         call['expected_generation'] = params['expected_generation']
+    # A sign-in is the machine owner (owner_identity), which is this same-user socket's own peer
+    # subject: let the socket mint it natively. The verifier lets a peer NAME only a structured
+    # login subject, so forwarding the owner's OS subject explicitly would be refused.
+    from gateway.owner_identity import host_owner_subject
+    subject = None if actor.subject == host_owner_subject() else actor.subject
     try:
-        async with connect_gateway(endpoint=endpoint, subject=actor.subject) as client:
+        async with connect_gateway(endpoint=endpoint, subject=subject) as client:
             return await client.rpc('session.mutate', **call)
     except GatewayRPCError:
         # The owner's own refusal frame: a verdict the caller maps to the direct path's status.

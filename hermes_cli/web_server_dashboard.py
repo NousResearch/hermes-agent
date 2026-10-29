@@ -122,6 +122,7 @@ def mount_spa(application: FastAPI):
     from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
     from hermes_cli.web_deps import _server
     from hermes_cli.web_server_surface import policy
+    from hermes_cli.web_server_static_assets import is_static_asset_path, public_font_file
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
@@ -159,7 +160,7 @@ def mount_spa(application: FastAPI):
     def web_dist() -> Path:
         return getattr(application.state, "web_dist", None) or WEB_DIST
 
-    def _serve_index(prefix: str = ""):
+    def _serve_index(request: Request, prefix: str = ""):
         """index.html with the session token + base-path injected.
 
         When the OAuth auth gate is active (``app.state.auth_required``), the legacy
@@ -225,7 +226,8 @@ def mount_spa(application: FastAPI):
         if theme_bootstrap:
             html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
-        return HTMLResponse(html, headers=_NO_STORE)
+        from hermes_cli.webapp_page_policy import page_headers
+        return HTMLResponse(html, headers=page_headers(request, html, _NO_STORE))
 
     # Built CSS contains absolute ``url(/fonts/...)`` / ``url(/ds-assets/...)`` references that
     # browsers resolve against the document origin — wrong under a proxy prefix. Intercept CSS
@@ -264,6 +266,8 @@ def mount_spa(application: FastAPI):
             asset_files[directory] = _ImmutableAssetFiles(directory=directory, check_dir=False)
         await asset_files[directory](scope, receive, send)
 
+    from hermes_cli.webapp_previews import mount_preview_assets
+    mount_preview_assets(application)
     application.mount("/assets", serve_assets, name="assets")
 
     @application.get("/{full_path:path}")
@@ -273,11 +277,13 @@ def mount_spa(application: FastAPI):
         # real 404 JSON instead of index.html (which breaks JSON clients with a SyntaxError).
         if full_path == "api" or full_path.startswith("api/"):
             return JSONResponse({"detail": f"No such API endpoint: /{full_path}"}, status_code=404)
-        if full_path == "index.html" and not policy(application.state).html_token:
-            # Where HTML may not carry the session token, no entry serves the raw file.
-            return _serve_index(prefix)
         dist = web_dist()
         file_path = dist / full_path
+        index = dist / "index.html"
+        if (not policy(application.state).html_token and file_path.is_file() and index.is_file()
+                and file_path.samefile(index)):
+            # No spelling of the entry document may bypass bootstrap or policy.
+            return _serve_index(request, prefix)
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
             full_path
@@ -286,7 +292,12 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index(prefix)
+        if is_static_asset_path(full_path):
+            font = public_font_file(dist, WEB_DIST, full_path)
+            if font is not None:
+                return FileResponse(font)
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return _serve_index(request, prefix)
 
 
 # ---------------------------------------------------------------------------

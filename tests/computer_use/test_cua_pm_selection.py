@@ -112,10 +112,14 @@ def test_private_start_uses_post_ensure_binary(cua_home, monkeypatch, permission
     def capture_serve(command, **kwargs):
         if command[1] == "serve":
             launches.append(command)
-            return SimpleNamespace(stderr=(), poll=lambda: None, wait=lambda **kw: 0)
+            return SimpleNamespace(pid=0, stderr=(), poll=lambda: None, wait=lambda **kw: 0)
         return spawn(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", capture_serve)
+    # The stand-in daemon has no real process group: keep it away from the owner-death supervisor.
+    from hermes_cli import process_identity
+    monkeypatch.setattr(process_identity, "_update_supervised_pgids", lambda verb, pgids: None)
+    monkeypatch.setattr(process_identity, "register_child", lambda pid, purpose: None)
     # Re-start the same backend after PM publishes another version as well.
     for _ in range(2):
         try:

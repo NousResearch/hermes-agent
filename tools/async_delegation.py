@@ -1012,8 +1012,10 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
             "total_duration_seconds": result.get("total_duration_seconds"),
             **({"group": result["group"]} if result.get("group") is not None else {})}
     else:
+        # A runner with no measured count (a cron run without a session) omits api_calls: never a fake 0.
         payload = {
-            "summary": result.get("summary"), "error": result.get("error"), "api_calls": result.get("api_calls", 0),
+            "summary": result.get("summary"), "error": result.get("error"),
+            **({"api_calls": result["api_calls"]} if result.get("api_calls") is not None else {}),
             "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),

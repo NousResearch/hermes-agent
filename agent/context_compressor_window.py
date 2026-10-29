@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from agent.context_compressor_tail import tail_cut_progress_floor
 from agent.prepared_compaction import PreparedCompaction, PreparedSummary
 
 
@@ -20,7 +21,9 @@ class CompactionWindowMixin:
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
         # A role collision can merge the summary into the first tail row; keep an actionable user
-        # event out of that slot by retaining an older assistant/tool bridge.
+        # event out of that slot by retaining an older assistant/tool bridge. The bridge never moves
+        # the cut below the progress floor: a bridge that leaves only handoff rows in the window
+        # would no-op with ``empty_post_handoff_window`` at every trigger.
         latest_actionable_idx = self._find_last_user_message_idx(messages, 0)
         if compress_end == latest_actionable_idx:
             bridge_idx = latest_actionable_idx - 1
@@ -29,7 +32,7 @@ class CompactionWindowMixin:
                 bridge_idx = self._align_boundary_backward(messages, latest_actionable_idx)
             elif bridge_role != "assistant":
                 bridge_idx = -1
-            if bridge_idx > compress_start:
+            if bridge_idx >= tail_cut_progress_floor(self, messages, compress_start, bridge_idx):
                 compress_end = bridge_idx
         return compress_start, compress_end
 

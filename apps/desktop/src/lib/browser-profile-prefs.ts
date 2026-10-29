@@ -6,10 +6,10 @@ import {
   migrateBrowserStartupProfile,
   readBrowserStartupProfile
 } from './browser-startup-profile'
-import { isBrowserHostedDesktop } from './platform'
+import { hostHas } from './host-capabilities'
 
 function hostedBasePath(): string | null {
-  return isBrowserHostedDesktop() ? browserPageBasePath() : null
+  return hostHas('originScopedPrefs') ? browserPageBasePath() : null
 }
 
 function namesProfile(profile: string | undefined, target: string): boolean {

@@ -10,7 +10,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/adkit/ads-mcp/tree/main/hermes#readme
-image: https://raw.githubusercontent.com/adkit/ads-mcp/97f9a776fd317329f544d10ce22792eb4b115c62/assets/logo.png
+image: https://raw.githubusercontent.com/adkit/ads-mcp/97f9a776fd317329f544d10ce22792eb4b115c62/assets/cover.png
 readme: true
 platforms: []
 capabilities:

@@ -31,6 +31,13 @@ _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str,
      "plugins and catalog installs at tier verified or official.",
      {"normalize": None, "reject_message": "Plugin '%s' login backend rejected: %s",
       "admit": "hermes_cli.plugins_cmd_catalog:login_backend_provenance_error", "identity": "static_name"}),
+    ("register_browser_page_backend", "browser_page_backend", "agent.browser_page_registry",
+     "agent.browser_page_backend:BrowserPageBackend", "browser page backend",
+     "Register an :class:`agent.browser_page_backend.BrowserPageBackend` so ``browser_vault`` inspects and "
+     "fills the pages of a browser with no CDP endpoint (Camofox). Profile-scoped, removed on plugin "
+     "unload; accepted only from bundled plugins and catalog installs at tier verified or official.",
+     {"reject_message": "Plugin '%s' browser page backend rejected: %s",
+      "admit": "hermes_cli.plugins_cmd_catalog:browser_page_backend_provenance_error"}),
     ("register_image_gen_provider", "image_gen_provider", "agent.image_gen_registry",
      "agent.image_gen_provider:ImageGenProvider", "image_gen provider",
      "Register an :class:`agent.image_gen_provider.ImageGenProvider`; "

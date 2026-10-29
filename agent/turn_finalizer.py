@@ -244,7 +244,7 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
     # providers don't see ``tool → user`` (placeholder: final_response is usually empty).
     if interrupted:
         from agent.message_sanitization import close_interrupted_tool_sequence
-        close_interrupted_tool_sequence(messages, final_response)
+        close_interrupted_tool_sequence(messages, final_response, stopped=True)
 
     # Recovery ``break`` sites can return a final_response with no closing assistant
     # row; enforce "delivered final_response ⇒ assistant row" here. Compare content,
@@ -437,6 +437,7 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             not _is_empty_terminal
             and not preserved_verification_fallback
             and not str(_turn_exit_reason).startswith("text_response")
+            and _turn_exit_reason != "fallback_prior_turn_content"
             and len(_stripped) <= 24
             and _stripped[-1:] not in _SENTENCE_END
         )

@@ -3966,31 +3966,31 @@ class GatewayRunner(
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
         from gateway.session_context import set_session_vars
-        # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
-        # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
-        _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
+        from gateway.session_detached import session_env_source
+        source = session_env_source(self, context.source)
+        # Can async tools wake a later turn here? Default True (CLI/unknown); api_server declares False.
+        _adapter = (getattr(self, "adapters", None) or {}).get(source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        # #98619: an admitted API turn carries its session-id provenance in the admission settings;
-        # every other platform leaves it undeclared.
+        # #98619: an admitted API turn carries its session-id provenance; other platforms leave it unset.
         from gateway.session_api_turn import api_session_vars
         _history_delivery = api_session_vars().get("session_history_delivery")
         return set_session_vars(
-            platform=context.source.platform.value,
-            chat_id=context.source.chat_id,
-            chat_type=str(context.source.chat_type) if context.source.chat_type else "",
-            chat_name=context.source.chat_name or "",
-            thread_id=str(context.source.thread_id) if context.source.thread_id else "",
-            user_id=str(context.source.user_id) if context.source.user_id else "",
-            user_id_alt=str(context.source.user_id_alt) if context.source.user_id_alt else "",
-            user_name=str(context.source.user_name) if context.source.user_name else "",
-            scope_id=str(getattr(context.source, "scope_id", "") or ""),
-            parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
+            platform=source.platform.value,
+            chat_id=source.chat_id,
+            chat_type=str(source.chat_type) if source.chat_type else "",
+            chat_name=source.chat_name or "",
+            thread_id=str(source.thread_id) if source.thread_id else "",
+            user_id=str(source.user_id) if source.user_id else "",
+            user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
+            user_name=str(source.user_name) if source.user_name else "",
+            scope_id=str(getattr(source, "scope_id", "") or ""),
+            parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
             # A cached agent binds HERMES_SESSION_ID only on the turn that built it; every later turn
             # (and a command it yields to the background) must still see its own session.
             session_id=context.session_id or "",
-            message_id=str(context.source.message_id) if context.source.message_id else "",
-            profile=getattr(context.source, "profile", "") or "",
+            message_id=str(source.message_id) if source.message_id else "",
+            profile=getattr(source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="", session_history_delivery=_history_delivery)
 
@@ -5154,9 +5154,8 @@ def main():
 
     config = None
     if args.config:
-        import hermes_yaml as yaml
-        with open(args.config, encoding="utf-8-sig") as f:
-            config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
+        from gateway.config_loader import load_gateway_config_file
+        config = load_gateway_config_file(args.config)
         # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
         from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
         log_multiplex_decision(resolve_multiplex_mode(config))

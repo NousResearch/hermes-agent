@@ -552,3 +552,14 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
                             warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
     bridge_core_env_settings(yaml_cfg, platforms_data)
+
+
+def load_gateway_config_file(gateway_config_file: str):
+    """``gateway --config <file>``: a ``GatewayConfig`` from an explicit local YAML file. Refused
+    when the config backend has no file tooling (Remote Config: config comes only from the plane)."""
+    import hermes_yaml as yaml
+    from gateway.config import GatewayConfig
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("gateway --config <file>")
+    with open(gateway_config_file, encoding="utf-8-sig") as f:
+        return GatewayConfig.from_dict(yaml.safe_load(f) or {})

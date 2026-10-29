@@ -254,6 +254,7 @@ def _spawn_kwargs() -> dict[str, Any]:
     if os.name == "nt":
         from hermes_cli._subprocess_compat import windows_hide_flags
         return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    # detached-spawn: ok — a shared-profile Chromium outlives its launcher for its other holders (browser_launcher_holders); a crashed owner's throwaway one is reaped from its launch record by the next Hermes
     return {"start_new_session": True}
 
 

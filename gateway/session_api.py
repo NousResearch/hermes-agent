@@ -280,7 +280,8 @@ def _heal_replacement(conn, caller, holder):
 
 def reopen_api_session(authority, ref):
     """The drain's admitted turn reopens a finalized API row, as ``reopen_local_session`` does a
-    local one: the binding keeps the route on it (``SessionStore._api_bound``)."""
+    local one: the binding keeps the route on it (``SessionStore._api_bound``). So does a turn of a
+    conversation its chat moved past (gateway/session_detached.py), whose row the chat's /new ended."""
     target = authority.physical_target(ref)
     row = authority.db.get_session(target)
     if row is not None and row.get('end_reason') is not None:
@@ -339,5 +340,5 @@ def restore_api_session(authority, session_id):
     elif is_history_mount(live):
         # A read-only view opened while the row had no binding becomes the bound conversation in place,
         # so its viewers keep their subscriptions and event stream.
-        live.source, live.route, live.superseded, live.history_mount = source, entry.session_key, False, False
+        live.source, live.route = source, entry.session_key
     return SessionRef(authority.profile_id, session_id)

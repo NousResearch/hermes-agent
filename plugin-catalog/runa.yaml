@@ -1,0 +1,31 @@
+name: runa
+title: Runa
+repo: https://github.com/Runa-Labs-Inc/runa-hermes-plugin
+sha: fd663db532caf61a9fa553a4e5f4855aefd06e22
+description: >-
+  Bring your Runa meetings into Hermes: prep for what's next, recap decisions and who owes what,
+  draft the follow-up, and find the exact words behind a claim, through Runa's hosted MCP server
+  (Streamable HTTP, OAuth 2.1), with four workflow skills bundled. Portable Agent Plugins v1 package
+  (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector with no local code: every
+  tool call goes to Runa's MCP server at mcp.joinruna.com, signed in as the user through Runa's
+  sign-in (Google or Microsoft), and a first sign-in creates a Runa account. Meeting titles,
+  summaries, transcripts, action items, people and company notes, and reads from apps the user
+  connected to Runa are pulled into the session context, and so reach the user's model provider.
+  No tool changes data in Runa or in those apps; Runa logs each call's metadata. The tool list comes
+  from Runa's server at run time, so the pinned commit doesn't cover it. Hermes stores and refreshes
+  the OAuth tokens. OAuth must be enabled with
+  `hermes mcp add runa --url https://mcp.joinruna.com/mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone yields 401.
+maintainer: Runa-Labs-Inc
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Runa-Labs-Inc/runa-hermes-plugin/blob/fd663db532caf61a9fa553a4e5f4855aefd06e22/README.md
+version: "1.0.0"
+image: https://raw.githubusercontent.com/Runa-Labs-Inc/runa-hermes-plugin/fd663db532caf61a9fa553a4e5f4855aefd06e22/assets/catalog-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

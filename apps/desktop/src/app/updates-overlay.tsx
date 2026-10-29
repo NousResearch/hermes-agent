@@ -390,7 +390,7 @@ function IdleView({
           )}
           version={version}
         />
-        <UpdateStatusCard target={target} />
+        <UpdateStatusCard target={target} version={version} />
         <SyncStatusCard />
         {details}
       </div>

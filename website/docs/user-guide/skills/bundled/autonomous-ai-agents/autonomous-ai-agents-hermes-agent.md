@@ -21,7 +21,7 @@ Use, configure, theme, extend, and orchestrate Hermes Agent.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `hermes`, `setup`, `configuration`, `multi-agent`, `spawning`, `cli`, `gateway`, `bots`, `bot-mode`, `features`, `themes`, `skins`, `desktop-plugins`, `tui-widgets`, `petdex`, `development` |
-| Related skills | [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`opencode`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-opencode.md) |
+| Related skills | [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`opencode`](../../optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) |
 
 ## Reference: full SKILL.md
 
@@ -158,23 +158,37 @@ terminal(command="hermes chat -q 'Set up CI/CD for ~/myapp'", background=true)
 
 ### Interactive PTY Mode (via tmux)
 
-Hermes uses prompt_toolkit, which requires a real terminal. Use tmux for interactive spawning:
+Hermes uses prompt_toolkit, which requires a real terminal. Use tmux for interactive spawning. Send the text and `Enter` as two `send-keys` calls: text and Enter in one call reach Hermes as one burst, and the Enter lands as a newline inside the message instead of submitting it. Both recipes wait for the `❯` input prompt (the default skin's symbol; use your skin's prompt symbol if you changed it) instead of a fixed sleep: a first start can take far longer than a few seconds, and input sent before the prompt is lost.
 
 ```
 # Start
 terminal(command="tmux new-session -d -s agent1 -x 120 -y 40 'hermes'", timeout=10)
 
-# Wait for startup, then send a message
-terminal(command="sleep 8 && tmux send-keys -t agent1 'Build a FastAPI auth service' Enter", timeout=15)
+# Wait for the input prompt (❯), then send a message
+terminal(command="for i in $(seq 90); do tmux capture-pane -t agent1 -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t agent1 -p | grep -q "❯" && tmux send-keys -t agent1 'Build a FastAPI auth service' && sleep 0.5 && tmux send-keys -t agent1 Enter", timeout=100)
 
 # Read output
 terminal(command="sleep 20 && tmux capture-pane -t agent1 -p", timeout=5)
 
 # Send follow-up
-terminal(command="tmux send-keys -t agent1 'Add rate limiting middleware' Enter", timeout=5)
+terminal(command="tmux send-keys -t agent1 'Add rate limiting middleware' && sleep 0.5 && tmux send-keys -t agent1 Enter", timeout=5)
 
 # Exit
-terminal(command="tmux send-keys -t agent1 '/exit' Enter && sleep 2 && tmux kill-session -t agent1", timeout=10)
+terminal(command="tmux send-keys -t agent1 '/exit' && sleep 0.5 && tmux send-keys -t agent1 Enter && sleep 2 && tmux kill-session -t agent1", timeout=10)
+```
+
+**No tmux** (`command -v tmux` prints nothing, e.g. an older Hermes Docker image): run Hermes as a PTY background process and drive it with `process_manage`. Stdin only exists with `pty=true`. Send the text, pause, then send the Enter key (`"\r"`) as its own `write`, for the same reason as with tmux: an Enter that arrives right after the text is read as part of a paste and becomes a newline. Use `write`, not `submit`, for the Enter. Wait for the input prompt before the first write: during startup Hermes queries the terminal's colours and then flushes its input, so text written before the prompt appears is silently dropped.
+
+```
+terminal(command="hermes", background=true, pty=true)   # returns session_id
+process_manage(action="log", session_id="<id>", limit=20)   # repeat, with terminal(command="sleep 1") between, until the ❯ prompt line shows
+process_manage(action="write", session_id="<id>", data="Build a FastAPI auth service")
+terminal(command="sleep 0.5")
+process_manage(action="write", session_id="<id>", data="\r")
+process_manage(action="log", session_id="<id>", limit=40)   # read the screen
+process_manage(action="write", session_id="<id>", data="/exit")
+terminal(command="sleep 0.5")
+process_manage(action="write", session_id="<id>", data="\r")
 ```
 
 ### Multi-Agent Coordination
@@ -182,15 +196,15 @@ terminal(command="tmux send-keys -t agent1 '/exit' Enter && sleep 2 && tmux kill
 ```
 # Agent A: backend
 terminal(command="tmux new-session -d -s backend -x 120 -y 40 'hermes -w'", timeout=10)
-terminal(command="sleep 8 && tmux send-keys -t backend 'Build REST API for user management' Enter", timeout=15)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t backend -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t backend -p | grep -q "❯" && tmux send-keys -t backend 'Build REST API for user management' && sleep 0.5 && tmux send-keys -t backend Enter", timeout=100)
 
 # Agent B: frontend
 terminal(command="tmux new-session -d -s frontend -x 120 -y 40 'hermes -w'", timeout=10)
-terminal(command="sleep 8 && tmux send-keys -t frontend 'Build React dashboard for user management' Enter", timeout=15)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t frontend -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t frontend -p | grep -q "❯" && tmux send-keys -t frontend 'Build React dashboard for user management' && sleep 0.5 && tmux send-keys -t frontend Enter", timeout=100)
 
 # Check progress, relay context between them
 terminal(command="tmux capture-pane -t backend -p | tail -30", timeout=5)
-terminal(command="tmux send-keys -t frontend 'Here is the API schema from the backend agent: ...' Enter", timeout=5)
+terminal(command="tmux send-keys -t frontend 'Here is the API schema from the backend agent: ...' && sleep 0.5 && tmux send-keys -t frontend Enter", timeout=5)
 ```
 
 ### Session Resume
@@ -209,7 +223,7 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 - **Use `-w` (worktree mode)** when spawning agents that edit code — prevents git conflicts
 - **Set timeouts** for one-shot mode — complex tasks can take 5-10 minutes
 - **Use `hermes chat -q` for fire-and-forget** — no PTY needed
-- **Use tmux for interactive sessions** — raw PTY mode has `\r` vs `\n` issues with prompt_toolkit
+- **Prefer tmux for interactive sessions when it is installed** — `capture-pane` reads the rendered screen; the PTY-background fallback only has the raw output log
 - **For scheduled tasks**, use the `cronjob` tool instead of spawning — handles delivery and retry
 - **"delegate_task is capped at N" reports** — see `references/delegate-task-concurrency-diagnosis.md`. Three real cap paths in Hermes; if none fired, the model is self-limiting and rationalising it as "the runtime caps."
 - **"Can $external_app use my Nous Portal subscription / OAuth?"** — see `references/portal-auth-for-third-party-apps.md`. Walk the user through three layers (plugin-vs-app, what Portal actually exposes, local-broker-proxy option).

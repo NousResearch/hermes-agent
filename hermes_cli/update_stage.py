@@ -131,6 +131,7 @@ def ensure_panel(update_root: Path) -> None:
         subprocess.Popen(
             ["/usr/bin/osascript", "-l", "JavaScript", str(panel), str(status_file())],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            # detached-spawn: ok — update progress panel, self-exits on the terminal state
             stderr=subprocess.DEVNULL, start_new_session=True,
         )
         os.environ[UI_SPAWNED_ENV] = "1"  # inherited: never spawn twice per chain

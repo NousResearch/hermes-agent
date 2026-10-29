@@ -1005,6 +1005,8 @@ platform:
       confirm_title: "Dearbhaigh"
       already_resolved: "Tá an cead seo réitithe cheana féin~"
       expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)"
+      no_longer_pending: "⌛ Níl an cead seo ar feitheamh a thuilleadh (chuaigh sé in éag nó freagraíodh in áit eile é)"
+      click_failed: "⚠️ Níorbh fhéidir do rogha a thaifeadadh. Cliceáil arís, nó freagair le /approve nó /deny."
       by_user: "{label} ag {user}"
       resolved_once: "Ceadaithe uair amháin"
       resolved_session: "Ceadaithe don seisiún"

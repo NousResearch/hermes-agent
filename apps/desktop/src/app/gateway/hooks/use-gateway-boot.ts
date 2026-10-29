@@ -23,7 +23,8 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
-import { browserLaunchProfile, isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
+import { browserLaunchProfile } from '@/lib/platform'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -744,7 +745,7 @@ export function useGatewayBoot({
     // stored preference; absent, behavior is unchanged.
     async function getWindowBackend(startup = false): Promise<HermesConnection> {
       // Webapp: the tab's own socket, whatever profile the tab opens on (openWebappTabProfile).
-      if (isBrowserHostedDesktop()) {
+      if (hostHas('servingOriginConnection')) {
         return desktop.getConnection()
       }
 
@@ -772,7 +773,7 @@ export function useGatewayBoot({
       shouldPublish: () => boolean = () => true,
       startup = false
     ): Promise<boolean> {
-      const webapp = isBrowserHostedDesktop()
+      const webapp = hostHas('servingOriginConnection')
       // The resolved descriptor reflects the explicit startup default. The
       // legacy profile.get preference only remembers the last workspace used.
       // A Webapp tab's primary is the profile its gateway runs as.

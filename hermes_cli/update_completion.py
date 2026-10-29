@@ -91,6 +91,7 @@ def run_completion(request: dict) -> dict:
         # starts runs outside the job), so the lock is never free while it runs.
         proc = subprocess.Popen(
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            # detached-spawn: ok — awaited; holds the checkout lock fd so an update finishes atomically even if this parent dies
             **({"start_new_session": True, "pass_fds": checkout_lock_fds(root)} if os.name == "posix" else
                {"creationflags": subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED}))
         decoder = codecs.getincrementaldecoder("utf-8")("replace")

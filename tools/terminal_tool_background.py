@@ -99,7 +99,8 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
                   persist_on_release=persist_on_release)
     if env_type == "local":
         return process_registry.spawn_local(
-            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
+            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
+            restore_login_path=True, **common)
     return process_registry.spawn_via_env(env=env, **common)
 
 

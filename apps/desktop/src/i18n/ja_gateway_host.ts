@@ -27,6 +27,7 @@ export const jaGatewayHost: GatewayHostTranslations = {
     unavailableDetail: reason => `ゲートウェイが Web アプリを提供できませんでした: ${reason}`,
     restartBusy: '保存しました。チャットが実行中のため、ゲートウェイは再起動しませんでした。終了したら「ゲートウェイを再起動」を選んでください。',
     restartFailed: '保存しましたが、ゲートウェイを再起動できませんでした。「ゲートウェイを再起動」を選んで再試行してください。',
+    restartFailedBecause: reason => `ゲートウェイを再起動できませんでした: ${reason}`,
     startTimedOut: 'ゲートウェイが 90 秒以内に Web アプリを提供しませんでした。',
     stopTimedOut: 'ゲートウェイが 90 秒以内に Web アプリの提供を停止しませんでした。',
     start: '開始',

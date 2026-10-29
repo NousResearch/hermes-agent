@@ -55,6 +55,11 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Certificate name to create/use for --setup-tcc-identity (default: Hermes Local Signing)",
     )
     gui_parser.add_argument(
+        "--install-apparmor-profile", action="store_true",
+        help="Linux only: install an AppArmor profile (sudo) that lets the packaged app use Chromium's "
+            "user-namespace sandbox on hosts with kernel.apparmor_restrict_unprivileged_userns=1 "
+            "(Ubuntu 23.10+), then exit. Survives rebuilds of the same checkout.")
+    gui_parser.add_argument(
         "--close-preview",
         action="store_true",
         help="Close the preview pane and exit its fullscreen (out-of-band escape hatch when the pane captured all input)",

@@ -474,13 +474,15 @@ def agent_tool_drops(agent: Any) -> frozenset:
 
 
 def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*tools* as *agent* carries them: :func:`agent_tool_drops` removed and, in a one-shot session, the
-    one-shot schema variants (``agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load,
-    MCP refresh) before any merge: a pinned or carried entry keeps the bytes already sent."""
+    """*tools* as *agent* carries them: :func:`agent_tool_drops` removed and, in a one-shot session or a gateway
+    session that joins its delegations in the turn (``delegation.gateway_mode``), the joined ``delegate_task``
+    variant (``agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load, MCP refresh)
+    before any merge: a pinned or carried entry keeps the bytes already sent."""
     from agent.oneshot_footprint import agent_is_oneshot, oneshot_tool_schemas
+    from tools.delegate_tool_config import agent_joins_delegation
     drops = agent_tool_drops(agent)
     tools = [tool for tool in tools if (tool.get("function") or {}).get("name") not in drops] if drops else list(tools)
-    return oneshot_tool_schemas(tools) if agent_is_oneshot(agent) else tools
+    return oneshot_tool_schemas(tools) if agent_is_oneshot(agent) or agent_joins_delegation(agent) else tools
 
 
 def validate_toolset(name: str) -> bool:

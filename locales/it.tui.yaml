@@ -1338,6 +1338,7 @@ userMessages.promptTimeout.vaultCode: "Richiesta del codice di verifica chiusa: 
 userMessages.promptTimeout.vaultSaveLogin: "Richiesta di salvataggio dell'accesso chiusa: nessuna risposta in tempo, quindi non è stato salvato nulla. Invia di nuovo la richiesta quando sei pronto."
 userMessages.promptTimeout.vaultUnlockPrompt: "Richiesta di sblocco chiusa: nessuna risposta in tempo, quindi il gestore di password è rimasto bloccato. Invia di nuovo la richiesta quando sei pronto a sbloccarlo."
 userMessages.rpc.launchCredentialsChanged: "Questa chat non può più usare la chiave API con cui è stata avviata (è stata cambiata o rimossa), quindi l'operazione non è stata eseguita. Una chat non passa mai da sola a una chiave diversa. Digita /new per avviare una nuova chat con la tua chiave attuale."
+userMessages.rpc.methodUnavailable: "Questo backend Hermes non fornisce {0}, quindi l'operazione non è stata eseguita."
 userMessages.rpc.notConnected: "Hermes al momento non è connesso, quindi il messaggio non è stato inviato. Si riconnette da solo; attendi un istante e riprova, oppure digita /logs se il problema persiste."
 userMessages.rpc.sessionHasChildren: "Questa chat ha sessioni figlie (come esecuzioni di subagenti) che eliminarla rimuoverebbe a loro volta, quindi non è stata eliminata."
 userMessages.rpc.sessionNotFound: "Questa chat non è più collegata al backend (era inattiva o il backend si è riavviato). La cronologia è salvata: digita /resume per riaprirla."

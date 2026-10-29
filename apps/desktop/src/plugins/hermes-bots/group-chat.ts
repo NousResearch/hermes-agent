@@ -382,6 +382,11 @@ export function groupChatSyncSnapshot(
           ? {
               sourceScoped: true
             }
+          : {}),
+        ...(member?.hermesHandleTaken
+          ? {
+              hermesHandleTaken: true
+            }
           : {})
       })),
       ...(typeof room?.image === 'string' && room.image.length <= GROUP_CHAT_SYNC_IMAGE_CHARS

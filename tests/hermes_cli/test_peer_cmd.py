@@ -41,6 +41,106 @@ def test_base_url_bare_and_profile():
     assert peer_cmd._base_url(peer, "researcher") == "http://spark.lan:8377/p/researcher"
 
 
+class _ProfilePeer(BaseHTTPRequestHandler):
+    """A peer whose /p/<profile>/ prefix answers like the real api_server middleware: a profile it
+    does not serve is a 404 ``{"error": "Unknown or unconfigured profile"}`` before any handler."""
+
+    served: set = set()
+    probe_status: int = 200
+    refusal: dict = {"error": "Unknown or unconfigured profile"}
+    hits: list = []
+
+    def _answer(self):
+        _, _, profile, rest = (self.path.split("/", 3) + ["", "", "", ""])[:4]
+        type(self).hits.append(self.path)
+        if profile not in type(self).served:
+            return 404, type(self).refusal
+        if rest == "health":
+            return type(self).probe_status, {"status": "ok"}
+        if rest.startswith("api/sessions?"):
+            return 200, {"data": [{"id": f"bc_{profile}", "title": "Bot Chat"}]}
+        if rest.endswith("/chat"):
+            return 200, {"session_id": f"bc_{profile}", "message": {"content": f"from {profile}"}}
+        return 200, {"run_id": "run_1", "status": f"run in {profile}"}
+
+    def _reply(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        status, payload = self._answer()
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _reply
+
+    def log_message(self, *args):
+        pass
+
+
+_NOT_SERVED = {"error": {"message": "Profile 'hermes' exists on this host but this gateway does not serve it"}}
+
+
+@pytest.mark.parametrize("served,probe_status,refusal,expected", [
+    ({"default", "hermes"}, 200, None, "hermes"),   # a real legacy 'hermes' profile keeps precedence
+    # An older peer's generic 404 also covers a real 'hermes' profile it parks or runs standalone:
+    # ambiguous, so it is an error naming box/default, never a guessed delivery into the default.
+    ({"default"}, 200, None, None),
+    ({"default", "hermes"}, 503, None, "hermes"),   # a transient failure is no verdict, so never reroute
+    ({"default"}, 200, _NOT_SERVED, None),          # it has one but does not serve it: an error, not default
+])
+def test_hermes_handle_reaches_the_profile_the_peer_serves(
+        monkeypatch, capsys, served, probe_status, refusal, expected):
+    """``box/hermes`` names the peer's real 'hermes' profile when it has one; the client never
+    reroutes it to /p/default on its own (an upgraded peer aliases the handle server-side); dm,
+    status and stop all address the same mirror."""
+    _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = served, probe_status, []
+    _ProfilePeer.refusal = refusal or {"error": "Unknown or unconfigured profile"}
+    server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"box": {"url": f"http://127.0.0.1:{server.server_port}"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    try:
+        replies = [
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="box/hermes", message="hi", json=True)),
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="box/hermes", run_id="run_1", json=True)),
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="stop", target="box/hermes", run_id="run_1", json=True)),
+        ]
+    finally:
+        server.shutdown()
+    captured = capsys.readouterr()
+    out, err = [json.loads(line) for line in captured.out.splitlines()], captured.err
+    if expected is None:
+        assert (replies, out) == ([1, 1, 1], [])
+        # A generic 404 is ambiguous (names box/default); a distinct refusal is relayed as the peer said it.
+        assert ("Profile 'hermes' exists" if refusal else "box/default") in err
+        assert {hit.split("/")[2] for hit in _ProfilePeer.hits} == {"hermes"}
+        return
+    assert replies == [0, 0, 0]
+    assert [out[0]["reply"], out[1]["status"], out[2]["status"]] == [
+        f"from {expected}", f"run in {expected}", f"run in {expected}"]
+    assert {hit.split("/")[2] for hit in _ProfilePeer.hits if not hit.endswith("/health")} == {expected}
+
+
+@pytest.mark.parametrize("target", ["box/Hermes", "box/HERMES"])
+def test_mixed_case_hermes_target_reaches_the_peers_real_hermes_profile(monkeypatch, capsys, target):
+    """Profile ids are lowercase, so ``box/Hermes`` is ``box/hermes``. A peer comparing prefixes
+    exactly (every peer before the case fix) answers ``/p/Hermes`` with its unknown-profile 404,
+    which the @hermes fallback read as "no hermes here" and rerouted the DM to the default."""
+    _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = {"default", "hermes"}, 200, []
+    _ProfilePeer.refusal = {"error": "Unknown or unconfigured profile"}
+    server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"box": {"url": f"http://127.0.0.1:{server.server_port}"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    try:
+        rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target=target, message="hi", json=True))
+    finally:
+        server.shutdown()
+    assert (rc, json.loads(capsys.readouterr().out)["reply"]) == (0, "from hermes")
+
+
 # ── registry round-trip (isolated config) ────────────────────────────────────
 
 

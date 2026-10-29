@@ -3,7 +3,7 @@ import { mergeUsage } from '@hermes/shared'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
+import { concatPartsByToolCall, sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
   type ChatMessage,
@@ -71,13 +71,25 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 import type { ClientSessionState } from '../../../types'
 
 import {
+  committedReplyCovers,
+  isStrictAnswerTextExtension,
+  pageReplyCommittingLiveRow,
+  replyAfterLastTool
+} from './committed-reply'
+import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
+import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
-  persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
 
+export {
+  chatMessageArraysEquivalent,
+  chatMessagesEquivalent,
+  chatPartsEquivalent,
+  chatReactionsEquivalent
+} from './message-equivalence'
 export { goneSessionVerdict, isSessionGoneError, resolveResumedBusy } from './resume-verdicts'
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
@@ -108,45 +120,6 @@ function hasStructuralParts(message: ChatMessage): boolean {
  */
 function isLiveTailRow(message: ChatMessage): boolean {
   return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
-}
-
-/**
- * True when `next` is a pure forward extension of the previous *answer* text.
- * Empty previous answer never accepts a dump as an extension — that is how the
- * mid-turn inflight flat dump used to sandwich structured rows (#76444).
- */
-export function isStrictAnswerTextExtension(next: string, previous: string): boolean {
-  const n = next.trim()
-  const p = previous.trim()
-
-  if (!p || !n) {
-    return false
-  }
-
-  return n.startsWith(p)
-}
-
-/**
- * Whether a committed bubble already holds the reply a stale live snapshot was
- * streaming. History folds a tool turn's narration, tools and answer into one
- * bubble while the snapshot carries the turn's whole text, so compare the
- * bubble's text with whitespace collapsed. The bubble must end in a reply: a
- * mid-turn commit ends on a tool call and the turn is still running.
- */
-function committedReplyCovers(message: ChatMessage, snapshot: string): boolean {
-  const text = message.parts
-    .flatMap(part => (part.type === 'text' ? [part.text] : []))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-
-  return Boolean(replyAfterLastTool(message).trim()) && isStrictAnswerTextExtension(text, snapshot.replace(/\s+/g, ' '))
-}
-
-/** A folded tool-turn bubble's answer: its text after the last tool call. */
-function replyAfterLastTool(message: ChatMessage): string {
-  const lastTool = message.parts.findLastIndex(part => part.type === 'tool-call')
-
-  return chatMessageText({ ...message, parts: message.parts.slice(lastTool + 1) })
 }
 
 /**
@@ -213,193 +186,6 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
   )
 
   return missing.length ? { ...message, parts: [...missing, ...message.parts] } : message
-}
-
-// Compile-time exhaustiveness guards. If a new field is added to ChatMessage
-// or a new part type appears in the ChatMessagePart union (e.g. @assistant-ui
-// ships one), these fail tsc until someone explicitly classifies it.
-//
-// COMPARED: fields whose change must trigger a re-render (setMessages).
-// Durable identity changes must publish too: view-side refresh reconciliation
-// must see an acknowledgement even when its visible text is unchanged.
-// IGNORED:  fields that are intentionally not compared — display-only metadata
-//           or reference identity the runtime already guarantees.
-//   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
-//   serverRowSpan — backend rows the folded message covers; the older-page offset
-//                   accounting reads it, the transcript never paints it
-//
-// If your new field affects what the user sees in the transcript, add it to
-// COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
-// IGNORED.
-const _chatMessageFieldsExhaustive: {
-  [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
-} = {}
-
-const COMPARED_FIELDS = [
-  'rowId',
-  'persistedTurn',
-  'durableComplete',
-  'recovered',
-  'asyncResult',
-  'asyncResultKind',
-  'id',
-  'role',
-  'pending',
-  'error',
-  // Structured failure layer — drives the error card's title and action row,
-  // so a change (e.g. resume replay attaching the descriptor) must repaint.
-  'errorSurface',
-  'hidden',
-  'branchGroupId',
-  'interim',
-  'interrupted',
-  'reactions',
-  'timestamp',
-  'completedAt',
-  // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
-  // must re-render (set once at completion; stable afterwards).
-  'durationS'
-] as const
-
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
-
-// Compile-time check: every ChatMessagePart discriminant must be handled by
-// chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
-//   text, reasoning      → compared by .text
-//   tool-call             → compared by toolCallId/toolName + result presence
-//   source, image, file, data, generative-ui, audio, data-* → shallow primitive compare
-const _chatMessagePartTypesExhaustive: {
-  [T in Exclude<ChatMessage['parts'][number]['type'], (typeof HANDLED_PART_TYPES)[number]>]: never
-} = {}
-
-const HANDLED_PART_TYPES = [
-  'text',
-  'reasoning',
-  'tool-call',
-  'source',
-  'image',
-  'file',
-  'data',
-  'generative-ui',
-  'audio'
-] as const
-
-// Structural compare WITHOUT JSON.stringify — the only consumer asks "did
-// the transcript change, should I call setMessages?", so a slightly
-// conservative compare (occasionally false-negative → one extra idempotent
-// setMessages) is safe, but a false-POSITIVE (claiming equal when different)
-// would skip a needed update.
-export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: ChatMessage['parts'][number]): boolean {
-  // Reference equality fast-path
-  if (aPart === bPart) {
-    return true
-  }
-
-  if (aPart.type !== bPart.type) {
-    return false
-  }
-
-  if (aPart.timestamp !== bPart.timestamp || aPart.completedAt !== bPart.completedAt) {
-    return false
-  }
-
-  if (aPart.type === 'text' || aPart.type === 'reasoning') {
-    if (aPart.sourceRowId !== bPart.sourceRowId) {
-      return false
-    }
-
-    return (aPart as { text: string }).text === (bPart as { text: string }).text
-  }
-
-  if (aPart.type === 'tool-call') {
-    const aCall = aPart as { toolCallId?: string; toolName?: string; result?: unknown }
-    const bCall = bPart as { toolCallId?: string; toolName?: string; result?: unknown }
-
-    if (aCall.toolCallId !== bCall.toolCallId || aCall.toolName !== bCall.toolName) {
-      return false
-    }
-
-    // Compare whether result is present (undefined on both or defined on both)
-    const aHasResult = aCall.result !== undefined
-    const bHasResult = bCall.result !== undefined
-
-    return aHasResult === bHasResult
-  }
-
-  // For all other handled part types (source, image, file, data, generative-ui,
-  // audio, data-*), fall back to shallow primitive-key comparison — conservative:
-  // if we're not sure, claim not-equal (one extra setMessages is harmless, but
-  // skipping an update would break the UI).
-  // SAFETY: both parts already narrowed by `type` to flat primitive part kinds;
-  // the cast only exposes their keys for comparison, never reinterprets them.
-  const aPrimitive = aPart as unknown as Record<string, unknown>
-  // SAFETY: same narrowing as above; key comparison only.
-  const bPrimitive = bPart as unknown as Record<string, unknown>
-  const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
-  const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
-
-  if (aKeys.length !== bKeys.length) {
-    return false
-  }
-
-  return aKeys.every(k => aPrimitive[k] === bPrimitive[k])
-}
-
-export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMessage['reactions']): boolean {
-  const aList = a ?? []
-  const bList = b ?? []
-
-  if (aList === bList) {
-    return true
-  }
-
-  return (
-    aList.length === bList.length &&
-    aList.every((reaction, index) => reaction.emoji === bList[index].emoji && reaction.author === bList[index].author)
-  )
-}
-
-export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
-  if (
-    a.id !== b.id ||
-    a.rowId !== b.rowId ||
-    !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
-    a.role !== b.role ||
-    a.durableComplete !== b.durableComplete ||
-    a.recovered !== b.recovered ||
-    a.pending !== b.pending ||
-    a.error !== b.error ||
-    // Structural compare — the descriptor arrives as a fresh object per
-    // resume/replay, so identity comparison would repaint forever.
-    (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
-    (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
-    (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
-    a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId ||
-    a.timestamp !== b.timestamp ||
-    a.completedAt !== b.completedAt ||
-    // Interim gates the action footer, so flipping it must repaint (e.g. a
-    // previewed final settling onto a sealed interim bubble restores the bar).
-    (a.interim ?? false) !== (b.interim ?? false) ||
-    !chatReactionsEquivalent(a.reactions, b.reactions)
-  ) {
-    return false
-  }
-
-  if (a.parts.length !== b.parts.length) {
-    return false
-  }
-
-  return a.parts.every((part, index) => chatPartsEquivalent(part, b.parts[index]))
-}
-
-export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
-  // Array-level identity fast-path (same reference)
-  if (a === b) {
-    return true
-  }
-
-  return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
 /**
@@ -1711,6 +1497,8 @@ export function overlayConcurrentMessageChanges(
     )
   }
 
+  const committedNewRow = (message: ChatMessage) => !baselineById.has(message.id) && !isLiveTailRow(message)
+
   const representedOnPage = (current: ChatMessage): boolean =>
     // The page can still carry the row's older streaming copy by id when it
     // was composed from the baseline; the committed row replaces both.
@@ -1759,13 +1547,25 @@ export function overlayConcurrentMessageChanges(
 
       const replacement =
         activationText && !currentText.startsWith(activationText)
-          ? { ...current, parts: [...activationStream.parts, ...current.parts] }
+          ? { ...current, parts: concatPartsByToolCall(activationStream.parts, current.parts) }
           : current
 
       nextIndexById.delete(activationStream.id)
       nextIndexById.set(current.id, activationStreamIndex)
       overlaid[activationStreamIndex] = replacement
       activationStreamIndex = -1
+      changed = true
+
+      continue
+    }
+
+    // The page caught this turn's reply committed before its completion
+    // reached the live row: the live row takes that bubble's place.
+    const committedIndex = pageReplyCommittingLiveRow(overlaid, committedNewRow, current, currentMessages)
+
+    if (committedIndex >= 0) {
+      nextIndexById.set(current.id, committedIndex)
+      overlaid[committedIndex] = current
       changed = true
 
       continue
@@ -2432,8 +2232,11 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 /** Session-independent side effects of one runtime info snapshot. */
 function reportRuntimeInfoAppState(info: SessionRuntimeInfo, owner: SessionOwnerScope): void {
   if (info.stored_session_id) {
-    reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions,
-      pendingSnapshotFence(info.replay_epoch, info.last_sequence))
+    reconcilePendingSubmissions(
+      info.stored_session_id,
+      info.pending_submissions,
+      pendingSnapshotFence(info.replay_epoch, info.last_sequence)
+    )
   }
 
   // App/profile-level reporting is session-independent — a tile's runtime

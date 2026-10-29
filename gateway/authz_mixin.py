@@ -307,6 +307,14 @@ class GatewayAuthorizationMixin:
         """
         if source is None:
             return None
+        from gateway.session_detached import detached_route_of
+        if detached_route_of(source):
+            # A conversation its chat moved past answers its app viewers only, through the local
+            # adapter's event-stream delivery (gateway/session_detached.py), never the chat.
+            from gateway.session_identity import identity_of
+            identity = identity_of(source)
+            profile = identity.runtime_profile if identity is not None else getattr(source, "profile", None)
+            return self._adapters_for_profile(profile).get(Platform.LOCAL)
         adapter = self._intake_adapter_for(source)
         if adapter is not None:
             return adapter

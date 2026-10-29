@@ -240,9 +240,15 @@ def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) 
 
 
 def _extract_preserved_thinking_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
-    """Deep-copied thinking/redacted_thinking blocks from ``reasoning_details``."""
+    """Deep-copied thinking/redacted_thinking blocks from ``reasoning_details``; none from a turn a non-Claude
+    Bedrock Converse model stamped (a GPT -> Claude switch or fallback): Claude rejects another family's
+    sealed blobs (``Invalid `data` in `redacted_thinking` block``), and no Anthropic route signed them."""
     raw_details = message.get("reasoning_details")
     if not isinstance(raw_details, list):
+        return []
+    from agent.bedrock_adapter import reasoning_minted_outside_claude
+
+    if reasoning_minted_outside_claude(message):
         return []
     return [
         copy.deepcopy(d)

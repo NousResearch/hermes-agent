@@ -256,6 +256,11 @@ export type KeyParseState = {
   mode: 'NORMAL' | 'IN_PASTE'
   incomplete: string
   pasteBuffer: string
+  // CR held back from the end of a single-line read; see BURST_END_QUIET_MS.
+  pendingReturn?: boolean
+  // Last read of a non-bracketed paste burst: a read that carried a line break
+  // as text, or any read that followed one without input going quiet.
+  pasteBurstAt?: number
   // Internal tokenizer instance
   _tokenizer?: Tokenizer
 }
@@ -264,6 +269,56 @@ export const INITIAL_STATE: KeyParseState = {
   mode: 'NORMAL',
   incomplete: '',
   pasteBuffer: ''
+}
+
+// A read that is one line of text ending in CR is either a scripted `text` +
+// Enter write (`tmux send-keys 'text' Enter`, a PTY write of `text\r`) or the
+// first chunk of a non-bracketed paste split across reads. The CR is held for
+// this long: a flush with nothing else read turns it into `return` (submit);
+// any read inside the window makes it paste content. Once a read carried a
+// pasted line break, a read ending in CR is the tail of that paste and stays
+// content until input has been quiet for this long, however many reads the
+// paste spans. Mirrors hermes_cli/cli_enter_burst.py.
+export const BURST_END_QUIET_MS = 250
+
+interface TextBurst {
+  pendingReturn: boolean
+  pasteBurstAt: number
+}
+
+// A CR held from the previous read: a flush (or an escape sequence, which is
+// no paste chunk) releases it as `return`; text read inside the window takes
+// it as the line break of a split paste.
+function resumeHeldReturn(prevState: KeyParseState, input: string, isFlush: boolean): [ParsedKey[], string] {
+  if (!prevState.pendingReturn) {
+    return [[], input]
+  }
+
+  return isFlush || input.startsWith('\x1b') ? [[parseKeypress('\r')], input] : [[], '\r' + input]
+}
+
+// Any read inside the quiet window keeps a paste burst alive, so a paste that
+// spans many reads ends only once input goes quiet.
+function extendPasteBurst(pasteBurstAt: number, isFlush: boolean, now: number): number {
+  return !isFlush && now - pasteBurstAt < BURST_END_QUIET_MS ? now : pasteBurstAt
+}
+
+// `tailOfRead`: the last token of the read, with no escape sequence buffered.
+function parseTextToken(text: string, burst: TextBurst, tailOfRead: boolean, now: number): ParsedKey[] {
+  const body = text.slice(0, -1)
+  const singleLineEndingInCr = Boolean(body) && text.endsWith('\r') && !/[\r\n]/.test(body)
+
+  if (tailOfRead && singleLineEndingInCr && now - burst.pasteBurstAt >= BURST_END_QUIET_MS) {
+    burst.pendingReturn = true
+
+    return parseTextKeypresses(body)
+  }
+
+  if (text.length > 1 && /[\r\n]/.test(text)) {
+    burst.pasteBurstAt = now
+  }
+
+  return parseTextKeypresses(text)
 }
 
 function inputToString(input: Buffer | string): string {
@@ -286,10 +341,13 @@ function inputToString(input: Buffer | string): string {
 
 export function parseMultipleKeypresses(
   prevState: KeyParseState,
-  input: Buffer | string | null = ''
+  input: Buffer | string | null = '',
+  now: number = Date.now()
 ): [ParsedInput[], KeyParseState] {
   const isFlush = input === null
-  const inputString = isFlush ? '' : inputToString(input)
+  const [held, inputString] = resumeHeldReturn(prevState, isFlush ? '' : inputToString(input), isFlush)
+  const keys: ParsedInput[] = [...held]
+  const burst: TextBurst = { pendingReturn: false, pasteBurstAt: prevState.pasteBurstAt ?? -Infinity }
 
   // Get or create tokenizer
   const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true, legacyAltEnter: true })
@@ -298,11 +356,10 @@ export function parseMultipleKeypresses(
   const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)
 
   // Convert tokens to parsed keys, handling paste mode
-  const keys: ParsedInput[] = []
   let inPaste = prevState.mode === 'IN_PASTE'
   let pasteBuffer = prevState.pasteBuffer
 
-  for (const token of tokens) {
+  for (const [index, token] of tokens.entries()) {
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
         inPaste = true
@@ -346,7 +403,7 @@ export function parseMultipleKeypresses(
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(...parseTextKeypresses(token.value))
+        keys.push(...parseTextToken(token.value, burst, index === tokens.length - 1 && !tokenizer.buffer(), now))
       }
     }
   }
@@ -368,6 +425,8 @@ export function parseMultipleKeypresses(
     mode: inPaste ? 'IN_PASTE' : 'NORMAL',
     incomplete: tokenizer.buffer(),
     pasteBuffer,
+    pendingReturn: burst.pendingReturn,
+    pasteBurstAt: extendPasteBurst(burst.pasteBurstAt, isFlush, now),
     _tokenizer: tokenizer
   }
 

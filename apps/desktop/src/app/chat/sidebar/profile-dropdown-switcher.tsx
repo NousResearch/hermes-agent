@@ -17,8 +17,8 @@ import {
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Loader2 } from '@/lib/icons'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
@@ -90,7 +90,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   // The Webapp always takes this dropdown in place of the rail's squares
   // (profile-switcher.tsx), so there it keeps the list fresh the same way and
   // carries the rail's right-click launch menu. Native Desktop's picker is main's.
-  const browserHost = isBrowserHostedDesktop()
+  const browserHost = !hostHas('profileRailSquares')
   useProfileRailRefreshOnActive(browserHost)
 
   // The `profile.create` hotkey bumps this request atom; the rail answers it

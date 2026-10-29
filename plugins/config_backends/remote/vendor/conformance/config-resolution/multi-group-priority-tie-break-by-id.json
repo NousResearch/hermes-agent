@@ -1,0 +1,73 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-priority-tie-break-by-id",
+  "description": "Proves d5-tie-break: Two groups share a priority (a transient state during a NAS reorder); the group with the byte-wise smaller id is applied last and wins.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-a",
+      "priority": 5,
+      "values": {
+        "k": "a"
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-b",
+      "priority": 5,
+      "values": {
+        "k": "b"
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "k": "a"
+    },
+    "provenance": {
+      "k": "group"
+    },
+    "groupProvenance": {
+      "k": "g-a"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "k",
+      "value": "p",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

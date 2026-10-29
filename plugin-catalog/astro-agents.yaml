@@ -1,8 +1,8 @@
 name: astro-agents
 title: Astro Agents
 repo: https://github.com/aidatatools-dev/astro-agents-mcp
-sha: 84285c6cee5d7f2779fba968445c167b505ed62a
-version: "1.1.0"
+sha: 3346c5abf9a9a2937f913f0927d07a6f856dab4e
+version: "1.3.0"
 description: "Exact Western and Vedic astrology through the Astro Agents MCP server (Streamable HTTP at https://astro-agent.dev/mcp, no sign-in, no keys in config): birth chart, transits, synastry, kundli with D1-D60 divisional charts, Vimshottari dashas, doshas, panchang and Gun Milan, computed from the NASA/JPL DE440 ephemeris with no LLM; every result carries a SHA-256 hash. Bundles the astrology skill (when to call which tool, input conventions). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code; every tool call sends the birth date, time and coordinates it is given to astro-agent.dev, and the tool set is served by that server at runtime, not covered by the pinned sha. Each client gets 3 free calls, after which a tool returns REST payment instructions (x402 or MPP); nothing is charged over MCP and the package holds no wallet or key."
 maintainer: aidatatools-dev
 tier: community

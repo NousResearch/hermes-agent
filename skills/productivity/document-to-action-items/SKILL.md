@@ -8,12 +8,12 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Documents, OCR, Action-Items, Deadlines, Extraction]
-    related_skills: [pdf, pdf, docx, notion]
+    related_skills: [pdf, microsoft-office, notion]
 ---
 
 # Document to Action Items
 
-Turn documents into cited facts and proposed actions. Extraction is not legal advice, and low-confidence OCR or ambiguous language must remain visible. The `pdf` / `pdf` / `docx` skills own extraction mechanics; this skill owns what happens to the extracted content.
+Turn documents into cited facts and proposed actions. Extraction is not legal advice, and low-confidence OCR or ambiguous language must remain visible. The `pdf` and `microsoft-office` skills own extraction mechanics; this skill owns what happens to the extracted content.
 
 ## When to Use
 

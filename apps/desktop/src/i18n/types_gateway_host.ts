@@ -30,6 +30,8 @@ export interface WebAccessTranslations {
   unavailableDetail: (reason: string) => string
   restartBusy: string
   restartFailed: string
+  /** A restart that exited without replacing the gateway, with the last line it wrote. */
+  restartFailedBecause: (reason: string) => string
   startTimedOut: string
   stopTimedOut: string
   start: string

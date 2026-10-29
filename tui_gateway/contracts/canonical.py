@@ -16,7 +16,7 @@ from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
-from .registry import canonical_method
+from .registry import canonical_method, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -510,7 +510,7 @@ canonical_method("worker.persist", params=WorkerPersistParams, result=WorkerPers
                  doc="Sequence-fenced typed persistence write from an adopted worker.")
 
 
-# ── hosted rooms (canonical-only verbs) ───────────────────────────────────────────────────────
+# ── hosted rooms ─────────────────────────────────────────────────────────────────────────────────
 
 
 class GroupsAttachmentUploadParams(RoomParams):
@@ -534,8 +534,12 @@ class RoomAttachment(OpenModel):
     event_id: str | None = None
 
 
+_UPLOAD_DOC = "Store one attachment for a later groups.send manifest (idempotent per upload_id)."
+# Both routes serve the room byte verbs with one wire, so a group composer attaches files the same
+# way whichever backend owns the room; the canonical table keeps its closed-set key check.
 canonical_method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment,
-                 doc="Store one attachment for a later groups.send manifest (idempotent per upload_id).")
+                 doc=_UPLOAD_DOC)
+method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment, doc=_UPLOAD_DOC)
 
 
 class GroupsAttachmentDownloadParams(RoomParams):
@@ -547,8 +551,11 @@ class RoomAttachmentBytes(RoomAttachment):
     data_base64: str
 
 
+_DOWNLOAD_DOC = "Read one committed attachment for a live room viewer."
 canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams,
-                 result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer.")
+                 result=RoomAttachmentBytes, doc=_DOWNLOAD_DOC)
+method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=RoomAttachmentBytes,
+       doc=_DOWNLOAD_DOC)
 
 
 class GroupsDiscardParams(RoomParams):
@@ -562,8 +569,10 @@ class GroupsDiscardResult(Result):
     task: RoomTaskReceipt
 
 
-canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
-                 doc="Discard one indeterminate room task after explicit user confirmation.")
+_DISCARD_DOC = "Discard one indeterminate room task after explicit user confirmation."
+canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
+# The standalone route forwards it to the room's owning gateway (#145960), like the byte verbs.
+method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
 
 
 # Shared-name overrides load after the authority-only value shapes above.

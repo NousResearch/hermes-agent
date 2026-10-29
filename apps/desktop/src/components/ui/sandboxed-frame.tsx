@@ -1,5 +1,9 @@
 import type * as React from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
+import { htmlFromDataUrl } from '@/lib/browser-guest-document'
+import { browserBootstrap, endpointUrl } from '@/lib/browser-transport'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 
 /** The sandbox posture guest content gets by default: scripts run, the frame
@@ -93,6 +97,24 @@ export function SandboxedFrame({ className, onError, onLoad, ref, sandbox, src, 
     return null
   }
 
+  const html = isBrowserHostedDesktop() ? htmlFromDataUrl(src) : null
+
+  if (html !== null) {
+    return (
+      <BrowserGuestFrame
+        className={className}
+        html={html}
+        key={sanitizeFrameSandbox(sandbox)}
+        onError={onError}
+        onLoad={onLoad}
+        ref={ref}
+        sandbox={sandbox}
+        style={style}
+        title={title}
+      />
+    )
+  }
+
   return (
     <iframe
       className={cn('size-full border-0 bg-transparent', className)}
@@ -102,6 +124,170 @@ export function SandboxedFrame({ className, onError, onLoad, ref, sandbox, src, 
       ref={ref}
       referrerPolicy="no-referrer"
       sandbox={sanitizeFrameSandbox(sandbox)}
+      src={src}
+      style={style}
+      title={title}
+    />
+  )
+}
+
+interface BrowserGuestFrameProps extends Omit<SandboxedFrameProps, 'src'> {
+  html: string
+}
+
+// A shell's own load is taken at the document in the capture phase (load
+// events never reach the window), before React or a consumer's handler sees
+// it (inside a shadow root, the frame's own handler takes it instead); guest
+// loads are dispatched on the shell's frame as marked load events.
+// Both keep working while an <Activity> or Suspense boundary hides the frame
+// and detaches its ref and effects. A frame mounted hidden has no handler yet:
+// its shell load is only recorded, and the frame starts when first shown.
+const shellLoads = new WeakMap<HTMLIFrameElement, (frame: HTMLIFrameElement) => void>()
+const loadedShells = new WeakSet<HTMLIFrameElement>()
+const shellFrames = new WeakMap<object, HTMLIFrameElement>()
+const guestLoadEvents = new WeakSet<Event>()
+let listening = false
+
+function listenForGuestShells() {
+  if (listening) {
+    return
+  }
+
+  listening = true
+  document.addEventListener(
+    'load',
+    event => {
+      const frame = event.target
+
+      if (frame instanceof HTMLIFrameElement && frame.hasAttribute('data-guest-shell') && !guestLoadEvents.has(event)) {
+        event.stopImmediatePropagation()
+        loadedShells.add(frame)
+        shellLoads.get(frame)?.(frame)
+      }
+    },
+    true
+  )
+  window.addEventListener('message', event => {
+    const frame = event.source && event.data?.type === 'hermes-guest-loaded' ? shellFrames.get(event.source) : undefined
+
+    if (frame?.isConnected && frame.contentWindow === event.source) {
+      const load = new Event('load')
+
+      guestLoadEvents.add(load)
+      frame.dispatchEvent(load)
+    }
+  })
+}
+
+/** Webapp only: a `data:text/html` document would inherit the page CSP, which
+ *  never runs guest inline scripts. The gateway's guest shell is served with
+ *  its own policy and the SDK allowlist as its sandbox ceiling; this frame's
+ *  sandbox narrows it to the caller's tokens (plus `allow-scripts`, which the
+ *  shell itself needs), and the guest document nested in the shell gets the
+ *  caller's tokens exactly. The shell relays messages both ways, so
+ *  `ref.current.contentWindow.postMessage` and `event.source ===
+ *  ref.current.contentWindow` keep working, and `onLoad` fires once the guest
+ *  document (not the shell) has loaded. */
+function BrowserGuestFrame({ className, html, onError, onLoad, ref, sandbox, style, title }: BrowserGuestFrameProps) {
+  const frame = useRef<HTMLIFrameElement | null>(null)
+  const guestSandbox = sanitizeFrameSandbox(sandbox)
+  // Before the first commit, so no shell can load unseen.
+  listenForGuestShells()
+  const lastDocument = useRef<{ html: string; sandbox: string } | null>(null)
+  const src = endpointUrl('/assets/webapp-guest.html', browserBootstrap()?.basePath || '').href
+
+  const send = useCallback(
+    (node: HTMLIFrameElement) => {
+      const target = node.contentWindow
+
+      if (!target || (lastDocument.current?.html === html && lastDocument.current.sandbox === guestSandbox)) {
+        return
+      }
+
+      target.postMessage({ type: 'hermes-preview-document', html, sandbox: guestSandbox }, '*')
+      lastDocument.current = { html, sandbox: guestSandbox }
+    },
+    [html, guestSandbox]
+  )
+
+  const shellLoaded = useCallback(
+    (node: HTMLIFrameElement) => {
+      shellFrames.set(node.contentWindow!, node)
+      lastDocument.current = null
+      send(node)
+    },
+    [send]
+  )
+
+  // Registered again with each document, so a shell that loads while hidden
+  // still gets the latest one this frame showed; a shell that loaded before
+  // this frame was first shown is started now.
+  useLayoutEffect(() => {
+    const node = frame.current
+
+    if (node) {
+      shellLoads.set(node, shellLoaded)
+
+      if (loadedShells.has(node) && shellFrames.get(node.contentWindow!) !== node) {
+        shellLoaded(node)
+      }
+    }
+  }, [shellLoaded])
+
+  useEffect(() => {
+    const node = frame.current
+
+    if (node?.contentWindow && shellFrames.get(node.contentWindow) === node) {
+      send(node)
+    }
+  }, [send])
+
+  const attach = useCallback(
+    (node: HTMLIFrameElement | null) => {
+      frame.current = node
+      const cleanup = typeof ref === 'function' ? ref(node) : undefined
+
+      if (ref && typeof ref !== 'function') {
+        ref.current = node
+      }
+
+      return () => {
+        frame.current = null
+
+        if (typeof cleanup === 'function') {
+          cleanup()
+        } else if (typeof ref === 'function') {
+          ref(null)
+        } else if (ref) {
+          ref.current = null
+        }
+      }
+    },
+    [ref]
+  )
+
+  return (
+    <iframe
+      className={cn('size-full border-0 bg-transparent', className)}
+      data-guest-shell=""
+      loading="lazy"
+      onError={onError}
+      onLoad={event => {
+        if (guestLoadEvents.has(event.nativeEvent)) {
+          onLoad?.(event)
+
+          return
+        }
+
+        // Only a shell load the document never saw (a load is not composed, so
+        // inside a shadow root it stops there) reaches React.
+        event.stopPropagation()
+        loadedShells.add(event.currentTarget)
+        shellLoaded(event.currentTarget)
+      }}
+      ref={attach}
+      referrerPolicy="no-referrer"
+      sandbox={sanitizeFrameSandbox(`${guestSandbox} allow-scripts`)}
       src={src}
       style={style}
       title={title}

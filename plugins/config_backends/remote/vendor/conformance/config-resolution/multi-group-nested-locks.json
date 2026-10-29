@@ -1,0 +1,102 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-nested-locks",
+  "description": "Proves d5-lock, r9: A higher group's lock inside a lower group's locked section supplies that sub-path; the rest of the section comes from the lower locking group; the covered lock is dropped from the lock list.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-low",
+      "priority": 1,
+      "values": {
+        "a": {
+          "b": "low",
+          "c": "low"
+        }
+      },
+      "locks": [
+        "a"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-high",
+      "priority": 2,
+      "values": {
+        "a": {
+          "b": "high",
+          "c": "high"
+        },
+        "z": "high"
+      },
+      "locks": [
+        "a.b"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": {
+        "c": "low",
+        "b": "high"
+      },
+      "z": "high"
+    },
+    "provenance": {
+      "a.c": "group",
+      "a.b": "group",
+      "z": "group"
+    },
+    "groupProvenance": {
+      "a.c": "g-low",
+      "a.b": "g-high",
+      "z": "g-high"
+    },
+    "locks": [
+      {
+        "path": "a",
+        "level": "group",
+        "groupId": "g-low"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "a.c",
+      "value": "p",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-low"
+      }
+    }
+  ]
+}

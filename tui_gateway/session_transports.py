@@ -36,13 +36,13 @@ def _session_has_live_transport(session: dict | None, *, excluding=None) -> bool
 
 
 def _transport_auth_user_id(transport) -> str | None:
-    """``<provider>:<user id>`` the WS-upgrade credential authenticated for ``transport``, or None for the legacy
-    token, stdio and the PTY child's server-internal credential. The prefix keeps a basic-auth ``alice`` and an
-    OIDC ``alice`` apart."""
+    """The owner a row created over ``transport`` belongs to: the host owner's OS subject for any WS-upgrade
+    login (a signed-in Webapp or dashboard tab is the machine owner, gateway.owner_identity), so native Desktop
+    and the TUI resume it; None for the legacy token, stdio and the PTY child's server-internal credential."""
     from gateway.session_identity import is_authenticated_identity
-    identity = getattr(transport, "auth_identity", None)
-    if is_authenticated_identity(identity):
-        return f"{str(identity['provider']).strip()}:{str(identity['user_id']).strip()}"
+    if is_authenticated_identity(getattr(transport, "auth_identity", None)):
+        from gateway.owner_identity import host_owner_subject
+        return host_owner_subject()
     return None
 
 

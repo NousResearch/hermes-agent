@@ -7,10 +7,13 @@ per function, so test patches on ``hermes_cli.update_cmd`` and the origin module
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -263,10 +266,44 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     if target.commit:
         print(f"→ {'Release' if target.ahead else 'Latest release'}: {target.label}")
         request["expected_sha"] = target.commit
+        if target.channel == "stable" and target.version and not target.ahead:
+            request["release_tag"] = f"v{target.version}"  # verified on origin by the resolver
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
     request["branch"] = target.branch
     return f"origin/{target.branch}", None, False, target.repository
+
+
+def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
+    """Fetch a pinned release's own tag when this checkout lacks it.
+
+    The checkout's version is the newest release tag merged into HEAD (version_info), so a
+    tagless release fetch moved HEAD to vX.Y.Z while every reader -- /health, the install
+    stamp, the receipt, About -- still named the previous release (#143656). Best effort and
+    create-only: a fork or mirror without the tag still updates, and an existing local tag
+    never moves (the stable pin contract). Only that one tag: others drag in their histories.
+    """
+    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
+    from hermes_cli.update_cmd import NETWORK_GIT_TIMEOUT_SECONDS
+
+    tag = request.get("release_tag")
+    if not tag:
+        return
+    try:
+        if _git(git_cmd, root, ["rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"]).returncode == 0:
+            return
+        fetched = _git(git_cmd, root, ["fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
+                       timeout=NETWORK_GIT_TIMEOUT_SECONDS, **no_prompt_git_kwargs())
+        detail = (fetched.stderr or "").strip().splitlines()[-1:] if fetched.returncode else None
+    except (OSError, subprocess.SubprocessError) as exc:  # custody refusals are OSErrors too
+        detail = [str(exc)]
+    if detail is not None:
+        # Not fatal (a mirror may lack the tag), but say so: without it every version reader keeps
+        # naming the previous release, the symptom this fetch exists to prevent.
+        reason = detail[0] if detail else "git fetch failed"
+        logger.warning("Could not fetch release tag %s: %s", tag, reason)
+        print(f"⚠ Could not fetch the {tag} tag ({reason}); the version shown may name the previous "
+              "release until the next update fetches it.")
 
 
 def hold_channel_release_behind_runtime(git_cmd, target_ref: str, channel: str) -> str | None:

@@ -6,7 +6,7 @@
  * a one-use launch link it got over the gateway's control socket. Proof, end to end with a real browser:
  *  - exactly one gateway serves the sandbox, and the browser's socket is that gateway's own;
  *  - a turn's terminal tool runs under the gateway process (its ancestry);
- *  - the gateway admitted the turn for the browser's sign-in, not the host's native grant;
+ *  - the gateway admitted the turn as the machine owner, the identity native Desktop uses;
  *  - reload resumes the chat;
  *  - after the gateway is killed and started again, the same tab is still signed in (the browser
  *    credential is kept in the home) and the next turn works;
@@ -56,8 +56,9 @@ const A = (n: number) => `A${n}-webapp${nonce}`
 const AI = (n: number) => `A${n}i-webapp${nonce}`
 
 const PYTHON = process.env.HERMES_E2E_PYTHON || 'python3'
-/** The browser's sign-in on a loopback Webapp: the gateway's session credential. */
-const BROWSER_LOGIN = 'auth:v1:["session-token","","legacy-token-owner"]'
+/** A signed-in Webapp tab acts as the machine owner, the OS subject native Desktop's ticket carries
+ * (`gateway/owner_identity.py`): sign-in decides who may open the Webapp, it names no second user. */
+const OWNER_SUBJECT = `uid:${process.getuid?.()}`
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -189,9 +190,9 @@ test('the gateway serves the Webapp and runs every turn its browser sends', asyn
     const sessionId = await currentSessionId(page)
     await expect.poll(() => storedSessionForMarker(sandbox, 'default', U(1))).toBe(sessionId)
 
-    // The tool ran inside the gateway, admitted for the browser's sign-in.
+    // The tool ran inside the gateway, admitted for the machine owner the browser signed in as.
     await expect.poll(() => toolAncestry(ancestry)).toContain(gateway.pid)
-    expect(admissionPrincipals(sandbox, sessionId)).toEqual([BROWSER_LOGIN])
+    expect(admissionPrincipals(sandbox, sessionId)).toEqual([OWNER_SUBJECT])
     await assertTranscriptOracle(page, ws, provider, { sessionId, expectUserMarkers: [U(1)] }, 'webapp turn')
 
     // Reload resumes the chat on the same gateway.

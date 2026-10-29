@@ -701,6 +701,47 @@ Database size: 12.4 MB
 
 For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](../reference/cli-commands.md#hermes-insights).
 
+### Refresh Prompts After a Profile Update
+
+A continuing session sends the same system prompt on every turn, the bytes it
+built on its first turn. Keeping those bytes fixed is what lets the provider
+reuse its prompt cache across a long conversation. The side effect: changes to
+`SOUL.md`, installed or edited skills, or project context files (`AGENTS.md`
+and friends) do not reach a session that is already running. A gateway
+restart does not change that, because the gateway restores each session's
+stored prompt. Until now the only way in was `/new`, which also drops the
+conversation.
+
+After updating a profile's prompt sources, ask its sessions to adopt them:
+
+```bash
+# Every session in the active profile (add -p <profile> for another one)
+hermes sessions refresh-prompts
+
+# One session (id or unique prefix)
+hermes sessions refresh-prompts --session SESSION_ID
+```
+
+The command records a refresh request in the profile's `state.db` and prints
+how many sessions hold a stored prompt. On each session's next turn, Hermes
+rebuilds the system prompt from the current sources and then sends the
+message. The conversation history, the session id and the session's tool list
+stay as they were. The rebuilt prompt is saved, so every later turn reuses it
+byte for byte.
+
+- **Cost:** each refreshed session pays one prompt-cache miss, on the turn
+  that rebuilds. Later turns are cached again.
+- **No restart needed:** the request is read at the start of every turn, by
+  agents the gateway keeps in memory and by agents it restores from the
+  database. It also survives restarts. Run it once the new files are in
+  place: an update script can call it before or after replacing the gateway.
+- **What gets rebuilt:** the whole system prompt goes through the normal
+  builder, so memory and `USER.md` blocks also pick up their latest saved
+  state on that turn. Tool definitions do not change. A session started after
+  the request already has the new prompt and does not rebuild again.
+- **Without the command** nothing changes: sessions keep replaying their
+  stored prompt as before.
+
 ### Repair Stranded Gateway Sessions
 
 If a gateway conversation ever "jumps back in time" after a restart — resuming

@@ -1,0 +1,27 @@
+name: eu-mode
+repo: https://github.com/AstrowareAI/eu-mode-hermes
+sha: 80f82114ba9fc7e9412303ee4b1c87625fcf93d8
+description: "EU Mode (beta): HaloGuard EU, Astroware's guard API hosted in the EU, checks each message and each reply (allow or block). EU Mode looks for personal data in what users send and masks what it finds before the request reaches the model, then puts the originals back in the reply, on your machine. Disclosure — on every turn the conversation's user and assistant text (not system prompts, tool results, files or images) goes to api.astroware.ai (or the HALOGUARD_BASE_URL you set) with your own HaloGuard EU key, up to twice per turn (your message, then the reply); fail-open: if the API does not answer, the message goes on unchecked and not masked, and the reply says so; reads two Hermes settings (session titles, context compression) only to say when they are on; stores SHA-256 fingerprints of blocked messages, never their text."
+maintainer: AstrowareAI
+tier: community
+category: general
+docs_url: https://github.com/AstrowareAI/eu-mode-hermes#readme
+version: "0.1.1"
+requires_hermes: ">=0.20.0"
+screenshots:
+  - https://raw.githubusercontent.com/AstrowareAI/eu-mode-hermes/80f82114ba9fc7e9412303ee4b1c87625fcf93d8/demo/eu-mode-demo.gif
+known_issues:
+  - "Hermes's automatic session titles and context compression send text to the model without passing through plugins, so that text is not checked or masked. Switch both off as the README shows."
+  - "Keep streaming off: with streaming on, a reply appears before EU Mode checks it and puts names back."
+  - "The filter can miss personal data, and it can also mask words that are not personal data."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+    - on_session_finalize
+    - on_session_reset
+  provides_middleware:
+    - llm_request
+  requires_env:
+    - HALOGUARD_API_KEY

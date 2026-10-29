@@ -1,7 +1,7 @@
 """Owner-only adoption of pre-authority local transcripts.
 
-An old transcript has no authenticated subject. Only a redeemed same-profile
-native control ticket may adopt it; remote login is not evidence of ownership.
+An old transcript has no authenticated subject. Only the machine owner (a redeemed same-profile
+native control ticket, or the owner signed in to the Webapp: gateway.owner_identity) may adopt it.
 The historical ID becomes the stable logical owner without copying its messages.
 Compression and reset may later advance the physical target, never FIFO identity.
 """
@@ -17,9 +17,11 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def bind_native_transport(authority, actor, identity):
-    if (identity.get('provider') == 'local'
-            and identity.get('profile_id') == authority.profile_id
-            and identity.get('instance_id') == authority.instance_id
+    # The machine owner signed in to the Webapp is the same person native Desktop is (owner_identity).
+    from gateway.owner_identity import host_owner_subject
+    native = (identity.get('provider') == 'local' and identity.get('profile_id') == authority.profile_id
+              and identity.get('instance_id') == authority.instance_id)
+    if ((native or actor.subject == host_owner_subject())
             and actor.profile_id == authority.profile_id
             and 'session:create' in actor.capabilities):
         if not hasattr(authority, '_native_legacy_transports'):
@@ -33,15 +35,16 @@ def unbind_native_transport(authority, actor):
 
 def require_history_claim(authority, conn, actor, sid):
     """Import receipts confer ownership; merely knowing an old ID does not."""
-    from hermes_state_mutation_binding import BINDING_PREFIX, _login_label, _owner_user
+    from gateway.owner_identity import same_owner
+    from hermes_state_mutation_binding import BINDING_PREFIX, _owner_user
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (sid,)).fetchone()
     if row is None or row['session_key'] or row['chat_id'] or row['origin_json']:
         return
     if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (BINDING_PREFIX + sid,)).fetchone():
         return  # authorize_history checks the already committed importer identity.
     own_profile = row['profile_name'] in (None, '', authority.db._own_profile_name() or 'default')
-    if own_profile and _owner_user(row) and row['user_id'] in (actor.subject, _login_label(actor.subject)):
-        return  # The login that created it (a served remote Desktop); authorize_history re-checks it.
+    if own_profile and _owner_user(row) and same_owner(row['user_id'], actor.subject):
+        return  # Its owner (a login stamp is the machine owner's); authorize_history re-checks it.
     if getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor:
         raise RuntimeStoreError('permission_denied')
 

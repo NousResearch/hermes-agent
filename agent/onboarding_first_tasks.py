@@ -171,7 +171,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
         quality="Real items they asked for. No test items.",
         done="The reminder and note exist, and the morning job is set up or declined."),
     FirstTask(
-        "notes", "Turn my notes into a wiki", _always, ("obsidian", "llm-wiki"),
+        "notes", "Turn my notes into a wiki", _always, ("obsidian",),
         goal="turn their notes into a small linked wiki",
         steps=(
             "Ask which folder holds their notes. Never search the disk for it.",
@@ -223,7 +223,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
         quality="Every finding has a source link. Nothing invented.",
         done="The first report is shown and the daily job is set up or declined."),
     FirstTask(
-        "site", "Design a page for me", _always, ("claude-design", "popular-web-designs", "design-md", "p5js"),
+        "site", "Design a page for me", _always, ("claude-design", "popular-web-designs", "p5js"),
         goal="design one web page for them",
         steps=(
             "If you do not know what the page is for, ask in one line.",

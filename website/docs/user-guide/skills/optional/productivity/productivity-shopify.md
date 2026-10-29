@@ -21,7 +21,7 @@ Query Shopify Admin/Storefront GraphQL APIs via curl.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Shopify`, `E-commerce`, `Commerce`, `API`, `GraphQL` |
-| Related skills | [`airtable`](../../bundled/productivity/productivity-airtable.md), [`xurl`](../../bundled/social-media/social-media-xurl.md) |
+| Related skills | [`airtable`](../../optional/productivity/productivity-airtable.md), [`xurl`](../../bundled/social-media/social-media-xurl.md) |
 
 ## Reference: full SKILL.md
 

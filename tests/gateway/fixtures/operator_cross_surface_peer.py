@@ -135,14 +135,13 @@ async def probe(peer, creator):
             assert await rpc(viewer, 'prompt.submit', **followup) == accepted
             rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
             assert len(rows) == 2, rows
+            # Hermes is single-user: the dashboard login is the machine owner, so both surfaces'
+            # admissions carry the owner's own OS subject and neither is an operator hand-off.
             assert rows[0]['principal_id'] == original_owner, rows
-            assert rows[1]['principal_id'] != original_owner, rows
-            assert rows[1]['payload']['local_operator_v1'] == {
-                'profile_id': authority.profile_id, 'session_id': sid,
-                'principal_id': rows[1]['principal_id']}
+            assert rows[1]['principal_id'] == original_owner, rows
+            assert all('local_operator_v1' not in row['payload'] for row in rows), rows
             attribution = [row['principal_id'] for row in rows]
-            assert any(subject.startswith('uid:') for subject in attribution), attribution
-            assert len(set(attribution)) == 2
+            assert all(subject.startswith('uid:') for subject in attribution), attribution
             await owner.close()
             await viewer.close()
             # No connected viewer owns this accepted work. A new surface sees the same queue.
@@ -175,7 +174,7 @@ async def probe(peer, creator):
             assert 'LOCAL_ACK_WS_SHARED' in json.dumps(snapshot['messages'])
             assert 'local_operator_v1' not in json.dumps([initial, attached, accepted, replay, snapshot])
             (home / 'operator-receipt.json').write_text(json.dumps(dict(
-                creator=creator, model_requests=len(peer.requests), distinct_attribution=True,
+                creator=creator, model_requests=len(peer.requests), owner_attribution=True,
                 disconnect_survived=True, negative_boundaries=True)))
     finally:
         peer.release.set()

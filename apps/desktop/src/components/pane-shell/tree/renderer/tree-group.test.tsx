@@ -257,6 +257,29 @@ describe('TreeGroup', () => {
     expect(strip.style).toHaveProperty('WebkitAppRegion', '')
   })
 
+  // A pane's live tab label is a React element (the terminal's
+  // locale-following title), so the zone menu's accessible name must come
+  // from the string form, never the element ("Zone options for [object
+  // Object]").
+  it.each([
+    ['its string label', { tabTitleText: () => 'Terminal' }, 'Terminal'],
+    ['its registered title without one', {}, 'Shell']
+  ])('names the body zone menu from %s when the tab label is an element', (_case, chrome, expected) => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { placement: 'main', tabTitle: () => <span>Live label</span>, ...chrome },
+      id: 'terminal',
+      title: 'Shell',
+      render: () => <div>Terminal</div>
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    stubResizeObserver()
+    render(<TreeGroup leftEdge node={terminalGroup(false)} rightEdge topEdge />)
+
+    const body = container!.querySelector<HTMLElement>('[data-zone-body="terminal-zone"]')!
+    expect(body.getAttribute('aria-label')).toBe(`Zone options for ${expected}`)
+  })
+
   // The invariant behind the shared eligibility predicate
   // (hostsSessionDropTarget): a session or new-session drag must paint the
   // SAME zones either drag resolver would accept, and stay dark everywhere

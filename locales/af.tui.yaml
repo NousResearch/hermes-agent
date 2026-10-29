@@ -1338,6 +1338,7 @@ userMessages.promptTimeout.vaultCode: "Verifikasiekode-prompt gesluit: geen antw
 userMessages.promptTimeout.vaultSaveLogin: "Stoor-aanmelding-prompt gesluit: geen antwoord betyds nie, so niks is gestoor nie. Stuur jou versoek weer wanneer jy gereed is."
 userMessages.promptTimeout.vaultUnlockPrompt: "Ontsluit-prompt gesluit: geen antwoord betyds nie, so die wagwoordbestuurder het gesluit gebly. Stuur jou versoek weer wanneer jy gereed is om dit te ontsluit."
 userMessages.rpc.launchCredentialsChanged: "Hierdie klets kan nie meer die API-sleutel gebruik waarmee dit begin is nie (dit is verander of verwyder), daarom is dit nie gedoen nie. 'n Klets skakel nooit self na 'n ander sleutel oor nie. Tik /new om 'n nuwe klets met jou huidige sleutel te begin."
+userMessages.rpc.methodUnavailable: "Hierdie Hermes-agterkant bied nie {0} nie, dus is dit nie gedoen nie."
 userMessages.rpc.notConnected: "Hermes is nie op die oomblik verbind nie, so dit is nie gestuur nie. Dit herverbind outomaties; wag 'n oomblik en probeer weer, of tik /logs as dit aanhou."
 userMessages.rpc.sessionHasChildren: "Hierdie klets het kindersessies (soos subagent-lopies) wat ook verwyder sou word as dit uitgevee word, daarom is dit nie uitgevee nie."
 userMessages.rpc.sessionNotFound: "Hierdie klets is nie meer aan die agterkant gekoppel nie (dit was onaktief, of die agterkant het herbegin). Jou geskiedenis is gestoor: tik /resume om dit weer oop te maak."

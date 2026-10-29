@@ -1005,6 +1005,8 @@ platform:
       confirm_title: "확인"
       already_resolved: "이 승인은 이미 처리되었어요~"
       expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)"
+      no_longer_pending: "⌛ 이 승인은 더 이상 대기 중이 아니에요 (만료되었거나 다른 곳에서 응답됨)"
+      click_failed: "⚠️ 선택을 기록하지 못했어요. 다시 클릭하거나 /approve 또는 /deny로 답해 주세요."
       by_user: "{user}: {label}"
       resolved_once: "한 번 승인됨"
       resolved_session: "세션 동안 승인됨"

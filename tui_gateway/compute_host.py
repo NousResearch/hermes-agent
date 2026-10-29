@@ -24,6 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection
 
+from hermes_cli.config_backend import ConfigBackendUnavailable
 from tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
 
 
@@ -186,7 +187,7 @@ class ComputeHost:
         try:
             from tui_gateway import server
             body(server, sid, request_id)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the frame's one reply (the outage is a SystemExit)
             if on_error is not None:
                 on_error(sid)
             self._reply(error_kind, sid, request_id, **error_extra, message=str(exc))
@@ -291,7 +292,7 @@ class ComputeHost:
             self._reply(
                 "turn.end", sid, request_id, **meta, interrupted=interrupted, ended_ns=now_ns(),
                 session_info=session_info, session_info_emitted=True)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the turn's one reply (the outage is a SystemExit)
             with contextlib.suppress(Exception):
                 from tui_gateway import server
                 session = server._sessions.get(sid)

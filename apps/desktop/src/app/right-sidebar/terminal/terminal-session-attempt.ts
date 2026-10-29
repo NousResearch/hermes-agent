@@ -2,7 +2,7 @@ import type { Terminal } from '@xterm/xterm'
 import type { RefObject } from 'react'
 
 import type { HermesTerminalSession } from '@/global'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 
 import { $terminals, markTerminalPersistent, removeExitedTerminal } from './terminals'
 
@@ -252,7 +252,7 @@ export function createSessionAttemptController(
         } else if (signal === 'expired') {
           resumeOnly = false
           armRetry(TERMINAL_EXIT_MESSAGES.expired)
-        } else if (isBrowserHostedDesktop()) {
+        } else if (hostHas('retryTerminalSpawn')) {
           armRetry(`Terminal failed to start: ${message}. Press Enter to retry.`)
         } else {
           // Native Desktop spawns a local shell: a failed spawn shows its error

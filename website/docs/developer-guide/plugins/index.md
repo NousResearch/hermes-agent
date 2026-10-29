@@ -409,6 +409,8 @@ Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
 `llm.task_override`, `llm.side_question` (ask the session's own agent after
 a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
+`llm.session_fork` (run a bounded background copy of the session's agent, see
+[Plugin LLM Access](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session)),
 `gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
@@ -888,7 +890,9 @@ def unit_convert(args: dict, **kwargs) -> str:
 3. **Never raise:** Catch all exceptions, return error JSON instead.
 4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
    `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
-   works; `**kwargs` is how you opt into the full, additively growing context.
+   works; `**kwargs` is how you opt into the full, additively growing context. Inside a
+   plugin's [session fork](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session)
+   the handler also receives `turn_origin="plugin_fork:<plugin id>"`; live-turn calls carry none.
 
 ## Step 5: Write the registration
 
@@ -1927,7 +1931,7 @@ def register(ctx):
     ctx.register_hook("post_llm_call", on_post_llm_call)
 ```
 
-The hook fires before Hermes decides, and the due flags are the values that decision uses. Keys and semantics: [`post_llm_call`](../../user-guide/features/hooks.md#review_signals).
+The hook fires before Hermes decides, and the due flags are the values that decision uses. Keys and semantics: [`post_llm_call`](../../user-guide/features/hooks.md#review_signals). To do that work the way Hermes' own review does (a background copy of the session's agent with a narrow tool list), pair the signal with [`ctx.fork_session`](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session).
 
 ### Send raw CDP commands to the agent's browser
 

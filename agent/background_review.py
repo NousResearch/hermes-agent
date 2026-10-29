@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -148,6 +149,11 @@ def cancel_background_review_for_live_turn(
     a reason-appropriate ``message``/``tool_reason`` when the caller isn't the live-turn-preemption
     path so diagnostics describe the real cause.
     """
+    from agent.plugin_session_fork import interrupt_plugin_forks
+
+    # Plugin session forks share the session id too: fenced and interrupted alongside the review,
+    # awaited under the same bounded deadline.
+    plugin_runs = interrupt_plugin_forks(agent, message=message, tool_reason=tool_reason)
     with _optional_lock(agent, "_background_review_lock"):
         run = getattr(agent, "_background_review_run", None)
         legacy_agent = getattr(agent, "_background_review_agent", None)
@@ -157,14 +163,13 @@ def cancel_background_review_for_live_turn(
     # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
     if review_agent is not None:
         _interrupt_background_review(review_agent, message=message, tool_reason=tool_reason)
-    if run is None:
-        return
-    if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
-        logger.warning(
-            "Background review did not acknowledge cancellation within %.1fs; proceeding (%s)",
-            _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
-            message,
-        )
+    deadline = time.monotonic() + _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS
+    for label, pending in [("Background review", run)] * (run is not None) + [("Plugin session fork", r) for r in plugin_runs]:
+        if not pending.request_done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            logger.warning(
+                "%s did not acknowledge cancellation within %.1fs; proceeding (%s)",
+                label, _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS, message,
+            )
 
 
 # Aux-model routing: by default ("auto") the fork runs on the MAIN model and replays the full

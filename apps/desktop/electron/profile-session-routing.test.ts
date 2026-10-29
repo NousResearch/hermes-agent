@@ -35,6 +35,8 @@ test('remote session routing includes the mutation snapshot and session reads, n
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/mutation-snapshot'), true)
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/timeline'), true)
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages/around'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages/search'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages/match'), true)
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/export'), false)
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages/extra'), false)
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/mutation-snapshot/extra'), false)

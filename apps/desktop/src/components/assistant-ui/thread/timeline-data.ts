@@ -29,6 +29,7 @@ export const EARLIER_TIMELINE_ID = '__earlier-history__'
 export interface TimelineRevealRequest {
   id: string
   rowId?: number
+  kind?: 'match'
   signal: AbortSignal
   complete: (revealedId: string | false) => void
 }

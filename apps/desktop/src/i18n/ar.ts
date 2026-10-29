@@ -10,9 +10,11 @@ import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
+  conversationSearch: conversationSearchCopy['ar'],
 
   catalog: {
     add: 'إضافة',

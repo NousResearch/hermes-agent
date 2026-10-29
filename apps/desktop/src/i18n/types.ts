@@ -9,6 +9,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { ConversationSearchCopy } from './conversation-search'
 import type { AppTourTranslations } from './types_app_tour'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
@@ -578,6 +579,8 @@ catalog: CatalogTranslations
     categories: Record<string, string>
     actions: Record<string, string>
   }
+
+  conversationSearch: ConversationSearchCopy
 
   // Find-in-page bar (⌘F). `close` reuses common.close.
   findInPage: {

@@ -42,8 +42,19 @@ class Model(BaseHTTPRequestHandler):
             message['content'] = json.dumps({'verdict': 'done', 'reason': 'Owned acceptance satisfied'})
         elif messages and (not has_result or messages[-1]['role'] == 'user'):
             continuation = has_result
-            message = {'role': 'assistant', 'content': None, 'tool_calls': [{'index': 0, 'id': 'owned-complete',
-                'type': 'function', 'function': {'name': 'kanban_complete' if continuation else 'kanban_comment', 'arguments': json.dumps({'summary': 'Owned probe complete'} if continuation else {'body': 'Owned first turn'})}}]}
+            calls = ([{'id': 'owned-complete', 'type': 'function', 'function': {
+                'name': 'kanban_complete', 'arguments': json.dumps({'summary': 'Owned probe complete'})}}]
+                if continuation else [
+                    # Observation round: the adopted execution asks the board who it is and
+                    # looks at what a terminal child inherited, then hands off on the next turn.
+                    {'id': 'owned-identity', 'type': 'function', 'function': {
+                        'name': 'kanban_show', 'arguments': '{}'}},
+                    {'id': 'owned-terminal', 'type': 'function', 'function': {
+                        'name': 'terminal', 'arguments': json.dumps({'command': 'env'})}},
+                    {'id': 'owned-comment', 'type': 'function', 'function': {
+                        'name': 'kanban_comment', 'arguments': json.dumps({'body': 'Owned first turn'})}}])
+            message = {'role': 'assistant', 'content': None,
+                'tool_calls': [{'index': index, **call} for index, call in enumerate(calls)]}
             finish = 'tool_calls'
         payload = json.dumps({'id': 'owned', 'choices': [{'index': 0, 'message': message, 'finish_reason': finish}],
             'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}).encode()
@@ -102,12 +113,6 @@ def main():
         child = original_popen(*args, **kwargs)
         if 'hermes_cli.kanban_worker_client' in args[0]:
             clients.append(child)
-            if peer.mode == 'timeout':
-                assert peer.blocked.wait(55), 'managed worker did not reach loopback'
-                with closing(connect(board='owned')) as snapshot:
-                    bound = snapshot.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='worker_bound' "
-                                             "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
-                    receipt['managed_pid'] = json.loads(bound[0])['pid'] if bound else None
         return child
     def wait_for(predicate):
         deadline = time.monotonic() + 60
@@ -129,7 +134,12 @@ def main():
                     active = kb.get_task(conn, tid)
                     receipt.update(client_pid=clients[0].pid, stored_pid=active.worker_pid, run_id=task.current_run_id)
                     if peer.mode == 'timeout':
-                        # The spawned worker stays the run's handle; the owner's interpreter dies with it.
+                        # The exec that bound this run is the attempt's own interpreter, and the
+                        # task/run pid stays the spawned submitter's (kills target it).
+                        with closing(connect(board='owned')) as snapshot:
+                            bound = snapshot.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='worker_bound' "
+                                                     "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+                        receipt['managed_pid'] = json.loads(bound[0])['pid'] if bound else None
                         receipt['pid_preserved'] = active.worker_pid == clients[0].pid != receipt['managed_pid']
                         # Deterministically elapse this owned attempt; keep real timeout/kill logic.
                         conn.execute('UPDATE task_runs SET started_at=? WHERE id=?', (int(time.time()) - 3601, task.current_run_id))
@@ -188,10 +198,29 @@ def main():
             wire = json.dumps(peer.requests)
             turns = [r for r in peer.requests if r.get('tools')]
             prefixes = [json.dumps([m for m in r['messages'] if m['role'] in {'system', 'developer'}]) for r in turns]
+
+            def tool_result(predicate):
+                for request in peer.requests:
+                    for message in request.get('messages', []):
+                        content = message.get('content')
+                        if message.get('role') == 'tool' and isinstance(content, str) and predicate(content):
+                            return content
+                return ''
+
+            try:
+                shown = json.loads(tool_result(lambda c: 'execution_identity' in c) or '{}')
+            except ValueError:
+                shown = {}
+            identity = shown.get('execution_identity') or {}
+            shell_env = tool_result(lambda c: 'PATH=' in c)
             receipt.update(goal_continuation=len(turns) >= 4, stable_prefix=len(set(prefixes)) == 1,
                 retry_same_session=same, tools='kanban_complete' in wire,
                 task_context='KANBAN_TASK_SENTINEL' in wire, skill_context='KANBAN_SKILL_SENTINEL' in wire,
-                hook_effect=(home / 'hook-effect').exists())
+                hook_effect=(home / 'hook-effect').exists(),
+                # What the adopted execution itself observed: its trusted role, and that a
+                # terminal child it spawned carries none of the dispatcher's pins.
+                owner_role=identity.get('role'), claim_match=identity.get('claim_match'),
+                terminal_scrubbed=bool(shell_env) and 'HERMES_KANBAN_TASK=' not in shell_env)
     finally:
         peer.release.set()
         for child in clients:

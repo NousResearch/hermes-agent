@@ -1,4 +1,5 @@
 """Two lifecycle invariants, using real SQLite and a local GitHub HTTP contract."""
+import contextvars
 import json
 import os
 import sys
@@ -9,6 +10,13 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
+
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
 
 
 @pytest.fixture
@@ -121,7 +129,12 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
                     assert kb.block_task(rival, tid, reason="Reassigned during acceptance")
                     assert kb.unblock_task(rival, tid)
                     github["replacement"] = kb.claim_task(rival, tid).current_run_id
-            github.update(conclusion=conclusion, race=reclaim)
+            # The rival acts from the HTTP handler thread, so this scope is
+            # propagated explicitly (the canonical `copy_context` mechanism) the
+            # way every other worker/dispatcher thread in the runtime receives
+            # it. An execution scope is never inherited across threads.
+            scope = contextvars.copy_context()
+            github.update(conclusion=conclusion, race=lambda: scope.run(reclaim))
             assert not kb.complete_task(conn, tid, result="done", expected_run_id=run_id,
                 metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
             assert kb.get_task(conn, tid).current_run_id == github["replacement"]

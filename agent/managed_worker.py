@@ -338,8 +338,14 @@ def execute(frame, channel):
     if adopted['owner_epoch'] != scope['epoch']:
         raise RuntimeError('stale_epoch')
     store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']), adopted)
-    from gateway.session_kanban import bind_worker_context
-    bind_worker_context(frame)
+    from gateway.session_kanban import bind_worker_context, managed_execution_scope
+    candidate = bind_worker_context(frame, adopted)
+    with managed_execution_scope(candidate):
+        _run_adopted_turn(frame, channel, scope, rpc, store)
+
+
+def _run_adopted_turn(frame, channel, scope, rpc, store):
+    """Discover tools, run the turn(s) and retire inside this exec's own identity scope."""
     # Background processes a previous admission of this session started outlive that worker
     # (F24); adopt them so process_manage in this turn can poll and kill them.
     from tools.process_registry import process_registry

@@ -186,8 +186,26 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "configured Kanban orchestrator must perform board mutations.")
 
 
+def _owned_task_default() -> Optional[str]:
+    """The task this execution owns by TRUSTED identity (the same record the authorizer re-checks).
+
+    A managed worker's bootstrap binds its grant in-process, so its default is that
+    grant — not the env pin a scrubbed shell or a copied frame could carry. With no
+    identity bound at all (direct CLI bootstrap, library callers) the dispatcher's
+    env pin stays the fallback it always was.
+    """
+    try:
+        from agent.kanban_execution_identity import ROLE_OWNER, current_execution_context
+    except ImportError:
+        return None
+    ctx = current_execution_context()
+    if ctx is None:
+        return None
+    return (str(ctx.task_id or "").strip() or None) if ctx.role == ROLE_OWNER else None
+
+
 def _default_task_id(arg: Any) -> Optional[str]:
-    """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
+    """Resolve ``task_id`` arg or fall back to the identity/env the dispatcher set."""
     if arg is not None:
         val = str(arg).strip()
         if val:
@@ -203,7 +221,7 @@ def _default_task_id(arg: Any) -> Optional[str]:
         val = env_tid.strip()
         if val:
             return val
-    return None
+    return _owned_task_default()
 
 
 def _require_task_id(args: dict) -> str:
@@ -309,13 +327,15 @@ def _require_orchestrator_tool(tool_name: str) -> None:
 
 
 @contextmanager
-def _board(board: Optional[str], *, quiet_close: bool = False):
+def _board(board: Optional[str], *, quiet_close: bool = False, read_only: bool = False):
     """``with _board(slug) as (kb, conn)``; lazy import so the module loads in non-kanban
     contexts. ``board=None`` keeps the env/symlink resolution chain; an explicit slug
-    overrides it per call. ``quiet_close`` swallows close() errors (best-effort bridges)."""
+    overrides it per call. ``read_only`` opens the board observationally (no create, no
+    schema work, no readiness write) for ``kanban_list`` / ``kanban_show``.
+    ``quiet_close`` swallows close() errors (best-effort bridges)."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    conn = kbc.connect(board=board)
+    conn = kbc.connect_readonly(board=board) if read_only else kbc.connect(board=board)
     try:
         yield kb, conn
     finally:
@@ -661,7 +681,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
-    """Full task state: row, parents, children, comments, runs, last 50 events."""
+    """Full task state: row, parents, children, comments, runs, last 50 events, plus the
+    caller's trusted execution identity (role / owned task+run / claim reconciliation)."""
+    from agent.kanban_execution_identity import identity_snapshot
+
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         # No dispatcher task in scope and no explicit id: the caller asked "what
@@ -669,27 +692,37 @@ def _handle_show(args: dict, **kw) -> str:
         # so an error naming the env var is dead end (#91431) — answer instead.
         return json.dumps({
             "current_task": None,
+            "execution_identity": identity_snapshot(),
             "hint": (
                 "No dispatcher-assigned task in this session, so there is no "
                 "task to show by default. Call kanban_list to see task ids on "
                 "the board, then kanban_show(task_id=<id>) for full state."),
         })
-    with _board(args.get("board")) as (kb, conn):
-        task = _existing_task(kb, conn, tid)
-        return json.dumps({
-            "task": _fields(task, _TASK_FIELDS),
-            "parents": kb.parent_ids(conn, tid),
-            # Non-terminal parents; on a running card this means the dependency
-            # gate is not holding it and kanban_complete will refuse.
-            "unsatisfied_parents": [
-                {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
-            "children": kb.child_ids(conn, tid),
-            "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
-            # Capped; full log via CLI.
-            "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
-            "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
-            # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+    try:
+        with _board(args.get("board"), read_only=True) as (kb, conn):
+            task = _existing_task(kb, conn, tid)
+            return json.dumps({
+                "task": _fields(task, _TASK_FIELDS),
+                # Authoritative identity of THIS execution: derived from the trusted
+                # in-process record and re-checked against the board, never from the
+                # scrubbed shell environment a terminal tool reports.
+                "execution_identity": identity_snapshot(conn, target_task_id=tid),
+                "parents": kb.parent_ids(conn, tid),
+                # Non-terminal parents; on a running card this means the dependency
+                # gate is not holding it and kanban_complete will refuse.
+                "unsatisfied_parents": [
+                    {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
+                "children": kb.child_ids(conn, tid),
+                "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
+                # Capped; full log via CLI.
+                "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
+                "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
+                # Same string build_worker_context hands the dispatcher at spawn time.
+                "worker_context": kb.build_worker_context(conn, tid)})
+    except Exception as exc:  # read-only board missing/incompatible, or unknown task
+        if type(exc).__name__ == "KanbanDbUnavailable":
+            return tool_error(f"kanban_show: {exc}")
+        raise
 
 
 @_kanban_handler("kanban_list")
@@ -704,22 +737,23 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error("limit must be an integer")
     _check(limit >= 1, "limit must be >= 1")
     _check(limit <= KANBAN_LIST_MAX_LIMIT, f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
-    with _board(args.get("board")) as (kb, conn):
-        # Match CLI list: dependencies cleared since the last dispatcher tick
-        # should be visible to orchestrators immediately.
-        promoted = kb.recompute_ready(conn)
-        # One extra row lets the output report truncation without dumping the board.
-        rows = kb.list_tasks(
-            conn, assignee=args.get("assignee"), status=args.get("status"),
-            tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1)
-        truncated = len(rows) > limit
-        tasks = rows[:limit]
-        return json.dumps({
-            "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
-            "count": len(tasks), "limit": limit, "truncated": truncated,
-            "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
-                           if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),
-            "promoted": promoted})
+    try:
+        with _board(args.get("board"), read_only=True) as (kb, conn):
+            # Match CLI list: observation only — no readiness write, no schema work.
+            rows = kb.list_tasks(
+                conn, assignee=args.get("assignee"), status=args.get("status"),
+                tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1)
+            truncated = len(rows) > limit
+            tasks = rows[:limit]
+            return json.dumps({
+                "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
+                "count": len(tasks), "limit": limit, "truncated": truncated,
+                "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
+                               if truncated and limit < KANBAN_LIST_MAX_LIMIT else None)})
+    except Exception as exc:
+        if type(exc).__name__ == "KanbanDbUnavailable":
+            return tool_error(f"kanban_list: {exc}")
+        raise
 
 
 @_kanban_handler("kanban_complete")

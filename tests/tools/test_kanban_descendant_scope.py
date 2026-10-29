@@ -1,3 +1,4 @@
+import pytest
 """Real shell/CLI ingress: inherited context is not a board-write grant."""
 import json
 import os
@@ -10,6 +11,13 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
 from tools import kanban_tools
 from tools.environments.local import LocalEnvironment
+
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
 
 
 ROOT = Path(__file__).resolve().parents[2]

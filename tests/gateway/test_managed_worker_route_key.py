@@ -231,7 +231,7 @@ def test_keyless_worker_credential_failure_keeps_the_kanban_start_exit(tmp_path,
         raise error
     monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', resolve)
     # Only the HERMES_KANBAN_* environment binding is skipped (it writes os.environ directly).
-    monkeypatch.setattr(session_kanban, 'bind_worker_context', lambda frame: None)
+    monkeypatch.setattr(session_kanban, 'bind_worker_context', lambda frame, adopted: None)
     built = {}
     with pytest.raises(type(error)):
         _execute(frame, monkeypatch, built=built)
@@ -283,7 +283,7 @@ def test_primary_auth_failure_with_an_unusable_turn_chain_keeps_the_kanban_start
     frame = _with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK])
     frame = {**frame, 'policy': {**frame['policy'], 'kanban_json': json.dumps(context)}}
     _primary_auth_failure(monkeypatch, fallback_ok=False)
-    monkeypatch.setattr(session_kanban, 'bind_worker_context', lambda frame: None)
+    monkeypatch.setattr(session_kanban, 'bind_worker_context', lambda frame, adopted: None)
     built = {}
     with pytest.raises(AuthError):
         _execute(frame, monkeypatch, built=built)

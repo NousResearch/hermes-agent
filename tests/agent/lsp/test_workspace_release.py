@@ -17,6 +17,13 @@ from agent.lsp.manager import LSPService
 from agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
 from agent.lsp.workspace import clear_cache
 
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
+
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 

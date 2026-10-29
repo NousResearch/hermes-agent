@@ -8,7 +8,7 @@ import { useI18n } from "@/i18n";
  * skills, MCPs, model) and new Chat sessions land in that profile.
  */
 export function ProfileScopeBanner() {
-  const { profile, currentProfile } = useProfileScope();
+  const { profile, currentProfile, profileLabel } = useProfileScope();
   const { t } = useI18n();
 
   if (!profile || profile === currentProfile) return null;
@@ -20,7 +20,7 @@ export function ProfileScopeBanner() {
         {(
           t.app.managingProfileBanner ??
           "Managing profile “{name}” — config, keys, skills, MCPs, model, and new chats apply to that profile."
-        ).replace("{name}", profile)}
+        ).replace("{name}", profileLabel(profile))}
       </span>
     </div>
   );

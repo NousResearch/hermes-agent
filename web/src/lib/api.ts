@@ -2,6 +2,7 @@ import {
   buildHermesWebSocketUrl,
   type ModelOptionProvider,
   type ModelOptionsResult,
+  type ProfileNameMetadata,
 } from "@hermes/shared";
 import { createDashboardSessionMutations } from "./session-mutations";
 
@@ -2298,8 +2299,7 @@ export interface ProfileDescribeAutoResult {
   description_auto: boolean;
 }
 
-export interface ProfileInfo {
-  name: string;
+export interface ProfileInfo extends ProfileNameMetadata {
   path: string;
   is_default: boolean;
   model: string | null;

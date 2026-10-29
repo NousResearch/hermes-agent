@@ -1,3 +1,4 @@
+import type { ProfileNameMetadata } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
@@ -10,14 +11,11 @@ import {
   $settingsScopeProfile,
   setSettingsScope
 } from '@/store/settings-scope'
-import type { ProfileInfo } from '@/types/hermes'
 
-// Settings-chip label: the Bot Mode title the Bots roster shows when set
-// (ui_meta['hermes-bots'].title), else the app-wide profileLabel
-// (display_name → slug). Scoped to this selector on purpose — the profile
-// rail and Profiles page keep naming profiles by display_name.
-export function settingsScopeLabel(profile: Pick<ProfileInfo, 'bot_title' | 'display_name' | 'name'>): string {
-  return (profile.bot_title ?? '').trim() || profileLabel(profile)
+// Settings and ordinary profile surfaces use the same presentation policy. A
+// function (not a `const` alias) so the store binding stays late.
+export function settingsScopeLabel(profile: ProfileNameMetadata): string {
+  return profileLabel(profile)
 }
 
 // The same chip affordance the Gateway page uses for its per-profile
@@ -54,9 +52,7 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   const selected = useStore($settingsScopeProfile)
   const editingNonDefault = useStore($settingsScopeEditsNonDefault)
   const profiles = useStore($profiles)
-  // The note names the edit target with the same presentation label as its
-  // chip (Bot title → display_name → slug); the slug alone can name a bot the
-  // user has never seen called that.
+  // The note and chip use the same visible name, not an unfamiliar slug.
   const selectedLabel = profiles.find(profile => normalizeProfileKey(profile.name) === selected)
   const selectedName = selectedLabel ? settingsScopeLabel(selectedLabel) : selected
 

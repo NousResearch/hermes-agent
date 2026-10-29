@@ -8,6 +8,19 @@ export function isSessionGoneError(err: unknown): boolean {
   return message.includes('404') || /session not found/i.test(message)
 }
 
+// An interrupt/close refusal that only says there is no runtime left to stop: a
+// reaped or detached runtime id the window still remembers (`not_found`, `not in
+// memory`), or a read-only mount whose chat moved on (`session_superseded`).
+// Deleting the conversation still has to retire the stored row, so these verdicts
+// must not abort the handler. Deliberately separate from isSessionGoneError: that
+// one decides a session may be discarded, this one only decides there is nothing
+// to interrupt.
+export function isNoRuntimeToStopError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '')
+
+  return isSessionGoneError(err) || /not_found|not in memory|session_superseded/i.test(message)
+}
+
 /**
  * What to do when a resume's RPC and REST fallback BOTH came back
  * gone-looking (#88540).

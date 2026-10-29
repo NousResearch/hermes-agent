@@ -1098,6 +1098,11 @@ def _action_pack(args):
     pack_command(args)
 
 
+def _action_idle_tasks(args):
+    from hermes_cli.plugins_idle_tasks import cmd_idle_tasks
+    cmd_idle_tasks(args.name, pause=args.pause, resume=args.resume)
+
+
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.
 _PLUGIN_ACTIONS = {
     "install": lambda args: cmd_install(
@@ -1126,6 +1131,7 @@ _PLUGIN_ACTIONS = {
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),
     "disable": lambda args: cmd_disable(args.name),
     "capabilities": lambda args: cmd_capabilities(getattr(args, "name", None)),
+    "idle-tasks": _action_idle_tasks,
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),

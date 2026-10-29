@@ -1933,6 +1933,38 @@ def register(ctx):
 
 The hook fires before Hermes decides, and the due flags are the values that decision uses. Keys and semantics: [`post_llm_call`](../../user-guide/features/hooks.md#review_signals). To do that work the way Hermes' own review does (a background copy of the session's agent with a narrow tool list), pair the signal with [`ctx.fork_session`](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session).
 
+### Run a job when Hermes is idle (`ctx.register_idle_task`)
+
+Some work has no turn to hang off: re-scoring your plugin's data once a day, suggesting a cleanup, compacting a cache. `ctx.register_idle_task` runs it on the same scheduler as the skill [curator](../../user-guide/features/curator.md), from the same places (gateway housekeeping for every served profile, CLI/TUI startup, the `hermes serve` maintenance tick):
+
+```python
+def register(ctx):
+    def suggest(run):
+        # run.name, run.idle_for_seconds, run.last_run_at (ISO or None), run.run_count
+        candidates = ctx.state.get("candidates", [])
+        if not candidates:
+            return None
+        result = ctx.llm.complete(
+            messages=[{"role": "user", "content": f"Rank these for promotion: {candidates}"}],
+            task="suggest",  # a task this plugin registered with ctx.register_auxiliary_task
+        )
+        ctx.state.set("ranking", result.text)
+        return f"ranked {len(candidates)} skills"  # optional summary, shown by `hermes plugins idle-tasks`
+
+    ctx.register_idle_task("suggest", suggest, interval_hours=24, min_idle_hours=2)
+```
+
+`register_idle_task(name, fn, *, interval_hours, min_idle_hours=2, first_run="defer")` returns a `PluginRegistration` (dispose it to stop polling). A task runs when:
+
+- the host has been idle `min_idle_hours` (gateway housekeeping and CLI startup count as fully idle, `hermes serve` measures chat inactivity);
+- `interval_hours` (floored to 1) have passed since its last run. The first poll records "now" and waits one interval, like the curator, so an install or update never runs the job straight away; `first_run="immediate"` runs it on the first idle poll instead;
+- it is not paused (`hermes plugins idle-tasks <plugin> --pause <task>`);
+- no other run of it is in flight, in this process or another one.
+
+`fn` runs synchronously on the polling thread, in the profile that registered it, so keep it bounded. An exception is logged and recorded as `last_status: error` and never reaches the host. State lives in the plugin's data dir, `<data dir>/idle-tasks/<name>.json` (`last_run_at`, `run_count`, `paused`, `last_summary`, `last_status`, `last_error`), so each profile schedules its own copy.
+
+No capability gates this: the scheduler only calls your own function. Anything privileged that function does goes through its own gate (model calls through the [`ctx.llm` trust gate](../plugin-llm-access.md#trust-gate), and so on).
+
 ### Send raw CDP commands to the agent's browser
 
 A plugin that must drive the agent's browser below the browser tools can get a

@@ -128,6 +128,15 @@ class TestSlackMentions:
         assert {"type": "usergroup", "usergroup_id": "S987XYZ"} in els
         assert not any("marketing" in (e.get("text") or "") for e in els)
 
+    def test_mention_label_with_underscores_is_not_split_by_italic(self):
+        blocks = render_blocks("- see <#C1|dev_ops_alerts> and <!subteam^S1|@eng_team_x>")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert {"type": "channel", "channel_id": "C1"} in els
+        assert {"type": "usergroup", "usergroup_id": "S1"} in els
+        assert not any(e.get("style") for e in els)
+        assert not any("<" in (e.get("text") or "") for e in els)
+
     def test_mention_in_quote_becomes_mention_element(self):
         blocks = render_blocks("> ping <@U123> now")
         assert blocks is not None

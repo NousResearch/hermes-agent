@@ -151,6 +151,9 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
     def _walk_slack_links(s: str, style: dict[str, bool]) -> None:
         # rich_text does not interpret mrkdwn. Agents often emit <url|label>
         # (works in section/mrkdwn; was literal in lists/quotes/table cells).
+        # Mention labels are dropped from the element anyway; strip them first
+        # so a label like |dev_ops_alerts is not split by the italic regex.
+        s = _SLACK_MENTION_RE.sub(lambda m: f"<{m.group(1)}>", s)
         pos = 0
         for m in _SLACK_LINK_RE.finditer(s):
             _walk_emphasis(s[pos : m.start()], style)

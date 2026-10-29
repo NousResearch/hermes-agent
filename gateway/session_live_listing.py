@@ -45,7 +45,7 @@ def _store_facts(db, session_ids):
     ids = json.dumps(list(session_ids))
     with db._read_ctx() as conn:
         rows = conn.execute(
-            "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.message_count, s.model, s.hidden, "
+            "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.end_reason, s.message_count, s.model, s.hidden, "
             "s.archived, s.runtime_revision, s.runtime_generation, "
             "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
             "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "
@@ -102,6 +102,12 @@ async def live_entries(authority, actor) -> list[LiveEntry]:
             live, row = authority.sessions.get(sid), rows.get(sid)
             if live is None or row is None:
                 continue  # retired during the read, or its row was deleted (``_handle``'s not_found)
+            if row.get('end_reason') == 'compression':
+                # A rotation's closed parent: its continuation child owns the conversation now. The
+                # rotation re-points the agent (and the route) without popping this mount, so an
+                # unfiltered feed keeps offering an id every mutate refuses (``session_superseded``,
+                # #143767). Deliberate and automatic ends stay listed: those are resumable.
+                continue
             masked = _masked_pending(live, pending.get(sid, []))
             state = _execution_state(masked)
             handle = SessionHandle(SessionRef(authority.profile_id, sid), authority.instance_id, authority.epoch,

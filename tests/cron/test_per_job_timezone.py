@@ -259,7 +259,7 @@ class TestGraceMinutesOverride:
                 prompt="p", schedule="every 5m", model="fixture", deliver="local",
                 grace_minutes=30)
 
-    @pytest.mark.parametrize("minutes, expected", [(0, 0), (45, 45 * 60)])
+    @pytest.mark.parametrize("minutes, expected", [(0, 120), (45, 45 * 60)])  # 0 floors at tick tolerance
     def test_stored_grace_round_trips(self, la_profile, cron_store, minutes, expected):
         job = jobs.create_job(
             prompt="p", schedule=WEEKDAY_9AM, model="fixture", deliver="local",
@@ -267,3 +267,50 @@ class TestGraceMinutesOverride:
         stored = next(r for r in jobs.load_jobs() if r["id"] == job["id"])
         assert stored["grace_minutes"] == minutes, "0 must not be dropped as falsy"
         assert jobs._compute_grace_seconds(stored["schedule"], stored["grace_minutes"]) == expected
+
+
+class TestSlotMovesFollowThePin:
+    def test_manual_run_settle_recomputes_in_the_job_zone(self, la_profile, cron_store):
+        """A finished extra fire whose slot passed takes the next natural occurrence: in the
+        JOB's zone, or the stale-lattice guard later re-anchors past it (one lost run)."""
+        from cron import extra_fire
+
+        cron_store.set(datetime(2026, 10, 22, 12, 0, tzinfo=NY))
+        job = {"schedule": jobs.parse_schedule(DAILY_9AM), "timezone": "Asia/Hong_Kong",
+               "next_run_at": datetime(2026, 10, 22, 9, 0, tzinfo=HK).isoformat()}
+        extra_fire.settle(job, cron_store.now().isoformat())
+        assert datetime.fromisoformat(job["next_run_at"]) == datetime(2026, 10, 23, 9, 0, tzinfo=HK)
+
+    def test_distribution_zone_change_recomputes_the_instant(self, la_profile, cron_store):
+        from cron.job_definition import merge_job_definition
+
+        cron_store.set(datetime(2026, 10, 22, 12, 0, tzinfo=NY))
+        local = jobs.create_job(prompt="p", schedule=DAILY_9AM, model="fixture",
+                                deliver="local", timezone="Asia/Hong_Kong")
+        authored = {"prompt": "p", "schedule": local["schedule"], "timezone": "America/New_York"}
+        merged = merge_job_definition(dict(local), authored)
+        assert datetime.fromisoformat(merged["next_run_at"]) == datetime(2026, 10, 23, 9, 0, tzinfo=NY)
+
+
+class TestZeroGraceAtTickResolution:
+    """The ticker fires seconds after the slot; ``0`` must mean "skip real misses", not "every
+    run is a miss" (which, with catch-up disabled, silently stopped the job firing at all)."""
+
+    @pytest.mark.parametrize("catch_up_disabled", [False, True])
+    def test_on_time_tick_fires_as_scheduled(self, la_profile, cron_store, tmp_path, catch_up_disabled):
+        if catch_up_disabled:
+            (tmp_path / "config.yaml").write_text("cron:\n  catch_up_missed: false\n", encoding="utf-8")
+        cron_store.set(datetime(2026, 10, 22, 9, 0, 20, tzinfo=NY))
+        job_id = _add_job(DAILY_9AM, timezone="America/New_York", grace_minutes=0,
+                          next_run_at=datetime(2026, 10, 22, 9, 0, tzinfo=NY))
+        assert [j["id"] for j in jobs.get_due_jobs()] == [job_id]
+        stored = next(r for r in jobs.load_jobs() if r["id"] == job_id)
+        assert stored["last_dispatch"]["kind"] != "catch_up"
+
+    def test_explicit_grace_skips_a_real_miss_even_with_default_catch_up(self, la_profile, cron_store):
+        cron_store.set(datetime(2026, 10, 22, 10, 0, tzinfo=NY))
+        job_id = _add_job(DAILY_9AM, timezone="America/New_York", grace_minutes=0,
+                          next_run_at=datetime(2026, 10, 22, 9, 0, tzinfo=NY))
+        assert jobs.get_due_jobs() == []
+        stored = next(r for r in jobs.load_jobs() if r["id"] == job_id)
+        assert datetime.fromisoformat(stored["next_run_at"]) == datetime(2026, 10, 23, 9, 0, tzinfo=NY)

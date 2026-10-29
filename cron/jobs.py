@@ -948,11 +948,12 @@ def _compute_grace_seconds(schedule: dict, grace_minutes: Any = None) -> int:
     """How late a job can be and still catch up rather than fast-forward: half the period, clamped
     to [120s, 2h], so daily jobs catch up but frequent jobs fast-forward quickly.
 
-    A per-job ``grace_minutes`` overrides that window outright (0 = never catch up: a missed
-    occurrence is skipped, not run late)."""
+    A per-job ``grace_minutes`` overrides that window (0 = never catch up), floored at the
+    120s tick tolerance: the ticker always fires a few seconds after the slot, so a 0s window
+    would classify every on-time run as missed."""
     override = jobs_time.grace_seconds_override(grace_minutes)
     if override is not None:
-        return override
+        return max(override, _MIN_GRACE_SECONDS)
     period_seconds = _schedule_cadence_seconds(schedule)
     if not period_seconds:
         return _MIN_GRACE_SECONDS
@@ -3098,11 +3099,14 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     if not new_next:
         return False
     d.scan.persist(d.job["id"], next_run_at=new_next)
+    # An explicit per-job grace_minutes is the user's catch-up limit for THIS job: past it the
+    # miss is skipped even while the global cron.catch_up_missed default still runs it once.
     if (_instant_after(_ensure_aware(datetime.fromisoformat(new_next)), d.scan.now)
-            and not _cron_config_number("catch_up_missed", True, lambda value: value is not False)):
+            and (jobs_time.grace_seconds_override(d.job.get("grace_minutes")) is not None
+                 or not _cron_config_number("catch_up_missed", True, lambda value: value is not False))):
         logger.info(
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
-            "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",
+            "Skipping missed occurrence (grace_minutes or cron.catch_up_missed=false); next run: %s",
             d.label, d.next_run, grace, new_next)
         d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
         return True

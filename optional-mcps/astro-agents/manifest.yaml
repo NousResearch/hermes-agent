@@ -11,8 +11,10 @@ source: https://github.com/aidatatools-dev/astro-agents-mcp
 # and `hermes mcp test`: initialize, 16 tools, calls). Pure computation:
 # every tool is read-only and idempotent, and every result carries a
 # SHA-256 that verify_result_hash recomputes.
-# Pricing: each client (identified by IP) gets 1 free tool call (any tool)
-# within a shared daily budget; after that a tool returns an isError result
+# Pricing: each client (identified by IP) gets 1 free tool call, on the
+# $0.01-0.02 tools only (resolve_birth_time, planet_positions, sky_today,
+# aspects, nakshatras, panchang), within a shared daily budget. Every
+# premium and finance tool is always paid: it returns an isError result
 # naming the paid REST endpoint and its price (x402 or MPP, $0.01-$0.50 per
 # call). Nothing is ever charged over MCP.
 # Data: every call sends the arguments it is given (birth date, time,
@@ -47,8 +49,9 @@ suggest:
 
 post_install: |
   No account or credentials needed — tools are available as soon as the
-  session restarts. Each client gets 1 free call; after that the tools
-  point to the paid REST endpoint (x402 or MPP). astro_catalog lists every
+  session restarts. Each client gets 1 free call on the cheap tools
+  (positions, aspects, sky, nakshatras, panchang, birth time); every
+  other tool points to the paid REST endpoint (x402 or MPP). astro_catalog lists every
   tool with its price and an example request. To add the astrology skill
   (when to call which tool), install the plugin as well:
   hermes plugins install aidatatools-dev/astro-agents-mcp --enable

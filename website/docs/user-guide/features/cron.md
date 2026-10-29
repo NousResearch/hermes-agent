@@ -481,6 +481,29 @@ cron:
   retry_unreachable: false   # default true; disables the automatic re-runs
 ```
 
+### One automatic re-run after a stale-provider abort
+
+The other never-reached-the-model case: the provider accepts the connection but
+stays silent — no tokens, no error — until the stale-call circuit breaker gives
+up ("Provider has been unresponsive … for N consecutive stale attempts —
+aborting this call") and the run dies. This is the classic provider-outage
+shape: a weekly job that aborted early in its window used to wait a full week.
+
+When a run dies on exactly that signature **and zero model calls completed**
+(nothing was spent, nothing executed, so the re-run cannot duplicate a side
+effect), the scheduler requeues it ONCE, 30–60 minutes later (jittered, so a
+waking provider is not hammered in unison). The re-run that aborts the same way
+is not requeued again — the provider is still down; it alerts normally and the
+job waits for its scheduled occurrence, which gets its own single re-run. The
+re-run never fires past the schedule's own next occurrence: when that lands
+within the hour (hourly or faster cadences), the normal slot already is the
+retry and the failure alerts as usual. One-shot jobs are excluded.
+
+```yaml
+cron:
+  retry_stale_abort: false   # default true; disables the single re-run
+```
+
 ### Holding a job through a closed provider usage window
 
 The mirror case: the provider says exactly how long it will stay closed. When

@@ -558,12 +558,20 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
     concurrent session shared the container bound to whichever workspace created it first; sessions
     in the same folder still share one. Sessions with no registered workspace keep the profile key.
 
+    The split exists so each mounted workspace has its own bind. When the profile does not
+    mount the cwd (``docker_mount_cwd_to_workspace`` false), a ``:ws:`` key is an empty home
+    with none of the profile volumes. Return the profile key. Desktop project chats register
+    the cwd even when that flag is off (``tui_gateway.session_workdir._register_session_cwd``).
+
     Idempotent: an already-resolved ``<base>:ws:<digest>`` key maps to itself (``ensure_task_env``
     hands the resolved key to ``get_active_env``, which resolves again). A ``delegate_task`` child has
     only a container alias to its parent (``register_container_alias``), so the alias chain is
     followed: the child runs in its parent's workspace container, never the profile's.
     Reads the raw table (not :func:`resolve_task_overrides`, which calls back into key resolution).
     """
+    # Mount off: do not split. An already-resolved :ws: key collapses back too.
+    if not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"):
+        return base
     if not task_id:
         return base
     if task_id.startswith(f"{base}:ws:"):

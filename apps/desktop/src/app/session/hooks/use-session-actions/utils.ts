@@ -1007,6 +1007,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
+
   // A turn normally persists its user row before inference begins. session.resume
   // then returns that stored row *and* the still-live inflight projection; adding
   // both makes a backgrounded prompt appear twice when its session is reopened.
@@ -1016,7 +1017,18 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // corrections). Arrival order seals already-streamed output BETWEEN those
   // rows (#73793), so collect the run by walking back over the live tail:
   // user rows count, live-tail assistant rows are skipped, and a committed
-  // assistant reply ends the turn.
+  // assistant reply ends the turn. On a tool-heavy turn, interim progress text
+  // is committed BEFORE a correction arrives, so a run that opens on one of
+  // this turn's corrections may still be missing its opening prompt: keep
+  // walking back past those committed progress rows until it is reached
+  // (#145196). A run that does not open on a persisted correction ends there
+  // as before.
+  const isTurnCorrection = (message: ChatMessage): boolean => {
+    const text = textWithoutReferenceLines(chatMessageText(message))
+
+    return inflightCorrections.some(correction => textWithoutReferenceLines(correction) === text)
+  }
+
   const latestUserIndex = messages.map(message => message.role).lastIndexOf('user')
   const latestUserRun: ChatMessage[] = []
 
@@ -1030,6 +1042,10 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     }
 
     if (candidate.role === 'assistant' && isLiveTailRow(candidate)) {
+      continue
+    }
+
+    if (candidate.role === 'assistant' && latestUserRun[0] && isTurnCorrection(latestUserRun[0])) {
       continue
     }
 

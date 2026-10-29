@@ -570,7 +570,8 @@ _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "com
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
 _SUDO_OPTIONS_WITH_ARG = {
     "-c", "--close-from", "-C", "-D", "-g", "--group", "-h", "--host", "-p", "--prompt",
-    "-r", "--role", "-t", "--type", "-T", "--command-timeout", "-u", "--user", "-U", "--other-user",
+    "-R", "--chroot", "-r", "--role", "-t", "--type", "-T", "--command-timeout", "-u", "--user",
+    "-U", "--other-user",
 }
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
@@ -1531,8 +1532,9 @@ def _sudo_privilege_flag_description(command: str) -> str | None:
                 break
             flag, equals, _ = option.partition("=")
             if flag.startswith("--"):
-                # sudo accepts unambiguous prefixes: --st[din] and --a[skpass].
-                if flag.startswith("--st") or flag.startswith("--a"):
+                # sudo accepts unambiguous prefixes: --st[din], --a[skpass],
+                # and --sh[ell].  `--s` itself remains ambiguous.
+                if flag.startswith(("--st", "--a", "--sh")):
                     return "sudo with privilege flag (stdin/askpass/shell/list)"
                 if not equals and flag in _SUDO_OPTIONS_WITH_ARG:
                     skip_operand = True

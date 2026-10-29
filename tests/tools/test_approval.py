@@ -1403,6 +1403,8 @@ class TestDetectSudoStdin:
             "sudo -Sn true",
             "sudo --stdin true",
             "sudo --askpass true",
+            "sudo --shell true",
+            "sudo --sh true",
             "sudo -u root -S true",
             "true; sudo -S true",
             "true | sudo -S true",
@@ -1424,6 +1426,7 @@ class TestDetectSudoStdin:
             "sudo -D -S true",
             "sudo -h -S true",
             "sudo -p -S true",
+            "sudo -R -S true",
             "sudo -r -S true",
             "sudo -t -S true",
             "sudo -T -S true",
@@ -1438,10 +1441,10 @@ class TestDetectSudoStdin:
             "sudo whoami",
             "sudo -i",
             "sudo -u root -i",
-            # `--set-home` / `--shell` share no prefix with `--stdin` beyond
-            # "--s", so the broadened `--st[a-z]*` pattern must not catch them.
+            # `--set-home` shares no prefix with --stdin or --shell beyond
+            # the ambiguous "--s", so the structural parser must not catch it.
             "sudo --set-home id",
-            "sudo --shell id",
+            "sudo --chroot -S true",
             "man sudo",
             "which sudo",
             "echo SUDO_USER=$SUDO_USER",

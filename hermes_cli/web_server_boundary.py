@@ -256,6 +256,10 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
         return f"origin_mismatch origin={origin} bound={bound_host}"
     # _is_accepted_host drops the port: a page on ANOTHER loopback port is a different origin, the
     # same one CORS refuses — without this it opens /api/pty with a token it read off index.html.
-    if parsed.hostname in _LOOPBACK_HOST_VALUES and not is_trusted_local_origin(origin, state):
+    # An Origin naming the very authority the upgrade targets is this server's own page reached
+    # through a port forward (``ssh -L 8000:localhost:9119``, ``docker -p 8080:9119``): same-origin
+    # by definition, and a page on another port cannot make the two match.
+    if (parsed.hostname in _LOOPBACK_HOST_VALUES and parsed.netloc.lower() != host_header.strip().lower()
+            and not is_trusted_local_origin(origin, state)):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None

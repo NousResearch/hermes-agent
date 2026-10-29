@@ -305,7 +305,8 @@ def test_other_local_ports_can_neither_read_nor_open_a_socket(
 
 @pytest.mark.parametrize("origin, trusted", [
     ("http://127.0.0.1:9119", True),    # the dev page's own upgrade, as the proxy presents it
-    ("http://localhost:5173", False),   # the same upgrade without the rewrite
+    ("http://localhost:5173", True),    # the same upgrade without the rewrite: Origin names the Host
+    ("http://127.0.0.1:5173", False),   # same port, different host: not the page the proxy serves
     ("http://localhost:3000", False),   # another local page using the proxy: passed through as is
 ])
 def test_dashboard_vite_dev_proxy_needs_no_trusted_dev_port(monkeypatch, origin, trusted):
@@ -328,6 +329,42 @@ def test_dashboard_vite_dev_proxy_needs_no_trusted_dev_port(monkeypatch, origin,
     url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
     headers = {"Host": "localhost:5173", "Origin": origin}
     if trusted:
+        with client.websocket_connect(url, headers=headers):
+            pass
+    else:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert exc.value.code == 4403
+
+
+@pytest.mark.parametrize("host, origin, allowed", [
+    ("localhost:8000", "http://localhost:8000", True),      # ssh -L 8000:localhost:9119
+    ("127.0.0.1:8080", "http://127.0.0.1:8080", True),      # docker -p 8080:9119
+    ("[::1]:8000", "http://[::1]:8000", True),              # the same forward over IPv6
+    ("localhost:8000", "http://localhost:3000", False),     # another page through that forward
+    ("localhost:8000", "http://127.0.0.1:8000", False),     # same port, another host
+    ("127.0.0.1:9119", "http://localhost:8000", False),     # the forward's origin dialling the bound port
+])
+def test_a_port_forwarded_dashboard_page_opens_its_own_sockets(monkeypatch, host, origin, allowed):
+    """Reached through a port forward, the dashboard's own page sends an Origin on the forwarded
+    port, never the bound one. An Origin naming the exact authority the upgrade targets is that
+    page (same-origin), so it is admitted; any other loopback origin still needs the bound port."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import hermes_cli.web_server as ws
+
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+    monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    client = TestClient(ws.app)
+
+    url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+    headers = {"Host": host, "Origin": origin}
+    if allowed:
         with client.websocket_connect(url, headers=headers):
             pass
     else:

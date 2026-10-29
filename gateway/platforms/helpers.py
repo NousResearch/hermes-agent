@@ -705,3 +705,47 @@ def platform_http_client(**kwargs: Any) -> Any:
     elif kwargs["limits"] is None:
         del kwargs["limits"]
     return create_ssrf_safe_async_client(event_hooks=hooks, **kwargs)
+
+
+_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
+
+
+def resolve_bang_command_name(name: str) -> Optional[str]:
+    """Resolve a ``!command`` token to a dispatchable token. Only known gateway/skill
+    commands resolve, so ordinary exclamations stay chat text. Returns whichever candidate
+    resolved — raw lowercased first, then ``_``→``-`` — never a forced canonical form:
+    aliases pass through for the dispatcher."""
+    if not name:
+        return None
+    candidates = list(dict.fromkeys((name.lower(), name.lower().replace("_", "-"))))
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+        for candidate in candidates:
+            if is_gateway_known_command(candidate):
+                return candidate
+    except Exception:
+        logger.debug("bang alias: is_gateway_known_command failed for %r", name, exc_info=True)
+    try:
+        from agent.skill_commands import get_skill_commands
+        skill_commands = get_skill_commands() or {}  # keys are slash-prefixed ("/arxiv")
+        for candidate in candidates:
+            if f"/{candidate}" in skill_commands:
+                return candidate
+    except Exception:
+        logger.debug("bang alias: get_skill_commands failed for %r", name, exc_info=True)
+    return None
+
+
+def normalize_bang_command(text: str) -> str:
+    """Rewrite a leading ``!cmd ...`` to the gateway ``/cmd ...`` form for known commands
+    only; anything else passes through unchanged. Slack (threads) and Matrix (client-
+    reserved ``/``) each carry a private copy of this logic; adapters hitting the same
+    client restriction should call this one (Mattermost reserves ``/status`` and friends
+    as built-in slash commands and blocks ``/`` posts on mobile — #25184)."""
+    if not text or not text.startswith("!"):
+        return text
+    match = _BANG_COMMAND_RE.match(text)
+    resolved = resolve_bang_command_name(match.group(1)) if match else None
+    if resolved is None:
+        return text
+    return f"/{resolved}{match.group(2) or ''}"

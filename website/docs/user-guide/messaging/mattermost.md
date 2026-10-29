@@ -53,6 +53,15 @@ Shared sessions can be useful for a collaborative channel, but they also mean:
 
 This guide walks you through the full setup process — from creating your bot on Mattermost to sending your first message.
 
+## Slash Commands and the `!` Alias
+
+Hermes slash commands work in Mattermost with two platform-specific twists:
+
+- Mattermost's own clients intercept some `/`-prefixed names before your message is ever sent — `/status`, `/me`, `/away`, `/join`, and friends are **built-in Mattermost commands**, and the mobile app blocks `/`-prefixed posts entirely.
+- So Hermes also accepts the `!` prefix as an alias for any command: `!status`, `!stop`, `!model opus` dispatch exactly like `/status`, `/stop`, `/model opus`, and `!` posts reach the server from every client. Unknown exclamations (`!nice work`) stay ordinary chat text.
+
+Two alternatives, if you prefer `/`: lead with a space (` /status`) — the client sends it as a normal post and Hermes treats it as a command — or use the desktop client's "send as message" prompt. In channels (where an `@mention` is required), the mention first: `@yourbot !stop`.
+
 ## Step 1: Enable Bot Accounts
 
 Bot accounts must be enabled on your Mattermost server before you can create one.

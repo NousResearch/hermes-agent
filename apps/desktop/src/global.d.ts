@@ -410,6 +410,9 @@ declare global {
       watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
+      /** Bounded functional stream deadlines; does not enable hidden-window painting. */
+      scheduleStreamWorkWake?: (token: string, delayMs: number | null) => void
+      onStreamWorkWake?: (callback: (token: string) => void) => () => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
@@ -1148,6 +1151,8 @@ export interface HermesTitleBarTheme {
 export interface HermesActiveWork {
   count: number
   titles: string[]
+  /** Speech output still consumes the frame-published transcript while streaming. */
+  voiceActive?: boolean
 }
 
 export interface HermesWindowState {

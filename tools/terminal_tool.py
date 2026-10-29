@@ -40,6 +40,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 
 
 from tools.registry import tool_error
+from tools.environment_observability import environment_acquired
 from tools.terminal_tool_lifecycle import (
     _call_in_flight, _cleanup_inactive_envs, _create_configured_env,
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
@@ -1270,7 +1271,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     with _env_lock:
         env: Any = _lookup_active_env(eff, task_id)
     if env is not None:
-        return env
+        return environment_acquired(env)
 
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(eff, threading.Lock())
@@ -1279,7 +1280,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         with _env_lock:
             env = _lookup_active_env(eff, task_id)
         if env is not None:
-            return env
+            return environment_acquired(env)
 
         logger.info("Creating new %s environment for task %s...", env_type, eff[:8])
         try:
@@ -1297,7 +1298,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
             _active_environments[eff] = new_env
             _last_activity[eff] = time.time()
         logger.info("%s environment ready for task %s", env_type, eff[:8])
-        return new_env
+        return environment_acquired(new_env)
 
 
 def _yield_kwargs(command: str, **ctx) -> dict:

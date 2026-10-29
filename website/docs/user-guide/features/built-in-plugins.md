@@ -221,6 +221,27 @@ gateway:
 
 Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
 
+#### Externally measured Docker scheduler windows
+
+A trusted in-process adapter can attach external Linux scheduler summaries to
+the existing Docker lifecycle scope. Hermes does not start kernel tracing or
+request root access. There is no scheduler collector service or polling setting.
+
+The adapter must verify the container lifetime before and after measurement.
+Hermes checks its observation binding, clock fields, non-overlapping windows,
+and scheduler accounting and trace-loss evidence before bounded publication.
+Tools keep their turn parents and share the same opaque resource ID.
+Closing scheduler summaries cover admitted windows only, with pending/failed
+publications reported separately—not complete container lifetimes.
+Scheduler switches are not container restarts or switch-overhead measurements.
+Cross-host clock alignment must be reported explicitly.
+
+For ordinary CPU, memory, and supported GPU collection, configure Relay's
+[resource_metrics plugin](https://docs.nvidia.com/nemo/relay/configure-plugins/resource-metrics).
+Its host/process measurements are not automatic per-Docker-container accounting.
+Per-container CPU collection remains in benchmark tooling, which can publish
+through Relay's existing metric API; this adapter adds no CPU/memory event format.
+
 ### google_meet
 
 Lets the agent **join, transcribe, and participate in Google Meet calls** — take notes on a meeting, summarize the back-and-forth after, follow up on specific points, and (optionally) speak replies back into the call via TTS.

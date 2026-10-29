@@ -1008,11 +1008,13 @@ _JOBS: list = []
 
 
 def _try_lock(fd: int, *, shared: bool = False) -> bool:
-    """Lock the owner byte and every lease byte without waiting; False when any is held.
+    """Take the checkout lock without waiting; False when the owner byte or any lease byte is held.
 
+    Windows keeps the owner byte locked and only test-locks the lease bytes; POSIX flocks the file.
     ``shared`` is the held? probe (:func:`checkout_lock_held`): holders lock exclusively, so a
-    shared try fails only on a holder and two probes never read each other as one. POSIX drops it
-    when the caller closes ``fd``; Windows gives it straight back.
+    shared try fails only on a holder, and two Python probes never read each other as one (the
+    marker.sh / marker.ps1 probes still lock exclusively). POSIX drops the shared lock when the
+    caller closes ``fd``; Windows gives it straight back.
     """
     if shared:
         return _try_shared_lock(fd)
@@ -1211,9 +1213,10 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
     return None
 
 
-# A "held?" probe (marker.sh/marker.ps1 checkout_lock_held, Python checkout_lock_held) takes the
-# lock for microseconds: an updater that collides with one waits this long before "busy" (D17:
-# 257 of 3283 tight-loop acquires failed spuriously with no real holder).
+# A "held?" probe (marker.sh/marker.ps1 checkout_lock_held exclusively, Python checkout_lock_held
+# shared, which still blocks an exclusive take) holds the lock for microseconds: an updater that
+# collides with one waits this long before "busy" (D17: 257 of 3283 tight-loop acquires failed
+# spuriously with no real holder).
 CHECKOUT_CONTENTION_WAIT_SECONDS = 3.0
 
 
@@ -1391,8 +1394,9 @@ def checkout_lock_held(install_root: Path | str | None = None) -> bool:
 
     A probe takes a SHARED lock on the owner byte and every lease byte for the microseconds of one
     try and drops it (closing the fd). Holders lock exclusively, so the probe fails only on a real
-    holder, while two probes never read each other as one: a client polling ``ensure`` and the
-    gateway it just started both probe while a killed update's dead marker is still there. An
+    holder, while two Python probes never read each other as one (``marker.sh`` / ``marker.ps1``
+    still probe exclusively): a client polling ``ensure`` and the gateway it just started both
+    probe while a killed update's dead marker is still there. An
     updater acquiring at that instant waits :data:`CHECKOUT_CONTENTION_WAIT_SECONDS` instead of
     failing (R6/D17).
 

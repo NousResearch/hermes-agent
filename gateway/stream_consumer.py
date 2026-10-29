@@ -581,6 +581,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     if _is_intentional_silence_response(self._clean_for_display(self._accumulated)):
                         await self._suppress_silence_marker()
                         return
+                    # Drop a closing marker before any overflow split: cut off on its own, it
+                    # would read as a bare marker the cleaner keeps. The transcript keeps it.
+                    self._accumulated = _strip_trailing_silence_marker(self._accumulated)
 
                 if self._should_edit(tick) and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)

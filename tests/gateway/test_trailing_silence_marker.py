@@ -64,3 +64,29 @@ async def test_stream_never_shows_a_trailing_marker_and_finalizes_on_the_reply()
     assert not [f for f in frames if "NO" in f], frames
     assert frames[-1] == ANSWER
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preview_first", [True, False], ids=["seal-overflow", "first-send-split"])
+async def test_overflow_split_never_sends_the_closing_marker_alone(preview_first):
+    """A reply just under the limit plus its closing marker splits right before the marker;
+    the leftover bare ``NO_REPLY`` must not go out as its own message."""
+    adapter = _make_adapter()
+    adapter.MAX_MESSAGE_LENGTH = 200
+    consumer = GatewayStreamConsumer(
+        adapter, "chat_1", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1))
+    task = asyncio.create_task(consumer.run())
+    intro = "Intro line.\n"
+    if preview_first:
+        consumer.on_delta(intro)
+        await async_wait_until(lambda: adapter.send.called, timeout=5)
+    await async_wait_until(lambda: getattr(consumer, "_safe_limit", 0) > 0, timeout=5)
+    body = "y" * (consumer._safe_limit - len(intro) - 2)
+    consumer.on_delta(("" if preview_first else intro) + body + "\n\nNO_REPLY")
+    consumer.finish()
+    await asyncio.wait_for(task, 5)
+
+    frames = _sent_and_edited(adapter)
+    assert not [f for f in frames if "NO_REPLY" in f], frames
+    assert any(body in f for f in frames), frames
+    assert consumer.final_content_delivered is True

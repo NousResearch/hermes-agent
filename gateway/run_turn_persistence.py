@@ -202,12 +202,18 @@ class GatewayTurnPersistenceMixin:
         """Runtime-metadata footer for the FINAL message of the turn; off by default
         (display.runtime_footer.enabled=false). Never on a finite (`-z`, `chat -q`) turn: its reply is
         the printed answer itself."""
+        if agent_result.get("runtime_footer_already_delivered"):
+            return ""
+        # A queued terminal reply must never inherit the whole chain's elapsed time. Ordinary
+        # paths without a local worker (for example proxy turns) retain the caller's measurement.
+        if "turn_seconds" in agent_result or "queued_terminal_inbound_id" in agent_result:
+            _turn_seconds = agent_result.get("turn_seconds")
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         from gateway.session_finite import finite_turn_required
+        from gateway.runtime_footer import build_footer_line as _bfl
         if finite_turn_required() is True:
             return ""
         try:
-            from gateway.runtime_footer import build_footer_line as _bfl
             return _bfl(
                 user_config=_load_gateway_config(),
                 platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
@@ -218,7 +224,7 @@ class GatewayTurnPersistenceMixin:
                 served_model=agent_result.get("served_model"),
             )
         except Exception as _footer_err:
-            logger.debug("runtime_footer build failed: %s", _footer_err)
+            logger.exception("runtime_footer build failed: %s", _footer_err)
             return ""
 
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):

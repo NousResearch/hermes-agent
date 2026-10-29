@@ -321,6 +321,8 @@ def _build_child_agent(
             effective_requested_provider=rt.get("requested_provider"),
         )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # An inherited launch key stays the child's credential too (#142362); a different key never matches it.
+    child._launch_api_key = getattr(parent_agent, "_launch_api_key", None)
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent

@@ -49,8 +49,8 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { type Translations, useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Loader2 } from '@/lib/icons'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { profileShortLabel } from '@/lib/profile-short-label'
 import {
@@ -122,7 +122,7 @@ const PROFILE_DROPDOWN_THRESHOLD = 13
 
 // The Webapp always takes the dropdown: squares are a native-window gesture
 // surface (drag, hold-to-recolor), and in a browser tab they read as chrome.
-const ALWAYS_CONDENSED = isBrowserHostedDesktop()
+const ALWAYS_CONDENSED = !hostHas('profileRailSquares')
 
 // The home pill's profile when the multi-profile rail shows one: the default profile. A gateway that
 // does not serve default (one launched as another profile, in the Webapp) refuses the switch, so the

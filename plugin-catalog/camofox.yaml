@@ -1,6 +1,6 @@
 name: camofox
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 190593f4ce4c481a80ed27448535c867c5c6e27f
+sha: 1138f25c8b7b5a8fb882b3161e248f29abbd1a46
 subdir: camofox
 description: 'Camofox browser backend: browse with a self-hosted anti-detection Firefox (Camoufox, C++
   fingerprint spoofing) through the camofox-browser REST server. Registers the browser_* tools (navigate,
@@ -14,13 +14,14 @@ description: 'Camofox browser backend: browse with a self-hosted anti-detection 
   auxiliary vision model. Snapshots mask values that look like secrets (API keys, tokens), but text typed
   into form fields, passwords included, shows up in snapshots. Oversized snapshots and screenshots are
   written under the Hermes home (cache/web, browser_screenshots). Cookie import reads Netscape
-  cookies.txt files only from browser.camofox.cookies_dir (default ~/.camofox/cookies). Inert on Hermes
+  cookies.txt files only from browser.camofox.cookies_dir (default ~/.camofox/cookies). browser_vault fills
+  saved passwords on the Camofox tab (sent only to a loopback or HTTPS CAMOFOX_URL). Inert on Hermes
   cores that still bundle Camofox.'
 maintainer: NousResearch
 tier: official
 category: web
-version: "1.0.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/190593f4ce4c481a80ed27448535c867c5c6e27f/assets/camofox.jpg
+version: "1.1.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/1138f25c8b7b5a8fb882b3161e248f29abbd1a46/assets/camofox.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/camofox
 capabilities:
   provides_tools:

@@ -63,19 +63,60 @@ def _fence_unfenced_tables(text: str) -> str:
     return "\n".join(out)
 
 
+def _shift_pos(pos: int, removals: list[tuple[int, int]]) -> int:
+    """Move *pos* left by sorted removals that begin before it."""
+    shift = 0
+    for remove_pos, remove_len in removals:
+        if remove_pos >= pos:
+            break
+        shift += min(remove_len, pos - remove_pos)
+    return pos - shift
+
+
+def _rebase_around_heading_markers(
+    styles: list[tuple[int, int, str]], removals: list[tuple[int, int]]
+) -> list[tuple[int, int, str]]:
+    """Re-base pre-heading spans after ``# `` markers are dropped.
+
+    Heading BOLD ranges are already in the stripped text. MONOSPACE ranges still
+    use the pre-strip offsets, so a code block after a heading would otherwise
+    miss its style.
+    """
+    removals = sorted(removals)
+    rebased: list[tuple[int, int, str]] = []
+    for start, length, style in styles:
+        if style == "BOLD":
+            rebased.append((start, length, style))
+            continue
+        new_start = _shift_pos(start, removals)
+        new_end = _shift_pos(start + length, removals)
+        if new_end > new_start:
+            rebased.append((new_start, new_end - new_start, style))
+    return rebased
+
+
 def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     """Convert markdown to plain text + Signal textStyles list. Signal uses ``bodyRanges`` (signal-cli
     ``textStyle`` / ``textStyles`` params) as ``start:length:STYLE`` with positions in UTF-16 code units.
     Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE."""
     text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
     styles: list[tuple[int, int, str]] = []
+    code_spans: list[tuple[int, int]] = []
     while match := _CODE_BLOCK_RE.search(text):
         inner = match.group(1).rstrip("\n")
-        styles.append((match.start(), len(inner), "MONOSPACE"))
-        text = text[: match.start()] + inner + text[match.end() :]
+        start = match.start()
+        styles.append((start, len(inner), "MONOSPACE"))
+        code_spans.append((start, start + len(inner)))
+        text = text[:start] + inner + text[match.end() :]
     new_text, last_end = "", 0
+    heading_removals: list[tuple[int, int]] = []
     for match in _HEADING_RE.finditer(text):
+        # A '#' line inside a fence is a comment or a Markdown sample, not a heading.
+        if any(start <= match.start() < end for start, end in code_spans):
+            continue
         new_text += text[last_end : match.start()]
+        heading_removals.append((match.start(), match.end() - match.start()))
+        last_end = match.end()
         eol = text.find("\n", match.end())
         if eol == -1:
             eol = len(text)
@@ -84,9 +125,16 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
         new_text += heading_text
         last_end = eol
     text = new_text + text[last_end:]
+    if heading_removals:
+        styles = _rebase_around_heading_markers(styles, heading_removals)
     # Inline markers: first pattern to claim a span wins; later overlapping matches are dropped.
+    # Code spans are already claimed so ``**`` / ``_`` inside a fence stay verbatim.
     all_matches: list[tuple[int, int, int, int, str]] = []
-    occupied: list[tuple[int, int]] = []
+    occupied: list[tuple[int, int]] = [
+        (span_start, span_start + span_len)
+        for span_start, span_len, kind in styles
+        if kind == "MONOSPACE"
+    ]
     for pattern, style in _INLINE_PATTERNS:
         for match in pattern.finditer(text):
             ms, me = match.start(), match.end()

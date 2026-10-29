@@ -91,4 +91,5 @@ def settle(job: dict[str, Any], now: str) -> None:
     if job.get("schedule", {}).get("kind") == "once":
         job["next_run_at"] = now
     else:
-        job["next_run_at"] = compute_next_run(job["schedule"], now) or job.get("next_run_at")
+        job["next_run_at"] = compute_next_run(
+            job["schedule"], now, timezone=job.get("timezone")) or job.get("next_run_at")

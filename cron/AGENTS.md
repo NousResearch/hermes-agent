@@ -28,7 +28,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   one-shots.
 - **A pinned `timezone` owns the whole path, not just the compute.** `compute_next_run` resolves
   *job pin → profile zone*, and every `next_run_at` write site must pass the pin (`cron/jobs.py`
-  call sites, `quota_hold.plan_hold`, `unreachable_retry.will_retry`); one missed site is a burst
+  call sites, `quota_hold.plan_hold`, `unreachable_retry.will_retry`, `extra_fire.settle`); one missed site is a burst
   re-run or a skipped slot. `_evaluate_due_job` normalizes the stored instant into the JOB's zone
   and **skips `_repair_timezone_shifted_cron`** for pinned jobs — that repair is for jobs that
   follow the profile zone, and on a pinned job its wall-clock predicate reads a due occurrence as

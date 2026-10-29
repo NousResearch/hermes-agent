@@ -29,6 +29,7 @@ GITHUB_TAP_PROVIDERS = {
     "openai/skills": "OpenAI", "anthropics/skills": "Anthropic", "huggingface/skills": "HuggingFace",
     "nvidia/skills": "NVIDIA", "voltagent/awesome-agent-skills": "VoltAgent", "garrytan/gstack": "gstack",
     "minimax-ai/cli": "MiniMax",
+    "ericgonzalez/hermesagent-callprep": "ericgonzalez", "ericgonzalez/hermesagent-hubspot-updater": "ericgonzalez",
 }
 
 # Accepted ``--source`` provider filters (lowercased). Not real source ids —
@@ -223,6 +224,9 @@ class GitHubSource(SkillSource):
         # (some GPL; KEGG is commercial for non-academic use) — surfaced per skill, not vetted here.
         # K-Dense-AI/scientific-agent-skills: flat skills/<name>/, MIT.
         {"repo": "K-Dense-AI/scientific-agent-skills", "path": "skills/", "bucket": "science"},
+        # Eric Gonzalez's community skill taps: sales-call-prep and post-call-hubspot.
+        {"repo": "ericgonzalez/HermesAgent-Callprep", "path": "skills/"},
+        {"repo": "ericgonzalez/Hermesagent-Hubspot-Updater", "path": "skills/"},
         # synthetic-sciences/openscience: Apache-2.0, nested backend/cli/skills/<category>/<name>/.
         # _list_skills_in_repo walks ONE level under a tap path, so each category is its own tap
         # (same one-entry-per-inner-path pattern as openai/skills above).

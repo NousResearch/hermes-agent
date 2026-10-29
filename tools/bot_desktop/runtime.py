@@ -422,8 +422,9 @@ def _should_auto_start(env: dict[str, str]) -> bool:
 # A desktop nobody is using still holds ~220 MiB (plus whatever browser was left open). Every use —
 # a computer_use action, a browser spawn onto the screen, a viewer attached, a human takeover — stamps
 # ``activity``; :func:`stop_if_idle` stops a screen idle past ``bot_desktop.idle_stop_minutes`` unless a
-# human holds it. Two callers apply it: the gateway's display watcher and the screen's own launcher
-# (``idle_watch``), so a screen whose gateway never came back still stops. The next use starts it again.
+# human is using it (see the lease lapse below). Two callers apply it: the gateway's display watcher and
+# the screen's own launcher (``idle_watch``), so a screen whose gateway never came back still stops. The
+# next use starts it again.
 DEFAULT_IDLE_STOP_MINUTES = 30
 # A human holding the screen is never timed out while there is evidence of one: an attached viewer stamps
 # ``activity`` (every RFB update it receives, at most once a minute; the panel clock repaints every minute).
@@ -803,7 +804,8 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             # command (the ``hermes --run-module`` launcher on a store install, which follows Python pin changes
             # and picks the current dependency generation at every run; this interpreter elsewhere), in this
             # home, first once the screen could be due (nothing is idle at start). The screen outlives updates,
-            # so neither this interpreter nor the inherited PYTHONPATH generation may be pinned.
+            # so the inherited PYTHONPATH generation is never pinned, and on a store install neither is this
+            # interpreter.
             "HERMES_BD_IDLE_CMD": shlex.join(installation_command(
                 Path(__file__).resolve().parents[2], module="tools.bot_desktop.idle_watch")),
             "HERMES_BD_HOME": str(get_hermes_home()),
@@ -888,7 +890,8 @@ def _sandbox_published_env() -> dict[str, str]:
 
 def stop(still_due: Optional[Callable[[], bool]] = None) -> bool:
     """Stop this profile's desktop; True when a running launcher (or the X server a dead one left behind)
-    was signalled. ``still_due`` is re-asked under ``start.lock``; False there leaves the screen running."""
+    was signalled. ``still_due`` is asked again before anything is killed (under ``start.lock`` for a screen on
+    this host); False there leaves the screen running."""
     from tools.bot_desktop import sandbox_host
     if sandbox_host._read_marker() or placement.resolve().where == placement.TERMINAL:
         if still_due is not None and not still_due():

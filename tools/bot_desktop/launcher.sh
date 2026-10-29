@@ -277,7 +277,7 @@ xset -display "$DISPLAY" s off -dpms s noblank 2>/dev/null || true
 
 # ---- idle self-stop: the screen outlives the gateway that started it (a restarted gateway re-attaches),
 # so it must also stop itself when no gateway ever comes back. tools/bot_desktop/idle_watch.py applies the
-# gateway watcher's own rule (bot_desktop.idle_stop_minutes; never while a human holds the screen) once per
+# gateway watcher's own rule (bot_desktop.idle_stop_minutes; never while a human is using the screen) once per
 # run and prints the seconds until the next check; nothing stays resident in between. runtime.py passes the
 # install's command for it, shell-quoted (the launcher's pid is appended); skipped when it passed none (the
 # sandbox-hosted screen, whose sandbox lifetime bounds it).

@@ -94,8 +94,7 @@ reverse proxy's access log may record an already-spent ticket.
   started it is gone and never restarts. A screen a human has taken over is
   kept while their viewer keeps it in use; once nothing has used it for four
   windows, and at least 10 minutes (a viewer whose link dropped and never came
-  back), it stops as well.
-  Practical guidance
+  back), it stops as well and control returns to the agent. Practical guidance
   for small instances: 4 GB runs the desktop, 8 GB is where a takeover with a
   browser is comfortable.
 

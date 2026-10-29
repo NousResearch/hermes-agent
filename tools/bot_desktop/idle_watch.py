@@ -2,11 +2,10 @@
 
 The screen outlives the gateway that started it on purpose (a restarted gateway re-attaches to it), so the
 gateway's display watcher cannot be the only thing that ever stops it: when no gateway comes back, Xvnc +
-Xfce and any browser left open run until reboot. ``launcher.sh`` therefore runs
-``python -m tools.bot_desktop.idle_watch`` in a loop of its own. Each run applies
-:func:`runtime.stop_if_idle` (the same ``bot_desktop.idle_stop_minutes`` window and the same rule that a
-human holding the screen is never timed out) and prints how long the launcher should sleep before the next
-run, so no interpreter stays resident between checks.
+Xfce and any browser left open run until reboot. ``launcher.sh`` therefore runs this module (through the
+install's stable command) in a loop of its own. Each run applies :func:`runtime.stop_if_idle` (the same
+``bot_desktop.idle_stop_minutes`` window and the same human-lease rule as the gateway's watcher) and prints
+how long the launcher should sleep before the next run, so no interpreter stays resident between checks.
 """
 
 from __future__ import annotations

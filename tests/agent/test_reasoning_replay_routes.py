@@ -44,6 +44,10 @@ def _wire(provider, base_url, model="m", rejected=()):
     ("novita", "https://api.novita.ai/openai/v1", "m", {"reasoning_content", "reasoning_details"}),
     ("ollama-cloud", "https://ollama.com/v1", "m", {"reasoning_content", "reasoning"}),
     ("custom", "http://127.0.0.1:8080/v1", "m", {"reasoning_content", "reasoning"}),
+    # Recursive's `rec` engine (Flint) 400s on more than one reasoning key per message, so its
+    # loopback endpoint gets the de-facto standard only, like any single-carrier route.
+    ("custom", "http://127.0.0.1:11500/v1", "flint", {"reasoning_content"}),
+    ("custom", "http://localhost:11500/v1", "flint", {"reasoning_content"}),
     # everyone else: the de-facto standard alias
     ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
     ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),
@@ -139,7 +143,6 @@ def test_route_shaping_keeps_private_native_carrier_for_the_transport():
 
 
 def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route():
-    from types import SimpleNamespace
     from agent.message_sanitization import record_reasoning_field_rejection
 
     agent = SimpleNamespace(provider="deepseek", model="deepseek-v4-flash", base_url="https://api.deepseek.com/v1",
@@ -149,3 +152,24 @@ def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route()
                  "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"):
         assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
     assert agent._reasoning_rejecting_routes == {}
+
+
+def test_duplicate_reasoning_field_complaint_strips_the_alias_and_retries():
+    """A route that accepts one reasoning key per message (rec/Flint: "Use one reasoning field per
+    message") names no field, so the drop is fixed at the aliases; reasoning_content survives."""
+    from agent.message_sanitization import record_reasoning_field_rejection, rejected_reasoning_fields
+
+    agent = SimpleNamespace(provider="custom", model="flint", base_url="http://127.0.0.1:11600/v1",
+                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
+    sent = [{"role": "user", "content": "hi"}, deepcopy(_TURN)]
+    body = '{"error": "Use one reasoning field per message"}'
+    assert rejected_reasoning_fields(body, sent) == {"reasoning", "reasoning_details"}
+    assert record_reasoning_field_rejection(agent, body, sent) == {"reasoning", "reasoning_details"}
+    rejected = agent._reasoning_rejecting_routes[("custom", "127.0.0.1", "flint")]
+    assert rejected == {"reasoning", "reasoning_details"}
+    # The retry carries the one key rec reads; the same rejection never loops.
+    route = reasoning_replay_route("chat_completions", "custom", "flint", agent.base_url, rejected=rejected)
+    assert route.carriers == {"reasoning_content"}
+    assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
+    # An unrelated error mentioning no field stays untouched.
+    assert rejected_reasoning_fields("400: bad request", sent) == frozenset()

@@ -1406,6 +1406,7 @@ class TestDetectSudoStdin:
             "sudo --shell true",
             "sudo --sh true",
             "sudo -u root -S true",
+            "sudo --chdir /tmp -S true",
             "true; sudo -S true",
             "true | sudo -S true",
             "true & sudo -S true",
@@ -1445,6 +1446,7 @@ class TestDetectSudoStdin:
             # the ambiguous "--s", so the structural parser must not catch it.
             "sudo --set-home id",
             "sudo --chroot -S true",
+            "sudo --chdir -S true",
             "man sudo",
             "which sudo",
             "echo SUDO_USER=$SUDO_USER",

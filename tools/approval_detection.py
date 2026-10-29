@@ -569,7 +569,7 @@ _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
 _SUDO_OPTIONS_WITH_ARG = {
-    "-c", "--close-from", "-C", "-D", "-g", "--group", "-h", "--host", "-p", "--prompt",
+    "-c", "--close-from", "-C", "-D", "--chdir", "-g", "--group", "-h", "--host", "-p", "--prompt",
     "-R", "--chroot", "-r", "--role", "-t", "--type", "-T", "--command-timeout", "-u", "--user",
     "-U", "--other-user",
 }

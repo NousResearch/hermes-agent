@@ -47,3 +47,11 @@ def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkey
     assert decomposed == 1
     assert seen["value"] == "launch-profile-key"
     assert ss.current_secret_scope() is None
+
+
+def test_pr_maintenance_rotates_one_board_per_async_run(monkeypatch):
+    dispatcher = _dispatcher()
+    monkeypatch.setattr(dispatcher, "_board_slugs", lambda: ["alpha", "beta"])
+    assert dispatcher.next_pr_maintenance_board() == "alpha"
+    assert dispatcher.next_pr_maintenance_board() == "beta"
+    assert dispatcher.next_pr_maintenance_board() == "alpha"

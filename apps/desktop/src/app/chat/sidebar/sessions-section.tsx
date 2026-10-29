@@ -27,7 +27,7 @@ import {
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
-import { sessionPinId } from '@/store/session'
+import { sessionOwnerPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, sessionDotStateForRow } from '@/store/session-dot-state'
 import { sessionOwnerRowKey } from '@/store/session-request-router'
 
@@ -289,7 +289,7 @@ export function SidebarSessionsSection({
         onArchive: () => onArchiveSession(session),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session),
-        onPin: () => onTogglePin(sessionPinId(session)),
+        onPin: () => onTogglePin(sessionOwnerPinId(session)),
         onToggleUnread: () => onToggleUnread(session),
         onResume: () => onResumeSession(session.id, session),
         reorderable: draggable && !branchStem,

@@ -154,6 +154,32 @@ def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
         other.close()
 
 
+def _is_board_slug_dir(db_file: Path) -> bool:
+    """Whether *db_file* sits in a directory named like a real board slug.
+
+    A board lives at ``<boards_root>/<slug>/kanban.db`` and the slug must
+    match ``_BOARD_SLUG_RE`` (``^[a-z0-9][a-z0-9\\-_]{0,63}$`` -- lowercase,
+    alphanumerics/hyphens/underscores, NOT starting with '-' or '_').
+
+    A directory whose name cannot be a slug (``_archived``, ``.tmp``,
+    ``Archive``) is therefore never a board, so a ``kanban.db`` file inside
+    it is a stray file and must not be allowed to block cleanup for every
+    task on every board (t_3c0ca734).
+    """
+    parent = db_file.parent
+    try:
+        slug = parent.name
+    except (AttributeError, ValueError):
+        return False
+    if not slug:
+        return False
+    try:
+        _kb._normalize_board_slug(slug)
+    except (ValueError, AttributeError):
+        return False
+    return True
+
+
 def _workspace_in_use_by_other(
     conn: sqlite3.Connection, task_id: str, path: Path | str
 ) -> Optional[str]:
@@ -190,6 +216,32 @@ def _workspace_in_use_by_other(
         try:
             if _other_board_uses_path(db_file, task_id, key):
                 return "shared"
+        except sqlite3.OperationalError as exc:
+            # A file named ``kanban.db`` that is NOT a kanban board (no
+            # ``tasks`` table) must not block cleanup for every task on
+            # every board. ``<boards_root>/_archived/kanban.db`` is exactly
+            # that: a human-made archive directory that happens to contain a
+            # file with that name. Treating it as "unknown" deferred EVERY
+            # scratch-workspace cleanup fleet-wide -- which is how completed
+            # tasks kept their workspaces and the root fs filled up
+            # (t_3c0ca734, 2026-10-29).
+            #
+            # The discriminator is the BOARD SLUG, not the exception: a
+            # directory whose name is not a valid board slug can never be a
+            # board, so a missing ``tasks`` table there means "not a board",
+            # not "a board I cannot read". A directory whose name IS a valid
+            # slug keeps the fail-closed behaviour -- an unreadable REAL
+            # board must still defer the delete.
+            if "no such table" in str(exc).lower() and not _is_board_slug_dir(db_file):
+                _kb._log.debug(
+                    "Skipping non-board sibling db %s for task %s: %s",
+                    db_file, task_id, exc,
+                )
+                continue
+            _kb._log.warning(
+                "Cannot read board db %s for task %s: %s", db_file, task_id, exc,
+            )
+            return "unknown"
         except (OSError, sqlite3.Error) as exc:
             _kb._log.warning(
                 "Cannot read board db %s for task %s: %s", db_file, task_id, exc,

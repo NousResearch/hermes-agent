@@ -221,3 +221,83 @@ def test_cleanup_workspace_keeps_scratch_when_other_boards_cannot_be_listed(boar
         kbw._cleanup_workspace(conn, archived)
         assert _deferred_reasons(conn, archived) == ["shared", "shared", "unknown"]
     assert (shared / "note.txt").read_text(encoding="utf-8") == "still needed"
+
+
+def test_cleanup_workspace_ignores_a_non_board_kanban_db_sibling(board):
+    """A file named ``kanban.db`` with no ``tasks`` table must not block cleanup.
+
+    Regression for t_3c0ca734 (2026-10-29): ``<boards_root>/_archived/kanban.db``
+    was a human-made archive directory whose empty ``kanban.db`` file (4 KB, no
+    tables) was picked up by the sibling-board scan. Reading it raised
+    ``sqlite3.OperationalError: no such table: tasks``, which the cleanup
+    path reported as reason ``"unknown"`` -- and ``"unknown"`` DEFERS the
+    delete. One misnamed file therefore deferred EVERY scratch-workspace
+    cleanup on every board, so completed tasks kept their workspaces, the
+    root filesystem filled up, and the gateway's dispatcher started failing
+    with ``sqlite3.OperationalError: disk I/O error``.
+
+    A missing table means "this file is not a board", not "this board cannot
+    be read": skip it and keep scanning the real boards.
+    """
+    from hermes_cli import kanban_db_workspace as kbw
+
+    archived = None
+    scratch = kb.workspaces_root() / "orphan-scratch"
+    scratch.mkdir(parents=True)
+    (scratch / "payload.bin").write_bytes(b"x" * 128)
+    with kbc.connect_closing() as conn:
+        archived = kb.create_task(conn, title="archived orphan")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='done', workspace_kind='scratch', "
+                "workspace_path=? WHERE id=?",
+                (str(scratch), archived),
+            )
+
+    # Plant a non-board sibling named exactly like a board db.
+    boards_root = kb.boards_root()
+    boards_root.mkdir(parents=True, exist_ok=True)
+    not_a_board = boards_root / "_archived"
+    not_a_board.mkdir(parents=True, exist_ok=True)
+    (not_a_board / "kanban.db").write_bytes(b"")  # empty file: no tables at all
+
+    with kbc.connect_closing() as conn:
+        kbw._cleanup_workspace(conn, archived)
+
+    assert not scratch.exists(), "cleanup was deferred by a non-board sibling db"
+    with kbc.connect_closing() as conn:
+        assert _deferred_reasons(conn, archived) == []
+
+
+def test_cleanup_workspace_still_refuses_on_a_corrupt_real_board(board):
+    """The fix must not weaken the fail-closed behaviour for a REAL board.
+
+    A sibling db that IS a board but cannot be read must still defer the
+    cleanup -- only a file that is demonstrably not a board is skipped.
+    """
+    from hermes_cli import kanban_db_workspace as kbw
+
+    kb.create_board("other")
+    scratch = kb.workspaces_root() / "guarded-scratch"
+    scratch.mkdir(parents=True)
+    (scratch / "payload.bin").write_bytes(b"x" * 128)
+    with kbc.connect_closing() as conn:
+        archived = kb.create_task(conn, title="archived guarded")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='done', workspace_kind='scratch', "
+                "workspace_path=? WHERE id=?",
+                (str(scratch), archived),
+            )
+
+    # A REAL board db whose schema is broken: the tasks table exists but is
+    # unreadable in a way that raises OperationalError.
+    other_db = kb.boards_root() / "other" / "kanban.db"
+    other_db.parent.mkdir(parents=True, exist_ok=True)
+    other_db.write_bytes(b"")  # same empty file, but it IS a registered board
+
+    with kbc.connect_closing() as conn:
+        kbw._cleanup_workspace(conn, archived)
+
+    assert scratch.exists(), "cleanup must fail closed on a real (broken) board"
+

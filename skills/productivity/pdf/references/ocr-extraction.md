@@ -77,6 +77,7 @@ else
     [ "$(readlink hermes-pdf-pymupdf-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
   )
 fi
+export PY
 ```
 
 **Via helper script**:
@@ -127,6 +128,7 @@ else
     [ "$(readlink hermes-pdf-marker-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
   )
 fi
+export PY
 ```
 
 **Via helper script**:

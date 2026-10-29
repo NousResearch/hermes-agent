@@ -26,6 +26,7 @@ from gateway.status_inline_source import (
     command_line_runs_inline_source,
     inline_bootstrap_argv,
     inline_source_flag_index,
+    spawn_intent_suffix_positions,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
@@ -633,10 +634,8 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     flag_index = inline_source_flag_index(cased_tokens)
     if flag_index is None:
         return None
-    # Skip the interpreter, its options, ``-c`` and the source literal; then try every suffix —
-    # the embedded argv starts at an unknown offset (the watcher prefixes it with the old PID).
-    start = flag_index + 2
-    for i in range(start, len(cased_tokens)):
+    # A gateway-free tail is an empty range, so this walk does not run (#137023).
+    for i in spawn_intent_suffix_positions(cased_tokens, flag_index):
         nested = _gateway_command_subcommand(" ".join(raw_tokens[i:]))
         if nested is not None:
             return nested

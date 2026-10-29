@@ -553,15 +553,13 @@ export async function installDesktopPluginFromGit(
       // Under the root's writer lock: the exists check and the publish must not
       // interleave with a reconcile pass copying the same package folder.
       return await withDesktopPluginsRoot<DesktopPluginInstallResult>(desktopPluginsRoot, async () => {
-        if ((await pathIsDirectory(targetDir)) || (await pathIsFile(targetPlugin))) {
-          if (!force) {
-            return {
-              ok: false,
-              error: `Desktop plugin '${pluginName}' already exists. Enable force reinstall to replace it.`
-            }
+        // Force replaces the folder only once the new tree has passed its checks and been staged
+        // (publishDesktopTree): a refused reinstall keeps the working copy.
+        if (!force && ((await pathIsDirectory(targetDir)) || (await pathIsFile(targetPlugin)))) {
+          return {
+            ok: false,
+            error: `Desktop plugin '${pluginName}' already exists. Enable force reinstall to replace it.`
           }
-
-          await fsp.rm(targetDir, { recursive: true, force: true })
         }
 
         // Staged copy + rename: a failed copy must not leave an empty `targetDir`

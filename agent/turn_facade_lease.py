@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from hermes_state_pidns import holder_namespace_token
+from agent.turn_liveness_registry import register_turn_token, retire_turn_token
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -46,9 +47,6 @@ class DurableTurnLease:
         self.interrupt_message: Optional[str] = None
         self.watchdog = None  # TurnLivenessWatchdog when configured
         self.timer_handles: list = []  # periodic_scheduler handles, cancelled in join_threads
-        # Ident of the thread this turn runs on; set in ``start()``. The refresher uses it
-        # to detect a turn that died without running the facade's finally.
-        self._turn_thread_ident: Optional[int] = None
 
     def _current_session_id(self) -> str:
         return getattr(self.agent, "session_id", None) or self.session_id
@@ -84,38 +82,61 @@ class DurableTurnLease:
         arm_turn(self.agent)
         from agent.periodic_scheduler import schedule
 
-        # Remember the thread this turn runs on. The refresher uses it to notice that its
-        # turn died WITHOUT running the facade's finally (the case that leaks a lease
-        # forever) — see ``refresh_tick``. Captured at turn entry, on the turn's own thread.
-        self._turn_thread_ident = threading.current_thread().ident
         self.timer_handles.append(schedule(self.refresh_tick, self.refresh_interval))
         if self.watchdog is not None:
             self.timer_handles.append(self.watchdog.schedule())
 
-    def _turn_thread_is_alive(self) -> Optional[bool]:
-        """True while the thread this turn runs on still exists; False once it is gone.
-
-        ``None`` when the turn's thread could not be identified (no ident captured, or the
-        ident was reused by a NEW thread — which is not proof of death, so it defers).
-
-        This is the direct signal for "my turn is gone". It does not depend on the facade's
-        ``finally`` running, which is exactly what fails when a turn is abandoned mid-flight.
-        """
-        ident = self._turn_thread_ident
-        if ident is None:
-            return None
-        for thread in threading.enumerate():
-            if thread.ident == ident:
-                return True
-        return False
-
     def stop_refresher(self) -> None:
         """Stop renewal and deactivate the turn. Also the watchdog's deactivate callback: a wedge the
         hard interrupt cannot unwind must not keep the lease alive forever; TTL expiry lets
-        stale-turn cleanup reclaim the row."""
+        stale-turn cleanup reclaim the row.
+
+        Retiring the turn token here is what makes that reclamation *prompt*: once this turn
+        is no longer active, a later turn on the same session can prove the lease stale even
+        though the owning PID is still alive.  A turn wedged inside a blocking call never
+        reaches the façade's ``finally``, so ``release()`` may never run — but the liveness
+        watchdog's deactivate callback does reach this method, and the periodic refresher
+        (a separate daemon thread) keeps running against a dead turn, which is exactly how a
+        stale lease outlives its turn and blocks every later inbound."""
         with self._lock:
             self.turn_active = False
             self.stop.set()
+        retire_turn_token(self._turn_token())
+
+    def _turn_token(self) -> str:
+        """The per-turn token embedded in this lease's holder string."""
+        from agent.turn_liveness_registry import holder_turn_token
+
+        return holder_turn_token(self.holder) or ""
+
+    def _turn_thread_is_gone(self) -> bool:
+        """True when this turn's execution thread is provably no longer running.
+
+        The agent stamps ``_execution_thread_id`` at the start of every turn.  When that
+        thread has exited, the turn is over even if the façade's ``finally`` never ran —
+        which is exactly the wedge case: the turn thread is stuck or died inside a
+        blocking call, so the lease is never released, yet the turn is not making progress.
+
+        Conservative by construction: an unset thread id, an id that still names a live
+        thread, or any error reading the thread table all answer False (keep renewing).
+        Only a positively-proven dead thread reclaims the lease.
+        """
+        ident = getattr(self.agent, "_execution_thread_id", None)
+        if not ident:
+            return False
+        try:
+            for thread in threading.enumerate():
+                if thread.ident == ident:
+                    return False
+        except Exception:
+            return False
+        # The turn thread is not in the live table.  It may simply not have started yet on
+        # a lease admitted before the turn body began, so only claim death when the lease
+        # was actually running: the refresher timer is only scheduled by ``start()``.
+        with self._lock:
+            if not self.turn_active:
+                return False
+        return True
 
     deactivate_after_liveness_abort = stop_refresher
 
@@ -132,16 +153,6 @@ class DurableTurnLease:
             self.db.release_session_turn_lease(self.session_id, self.holder)
         except Exception:
             logger.error("Failed to release session turn lease: %s", self.session_id, exc_info=True)
-        finally:
-            # Drop the liveness registration in EVERY exit path, including a failed release:
-            # a holder left registered keeps its own pid looking alive, and the reclaim
-            # predicate would then never free the row. Unregistering is idempotent.
-            try:
-                from agent.turn_lease_liveness import unregister_holder
-
-                unregister_holder(self.holder)
-            except Exception:
-                logger.debug("Failed to unregister session turn lease holder", exc_info=True)
         if getattr(agent, "_active_session_turn_lease_holder", None) == self.holder:
             agent._active_session_turn_lease_holder = None
             agent._active_session_turn_lease_ttl_seconds = None
@@ -223,55 +234,28 @@ class DurableTurnLease:
         finally sets ``stop`` before releasing, so a holder-fenced miss observed after stop is not
         a loss.
 
-        Liveness guard (kanban t_1915c9a3): a refresher that outlives its turn renews its lease
-        FOREVER. The row then never expires, and the session can never be served again — the
-        2026-10-23 gateway held three telegram conversation leases 91, 45 and 32 minutes after
-        their turns had died, each still being refreshed every 60s by exactly this timer. The
-        turn's ``finally`` (which cancels the timer) does not run when the turn is abandoned
-        mid-flight, so the timer must notice that its turn is gone on its own.
-
-        Two independent signals, in order of strength:
-
-        1. **The turn's thread is gone.** ``_turn_thread_is_alive`` enumerates live threads;
-           a turn whose thread no longer exists is provably dead, whatever happened to its
-           ``finally``. This is the signal that catches the incident's case.
-        2. **The holder was explicitly released.** The process-local registry in
-           ``agent.turn_lease_liveness`` records a holder whose turn exited; a released
-           holder is provably orphaned too (e.g. the release ran but the row delete failed).
-
-        When either fires, stop refreshing AND release the row — a lease nobody will finish
-        holding must not block the next inbound.
+        The refresher runs on its own daemon thread, so it outlives a turn whose worker thread
+        died without unwinding (a wedge inside a blocking call never reaches the façade's
+        ``finally``, and never calls ``release()``).  Renewing such a lease keeps a dead turn
+        holding the session hostage: the row's PID probe still reads "alive" because the
+        *gateway* is alive, so the row is unreclaimable until its TTL, and every later inbound
+        on that session waits it out.  When the turn's execution thread is provably gone, stop
+        renewing and retire the turn token so the next turn can reclaim the row immediately.
         """
         if self.stop.is_set():
             return False
-        try:
-            orphaned = self._turn_thread_is_alive() is False
-        except Exception:
-            orphaned = False
-            logger.debug("Turn-thread liveness check failed; proceeding with renewal", exc_info=True)
-        if not orphaned:
-            try:
-                from agent.turn_lease_liveness import is_holder_live
-
-                orphaned = is_holder_live(self.holder) is False
-            except Exception:
-                orphaned = False
-                logger.debug(
-                    "Turn-lease holder liveness check failed; proceeding with renewal", exc_info=True
-                )
-        if orphaned:
-            # The turn behind this holder is gone — the timer outlived its turn. Release
-            # the row so the next inbound is not blocked by a lease nobody owns, and stop
-            # the timer.
+        if self._turn_thread_is_gone():
             logger.warning(
-                "Turn behind session turn lease is gone; releasing the orphaned lease: %s",
+                "Turn thread for session %s is gone while its turn lease is still held; "
+                "releasing the stale lease so the next turn can proceed.",
                 self._current_session_id(),
             )
+            self.stop_refresher()
             try:
-                self.db.release_session_turn_lease(self.session_id, self.holder)
+                self.db.release_session_turn_lease(self._current_session_id(), self.holder)
             except Exception:
-                logger.warning(
-                    "Failed to release orphaned session turn lease: %s",
+                logger.error(
+                    "Failed to release stale session turn lease: %s",
                     self._current_session_id(), exc_info=True,
                 )
             return False
@@ -349,14 +333,11 @@ def admit_durable_turn_lease(
         f"pid={os.getpid()}{holder_namespace_token()}:turn={relay_turn_id}"
         f":platform={task_context['platform'] or 'unknown'}"
     )
-    # Register the holder BEFORE the row is written. The reclaim predicate treats an
-    # own-pid holder that is absent from this registry as an ORPHANED lease (its turn
-    # died without running its finally) and frees the row — see
-    # ``agent/turn_lease_liveness``. Registering first means the acquisition path can
-    # never be seen as "own pid, not registered", which would free a live lease.
-    from agent.turn_lease_liveness import register_holder
-
-    register_holder(holder, session_id)
+    # Announce the turn's liveness so a later turn on this session can tell "the owning
+    # process is alive but THIS turn is gone" apart from "a live turn holds the lease".
+    # Without it a turn wedged mid-flight (its release never runs) leaves a lease that no
+    # PID probe can reclaim, and every later inbound on the session waits out the TTL.
+    register_turn_token(relay_turn_id)
     reload_needed = announced = False
 
     def _on_contended() -> None:
@@ -381,13 +362,6 @@ def admit_durable_turn_lease(
         on_wait=_on_wait, on_contended=_on_contended,
         should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
-        # Admission failed: the row is not ours, so there is nothing to release — but the
-        # holder was registered before the attempt, and an un-registered own-pid holder
-        # reads as an ORPHANED lease to the reclaim predicate. Drop the registration so
-        # the next acquirer does not mistake this attempt for a live turn.
-        from agent.turn_lease_liveness import unregister_holder
-
-        unregister_holder(holder)
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
         return admission
 

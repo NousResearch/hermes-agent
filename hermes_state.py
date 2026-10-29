@@ -134,6 +134,21 @@ class SessionExportTooLargeError(ValueError):
         )
 
 
+def _turn_lease_holder_turn_is_dead(holder: str) -> bool:
+    """True when ``holder`` names a turn this process has already finished.
+
+    Import is deferred and failures are swallowed: ``hermes_state`` is a low-level module
+    that must not gain a hard dependency on the agent package, and a holder we cannot
+    interpret simply defers to TTL expiry (the safe direction).
+    """
+    try:
+        from agent.turn_liveness_registry import holder_turn_is_dead
+
+        return holder_turn_is_dead(holder)
+    except Exception:
+        return False
+
+
 def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     """True only when a ``pid=<n>`` lock holder's local PID is provably gone.
     Reclaim on kernel proof only: unstructured/same-process holders (another
@@ -141,28 +156,19 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     (PID reuse must never steal a live lease; a wrongly-kept one self-heals).
     Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``.
 
-    Own-pid holders get one extra question the kernel cannot answer: "is the TURN still
-    running?". A lease held by THIS process whose turn is gone was orphaned by a turn
-    that died without running its ``finally`` — and such a lease is renewed forever by
-    the still-running refresher, so TTL expiry never frees it. The process-local
-    registry in ``agent.turn_lease_liveness`` answers that question; it speaks only for
-    our own pid, so the PID-reuse caution above is untouched for every other holder.
-    """
+    Also true when the holder names a TURN this process has already finished, even
+    though its PID is still alive.  A turn that wedged never reached its release, so its
+    lease outlived the turn while the owning gateway stayed up — and a live PID makes
+    such a row unreclaimable by the probe above.  The turn token is proof this process
+    itself minted and retired, so it never steals a sibling process's live turn; an
+    unknown token defers to TTL (a false reclaim ends a live turn, a late reclaim only
+    delays the next inbound).  See ``agent/turn_liveness_registry``."""
+    if _turn_lease_holder_turn_is_dead(holder):
+        return True
     match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
     pid = int(match.group(1)) if match else 0
-    if pid <= 0:
+    if pid <= 0 or pid == os.getpid():
         return False
-    if pid == os.getpid():
-        # Our own pid. The kernel says the process is alive; the registry says whether
-        # the TURN behind the holder is. Only a provable "no" (registered-and-gone, or
-        # never registered for this holder) frees the row.
-        try:
-            from agent.turn_lease_liveness import is_holder_live
-
-            live = is_holder_live(holder)
-        except Exception:
-            return False
-        return live is False
     if not holder_pid_checkable(holder):
         return False  # foreign / unknown namespace: defer to TTL
     if psutil is not None:

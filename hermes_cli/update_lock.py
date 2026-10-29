@@ -33,6 +33,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from stat import S_ISREG
 
@@ -165,6 +166,33 @@ def _windows_kernel32():
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
     return kernel32
+
+
+_LOCKFILE_FAIL_IMMEDIATELY = 0x1
+
+
+@cache
+def _windows_lockfile_api():
+    """kernel32 with LockFileEx/UnlockFileEx typed, plus the OVERLAPPED struct, built once.
+
+    Built per call, each fresh struct's ``ctypes.POINTER`` stays in ctypes' pointer-type cache
+    forever before Python 3.14, so a gateway polling the checkout lock would leak per probe.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class _Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.DWORD, ctypes.POINTER(_Overlapped)]
+    kernel32.LockFileEx.restype = wintypes.BOOL
+    kernel32.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                      ctypes.POINTER(_Overlapped)]
+    kernel32.UnlockFileEx.restype = wintypes.BOOL
+    return kernel32, _Overlapped
 
 
 def _windows_create_filetime(pid: int) -> int | None:
@@ -1008,27 +1036,20 @@ def _try_lock(fd: int, *, shared: bool = False) -> bool:
 def _try_shared_lock(fd: int) -> bool:
     if sys.platform == "win32":
         # msvcrt has no shared mode: LockFileEx without LOCKFILE_EXCLUSIVE_LOCK over the owner byte
-        # and the 16 lease bytes. Any failure answers held, as the exclusive probe did.
+        # and the 16 lease bytes. Any LockFileEx failure answers held, as the exclusive probe did;
+        # an OSError (get_osfhandle on a bad fd) reaches checkout_lock_held, which answers free.
         import ctypes
         import msvcrt
         from ctypes import wintypes
 
-        class _Overlapped(ctypes.Structure):
-            _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
-                        ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
-                                        wintypes.DWORD, ctypes.POINTER(_Overlapped)]
-        kernel32.LockFileEx.restype = wintypes.BOOL
-        kernel32.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
-                                          ctypes.POINTER(_Overlapped)]
-        kernel32.UnlockFileEx.restype = wintypes.BOOL
+        kernel32, overlapped = _windows_lockfile_api()
         handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
         span = 1 + _LEASE_SLOTS
-        if not kernel32.LockFileEx(handle, 0x1, 0, span, 0, ctypes.byref(_Overlapped(Offset=_WINDOWS_LOCK_OFFSET))):
-            return False  # 0x1 = LOCKFILE_FAIL_IMMEDIATELY
-        kernel32.UnlockFileEx(handle, 0, span, 0, ctypes.byref(_Overlapped(Offset=_WINDOWS_LOCK_OFFSET)))
+        if not kernel32.LockFileEx(handle, _LOCKFILE_FAIL_IMMEDIATELY, 0, span, 0,
+                                   ctypes.byref(overlapped(Offset=_WINDOWS_LOCK_OFFSET))):
+            return False
+        # The result is ignored: the caller closes fd next, which normally releases the lock too.
+        kernel32.UnlockFileEx(handle, 0, span, 0, ctypes.byref(overlapped(Offset=_WINDOWS_LOCK_OFFSET)))
         return True
     import fcntl
 

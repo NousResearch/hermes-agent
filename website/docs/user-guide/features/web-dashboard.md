@@ -1258,10 +1258,13 @@ Reached through a port forward (`ssh -L 8000:localhost:9119`, `docker -p 8080:91
 dashboard's own page still opens its WebSocket upgrades: an Origin that names exactly the host and
 port the upgrade was sent to is that page.
 
-A desktop dev build passes the variable to the backends it starts over SSH. A gateway on the same
-machine that was already running without it has to be restarted before a dev build can use it, and
-a remote backend you start yourself serves a dev build only when it is started with
-`HERMES_DESKTOP_DEV_SERVER` set to that build's renderer URL.
+A desktop dev build passes the variable to the backends it starts over SSH, and replaces a backend
+it started earlier for a different renderer URL. The sockets Desktop opens to a gateway on the same
+machine are one-use, ticketed native dials that carry no Origin, so a dev build can use a local
+gateway that is already running without restarting it. Only a connection that presents the dev
+renderer's Origin to a backend Desktop did not start (for example a remote backend you start
+yourself and reach directly) needs that backend started with `HERMES_DESKTOP_DEV_SERVER` set to the
+build's renderer URL.
 
 ## Development
 

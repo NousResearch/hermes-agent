@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 import shlex
 import shutil
@@ -461,7 +462,10 @@ def idle_stop_seconds() -> float:
         minutes = float(cfg.get("idle_stop_minutes", DEFAULT_IDLE_STOP_MINUTES))
     except (TypeError, ValueError):
         minutes = DEFAULT_IDLE_STOP_MINUTES
-    return max(0.0, minutes) * 60
+    # .inf ("never") is off, like 0, and so are .nan and a window too large to convert to seconds (1e308): none
+    # can ever be due, and the launcher's next-check arithmetic would raise on them and fail start().
+    seconds = minutes * 60
+    return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
 
 
 def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:

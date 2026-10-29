@@ -3,7 +3,7 @@
 // changes the path AND the param together (Profiles > "Manage skills & tools"
 // goes to /skills?profile=X) must switch the scope to X.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
@@ -29,7 +29,22 @@ import { useProfileScope } from "./useProfileScope";
 
 let container: HTMLDivElement;
 let root: Root;
-const router: { navigate?: NavigateFunction } = {};
+const router: { navigate?: NavigateFunction; setProfile?: (name: string) => void } = {};
+
+/** In-memory Storage so the test does not depend on the host jsdom/Node pairing. */
+function memoryStorage(): Storage {
+  const m = new Map<string, string>();
+  return {
+    get length() {
+      return m.size;
+    },
+    clear: () => m.clear(),
+    getItem: (k) => (m.has(k) ? m.get(k)! : null),
+    key: (i) => Array.from(m.keys())[i] ?? null,
+    removeItem: (k) => void m.delete(k),
+    setItem: (k, v) => void m.set(k, String(v)),
+  };
+}
 
 function Probe() {
   const navigate = useNavigate();
@@ -37,7 +52,8 @@ function Probe() {
   const { pathname, search } = useLocation();
   useEffect(() => {
     router.navigate = navigate;
-  }, [navigate]);
+    router.setProfile = setProfile;
+  }, [navigate, setProfile]);
   return (
     <button
       data-profile={profile}
@@ -67,6 +83,13 @@ async function mount(initialEntry: string) {
   );
 }
 
+beforeEach(() => {
+  Object.defineProperty(window, "localStorage", {
+    value: memoryStorage(),
+    configurable: true,
+  });
+});
+
 afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
@@ -90,5 +113,21 @@ describe("ProfileProvider URL sync", () => {
 
     await act(async () => container.querySelector("button")!.click());
     expect(seen()).toEqual({ profile: "gamma", url: "/config?profile=gamma" });
+  });
+
+  it("setProfile('') forgets the stored profile, so a bare load does not snap back to it", async () => {
+    await mount("/profiles?profile=alpha");
+    await act(async () => router.setProfile!("gamma")); // the user picks a profile
+    expect(window.localStorage.getItem("hermes.dashboard.managementProfile")).toBe("gamma");
+
+    await act(async () => router.setProfile!("")); // ... and goes back to the dashboard's own
+    expect(seen()).toEqual({ profile: "", url: "/profiles" });
+    expect(window.localStorage.getItem("hermes.dashboard.managementProfile")).toBeNull();
+
+    // A fresh bare load starts on the dashboard's own profile.
+    await act(async () => root.unmount());
+    container.remove();
+    await mount("/profiles");
+    expect(seen().profile).toBe("");
   });
 });

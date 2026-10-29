@@ -945,6 +945,7 @@ function SidebarSystemActions({
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
+  const { profile: scopedProfile } = useProfileScope();
   const canUpdateHermes = status?.can_update_hermes === true;
   // Served by the shared multiplexer: a restart blips every bot on this device — say which.
   const sharedGateway = sharedGatewayProfiles(status);
@@ -1085,8 +1086,10 @@ function SidebarSystemActions({
       description={
         sharedGateway
           ? sharedGatewayRestartDescription(sharedGateway)
-          : (t.status.restartGatewayConfirmMessage ??
-            "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.")
+          : scopedProfile
+            ? `This restarts the gateway for profile "${scopedProfile}" — not the dashboard's own default gateway. Connected channels and active sessions for that profile will reconnect afterward.`
+            : (t.status.restartGatewayConfirmMessage ??
+              "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.")
       }
       loading={pendingAction === "restart"}
       onCancel={() => setRestartConfirmOpen(false)}
@@ -1095,7 +1098,9 @@ function SidebarSystemActions({
       title={
         sharedGateway
           ? "Restart the shared gateway?"
-          : (t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`)
+          : scopedProfile
+            ? `Restart gateway for profile "${scopedProfile}"?`
+            : (t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`)
       }
     />
 

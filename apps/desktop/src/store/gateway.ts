@@ -32,6 +32,7 @@ import {
 } from '@/lib/with-timeout'
 import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 import { isMissingConnectionError, isMissingProfileError } from '@/store/gateway-dial-failures'
+import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -216,12 +217,6 @@ const ACTIVATION_LEASE_MS = SOURCE_SWITCH_DIAL_TIMEOUT_MS + 15_000
 interface GatewayRegistryState {
   config: RegistryConfig | null
   primaryGateway: HermesGateway | null
-  /** Registry source currently served by primaryGateway, when known. */
-  primaryConnectionId: null | string
-  /** Resolved mode of the primary's descriptor: a `local` primary is ONE
-   *  `hermes serve --profile <primary>` child and can never stand in for a
-   *  pooled profile's own backend. */
-  primaryConnectionMode: 'local' | 'remote' | null
   primaryProfile: string
   activeKey: string
   secondaries: Map<string, Secondary>
@@ -248,8 +243,6 @@ function createRegistryState(): GatewayRegistryState {
   return {
     config: null,
     primaryGateway: null,
-    primaryConnectionId: null,
-    primaryConnectionMode: null,
     primaryProfile: initialGatewayProfile(),
     activeKey: initialGatewayProfile(),
     secondaries: new Map<string, Secondary>(),
@@ -366,12 +359,16 @@ export function dispatchPrimaryServerRequest(request: ServerRequest, profile: st
   return dispatchServerRequest(request, profile, g.config?.activeConnectionId?.() ?? null)
 }
 
+/** Registry source currently served by the window primary socket, when known. */
+function primaryConnectionId(): null | string {
+  return $primaryGatewayRoute.get().connectionId
+}
+
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
   const next = normKey(profile)
 
   if (g.primaryGateway !== gateway) {
-    g.primaryConnectionId = null
-    g.primaryConnectionMode = null
+    $primaryGatewayRoute.set({ connectionId: null, mode: null })
   }
 
   // Route identity is exact-scope, never bare-name (#93892 follow-up): when
@@ -388,7 +385,7 @@ export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'defa
   g.primaryProfile = next
 
   if (g.activeKey === g.primaryProfile) {
-    setApiRequestConnection(g.primaryConnectionId)
+    setApiRequestConnection(primaryConnectionId())
   }
 }
 
@@ -398,16 +395,17 @@ export function setPrimaryGatewayConnectionId(
 ): void {
   // Every caller publishes the window's OWN primary socket (boot, reconnect,
   // connection apply, HMR survivor), so record it even while a secondary is
-  // foregrounded. Refusing it there left primaryConnectionId naming the
+  // foregrounded. Refusing it there left the primary route naming the
   // machine the primary socket had just left, and owner routing then sent
   // that machine's requests to the other one. What belongs to the active
   // scope is the AMBIENT request connection (#95628), which moves only while
   // the primary is in front.
-  g.primaryConnectionId = (connectionId ?? '').trim() || null
-  g.primaryConnectionMode = mode === 'local' || mode === 'remote' ? mode : null
+  const id = (connectionId ?? '').trim() || null
+  const primaryMode = mode === 'local' || mode === 'remote' ? mode : null
+  $primaryGatewayRoute.set({ connectionId: id, mode: primaryMode })
 
   if (g.activeKey === g.primaryProfile) {
-    setApiRequestConnection(g.primaryConnectionId)
+    setApiRequestConnection(id)
   }
 }
 
@@ -420,8 +418,10 @@ export function dialedGatewayModeFor(connectionId: null | string, profile: strin
   const id = String(connectionId ?? '').trim() || null
   const key = normKey(profile)
 
-  if (key === g.primaryProfile && (!id || id === g.primaryConnectionId) && g.primaryConnectionMode) {
-    return g.primaryConnectionMode
+  const primary = $primaryGatewayRoute.get()
+
+  if (key === g.primaryProfile && (!id || id === primary.connectionId) && primary.mode) {
+    return primary.mode
   }
 
   const mode = g.secondaries.get(registryBackendScopeKey(id, key))?.connection?.mode
@@ -435,18 +435,13 @@ export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, '
 }
 
 function traceAgentRoute(scope: string, via: string): void {
-  traceIdentityChange('gateway-route', scope, `via=${via} primary=${g.primaryConnectionId ?? '-'}/${g.primaryProfile}`)
+  traceIdentityChange('gateway-route', scope, `via=${via} primary=${primaryConnectionId() ?? '-'}/${g.primaryProfile}`)
 }
 
 function isPrimaryRegistryRoute(connectionId: null | string, profile: string): boolean {
   const id = String(connectionId ?? '').trim()
 
-  return (
-    normKey(profile) === g.primaryProfile &&
-    Boolean(id) &&
-    Boolean(g.primaryConnectionId) &&
-    id === g.primaryConnectionId
-  )
+  return normKey(profile) === g.primaryProfile && Boolean(id) && id === primaryConnectionId()
 }
 
 /** True when `connectionId` is the window's already-attached source AND main
@@ -463,7 +458,7 @@ async function ridesPrimaryBackend(connectionId: null | string, profile: string)
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
 
-  if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
+  if (!id || id !== primaryConnectionId()) {
     return false
   }
 
@@ -503,7 +498,7 @@ async function ridesPrimaryBackend(connectionId: null | string, profile: string)
     // its own pid, but the exact-owner route names the pool backend — after a
     // renderer reload or a pool respawn the resume dials that backend and is
     // refused SESSION_NOT_OWNED by a pid of the same Desktop (#101416).
-    return g.primaryConnectionMode !== 'local'
+    return $primaryGatewayRoute.get().mode !== 'local'
   }
 }
 
@@ -586,7 +581,7 @@ export function pendingSessionReplay(runtimeId: string): Promise<boolean> | unde
  */
 export function activeGatewayConnectionId(): null | string {
   if (g.activeKey === g.primaryProfile) {
-    return g.primaryConnectionId ?? (g.config?.activeConnectionId?.()?.trim() || null)
+    return primaryConnectionId() ?? (g.config?.activeConnectionId?.()?.trim() || null)
   }
 
   return g.secondaries.get(g.activeKey)?.connectionId ?? null

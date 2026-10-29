@@ -3,11 +3,14 @@ import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it } from 'vitest'
 
+import { setApiRequestConnection } from '@/api/client'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import type { HermesConnection } from '@/global'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { setPrimaryGatewayConnection } from '@/store/gateway'
 import { $sidebarRowMeta, setSidebarGrouping } from '@/store/layout'
 import { $profiles, $showAllProfiles } from '@/store/profile'
-import { $sessionProfilesUsage, $sessions } from '@/store/session'
+import { $connection, $sessionProfilesUsage, $sessions } from '@/store/session'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { ChatSidebar } from './index'
@@ -41,6 +44,9 @@ const mount = () =>
 afterEach(() => {
   cleanup()
   delete window.document.documentElement.dataset.hermesDesktopHost
+  $connection.set(null)
+  setPrimaryGatewayConnection(null)
+  setApiRequestConnection(null)
   $showAllProfiles.set(false)
   $sidebarRowMeta.set([])
   $sessionProfilesUsage.set({})
@@ -130,3 +136,61 @@ it.each([
   expect(within(quiet!).getByRole('button', { name: 'New session in quiet' })).toBeTruthy()
   expect(screen.getByText('only chat')).toBeTruthy()
 })
+
+// `local` rows are untagged only while local is the aggregate base (the registry primary); beside a
+// remote base they carry `local`, so the empty profile sections read from `local` must too. The active descriptor
+// ($connection) is the foregrounded gateway's, `local` for a local secondary, and null on a
+// reconnect blip; neither says which gateway is the primary. Before the primary is recorded, local
+// stays the untagged pool. The untagged pool is the registry primary's, so a window booted on
+// another registered route (the saved default route) does not move it.
+it.each([
+  { primary: 'remote', active: 'local', base: 'remote-1', owner: 'local' },
+  { primary: 'local', active: 'local', base: 'local', owner: null },
+  { primary: 'local', active: null, base: 'local', owner: null },
+  { primary: null, active: 'local', base: 'local', owner: null },
+  { primary: 'remote', active: 'local', base: 'local', owner: null },
+  { primary: 'local', active: 'local', base: 'remote-1', owner: 'local' }
+] as const)(
+  'files empty profile sections under the owner its rows carry ($primary primary, $active active, $base base)',
+  ({ primary, active, base, owner }) => {
+    mount()
+    act(() => {
+      setPrimaryGatewayConnection(
+        primary ? { connectionId: primary === 'remote' ? 'remote-1' : 'local', mode: primary } : null
+      )
+      $connection.set(active ? ({ mode: active } as HermesConnection) : null)
+      setApiRequestConnection('local')
+      $connectionsRegistry.set({
+        version: 2,
+        primary: base,
+        secureTokenStorage: true,
+        connections: [
+          { id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null },
+          { id: 'remote-1', label: 'Homelab', kind: 'remote', tokenSet: false, tokenPreview: null }
+        ]
+      })
+      $profiles.set([
+        { name: 'default', is_default: true },
+        { name: 'quiet', is_default: false }
+      ] as typeof $profiles.value)
+      $showAllProfiles.set(true)
+      setSidebarGrouping('profile')
+      $sessions.set([
+        makeSessionInfo({
+          id: 'one',
+          ...(owner ? { connection_id: owner } : {}),
+          profile: 'default',
+          title: 'only chat',
+          last_active: Date.now() / 1000
+        })
+      ])
+    })
+
+    const groups = [...window.document.querySelectorAll('[data-gateway-group]')].map(group =>
+      group.getAttribute('data-gateway-group')
+    )
+
+    expect(groups.sort()).toEqual([JSON.stringify([owner, 'default']), JSON.stringify([owner, 'quiet'])].sort())
+    expect(window.document.querySelectorAll('[data-gateway-group-empty]')).toHaveLength(1)
+  }
+)

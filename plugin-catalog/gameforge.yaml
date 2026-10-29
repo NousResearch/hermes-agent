@@ -1,7 +1,7 @@
 name: gameforge
 repo: https://github.com/DECRUX9812/hermes-plugin-gameforge
-sha: ef2632af494f1bd806f8c597af7c918353c55a67
-version: "1.1.1"
+sha: ee4a07a7fdf26139ae53ad23156b8b275e99743b   # tag v1.1.2
+version: "1.1.2"
 title: GameForge
 description: >-
   Game development toolkit: sound effects, music loops with MIDI, NPC voices, pixel-art sprite
@@ -11,8 +11,8 @@ description: >-
   boring stretches; one-click PWA, itch.io, single-HTML and Capacitor export. Offline by default.
   Disclosure — runs local Chrome/Chromium for playtests, and Godot, Unity, Blender,
   UnrealEditor-Cmd, ffmpeg, xvfb-run or butler only when a call asks for them; blender
-  action=script runs a bpy file the caller names. Network only when asked: fal.ai or Meshy
-  (FAL_KEY / MESHY_API_KEY, prompt and image sent), ElevenLabs (ELEVENLABS_API_KEY, SFX prompt),
+  action=script runs a bpy file the caller names. Network only when asked: fal.ai, Tripo or Meshy
+  (FAL_KEY / TRIPO_API_KEY / MESHY_API_KEY, prompt and image sent), ElevenLabs (ELEVENLABS_API_KEY, SFX prompt),
   Edge TTS when edge-tts is installed (dialogue text), Godot export templates from GitHub
   (~1 GB, target=godot_templates), itch.io via butler (target=itch with an explicit itch_target).
   Writes only inside the game project directory, plus a temporary browser profile. No telemetry.

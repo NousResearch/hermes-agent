@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  enqueuePtyInput,
   PTY_RECONNECT_BASE_MS,
   PTY_RECONNECT_MAX_MS,
   ptyReconnectDelayMs,
   shouldBlockPtyInput,
+  shouldQueuePtyInput,
   shouldReconnectPtyOnPageResume
 } from './pty-reconnect'
 
@@ -135,6 +137,46 @@ describe('shouldBlockPtyInput', () => {
     expect(shouldBlockPtyInput('reconnecting')).toBe(true)
     expect(shouldBlockPtyInput('closed')).toBe(true)
     expect(shouldBlockPtyInput('ended')).toBe(true)
+  })
+})
+
+describe('shouldQueuePtyInput', () => {
+  it('holds input only while a socket is on its way', () => {
+    expect(shouldQueuePtyInput('connecting')).toBe(true)
+    expect(shouldQueuePtyInput('reconnecting')).toBe(true)
+    expect(shouldQueuePtyInput('open')).toBe(false)
+    expect(shouldQueuePtyInput('closed')).toBe(false)
+    expect(shouldQueuePtyInput('ended')).toBe(false)
+  })
+})
+
+describe('enqueuePtyInput', () => {
+  it('appends chunks in typing order without mutating the input queue', () => {
+    const queue = ['æ']
+    const next = enqueuePtyInput(queue, 'ø')
+
+    expect(next).toEqual(['æ', 'ø'])
+    expect(queue).toEqual(['æ'])
+  })
+
+  it('ignores empty chunks', () => {
+    expect(enqueuePtyInput(['a'], '')).toEqual(['a'])
+  })
+
+  it('drops the oldest whole chunks once the limit is passed', () => {
+    expect(enqueuePtyInput(['abc', 'de'], 'fg', 5)).toEqual(['de', 'fg'])
+  })
+
+  it('never splits an escape sequence when trimming', () => {
+    const arrowUp = '\x1b[A'
+    const next = enqueuePtyInput([arrowUp, 'x'], 'yz', 4)
+
+    expect(next).toEqual(['x', 'yz'])
+    expect(next.join('')).not.toContain('[A')
+  })
+
+  it('drops a single chunk larger than the limit instead of truncating it', () => {
+    expect(enqueuePtyInput(['a'], 'too long', 4)).toEqual(['a'])
   })
 })
 

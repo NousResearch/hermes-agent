@@ -117,6 +117,37 @@ _SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+# The MEASURED footprint of one worker scope: the Hermes runtime plus a pyright
+# language server (t_8e8ec4de, 2026-10-28, ``memory.peak`` across three live
+# scopes: 1343-1375 MiB). This is the per-worker limit on any host big enough
+# to afford it — the concurrency cap is derived FROM it, so the limit is never
+# too tight to run a worker (the ``t_4d12c8eb`` failure mode) and the sum of
+# concurrent scopes always fits the host's budget.
+#
+# Taken from the shared budget module so the two sides cannot drift.
+try:
+    from hermes_cli.memory_budget import (  # noqa: PLC0415
+        MEMORY_GUARD_MB_PER_WORKER as _BUDGET_WORKER_MB,
+    )
+except Exception:  # noqa: BLE001 - never let an import break the registry
+    _BUDGET_WORKER_MB = 1400
+_MEMORY_BUDGET_WORKER_FOOTPRINT_BYTES = _BUDGET_WORKER_MB * 1024 * 1024
+# The host-wide memory budget is shared with the dispatcher so the per-worker
+# cgroup limit and the concurrency cap can never disagree. See
+# ``hermes_cli/memory_budget.py``.
+#
+# Observed 2026-10-28 (t_8e8ec4de): the limit above was ``min(slice, MemTotal/2,
+# 4 GiB)`` = 3971 MiB per worker, while the dispatcher derived a concurrency cap of
+# 8 from ``MemTotal/512``. Three concurrent workers therefore CLAIMED 11913 MiB
+# against 7942 MiB of RAM — a 1.5x overcommit at the board's own ``max_spawn`` of 3.
+# Each scope policed only itself, so the kernel OOM-killed whichever scope crossed
+# the line and took a healthy worker with it (``constraint=CONSTRAINT_MEMCG``;
+# journal 2026-10-28 05:34 and 13:01 — the 13:01 kill took both the worker and
+# its 1.4 GB pyright language server).
+#
+# The limit is now derived from the SAME concurrency cap the dispatcher uses, so
+# ``effective_max_workers x per_worker_memory_max <= 0.7 x MemTotal`` holds by
+# construction.
 # A worker's scope is created as a child of the dispatcher's SLICE (``app.slice``),
 # not as a child of the gateway's own unit cgroup. The slice's ``memory.max`` is the
 # limit that actually bounds the worker; the gateway unit's ``MemoryMax`` is a budget
@@ -196,15 +227,35 @@ def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
 
     The bound is the MINIMUM of:
+      * the worker's REAL footprint (``MEMORY_GUARD_MB_PER_WORKER``, measured) —
+        so a worker is never OOM-killed by its own scope, which is the failure
+        ``t_4d12c8eb`` fixed,
+      * ``0.7 x host_RAM / 2`` — even ONE worker may not claim more than half the
+        host's budget,
       * the SLICE the worker scope will be created under (``memory.max`` of the
         dispatcher's slice, not the gateway unit's own budget),
-      * half of physical RAM, capped at 4 GiB,
+      * 4 GiB — no single worker may claim the whole host,
       * ``TERMINAL_LOCAL_MEMORY_MAX_MB`` when that TIGHTENS the bound.
 
     The slice's limit is the one that actually constrains the worker. The gateway
     unit's ``MemoryMax`` is a control-plane budget and is deliberately NOT read
     here — see ``_WORKER_MEMORY_SCOPE_SLICE`` for the incident that motivated it.
+
+    The host-wide term is NEW (2026-10-28, t_8e8ec4de). Before it, the limit was
+    ``min(slice, MemTotal/2, 4 GiB)`` with no knowledge of the concurrency cap, so
+    3 workers claimed 1.5x the host's RAM and the kernel OOM-killed a healthy
+    worker. The limit was never too SMALL — it was too LARGE for the number of
+    workers that actually ran.
+
+    The DISPATCHER derives its concurrency cap from THIS limit
+    (``hermes_cli.kanban_db_dispatch.derive_default_max_in_progress``), so
+    ``effective_max_workers x per_worker_memory_max <= 0.7 x MemTotal`` holds by
+    construction. An explicitly configured ``kanban.max_in_progress`` overrides the
+    derived cap; the operator's number then wins and the limit stays sized to the
+    real footprint.
     """
+    from hermes_cli import memory_budget
+
     override_bound: Optional[int] = None
     override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
     if override:
@@ -224,19 +275,75 @@ def _worker_memory_max_bytes() -> int:
     if slice_limit is not None and slice_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
         candidates.append(slice_limit)
 
+    physical_bytes: Optional[int] = None
     try:
+        # Read the host total HERE, through ``pr.os.sysconf`` — that is the
+        # established test seam for this module (``monkeypatch.setattr(pr.os,
+        # "sysconf", ...)``) and moving the read into another module would
+        # silently break every existing test that fakes the host's RAM.
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
             os.sysconf("SC_PAGE_SIZE")
         )
+    except (OSError, ValueError, TypeError):
+        physical_bytes = None
+    if physical_bytes is not None:
+        # The host-wide term: how much of the host each worker may claim. The
+        # limit is sized from the worker's REAL footprint (measured), then the
+        # concurrency cap is derived from THAT limit by the dispatcher — so the
+        # sum of concurrent scopes always fits the host, and the limit is never
+        # too tight to run a worker.
+        #
+        # ``max_workers`` is the cap the dispatcher will actually honour, so an
+        # operator who explicitly raises ``kanban.max_in_progress`` gets a limit
+        # that shrinks to keep the host-wide invariant. ``None`` (cap unknown)
+        # falls back to the footprint-sized limit.
+        budgeted = memory_budget.per_worker_memory_max_bytes(
+            physical_bytes,
+            max_workers=_effective_max_workers_for_scope(),
+            slice_limit=slice_limit,
+        )
+        if budgeted is not None:
+            candidates.append(budgeted)
+        # Keep the legacy physical half-of-RAM bound as an additional ceiling: the
+        # budget term above is already <= it for any cap >= 2, but the explicit
+        # min() keeps the invariant true even if the budget computation changes.
         physical_bound = min(
             _WORKER_MEMORY_MAX_CAP_BYTES,
             max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
         )
         candidates.append(physical_bound)
-    except (OSError, ValueError, TypeError):
-        pass
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
     return min(override_bound, safe_bound) if override_bound else safe_bound
+
+
+def _effective_max_workers_for_scope() -> Optional[int]:
+    """The HOST-level concurrency cap the dispatcher will honour on this host.
+
+    This is ``resolve_max_in_progress(configured_max_in_progress())`` — the same
+    expression the dispatcher loop evaluates every tick (kanban_db_dispatch.py).
+    An explicit ``kanban.max_in_progress`` wins over the memory-derived default,
+    so the scope limit matches the number of workers that will actually run.
+    Otherwise an operator who deliberately raises the cap would silently keep the
+    old per-worker limit.
+
+    The per-BOARD cap (``kanban.max_spawn``) is deliberately NOT used: scopes from
+    several boards share one host, and the host-level cap is what bounds how many
+    scopes can exist at once across all of them.
+
+    ``None`` when the host RAM is unknown — the caller then falls back to its own
+    default rather than inventing a number.
+    """
+    try:
+        from hermes_cli.kanban_db_dispatch import (
+            configured_max_in_progress,
+            resolve_max_in_progress,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        return resolve_max_in_progress(configured_max_in_progress())
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:

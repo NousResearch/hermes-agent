@@ -93,6 +93,38 @@ class ServerContext:
     # Whether the server may load code the project ships (see workspace.is_trusted_workspace).
     # Defaults closed: a context built without a trust decision must never run the repo's code.
     trusted: bool = False
+    # V8/Node heap ceiling in MiB for Node-based language servers (pyright and
+    # friends). ``None``/0 = no ceiling (the default before t_8e8ec4de).
+    #
+    # A language server's RSS is the dominant consumer inside a worker scope:
+    # pyright reached 1.7 GB on the homelab host and was the process the kernel
+    # OOM-killed (``task=node-MainThread``). The worker scope's ``MemoryMax``
+    # bounds the whole subtree, but a server that grows to the scope limit takes
+    # the worker down with it — the scope limit is a backstop, not a budget.
+    # Capping the V8 heap makes the server GC instead of growing.
+    max_heap_mb: int = 0
+
+
+# V8 heap ceiling applied to Node-based servers when ``lsp.max_server_heap_mb``
+# is configured. Node reads ``--max-old-space-size`` from ``NODE_OPTIONS``.
+def apply_heap_cap(env: Dict[str, str], max_heap_mb: int) -> Dict[str, str]:
+    """Add ``--max-old-space-size`` to ``NODE_OPTIONS`` when *max_heap_mb* > 0.
+
+    Idempotent: an existing ``--max-old-space-size`` in ``NODE_OPTIONS`` is
+    replaced (the config value wins) rather than duplicated, and any other
+    ``NODE_OPTIONS`` flags are preserved.
+    """
+    if not max_heap_mb or max_heap_mb <= 0:
+        return env
+    existing = env.get("NODE_OPTIONS", "").strip()
+    kept = [
+        opt for opt in existing.split()
+        if opt and not opt.startswith("--max-old-space-size")
+        and not opt.startswith("--max_old_space_size")
+    ]
+    kept.append(f"--max-old-space-size={int(max_heap_mb)}")
+    env["NODE_OPTIONS"] = " ".join(kept)
+    return env
 
 
 # ---- helpers ----
@@ -149,6 +181,10 @@ def _make_spec(root: str, ctx: ServerContext, server_id: str, command: List[str]
     init = ctx.init_overrides.get(server_id, {}) if base_init is None else {**base_init, **ctx.init_overrides.get(server_id, {})}
     env = env_for("node")
     env.update(ctx.env_overrides.get(server_id, {}))
+    # Cap the V8 heap for Node-based servers (pyright is the one that matters):
+    # a language server that grows without bound is the process that takes the
+    # worker scope down with it. See ServerContext.max_heap_mb.
+    apply_heap_cap(env, ctx.max_heap_mb)
     return SpawnSpec(command, root, root, env=env,
                      initialization_options=init, seed_diagnostics_on_first_push=seed)
 

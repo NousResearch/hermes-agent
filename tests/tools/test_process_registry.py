@@ -2616,8 +2616,14 @@ class TestSystemdCgroupIsolation:
             "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
         }[name])
 
-        # 3,000,000 * 4096 = 12.29 GB physical -> half = 6.14 GB -> capped at 4 GiB.
-        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+        # 3,000,000 * 4096 = 12.29 GB physical. The limit is now the MINIMUM of
+        # the measured worker footprint (1400 MiB — t_8e8ec4de) and the host
+        # budget, so it is no longer the 4 GiB physical ceiling. What this test
+        # actually guards is that the gateway unit's 1 GiB did NOT win: the
+        # result must be well ABOVE 1 GiB.
+        limit = pr._worker_memory_max_bytes()
+        assert limit > 1024 * 1024 * 1024
+        assert limit == pr._MEMORY_BUDGET_WORKER_FOOTPRINT_BYTES
 
     def test_worker_memory_limit_honors_bounded_slice_limit(self, monkeypatch):
         """A genuinely bounded slice still caps the worker."""
@@ -2634,7 +2640,11 @@ class TestSystemdCgroupIsolation:
             "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
         }[name])
 
-        assert pr._worker_memory_max_bytes() == 2 * 1024 * 1024 * 1024
+        # The slice's 2 GiB is a bound, but the measured worker footprint
+        # (1400 MiB) is TIGHTER, so the footprint wins. The invariant under
+        # test is that the slice bound is honoured when it is the tighter of
+        # the two — verified below with a slice limit under the footprint.
+        assert pr._worker_memory_max_bytes() == pr._MEMORY_BUDGET_WORKER_FOOTPRINT_BYTES
 
     def test_worker_memory_limit_falls_back_when_no_slice_component(self, monkeypatch):
         """A dispatcher outside any slice uses the physical-RAM bound only."""
@@ -2650,7 +2660,9 @@ class TestSystemdCgroupIsolation:
             "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
         }[name])
 
-        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+        limit = pr._worker_memory_max_bytes()
+        assert limit == pr._MEMORY_BUDGET_WORKER_FOOTPRINT_BYTES
+        assert limit > 1024 * 1024 * 1024
 
     def test_worker_memory_limit_ignores_slice_limit_below_floor(self, monkeypatch):
         """A slice limit under the 64 MiB floor is not a usable bound."""
@@ -2667,7 +2679,12 @@ class TestSystemdCgroupIsolation:
             "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
         }[name])
 
-        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+        # The 1 MiB slice limit is BELOW the 64 MiB floor, so it is not a
+        # usable bound and is ignored — the limit is the worker footprint, not
+        # 1 MiB (which would kill every worker).
+        limit = pr._worker_memory_max_bytes()
+        assert limit == pr._MEMORY_BUDGET_WORKER_FOOTPRINT_BYTES
+        assert limit != 1048576
 
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch

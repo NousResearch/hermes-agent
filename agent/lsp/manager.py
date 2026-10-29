@@ -33,6 +33,22 @@ DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
 _DELTA_BASELINE_CAP = 256  # per-file pre-write snapshots; paths never written again would otherwise live forever (#62950)
 MIN_IDLE_TIMEOUT = 30  # floor for config values; must exceed any per-op wait budget
 
+# Hard cap on how many language-server PROCESSES one service may run at once.
+#
+# A Kanban worker has no operator anchor (``operator_workspace_roots`` returns
+# empty when ``HERMES_KANBAN_TASK`` is set), so every workspace it touches is
+# UNTRUSTED -- and an untrusted root gets its own client key, so pyright's
+# multi-root sharing never engages. A worker that writes into two checkouts
+# therefore spawns TWO pyright processes (observed 2026-10-28: two pyright
+# processes, 436 MB and 483 MB RSS, in one worker scope; the kernel OOM-killed
+# one of them at 13:01 alongside its worker -- t_8e8ec4de).
+#
+# The trust boundary stays exactly as it is -- the fix is a RESOURCE bound, not
+# a trust relaxation: when the cap is reached the least-recently-used client is
+# shut down and respawned on demand. One language server per service is the
+# default; a second is allowed only so an in-flight operation is not starved.
+DEFAULT_MAX_CLIENTS = 2
+
 _Key = Tuple[str, str]
 _Diags = List[Dict[str, Any]]
 
@@ -144,6 +160,8 @@ class LSPService:
         init_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         disabled_servers: Optional[List[str]] = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+        max_server_heap_mb: int = 0,
+        max_clients: int = DEFAULT_MAX_CLIENTS,
         extra_servers: Optional[List[ServerDef]] = None,
         broken_retry_seconds: float = 0.0,
         warmup_timeout: float = 0.0,
@@ -159,6 +177,15 @@ class LSPService:
         self._init_overrides = init_overrides or {}
         self._disabled_servers = set(disabled_servers or [])
         self._idle_timeout = idle_timeout
+        self._max_server_heap_mb = max(0, int(max_server_heap_mb or 0))
+        # ``max_clients`` is clamped to at least 1 — a cap of 0 (or a negative
+        # value) would mean "no language server at all", which would silently
+        # disable diagnostics. Note the explicit ``is None`` check: a bare
+        # ``int(max_clients or DEFAULT_MAX_CLIENTS)`` swallows a legitimate 0
+        # and substitutes the default instead of clamping it.
+        if max_clients is None:
+            max_clients = DEFAULT_MAX_CLIENTS
+        self._max_clients = max(1, int(max_clients))
         self._extra_servers: List[ServerDef] = list(extra_servers or [])
         self._broken_retry = max(0.0, broken_retry_seconds)
         self._warmup_timeout = max(0.0, warmup_timeout)
@@ -207,6 +234,14 @@ class LSPService:
             # Below the per-op wait budget the reaper could kill a client mid-flight and the outer
             # timeout would then mark the pair broken for the process lifetime.  Clamp (0 still disables).
             idle_timeout = MIN_IDLE_TIMEOUT
+        try:
+            max_server_heap_mb = int(lsp_cfg.get("max_server_heap_mb", 0) or 0)
+        except (TypeError, ValueError):
+            max_server_heap_mb = 0
+        try:
+            max_clients = int(lsp_cfg.get("max_clients", DEFAULT_MAX_CLIENTS) or DEFAULT_MAX_CLIENTS)
+        except (TypeError, ValueError):
+            max_clients = DEFAULT_MAX_CLIENTS
         servers_cfg = lsp_cfg.get("servers") or {}
         servers = {n: c for n, c in servers_cfg.items() if isinstance(c, dict)} if isinstance(servers_cfg, dict) else {}
         return cls(
@@ -222,6 +257,8 @@ class LSPService:
                             if isinstance(c.get("initialization_options"), dict)},
             disabled_servers=[n for n, c in servers.items() if c.get("disabled")],
             idle_timeout=idle_timeout,
+            max_server_heap_mb=max_server_heap_mb,
+            max_clients=max_clients,
             extra_servers=custom_servers(servers),
             broken_retry_seconds=_float_or(lsp_cfg.get("broken_retry_seconds"), 0.0),
             warmup_timeout=_float_or(lsp_cfg.get("warmup_timeout"), 0.0),
@@ -535,6 +572,61 @@ class LSPService:
             client = self._clients.get(self._live_key(srv, root))
         return list(client.diagnostics_for(file_path, fresh_only=True)) if client else []
 
+    async def _evict_for_capacity(self, keep_key: Optional[_Key] = None) -> int:
+        """Shut down clients until the service is within ``_max_clients``.
+
+        Least-recently-used first, and never the client the caller is about to
+        use. Returns how many clients were shut down.
+
+        The cap counts LIVE language-server processes. ``keep_key`` is the
+        client the caller is about to use:
+
+        * when it names a client that is already live, nothing new will be
+          spawned, so the service only has to come down TO the cap;
+        * when it names a client that is NOT live (or is ``None``), a new
+          process is about to be started — so when the service is exactly AT
+          the cap, one extra client must go to make room for it.
+
+        A service that is already OVER the cap is brought back down to the cap
+        either way; the incoming process then transiently occupies one slot and
+        the next spawn evicts again.
+
+        This is a RESOURCE bound, not a trust relaxation: an untrusted workspace
+        keeps its own language-server process (the trust boundary is unchanged),
+        but a worker that touches many checkouts cannot accumulate one process
+        per checkout. The evicted client is respawned on demand.
+        """
+        evicted: List[LSPClient] = []
+        with self._state_lock:
+            # A new process is only coming when the key the caller wants is not
+            # already live. ``keep_key`` names that same key, so it is never a
+            # candidate for eviction.
+            incoming = keep_key is None or keep_key not in self._clients
+            # Target: the cap, except when an incoming process needs a slot and
+            # the service is sitting exactly on the cap.
+            target = self._max_clients
+            if incoming and len(self._clients) == self._max_clients:
+                target = self._max_clients - 1
+            excess = len(self._clients) - target
+            if excess <= 0:
+                return 0
+            # Oldest first; skip the client the caller is about to use.
+            ordered = sorted(
+                (k for k in self._clients if k != keep_key),
+                key=lambda k: self._last_used.get(k, 0.0),
+            )
+            for key in ordered[:excess]:
+                client = self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+                if client is not None:
+                    evicted.append(client)
+        if evicted:
+            eventlog.log_evicted(
+                [(c.server_id, c.workspace_root) for c in evicted], self._max_clients,
+            )
+            await asyncio.gather(*(client.shutdown() for client in evicted), return_exceptions=True)
+        return len(evicted)
+
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
         srv = self._server_for(file_path)
         if srv is None:
@@ -578,6 +670,11 @@ class LSPService:
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None
         try:
+            # Capacity first: a new language-server process is only started once
+            # the service is within its process cap. Without this a worker that
+            # touches several checkouts accumulates one process per checkout --
+            # the unbounded pyright growth that OOM-killed a worker on 2026-10-28.
+            await self._evict_for_capacity(keep_key=key)
             client = await self._spawn_client(srv, root, trusted)
             if client is None:
                 self._mark_broken((srv.server_id, root))
@@ -604,7 +701,7 @@ class LSPService:
         ctx = ServerContext(
             workspace_root=root, install_strategy=self._install_strategy, binary_overrides=self._binary_overrides,
             env_overrides=self._env_overrides, init_overrides=self._init_overrides,
-            trusted=trusted,
+            trusted=trusted, max_heap_mb=self._max_server_heap_mb,
         )
         spec = srv.build_spawn(root, ctx)
         if spec is None:

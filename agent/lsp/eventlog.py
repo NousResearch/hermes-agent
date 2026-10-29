@@ -165,6 +165,21 @@ def log_released(keys: List[Tuple[str, str]], reason: str) -> None:
     _emit("reaper", logging.INFO, f"released {len(keys)} client(s) ({reason}): {summary}")
 
 
+def log_evicted(keys: List[Tuple[str, str]], max_clients: int) -> None:
+    """Clients were shut down to stay within the per-service process cap.
+
+    INFO, one line per event; forgets the ``log_active`` announcement like
+    :func:`log_reaped` so a respawn re-announces at INFO.
+    """
+    with _announce_lock:
+        _announced_active.difference_update(keys)
+    summary = ", ".join(f"{sid} ({root})" for sid, root in keys)
+    _emit(
+        "reaper", logging.INFO,
+        f"evicted {len(keys)} client(s) to stay within the {max_clients}-client cap: {summary}",
+    )
+
+
 def reset_announce_caches() -> None:
     """Test-only: clear the dedup caches.  Production code never calls this."""
     with _announce_lock:

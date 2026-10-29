@@ -2434,6 +2434,22 @@ DEFAULT_CONFIG = {
         # processes don't accumulate stale children (hundreds of MB + pipe FDs each) across
         # worktrees. 0 = keep servers for process lifetime.
         "idle_timeout": 600.0,
+        # V8/Node heap ceiling in MiB for Node-based language servers (pyright,
+        # typescript). A language server is the dominant memory consumer inside a
+        # Kanban worker scope: pyright reached 1.7 GB on the homelab host and was
+        # the process the kernel OOM-killed (t_8e8ec4de, journal 2026-10-28
+        # 13:01, task=node-MainThread). The worker scope's MemoryMax is a
+        # backstop, not a budget — a server that grows to the scope limit takes
+        # the worker down with it. Capping the V8 heap makes the server GC
+        # instead of growing. 0 = no ceiling.
+        "max_server_heap_mb": 768,
+        # Hard cap on how many language-server PROCESSES one Hermes process may
+        # run at once. A Kanban worker has no operator anchor, so every checkout
+        # it touches is untrusted and gets its own pyright process -- a worker
+        # that edited two repos ran two 1.7 GB servers (t_8e8ec4de). When the
+        # cap is reached the least-recently-used server is shut down and
+        # respawned on demand. 1 = one language server per Hermes process.
+        "max_clients": 2,
         # Per-server overrides keyed by registry server_id (pyright, gopls...): disabled: true;
         # command: ["path/to/server", "--stdio"] (bypasses auto- install); env: {...};
         # initialization_options: {...} (merged into LSP initializationOptions).

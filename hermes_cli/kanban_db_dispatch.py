@@ -2121,15 +2121,31 @@ def review_dispatch_enabled() -> bool:
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
 # tick (``_memory_pressure_level``) because a static cap can't see other
 # tenants. Both fail open: non-Linux / read error → no cap / "unknown".
+#
+# The derived cap and the per-worker cgroup ``MemoryMax`` MUST agree, or the
+# scopes collectively claim more RAM than the host has (t_8e8ec4de, 2026-10-28:
+# 3 workers x 3971 MiB = 11913 MiB against 7942 MiB of RAM — a 1.5x overcommit
+# that the kernel settled with CONSTRAINT_MEMCG OOM kills). The shared source of
+# truth for BOTH sides is ``hermes_cli.memory_budget``:
+#
+#   effective_max_workers x per_worker_memory_max <= 0.7 x MemTotal
+#
+# ``tools.process_registry._worker_memory_max_bytes()`` derives the scope limit
+# FROM the same cap this module computes, so the invariant holds by construction.
+from hermes_cli.memory_budget import (
+    DERIVED_MAX_IN_PROGRESS_CEILING as _SHARED_MAX_IN_PROGRESS_CEILING,
+    DERIVED_MAX_IN_PROGRESS_FLOOR as _SHARED_MAX_IN_PROGRESS_FLOOR,
+    MEMORY_GUARD_MB_PER_WORKER as _SHARED_MEMORY_GUARD_MB_PER_WORKER,
+)
 
 # Assumed per-worker footprint for the derived cap; deliberately conservative
 # so the cap errs toward fewer workers on small VMs.
-MEMORY_GUARD_MB_PER_WORKER = 512
+MEMORY_GUARD_MB_PER_WORKER = _SHARED_MEMORY_GUARD_MB_PER_WORKER
 
 # Derived default bounds: never below 2 (smallest VM must still progress),
 # never above 8 (more fan-out must be explicit in config).
-DERIVED_MAX_IN_PROGRESS_FLOOR = 2
-DERIVED_MAX_IN_PROGRESS_CEILING = 8
+DERIVED_MAX_IN_PROGRESS_FLOOR = _SHARED_MAX_IN_PROGRESS_FLOOR
+DERIVED_MAX_IN_PROGRESS_CEILING = _SHARED_MAX_IN_PROGRESS_CEILING
 
 
 def _system_memory_sample() -> dict:
@@ -2147,18 +2163,49 @@ def _system_memory_sample() -> dict:
 
 
 def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -> Optional[int]:
-    """Memory-derived default for ``kanban.max_in_progress`` when unset:
-    ``clamp(MemTotal / MEMORY_GUARD_MB_PER_WORKER, FLOOR, CEILING)``. Returns
-    ``None`` (no cap) when total memory is unknown, so macOS/Windows dev
+    """Memory-derived default for ``kanban.max_in_progress`` when unset.
+
+    The cap is the most workers whose per-worker scope limits still sum inside
+    the host's memory budget:
+
+        cap = clamp(floor(0.7 x MemTotal / per_worker_limit), FLOOR, CEILING)
+
+    ``per_worker_limit`` is the worker's REAL footprint (measured — the Hermes
+    runtime plus a language server), and the SAME number
+    ``tools.process_registry._worker_memory_max_bytes()`` uses to size the scope's
+    ``MemoryMax``. Both sides read ``hermes_cli.memory_budget``, so
+
+        effective_max_workers x per_worker_memory_max <= 0.7 x MemTotal
+
+    holds by construction.
+
+    Before this (t_8e8ec4de, 2026-10-28) the cap was
+    ``clamp(MemTotal / 512, 2, 8)`` while the scope limit was ``MemTotal / 2`` —
+    two unrelated numbers. On the homelab host they produced 3 workers claiming
+    11913 MiB against 7942 MiB of RAM, and the kernel OOM-killed a healthy worker
+    (``constraint=CONSTRAINT_MEMCG``).
+
+    Returns ``None`` (no cap) when total memory is unknown, so macOS/Windows dev
     machines are unaffected.
     """
+    from hermes_cli import memory_budget
+
     if sample is None:
         sample = _system_memory_sample()
     total_kib = sample.get("mem_total_kib")
     if isinstance(total_kib, bool) or not isinstance(total_kib, int) or total_kib <= 0:
         return None
-    workers = (total_kib // 1024) // MEMORY_GUARD_MB_PER_WORKER
-    return max(DERIVED_MAX_IN_PROGRESS_FLOOR, min(workers, DERIVED_MAX_IN_PROGRESS_CEILING))
+    host_bytes = total_kib * 1024
+    per_worker = memory_budget.per_worker_memory_max_bytes(host_bytes)
+    if per_worker is None:
+        return None
+    workers = memory_budget.effective_max_workers(
+        host_bytes,
+        per_worker_bytes=per_worker,
+        floor=DERIVED_MAX_IN_PROGRESS_FLOOR,
+        ceiling=DERIVED_MAX_IN_PROGRESS_CEILING,
+    )
+    return workers
 
 
 def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:

@@ -10,7 +10,6 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
-import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import {
   Sidebar,
@@ -25,7 +24,6 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -34,7 +32,6 @@ import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { recordAction } from '@/store/desktop-metrics'
 import { $interfaceMode, $showsAdvancedChrome, shownInMode } from '@/store/interface-mode'
-import { $bindings } from '@/store/keybinds'
 import {
   $dismissedAutoProjectIds,
   $panesFlipped,
@@ -544,8 +541,6 @@ export function ChatSidebar({
   const projectScope = useStore($projectScope)
   const gatewayState = useStore($gatewayState)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
-  const newSessionCombo = useStore($bindings)['session.new']?.[0]
-  const newSessionKbd = newSessionCombo ? comboTokens(newSessionCombo) : []
   const [searchQuery, setSearchQuery] = useState('')
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [messagingLoadMorePending, setMessagingLoadMorePending] = useState<Record<string, boolean>>({})
@@ -1572,7 +1567,7 @@ export function ChatSidebar({
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
-            <SidebarMenu className="gap-px">
+            <SidebarMenu className="grid! grid-cols-6 gap-1">
               {navItems.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
@@ -1589,6 +1584,9 @@ export function ChatSidebar({
                 const button = (
                   <SidebarMenuButton
                     aria-disabled={!isInteractive}
+                    // Icon-only tiles carry no visible text, so the accessible
+                    // name comes from the label the tooltip also shows.
+                    aria-label={s.nav[item.id] ?? item.label}
                     className={cn(
                       // no-drag: these rows sit directly under the titlebar's
                       // [-webkit-app-region:drag] strips (app-shell.tsx), with only
@@ -1597,15 +1595,27 @@ export function ChatSidebar({
                       // resolved region has been observed to swallow clicks on the
                       // top rows. Same carve-out as USER_BUBBLE_BASE_CLASS in
                       // thread.tsx.
-                      'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                      //
+                      // A square tile, not a row: the nav is a six-column grid, so
+                      // the entries cost one line of height, and a plugin's entry
+                      // lands in the next free cell whatever the count. `w-full`
+                      // with a `max-w-8` cap keeps the tile square in a narrow rail
+                      // without growing into a rectangle when the sidebar is wide.
+                      // The label lives in the tooltip.
+                      'mx-auto flex aspect-square w-full max-w-8 items-center justify-center rounded-md border border-transparent p-0 text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
                       active &&
                         'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
+                      // The shortcut ping that used to brighten the keycap now
+                      // brightens the tile it belongs to.
+                      newSessionKbdFlash && isNewSession && 'bg-(--ui-control-active-background) text-foreground',
                       !isInteractive &&
                         'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                     )}
-                    // A tip anchored to the label points at the end of the
-                    // word; the row is what it's actually about.
+                    // A tip anchored to the tile points at the tile; the label
+                    // itself is only in the tooltip now (tours and tips target
+                    // this same handle, so they must not move onto removed DOM).
                     data-tip-region=""
+                    data-tour={`sidebar-nav-${item.id}`}
                     onClick={() => {
                       // A plain new session lands in whatever profile the live
                       // gateway is on (= the active switcher context). null →
@@ -1640,37 +1650,23 @@ export function ChatSidebar({
                         onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
                       }, event)
                     }}
+                    // `hidden: false` opts this tip out of SidebarMenuButton's
+                    // collapsed-rail gate (`hidden={state !== 'collapsed'}`).
+                    // The tiles carry no visible label at any width, so on an
+                    // expanded rail the tooltip is the only name they have.
                     tooltip={
                       item.keybindActionId
                         ? {
+                            hidden: false,
                             children: (
                               <TipKeybindLabel actionId={item.keybindActionId} text={s.nav[item.id] ?? item.label} />
                             )
                           }
-                        : (s.nav[item.id] ?? item.label)
+                        : { hidden: false, children: s.nav[item.id] ?? item.label }
                     }
                     type="button"
                   >
                     <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
-                    {/* Shrink-to-fit, not flex-1: the label carries the row's
-                        `data-tour` handle, and anything anchored to it should
-                        land at the end of the WORD, not out at the sidebar's
-                        edge. Still truncates — `min-w-0` lets it shrink past
-                        its content when the rail is narrow — and the trailing
-                        chip's `ml-auto` was already doing the pushing that
-                        `flex-1` looked like it was for.
-                        Its own `sidebar-nav-` namespace: the overlay nav owns
-                        `nav-<id>`, and both are on screen with Settings open. */}
-                    <span className="min-w-0 truncate" data-tip-arrow-only="" data-tour={`sidebar-nav-${item.id}`}>
-                      {s.nav[item.id] ?? item.label}
-                    </span>
-                    {isNewSession && (
-                      <KbdGroup
-                        className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
-                        keys={newSessionKbd}
-                        size="sm"
-                      />
-                    )}
                   </SidebarMenuButton>
                 )
 

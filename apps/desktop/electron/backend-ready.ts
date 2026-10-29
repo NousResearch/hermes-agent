@@ -66,7 +66,8 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
 
 /**
  * Watch a child process's stdout for the `HERMES_(BACKEND|DASHBOARD)_READY
- * port=<N>` line that web_server.py prints after uvicorn binds its socket.
+ * port=<N>` line that web_server.py prints after uvicorn binds its socket,
+ * and stderr for source-update completion banners.
  *
  * Returns the parsed port. Rejects if:
  *   - the child exits before emitting the line
@@ -97,6 +98,7 @@ function waitForDashboardPort(
     // healthy backend is killed. Scanning the tail's buffer (and seeding any
     // trailing partial line) makes the listener-attach ordering irrelevant.
     let buf = ''
+    let stderrBuf = ''
     let done = false
     // #122206: the child is finishing an owed source-update completion
     // (venv_sync banners) before `hermes serve` starts. While that repair is
@@ -136,6 +138,7 @@ function waitForDashboardPort(
       done = true
       clearTimeout(timer)
       child.stdout.off('data', onData)
+      child.stderr?.off('data', onStderrData)
       child.off('exit', onExit)
       child.off('error', onError)
     }
@@ -166,6 +169,25 @@ function waitForDashboardPort(
       }
     }
 
+    function onStderrData(chunk) {
+      stderrBuf += chunk.toString()
+      let nl
+
+      while ((nl = stderrBuf.indexOf('\n')) !== -1) {
+        const line = stderrBuf.slice(0, nl)
+        stderrBuf = stderrBuf.slice(nl + 1)
+
+        // venv_sync deliberately keeps automatic-repair progress out of
+        // machine-readable stdout. Do not merge this into `buf`: stderr must
+        // never splice a READY line, but its completion banner still arms the
+        // bounded grace period.
+        if (SOURCE_COMPLETION_BANNER_RE.test(line)) {
+          completionInProgress = true
+          rearmTimer()
+        }
+      }
+    }
+
     function onExit(code, signal) {
       cleanup()
       reject(new Error(`Hermes backend: exited before port announcement (${signal || code})${describeOutputTail()}`))
@@ -178,6 +200,7 @@ function waitForDashboardPort(
 
     rearmTimer()
     child.stdout.on('data', onData)
+    child.stderr?.on('data', onStderrData)
     child.on('exit', onExit)
     child.on('error', onError)
 

@@ -1375,7 +1375,7 @@ class TestPerJobScanContainment:
         import cron.jobs as jobs_mod
         real_grace = jobs_mod._compute_grace_seconds
 
-        def selective_grace(schedule):
+        def selective_grace(schedule, grace_minutes=None):
             if schedule.get("minutes") == 7:
                 raise RuntimeError("simulated unforeseen malformed field")
             return real_grace(schedule)

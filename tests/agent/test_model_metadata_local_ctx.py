@@ -492,10 +492,126 @@ class TestQueryLocalContextLengthLmStudio:
         with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length(
-                "nvidia/nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
+                "nvidia/nvidia-nemotron-super-49b-v1", "http://127.0.0.1:1234/v1"
             )
 
         assert result == 131072
+
+    def test_lmstudio_loaded_instance_alias_match(self):
+        """A loaded-instance id must resolve the parent model's runtime context."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [{
+                "key": "publisher/qwen3.8-27b",
+                "id": "publisher/qwen3.8-27b",
+                "loaded_instances": [{
+                    "id": "loaded-instance-alias",
+                    "config": {"context_length": 98_304},
+                }],
+            }]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "loaded-instance-alias", "http://127.0.0.1:1234/v1"
+            )
+
+        assert result == 98_304
+
+    def test_lmstudio_loaded_instance_alias_selects_matching_context(self):
+        """A requested instance id must not inherit another instance's context."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [{
+                "key": "qwen/qwen3.8-27b",
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.8-27b", "config": {"context_length": 131072}},
+                    {"id": "qwen/qwen3.8-27b:2", "config": {"context_length": 98_304}},
+                ],
+            }]
+        })
+        client_mock = self._make_client(native_resp, self._make_resp(404, {}), self._make_resp(404, {}))
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen/qwen3.8-27b:2", "http://127.0.0.1:1234/v1"
+            )
+
+        assert result == 98_304
+
+    def test_lmstudio_loaded_parent_wins_duplicate_slug(self):
+        """A loaded duplicate must beat an earlier unloaded suffix match."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {"key": "unsloth/qwen3.8-27b", "loaded_instances": []},
+                {"key": "qwen/qwen3.8-27b", "loaded_instances": [{"id": "qwen/qwen3.8-27b", "config": {"context_length": 98_304}}]},
+            ]
+        })
+        client_mock = self._make_client(native_resp, self._make_resp(404, {}), self._make_resp(404, {}))
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("qwen3.8-27b", "http://127.0.0.1:1234/v1")
+
+        assert result == 98_304
+
+    def test_lmstudio_exact_instance_with_invalid_context_does_not_use_sibling(self):
+        """An exact instance with bad metadata must resolve unknown, not a sibling context."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [{
+                "key": "qwen/qwen3.8-27b",
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.8-27b:2", "config": {"context_length": True}},
+                    {"id": "qwen/qwen3.8-27b", "config": {"context_length": 131072}},
+                ],
+            }]
+        })
+        client_mock = self._make_client(native_resp, self._make_resp(404, {}), self._make_resp(404, {}))
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen/qwen3.8-27b:2", "http://127.0.0.1:1234/v1"
+            )
+
+        assert result is None
+
+    def test_lmstudio_duplicate_loaded_slugs_are_first_match_consistent(self):
+        """Equal-rank duplicate suffixes use one deterministic catalog-order policy."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {"key": "publisher/qwen3.8-27b", "loaded_instances": [
+                    {"id": "publisher/qwen3.8-27b", "config": {"context_length": 65536}},
+                ]},
+                {"key": "other/qwen3.8-27b", "loaded_instances": [
+                    {"id": "other/qwen3.8-27b", "config": {"context_length": 131072}},
+                ]},
+            ]
+        })
+        client_mock = self._make_client(native_resp, self._make_resp(404, {}), self._make_resp(404, {}))
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen3.8-27b", "http://127.0.0.1:1234/v1"
+            )
+
+        assert result == 65536
 
 
 
@@ -629,7 +745,7 @@ class TestFetchEndpointModelMetadataLmStudio:
                         "id": "lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf",
                         "max_context_length": 1_048_576,
                         "loaded_instances": [
-                            {"config": {"context_length": 131072}}
+                            {"id": "loaded-instance-alias", "config": {"context_length": 131072}}
                         ],
                     }
                 ]
@@ -651,6 +767,57 @@ class TestFetchEndpointModelMetadataLmStudio:
         }
         assert result["lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
         assert result["Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
+        assert result["loaded-instance-alias"]["context_length"] == 131072
+
+    def test_native_alias_context_follows_matching_instance(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        native_resp = self._make_resp({
+            "models": [
+                {"key": "unsloth/qwen3.8-27b", "loaded_instances": []},
+                {
+                    "key": "qwen/qwen3.8-27b",
+                    "loaded_instances": [
+                        {"id": "qwen/qwen3.8-27b", "config": {"context_length": 131072}},
+                        {"id": "qwen/qwen3.8-27b:2", "config": {"context_length": 98_304}},
+                    ],
+                },
+            ]
+        })
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata_http.get", return_value=native_resp):
+            result = fetch_endpoint_model_metadata(
+                "http://localhost:1234/v1", force_refresh=True,
+            )
+
+        assert result["qwen/qwen3.8-27b"]["context_length"] == 131072
+        assert result["qwen/qwen3.8-27b:2"]["context_length"] == 98_304
+        # The bare slug is ambiguous when two instances are loaded; the exact instance
+        # alias above is the selector that must carry the 96k context.
+        assert result["qwen3.8-27b"]["context_length"] == 131072
+
+    def test_native_duplicate_loaded_slugs_follow_catalog_order(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        native_resp = self._make_resp({
+            "models": [
+                {"key": "publisher/qwen3.8-27b", "loaded_instances": [
+                    {"id": "publisher/qwen3.8-27b", "config": {"context_length": 65536}},
+                ]},
+                {"key": "other/qwen3.8-27b", "loaded_instances": [
+                    {"id": "other/qwen3.8-27b", "config": {"context_length": 131072}},
+                ]},
+            ]
+        })
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata_http.get", return_value=native_resp):
+            result = fetch_endpoint_model_metadata(
+                "http://localhost:1234/v1", force_refresh=True,
+            )
+
+        assert result["qwen3.8-27b"]["context_length"] == 65536
 
     def test_native_api_base_url_is_not_doubled(self):
         from agent.model_metadata import fetch_endpoint_model_metadata

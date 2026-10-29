@@ -144,8 +144,9 @@ import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
-import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
+import { useWindowControlsOverlayInsets } from '../shell/hooks/use-window-controls-overlay-width'
 import {
+  knownWindowButtonPosition,
   TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
@@ -1198,17 +1199,25 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const leftTitlebarTools = useTitlebarToolContributions('left')
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
-  const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+  // Windows/WSLg reserve native min/max/close on the right, Linux wherever the
+  // desktop's button order puts them (AppShell parity: prefer the live WCO
+  // measurement, fall back to the static right-side reservation).
+  const overlayInsets = useWindowControlsOverlayInsets()
+  const nativeOverlayWidth = overlayInsets?.right ?? connection?.nativeOverlayWidth ?? 0
+
+  const windowButtonPosition = knownWindowButtonPosition(connection?.windowButtonPosition)
+
+  const controlsPos = titlebarControlsPosition(
+    windowButtonPosition,
+    Boolean(connection?.isFullscreen),
+    overlayInsets?.left
+  )
   const controlsVars = useTitlebarControlsVars(controlsPos)
-  // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
-  // prefer the live WCO measurement, fall back to the static reservation).
-  const measuredOverlayWidth = useWindowControlsOverlayWidth()
-  const nativeOverlayWidth = measuredOverlayWidth ?? connection?.nativeOverlayWidth ?? 0
 
   const titlebarChrome = {
     darwinMajor: connection?.darwinMajor ?? 0,
     isFullscreen: Boolean(connection?.isFullscreen),
-    windowButtonPosition: connection?.windowButtonPosition
+    windowButtonPosition
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)

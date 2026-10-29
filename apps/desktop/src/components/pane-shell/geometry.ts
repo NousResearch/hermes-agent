@@ -13,6 +13,11 @@
 
 import { type RefObject, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 
+import {
+  measureOverlayInsets,
+  type OverlayInsets,
+  windowControlsOverlay
+} from '@/app/shell/hooks/use-window-controls-overlay-width'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $connection } from '@/store/session'
 
@@ -62,7 +67,11 @@ interface ConnectionLike {
  * is nothing to dodge (fullscreen, plain browser, secondary windows with
  * hidden controls).
  */
-export function windowControlsRect(connection: ConnectionLike | null, viewportWidth: number): Rect | null {
+export function windowControlsRect(
+  connection: ConnectionLike | null,
+  viewportWidth: number,
+  overlayInsets: OverlayInsets | null = null
+): Rect | null {
   const inElectron = typeof window !== 'undefined' && 'hermesDesktop' in window
 
   if (!inElectron) {
@@ -73,7 +82,19 @@ export function windowControlsRect(connection: ConnectionLike | null, viewportWi
     return null
   }
 
-  // Windows / WSLg: native overlay on the top-right.
+  const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+
+  // Windows / Linux: the measured overlay. Linux follows the desktop's button
+  // order, so the controls may sit on the left.
+  if (overlayInsets && !isMac) {
+    if (overlayInsets.right > 0) {
+      return { x: viewportWidth - overlayInsets.right, y: 0, width: overlayInsets.right, height: CONTROLS_BAND_HEIGHT }
+    }
+
+    return overlayInsets.left > 0 ? { x: 0, y: 0, width: overlayInsets.left, height: CONTROLS_BAND_HEIGHT } : null
+  }
+
+  // Windows / WSLg without a measured overlay: static reservation on the top-right.
   const overlayWidth = connection?.nativeOverlayWidth ?? 0
 
   if (overlayWidth > 0) {
@@ -87,8 +108,6 @@ export function windowControlsRect(connection: ConnectionLike | null, viewportWi
   if (pos === null) {
     return null
   }
-
-  const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
 
   if (!pos && !isMac) {
     return null
@@ -111,7 +130,8 @@ function rectKey(r: Rect | null) {
 }
 
 function readControlsRect(): Rect | null {
-  const next = windowControlsRect($connection.get(), typeof window === 'undefined' ? 0 : window.innerWidth)
+  const width = typeof window === 'undefined' ? 0 : window.innerWidth
+  const next = windowControlsRect($connection.get(), width, measureOverlayInsets(windowControlsOverlay(), width))
   const key = rectKey(next)
 
   // Referentially stable snapshot for useSyncExternalStore.
@@ -125,11 +145,14 @@ function readControlsRect(): Rect | null {
 
 function subscribeControlsRect(cb: () => void) {
   const unsubConnection = $connection.subscribe(() => cb())
+  const wco = windowControlsOverlay()
   window.addEventListener('resize', cb)
+  wco?.addEventListener('geometrychange', cb)
 
   return () => {
     unsubConnection()
     window.removeEventListener('resize', cb)
+    wco?.removeEventListener('geometrychange', cb)
   }
 }
 

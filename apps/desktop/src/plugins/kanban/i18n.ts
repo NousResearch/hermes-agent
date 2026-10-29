@@ -21,6 +21,8 @@ type KanbanMessages = {
   >
   locked: { review: string; running: string; scheduled: string }
   arcRunning: string
+  booting: string
+  arcBooting: string
   arcStale: string
   title: string
   orchestrationSettings: string
@@ -246,6 +248,9 @@ export const en: KanbanMessages = {
     scheduled: 'Scheduled needs a wake-up time — agents set it; it can’t be dragged into.'
   },
   arcRunning: 'An agent is working on this now.',
+  booting: 'starting…',
+  arcBooting:
+    'Claimed — the worker is up and its agent is booting; the first heartbeat usually lands within ~2 min.',
   arcStale: 'Claimed, but no worker heartbeat for 2+ minutes — the dispatcher will reclaim it.',
   title: 'Kanban',
   orchestrationSettings: 'Orchestration settings',
@@ -474,6 +479,8 @@ const ja: KanbanMessages = {
     scheduled: 'スケジュールには起動時刻が必要です — エージェントが設定します。ドラッグでは移動できません。'
   },
   arcRunning: 'エージェントが現在作業中です。',
+  booting: '起動中…',
+  arcBooting: '取得済み — ワーカーは起動中で、最初のハートビートは約2分以内に届きます。',
   arcStale: '取得済みですが、2分以上ワーカーのハートビートがありません — ディスパッチャが再取得します。',
   title: 'カンバン',
   orchestrationSettings: 'オーケストレーション設定',
@@ -701,6 +708,8 @@ const zh: KanbanMessages = {
     scheduled: '排期需要唤醒时间 — 由代理设置；无法拖入。'
   },
   arcRunning: '有代理正在处理它。',
+  booting: '启动中…',
+  arcBooting: '已领取 — 工作单元正在启动，第一个心跳通常在约 2 分钟内到达。',
   arcStale: '已领取，但超过 2 分钟没有工作单元心跳 — 调度器将重新领取。',
   title: '看板',
   orchestrationSettings: '编排设置',
@@ -925,6 +934,8 @@ const zhHant: KanbanMessages = {
     scheduled: '排程需要喚醒時間 — 由代理設定；無法拖入。'
   },
   arcRunning: '有代理正在處理它。',
+  booting: '啟動中…',
+  arcBooting: '已領取 — 工作單元正在啟動，第一個心跳通常會在約 2 分鐘內送達。',
   arcStale: '已領取，但超過 2 分鐘沒有工作單元心跳 — 排程器將重新領取。',
   title: '看板',
   orchestrationSettings: '編排設定',
@@ -1127,8 +1138,19 @@ const zhHant: KanbanMessages = {
   }
 }
 
+/** Partial FR bundle — the translator falls back to the plugin's English
+ *  bundle per key (active locale → en → key), so a partial French bundle only
+ *  overrides the keys it carries. Covers the boot-window labels the
+ *  founder-facing board shows during a run's first ~2 minutes; the rest of FR
+ *  UI copy stays English until the plugin ships a full French bundle. */
+const fr: Partial<KanbanMessages> = {
+  booting: 'démarrage…',
+  arcBooting: 'Claimé — la worker est lancée et son agent démarre ; le premier heartbeat arrive en général dans les ~2 min.',
+  arcStale: 'Claimé, mais aucun heartbeat du worker depuis plus de 2 minutes — le dispatcher va reprendre la tâche.',
+}
+
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant, fr }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …). One tiny generic

@@ -301,6 +301,39 @@ def test_stale_claim_extend_live_worker_does_not_count_failure(
         assert row["consecutive_failures"] == 0
 
 
+def test_claim_resets_last_heartbeat_of_stale_run(kanban_home):
+    """A claim must reset ``last_heartbeat_at`` — that column is the liveness
+    signal of the CURRENT run. A retry that inherits the dead run's last beat
+    reads as "no heartbeat" on every board for the whole boot window of the
+    fresh run (its first beat lands ~2 min after claim, once the agent fully
+    boots), precisely the night-of-2026-10-20 S4 report.
+    """
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="retry after crash", assignee="a")
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")  # run 1
+        conn.execute(
+            "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+            (int(time.time()) - 120, t),
+        )
+        # Run 1 dies: claim expires with no worker pid ever set (a
+        # never-spawned claimer), so release_stale_claims requeues the card
+        # without any pid probe.
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        assert kb.release_stale_claims(
+            conn, signal_fn=lambda _p, _s: None, failure_limit=2,
+        ) == 1
+        assert kb.get_task(conn, t).status == "ready"
+        kb.claim_task(conn, t, claimer=f"{host}:worker")  # run 2 (the retry)
+        row = conn.execute(
+            "SELECT last_heartbeat_at FROM tasks WHERE id = ?", (t,),
+        ).fetchone()
+        assert row["last_heartbeat_at"] is None
+
+
 
 
 

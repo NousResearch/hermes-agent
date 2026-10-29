@@ -39,6 +39,14 @@
   animation-duration: 6s;
 }
 
+/* Freshly claimed, agent still booting: quiet neutral pulse — alive, just not
+   talking yet. Subtle on purpose: it must never read as distress. */
+.kanban-arc--booting {
+  opacity: 0.45;
+  --kanban-tone: var(--ui-text-quaternary);
+  animation-duration: 4.5s;
+}
+
 @keyframes kanban-arc-spin {
   to {
     --kanban-arc-angle: 360deg;

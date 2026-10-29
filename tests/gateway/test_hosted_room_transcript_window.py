@@ -108,6 +108,8 @@ def test_a_long_thread_keeps_the_discussion_of_every_retained_settlement(room_db
     snapshot = _snapshot(db)
     window = list(snapshot.events)
     assert _message_rows(window)[0]["seq"] > log_messages[0]["seq"]
+    # Closure is a bounded concession: one pinned anchor per retained member row at most.
+    assert MAX_THREAD_TRANSCRIPT_EVENTS <= len(_message_rows(window)) <= 2 * MAX_THREAD_TRANSCRIPT_EVENTS
     assert _compacted_anchors(window), "a trimmed settlement lost the discussion it answered"
     window_ids = {event["event_id"] for event in window}
     retained = [event for event in window if event["kind"] == "message.member"]

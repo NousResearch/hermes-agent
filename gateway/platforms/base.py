@@ -1849,6 +1849,11 @@ class BasePlatformAdapter(ABC):
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from gateway.outbound_policy import guard_adapter_methods
+        guard_adapter_methods(cls)
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform

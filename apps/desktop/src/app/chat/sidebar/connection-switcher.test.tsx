@@ -25,7 +25,8 @@ vi.mock('@/store/connections', () => ({
   selectConnection: vi.fn(async () => undefined)
 }))
 
-vi.mock('@/i18n', () => ({
+vi.mock('@/i18n', async () => ({
+  ...(await import('@/i18n/runtime')),
   useI18n: () => ({
     t: {
       profiles: {

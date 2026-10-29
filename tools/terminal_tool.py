@@ -254,6 +254,7 @@ def _reset_cached_sudo_passwords() -> None:
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    check_protected_git_roots_guard as _check_protected_git_roots,
 )
 
 
@@ -2370,6 +2371,21 @@ def terminal_tool(
                     ),
                     "status": "error",
                 }, ensure_ascii=False)
+
+        # Hard-block: protected-git-roots guard for kanban workers.
+        # Fires unconditionally (even when force=True) when
+        # HERMES_PROTECTED_GIT_ROOTS is set.  The guard prevents a worker
+        # running with subagent_auto_approve from accidentally destroying
+        # uncommitted work in the board's main checkout.  Non-kanban
+        # sessions are unaffected (env var absent → guard is a no-op).
+        _pg_block = _check_protected_git_roots(command, cwd)
+        if _pg_block is not None:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _pg_block.get("message", "Blocked by protected-git-roots guard"),
+                "status": "blocked",
+            }, ensure_ascii=False)
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)

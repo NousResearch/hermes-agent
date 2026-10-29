@@ -3332,6 +3332,221 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
+# ---------------------------------------------------------------------------
+# Protected-git-roots guard (kanban worker safety)
+# ---------------------------------------------------------------------------
+# Patterns that can destroy uncommitted work or rewrite shared history and
+# must be blocked when the effective cwd is inside a HERMES_PROTECTED_GIT_ROOTS
+# path.  Each entry: (compiled_regex, short_description).
+# `list`/`show` are read-only and intentionally excluded.
+#
+# The git global-flags fragment ``_GIT_GLOBAL_FLAGS`` handles flags that
+# optionally appear between `git` and the subcommand.  Single-dash flags
+# such as ``-C <path>`` take one optional whitespace-separated argument;
+# double-dash long options may be inline (``--git-dir=<path>``) or bare
+# (``--verbose``).  Using ``(?:\s+(?:-\S+(?:\s+\S+)?|--\S+))*`` allows
+# ``git -C /repo reset --hard`` to match the reset pattern without also
+# matching ``git push origin reset --hard`` (no `-`/`--` prefix on `push`).
+_GIT_GLOBAL_FLAGS = r"(?:\s+(?:-\S+(?:\s+\S+)?|--\S+))*"
+
+_PROTECTED_GIT_DENY: list = [
+    # git stash <verb> where verb is push / pop / drop / clear, or bare git stash
+    (
+        re.compile(
+            r"\bgit" + _GIT_GLOBAL_FLAGS + r"\s+stash\b"
+            r"(?:\s+(?!list\b|show\b|--\s*$)|\s*(?:;|&&|\|\||$))",
+            re.MULTILINE,
+        ),
+        "git stash (push/pop/drop/clear)",
+    ),
+    # git reset --hard / --merge / --keep  (--soft / --mixed are safe)
+    (
+        re.compile(
+            r"\bgit" + _GIT_GLOBAL_FLAGS
+            + r"\s+reset\s+--(?:h(?:a(?:r(?:d)?)?)?|merge|keep)\b"
+        ),
+        "git reset --hard/--merge/--keep",
+    ),
+    # git checkout -- <path>  (discards working-tree changes)
+    (
+        re.compile(r"\bgit" + _GIT_GLOBAL_FLAGS + r"\s+checkout\s+--\s"),
+        "git checkout -- path (discards working-tree changes)",
+    ),
+    # git checkout <rev|branch> — block unless preceded by -b (new branch)
+    # Allows: git checkout -b feat / git checkout --help
+    # Blocks: git checkout main / git checkout abc1234
+    (
+        re.compile(
+            r"\bgit" + _GIT_GLOBAL_FLAGS
+            + r"\s+checkout\s+(?!-b\b)(?!--(?:help|version)\b)(?!-$)\S"
+        ),
+        "git checkout rev/branch (switches context)",
+    ),
+    # git switch <anything>
+    (
+        re.compile(r"\bgit" + _GIT_GLOBAL_FLAGS + r"\s+switch\b"),
+        "git switch (changes branch)",
+    ),
+    # git clean -f*
+    (
+        re.compile(r"\bgit" + _GIT_GLOBAL_FLAGS + r"\s+clean\s+-[^\s]*f"),
+        "git clean with force",
+    ),
+    # git branch -D  (force delete)
+    (
+        re.compile(r"\bgit" + _GIT_GLOBAL_FLAGS + r"\s+branch\s+-D\b"),
+        "git branch -D (force delete)",
+    ),
+    # git push --force / -f
+    (
+        re.compile(r"\bgit" + _GIT_GLOBAL_FLAGS + r"\s+push\b.*?(?:--forc[a-z]*|-f)\b"),
+        "git force push",
+    ),
+]
+
+# Regex to extract the path argument of `git -C <path>` (bypass vector).
+_GIT_DASH_C_RE = re.compile(r"\bgit\s+-C\s+(['\"]?)(\S+)\1")
+# Regex to extract `git --work-tree=<path>` / `git --git-dir=<path>` (bypass).
+_GIT_WORK_TREE_RE = re.compile(r"\bgit\b.*?--(?:work-tree|git-dir)=(['\"]?)(\S+)\1")
+
+
+def _pg_is_inside_protected_root(path: str, roots: list) -> tuple:
+    """Return (True, root) if *path* is inside any protected root.
+
+    A path is *exempt* when it lives under ``<root>/.worktrees/`` — these
+    are linked worktrees that only affect their own branch, not the main
+    checkout's branch, so destructive git ops inside them are allowed.
+
+    Returns (False, None) when no root matches or the path is exempt.
+    """
+    try:
+        norm = os.path.realpath(path)
+    except Exception:
+        norm = os.path.abspath(path)
+    for root in roots:
+        try:
+            rr = os.path.realpath(root)
+        except Exception:
+            rr = os.path.abspath(root)
+        if norm == rr or norm.startswith(rr + os.sep):
+            # Exempt: path is inside <root>/.worktrees/<anything>
+            worktrees_prefix = os.path.join(rr, ".worktrees") + os.sep
+            if norm.startswith(worktrees_prefix):
+                return False, None
+            return True, root
+    return False, None
+
+
+def _pg_effective_cwd(command: str, session_cwd: str) -> str:
+    """Return the effective cwd after applying leading ``cd <path>`` segments.
+
+    Only the *leading* ``cd <path>`` segment is considered (not one embedded
+    in the middle of a pipeline) because that is the only form that changes
+    the shell's cwd before the git subcommand runs.
+    """
+    cwd = session_cwd or ""
+    for seg in _iter_top_level_shell_segments(command):
+        stripped = seg.strip()
+        m = re.match(r"^cd\s+(.+)$", stripped)
+        if not m:
+            break  # first non-cd segment — stop
+        raw = m.group(1).strip().strip("\"'")
+        if os.path.isabs(raw):
+            cwd = raw
+        elif cwd:
+            cwd = os.path.normpath(os.path.join(cwd, raw))
+        else:
+            cwd = raw
+    return cwd
+
+
+def check_protected_git_roots_guard(command: str, session_cwd: str) -> Optional[dict]:
+    """Fail-closed guard for kanban workers: block destructive git commands on
+    protected checkouts.
+
+    Returns a block-result dict when the guard fires, or ``None`` when the
+    guard is inactive (env var absent) or the command is safe.
+
+    The guard is *only active* when ``HERMES_PROTECTED_GIT_ROOTS`` is set in
+    the worker's environment (injected by ``_default_spawn`` in kanban_db.py).
+    Non-kanban CLI and gateway sessions are completely unaffected.
+    """
+    raw_roots = os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip()
+    if not raw_roots:
+        return None  # guard off — normal user session
+
+    roots = [r for r in raw_roots.split(os.pathsep) if r.strip()]
+    if not roots:
+        return None
+
+    # Compute the effective cwd the git command will run in.
+    effective_cwd = _pg_effective_cwd(command, session_cwd)
+
+    # Primary check: is the effective cwd itself inside a protected root?
+    in_protected, matched_root = _pg_is_inside_protected_root(effective_cwd, roots)
+
+    # Bypass check 1: `git -C <path>` overrides the shell cwd.
+    bypass_path: Optional[str] = None
+    if not in_protected:
+        for m in _GIT_DASH_C_RE.finditer(command):
+            candidate = m.group(2)
+            if not os.path.isabs(candidate):
+                candidate = os.path.normpath(
+                    os.path.join(effective_cwd, candidate)
+                ) if effective_cwd else candidate
+            hit, root = _pg_is_inside_protected_root(candidate, roots)
+            if hit:
+                in_protected = True
+                matched_root = root
+                bypass_path = candidate
+                break
+
+    # Bypass check 2: `git --work-tree=<path>` / `git --git-dir=<path>`
+    if not in_protected:
+        for m in _GIT_WORK_TREE_RE.finditer(command):
+            candidate = m.group(2).rstrip("/")
+            if not os.path.isabs(candidate):
+                candidate = os.path.normpath(
+                    os.path.join(effective_cwd, candidate)
+                ) if effective_cwd else candidate
+            hit, root = _pg_is_inside_protected_root(candidate, roots)
+            if hit:
+                in_protected = True
+                matched_root = root
+                bypass_path = candidate
+                break
+
+    if not in_protected:
+        return None  # cwd and explicit git paths are outside protected roots
+
+    # Check whether the command matches any protected git deny pattern.
+    # We check the entire command text so semicolon chains, `sh -c "..."`,
+    # `command git ...`, and `\git ...` wrappers are all caught.
+    hit_desc: Optional[str] = None
+    for pat, desc in _PROTECTED_GIT_DENY:
+        if pat.search(command):
+            hit_desc = desc
+            break
+
+    if hit_desc is None:
+        return None  # command is safe (e.g. git log, git status, git stash list)
+
+    root_display = bypass_path or effective_cwd
+    msg = (
+        f"BLOCKED: `{hit_desc}` is forbidden inside protected checkout "
+        f"`{matched_root}` (effective path: `{root_display}`). "
+        "To inspect a specific revision without touching the main checkout, use "
+        "`git worktree add /tmp/review-<id> <rev>` or `git show <rev>:<path>`."
+    )
+    logger.warning(
+        "Protected-git-roots guard blocked command in %s: %s (pattern: %s)",
+        matched_root,
+        command[:120],
+        hit_desc,
+    )
+    return {"approved": False, "message": msg, "status": "blocked"}
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:

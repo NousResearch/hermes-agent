@@ -1,15 +1,33 @@
 name: mindgraph
 repo: https://github.com/shuruheel/mindgraph
-sha: b96c2590435bb625210506a47df682967215b6d7
-description: MindGraph — semantic graph memory with hybrid retrieval, goal/decision tracking, and cross-document
-  synthesis.
+sha: 07876e816487c8b7e841d618f478de543050a733
+version: "1.0.0"
+description: "MindGraph typed knowledge-graph memory: bounded per-message recall, session transcript capture, and the mindgraph-mcp general tool surface (capture, reason, commit, plan, retrieve, remember, ingest, synthesize, ontology). Disclosure — every tool call, recall and capture goes to the MindGraph API (api.mindgraph.cloud, or MINDGRAPH_BASE_URL) under MINDGRAPH_API_KEY; with automatic capture on (default; MINDGRAPH_AUTO_CAPTURE=off disables it) the user and assistant text of completed turns is sent for extraction, tool calls and outputs are not; every add or replace made with Hermes's built-in memory tool is mirrored to MindGraph (and the replaced entry is forgotten there); each tool call first sends its name, action and target node uids to the server's governance check (MINDGRAPH_GOVERNANCE=off skips it); automatic writes run only in the primary agent, never in subagents or cron; no telemetry, no background processes, no credentials stored outside Hermes."
 maintainer: shuruheel
 tier: community
 category: memory
+requires_hermes: ">=0.22.0"
 docs_url: https://github.com/shuruheel/mindgraph#readme
+readme: true
 capabilities:
-  provides_tools: []
-  provides_hooks: []
+  provides_tools:
+    - mindgraph_memory
+    - mindgraph_capture
+    - mindgraph_reason
+    - mindgraph_commit
+    - mindgraph_plan
+    - mindgraph_retrieve
+    - mindgraph_remember
+    - mindgraph_series_query
+    - mindgraph_ingest
+    - mindgraph_synthesize
+    - mindgraph_ontology
+  provides_hooks:
+    - on_turn_start
+    - on_session_end
+    - on_session_switch
+    - on_pre_compress
+    - on_memory_write
   provides_middleware: []
   requires_env:
-  - name
+    - MINDGRAPH_API_KEY

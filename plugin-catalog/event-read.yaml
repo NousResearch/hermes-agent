@@ -1,13 +1,14 @@
 name: event-read
 repo: https://github.com/TakeshiTGAL/hermes-plugin-event-read
-sha: d469ceb434d59dc91bb14ff9ae1e1191e135d025
-description: "Read one CalDAV calendar collection you run, with list_events and read_event. Disclosure — Sends CALDAV_USER and CALDAV_PASSWORD as Basic auth to your CALDAV_URL, does not follow redirects, and starts no local program. Over plain http that password travels unencrypted. The tools are on for every surface, including gateways, and the plugin has no user list of its own: anyone you allow on your Hermes gateway reads the calendar with your password. Turn a surface off with hermes tools. A watch is a cron job you create yourself with hermes cron create. Each run is at least one model turn, there is no daily cap, and the job stays until you run hermes cron remove. Under plugins.isolation: host the watch cannot run and posts a notice saying so on every run. When the watch can run, it reports a problem on the first run, when the cause changes and again after 23 hours, or on every run when its data directory cannot be written. Each request gives up after 20 seconds without data, and a whole call has no time limit. The watch relies on private parts of Hermes, so an update can stop it. State lives in plugin-data/event-read. Not tested against a vendor-hosted calendar."
+sha: 00e8aed782ad3d81e1fbc30abb202e3caf9a4dc0
+description: "Read one CalDAV calendar collection you run, with list_events and read_event. Disclosure — Sends CALDAV_USER and CALDAV_PASSWORD as Basic auth to your CALDAV_URL, does not follow redirects, and starts no local program. Over plain http that password travels unencrypted. The tools are on for every surface, including gateways, and the plugin has no user list of its own: anyone you allow on your Hermes gateway reads the calendar with your password. Turn a surface off with hermes tools. On Hermes 0.21.6 and later, while the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off. A watch is a cron job you create yourself with hermes cron create. Each run is at least one model turn, there is no daily cap, and the job stays until you run hermes cron remove. Under plugins.isolation: host a no-argument list_events still returns the next 7 days and does not record uids. When the watch can run, it reports a problem on the first run, when the cause changes and again after 23 hours, or on every run when its data directory cannot be written. Each request gives up after 20 seconds without data, and a whole call has no time limit. The watch reads cron.execution_identity.current_cron_execution (Hermes 0.21.6). The printed cron line uses ctx.profile_name. The file write still uses Hermes's write guard. An update can stop the watch if that guard moves. These reads do not ask for approval and do not register a hook. State lives in plugin-data/event-read. Not tested against a vendor-hosted calendar."
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-event-read#readme
-version: "0.1.0"
-requires_hermes: '>=0.21.4'
+version: "0.1.4"
+requires_hermes: '>=0.21.6'
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-event-read/00e8aed782ad3d81e1fbc30abb202e3caf9a4dc0/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:

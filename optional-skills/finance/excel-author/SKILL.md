@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [excel, openpyxl, finance, spreadsheet, modeling]
-    related_skills: [xlsx, pptx-author, dcf-model, comps-analysis, lbo-model, 3-statement-model]
+    related_skills: [microsoft-office, pptx-author, dcf-model, comps-analysis, lbo-model, 3-statement-model]
 ---
 
 # excel-author
@@ -30,7 +30,7 @@ it). Otherwise, when `hermes` is on PATH, let Hermes build its shared, pinned
 documents environment under the Hermes home (safe to run from several agents
 at once); in a Docker sandbox without Hermes the block builds a venv in the
 sandbox home with the same pinned versions. It is the same block as the
-docx/xlsx/powerpoint/pdf skills. Never `pip install` into the interpreter that
+microsoft-office/pdf skills. Never `pip install` into the interpreter that
 runs Hermes:
 
 ```bash

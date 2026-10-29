@@ -1,18 +1,7 @@
----
-name: powerpoint
-description: Create, read, edit .pptx decks with python-pptx.
-version: 1.1.0
-author: Nous Research
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [pptx, powerpoint, presentations, slides, office, python-pptx]
-    category: productivity
-    related_skills: [docx, xlsx, pdf]
----
+# PowerPoint (.pptx)
 
-# Powerpoint Skill
+Run the helpers with `"$PY"` from the Prerequisites block in `SKILL.md`, from the
+skill directory.
 
 Create, inspect, and edit PowerPoint (.pptx) presentations using the
 python-pptx library. Five helper scripts cover deck creation from a JSON
@@ -31,72 +20,22 @@ and slide rendering — all offline, no PowerPoint installation required.
 - Do NOT use this for .ppt (legacy binary) files — convert them first with
   `soffice --convert-to pptx old.ppt` if LibreOffice is available.
 
-## Prerequisites
-
-- Python 3.10+ with `python-pptx` (import name `pptx`).
-- Pick the interpreter with `terminal`. Use `python` when it already imports
-  the libraries (the Hermes Docker image ships them). Otherwise, when `hermes`
-  is on PATH, let Hermes build its shared, pinned documents environment under
-  the Hermes home: it survives container restarts, never touches the Hermes
-  install itself, and is safe to run from several agents at once. When it is
-  not (the terminal runs in a Docker sandbox, which has no Hermes), the block
-  builds a venv in the sandbox home with the same pinned versions. Use this
-  exact block in every document skill so they all share one environment:
-
-  ```bash
-  python -c "import pptx" 2>/dev/null && PY=python || if command -v hermes >/dev/null 2>&1; then
-    PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
-  else
-    PY="$HOME/.cache/hermes-docs-venv/bin/python"
-    "$PY" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null || (
-      # Safe to run from several agents at once: each caller builds a private venv,
-      # a symlink publishes the first finished one atomically, the others delete theirs.
-      mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-docs-venv.XXXXXX)" || exit 1
-      old="$(readlink hermes-docs-venv)"  # an earlier build that no longer imports, if any
-      python3 -m venv "$stage" &&
-        "$stage/bin/python" -m pip install -q --disable-pip-version-check python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 reportlab==5.1.0 pypdf==6.21.2 pdfplumber==0.11.10 pypdfium2==5.14.0 &&
-        "$stage/bin/python" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" &&
-        if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-docs-venv
-        elif [ "$(readlink hermes-docs-venv)" = "$old" ]; then
-          ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-docs-venv &&
-            case "$old" in hermes-docs-venv.??????) rm -rf "$old" ;; esac
-        fi 2>/dev/null
-      [ "$(readlink hermes-docs-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
-    )
-  fi
-  export PY
-  "$PY" scripts/pptx_create.py --help
-  ```
-
-  Run every helper below with `"$PY"`. In PowerShell (Hermes runs on that
-  host, so it is on PATH):
-  `$env:PY = hermes pm environment documents --extra documents --extra documents-pdf`.
-  Never `pip install` into the interpreter that runs Hermes or into the
-  `hermes pm environment` one; Hermes owns both.
-- Optional: LibreOffice (`soffice`) plus poppler (`pdftoppm` or
-  `pdftocairo`) for rendering slides to PNGs and for PDF export.
-  `pptx_render.py` detects both with `shutil.which` and degrades
-  gracefully (reports `{"rendered": false, "missing": [...]}`, exit 0)
-  when absent — all create/read/edit operations work without them.
-- Check availability via `terminal`:
-  `"$PY" -c "import pptx; print(pptx.__version__)"` and `which soffice pdftoppm`.
-
 ## How to Run
 
 All scripts live in `scripts/`, take `--help`, print JSON to stdout, and
 exit non-zero on failure. Run them with `terminal`:
 
 ```bash
-python scripts/pptx_create.py deck.json out.pptx
-python scripts/pptx_read.py deck.pptx --outline      # full JSON outline
-python scripts/pptx_read.py deck.pptx --notes        # speaker notes
-python scripts/pptx_read.py deck.pptx --images ./img # export pictures
-python scripts/pptx_edit.py deck.pptx --replace-text "Old Corp" "New Corp"
-python scripts/pptx_edit.py deck.pptx --chart-data update.json
-python scripts/pptx_edit.py deck.pptx --duplicate-slide 2
-python scripts/pptx_edit.py deck.pptx --remove-slide 3 --move-slide 2 0
-python scripts/pptx_from_template.py brand.pptx out.pptx --values vals.json
-python scripts/pptx_render.py deck.pptx --outdir ./render  # slide PNGs
+"$PY" scripts/pptx_create.py deck.json out.pptx
+"$PY" scripts/pptx_read.py deck.pptx --outline      # full JSON outline
+"$PY" scripts/pptx_read.py deck.pptx --notes        # speaker notes
+"$PY" scripts/pptx_read.py deck.pptx --images ./img # export pictures
+"$PY" scripts/pptx_edit.py deck.pptx --replace-text "Old Corp" "New Corp"
+"$PY" scripts/pptx_edit.py deck.pptx --chart-data update.json
+"$PY" scripts/pptx_edit.py deck.pptx --duplicate-slide 2
+"$PY" scripts/pptx_edit.py deck.pptx --remove-slide 3 --move-slide 2 0
+"$PY" scripts/pptx_from_template.py brand.pptx out.pptx --values vals.json
+"$PY" scripts/pptx_render.py deck.pptx --outdir ./render  # slide PNGs
 ```
 
 Author JSON specs with `write_file`; inspect script output and generated
@@ -195,19 +134,6 @@ each with `vision_analyze`. When either tool is missing the script exits
 0 with `{"rendered": false, "missing": [...]}` and guidance; fall back to
 the JSON outline from `pptx_read.py`, which verifies content and
 structure, just not visuals.
-
-## Converting to PDF
-
-If LibreOffice is installed, export the finished deck to PDF directly:
-
-```bash
-soffice --headless --convert-to pdf --outdir ./out deck.pptx
-```
-
-The output lands at `./out/deck.pdf`. Fonts not installed on the host are
-substituted, so render-verify (Procedure step 5) before shipping the PDF.
-There is no offline pure-Python .pptx→PDF path; if `soffice` is absent,
-say so rather than approximating.
 
 ## Pitfalls
 

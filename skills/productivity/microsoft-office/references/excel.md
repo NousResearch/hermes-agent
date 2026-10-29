@@ -1,18 +1,7 @@
----
-name: xlsx
-description: Create, read, edit Excel .xlsx workbooks and CSVs.
-version: 1.1.0
-author: Nous Research
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [excel, spreadsheet, xlsx, csv, openpyxl, productivity]
-    category: productivity
-    related_skills: [docx, pdf, powerpoint]
----
+# Excel (.xlsx, .csv)
 
-# Xlsx Skill
+Run the helpers with `"$PY"` from the Prerequisites block in `SKILL.md`, from the
+skill directory.
 
 Work with Excel .xlsx workbooks using Python and openpyxl: build styled
 multi-sheet workbooks with formulas and charts, inspect or dump existing
@@ -36,67 +25,21 @@ scripts are argparse CLIs that print JSON and use explicit UTF-8 I/O.
 - Not for the legacy .xls binary format (use LibreOffice to convert
   first: `soffice --headless --convert-to xlsx old.xls`).
 
-## Prerequisites
-
-- Python 3.10+ with `openpyxl`. No other third-party packages are
-  needed; everything else is stdlib.
-- Pick the interpreter with `terminal`. Use `python` when it already imports
-  the libraries (the Hermes Docker image ships them). Otherwise, when `hermes`
-  is on PATH, let Hermes build its shared, pinned documents environment under
-  the Hermes home: it survives container restarts, never touches the Hermes
-  install itself, and is safe to run from several agents at once. When it is
-  not (the terminal runs in a Docker sandbox, which has no Hermes), the block
-  builds a venv in the sandbox home with the same pinned versions. Use this
-  exact block in every document skill so they all share one environment:
-
-  ```bash
-  python -c "import openpyxl" 2>/dev/null && PY=python || if command -v hermes >/dev/null 2>&1; then
-    PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
-  else
-    PY="$HOME/.cache/hermes-docs-venv/bin/python"
-    "$PY" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null || (
-      # Safe to run from several agents at once: each caller builds a private venv,
-      # a symlink publishes the first finished one atomically, the others delete theirs.
-      mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-docs-venv.XXXXXX)" || exit 1
-      old="$(readlink hermes-docs-venv)"  # an earlier build that no longer imports, if any
-      python3 -m venv "$stage" &&
-        "$stage/bin/python" -m pip install -q --disable-pip-version-check python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 reportlab==5.1.0 pypdf==6.21.2 pdfplumber==0.11.10 pypdfium2==5.14.0 &&
-        "$stage/bin/python" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" &&
-        if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-docs-venv
-        elif [ "$(readlink hermes-docs-venv)" = "$old" ]; then
-          ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-docs-venv &&
-            case "$old" in hermes-docs-venv.??????) rm -rf "$old" ;; esac
-        fi 2>/dev/null
-      [ "$(readlink hermes-docs-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
-    )
-  fi
-  export PY
-  "$PY" scripts/xlsx_create.py --help
-  ```
-
-  Run every helper below with `"$PY"`. In PowerShell (Hermes runs on that
-  host, so it is on PATH):
-  `$env:PY = hermes pm environment documents --extra documents --extra documents-pdf`.
-  Never `pip install` into the interpreter that runs Hermes or into the
-  `hermes pm environment` one; Hermes owns both.
-- Optional: LibreOffice (`soffice`) for headless recalculation or
-  format conversion.
-
 ## How to Run
 
 Run the helper scripts with the `terminal` tool from this skill's
 `scripts/` directory (every script supports `--help`):
 
 ```bash
-python scripts/xlsx_create.py spec.json report.xlsx   # build from JSON spec
-python scripts/xlsx_read.py report.xlsx --sheets      # inventory
-python scripts/xlsx_read.py report.xlsx --json --sheet Data
-python scripts/xlsx_read.py report.xlsx --formulas
-python scripts/xlsx_edit.py report.xlsx --sheet Data --set B2=42 --recalc
-python scripts/xlsx_restructure.py report.xlsx --sheet Data --insert-rows 3:2
-python scripts/xlsx_recalc.py report.xlsx
-python scripts/csv_to_xlsx.py data.csv out.xlsx --encoding utf-8
-python scripts/xlsx_to_csv.py report.xlsx out.csv --sheet Data
+"$PY" scripts/xlsx_create.py spec.json report.xlsx   # build from JSON spec
+"$PY" scripts/xlsx_read.py report.xlsx --sheets      # inventory
+"$PY" scripts/xlsx_read.py report.xlsx --json --sheet Data
+"$PY" scripts/xlsx_read.py report.xlsx --formulas
+"$PY" scripts/xlsx_edit.py report.xlsx --sheet Data --set B2=42 --recalc
+"$PY" scripts/xlsx_restructure.py report.xlsx --sheet Data --insert-rows 3:2
+"$PY" scripts/xlsx_recalc.py report.xlsx
+"$PY" scripts/csv_to_xlsx.py data.csv out.xlsx --encoding utf-8
+"$PY" scripts/xlsx_to_csv.py report.xlsx out.csv --sheet Data
 ```
 
 Author the JSON spec with `write_file`, inspect script JSON output with
@@ -176,20 +119,6 @@ Author the JSON spec with `write_file`, inspect script JSON output with
    dates and blank strings for empty cells. Both default to UTF-8 and
    accept `--encoding` (e.g. `utf-8-sig` for Excel-friendly BOM,
    `cp1252` for legacy Windows exports).
-
-## Converting to PDF
-
-LibreOffice converts headlessly (also works for CSV export of a single
-sheet):
-
-```bash
-soffice --headless --convert-to pdf report.xlsx --outdir out/
-soffice --headless --convert-to csv report.xlsx --outdir out/  # 1st sheet only
-```
-
-Only the first sheet lands in a CSV; for other sheets use
-`xlsx_to_csv.py --sheet NAME`. If `soffice` is missing, install
-LibreOffice or hand the file to the user unconverted.
 
 ## Pitfalls
 

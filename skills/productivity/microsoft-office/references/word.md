@@ -1,25 +1,14 @@
----
-name: docx
-description: Create, read, edit, template, and review Word .docx files.
-version: 1.1.0
-author: Nous Research
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [word, docx, documents, office, templates, revisions, comments]
-    category: productivity
-    related_skills: [pdf, xlsx, powerpoint]
----
+# Word (.docx)
 
-# Docx Skill
+Run the helpers with `"$PY"` from the Prerequisites block in `SKILL.md`, from the
+skill directory.
 
 Create, read, edit, and template Microsoft Word `.docx` files with
 python-docx via small CLIs. It handles text, styles, lists, tables,
 images, headers/footers, `{{token}}` templating, tracked changes
 (list/accept/reject), comments (list/add/delete), TOC and page-number
 fields, and package health checks. It does not render documents itself
-(PDF needs LibreOffice — see Converting to PDF) or edit legacy `.doc`.
+(PDF needs LibreOffice — see Converting to PDF in SKILL.md) or edit legacy `.doc`.
 
 ## When to Use
 
@@ -34,65 +23,19 @@ fields, and package health checks. It does not render documents itself
 - The document needs a table of contents or "Page X of Y" footers.
 - Not for: `.doc` (legacy), `.odt`, or WYSIWYG layout work.
 
-## Prerequisites
-
-- Python 3.10+ with `python-docx` (import name `docx`; lxml comes with it).
-- Pick the interpreter with `terminal`. Use `python` when it already imports
-  the libraries (the Hermes Docker image ships them). Otherwise, when `hermes`
-  is on PATH, let Hermes build its shared, pinned documents environment under
-  the Hermes home: it survives container restarts, never touches the Hermes
-  install itself, and is safe to run from several agents at once. When it is
-  not (the terminal runs in a Docker sandbox, which has no Hermes), the block
-  builds a venv in the sandbox home with the same pinned versions. Use this
-  exact block in every document skill so they all share one environment:
-
-  ```bash
-  python -c "import docx" 2>/dev/null && PY=python || if command -v hermes >/dev/null 2>&1; then
-    PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
-  else
-    PY="$HOME/.cache/hermes-docs-venv/bin/python"
-    "$PY" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null || (
-      # Safe to run from several agents at once: each caller builds a private venv,
-      # a symlink publishes the first finished one atomically, the others delete theirs.
-      mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-docs-venv.XXXXXX)" || exit 1
-      old="$(readlink hermes-docs-venv)"  # an earlier build that no longer imports, if any
-      python3 -m venv "$stage" &&
-        "$stage/bin/python" -m pip install -q --disable-pip-version-check python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 reportlab==5.1.0 pypdf==6.21.2 pdfplumber==0.11.10 pypdfium2==5.14.0 &&
-        "$stage/bin/python" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" &&
-        if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-docs-venv
-        elif [ "$(readlink hermes-docs-venv)" = "$old" ]; then
-          ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-docs-venv &&
-            case "$old" in hermes-docs-venv.??????) rm -rf "$old" ;; esac
-        fi 2>/dev/null
-      [ "$(readlink hermes-docs-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
-    )
-  fi
-  export PY
-  "$PY" scripts/docx_create.py --help
-  ```
-
-  Run every helper below with `"$PY"`. In PowerShell (Hermes runs on that
-  host, so it is on PATH):
-  `$env:PY = hermes pm environment documents --extra documents --extra documents-pdf`.
-  Never `pip install` into the interpreter that runs Hermes or into the
-  `hermes pm environment` one; Hermes owns both.
-- Comments `add` uses the native API on python-docx >= 1.2 and an XML
-  fallback on older versions — both are automatic.
-- For image blocks: the image files must exist locally (PNG/JPEG).
-
 ## How to Run
 
-All helpers live in `scripts/` next to this file. Run them with the
+All helpers live in the skill's `scripts/` directory. Run them with the
 `terminal` tool; each supports `--help` and prints JSON to stdout.
 
 ```bash
-python scripts/docx_create.py spec.json out.docx
-python scripts/docx_read.py out.docx --text
-python scripts/docx_edit.py replace out.docx --find old --replace new
-python scripts/docx_template.py tpl.docx values.json filled.docx
-python scripts/docx_revisions.py list out.docx
-python scripts/docx_comments.py list out.docx
-python scripts/docx_validate.py out.docx
+"$PY" scripts/docx_create.py spec.json out.docx
+"$PY" scripts/docx_read.py out.docx --text
+"$PY" scripts/docx_edit.py replace out.docx --find old --replace new
+"$PY" scripts/docx_template.py tpl.docx values.json filled.docx
+"$PY" scripts/docx_revisions.py list out.docx
+"$PY" scripts/docx_comments.py list out.docx
+"$PY" scripts/docx_validate.py out.docx
 ```
 
 ## Quick Reference
@@ -166,19 +109,6 @@ python scripts/docx_validate.py out.docx
 7. **Verify** (always): re-read the output with `--text` or
    `--structure`, and run `docx_validate.py` on anything you produced
    via revision/comment surgery.
-
-## Converting to PDF
-
-No script needed. When LibreOffice is installed, convert headlessly:
-
-```bash
-soffice --headless --convert-to pdf --outdir outdir/ file.docx
-```
-
-Check availability first (`command -v soffice || command -v
-libreoffice`). If neither exists, tell the user PDF conversion is
-unavailable in this environment rather than improvising — python-docx
-cannot render PDFs, and layout fidelity requires a real renderer.
 
 ## Pitfalls
 

@@ -287,7 +287,7 @@ FROM runtime_base AS python_deps
 # restores this baseline into volumes that already lost it.
 #
 # The [documents] extra (python-docx, openpyxl, python-pptx, reportlab, pypdf;
-# ~25 MB) is baked so the docx/xlsx/powerpoint/pdf skills work out of the box:
+# ~25 MB) is baked so the microsoft-office and pdf skills work out of the box:
 # this venv is sealed and has no pip, so the agent could not add them itself.
 #
 # Source binding is created after the source copy below.

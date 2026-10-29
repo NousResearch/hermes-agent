@@ -669,7 +669,8 @@ when nothing was started.
   per turn, a side question *or* a fork, shared by every plugin;
   unattended turns (cron, subagents) get none; another profile's plugin
   gets `None` and does not spend it. A plugin without `llm.session_fork`
-  gets `None` and does not spend it either; every other `None` spends it.
+  gets `None` and does not spend it either, nor does a request naming an
+  agent-spawning tool (below); every other `None` spends it.
 * `prompt` is a non-empty string of at most **8192 characters**, sent as
   the fork's user message. The system prompt and `tools[]` stay
   byte-identical to the session's, so the first request is mostly cache
@@ -680,6 +681,14 @@ when nothing was started.
   *sees* every session tool (cache parity); calls outside the list are
   refused at dispatch with a message naming the allowed tools. An empty
   list means a tool-less fork.
+* A fork never holds a tool that starts another agent loop:
+  `delegate_task`, `message_agent`, `cronjob_manage`, and the Kanban
+  moves that hand a task to a dispatched worker (`kanban_create`,
+  `kanban_unblock`, `kanban_complete`, `kanban_request_review`,
+  `kanban_request_changes`). That loop would run outside the fork's tool
+  list and its auto-denied approvals. Naming one returns `None` without
+  spending the token, and the fork's dispatch refuses them however they
+  are reached. The background review's `extra_tools` ignores them too.
 * `max_iterations` caps the fork's loop (1 to 16). The fork's aggregate
   input tokens are bounded like the background review's
   (`auxiliary.background_review.max_input_tokens`, default 75% of the

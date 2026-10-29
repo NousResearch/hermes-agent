@@ -1770,12 +1770,14 @@ stt:
   #     command: "custom-asr --input {input_path} --output {output_path}"
   #     normalize: true  # requires ffmpeg; default false
 
-# Text-to-speech. Only the deepinfra block is documented here — the
-# remaining providers (edge, openai, xai, minimax, mistral, gemini,
-# elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
-# DEFAULT_CONFIG in hermes_cli/config.py.
+# Text-to-speech. OpenAI streaming and DeepInfra options are shown here;
+# other provider settings inherit defaults from hermes_cli/config_defaults.py.
 # tts:
 #   provider: "deepinfra"
+#   openai:
+#     # Per-connect/read timeout, not a total sentence deadline. Finite number > 0 and <= 120.
+#     # Increase for cold model starts. Streaming synthesis never retries automatically.
+#     stream_timeout_seconds: 15.0
 #   deepinfra:
 #     # Model id is discovered live from the DeepInfra catalog filtered
 #     # by the `tts` surface tag — leave `model` blank to take the first

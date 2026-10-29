@@ -30,6 +30,7 @@ from hermes_constants import (
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.status_report import resolve_display_identity
 from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_state_ids import new_session_id
@@ -1615,26 +1616,26 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # A switch queued mid-turn applies at next turn start (agent.model still reads the OLD model); report the
     # pending pick so the end-of-turn settle doesn't blip the UI back first.
     pending_switch = sess.get("pending_model_switch") or {}
-    pending_model = str(pending_switch.get("display_model") or "").strip()
-    pending_provider = str(pending_switch.get("display_provider") or "").strip()
-    provider = mirror.get("provider", getattr(agent, "provider", ""))
-    if provider == "custom" and "provider" not in mirror and agent is not None:
-        provider = _scoped_session_provider(agent, sess)
-    model = pending_model or mirror.get("model", getattr(agent, "model", ""))
+    # Compute-host turns run out-of-process: the mirror is authoritative (same rule as
+    # `session.status`). Everything resolves through the shared helper.
+    identity_agent = None if sess.get("_compute_host_active") else agent
+    model, provider = resolve_display_identity(
+        agent=identity_agent, mirror=mirror, pending=pending_switch,
+        custom_resolver=lambda a: _scoped_session_provider(a, sess) if a is not None else "")
     # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
         reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
-            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
+            provider, model, getattr(agent, "api_mode", None))) or "")
     info: dict = {
         "model": model,
-        "provider": pending_provider or provider,
+        "provider": provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
         "service_tier": service_tier,
-        "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
-                                                                    route_known=not pending_provider, tier=service_tier),
+        "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, provider,
+                                                                    route_known=not pending_switch, tier=service_tier),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},

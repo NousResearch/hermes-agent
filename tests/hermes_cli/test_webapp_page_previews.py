@@ -1,12 +1,4 @@
-"""Live HTML previews on the gateway's Webapp page (``::preview`` widgets and artifacts).
-
-They render in sandboxed ``srcdoc`` frames, which inherit the Content-Security-Policy of the page that
-embeds them, and they load their libraries from a public CDN: the agent is told to pin each one as
-``https://cdn.jsdelivr.net/npm/<package>@<version>/<file>`` (``agent/onboarding_text.py``). A policy on
-the Webapp page that keeps scripts or stylesheets to its own origin blocks them, and the widget renders
-nothing (headless Chromium: ``script-src-elem`` violation, the CDN never asked). Until previews move to
-documents served with a policy of their own, whatever the page sends must let those loads through.
-"""
+"""Preview CDN loads use the isolated document policy, never the app policy."""
 from urllib.parse import urlsplit
 
 import pytest
@@ -24,6 +16,7 @@ def _page(monkeypatch, tmp_path):
     from hermes_cli import web_server as server
     from hermes_cli.web_server_dashboard import mount_spa
 
+    (tmp_path / "assets").mkdir()
     (tmp_path / "index.html").write_text("<html><head></head><body></body></html>")
     application = FastAPI()
     application.state.ui_surface = "webapp"
@@ -52,11 +45,10 @@ def _allows(policy: str, directives: tuple[str, ...], url: str) -> bool:
                for source in sources)
 
 
-@pytest.mark.parametrize("path", ["/", "/chat"])
 @pytest.mark.parametrize(("directives", "url"), PREVIEW_LOADS, ids=[d[0] for d, _ in PREVIEW_LOADS])
-def test_a_live_preview_can_load_its_cdn_libraries_under_the_webapp_pages_policy(
-        monkeypatch, tmp_path, path, directives, url):
-    response = _page(monkeypatch, tmp_path).get(path)
+def test_a_live_preview_can_load_its_cdn_libraries_under_its_own_policy(
+        monkeypatch, tmp_path, directives, url):
+    response = _page(monkeypatch, tmp_path).get("/assets/webapp-preview.html")
     assert response.status_code == 200
     for policy in response.headers.get_list("content-security-policy"):
         assert _allows(policy, directives, url), f"{directives[0]} blocks {url}: {policy}"

@@ -20,6 +20,7 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_local_probe import _localhost_to_ipv4, tags_server_verdict
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -708,16 +709,8 @@ def is_local_endpoint(base_url: str) -> bool:
     return first == 10 or (first == 172 and 16 <= second <= 31) or (first == 192 and second == 168) or (first == 100 and 64 <= second <= 127)
 
 
-def _localhost_to_ipv4(url: str) -> str:
-    """``localhost`` HOST -> ``127.0.0.1`` (Windows dual-stack resolves ::1 first and pays a ~2s IPv6
-    connect timeout on IPv4-only servers). Scheme-anchored so ``?upstream=http://localhost`` is untouched."""
-    if not url or not isinstance(url, str):
-        return url  # non-string values (test doubles, lazy config) pass through
-    return re.sub(r"^(https?://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", url, count=1)
-
-
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
-    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
+    """Probe known endpoints: "ollama", "sglang", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
@@ -744,7 +737,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     # with {"error": ...} and 200, so Ollama's body must carry "models"; older llama.cpp builds have no /v1 prefix.
     waterfall = (
         ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: True),
-        ("ollama", (f"{server_url}/api/tags",), lambda r: "models" in r.json()),
+        ("ollama", (f"{server_url}/api/tags",), tags_server_verdict),  # names SGLang, which also serves it
         ("llamacpp", (f"{server_url}/v1/props", f"{server_url}/props"), lambda r: "default_generation_settings" in r.text),
         ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),
     )
@@ -757,8 +750,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         r = client.get(url)
                         if r.status_code == 200:
                             break
-                    if r.status_code == 200 and check(r):
-                        result = name
+                    if r.status_code == 200 and (verdict := check(r)):
+                        result = verdict if isinstance(verdict, str) else name  # a check may name the owner
                         break
                 except Exception as exc:
                     # A connect timeout condemns the host: skip the remaining legs.

@@ -21,6 +21,19 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
+def billing_failover_enabled() -> bool:
+    """Opt-in ``fallback.on_billing`` (default false): treat a *verified* billing exhaustion
+    (HTTP 402 Insufficient Balance / insufficient_quota) as failover-eligible and switch to the
+    next configured provider instead of ending the turn (#143148). Default stays off: moving
+    spend to another account/provider is an operator decision, not a transient-availability
+    problem, and the credential pool's billing latch remains the primary path."""
+    try:
+        from hermes_cli.config import load_config
+        return bool((load_config() or {}).get("fallback", {}).get("on_billing") or False)
+    except Exception:
+        return False
+
+
 def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so

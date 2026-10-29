@@ -15,8 +15,11 @@ def cmd_tts(args: argparse.Namespace) -> int:
     subcmd = getattr(args, "tts_command", None)
     if subcmd == "serve":
         return _cmd_tts_serve(args)
-    print(f"Unknown tts command: {subcmd}")
-    print("Usage: hermes tts serve [--host HOST] [--port PORT]")
+    if subcmd:
+        print(f"Unknown tts command: {subcmd}")
+    else:
+        print("Usage: hermes tts serve [--host HOST] [--port PORT]")
+    print("Run 'hermes tts --help' for the available sub-actions.")
     return 1
 
 

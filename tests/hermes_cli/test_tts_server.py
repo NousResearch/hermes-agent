@@ -8,6 +8,7 @@ request body shape, the response headers and the bytes on the wire.
 
 from __future__ import annotations
 
+import argparse
 import json
 import threading
 import urllib.error
@@ -184,6 +185,29 @@ def test_bind_allows_loopback_by_default():
     """The default bind is loopback on both spellings of the address."""
     for host in ("127.0.0.1", "::1", "localhost"):
         assert tts_server._resolve_bind_address(host, 5099, allow_remote=False)[0] == host
+
+
+def test_tts_without_a_subcommand_reports_usage(capsys):
+    """``hermes tts`` with no sub-action must say what to run, not print the top-level usage."""
+    from hermes_cli.tts_cli import cmd_tts
+
+    code = cmd_tts(argparse.Namespace(tts_command=None))
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "hermes tts serve" in out
+    assert "hermes tts --help" in out
+
+
+def test_unknown_tts_subcommand_is_rejected(capsys):
+    """An unknown sub-action must fail loudly rather than silently doing nothing."""
+    from hermes_cli.tts_cli import cmd_tts
+
+    code = cmd_tts(argparse.Namespace(tts_command="bogus"))
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "bogus" in out
 
 
 def test_synthesis_failure_envelope_becomes_a_client_error(monkeypatch):

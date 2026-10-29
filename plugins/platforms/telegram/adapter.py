@@ -7224,8 +7224,21 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 # _PLATFORMS["telegram"] static dict in hermes_cli/{setup,gateway}.py, and the _send_telegram dispatch in
 # tools/send_message_tool.py). Telegram uses the generic token connected check, so no is_connected override
 # is needed. ──────────────────────────────────────────────────────────────────────────
+_notifications_mode_cache: Optional[str] = None
+
+
 def _resolve_notifications_mode() -> str:
-    """Notification mode (all/important) from env, else config.yaml display.platforms.telegram.notifications."""
+    """Notification mode (all/important) from env, else config.yaml display.platforms.telegram.notifications.
+
+    Memoised for the process. The config fallback calls ``load_gateway_config()``, which re-reads
+    config.yaml and re-scans every bundled plugin manifest — ~0.77 s of synchronous work, repeated on
+    every adapter rebuild, i.e. on every network flap. The value is static YAML; changing it needs a
+    gateway restart anyway. A config read that raises is not memoised, so a transient failure retries
+    on the next build instead of pinning the default for the process lifetime.
+    """
+    global _notifications_mode_cache
+    if _notifications_mode_cache is not None:
+        return _notifications_mode_cache
     mode = os.getenv("HERMES_TELEGRAM_NOTIFICATIONS", "")
     if not mode:
         try:
@@ -7235,11 +7248,12 @@ def _resolve_notifications_mode() -> str:
             if _raw not in {None, ""}:
                 mode = str(_raw).strip().lower()
         except Exception:
-            pass
+            return "important"
     mode = mode or "important"
     if mode not in {"all", "important"}:
         logger.warning("Unknown telegram notifications mode '%s', defaulting to 'important' (valid: all, important)", mode)
         mode = "important"
+    _notifications_mode_cache = mode
     return mode
 
 

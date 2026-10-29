@@ -371,9 +371,11 @@ class GatewayVoiceMixin:
     def _should_send_voice_reply(
         self, event: MessageEvent, response: str, agent_messages: list, already_sent: bool = False
     ) -> bool:
-        """False when voice_mode is off for this chat, the response is empty/an error, the agent
-        already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
-        — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
+        """Whether this reply needs narration, independent of final-text delivery.
+
+        The runner owns speech for its replies, including unstreamed voice input.
+        ``already_sent`` remains accepted for callers reporting streamed text.
+        """
         if not response or response.startswith("Error:"):
             return False
         # A2A is agent-to-agent text. The adapter has no native send_voice, so
@@ -402,19 +404,116 @@ class GatewayVoiceMixin:
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
             return False
-        # Dedup: agent already called the TTS tool in THIS turn (from the last user message on).
-        start = next((i for i, m in reversed(list(enumerate(agent_messages)))
-                      if m.get("role") == "user"), 0)
-        if any((tc.get("function") or {}).get("name") == "text_to_speech"
-               for msg in agent_messages[start:] if msg.get("role") == "assistant"
-               for tc in (msg.get("tool_calls") or [])):
+        # An attempt is not speech. Only matched, successful current-turn artifacts deduplicate.
+        if self._reply_speech_artifacts(agent_messages):
             return False
-        # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
-        # connected) — unless streaming consumed the text (already_sent): then the runner must.
-        return not (is_voice_input and not already_sent)
+        return True
+
+    @staticmethod
+    def _reply_speech_artifacts(messages):
+        from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+        start = next((i for i, m in reversed(list(enumerate(messages))) if m.get("role") == "user"), 0)
+        calls, artifacts = set(), []
+        for message in messages[start:]:
+            for call in message.get("tool_calls") or []:
+                if (call.get("function") or {}).get("name") == "text_to_speech":
+                    calls.update(tool_call_id_variants(call))
+            if message.get("role") != "tool" or not calls.intersection(
+                    tool_result_id_variants(message.get("tool_call_id") or message.get("call_id"))):
+                continue
+            content = message.get("content")
+            try:
+                result = json.loads(content) if isinstance(content, str) else content
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(result, dict) or result.get("success") is not True:
+                continue
+            paths = result.get("file_paths") or [result.get("file_path")]
+            if not isinstance(paths, list):
+                continue
+            artifacts.extend((p, bool(result.get("voice_compatible"))) for p in paths
+                             if isinstance(p, str) and os.path.isfile(p))
+        return list(dict.fromkeys(artifacts))
+
+    def _include_reply_speech(self, response, messages, adapter):
+        """Recover only successful TTS output, even when another MEDIA tag already exists."""
+        artifacts = self._reply_speech_artifacts(messages)
+        if not response or adapter is None or not artifacts:
+            return response
+        media, body = adapter.extract_media(response)
+        local, _ = adapter.extract_local_files(body)
+        present = {os.path.abspath(p) for p, _voice in media} | {os.path.abspath(p) for p in local}
+        for path, voice_compatible in artifacts:
+            if os.path.abspath(path) not in present:
+                response += f"\n{'[[audio_as_voice]]' if voice_compatible else ''}\nMEDIA:{path}"
+                present.add(os.path.abspath(path))
+        return response
 
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
+
+    async def _narrate_reply(self, event, response, agent_messages, session_key, generation, *, text_delivered=False):
+        """Claim narration once, independently of written-body and attachment delivery."""
+        if getattr(event, "_reply_voice_managed", False):
+            return bool(getattr(event, "_reply_voice_caption", False))
+        event._reply_voice_managed = True
+        adapter = self._delivery_adapter_for(event.source)
+        streaming_done = adapter is not None and bool(
+            adapter._streaming_tts_turn_completed(session_key, generation))
+        if streaming_done or not self._should_send_voice_reply(event, response, agent_messages):
+            return False
+        extracted = None
+        if adapter is not None and ("[[audio_as_voice]]" in response or (
+                event.message_type == MessageType.VOICE and not text_delivered)):
+            extracted = await adapter._extract_response_content(response, event, session_key, is_ephemeral_response=False)
+            # Explicit supplied speech already belongs to the attachment plan. Do not
+            # regenerate it, and do not confuse ordinary music/audio with narration.
+            if extracted.media_files and await asyncio.to_thread(self._has_existing_voice_media, extracted.media_files):
+                return False
+        if event.message_type == MessageType.VOICE and not text_delivered and extracted is not None:
+            return await self._play_reply_narration(adapter, event, extracted.text_content, session_key)
+        await self._send_voice_reply(event, response)
+        return False
+
+    @staticmethod
+    def _has_existing_voice_media(media):
+        """Blocking artifact validation, called off-loop by the coordinator."""
+        return any(voice and os.path.isfile(path) for path, voice in media)
+
+    async def _play_reply_narration(self, adapter, event, text_content, session_key):
+        """Preserve adapter playback and confirmed-caption semantics for voice input."""
+        paths, requested = await adapter._synthesize_auto_tts(text_content)
+        results, caption = [], False
+        try:
+            guard = adapter._active_sessions.get(session_key)
+            if guard is not None and guard.is_set():
+                return False
+            metadata = dict(self._event_thread_metadata(event, event.source) or {}, notify=True)
+            for index, path in enumerate(paths):
+                caption |= await adapter._play_tts_file(event, text_content, path, index == 0, metadata, results.append)
+        except Exception as error:
+            # Narration failure must not discard the written answer or its files.
+            logger.warning("Auto voice playback failed: %s", error, exc_info=True)
+        finally:
+            for path in {requested, *paths} - {None}:
+                with suppress(OSError):
+                    os.unlink(path)
+        event._reply_voice_caption = caption
+        if results:
+            event._reply_voice_result = next((r for r in results if getattr(r, "success", False)), results[0])
+        return caption
+
+    async def _narrate_queued_reply(self, turn_ctx, response, result, *, text_delivered=False):
+        event = turn_ctx.reply_event or MessageEvent(
+            text="", source=turn_ctx.source,
+            message_type=MessageType.VOICE if turn_ctx.voice_turn else MessageType.TEXT,
+            message_id=turn_ctx.inbound_message_id or turn_ctx.event_message_id,
+        )
+        caption = await self._narrate_reply(
+            event, response, result.get("messages", []), turn_ctx.session_key, turn_ctx.run_generation,
+            text_delivered=text_delivered)
+        result["_reply_voice_managed"] = True
+        return caption
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool

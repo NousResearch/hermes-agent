@@ -72,7 +72,7 @@ async def test_queued_followup_persists_authored_text():
     turn_ctx = SimpleNamespace(
         source=source, session_id="sid", session_key="agent:main:discord:dm:dm1", run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata=None, context_prompt=None,
-        result_holder=[None],
+        result_holder=[None], voice_turn=False,
     )
     pending_event = SimpleNamespace(
         source=source, message_id="6002", channel_prompt=None, message_type=None, internal=False, metadata={},

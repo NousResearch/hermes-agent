@@ -73,6 +73,7 @@ export const frBoot = {
       signedInMessage: 'Reconnexion au gateway distante…',
       signInIncompleteTitle: 'Connexion incomplète',
       signInIncompleteMessage: "La fenêtre de connexion s'est fermée avant la fin de l'authentification.",
+      browserSignInIncompleteMessage: "La connexion n'a pas été terminée dans le navigateur.",
       signInFailed: 'Échec de la connexion',
       signInToRemoteGateway: 'Se connecter au gateway distante',
       signInWithProvider: provider => `Se connecter avec ${provider}`,

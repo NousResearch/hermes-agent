@@ -188,14 +188,14 @@ test('the flight key is the jar plus the gateway origin', () => {
 })
 
 // main.ts is not importable under vitest; pin which callers count as unattended.
-test('refused requests and the boot cascade sign in hidden; only user actions may show a window', () => {
+// The Hermes Cloud boot cascade opens no window at all: it is a token exchange
+// (portal-session.test.ts: 'background portal auth never opens the system
+// browser: only login() does').
+test('refused requests sign in hidden; only user actions may show a window', () => {
   const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
   const fetchStart = source.indexOf('function fetchJsonViaOauthSession(')
   const fetchBody = source.slice(fetchStart, source.indexOf('\n}\n', fetchStart))
-  const bootStart = source.indexOf('async function waitForRemoteHermes(')
-  const bootBody = source.slice(bootStart, source.indexOf('\n}\n', bootStart))
 
   expect(fetchBody).toContain('openOauthLoginWindow(origin, { silent: true, background: true })')
-  expect(bootBody).toContain('cloudAgentSilentSignIn(remote.baseUrl, { background: true })')
   expect(source).toContain("unattended ? 'background' : 'foreground'")
 })

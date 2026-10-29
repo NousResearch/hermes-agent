@@ -12,7 +12,8 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { runNativeLogin } from './native-oauth-login'
+import { NativeLoginCancelledError } from './native-oauth'
+import { nativeLoginFailureResult, runLoopbackAuthorization, runNativeLogin } from './native-oauth-login'
 
 // A fake http.Server: captures the request handler, lets the test drive a
 // synthetic browser callback, and records listen/close lifecycle.
@@ -39,11 +40,26 @@ function makeFakeServerFactory(port = 51234) {
     return server
   }
 
-  // Drive a synthetic browser hit to the loopback callback.
-  state.hitCallback = (query: string) => {
-    const res: any = { writeHead: () => undefined, end: () => undefined }
-    state.handler({ url: `/callback?${query}` }, res)
+  // Drive a synthetic browser hit to the loopback callback. Returns what the
+  // browser was answered with.
+  state.hit = (url: string) => {
+    const reply: { status: number; body: string } = { status: 0, body: '' }
+
+    const res: any = {
+      writeHead: (status: number) => {
+        reply.status = status
+      },
+      end: (body = '') => {
+        reply.body = body
+      }
+    }
+
+    state.handler({ url }, res)
+
+    return reply
   }
+
+  state.hitCallback = (query: string) => state.hit(`/callback?${query}`)
 
   return { createServer, state }
 }
@@ -102,44 +118,215 @@ test('runNativeLogin completes the loopback round trip and returns tokens', asyn
   assert.equal(state.closed, true)
 })
 
-test('runNativeLogin rejects on a state mismatch (CSRF) without redeeming', async () => {
+const tick = () => new Promise(r => setTimeout(r, 5))
+
+function startGatewayLogin(extra: Record<string, unknown> = {}) {
   const { createServer, state } = makeFakeServerFactory()
-  let tokenPostCalled = false
+  let opened = ''
+  let redeemed = 0
 
   const promise = runNativeLogin('https://gw.example.com', {
-    openExternal: async () => undefined,
+    openExternal: async url => {
+      opened = url
+    },
     postJson: async () => {
-      tokenPostCalled = true
+      redeemed++
 
-      return {}
+      return { access_token: 'AT-ok', refresh_token: 'RT-ok' }
     },
     createServer,
-    timeoutMs: 5_000
+    timeoutMs: 5_000,
+    ...extra
   })
 
-  await new Promise(r => setTimeout(r, 5))
-  // Wrong state — must not redeem the code.
-  state.hitCallback('code=evil&state=not-the-real-state')
+  let outcome: 'pending' | 'resolved' | 'rejected' = 'pending'
+  promise.then(
+    () => (outcome = 'resolved'),
+    () => (outcome = 'rejected')
+  )
 
-  await assert.rejects(promise, /state mismatch/i)
-  assert.equal(tokenPostCalled, false)
-  assert.equal(state.closed, true)
+  return {
+    promise,
+    state,
+    realState: () => new URL(opened).searchParams.get('state')!,
+    redeemed: () => redeemed,
+    outcome: () => outcome
+  }
+}
+
+test('a callback with a mismatched state is answered 400 and IGNORED: the login keeps waiting (no DoS)', async () => {
+  const login = startGatewayLogin()
+  await tick()
+
+  const reply = login.state.hitCallback('code=evil&state=not-the-real-state')
+  await tick()
+
+  assert.equal(reply.status, 400)
+  // The success page is rendered only after the state check.
+  assert.doesNotMatch(reply.body, /signed in/i)
+  assert.equal(login.redeemed(), 0)
+  assert.equal(login.outcome(), 'pending')
+  assert.equal(login.state.closed, false)
+
+  // The genuine redirect still completes the sign-in.
+  const good = login.state.hitCallback(`code=real&state=${login.realState()}`)
+  assert.equal(good.status, 200)
+  assert.match(good.body, /signed in/i)
+  assert.equal((await login.promise).accessToken, 'AT-ok')
+  assert.equal(login.redeemed(), 1)
 })
 
-test('runNativeLogin surfaces a gateway error param', async () => {
-  const { createServer, state } = makeFakeServerFactory()
+test('stateless and foreign-state error callbacks are ignored, never a cancel or a failure', async () => {
+  const login = startGatewayLogin()
+  await tick()
 
-  const promise = runNativeLogin('https://gw.example.com', {
-    openExternal: async () => undefined,
-    postJson: async () => ({}),
-    createServer,
-    timeoutMs: 5_000
+  for (const query of ['error=access_denied&error_description=user_declined', 'error=access_denied&state=attacker']) {
+    assert.equal(login.state.hitCallback(query).status, 400)
+  }
+
+  await tick()
+  assert.equal(login.outcome(), 'pending')
+  login.state.hitCallback(`code=real&state=${login.realState()}`)
+  assert.equal((await login.promise).accessToken, 'AT-ok')
+})
+
+test('only the /callback path is honoured; any other path is 404 and ignored', async () => {
+  const login = startGatewayLogin()
+  await tick()
+
+  assert.equal(login.state.hit(`/favicon.ico`).status, 404)
+  assert.equal(login.state.hit(`/other?code=x&state=${login.realState()}`).status, 404)
+  await tick()
+  assert.equal(login.redeemed(), 0)
+  assert.equal(login.outcome(), 'pending')
+  login.state.hitCallback(`code=real&state=${login.realState()}`)
+  await login.promise
+})
+
+test('a Deny (error=access_denied with our state) rejects as a typed cancel with a cancelled page', async () => {
+  const login = startGatewayLogin()
+  await tick()
+
+  const reply = login.state.hitCallback(`error=access_denied&state=${login.realState()}`)
+
+  const error = await login.promise.catch(e => e)
+  assert.ok(error instanceof NativeLoginCancelledError)
+  assert.match(error.message, /access_denied/)
+  assert.match(reply.body, /sign-in cancelled/i)
+  assert.equal(login.state.closed, true)
+})
+
+test('any other error with our state is a failure with a neutral "did not complete" page', async () => {
+  const login = startGatewayLogin()
+  await tick()
+
+  const reply = login.state.hitCallback(`error=server_error&state=${login.realState()}`)
+
+  const error = await login.promise.catch(e => e)
+  assert.ok(!(error instanceof NativeLoginCancelledError))
+  assert.match(error.message, /server_error/)
+  assert.match(reply.body, /did not complete/i)
+  assert.doesNotMatch(reply.body, /cancelled/i)
+})
+
+test('a callback with our state but neither code nor error gets the "did not complete" page, not success', async () => {
+  const login = startGatewayLogin()
+  await tick()
+
+  const reply = login.state.hitCallback(`state=${login.realState()}`)
+
+  const error = await login.promise.catch(e => e)
+  assert.match(error.message, /missing authorization code/i)
+  assert.equal(reply.status, 200)
+  assert.match(reply.body, /did not complete/i)
+  assert.doesNotMatch(reply.body, /signed in/i)
+  assert.equal(login.redeemed(), 0)
+})
+
+test('aborting the signal cancels a pending login and tears the listener down', async () => {
+  const controller = new AbortController()
+  const login = startGatewayLogin({ signal: controller.signal })
+  await tick()
+
+  controller.abort()
+
+  const error = await login.promise.catch(e => e)
+  assert.ok(error instanceof NativeLoginCancelledError)
+  assert.equal(login.state.closed, true)
+  assert.equal(login.redeemed(), 0)
+})
+
+test('an already-aborted signal never opens the browser', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  let opened = false
+  const { createServer } = makeFakeServerFactory()
+
+  const error = await runLoopbackAuthorization(
+    {
+      openExternal: async () => {
+        opened = true
+      },
+      createServer,
+      signal: controller.signal
+    },
+    { buildAuthorizeUrl: () => 'https://idp.example/authorize', redeem: async () => 'x' }
+  ).catch(e => e)
+
+  assert.ok(error instanceof NativeLoginCancelledError)
+  assert.equal(opened, false)
+})
+
+test('the authorize URL is reported to onAuthorizeUrl so the UI can offer a copy-link fallback', async () => {
+  const reported: string[] = []
+  const login = startGatewayLogin({ onAuthorizeUrl: (url: string) => reported.push(url) })
+  await tick()
+
+  assert.equal(reported.length, 1)
+  assert.equal(new URL(reported[0]).searchParams.get('state'), login.realState())
+  login.state.hitCallback(`code=real&state=${login.realState()}`)
+  await login.promise
+})
+
+test('nativeLoginFailureResult maps a browser Deny to a quiet cancel and anything else to an error', () => {
+  assert.deepEqual(nativeLoginFailureResult(new NativeLoginCancelledError()), {
+    ok: false,
+    connected: false,
+    cancelled: true
   })
+  assert.deepEqual(nativeLoginFailureResult(new Error('boom')), { ok: false, connected: false, error: 'boom' })
+})
+
+test('runLoopbackAuthorization hands redeem the exact redirect_uri it authorized with', async () => {
+  const { createServer, state } = makeFakeServerFactory(40404)
+  let authorizeRedirect = ''
+  let authorizeState = ''
+  let redeemed: any = null
+
+  const promise = runLoopbackAuthorization(
+    { openExternal: async () => undefined, createServer, timeoutMs: 5_000 },
+    {
+      buildAuthorizeUrl: ({ redirectUri, state: s }) => {
+        authorizeRedirect = redirectUri
+        authorizeState = s
+
+        return `https://idp.example/authorize?state=${s}`
+      },
+      redeem: async params => {
+        redeemed = params
+
+        return 'ok'
+      }
+    }
+  )
 
   await new Promise(r => setTimeout(r, 5))
-  state.hitCallback('error=access_denied&error_description=user_declined')
-
-  await assert.rejects(promise, /access_denied/i)
+  state.hitCallback(`code=C1&state=${authorizeState}`)
+  assert.equal(await promise, 'ok')
+  assert.equal(authorizeRedirect, 'http://127.0.0.1:40404/callback')
+  assert.equal(redeemed.redirectUri, authorizeRedirect)
+  assert.equal(redeemed.code, 'C1')
+  assert.ok(redeemed.verifier.length >= 43)
 })
 
 test('runNativeLogin times out when no callback arrives', async () => {

@@ -4131,6 +4131,49 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 return SendResult(success=False, error=_redact_telegram_error_text(e))
         return SendResult(success=False, error="draft_rejected")
 
+    async def abandon_open_draft(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Seal an orphaned draft stream when its turn dies.
+
+        Telegram exposes no "cancel draft" API: the client keeps the
+        typing/streaming indicator alive while a draft is armed, and the
+        draft preview is only cleared when a real ``sendMessage`` lands
+        (or after the server-side preview window). ``GatewayStreamConsumer``
+        calls this on a stale-generation exit or cancellation so an
+        interrupted turn cannot leave the "typing..." bubble running.
+
+        Same contract as ``RelayAdapter.abandon_open_draft``: best-effort,
+        never raises, sets no delivery flags.
+
+        Seal in place by persisting the last delivered frame as a real
+        message — adds nothing new on screen, but replaces the draft so the
+        indicator stops. ``metadata`` is stamped ``notify`` so the normal
+        post-send typing re-trigger is skipped (#48678).
+        """
+        if not content or not content.strip():
+            # Nothing visible to persist — the preview expires on its own.
+            return SendResult(success=True)
+        try:
+            _md: dict[str, Any] = dict(metadata) if metadata else {}
+            _md["notify"] = True
+            return await self.send(
+                chat_id=chat_id,
+                content=content,
+                metadata=_md,
+            )
+        except Exception as e:
+            logger.debug(
+                "[%s] abandon_open_draft failed (best-effort): %s",
+                self.name, _redact_telegram_error_text(e),
+            )
+            return SendResult(
+                success=False, error=f"abandon draft seal error: {e}"
+            )
+
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a control-style message (approval prompts, pickers), retrying once without
         message_thread_id on 'Message thread not found' (stale thread_id); ``send`` has its own.

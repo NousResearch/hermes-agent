@@ -309,6 +309,14 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
+# Worker exit "host infrastructure failure": the owner never completed this attempt — it stayed
+# silent past the submitter's wait, or its receipt settled ``unknown`` with no board result to
+# reconcile (#139612). Nothing about the card ran, so the dispatcher books it through the
+# infrastructure seam of #114720: ``consecutive_failures`` untouched, breaker never trips.
+# 74 == BSD EX_IOERR, the same code chosen for the persistence-failure family so one sentinel
+# covers every host-side stall.
+KANBAN_INFRASTRUCTURE_EXIT_CODE = 74
+
 # Worker exit "provider rejected the configuration": credential revoked (401/403), model gone
 # (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.

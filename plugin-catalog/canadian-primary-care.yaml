@@ -1,7 +1,7 @@
 name: canadian-primary-care
 repo: https://github.com/cortexuvula/canadian-primary-care-calculators
 sha: 31f63539a15ade9ae3c78804f23ec2c09a7a04ea
-description: Twenty-six offline Canadian-unit clinician decision-support calculators (preview).
+description: "Twenty-six offline Canadian-unit clinician decision-support calculators (preview). Disclosure — clinician decision-support calculators, not a regulator-reviewed medical device; runs fully offline with no network calls, stores only your favourites list in Desktop plugin storage, Copy puts the result on the system clipboard, and source citations open in your browser when clicked."
 maintainer: cortexuvula
 tier: community
 category: desktop

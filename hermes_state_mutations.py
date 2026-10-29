@@ -195,7 +195,9 @@ def _carrier_live_view(db, conn, session_id, message_id):
 
 def _import(db, conn, session_id, payload):
     rows = payload['sessions']
-    if len(rows) > db._IMPORT_MAX_SESSIONS:
+    from hermes_state import resolved_import_max_sessions
+    max_sessions = resolved_import_max_sessions()
+    if max_sessions and len(rows) > max_sessions:
         raise RuntimeStoreError('invalid_params')
     normalized, errors = db._validate_import_payload(rows)
     if errors or not normalized or session_id != normalized[0]['session']['id']:

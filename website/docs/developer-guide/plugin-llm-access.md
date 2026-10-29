@@ -331,11 +331,29 @@ tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 
 #### Inheriting a built-in slot
 
-`inherit_from` names a built-in auxiliary block (`compression`, `mcp`,
-`vision`, `background_review`, ... — any core `auxiliary.<task>`) or a task
-your plugin (or one loaded before it) already registered. Your task then
-uses that slot's model until the operator pins
-one on your task directly:
+`inherit_from` names a built-in auxiliary task the model picker lists
+(`compression`, `mcp`, `vision`, `curator`, ...), `background_review`, or a
+task your plugin (or one loaded before it) already registered. Other core
+`auxiliary.*` blocks are not bases. Your task then uses that slot's model
+until the operator pins one on your task directly.
+
+**Following a built-in slot's model needs the operator's grant.** The
+slot's route (`provider`, `model`, `base_url`, `api_key`, `api_mode`, the
+key env, `reasoning_effort`, `extra_body`, `fallback_chain`) carries over
+only when the operator sets `allow_task_override` for your plugin, the
+same grant that lets `task=` name a built-in slot. Without it your task
+inherits the slot's other settings (such as `timeout`) and runs on its
+own route: your `defaults`, else the active main model. Declare it in
+your setup instructions when your task should follow the user's review or
+curator model:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      llm:
+        allow_task_override: true
+```
 
 ```python
 def register(ctx):
@@ -353,6 +371,9 @@ def register(ctx):
   classifier follows on its next call, per profile.
 - **Precedence:** the inherited base, then the plugin's `defaults`, then the
   operator's `auxiliary.<task>` block.
+- **A chain counts as its root.** Inheriting another plugin's task that
+  inherits a built-in slot carries that slot's route only when your plugin
+  holds the grant too.
 - **An operator pin wins as a whole route.** Once `auxiliary.classifier` sets a
   non-`auto` provider, a model or a `base_url`, the provider, model, endpoint,
   key and reasoning effort all come from that block; nothing from the base's
@@ -461,6 +482,7 @@ path-derived key for nested plugins (`image_gen/openai`,
 | `agent_id=`     | denied  | `allow_agent_id_override: true`  |
 | `profile=`      | denied  | `allow_profile_override: true`   |
 | built-in `task=` | denied  | `allow_task_override: true`      |
+| route inherited from a built-in slot | stripped | `allow_task_override: true` |
 
 Each override is independently gated. Granting `allow_model_override`
 does **not** also grant `allow_provider_override` — a plugin trusted
@@ -703,7 +725,10 @@ when nothing was started.
   fork then runs on that lane's model, resolved like
   `auxiliary.background_review` (a different model starts cache-cold and
   sees a digest of the conversation). A task the plugin did not register
-  returns `None`. Without `task` the fork runs on the session's model.
+  returns `None`. Without `task` the fork runs on the session's model. A
+  lane with `inherit_from="background_review"` follows the user's review
+  model only under `allow_task_override` ([Inheriting a built-in
+  slot](#inheriting-a-built-in-slot)).
 * On a runtime Hermes manages locally (the bundled llama-server), the fork
   waits for the machine to go idle like the background review
   (`outcome == "deferred"`); a newer deferred fork of the same plugin for

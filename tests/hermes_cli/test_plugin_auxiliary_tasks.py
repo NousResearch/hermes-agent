@@ -113,8 +113,8 @@ def aux_home(tmp_path, monkeypatch):
     return home
 
 
-def _register(patched_manager, key, **kwargs):
-    ctx = PluginContext(PluginManifest(name="plug"), patched_manager)
+def _register(patched_manager, key, *, plugin="plug", **kwargs):
+    ctx = PluginContext(PluginManifest(name=plugin), patched_manager)
     return ctx.register_auxiliary_task(key, display_name="Plug Aux", description="d", **kwargs)
 
 
@@ -126,10 +126,21 @@ def _set_aux(**blocks):
     save_config(cfg)
 
 
+def _grant_task_override(patched_manager, key):
+    """``plugins.entries.<owner of key>.llm.allow_task_override: true``."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    owner = patched_manager._aux_tasks[key]["plugin"]
+    cfg.setdefault("plugins", {}).setdefault("entries", {})[owner] = {"llm": {"allow_task_override": True}}
+    save_config(cfg)
+
+
 def test_inheriting_task_follows_base_until_pinned(aux_home, patched_manager):
     from agent.auxiliary_client import _get_auxiliary_task_config as resolve
 
     _register(patched_manager, "plug_aux", inherit_from="compression", defaults={"timeout": 90})
+    _grant_task_override(patched_manager, "plug_aux")
     _set_aux(compression={"provider": "openrouter", "model": "vendor/a", "base_url": "https://base.example",
                           "api_key": "base-key"})
     got = resolve("plug_aux")
@@ -155,16 +166,52 @@ def test_inheriting_task_follows_base_until_pinned(aux_home, patched_manager):
     assert not got.get("base_url") and not got.get("api_key")
 
 
-def test_inherit_from_a_core_block_outside_the_picker(aux_home, patched_manager):
-    """``background_review`` is a core ``auxiliary.*`` block but not a picker task; it is still a base."""
+def test_inherit_from_background_review_follows_its_route_only_with_the_grant(aux_home, patched_manager):
+    """``background_review`` is not a picker task but is an inheritable core block. Without
+    ``llm.allow_task_override`` the plugin task keeps the base's non-route policy and its own
+    (default) route; with the grant it follows ``auxiliary.background_review``."""
     from agent.auxiliary_client import _get_auxiliary_task_config as resolve
 
     _register(patched_manager, "plug_aux", inherit_from="background_review")
     assert patched_manager._aux_tasks["plug_aux"]["inherit_from"] == "background_review"
-    _set_aux(background_review={"provider": "openrouter", "model": "vendor/review"})
+    _set_aux(background_review={"provider": "openrouter", "model": "vendor/review", "base_url": "https://r.example",
+                                "api_key": "review-key", "extra_body": {"provider": {"order": ["x"]}}})
     got = resolve("plug_aux")
-    assert (got["provider"], got["model"]) == ("openrouter", "vendor/review")
-    assert got["timeout"] == 120  # the base's shape, not the fixed non-inheriting one
+    assert not {"provider", "model", "base_url", "api_key", "extra_body"} & set(got)
+    assert got["timeout"] == 120  # non-route policy still comes from the base
+
+    _grant_task_override(patched_manager, "plug_aux")
+    got = resolve("plug_aux")
+    assert (got["provider"], got["model"], got["base_url"]) == ("openrouter", "vendor/review", "https://r.example")
+    assert got["timeout"] == 120
+
+
+def test_a_plugin_chain_ending_in_a_core_block_needs_the_grant_at_every_link(aux_home, patched_manager):
+    """Inheriting another plugin's task that inherits a core block is still a core route."""
+    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+
+    _register(patched_manager, "base_aux", plugin="granted", inherit_from="curator")
+    _register(patched_manager, "chained_aux", plugin="other", inherit_from="base_aux")
+    _register(patched_manager, "own_aux", plugin="owner", defaults={"provider": "openrouter", "model": "vendor/own"})
+    _register(patched_manager, "follows_own", plugin="other", inherit_from="own_aux")
+    _grant_task_override(patched_manager, "base_aux")
+    _set_aux(curator={"provider": "openrouter", "model": "vendor/curator"})
+    assert resolve("base_aux")["model"] == "vendor/curator"
+    assert "model" not in resolve("chained_aux")
+    assert resolve("follows_own")["model"] == "vendor/own"  # a plugin-owned route is not a core one
+
+
+@pytest.mark.parametrize("bad", ["goal_judge", "moa_aggregator"])
+def test_core_blocks_off_the_inheritance_allowlist_are_refused(aux_home, patched_manager, caplog, bad):
+    import logging
+
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert isinstance(DEFAULT_CONFIG["auxiliary"].get(bad), dict)  # a real core block, just not a base
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        _register(patched_manager, "plug_aux", inherit_from=bad)
+    assert "ignoring inherit_from" in caplog.text
+    assert patched_manager._aux_tasks["plug_aux"]["inherit_from"] is None
 
 
 @pytest.mark.parametrize("bad", ["no_such_task", "plug_aux", ""])

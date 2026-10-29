@@ -860,10 +860,10 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
-        ``inherit_from`` names any core ``auxiliary.<task>`` or registered task whose effective
-        configuration becomes the base for this one; it is resolved at read time, so the task tracks
-        the base's current config instead of snapshotting it (precedence: inherited base, then
-        ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
+        ``inherit_from`` names a picker task, ``background_review``, ``curator`` or a registered task;
+        its effective config becomes this one's base at read time (precedence: inherited base, then
+        ``defaults``, then user config in ``auxiliary.<key>``). A core base's route carries over only
+        with ``plugins.entries.<id>.llm.allow_task_override``. An unknown or self-referential
         ``inherit_from`` logs a warning and registers the task without inheritance.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         from hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry

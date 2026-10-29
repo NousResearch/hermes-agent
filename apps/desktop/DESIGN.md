@@ -243,6 +243,25 @@ Clipped horizontal edges reuse `edgeMask(edges, 'x')` from `fade-scroll.tsx`;
 the default axis remains vertical for `FadeScroll`. Fitting content is unmasked,
 and profile drag gestures temporarily remove the mask so the dragged square stays legible.
 
+## Recent sessions
+
+The ordinary flat Sessions view shows at most **10 latest unpinned sessions**
+(`RECENT_SESSION_LIMIT`), selected by last activity before presentation ordering
+and calendar/profile grouping. Pinned sessions remain separately managed and do
+not consume that bound. Selecting an older session does not add an eleventh row
+or change the current conversation: use **Session history…** to find it again.
+The visible, keyboard-focusable history button reuses the Ctrl+H session picker,
+including its search focus, selection keys and single-Escape dismissal.
+
+Explicit sidebar search, filter results, archives, and project navigation keep
+their existing full loaded result sets and paging; the recent bound must never
+silently truncate those views. In All profiles the ordinary recent bound applies
+once across the scoped pool, not once per profile. If loaded pins leave fewer
+than ten unpinned rows and the backend reports more, Load more remains available
+and stops once the bound is filled (or the existing bounded paging stops making
+progress). At ten rows, History replaces further recent-list expansion. Calendar
+dividers are computed only for rows within the bound, not for hidden older rows.
+
 ## Context-sensitive dialogs
 
 Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s

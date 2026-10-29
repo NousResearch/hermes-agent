@@ -1,0 +1,97 @@
+{
+  "fixtureVersion": 1,
+  "name": "null-over-scalar-and-list-sets-no-value",
+  "description": "Proves rule-5: null at a lower level over an upper scalar or list sets no value (null); over DEFAULT_CONFIG it stays null.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "model": {
+          "default": "hermes-4-405b",
+          "provider": "nous"
+        },
+        "tools": {
+          "disabled": [
+            "web"
+          ]
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "model": {
+          "default": null
+        },
+        "tools": {
+          "disabled": null
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "model": {
+        "default": null,
+        "provider": "nous"
+      },
+      "tools": {
+        "disabled": null
+      }
+    },
+    "provenance": {
+      "model.default": "profile",
+      "model.provider": "global",
+      "tools.disabled": "profile"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "model.default",
+      "value": null,
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "model": {
+        "default": "",
+        "provider": "auto"
+      },
+      "tools": {
+        "disabled": []
+      }
+    },
+    "expect": {
+      "model": {
+        "default": null,
+        "provider": "nous"
+      },
+      "tools": {
+        "disabled": null
+      }
+    }
+  }
+}

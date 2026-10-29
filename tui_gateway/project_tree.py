@@ -333,8 +333,15 @@ class _FolderIndex:
         return None, -1
 
 
+def _bound_project(session: dict, by_id: dict[str, dict]) -> Optional[dict]:
+    """The ACTIVE project a session is explicitly bound to (``project_id``) — it wins over any
+    folder match; a binding to an archived/deleted project falls back to folder inference."""
+    return by_id.get(_field(session, "project_id"))
+
+
 def _project_for_session(
         session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
+    """Folder inference for an UNBOUND session (longest project folder owning its cwd / repo root)."""
     cwd = _field(session, "cwd")
     repo_root = _session_repo_root(session, resolve)
     # A root-only row (empty cwd) still belongs to the project owning its root.
@@ -364,7 +371,9 @@ def _project_node(
         # Every claimed row, not just the preview window: the renderer's live overlay
         # uses this as the ONE owner (a sibling worktree row with git_repo_root NULL
         # re-classifies to an ancestor project by cwd alone).
-        "sessionIds": [s["id"] for s in rows if s.get("id")]}
+        "sessionIds": [s["id"] for s in rows if s.get("id")],
+        # The unbound subset claimed by folder alone ("In this folder"); see build_tree.
+        "folderMatchIds": [], "folderMatches": []}
     node.update(flags)
     return node
 
@@ -427,10 +436,15 @@ def build_tree(
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     _exists = exists or (lambda _path: True)
     folder_index = _FolderIndex(active_projects)
+    by_id = {p["id"]: p for p in active_projects}
     by_project: dict[str, list[dict]] = {}  # explicit project id -> owned rows
+    folder_matched: dict[str, list[dict]] = {}  # explicit project id -> its unbound, cwd-matched rows
     unowned: list[dict] = []
     for session in sessions:
-        owner = _project_for_session(session, folder_index, resolve)
+        # project_id wins; only an unbound row is placed by its folder (and flagged as such).
+        owner = _bound_project(session, by_id)
+        if owner is None and (owner := _project_for_session(session, folder_index, resolve)) is not None:
+            folder_matched.setdefault(owner["id"], []).append(session)
         (by_project.setdefault(owner["id"], []) if owner else unowned).append(session)
 
     scoped_ids: list[str] = []
@@ -449,10 +463,12 @@ def build_tree(
         _scope(psessions)
         repos = _build_repos(psessions, resolve, hydrate)
         repos = _seed_folder_repos(repos, project.get("folders") or [], resolve)
+        matched = sorted(folder_matched.get(project["id"], []), key=_session_time, reverse=True)
         result.append(_project_node(
             project["id"], project.get("name") or project["id"], project.get("primary_path"), repos,
             len(psessions), _last_active(psessions), _previews(psessions), psessions,
-            color=project.get("color"), icon=project.get("icon")))
+            color=project.get("color"), icon=project.get("icon"),
+            folderMatchIds=[s["id"] for s in matched if s.get("id")], folderMatches=matched if hydrate else []))
 
     # Tier 2: auto projects from leftover sessions.
     by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)

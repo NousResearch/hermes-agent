@@ -584,6 +584,7 @@ class _RunLaunch:
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
     admission: Any = None
     walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
+    session_cwd: str = ""  # the stored session's folder (a project binding sets it): the turn runs there
 
     @property
     def approval_session_key(self) -> str:
@@ -870,6 +871,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
+    from gateway.platforms.api_server_session_projects import session_cwd_for
+    launch.session_cwd = await session_cwd_for(self, selected_session_id)  # run a project session in its folder
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
@@ -962,9 +965,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # so it stays default-denied until a merge contract exists for that chain;
                 # likewise a caller-supplied conversation_history is authoritative for the
                 # turn and never reads the delivery row, so it is denied the same way.
-                session_history_delivery="1" if run.session_history_delivery else "")
+                session_history_delivery="1" if run.session_history_delivery else "", cwd=run.session_cwd)
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
+            # Terminal/file tools start in the session's folder (a project session's project folder).
+            from gateway.platforms.api_server_session_projects import pin_run_workspace
+            pin_run_workspace(effective_task_id, run.session_cwd)
             if run.agent_kwargs["room_dispatch"] is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
@@ -1135,7 +1141,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with self._profile_scope(run.request_profile):
                 agent = self._create_agent(
                     stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                    interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+                    interim_assistant_callback=_interim_cb, session_cwd=run.session_cwd, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
             result, usage, served_runtime = await _submit_api_worker(

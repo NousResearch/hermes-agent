@@ -3680,7 +3680,7 @@
     },
     {
       "name": "session.workspace.move",
-      "summary": "Re-home a stored session's workspace; git identity is replaced and a live agent follows.",
+      "summary": "Re-home a stored session's workspace and project binding; git identity is replaced and a live agent follows.",
       "params": [
         {
           "name": "params",
@@ -30924,6 +30924,20 @@
             },
             "title": "Sessionids",
             "type": "array"
+          },
+          "folderMatchIds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Foldermatchids",
+            "type": "array"
+          },
+          "folderMatches": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectTreeSession"
+            },
+            "title": "Foldermatches",
+            "type": "array"
           }
         },
         "required": [
@@ -31263,6 +31277,18 @@
             ],
             "default": null,
             "title": "Continuation Kind"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "profile": {
             "anyOf": [
@@ -38115,6 +38141,79 @@
         "title": "SessionParams",
         "type": "object"
       },
+      "SessionProjectRef": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/projects_db.py::session_project_ref`` \u2014 the project a session is bound to.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Icon"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Color"
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Folder"
+          },
+          "board_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Board Slug"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name"
+        ],
+        "title": "SessionProjectRef",
+        "type": "object"
+      },
       "SessionPruneParams": {
         "additionalProperties": false,
         "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
@@ -39639,6 +39738,7 @@
       },
       "SessionWorkspaceMoveParams": {
         "additionalProperties": false,
+        "description": "``project_id`` (id or slug) binds the session to that project, ``cwd`` defaulting to its\nfolder; an explicit ``null``/``\"\"`` unassigns (``cwd`` defaults to ``~``); absent = a cwd-only\nmove that keeps the binding while ``cwd`` stays inside the project (``5062``: unknown or\narchived project).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -39657,13 +39757,32 @@
             "type": "string"
           },
           "cwd": {
-            "title": "Cwd",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           }
         },
         "required": [
-          "session_key",
-          "cwd"
+          "session_key"
         ],
         "title": "SessionWorkspaceMoveParams",
         "type": "object"
@@ -39698,6 +39817,29 @@
             ],
             "default": null,
             "title": "Git Repo Root"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

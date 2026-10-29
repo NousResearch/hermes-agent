@@ -278,6 +278,11 @@ class ProjectTreeNode(Result):
     repos: list[ProjectTreeRepo] = Field(default_factory=list)
     previewSessions: list[ProjectTreeSession] = Field(default_factory=list)
     sessionIds: list[str] = Field(default_factory=list)
+    # Of ``sessionIds``: the UNBOUND rows claimed only because their cwd sits in a project folder
+    # ("In this folder"); the rest carry ``project_id`` = this project. ``folderMatches`` holds those
+    # rows themselves when the lanes are hydrated (``projects.project_sessions``).
+    folderMatchIds: list[str] = Field(default_factory=list)
+    folderMatches: list[ProjectTreeSession] = Field(default_factory=list)
 
 
 class ProjectsTreeParams(ProfileParams):

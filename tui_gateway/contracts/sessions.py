@@ -8,7 +8,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
+from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, SessionProjectRef,
+                     TranscriptMessage,
                      Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
@@ -357,18 +358,26 @@ method("session.archive", params=SessionArchiveParams, result=SessionArchiveResu
 
 
 class SessionWorkspaceMoveParams(ProfileParams):
+    """``project_id`` (id or slug) binds the session to that project, ``cwd`` defaulting to its
+    folder; an explicit ``null``/``""`` unassigns (``cwd`` defaults to ``~``); absent = a cwd-only
+    move that keeps the binding while ``cwd`` stays inside the project (``5062``: unknown or
+    archived project)."""
+
     session_key: str
-    cwd: str
+    cwd: str | None = None
+    project_id: str | None = None
 
 
 class SessionWorkspaceMoveResult(Result):
     cwd: str
     branch: str | None = None
     git_repo_root: str | None = None
+    project_id: str | None = None
+    project: SessionProjectRef | None = None
 
 
 method("session.workspace.move", params=SessionWorkspaceMoveParams, result=SessionWorkspaceMoveResult,
-       doc="Re-home a stored session's workspace; git identity is replaced and a live agent follows.")
+       doc="Re-home a stored session's workspace and project binding; git identity is replaced and a live agent follows.")
 
 
 class SessionCwdSetParams(SessionParams):

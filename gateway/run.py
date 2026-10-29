@@ -3973,7 +3973,7 @@ class GatewayRunner(
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
         # #98619: an admitted API turn carries its session-id provenance; other platforms leave it unset.
         from gateway.session_api_turn import api_session_vars
-        _history_delivery = api_session_vars().get("session_history_delivery")
+        _api_vars = api_session_vars()  # + an admitted API turn's session folder (project sessions)
         return set_session_vars(
             platform=source.platform.value,
             chat_id=source.chat_id,
@@ -3992,7 +3992,7 @@ class GatewayRunner(
             message_id=str(source.message_id) if source.message_id else "",
             profile=getattr(source, "profile", "") or "",
             async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery)
+            cron_session="", session_history_delivery=_api_vars.get("session_history_delivery"), cwd=_api_vars.get("cwd", ""))
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

@@ -113,18 +113,21 @@ def run_bounded_git(repo_root: str, args: Sequence[str], timeout: float, env: Op
     Returns the exit code, or None when the timeout killed it; a failure is logged with git's last
     stderr line. ``repack`` forks ``pack-objects``; ``subprocess.run(timeout=)`` killed only the
     parent and left the grandchild packing for days, and a daemon thread's child outlived the CLI the
-    same way. A new session/process group + ``atexit`` reaps both cases, SIGTERM first so git can
-    delete its own lock and tmp files.
+    same way. An owned process group (``spawn_owned``) + ``atexit`` reaps both cases, SIGTERM first so
+    git can delete its own lock and tmp files, and the owner-death supervisor kills the group when we
+    are SIGKILLed or OOM-killed mid-repack.
     """
+    from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+
     cmd = ["git", *args]
     if os.name == "posix":
         cmd = ["nice", "-n", "19", *cmd]
-        group_kw: dict = {"process_group": 0}
+        group_kw: dict = {}
     else:
         group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=err, env=env, **group_kw)
+        proc = spawn_owned(cmd, purpose=f"git {args[0]}", cwd=repo_root, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=err, env=env, **group_kw)
 
         def _reap() -> None:
             if proc.poll() is None:
@@ -139,6 +142,7 @@ def run_bounded_git(repo_root: str, args: Sequence[str], timeout: float, env: Op
             return None
         finally:
             atexit.unregister(_reap)
+            release_process_group_once_empty(proc.pid, proc=proc)
         if rc:
             err.seek(0)
             lines = err.read()[-4096:].decode("utf-8", "replace").strip().splitlines()
@@ -273,6 +277,7 @@ def spawn_commit_graph_refresh(repo_root: Path) -> bool:
                         stderr=subprocess.DEVNULL, close_fds=True)
     try:
         try:
+            # detached-spawn: ok — the refresh must neither delay the update nor die with it; slot-locked, bounded
             subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
         except OSError:
             if not IS_WINDOWS:

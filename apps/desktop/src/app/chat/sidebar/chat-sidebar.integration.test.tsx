@@ -398,6 +398,32 @@ describe('ChatSidebar empty-profile sections', () => {
     expect(container.textContent).toContain('No sessions yet')
     expect(screen.queryByPlaceholderText('Search sessions…')).toBeNull()
   })
+
+  it('shows a section per profile when several profiles have no chats anywhere', () => {
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+    $profiles.set([
+      { name: 'default', is_default: true },
+      { name: 'work', is_default: false }
+    ] as typeof $profiles.value)
+    setShowAllProfiles(true)
+    setSidebarGrouping('profile')
+
+    try {
+      const { container } = renderSidebar('/', 'chat')
+
+      const groups = [...container.querySelectorAll<HTMLElement>('[data-gateway-group]')].map(
+        node => node.dataset.gatewayGroup
+      )
+
+      expect(screen.getByPlaceholderText('Search sessions…')).toBeTruthy()
+      expect(groups.some(id => id?.includes('"default"'))).toBe(true)
+      expect(groups.some(id => id?.includes('"work"'))).toBe(true)
+    } finally {
+      setSidebarGrouping('date')
+      setShowAllProfiles(false)
+    }
+  })
 })
 
 describe('ChatSidebar messaging owners', () => {

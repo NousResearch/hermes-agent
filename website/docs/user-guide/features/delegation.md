@@ -442,7 +442,8 @@ With a hard cap configured, if a subagent times out having made **zero** API cal
 
 ## Stall Detection for Background Subagents
 
-Background delegations (`delegate_task(background=true)`) are watched by a
+Background delegations (top-level `delegate_task` calls normally run
+detached automatically — there is no `background` argument) are watched by a
 **progress-based stall monitor** — on by default, zero config. Unlike a
 wall-clock timeout, it never touches a child that is making progress, no
 matter how long it runs.

@@ -4,10 +4,12 @@ import { toUsageMeterInfo } from '../app/useUsageMeterPoll.js'
 
 describe('toUsageMeterInfo', () => {
   it('preserves an unavailable reason for the status command', () => {
+
     const info = toUsageMeterInfo({
       claude: { available: false, windows: [], unavailable_reason: 'Usage endpoint returned HTTP 429.' },
       codex: { available: false, windows: [] }
     } as never)
+
     expect(info?.claude).toMatchObject({ available: false, unavailableReason: 'Usage endpoint returned HTTP 429.' })
   })
   it('normalizes both providers independently and clamps percentages', () => {

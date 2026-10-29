@@ -14,7 +14,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from agent.lsp.workspace import nearest_root
+from agent.lsp.workspace import find_git_worktree, nearest_root, normalize_path
 
 logger = logging.getLogger("agent.lsp.servers")
 
@@ -116,7 +116,7 @@ def _which(*names: str) -> Optional[str]:
 
 def _root_or_workspace(file_path: str, workspace: str, markers: Sequence[str], excludes: Sequence[str] = ()) -> Optional[str]:
     """``nearest_root`` with workspace fallback; ``None`` iff an exclude marker hit."""
-    ceiling = os.path.dirname(workspace) if workspace else None
+    ceiling = workspace or None
     found = nearest_root(file_path, markers, excludes=excludes, ceiling=ceiling)
     if found is None and excludes and nearest_root(file_path, markers, ceiling=ceiling) is not None:
         # None is ambiguous with excludes configured: a hit without them means
@@ -178,10 +178,22 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         sibling = os.path.join(os.path.dirname(bin_path), f"pyright-langserver{suffix}")
         if os.path.exists(sibling):
             bin_path = sibling
+    return _make_spec(root, ctx, "pyright", [bin_path, "--stdio"], pyright_settings(root, trusted=ctx.trusted))
+
+
+def pyright_settings(root: str, *, trusted: bool) -> dict[str, Any]:
+    """Per-root settings, also needed when a trusted root joins an existing client."""
     # Point pyright at the project venv; its default "python on PATH" rarely is.  Pyright executes
     # this interpreter, so a checkout's own venv is only used when the workspace is trusted.
-    py = _detect_python(root if ctx.trusted else None)
-    return _make_spec(root, ctx, "pyright", [bin_path, "--stdio"], {"python": {"pythonPath": py}} if py else {})
+    py = _detect_python(root if trusted else None)
+    settings: dict[str, Any] = {"pythonPath": py} if py else {}
+    task_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE") if os.environ.get("HERMES_KANBAN_TASK") else None
+    if task_workspace and normalize_path(task_workspace) == root:
+        git_root = find_git_worktree(root)
+        if git_root and git_root != root:
+            # Retain imports from the enclosing repo without enumerating its unrelated source trees.
+            settings["analysis"] = {"extraPaths": [git_root], "autoSearchPaths": True}
+    return {"python": settings} if settings else {}
 
 
 def _detect_python(root: Optional[str]) -> Optional[str]:

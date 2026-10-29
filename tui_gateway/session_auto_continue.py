@@ -463,6 +463,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
+        session.pop("_bot_delivery_wait", None)
         queued_transport = queued.get("transport")
         # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
         # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
@@ -481,6 +482,8 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["running"] = False
             return True
     kwargs: dict = {"queued_prompt_generation": queue_generation}
+    if queued.get("_queued_display_kind"):
+        kwargs["display_kind"] = queued["_queued_display_kind"]
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow

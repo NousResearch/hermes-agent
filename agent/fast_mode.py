@@ -1,7 +1,7 @@
 """Bounded fast-mode windows (``/fast auto`` and ``/fast cold``).
 
 ``agent.service_tier``: ``None`` (normal), ``"priority"`` / ``"ultrafast"`` (static tiers,
-pinned into ``agent.request_overrides`` at build time), ``"auto"`` (every user turn opens a
+resolved against the active route per request), ``"auto"`` (every user turn opens a
 window of ``agent.fast_auto_seconds``) or ``"cold"`` (only a session's first turn,
 no prior history, opens it). The provider's fast override is layered onto request
 kwargs only while the window is open; only per-request params (``service_tier`` /
@@ -75,16 +75,21 @@ def begin_turn(agent: Any, conversation_history: Any) -> None:
 
 
 def effective_request_overrides(agent: Any) -> dict[str, Any]:
-    """``agent.request_overrides`` plus the fast override while the window is open, minus
-    ``speed`` for a model this session learned has no fast capacity."""
+    """Route-scoped fast overrides, minus ``speed`` for a model with no fast capacity."""
     overrides = dict(getattr(agent, "request_overrides", None) or {})
-    if getattr(agent, "service_tier", None) in BOUNDED_MODES and time.monotonic() < getattr(agent, "_fast_until", 0.0):
+    tier = getattr(agent, "service_tier", None)
+    if tier in STATIC_TIERS or tier in BOUNDED_MODES:
+        # Static pins belong to the primary route, not a fallback's wire schema.
+        overrides.pop("speed", None)
+        overrides.pop("service_tier", None)
+    if tier in STATIC_TIERS or (tier in BOUNDED_MODES and time.monotonic() < getattr(agent, "_fast_until", 0.0)):
         from hermes_cli.models import resolve_fast_mode_overrides
         base_url = getattr(agent, "base_url", None)
         if getattr(agent, "api_mode", None) == "anthropic_messages":
             base_url = getattr(agent, "_anthropic_base_url", None) or base_url
         overrides.update(
-            resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url) or {}
+            resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url,
+                                        tier=tier if tier in STATIC_TIERS else None) or {}
         )
     if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
         overrides.pop("speed", None)

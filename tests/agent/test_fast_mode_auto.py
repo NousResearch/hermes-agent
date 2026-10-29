@@ -170,7 +170,7 @@ def test_unprovisioned_detects_only_zero_limit_fast_429s():
 def test_unavailable_model_drops_speed_for_the_session_and_only_that_model():
     agent = _agent(
         service_tier="priority", model="claude-opus-5", provider="anthropic",
-        api_mode="anthropic_messages", request_overrides={"speed": "fast"},
+        base_url="https://api.anthropic.com", api_mode="anthropic_messages", request_overrides={"speed": "fast"},
     )
     assert fast_mode.effective_request_overrides(agent) == {"speed": "fast"}
     assert fast_mode.mark_fast_mode_unavailable(agent) is True

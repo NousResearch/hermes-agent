@@ -12,7 +12,9 @@ recovery escape hatch); otherwise ``key_cmd`` beats a static ``api_key`` / ``key
 from __future__ import annotations
 
 import json
+import os
 import logging
+import shlex
 import subprocess
 import threading
 import time
@@ -51,9 +53,20 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
     launch environ — an ``op read`` / ``vault kv get`` helper must sign in as the served profile."""
     from tools.environments.local import served_profile_child_env
 
+    # Treat key_cmd as an argv vector, never as shell text: parse with shlex so shell
+    # metacharacters/operators do not regain shell semantics (see #98831). shell=False is
+    # mandatory; a parse failure (unbalanced quotes / shell syntax) is refused outright.
+    try:
+        argv = shlex.split(command, posix=(os.name != "nt"))
+    except ValueError as exc:
+        raise CommandTokenError(
+            f"key_cmd for provider {label!r} could not be parsed as argv: {exc}"
+        ) from exc
+    if not argv:
+        raise CommandTokenError(f"key_cmd for provider {label!r} produced no command")
     try:
         completed = subprocess.run(
-            command, stdin=subprocess.DEVNULL, shell=True, capture_output=True, text=True, errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
+            argv, stdin=subprocess.DEVNULL, shell=False, capture_output=True, text=True, errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
             env=served_profile_child_env(inherit_credentials=True),
             check=False,
         )

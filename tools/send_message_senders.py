@@ -256,10 +256,10 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                         force_document=False, rich_messages=False, markdown_file=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     try:
-        formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
@@ -268,6 +268,25 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
+        if rich_messages and markdown_file and not media_files and len(message) <= 32768:
+            from plugins.platforms.telegram.adapter import TelegramAdapter, _rich_normalize_linebreaks
+            rich_adapter = TelegramAdapter.__new__(TelegramAdapter)
+            try:
+                rich_message = await bot.do_api_request(
+                    "sendRichMessage",
+                    api_kwargs={
+                        "chat_id": int_chat_id,
+                        "rich_message": {"markdown": _rich_normalize_linebreaks(message)},
+                        **thread_kwargs,
+                    },
+                )
+                return _success("telegram", chat_id, message_id=str(rich_message.message_id))
+            except Exception as exc:
+                if not rich_adapter._is_rich_fallback_error(exc):
+                    raise
+                logger.warning("Telegram Rich Message rejected; falling back to MarkdownV2: %s",
+                               _sanitize_error_text(exc))
+        formatted, send_parse_mode, _has_html = _telegram_format(message)
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None

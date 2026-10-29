@@ -254,8 +254,8 @@ def _driver_payload(out: dict[str, Any], action: str) -> dict[str, Any]:
     if out.get("isError") or (action == "verify_state" and result.get("status") != "satisfied"):
         result["ok"] = False
     if action == "run_steps" and (result.get("failed_step") is not None or any(
-            step.get("ok") is False or step.get("verified") is False
-            or step.get("effect") in {"unverifiable", "suspected_noop"} for step in result.get("steps", []))):
+            not isinstance(step, dict) or step.get("ok") is False or step.get("verified") is False
+            or step.get("effect") in {"unverifiable", "suspected_noop"} for step in (result.get("steps") or []))):
         result["ok"] = False
     return result
 
@@ -411,10 +411,12 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def run_steps(self, *, steps: list[dict[str, Any]], **defaults: Any) -> dict[str, Any]:
         """Forward the batch unchanged; the driver owns validation and stop-on-failure execution."""
-        if defaults.get("pid") is not None and defaults.get("window_id") is not None:
+        result = _driver_payload(self.call_tool("run_steps", {"steps": steps, **defaults}), "run_steps")
+        if result.get("ok") is not False and defaults.get("pid") is not None and defaults.get("window_id") is not None:
             self._set_active_target({"pid": defaults["pid"], "window_id": defaults["window_id"]})
-            self._last_app = defaults.get("app")
-        return _driver_payload(self.call_tool("run_steps", {"steps": steps, **defaults}), "run_steps")
+            if defaults.get("app") is not None:
+                self._last_app = defaults["app"]
+        return result
 
     def verify_state(self, *, pid: int, window_id: int, expect: list[dict[str, Any]],
                      timeout_ms: Optional[int] = None, stable_samples: Optional[int] = None) -> dict[str, Any]:

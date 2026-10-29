@@ -59,12 +59,15 @@ def _canon_key_combo(keys: str) -> frozenset:
 
 def _reject_unsafe(action: str, args: dict[str, Any]) -> Optional[str]:
     """JSON error for hard-blocked input, else None. Runs BEFORE the approval prompt."""
-    if action == "type" and (pat := next((p.pattern for p in _BLOCKED_TYPE_PATTERNS if p.search(args.get("text", ""))), None)):
+    if action in {"type", "clipboard_write"} and (pat := next(
+            (p.pattern for p in _BLOCKED_TYPE_PATTERNS if p.search(args.get("text") or "")), None)):
         return json.dumps({"error": f"blocked pattern in type text: {pat!r}",
                            "hint": "Dangerous shell patterns cannot be typed via computer_use."})
     if action == "key" and (blocked := next((b for b in _BLOCKED_KEY_COMBOS
                                              if b.issubset(_canon_key_combo(args.get("keys", "")))), None)) is not None:
         return json.dumps({"error": f"blocked key combo: {sorted(blocked)}", "hint": "Destructive system shortcuts are hard-blocked."})
+    if action == "launch_app" and not (args.get("bundle_id") or args.get("name")):
+        return json.dumps({"error": "launch_app requires either bundle_id or name"})
     required = {"run_steps": ("steps",), "verify_state": ("pid", "window_id", "expect")}.get(action, ())
     if missing := [k for k in required if args.get(k) is None]:
         return json.dumps({"error": f"{action} requires {', '.join(missing)}"})
@@ -80,18 +83,28 @@ def _reject_unsafe(action: str, args: dict[str, Any]) -> Optional[str]:
                            "code": "bring_to_front_requires_foreground"})
     return None
 
-_KEY_STEP_TOOLS = frozenset({"hotkey", "press_key", "press", "key", "keypress"})
-_TYPE_STEP_TOOLS = frozenset({"type", "type_text"})
+_STEP_TOOL_ALIASES = {"press": "press_key", "key": "press_key", "keypress": "press_key",
+                      "type": "type_text", "set": "set_value", "hover": "move_cursor", "mouse_move": "move_cursor"}
+_BARE_STEP_KEYS = frozenset({"return", "enter", "tab", "escape", "esc", "space", "backspace", "up", "down",
+                             "left", "right", "home", "end", "pageup", "pagedown"})
+_KEY_STEP_TOOLS = frozenset({"hotkey", "press_key"})
+_TYPE_STEP_TOOLS = frozenset({"type_text"})
 
 
 def _reject_unsafe_step_input(name: str, params: dict[str, Any]) -> Optional[str]:
+    name = _STEP_TOOL_ALIASES.get(name, name)
+    bare_key = name if name in _BARE_STEP_KEYS else None
+    if bare_key is not None:
+        name = "press_key"
     if name in _KEY_STEP_TOOLS:
-        parts = []
+        parts = [bare_key] if bare_key is not None else []
         for field in ("keys", "key", "modifiers"):
             value = params.get(field, [])
             parts.extend(value if isinstance(value, list) else [value])
-        return _reject_unsafe("key", {"keys": "+".join(p for p in parts if isinstance(p, str))})
-    return _reject_unsafe("type" if name in _TYPE_STEP_TOOLS else "", params)
+        if any(not isinstance(p, str) for p in parts):
+            return json.dumps({"error": "run_steps step keys, key, and modifiers must contain only strings"})
+        return _reject_unsafe("key", {"keys": "+".join(parts)})
+    return _reject_unsafe("type", params) if name in _TYPE_STEP_TOOLS else None
 
 
 def _reject_unsafe_steps(steps: list[Any]) -> Optional[str]:
@@ -104,7 +117,7 @@ def _reject_unsafe_steps(steps: list[Any]) -> Optional[str]:
                 return json.dumps({"error": "run_steps step tool must be a string"})
             calls = [(step["tool"], step.get("args", {}))]
         else:
-            calls = [(name, params) for name, params in step.items() if name in _KEY_STEP_TOOLS | _TYPE_STEP_TOOLS]
+            calls = list(step.items())
         for name, params in calls:
             if isinstance(params, dict) and (err := _reject_unsafe_step_input(name, params)) is not None:
                 return err
@@ -494,8 +507,11 @@ def _do_driver_action(backend, action, args, params, **_):
 
 def _summarize_batch(action: str, args: dict[str, Any], fg: str) -> str:
     steps = args.get("steps", [])
-    tools = [step["tool"] if "tool" in step else ", ".join(
-        k for k in step if k not in {"wait_for", "expect", "timeout_ms"}) or "check" for step in steps]
+    tools = []
+    for step in steps:
+        calls = [(step["tool"], step.get("args", {}))] if "tool" in step else list(step.items())
+        tools.append(", ".join(f"{name} {repr(params)[:120]}" for name, params in calls
+                               if name not in {"wait_for", "expect", "timeout_ms"}) or "check")
     return f"{action} {len(steps)} steps: {', '.join(tools)}{fg}"
 
 
@@ -532,7 +548,9 @@ _ACTIONS: dict[str, _ActionSpec] = {
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
     "launch_app": _ActionSpec(partial(_do_driver_action, params=(
         "bundle_id", "name", "urls", "additional_arguments", "creates_new_application_instance")), destructive=True,
-        summarize=lambda a, args, fg: f"launch {args.get('bundle_id') or args.get('name')!r} {args.get('urls', [])}{fg}"),
+        summarize=lambda a, args, fg: (f"launch {args.get('bundle_id') or args.get('name')!r} {args.get('urls', [])} "
+            f"additional_arguments={args.get('additional_arguments', [])!r} "
+            f"creates_new_application_instance={bool(args.get('creates_new_application_instance'))}{fg}")),
     "clipboard_read": _ActionSpec(partial(_do_driver_action, params=("include_text",))),
     "clipboard_write": _ActionSpec(partial(_do_driver_action, params=("text", "image_path", "file_path")), destructive=True,
         summarize=lambda a, args, fg: "copy to clipboard " + ", ".join(
@@ -579,10 +597,16 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
     # only on read handlers (delivery kwargs would leak into backend input calls, and vice versa).
     res = spec.handler(backend, action, args, **(dict(delivery_mode=args.get("delivery_mode"), bring_to_front=bool(args.get("bring_to_front")))
                                                  if spec.input else dict(fence=fence, session_id=session_id)))
-    if action not in _DRIVER_ACTIONS and isinstance(res, (str, dict)):
+    if isinstance(res, str) or (action not in _DRIVER_ACTIONS and isinstance(res, dict)):
         return res
+    default_capture = spec.input or action in {"focus_app", "launch_app", "run_steps"}
+    if action == "launch_app":
+        windows = res.get("windows") or []
+        default_capture = res.get("pid") is not None and bool(windows) and windows[0].get("window_id") is not None
+    elif action == "run_steps":
+        default_capture = getattr(backend, "_active_window_id", None) is not None
     return _maybe_follow_capture(
-        backend, res, bool(args.get("capture_after", spec.input or action in {"focus_app", "launch_app", "run_steps"})),
+        backend, res, bool(args.get("capture_after", default_capture)),
         fence, session_id=session_id, driver_action=action in _DRIVER_ACTIONS)
 
 # ── Response shaping ────────────────────────────────────────────────────────

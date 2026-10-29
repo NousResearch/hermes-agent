@@ -1,16 +1,16 @@
 name: ram-first-context
 repo: https://github.com/ether-btc/ram-first-context
-sha: cc3f1a94f8eaec5915892dcc91cf22775cbe42a7
+sha: 364992afde615e8588e285fbb4dd6fe8d57f6869
 subdir: "plugin"
 description: Read-only RAM-first context memory — FTS5 keyword recall over the live Mnemosyne SQLite database; no embeddings, no network.
 maintainer: ether-btc
 tier: community
 category: memory
 requires_hermes: ">=0.19"
-version: "0.1.2"
+version: "0.1.3"
 known_issues:
-  - "DB location is fixed at ~/.hermes/mnemosyne/data/mnemosyne.db (no profile-path override yet); moving Mnemosyne disables the tool"
   - "Reads the Mnemosyne SQLite schema directly (mode=ro); a Mnemosyne schema change degrades recall to the safe fallback"
+  - "Mnemosyne profile-isolation bank layouts (mnemosyne/data/banks/<profile>/) are not followed; only the active Hermes home's default per-profile database is read (see README)"
 capabilities:
   provides_tools:
     - mnemosyne_fts_recall

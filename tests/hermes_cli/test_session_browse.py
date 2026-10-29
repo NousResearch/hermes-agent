@@ -6,13 +6,23 @@ Covers:
 - Argument parser registration
 """
 
+import argparse
+import json
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 
-from hermes_cli.sessions_cmd_browse import _session_browse_picker
+from hermes_cli.sessions_cmd import _cmd_browse, cmd_sessions
+from hermes_cli.sessions_cmd_browse import (
+    _session_browse_picker,
+    session_browse_to_json_record,
+    session_browse_to_json_records,
+)
+from hermes_cli.subcommands.sessions import build_sessions_parser
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -152,9 +162,176 @@ class TestCursesBrowse:
 
 # ─── Argument parser registration ──────────────────────────────────────────
 
+class TestArgumentParser:
+    """Verify browse subparser registers --json and --format flags."""
+
+    @pytest.fixture
+    def parser(self):
+        root = argparse.ArgumentParser()
+        subs = root.add_subparsers(dest="command")
+        build_sessions_parser(subs, cmd_sessions=MagicMock())
+        return root
+
+    def test_browse_json_flag(self, parser):
+        args = parser.parse_args(["sessions", "browse", "--json"])
+        assert args.command == "sessions"
+        assert args.sessions_action == "browse"
+        assert args.json is True
+        assert args.format is None
+
+    def test_browse_format_json_flag(self, parser):
+        args = parser.parse_args(["sessions", "browse", "--format", "json"])
+        assert args.format == "json"
+        assert args.json is False
+
+    def test_browse_format_text_flag(self, parser):
+        args = parser.parse_args(["sessions", "browse", "--format", "text"])
+        assert args.format == "text"
+        assert args.json is False
+
+    def test_browse_default_flags(self, parser):
+        args = parser.parse_args(["sessions", "browse"])
+        assert args.json is False
+        assert args.format is None
+        assert args.limit == 500
+        assert args.source is None
+
+    def test_browse_filter_flags(self, parser):
+        args = parser.parse_args(["sessions", "browse", "--source", "cli", "--limit", "50", "--json"])
+        assert args.source == "cli"
+        assert args.limit == 50
+        assert args.json is True
+
+
+# ─── JSON Projection ────────────────────────────────────────────────────────
+
+class TestSessionBrowseJsonProjection:
+    """Unit tests for session_browse_to_json_record projection."""
+
+    def test_projection_full_fields(self):
+        record = session_browse_to_json_record({
+            "id": "sess_123",
+            "name": "Custom Name",
+            "source": "cli",
+            "created_at": "2026-10-15T12:00:00Z",
+            "turn_count": 42,
+            "tokens": 12345,
+            "path": "/custom/path/sess_123.jsonl",
+        })
+        assert record == {
+            "id": "sess_123",
+            "name": "Custom Name",
+            "source": "cli",
+            "created_at": "2026-10-15T12:00:00Z",
+            "turn_count": 42,
+            "tokens": 12345,
+            "path": "/custom/path/sess_123.jsonl",
+        }
+
+    def test_name_fallbacks(self):
+        assert session_browse_to_json_record({"id": "s1", "title": "My Title"})["name"] == "My Title"
+        assert session_browse_to_json_record({"id": "s1", "display_name": "Disp Name"})["name"] == "Disp Name"
+        assert session_browse_to_json_record({"id": "s1", "preview": "Hello world"})["name"] == "Hello world"
+        assert session_browse_to_json_record({"id": "s1"})["name"] == "s1"
+
+    def test_created_at_from_started_at_timestamp(self):
+        record = session_browse_to_json_record({"id": "s1", "started_at": 1728950400.0})
+        assert record["created_at"] == "2024-10-15T00:00:00Z"
+
+    def test_turn_count_and_tokens_fallbacks(self):
+        record = session_browse_to_json_record({
+            "id": "s1",
+            "message_count": 10,
+            "input_tokens": 100,
+            "output_tokens": 50,
+        })
+        assert record["turn_count"] == 10
+        assert record["tokens"] == 150
+
+    def test_path_derived_from_db(self, tmp_path):
+        mock_db = MagicMock(db_path=tmp_path / "state.db")
+        record = session_browse_to_json_record({"id": "s1"}, session_db=mock_db)
+        expected = str(tmp_path / "sessions" / "s1.jsonl")
+        assert record["path"] == expected
 
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────
+
+class TestCmdBrowseJsonIntegration:
+    """Integration tests for _cmd_browse in JSON mode."""
+
+    def test_browse_json_output(self, capsys):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = [
+            {
+                "id": "sess_001",
+                "title": "Alpha Session",
+                "source": "cli",
+                "started_at": 1728950400.0,
+                "message_count": 5,
+                "input_tokens": 200,
+                "output_tokens": 100,
+            }
+        ]
+        args = SimpleNamespace(json=True, format=None, limit=10, source=None)
+        _cmd_browse(mock_db, args)
+
+        mock_db.close.assert_called_once()
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["id"] == "sess_001"
+        assert data[0]["name"] == "Alpha Session"
+        assert data[0]["source"] == "cli"
+        assert data[0]["created_at"] == "2024-10-15T00:00:00Z"
+        assert data[0]["turn_count"] == 5
+        assert data[0]["tokens"] == 300
+        assert data[0]["path"].endswith("sess_001.jsonl")
+
+    def test_browse_format_json_output(self, capsys):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = [
+            {"id": "sess_002", "source": "telegram", "started_at": 1728950400.0, "message_count": 2}
+        ]
+        args = SimpleNamespace(json=False, format="json", limit=10, source="telegram")
+        _cmd_browse(mock_db, args)
+
+        mock_db.close.assert_called_once()
+        data = json.loads(capsys.readouterr().out)
+        assert len(data) == 1
+        assert data[0]["id"] == "sess_002"
+        assert data[0]["source"] == "telegram"
+
+    def test_browse_json_empty_sessions_emits_empty_array(self, capsys):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+        args = SimpleNamespace(json=True, format=None, limit=500, source=None)
+        _cmd_browse(mock_db, args)
+
+        mock_db.close.assert_called_once()
+        out = capsys.readouterr().out.strip()
+        assert out == "[]"
+        assert json.loads(out) == []
+
+    def test_browse_json_passes_filters(self):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+        args = SimpleNamespace(json=True, format=None, limit=25, source="discord")
+        _cmd_browse(mock_db, args)
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source="discord", exclude_sources=None, limit=25
+        )
+
+    def test_empty_profile_browse_json(self, tmp_path, capsys):
+        """When profile has no state.db and --json is requested, emit []."""
+        with patch("hermes_cli.sessions_cmd.get_hermes_home", return_value=tmp_path):
+            args = SimpleNamespace(sessions_action="browse", json=True, format=None, source=None, limit=100)
+            result = cmd_sessions(args)
+            assert result is None
+            out = capsys.readouterr().out.strip()
+            assert out == "[]"
 
 
 

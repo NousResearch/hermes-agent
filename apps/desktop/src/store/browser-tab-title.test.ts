@@ -1,12 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../test/session-info'
 
 import { type BrowserTabStatus, browserTabTitle, installBrowserTabTitle } from './browser-tab-title'
-import { $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds, setSessions } from './session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $unlistedSessionOwnerRows,
+  $unreadFinishedSessionIds,
+  applySessionTitle,
+  setSessions
+} from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from './session-unread'
 
@@ -27,12 +38,18 @@ function reset() {
 
   uninstall = () => {}
   clearAllSessionStates()
+  $layoutTree.set(null)
+  $activeTreeGroup.set(null)
   $sessions.set([])
+  $cronSessions.set([])
+  $messagingSessions.set([])
+  $unlistedSessionOwnerRows.set([])
   $selectedStoredSessionId.set(null)
   $sessionSeenCounts.set({})
   $unreadFinishedMarkers.set({})
   $unreadFinishedSessionIds.set([])
   delete document.documentElement.dataset.hermesDesktopHost
+  window.history.replaceState(null, '', '/')
   document.title = 'Hermes'
 }
 
@@ -104,12 +121,75 @@ describe('installBrowserTabTitle', () => {
     expect(document.title).toBe('Hermes')
   })
 
-  it('leaves the native window title alone', () => {
+  it.each([$cronSessions, $messagingSessions, $unlistedSessionOwnerRows])(
+    'names a focused session outside the recents list',
+    slice => {
+      slice.set([row({ id: 'hidden', profile: 'writer', title: 'Scheduled report' })])
+      $selectedStoredSessionId.set('hidden')
+      uninstall = installBrowserTabTitle()
+
+      expect(document.title).toBe('Scheduled report — writer · Hermes')
+      applySessionTitle('hidden', 'Renamed report')
+      expect(document.title).toBe('Renamed report — writer · Hermes')
+    }
+  )
+
+  it.each(['hud', 'overlay', 'quick', 'wake', 'browser', 'secondary'])(
+    'leaves the %s auxiliary window title untouched',
+    win => {
+      window.history.replaceState(null, '', `/?win=${win}`)
+      document.title = `Hermes ${win}`
+      setSessions([row({ id: 's1', title: 'Fix login' })])
+      $selectedStoredSessionId.set('s1')
+      uninstall = installBrowserTabTitle()
+      setSessions([row({ id: 's1', title: 'Renamed session' })])
+
+      expect(document.title).toBe(`Hermes ${win}`)
+    }
+  )
+
+  it('follows auto titles, manual renames and focused tiles rather than background sessions', () => {
+    setSessions([row({ id: 's1', title: null }), row({ id: 's2', profile: 'writer', title: 'Essay' })])
+    $selectedStoredSessionId.set('s1')
+    uninstall = installBrowserTabTitle()
+    expect(document.title).toBe('Hermes')
+
+    // Both backend auto-title events and manual rename receipts use this reducer.
+    applySessionTitle('s1', 'Generated title')
+    expect(document.title).toBe('Generated title · Hermes')
+    applySessionTitle('s1', 'My chosen title')
+    expect(document.title).toBe('My chosen title · Hermes')
+
+    $layoutTree.set(group(['workspace', 'session-tile:s2'], { active: 'session-tile:s2', id: 'main' }))
+    $activeTreeGroup.set('main')
+    expect(document.title).toBe('Essay — writer · Hermes')
+    applySessionTitle('s1', 'Background rename')
+    expect(document.title).toBe('Essay — writer · Hermes')
+    applySessionTitle('s2', 'Revised essay')
+    expect(document.title).toBe('Revised essay — writer · Hermes')
+
+    $layoutTree.set(group(['workspace', 'session-tile:s2'], { active: 'workspace', id: 'main' }))
+    expect(document.title).toBe('Background rename · Hermes')
+    $selectedStoredSessionId.set(null)
+    expect(document.title).toBe('Hermes')
+  })
+
+  it('stops updating the document when uninstalled', () => {
+    setSessions([row({ id: 's1', title: 'First title' })])
+    $selectedStoredSessionId.set('s1')
+    uninstall = installBrowserTabTitle()
+    uninstall()
+    applySessionTitle('s1', 'Later title')
+
+    expect(document.title).toBe('First title · Hermes')
+  })
+
+  it('names the native window after the focused session without browser status marks', () => {
     setSessions([row({ id: 's1', title: 'Fix login' })])
     $selectedStoredSessionId.set('s1')
     uninstall = installBrowserTabTitle()
     publishSessionState('r1', state('s1', { busy: true }))
 
-    expect(document.title).toBe('Hermes')
+    expect(document.title).toBe('Fix login · Hermes')
   })
 })

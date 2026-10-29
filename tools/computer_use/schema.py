@@ -176,7 +176,6 @@ _PROPERTIES: dict[str, Any] = {
     },
     "timeout_ms": {"type": "integer", "description": "verify_state: polling timeout in milliseconds."},
     "stable_samples": {"type": "integer", "description": "verify_state: consecutive matching samples required."},
-    "include_screenshot": {"type": "boolean", "description": "verify_state: include a screenshot. Default false."},
     "text": {"type": "string", "description": "Text to type (respects the current layout), or clipboard_write text."},
     "keys": {
         "type": "string",

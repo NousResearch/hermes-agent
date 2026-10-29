@@ -349,18 +349,29 @@ def test_result_is_redacted_bounded_and_pending_during_cache_pruning(monkeypatch
     assert len(cont.pending_jobs()) == 2
 
 
-def test_claim_preserves_manual_schedule_and_omits_collection_gates():
+@pytest.mark.parametrize("manual_timing", ["before_claim", "after_claim"])
+def test_claim_preserves_manual_schedule_and_omits_collection_gates(manual_timing):
     job, _, _ = ready_job()
     jobs.update_job(job["id"], {"script": "collect.py", "context_from": ["upstream"]})
+    if manual_timing == "before_claim":
+        jobs.trigger_job(job["id"], "manual request waiting before continuation")
     queued = candidate()
     claimed = cont.claim_job(queued)
     assert "script" not in claimed and "context_from" not in claimed
-    jobs.trigger_job(job["id"], "manual request arrived during continuation")
+    if manual_timing == "after_claim":
+        jobs.trigger_job(job["id"], "manual request arrived during continuation")
     before = copy.deepcopy(jobs.get_job(job["id"]))
     assert jobs.mark_job_run(job["id"], True, expected_fire_owner=claimed["fire_claim"]["by"])
     after = jobs.get_job(job["id"])
-    for key in ("next_run_at", "repeat", "manual_run_at", "manual_run_prompt"):
+    for key in ("next_run_at", "repeat", "manual_run_at", "manual_run_prompt", "manual_run_restore_at"):
         assert after.get(key) == before.get(key)
+    manual = jobs.claim_job_for_fire(job["id"], return_job=True)
+    assert manual and jobs.claim_dispatch(job["id"])
+    assert jobs.mark_job_run(job["id"], True, expected_fire_owner=manual["fire_claim"]["by"])
+    finished = jobs.get_job(job["id"])
+    assert finished["next_run_at"] == job["next_run_at"]
+    assert finished["repeat"] == job["repeat"]
+    assert "manual_run_restore_at" not in finished
 
 
 def test_async_ticks_do_not_duplicate_an_inflight_continuation(monkeypatch, quiet_scheduler):

@@ -75,8 +75,9 @@ Collection scripts and monitor gates do not run again for the follow-up.
 This option is rejected outside the owning cron turn, including delegated children,
 and inside a continuation. It does not enable interactive completion notifications.
 Each process can trigger at most one continuation; the continuation does not consume
-the job's repeat count or move its next scheduled time. Retained, completed one-shot
-jobs can still receive their pending continuation.
+the job's repeat count or move its next scheduled time. A manual run queued before or
+during the continuation stays queued and retains the scheduled time it must restore.
+Retained, completed one-shot jobs can still receive their pending continuation.
 
 Paused, disabled, or deleted jobs are skipped when the scheduler checks the result.
 Cancelled processes and results with unknown exit status do not trigger a follow-up.
@@ -312,7 +313,7 @@ What they do:
 
 - `pause` — keep the job but stop scheduling it
 - `resume` — re-enable the job. A recurring job whose slot came due while it was paused keeps that slot due, so the next tick fires one catch-up run (or logs the skip when `cron.catch_up_missed: false`) instead of silently jumping to the next occurrence; otherwise the next future run is computed
-- `run` — trigger the job on the next scheduler tick
+- `run` — trigger the job on the next scheduler tick. A manual run is an extra fire: the scheduled run still happens and the `repeat` count is not spent, so test-firing an `in 30m` reminder keeps the real one (a run once the slot is already due is that scheduled run)
 - `remove` — delete it entirely
 - `edit` — modify schedule, prompt, delivery, etc.
 - `tick` — run one scheduler pass and exit (for a system crontab or other external

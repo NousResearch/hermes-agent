@@ -1,6 +1,6 @@
 """Record a completed cron run without advancing its schedule."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 def record_run_outcome(
@@ -10,6 +10,7 @@ def record_run_outcome(
     """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
     job["last_run_at"] = now
     job.pop("manual_run_at", None)
+    job.pop("manual_run_restore_at", None)
     # The transient manual-run context is single-fire: the run that just completed consumed it.
     job.pop("manual_run_prompt", None)
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())

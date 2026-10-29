@@ -56,9 +56,9 @@ class _Agent:
 
 
 def _settle(agent, err, provider, status_code):
-    retry = SimpleNamespace(copilot_stale_cred_retry_attempted=False, primary_recovery_attempted=False)
+    retry = SimpleNamespace(provider_stale_refresh_attempted=False, primary_recovery_attempted=False)
     classified = classify_api_error(err, provider=provider)
-    with patch("agent.conversation_loop._is_copilot_provider", lambda a: False):
+    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None):
         return settle_unrecovered_error(
             agent, api_error=err, classified=classified, _retry=retry, status_code=status_code, error_msg=str(err),
             is_context_length_error=False, is_rate_limited=False, _is_zai_coding_overload=False,

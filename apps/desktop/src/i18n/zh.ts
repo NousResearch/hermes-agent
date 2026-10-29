@@ -11,6 +11,7 @@ import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
 import { zhGatewayHost } from './zh_gateway_host'
 import { zhLocalModels } from './zh_local_models'
+import { zhMemoryLayers } from './zh_memory_layers'
 import { zhModelMenu } from './zh_model_menu'
 import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
@@ -244,6 +245,7 @@ export const zhOverrides = {
       microphoneConstraintsUnsupported: '此设备不支持当前麦克风约束。',
       microphoneFailed: '麦克风出错',
       microphoneInUse: '麦克风正被其他应用占用。',
+      microphoneNeedsHttps: '麦克风需要安全连接。请通过 HTTPS 或到 127.0.0.1 的 SSH 隧道打开 Webapp 后使用。',
       microphonePermissionDenied: '麦克风权限被拒绝。',
       microphoneStartFailed: '无法开始麦克风录音。',
       microphoneUnsupported: '当前运行环境不支持麦克风录音。',
@@ -452,6 +454,7 @@ export const zhOverrides = {
   },
 
   settings: {
+    memoryLayers: zhMemoryLayers,
     subpages: {
       appearanceTheme: '主题',
       appearanceTypography: '字体与缩放',
@@ -672,6 +675,14 @@ export const zhOverrides = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha => (sha ? `自你审阅后仓库已变更。请先审阅新版本（提交 ${sha}）再安装。` : '自你审阅后仓库已变更。正在读取新版本…'),
+        legacyBackendConfirm:
+          '此后端比本应用旧，无法保证安装的就是你审阅过的版本：如果仓库此后有变更，安装的会是更新的版本。更新后端即可获得这一保证。',
+        installAnyway: '仍然安装',
+        partialInstall: sha =>
+          sha
+            ? `插件只安装了一部分：代理部分已安装在提交 ${sha}，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。`
+            : '插件只安装了一部分：代理部分已安装，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。',
         nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
@@ -1878,7 +1889,7 @@ export const zhOverrides = {
       autoArchiveFailed: '无法更新自动归档设置',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
-      defaultDirUpdated: '默认项目目录已更新',
+      defaultDirUpdated: () => '默认项目目录已更新',
       defaultsTo: label => `默认使用 ${label}。`,
       change: '更改',
       choose: '选择',
@@ -2395,9 +2406,6 @@ export const zhOverrides = {
       resume: '恢复',
       runNow: '立即运行',
       memoryData: '记忆数据',
-      memoryDataDesc: '注入每个会话的内置记忆文件',
-      memoryProvider: name => `当前提供方：${name}`,
-      builtinMemory: '内置',
       memoryFile: '智能体记忆（MEMORY.md）',
       userFile: '用户画像（USER.md）',
       bytes: size => size,
@@ -2688,8 +2696,10 @@ export const zhOverrides = {
     exported: '配置档案已导出',
     failedImport: '导入配置档案失败',
     failedExport: '导出配置档案失败',
+    exportNeedsHost: name => `浏览器无法保存配置档案归档。请在 Hermes 主机上运行：hermes profile export ${name}`,
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
+    notServedHere: '此处未提供',
     switchToProfile: name => `切换到 ${name}`,
     switchToConnection: name => `切换到 ${name}`,
     switchConnectionFailed: name => `无法连接到 ${name}`,
@@ -3671,6 +3681,8 @@ export const zhOverrides = {
     versionDetailsTitle: '版本详情',
     versionDetailsBody: '此安装在应用外部管理。请使用与安装时相同的方式更新。',
     versionDetailsVersion: '版本',
+    versionDetailsClient: '本设备',
+    versionDetailsBackend: '已连接的后端',
     versionDetailsCommit: '提交',
     versionDetailsBuildOrigin: '构建来源',
     versionDetailsDistribution: '发行版',
@@ -4030,6 +4042,7 @@ export const zhOverrides = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `无法在 ${shell} 中安全地输入这些名称：${paths}`,
     terminalReadOnly: '只读输出',
     terminalReadOnlyHelp:
       '如需回应提示，请停止后台命令，再在新终端中运行。新终端会打开独立的 shell，不会连接到此进程。',
@@ -4610,6 +4623,7 @@ export const zhOverrides = {
     imageAttach: '附加图片',
     imageWriteFailed: '无法将图片写入磁盘。',
     imageAttachFailed: '附加图片失败',
+    attachFailed: '附加失败',
     pastedContent: '粘贴内容',
     pasteAttachFailed: '无法附加粘贴的文本',
     attachImages: '附加图片',
@@ -4617,6 +4631,7 @@ export const zhOverrides = {
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
     dropFiles: '拖放文件',
+    dropFilesMore: (count: number) => `以及另外 ${count} 项`,
     handoff: {
       pickPlatform: '选择目标平台',
       success: platform => `已移交到 ${platform}。随时可在此处恢复。`,

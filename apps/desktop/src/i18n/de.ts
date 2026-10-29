@@ -10,6 +10,7 @@ import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
+import { deMemoryLayers } from './de_memory_layers'
 import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
@@ -464,6 +465,7 @@ export const deOverrides = {
       microphoneConstraintsUnsupported: 'Mikrofon-Einschränkungen werden von diesem Gerät nicht unterstützt.',
       microphoneFailed: 'Mikrofon fehlgeschlagen',
       microphoneInUse: 'Das Mikrofon wird bereits von einer anderen App verwendet.',
+      microphoneNeedsHttps: 'Das Mikrofon braucht eine sichere Verbindung. Öffne die Webapp über HTTPS oder über einen SSH-Tunnel zu 127.0.0.1, um es zu nutzen.',
       microphonePermissionDenied: 'Die Mikrofonberechtigung wurde verweigert.',
       microphoneStartFailed: 'Mikrofonaufnahme konnte nicht gestartet werden.',
       microphoneUnsupported: 'Diese Laufzeitumgebung unterstützt keine Mikrofonaufnahme.',
@@ -680,6 +682,7 @@ export const deOverrides = {
     noResults: 'Keine Sprachen gefunden'
   },
   settings: {
+    memoryLayers: deMemoryLayers,
     subpages: {
       appearanceTheme: 'Design',
       appearanceTypography: 'Typografie',
@@ -839,6 +842,17 @@ export const deOverrides = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Geprüfter Pin ${sha}` : 'Geprüfter Pin'),
         latestCommit: 'Neuester Commit',
+        sourceMoved: sha =>
+          sha
+            ? `Das Repository hat sich seit deiner Prüfung geändert. Prüfe die neue Version (Commit ${sha}), bevor du sie installierst.`
+            : 'Das Repository hat sich seit deiner Prüfung geändert. Die neue Version wird gelesen…',
+        legacyBackendConfirm:
+          'Dieses Backend ist älter als diese App und kann nicht garantieren, dass genau die geprüfte Version installiert wird: Hat sich das Repository seitdem geändert, wird stattdessen die neuere Version installiert. Aktualisiere das Backend, um diese Garantie zu bekommen.',
+        installAnyway: 'Trotzdem installieren',
+        partialInstall: sha =>
+          sha
+            ? `Das Plugin ist nur teilweise installiert: Der Agent-Teil ist mit Commit ${sha} installiert, der Desktop-Teil konnte nicht folgen, weil sich das Repository seit deiner Prüfung geändert hat. Aktiviere unter „Erweitert“ die erzwungene Neuinstallation, um beide Teile durch die angezeigte Version zu ersetzen, oder brich ab, um nur den Agent-Teil zu behalten.`
+            : 'Das Plugin ist nur teilweise installiert: Der Agent-Teil ist installiert, der Desktop-Teil konnte nicht folgen, weil sich das Repository seit deiner Prüfung geändert hat. Aktiviere unter „Erweitert“ die erzwungene Neuinstallation, um beide Teile durch die angezeigte Version zu ersetzen, oder brich ab, um nur den Agent-Teil zu behalten.',
         nothingToInstall: 'Dieses Paket hat hier nichts zu installieren.'
       }
     },
@@ -2258,8 +2272,8 @@ export const deOverrides = {
       defaultDirTitle: 'Standard-Projektordner',
       defaultDirDesc:
         'Neue Sessions starten in diesem Ordner, sofern Sie keinen anderen wählen. Nicht festlegen, um Ihr Home-Verzeichnis zu verwenden.',
-      defaultDirUpdated:
-        'Standard-Projektordner aktualisiert – starten Sie einen neuen Chat (Strg/⌘+N), damit er wirksam wird',
+      defaultDirUpdated: shortcut =>
+        `Standard-Projektordner aktualisiert – starten Sie einen neuen Chat${shortcut ? ` (${shortcut})` : ''}, damit er wirksam wird`,
       defaultsTo: label => `Standardmäßig ${label}.`,
       change: 'Ändern',
       choose: 'Auswählen',
@@ -2857,9 +2871,6 @@ export const deOverrides = {
       resume: 'Fortsetzen',
       runNow: 'Jetzt ausführen',
       memoryData: 'Memory-Daten',
-      memoryDataDesc: 'Eingebaute Memory-Dateien, die in jede Session eingefügt werden',
-      memoryProvider: name => `Aktiver Provider: ${name}`,
-      builtinMemory: 'eingebaut',
       memoryFile: 'Agent-Memory (MEMORY.md)',
       userFile: 'Benutzerprofil (USER.md)',
       bytes: size => size,
@@ -3204,8 +3215,10 @@ export const deOverrides = {
     exported: 'Profil exportiert',
     failedImport: 'Profil konnte nicht importiert werden',
     failedExport: 'Profil konnte nicht exportiert werden',
+    exportNeedsHost: name => `Der Browser kann kein Profilarchiv speichern. Führe auf dem Hermes-Host aus: hermes profile export ${name}`,
     allProfiles: 'Alle Profile',
     showAllProfiles: 'Alle Profile anzeigen',
+    notServedHere: 'Hier nicht bereitgestellt',
     switchToProfile: name => `Zu ${name} wechseln`,
     switchToConnection: name => `Zu ${name} wechseln`,
     switchConnectionFailed: name => `Keine Verbindung zu ${name} möglich`,
@@ -4112,6 +4125,8 @@ export const deOverrides = {
     versionDetailsBody:
       'Diese Installation wird außerhalb der App verwaltet. Aktualisieren Sie sie auf dieselbe Weise, wie Sie sie installiert haben.',
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'Dieses Gerät',
+    versionDetailsBackend: 'Verbundenes Backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build-Ursprung',
     versionDetailsDistribution: 'Distribution',
@@ -4616,6 +4631,7 @@ export const deOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Diese Namen lassen sich in ${shell} nicht sicher eintippen: ${paths}`,
     aria: 'Rechte Sidebar',
     panelsAria: 'Panels der rechten Sidebar',
     files: 'Dateisystem',
@@ -5413,6 +5429,7 @@ export const deOverrides = {
     imageAttach: 'Bild anhängen',
     imageWriteFailed: 'Bild konnte nicht auf die Festplatte geschrieben werden.',
     imageAttachFailed: 'Bild-Anhängen fehlgeschlagen',
+    attachFailed: 'Anhängen fehlgeschlagen',
     pastedContent: 'Eingefügter Inhalt',
     pasteAttachFailed: 'Eingefügter Text konnte nicht angehängt werden',
     attachImages: 'Bilder anhängen',
@@ -5420,6 +5437,7 @@ export const deOverrides = {
     noClipboardImage: 'Kein Bild in der Zwischenablage',
     clipboardPasteFailed: 'Zwischenablage-Einfügen fehlgeschlagen',
     dropFiles: 'Dateien ablegen',
+    dropFilesMore: (count: number) => `und ${count} weitere`,
     handoff: {
       pickPlatform: 'Ziel wählen',
       success: platform => `Übergeben an ${platform}. Jederzeit hier fortsetzen.`,

@@ -27,6 +27,7 @@ from hermes_cli.web_routers._common import (
 )
 
 _restart_gateway_after = late("_restart_gateway_after", "hermes_cli.web_server_gateway")
+_gateway_restart_failure = late("gateway_restart_failure", "hermes_cli.web_server_gateway")
 # One Web Access change at a time in this backend (every Desktop window's pane talks to it): a
 # Start, Stop or Restart waits for the one in flight, from its build through the restart request,
 # so the Portal's callback, the config and the gateway all end on the last change asked for.
@@ -113,19 +114,26 @@ async def _restart(gateway: Optional[str], what: str) -> dict:
 
 @router.get("/api/webapp-access/status")
 async def webapp_access_status(profile: Optional[str] = None):
-    return await _scoped(profile, lambda _gateway: webapp_access.access_status())
+    """``restart_failure``: the newest restart of this gateway exited without replacing it, and why;
+    the pane waiting on that restart stops and says so instead of timing out. The pane polls this,
+    so the status (a control-socket round trip) runs outside the skills lock, as in ``_restart``."""
+    gateway = await _scoped(profile, lambda gateway: gateway)
+    return await _in_gateway_home(gateway, lambda: {
+        **webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway)})
 
 
 @router.post("/api/webapp-access/start")
 async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/webapp-access/start")
     async with _one_change_at_a_time():
-        gateway, (host, public_url, callback) = await _scoped(
-            profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)))
-        # The bundle before anything lasting: a failed build registers, writes and restarts nothing.
+        # Writes a standalone profile's first port claim, so it takes the config lock.
+        gateway, (host, port, public_url, callback) = await _scoped(
+            profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)), config_write=True)
+        # The bundle before anything else lasting: a failed build registers, restarts and writes nothing
+        # but that port claim.
         await _in_gateway_home(gateway, webapp_access.build_bundle)
         await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
-        await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url), config_write=True)
+        await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url, port), config_write=True)
         return await _restart(gateway, "turning on Web Access")
 
 

@@ -448,8 +448,8 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
 
     Aux clients are process-shared and cannot be closed to wake one request, so the callback (incl.
     stream aggregation) runs in a daemon while the owner polls cancellation; on cancel the owner
-    unwinds at once and the daemon finishes under the provider timeout in ``kwargs`` (it owns no
-    transcript/commit state, never holds the session lock). Unprotected / no cancel source: direct.
+    unwinds at once; the daemon stops at its next streamed chunk, else under the provider timeout in ``kwargs``
+    (it owns no transcript/commit state, never holds the session lock). Unprotected / no cancel source: direct.
     """
     source_cancel_check = _capture_aux_cancel_check()
     if not _aux_interrupt_protected() or not callable(source_cancel_check):
@@ -543,25 +543,23 @@ _LOCAL_SERVER_ALIASES = {
     "llama.cpp": "custom", "llama-cpp": "custom",
 }
 
-_ALIAS_TABLE: Optional[dict[str, str]] = None
+_ALIAS_TABLES: dict[str, tuple[int, dict[str, str]]] = {}  # home key -> (registry generation, table)
 
 
 def _provider_alias_table() -> dict[str, str]:
-    """The same alias table the main provider path resolves against (hermes_cli.auth).
-
-    A hand-copied mirror here rots silently every time auth grows a family — the local
-    servers (#106010) and the OpenCode entries were both missed that way. Local-server
-    names stay pinned on top: that set doubles as the guard for the /v1 tail and the
-    no-key-borrow rule in the custom branch below.
-    """
-    global _ALIAS_TABLE
-    if _ALIAS_TABLE is None:
-        merged: dict[str, str] = dict(_LOCAL_SERVER_ALIASES)
+    """The alias table the main provider path resolves against (hermes_cli.auth), per home and registry
+    generation: plugin aliases are per home. A hand-copied mirror rots silently (#106010); local-server
+    names stay in: they guard the /v1 tail and the custom-branch no-key-borrow rule."""
+    from providers import bound_registry_key
+    home, generation = bound_registry_key()
+    cached = _ALIAS_TABLES.get(home)
+    if cached is None or cached[0] != generation:
+        cached = (generation, dict(_LOCAL_SERVER_ALIASES))
         with contextlib.suppress(Exception):
-            from hermes_cli.auth import _PROVIDER_ALIASES as _auth_table
-            merged.update(_auth_table)
-        _ALIAS_TABLE = merged
-    return _ALIAS_TABLE
+            from hermes_cli.auth import _plugin_aliases
+            cached[1].update(_plugin_aliases())
+        _ALIAS_TABLES[home] = cached
+    return cached[1]
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
@@ -1417,11 +1415,9 @@ class _CodexCompletionsAdapter:
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
-        is_copilot = base_url_host_matches(host, "githubcopilot.com")
         # Same route classifier as the main transport, so the issuer stamp matches what it minted.
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
         is_xai = route.is_xai_responses
-        is_github = route.is_github_responses
         tools = kwargs.get("tools")
         if tools:
             # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
@@ -1467,8 +1463,8 @@ class _CodexCompletionsAdapter:
                     for tc in msg["tool_calls"]
                 ]}
             replay_messages.append(msg)
-        # Copilot binds replayed codex_message_items ids to a backend connection that doesn't
-        # survive credential rotation (401 on replay) — same guard as build_kwargs. Aux calls
+        # Endpoints that bind replayed codex_message_items ids to a backend connection 401 on a stale id
+        # (``replay_item_ids=False``) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
         # Auxiliary calls (context compression, flush_memories, MoA aggregation) go through this adapter
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
@@ -1476,7 +1472,7 @@ class _CodexCompletionsAdapter:
         # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
         issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=is_copilot,
+            replay_messages, drop_replay_item_ids=not route.endpoint.replay_item_ids,
             current_issuer_kind=issuer_kind,
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
@@ -1490,7 +1486,7 @@ class _CodexCompletionsAdapter:
         timeout = kwargs.get("timeout")
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
-        # Per-request HTTP headers (OpenCode session affinity, Copilot x-initiator) map to real
+        # Per-request HTTP headers (OpenCode session affinity, provider request headers) map to real
         # headers via the SDK kwarg — forward them.
         if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
             resp_kwargs["extra_headers"] = dict(kwargs["extra_headers"])
@@ -1526,14 +1522,14 @@ class _CodexCompletionsAdapter:
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
-        # key where the main transport does: xAI takes it in extra_body, GitHub opts out.
+        # key where the main transport does: xAI takes it in extra_body, ``prompt_cache_key=False`` endpoints opt out.
         try:
             # Reuse the Responses transport's single authoritative hash algorithm and session-scope
             # normalization so equivalent static prefixes route to the same cache bucket across modes,
             # without concentrating unrelated sessions into one shared bucket (see #78941).
             from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
             from agent.transports.codex import _default_prompt_cache_retention_for_request
-            if not (is_xai or is_github) and "prompt_cache_key" not in resp_kwargs:
+            if not is_xai and route.endpoint.prompt_cache_key and "prompt_cache_key" not in resp_kwargs:
                 scope = _cache_scope_from_session_id(
                     _runtime_main_value("cache_scope") or _runtime_main_value("session_id")
                 )
@@ -2157,7 +2153,8 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
     except ImportError:
         logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
         return None, None
-    for provider_id, pconfig in PROVIDER_REGISTRY.items():
+    from hermes_cli.auth_plugin_providers import canonical_registry_rows
+    for provider_id, pconfig in canonical_registry_rows():
         if pconfig.auth_type != "api_key":
             continue
         if _is_provider_unhealthy(provider_id):
@@ -2170,12 +2167,12 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
             return _try_anthropic()
-        if provider_id == "copilot":
-            # Explicit-config gate: ambient gh-CLI credentials must not silently become aux fallback (#114740).
-            with contextlib.suppress(ImportError):
-                from hermes_cli.auth import is_provider_explicitly_configured
-                if not is_provider_explicitly_configured("copilot"):
-                    continue
+        from providers import get_provider_profile
+        if getattr(get_provider_profile(provider_id), "ambient_credentials", False):
+            # Explicit-config gate: ambient credentials (another tool's login) must not silently become aux fallback (#114740).
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured(provider_id):
+                continue
         model = _get_aux_model_for_provider(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
@@ -2210,13 +2207,10 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
-            headers = copilot_default_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers = build_nvidia_nim_headers(base_url)
         else:
-            headers = _profile_default_headers(provider_id)
+            headers = _route_client_headers(base_url, provider_id) or _profile_default_headers(provider_id)
         extra = {"default_headers": headers} if headers else {}
         merged = _apply_user_default_headers(extra.get("default_headers"))
         if merged:
@@ -2226,20 +2220,24 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
     return None, None
 
 
+def _route_client_headers(base_url: str, provider: str, *, is_vision: bool = False) -> Optional[dict]:
+    from agent.provider_route_hooks import route_answer
+    headers = route_answer("client_headers", provider=provider or "", base_url=base_url, has_images=is_vision)
+    return dict(headers) if headers else None
+
+
 def _endpoint_default_headers(
     base_url: str, provider: str, *, is_vision: bool = False, xai: bool = False,
 ) -> Optional[dict]:
     """Provider-specific client headers by endpoint host, merged with user ``model.default_headers``.
 
-    Kimi Code needs the claude-code User-Agent; Copilot needs its request headers
-    (``is_vision`` adds Copilot-Vision-Request); NVIDIA NIM and (optionally) xAI have
-    their own fingerprints; anything else falls back to the provider profile.
+    Kimi Code needs the claude-code User-Agent; a profile's ``client_headers`` (``is_vision`` = image
+    client), NVIDIA NIM and (optionally) xAI have their own; else the provider profile.
     """
     if base_url_host_matches(base_url, "api.kimi.com"):
         headers: dict = {"User-Agent": "claude-code/0.1.0"}
-    elif base_url_host_matches(base_url, "githubcopilot.com"):
-        from hermes_cli.copilot_auth import copilot_request_headers
-        headers = dict(copilot_request_headers(is_agent_turn=True, is_vision=is_vision))
+    elif route := _route_client_headers(base_url, provider, is_vision=is_vision):
+        headers = route
     elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
         headers = dict(build_nvidia_nim_headers(base_url))
     elif xai and base_url_host_matches(base_url, "x.ai"):
@@ -3638,14 +3636,14 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = 
     return f"{normalized}:{entry_id}:{digest}"
 
 
-# Ordered (host, provider) tables for inferring a backend from a client base URL.
+# Ordered (host, provider) tables for inferring a backend from a client base URL (then profile ``hostnames``).
 _POOL_PROVIDER_BY_HOST = (
     ("chatgpt.com", "openai-codex"), ("openrouter.ai", "openrouter"),
     ("inference-api.nousresearch.com", "nous"), ("api.anthropic.com", "anthropic"),
-    ("githubcopilot.com", "copilot"), ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
+    ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
 )
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
-    ("api.githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
+    ("chatgpt.com", "openai-codex"),
     ("api.anthropic.com", "anthropic"), ("inference-api.nousresearch.com", "nous"),
     # An aux call that inherits the main xai-oauth route arrives as "auto"; without this row the
     # 403 bad-credentials rung skipped the refresh and benched the only grant (#84845).
@@ -3654,11 +3652,12 @@ _AUTH_REFRESH_PROVIDER_BY_HOST = (
 
 
 def _provider_for_host(base_url: str, table: tuple[tuple[str, str], ...]) -> Optional[str]:
-    """First provider in ``table`` whose host matches ``base_url``, else None."""
+    """First provider in ``table`` whose host matches ``base_url``, else a profile claiming the host."""
     for host, provider in table:
         if base_url_host_matches(base_url, host):
             return provider
-    return None
+    from providers import profile_for_host
+    return getattr(profile_for_host(base_url), "name", None)
 
 
 def _recoverable_pool_provider(
@@ -3781,12 +3780,9 @@ def _prepare_same_provider_retry(
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
     )
-    # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
+    # Preserve per-request attribution headers (a profile's ``request_headers``) across the rebuilt-client
+    # retry: dropping them would let a recovery retry silently lose capability gating (#60293).
     if extra_headers:
-        # Copilot's ``x-initiator: user``) across the rebuilt-client retry — dropping them here would let a
-        # recovery retry silently lose capability gating (#60293).
-        # Preserve per-request attribution headers across the rebuilt-client retry — see the sync variant
-        # above (#60293).
         retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -3816,16 +3812,6 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
 
 def _creds_have_api_key(creds: dict[str, Any]) -> bool:
     return bool(str(creds.get("api_key", "") or "").strip())
-
-
-def _refresh_copilot_credentials() -> bool:
-    from hermes_cli.copilot_auth import _jwt_cache, _token_fingerprint, exchange_copilot_token, resolve_copilot_token
-    raw_token, _source = resolve_copilot_token()
-    if not str(raw_token or "").strip():
-        return False
-    _jwt_cache.pop(_token_fingerprint(raw_token), None)
-    exchange_copilot_token(raw_token)
-    return True
 
 
 def _refresh_codex_credentials() -> bool:
@@ -3877,7 +3863,7 @@ def _refresh_vertex_credentials() -> bool:
 
 # Each refresher returns True when a usable credential exists; the caller then evicts cached clients.
 _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
-    "copilot": _refresh_copilot_credentials, "openai-codex": _refresh_codex_credentials,
+    "openai-codex": _refresh_codex_credentials,
     "nous": _refresh_nous_credentials, "anthropic": _refresh_anthropic_credentials,
     "xai-oauth": _refresh_xai_oauth_credentials, "vertex": _refresh_vertex_credentials,
 }
@@ -3888,7 +3874,11 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
     if refresher is None:
-        return False
+        from providers import get_provider_profile
+        profile = get_provider_profile(normalized)
+        if profile is None:
+            return False
+        refresher = lambda: profile.refresh_runtime_credentials(reason="auxiliary_unauthorized")
     try:
         if not (refresher(failed_api_key) if normalized == "anthropic" else refresher()):
             return False
@@ -4705,7 +4695,7 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 
 
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
-    """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
+    """Sync client → async counterpart, preserving Codex routing (``is_vision`` keeps the endpoint's vision headers)."""
     from openai import AsyncOpenAI
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
@@ -5289,9 +5279,8 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             if not api_key and is_actual_local_base_url(raw_base_url):
                 api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     if not api_key:
-        tried_sources = list(pconfig.api_key_env_vars) + (["gh auth token"] if provider == "copilot" else [])
         logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",
-                     provider, ", ".join(tried_sources))
+                     provider, ", ".join(pconfig.api_key_env_vars))
         return None, None
     base_url = _to_openai_base_url(raw_base_url)
     # Explicit base_url override: a fallback_model/custom_providers entry pointing a built-in name elsewhere.
@@ -5311,15 +5300,12 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
-    # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
-    # wrap so call_llm() transparently routes through responses.stream().
-    if provider == "copilot" and final_model and not req.raw_codex:
-        with contextlib.suppress(ImportError):
-            from hermes_cli.models import _should_use_copilot_responses_api
-            if _should_use_copilot_responses_api(final_model):
-                logger.debug("resolve_provider_client: copilot model %s needs "
-                             "Responses API — wrapping with CodexAuxiliaryClient", final_model)
-                client = CodexAuxiliaryClient(client, final_model)
+    from agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider) if final_model and not req.raw_codex else None
+    if profile is not None and model_api_mode(profile, final_model) == "codex_responses":
+        logger.debug("resolve_provider_client: %s model %s needs Responses API — wrapping", provider, final_model)
+        client = CodexAuxiliaryClient(client, final_model)
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire
     # endpoints (api.kimi.com/coding, /anthropic gateways) without per-provider branches.
     client = _wrap_transport(req, client, final_model, raw_base_url, api_key)
@@ -5545,7 +5531,6 @@ def _deepinfra_strict_vision_backend(model: Optional[str]) -> tuple[Optional[Any
 # through resolve_provider_client so anthropic/* picks wrap onto /v1/messages (a bare _try_nous
 # client 404s). openai-codex has no safe default model; callers set auxiliary.<task>.model.
 _STRICT_VISION_BACKENDS: dict[str, Callable[[Optional[str]], tuple[Optional[Any], Optional[str]]]] = {
-    "copilot": lambda model: resolve_provider_client("copilot", model, is_vision=True),
     "openrouter": lambda model: _try_openrouter(model=model),
     "nous": lambda model: resolve_provider_client("nous", model, is_vision=True),
     "openai-codex": lambda model: resolve_provider_client("openai-codex", model, is_vision=True),
@@ -5727,13 +5712,13 @@ def get_auxiliary_extra_body() -> dict:
 
 
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
-    """Max-tokens kwarg for the auxiliary provider: direct OpenAI/Copilot and newer OpenAI-family
-    models (by ``model`` name, so custom endpoints fronting gpt-5.x are caught) need max_completion_tokens."""
-    _custom_host = base_url_hostname(_current_custom_base_url()) or ""
-    direct_openai_family = (
-        not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None
-        and (_custom_host in ("api.openai.com", "api.githubcopilot.com") or _custom_host.endswith(".githubcopilot.com"))
-    )
+    """Max-tokens kwarg for the auxiliary provider: direct OpenAI, a custom endpoint whose profile declares
+    it, and newer OpenAI-family models (by ``model`` name: custom endpoints fronting gpt-5.x) need max_completion_tokens."""
+    from agent.provider_route_hooks import route_answer
+    _custom_base = _current_custom_base_url()
+    direct_openai_family = not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None and (
+        base_url_hostname(_custom_base) == "api.openai.com"
+        or route_answer("max_tokens_param", base_url=_custom_base, model=model or "") == "max_completion_tokens")
     if direct_openai_family or model_forces_max_completion_tokens(model):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
@@ -6117,30 +6102,29 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
 
 
 def _builtin_provider_present(name: str) -> bool:
-    """Look up *name* in the built-in provider registry, returning False
-    (not raising) when the catalog fails to load.
-
-    Used by ``_preserve_provider_with_base_url`` so a built-in lookup
-    exception cannot suppress the parallel user-defined provider lookup
-    (#76602).
-    """
+    """*name* is a built-in provider. Never raises, so a failing catalog cannot suppress the parallel
+    user-defined lookup in ``_preserve_provider_with_base_url`` (#76602)."""
     try:
         from hermes_cli.providers import get_provider
 
         return get_provider(name) is not None
     except Exception:
-        # Keep the high-risk provider-backed routes safe even if provider
-        # catalog loading is unavailable during early import/test paths.
-        return name in {
-            "anthropic",
-            "copilot",
-            "copilot-acp",
-            "minimax-oauth",
-            "nous",
-            "openai-codex",
-            "qwen-oauth",
-            "xai-oauth",
-        }
+        # Catalog unavailable (early import/test paths): still keep the high-risk provider-backed routes.
+        return (name in {"anthropic", "minimax-oauth", "nous", "openai-codex", "qwen-oauth", "xai-oauth"}
+                or _profile_credentials_bypass_custom(name))
+
+
+def _profile_credentials_bypass_custom(name: str) -> bool:
+    """A profile (canonical name) whose credentials ``custom`` cannot carry: ambient, or an external process's."""
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(name)
+    except Exception:
+        logger.debug("provider profile lookup for %s failed", name, exc_info=True)
+        return False
+    return profile is not None and profile.name == name and (
+        profile.ambient_credentials or profile.auth_type == "external_process")
 
 
 def _named_custom_provider_present(name: str) -> bool:
@@ -7176,11 +7160,8 @@ class _ChatStreamAccumulator:
         # llama-server prompt reading doesn't count toward the ceiling (``local_prompt_progress``).
         self._prompt_reading = PromptReadingClock(self._started)
         self._total_ceiling = total_ceiling
-        # Absolute instant the waiting host gives up; checked alongside (not instead of) the
-        # ceiling, and unaffected by pre-construction dispatch/TTFT.
-        # Checked as well as (not instead of) the ceiling above: the ceiling still bounds callers with no
-        # host deadline, and the host deadline is absolute, so it is unaffected by however long dispatch and
-        # TTFT took before this accumulator was constructed. See #99692.
+        # Absolute instant the waiting host gives up, checked as well as (not instead of) the ceiling, which
+        # still bounds callers with no host deadline; unaffected by pre-construction dispatch/TTFT (#99692).
         self._host_deadline = host_deadline
         self.content_parts: list[str] = []
         self.reasoning_parts: list[str] = []
@@ -7191,7 +7172,10 @@ class _ChatStreamAccumulator:
         self.resp_model = model or ""
 
     def _check_deadlines(self) -> None:
-        """Raise TimeoutError past the total ceiling or the host deadline."""
+        """Raise TimeoutError past the total ceiling or the host deadline; a host hard cancel (/stop, session
+        boundary) stops the stream at its next chunk instead of letting the daemon bill on to the deadline."""
+        if _aux_interrupt_cancel_requested():
+            raise AuxiliaryExplicitCancellation()
         now = time.monotonic()
         if self._total_ceiling is not None and (now - self._started - self._prompt_reading.seconds) >= self._total_ceiling:
             raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
@@ -7835,12 +7819,9 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     regardless of user intent. Auth errors from an explicit provider may only use the task's
     own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
-    # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
-    # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
-    # and connection failures are capacity problems, not request constraints. See #26803: daily token quota
-    # (429 + "too many tokens per day") must fall back just like a 402 credit error.
-    # Rate limits are included: after retries are exhausted, a 429 means the provider is at capacity. See
-    # #52228. See #26803: daily token quota must fall back like a 402 credit error.
+    # Respect explicit provider choice for transient errors (auth, request validation, etc.) but fall back when
+    # the provider cannot serve due to capacity: payment/quota exhaustion (a daily-token 429 like a 402, #26803),
+    # connection failures, and a 429 after retries are exhausted (#52228) are not request constraints.
     is_auto = resolved_provider in {"auto", "", None}
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
     is_capacity_error = any(
@@ -7909,6 +7890,9 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
         fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
         if fb_resp is not None:
+            if route.route_info is not None:  # tell the caller its own route failed, not only where it landed
+                route.route_info.update(failed_model=route.final_model or "", failure=f"{reason}: {first_err}",
+                                        fallback_label=fb_label)
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,

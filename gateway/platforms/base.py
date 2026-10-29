@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
 
-from utils import normalize_proxy_url
+from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -543,7 +543,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         return d
 
     def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
-        return _cleanup_cache_dir(get_dir(), max_age_hours)
+        return unlink_files_older_than(get_dir(), "*", max_age_hours * 3600)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
     return get_dir, cleanup
@@ -667,18 +667,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     return await _cache_media_from_url(
         url, ext, retries, media_type="image", accept="image/*,*/*;q=0.8",
         cache_fn=cache_image_from_bytes, log_label="Media")
-
-
-def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
-    """Delete files in *cache_dir* older than *max_age_hours*; return the count removed."""
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            with contextlib.suppress(OSError):
-                f.unlink()
-                removed += 1
-    return removed
 
 
 # Audio cache utilities (same pattern as images; feeds the STT tool).
@@ -1004,13 +992,13 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
 
 
 def _translate_docker_container_media_path(
-    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False,
+    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False, workspace_cwd: str = "",
 ) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
 
-    ``workspace_key`` is the 16-hex digest of one session's host cwd. It selects that
-    session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
+    ``workspace_key`` is the 16-hex digest of one session's host cwd ``workspace_cwd`` (its cwd
+    mount). It selects that session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
     """
     if not candidate.as_posix().startswith("/"):  # POSIX even on Windows gateways (not is_absolute)
         return None
@@ -1029,7 +1017,7 @@ def _translate_docker_container_media_path(
     if "/workspace" not in mounted:
         mounts.extend(
             (root, Path("/workspace"))
-            for root in _default_docker_workspace_host_roots(session_key, workspace_key))
+            for root in _default_docker_workspace_host_roots(session_key, workspace_key, workspace_cwd))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
@@ -1590,6 +1578,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
+    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
 
     @property
     def choices(self) -> list[str]:
@@ -2802,16 +2791,15 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
-        """Interactive exec-approval prompt; a press resolves via
-        ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
-        render them natively in ``_send_exec_approval_prompt``."""
+        """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
+        Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``."""
         if description is None:
             description = ea_default_reason_text()
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
+            description=description, smart_denied=smart_denied, request_id=request_id,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
@@ -4589,8 +4577,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
-            # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
-            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+            from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only
+            if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
             await self._release_turn_marker(event)

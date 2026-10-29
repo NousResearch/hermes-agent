@@ -20,6 +20,7 @@ import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
 import type { GatewayHostTranslations } from './types_gateway_host'
+import type { MemoryLayersTranslations } from './types_memory_layers'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
@@ -481,6 +482,7 @@ catalog: CatalogTranslations
       microphoneConstraintsUnsupported: string
       microphoneFailed: string
       microphoneInUse: string
+      microphoneNeedsHttps: string
       microphonePermissionDenied: string
       microphoneStartFailed: string
       microphoneUnsupported: string
@@ -650,6 +652,10 @@ catalog: CatalogTranslations
         versionLabel: string
         reviewedPin: (sha: string) => string
         latestCommit: string
+        sourceMoved: (sha: string) => string
+        legacyBackendConfirm: string
+        installAnyway: string
+        partialInstall: (sha: string) => string
         nothingToInstall: string
         includesHeading: string
         agentLabel: string
@@ -914,6 +920,7 @@ catalog: CatalogTranslations
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
+    memoryLayers: MemoryLayersTranslations
     customEndpoints: {
       active: string
       apiKeySet: string
@@ -1715,7 +1722,7 @@ catalog: CatalogTranslations
       autoArchiveFailed: string
       defaultDirTitle: string
       defaultDirDesc: string
-      defaultDirUpdated: string
+      defaultDirUpdated: (shortcut: null | string) => string
       defaultsTo: (label: string) => string
       change: string
       choose: string
@@ -2242,9 +2249,6 @@ catalog: CatalogTranslations
       resume: string
       runNow: string
       memoryData: string
-      memoryDataDesc: string
-      memoryProvider: (name: string) => string
-      builtinMemory: string
       memoryFile: string
       userFile: string
       bytes: (size: string) => string
@@ -2438,8 +2442,10 @@ catalog: CatalogTranslations
     exported: string
     failedImport: string
     failedExport: string
+    exportNeedsHost: (name: string) => string
     allProfiles: string
     showAllProfiles: string
+    notServedHere: string
     switchToProfile: (name: string) => string
     switchToConnection: (name: string) => string
     switchConnectionFailed: (name: string) => string
@@ -3268,6 +3274,8 @@ catalog: CatalogTranslations
     versionDetailsTitle: string
     versionDetailsBody: string
     versionDetailsVersion: string
+    versionDetailsClient: string
+    versionDetailsBackend: string
     versionDetailsCommit: string
     versionDetailsBuildOrigin: string
     versionDetailsDistribution: string
@@ -4194,6 +4202,7 @@ catalog: CatalogTranslations
     imageAttach: string
     imageWriteFailed: string
     imageAttachFailed: string
+    attachFailed: string,
     pastedContent: string
     pasteAttachFailed: string
     attachImages: string
@@ -4201,6 +4210,7 @@ catalog: CatalogTranslations
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    dropFilesMore: (count: number) => string
     handoff: {
       pickPlatform: string
       success: (platform: string) => string

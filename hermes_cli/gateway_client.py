@@ -98,9 +98,9 @@ class GatewayUnavailableError(GatewayClientError):
     """No ready owner to dial: ``state`` is ``ensure_gateway_runtime``'s verdict (``draining`` while an
     update holds the install, ``starting`` past the deadline, ...). Nothing was submitted."""
 
-    def __init__(self, message, state):
+    def __init__(self, message, state, reason_code=None):
         super().__init__(message)
-        self.state = state
+        self.state, self.reason_code = state, reason_code
 
 
 class EventQueue(asyncio.Queue):
@@ -276,6 +276,7 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
     from urllib.parse import urlsplit
 
     remote = "" if endpoint is not None else os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
@@ -299,12 +300,18 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:
                 # A multi-line startup report (redacted traceback tail + where the full log is).
-                raise GatewayUnavailableError(f"Gateway could not start: {detail}", result.state)
+                raise GatewayUnavailableError(f"Gateway could not start: {detail}", result.state, result.reason_code)
             detail = f" ({detail})" if detail else ""
             raise GatewayUnavailableError(f"Gateway {result.state}: {result.reason_code or 'not_ready'}{detail}",
-                                          result.state)
+                                          result.state, result.reason_code)
         endpoint = result.endpoint
-        ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
+        try:
+            ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
+        except DiscoveryError as exc:
+            # The control socket refused the ticket: the verdict discovery gives the same refusal.
+            detail = exc.bounded_detail(500)
+            raise GatewayUnavailableError(f"Gateway inaccessible: {exc.reason}" + (f" ({detail})" if detail else ""),
+                                          "inaccessible", exc.reason) from exc
         url, protocols = gateway_ws_target(endpoint, ticket)
     try:
         # The gateway is a loopback (or explicitly named) peer, never something to route through the

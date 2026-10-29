@@ -11,6 +11,7 @@ import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
+import { frMemoryLayers } from './fr_memory_layers'
 import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
@@ -464,6 +465,7 @@ export const frOverrides = {
       microphoneConstraintsUnsupported: 'Les contraintes du microphone ne sont pas prises en charge par cet appareil.',
       microphoneFailed: 'Échec du microphone',
       microphoneInUse: 'Le microphone est déjà utilisé par une autre application.',
+      microphoneNeedsHttps: "Le micro nécessite une connexion sécurisée. Ouvrez la Webapp en HTTPS, ou via un tunnel SSH vers 127.0.0.1, pour l'utiliser.",
       microphonePermissionDenied: "L'autorisation du microphone a été refusée.",
       microphoneStartFailed: "Impossible de démarrer l'enregistrement du microphone.",
       microphoneUnsupported: "Ce runtime ne prend pas en charge l'enregistrement micro.",
@@ -680,6 +682,7 @@ export const frOverrides = {
     noResults: 'Aucune langue trouvée'
   },
   settings: {
+    memoryLayers: frMemoryLayers,
     subpages: {
       appearanceTheme: 'Thème',
       appearanceTypography: 'Typographie',
@@ -841,6 +844,17 @@ export const frOverrides = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Pin examiné ${sha}` : 'Pin examiné'),
         latestCommit: 'Dernier commit',
+        sourceMoved: sha =>
+          sha
+            ? `Le dépôt a changé depuis votre examen. Examinez la nouvelle version (commit ${sha}) avant de l'installer.`
+            : 'Le dépôt a changé depuis votre examen. Lecture de la nouvelle version…',
+        legacyBackendConfirm:
+          'Ce backend est plus ancien que cette application : il ne peut pas garantir que la version examinée est celle qui sera installée. Si le dépôt a changé depuis, c\'est la version plus récente qui s\'installe. Mettez à jour le backend pour obtenir cette garantie.',
+        installAnyway: 'Installer quand même',
+        partialInstall: sha =>
+          sha
+            ? `Le plugin n'est installé qu'en partie : la partie agent est installée au commit ${sha}, mais la partie bureau n'a pas pu suivre car le dépôt a changé depuis votre examen. Activez Forcer la réinstallation dans Avancé pour remplacer les deux parties par la version affichée, ou annulez pour ne garder que la partie agent.`
+            : 'Le plugin n\'est installé qu\'en partie : la partie agent est installée, mais la partie bureau n\'a pas pu suivre car le dépôt a changé depuis votre examen. Activez Forcer la réinstallation dans Avancé pour remplacer les deux parties par la version affichée, ou annulez pour ne garder que la partie agent.',
         nothingToInstall: 'Ce paquet n’a rien à installer ici.'
       }
     },
@@ -2261,8 +2275,8 @@ export const frOverrides = {
       defaultDirTitle: 'Répertoire de projet par défaut',
       defaultDirDesc:
         'Les nouvelles sessions commencent dans ce dossier sauf si vous en choisissez un autre. Laissez-le non défini pour utiliser votre répertoire personnel.',
-      defaultDirUpdated:
-        "Répertoire de projet par défaut mis à jour — commencez une nouvelle conversation (Ctrl/⌘+N) pour qu'il prenne effet",
+      defaultDirUpdated: shortcut =>
+        `Répertoire de projet par défaut mis à jour — commencez une nouvelle conversation${shortcut ? ` (${shortcut})` : ''} pour qu'il prenne effet`,
       defaultsTo: label => `Par défaut : ${label}.`,
       change: 'Modifier',
       choose: 'Choisir',
@@ -2865,9 +2879,6 @@ export const frOverrides = {
       resume: 'Reprendre',
       runNow: 'Exécuter maintenant',
       memoryData: 'Données de mémoire',
-      memoryDataDesc: 'Fichiers de mémoire intégrés injectés dans chaque session',
-      memoryProvider: name => `Fournisseur actif : ${name}`,
-      builtinMemory: 'intégré',
       memoryFile: "Mémoire de l'agent (MEMORY.md)",
       userFile: 'Profil utilisateur (USER.md)',
       bytes: size => size,
@@ -3209,8 +3220,10 @@ export const frOverrides = {
     exported: 'Profil exporté',
     failedImport: "Échec de l'importation du profil",
     failedExport: "Échec de l'exportation du profil",
+    exportNeedsHost: name => `Le navigateur ne peut pas enregistrer une archive de profil. Sur l'hôte Hermes, exécutez : hermes profile export ${name}`,
     allProfiles: 'Tous les profils',
     showAllProfiles: 'Afficher tous les profils',
+    notServedHere: 'Non proposé ici',
     switchToProfile: name => `Basculer vers ${name}`,
     switchToConnection: name => `Basculer vers ${name}`,
     switchConnectionFailed: name => `Impossible de se connecter à ${name}`,
@@ -4121,6 +4134,8 @@ export const frOverrides = {
     versionDetailsBody:
       "Cette installation est gérée hors de l'application. Mettez-la à jour de la même manière que vous l'avez installée.",
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'Cet appareil',
+    versionDetailsBackend: 'Backend connecté',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origine de la compilation',
     versionDetailsDistribution: 'Distribution',
@@ -4624,6 +4639,7 @@ export const frOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Impossible de saisir ces noms en toute sécurité dans ${shell} : ${paths}`,
     aria: 'Barre latérale droite',
     panelsAria: 'Panneaux de la barre latérale droite',
     files: 'Système de fichiers',
@@ -5420,6 +5436,7 @@ export const frOverrides = {
     imageAttach: 'Image jointe',
     imageWriteFailed: "Échec de l'écriture de l'image sur le disque.",
     imageAttachFailed: "Échec de l'ajout de l'image",
+    attachFailed: "Échec de l'ajout",
     pastedContent: 'Contenu collé',
     pasteAttachFailed: 'Impossible de joindre le texte collé',
     attachImages: 'Joindre des images',
@@ -5427,6 +5444,7 @@ export const frOverrides = {
     noClipboardImage: 'Aucune image trouvée dans le presse-papiers',
     clipboardPasteFailed: 'Échec du collage depuis le presse-papiers',
     dropFiles: 'Déposer des fichiers',
+    dropFilesMore: (count: number) => `et ${count} de plus`,
     handoff: {
       pickPlatform: 'Choisissez une destination',
       success: platform => `Transféré vers ${platform}. Reprenez ici à tout moment.`,

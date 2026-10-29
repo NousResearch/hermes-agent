@@ -73,16 +73,18 @@ def test_agent_continues_durable_result_in_a_fresh_scheduler_process(tmp_path):
            "OPENAI_BASE_URL": url, "PYTHONPATH": str(repo)}
     producer = """
 import sys
-from cron import jobs, scheduler
+from cron import executions, jobs, scheduler
 job = jobs.create_job(prompt='Run the build in the background and inspect its completed result.',
     schedule='every 1h', model='test-model', provider='custom', base_url=sys.argv[1],
     enabled_toolsets=['terminal'], workdir=sys.argv[2])
 assert scheduler.run_one_job(job)
+rows = executions.list_executions(job_id=job['id'])
+assert rows and all(r['status'] == 'completed' for r in rows), rows
 """
     consumer = """
 from cron import continuations, executions, jobs, scheduler
 pending = continuations.pending_jobs()
-assert len(pending) == 1, pending
+assert len(pending) == 1, (pending, executions.list_executions())
 job_id = pending[0]['id']
 before = jobs.get_job(job_id)
 scheduler.tick(verbose=False)
@@ -95,9 +97,43 @@ assert before['next_run_at'] == after['next_run_at']
 assert before['repeat'] == after['repeat']
 assert not continuations.pending_jobs()
 """
+    # Each fresh scheduler owns an isolated canonical gateway authority. This exercises
+    # real admission, agent/tool execution and settlement without booting a host daemon.
+    owner = """
+import asyncio
+from types import SimpleNamespace
+from gateway import session_cron
+from gateway.config import GatewayConfig
+from gateway.session import SessionStore
+from gateway.session_authority import SessionAuthority
+from hermes_constants import get_hermes_home
+from hermes_state_registry import acquire, release
+from hermes_state_runtime import begin_runtime_epoch
+home = get_hermes_home()
+db = acquire(home / 'state.db')
+runner = SimpleNamespace(_draining=False, adapters={},
+    session_store=SessionStore(home / 'sessions', GatewayConfig()))
+authority = SessionAuthority(runner, profile_id=str(home), instance_id='test', db=db,
+    epoch=begin_runtime_epoch(db, instance_id='test'))
+runner.session_authority = authority
+runner._adapter_for_source = lambda source: runner.adapters[source.platform]
+async def main():
+    session_cron.bind_owner(authority)
+    try:
+        await asyncio.to_thread(exec, PROGRAM, globals())
+        tasks = [live.task for live in authority.sessions.values() if live.task is not None]
+        if tasks:
+            await asyncio.gather(*tasks)
+    finally:
+        session_cron.unbind_owner(authority)
+try:
+    asyncio.run(main())
+finally:
+    release(db)
+"""
     try:
         for program, args in [(producer, [url, str(tmp_path)]), (consumer, [])]:
-            result = subprocess.run([sys.executable, "-c", program, *args], env=env, cwd=tmp_path,
+            result = subprocess.run([sys.executable, "-c", "PROGRAM = " + repr(program) + "\n" + owner, *args], env=env, cwd=tmp_path,
                                     capture_output=True, text=True, timeout=90, check=False)
             assert result.returncode == 0, result.stdout + result.stderr
     finally:

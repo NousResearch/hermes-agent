@@ -1505,6 +1505,34 @@ class TestSafeCopyDb:
 # ---------------------------------------------------------------------------
 
 class TestQuickSnapshot:
+    def test_snapshot_excludes_credentials(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        snapshot = hermes_home / "state-snapshots" / snap_id
+        manifest = json.loads((snapshot / "manifest.json").read_text())
+        for name in (".env", "auth.json"):
+            assert not (snapshot / name).exists()
+            assert name not in manifest["files"]
+        for name in ("config.yaml", "cron/jobs.json"):
+            assert (snapshot / name).read_bytes() == (hermes_home / name).read_bytes()
+            assert name in manifest["files"]
+        assert (snapshot / "state.db").is_file()
+        assert "state.db" in manifest["files"]
+
+    def test_full_backup_preserves_credentials(self, hermes_home, tmp_path, monkeypatch):
+        from hermes_cli.backup import run_backup
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        output = tmp_path / "backup.zip"
+        run_backup(Namespace(output=str(output)))
+
+        with zipfile.ZipFile(output) as archive:
+            for name in (".env", "auth.json"):
+                assert archive.read(name) == (hermes_home / name).read_bytes()
+
     @pytest.fixture
     def hermes_home(self, tmp_path):
         """Create a fake HERMES_HOME with critical state files."""

@@ -32,6 +32,16 @@ MAX_TIMEOUT_SECONDS = 1800.0
 
 _TURN_ORIGIN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("hermes_turn_origin", default=None)
 
+# Tools that start another agent loop: in-process subagents (``delegate_task``), a teammate agent
+# (``message_agent``), scheduled or immediately fired cron runs (``cronjob_manage``) and Kanban
+# moves that hand a task to a dispatched worker. That loop runs outside this thread's dispatch
+# guard, so it keeps neither the fork's tool whitelist nor its auto-denied approvals; a fork never
+# holds one of them.
+AGENT_SPAWNING_TOOLS = frozenset({
+    "delegate_task", "message_agent", "cronjob_manage",
+    "kanban_create", "kanban_unblock", "kanban_complete", "kanban_request_review", "kanban_request_changes",
+})
+
 
 def current_turn_origin() -> Optional[str]:
     """``"plugin_fork:<plugin id>"`` while a plugin session fork runs on this context, else None."""
@@ -148,17 +158,23 @@ def start_session_fork(
     input_budget: Any = None, task: Optional[str] = None, timeout: Any = None, owned_tasks: Iterable[str] = (),
 ) -> Optional[PluginForkHandle]:
     """Spend the lease behind ``token`` on one background fork; its handle, or None (bad token,
-    expired lease, another profile's lease, a tool the session does not advertise, a task the
-    plugin does not own). The lease is consumed by every call except another profile's."""
+    expired lease, another profile's lease, a tool the session does not advertise, an
+    agent-spawning tool, a task the plugin does not own). The lease is consumed by every call
+    except another profile's."""
     from agent.background_review import _BackgroundReviewRun
     from agent.side_question_lease import take_lease
 
+    names = frozenset(tools) if isinstance(tools, (list, tuple, set, frozenset)) else None
+    if names is not None and names & AGENT_SPAWNING_TOOLS:
+        # A request no session could satisfy: refused before the lease, so the token stays usable.
+        logger.info("session_fork plugin=%s outcome=rejected:agent_spawning_tool %s", plugin_id,
+                    sorted(map(str, names & AGENT_SPAWNING_TOOLS)))
+        return None
     lease = take_lease(token, prompt, plugin_id=plugin_id, home=home, kind="session_fork",
                        max_prompt_chars=MAX_PROMPT_CHARS)
     if lease is None:
         return None
     capture = lease.capture
-    names = frozenset(tools) if isinstance(tools, (list, tuple, set, frozenset)) else None
     advertised = {t.get("function", {}).get("name") for t in capture.tools if isinstance(t, dict)}
     if names is None or not all(isinstance(n, str) for n in names) or not names <= advertised:
         logger.info("session_fork plugin=%s outcome=rejected:tools_not_in_session %s", plugin_id,
@@ -322,8 +338,10 @@ def _run_job(job: _ForkJob) -> None:
             fork._review_input_token_budget = budget
             fork._loop_aux_task = (PLUGIN_FORK_TASK, {"plugin_id": job.plugin_id})
             _track_child(parent, fork, register=True)
-            set_thread_tool_whitelist(set(job.tools), deny_msg_fmt=(
-                "This background task may only call: " + (", ".join(sorted(job.tools)) or "no tools")
+            # The dispatch guard refuses agent-spawning tools however the job was built.
+            allowed = set(job.tools) - AGENT_SPAWNING_TOOLS
+            set_thread_tool_whitelist(allowed, deny_msg_fmt=(
+                "This background task may only call: " + (", ".join(sorted(allowed)) or "no tools")
                 + ". {tool_name} was denied; do not retry it."))
             if job.timeout is not None:
                 def _on_timeout() -> None:

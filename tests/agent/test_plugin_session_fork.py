@@ -209,6 +209,55 @@ def test_task_must_be_the_plugins_own(forks, consented):
     assert forks.built == []
 
 
+@pytest.mark.parametrize("spawning", sorted(plugin_session_fork.AGENT_SPAWNING_TOOLS))
+def test_agent_spawning_tools_are_refused_and_the_token_stays_usable(forks, consented, spawning):
+    """A subagent, teammate, cron or Kanban worker loop runs outside the fork's whitelist and
+    auto-deny, so naming one refuses the fork even when the session advertises it."""
+    parent = _agent(tools=[_tool("cw_offer"), _tool(spawning)])
+    token = issue_side_question_token(parent, [], "turn-1")
+    assert _ctx(consented).fork_session(token, "q", tools=["cw_offer", spawning]) is None
+    assert forks.built == []
+    assert _settled(_ctx(consented).fork_session(token, "q", tools=["cw_offer"])).outcome == "ok"
+
+
+def test_the_fork_dispatch_guard_refuses_agent_spawning_tools_however_the_job_was_built(forks, consented):
+    """Second fence: a job holding delegate_task (built past start_session_fork) still cannot
+    dispatch it from the fork thread; its whitelisted tool still can."""
+    import contextvars
+    import weakref
+
+    from agent.side_question_request import SideQuestionCapture, runtime_key
+    from hermes_cli.plugins import get_pre_tool_call_directive
+
+    parent = _agent(tools=[_tool("cw_offer"), _tool("delegate_task")])
+    capture = SideQuestionCapture(parent_ref=weakref.ref(parent), messages=[], system_prompt="sys",
+                                  system_prompt_static=None, tools=parent.tools, session_id="sess",
+                                  turn_id="turn-1", runtime=runtime_key(parent), context=contextvars.copy_context())
+    forks.script = lambda fork: {"final_response": json.dumps({
+        name: get_pre_tool_call_directive(name, {}) for name in ("delegate_task", "cw_offer")}), "messages": []}
+    job = plugin_session_fork._ForkJob(PLUGIN, capture, "q", frozenset({"delegate_task", "cw_offer"}), 1, None, {},
+                                       None, background_review._BackgroundReviewRun())
+    job.handle = plugin_session_fork.PluginForkHandle(PLUGIN, lambda: None)
+    plugin_session_fork._launch(job)
+    seen = json.loads(_settled(job.handle).result)
+    assert seen["delegate_task"][0] == "block" and "may only call: cw_offer." in seen["delegate_task"][1]
+    assert seen["cw_offer"] == [None, None]
+
+
+def test_the_background_review_whitelist_holds_no_agent_spawning_tool(caplog):
+    """The review fork has the same thread-local guard: neither its default whitelist nor an
+    operator's ``extra_tools`` admits a tool that spawns an agent loop."""
+    review_agent = SimpleNamespace(_memory_enabled=True, _user_profile_enabled=True)
+    for review_memory in (False, True):
+        whitelist, _extra = background_review._review_tool_whitelist(review_agent, None, review_memory)
+        assert not whitelist & plugin_session_fork.AGENT_SPAWNING_TOOLS
+    task_cfg = {"extra_tools": ["delegate_task", "cronjob_manage", "propose_change"]}
+    whitelist, extra = background_review._review_tool_whitelist(review_agent, task_cfg)
+    assert extra == {"propose_change"} and "propose_change" in whitelist
+    assert not whitelist & plugin_session_fork.AGENT_SPAWNING_TOOLS
+    assert "ignoring agent-spawning tools ['cronjob_manage', 'delegate_task']" in caplog.text
+
+
 def test_own_task_inheriting_background_review_routes_the_fork(forks):
     """``inherit_from="background_review"`` (a core block outside the picker) is kept, and the
     fork's ``task=`` lane follows ``auxiliary.background_review`` at read time."""
@@ -351,8 +400,9 @@ def register(ctx):
         ctx.register_hook(name, lambda _n=name, **kw: _log(_n, **kw))
 
     def _on_post_llm_call(**kwargs):
-        PROBE.handles.append(ctx.fork_session(kwargs["side_question_token"], PROBE.prompt, tools=["cw_offer"],
-                                              **PROBE.fork_kwargs))
+        for tools in PROBE.attempts:  # one token: a refused attempt that leaves it unspent lets the next try
+            PROBE.handles.append(ctx.fork_session(kwargs["side_question_token"], PROBE.prompt, tools=tools,
+                                                  **PROBE.fork_kwargs))
     ctx.register_hook("post_llm_call", _on_post_llm_call)
 '''
 
@@ -364,17 +414,17 @@ def _reply(content=None, tool_calls=None):
                                                                      total_tokens=907))
 
 
-def _call(call_id, name):
-    return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments="{}"))
+def _call(call_id, name, arguments="{}"):
+    return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments=arguments))
 
 
-def _run_turn_with_fork(monkeypatch, **fork_kwargs):
+def _run_turn_with_fork(monkeypatch, *, attempts=(["cw_offer"],), fork_replies=None, **fork_kwargs):
     """Live turn: calls cw_offer, answers. Its plugin forks the session from post_llm_call; the
-    fork calls cw_other (not whitelisted) and cw_offer, then answers."""
+    fork (by default) calls cw_other (not whitelisted) and cw_offer, then answers."""
     from run_agent import AIAgent
 
     probe = SimpleNamespace(calls=[], events=[], handles=[], prompt="Worth sharing with the team?",
-                            fork_kwargs=fork_kwargs)
+                            attempts=list(attempts), fork_kwargs=fork_kwargs)
     monkeypatch.setitem(sys.modules, "_fork_probe", probe)
     _install_plugin(PLUGIN, declares=True, body=_E2E_PLUGIN)
     _load([PLUGIN], granted=[PLUGIN])
@@ -385,15 +435,16 @@ def _run_turn_with_fork(monkeypatch, **fork_kwargs):
     replies = [
         _reply(tool_calls=[_call("call_live", "cw_offer")]),
         _reply("The answer is 42."),
-        _reply(tool_calls=[_call("call_f1", "cw_other"), _call("call_f2", "cw_offer")]),
-        _reply("Offered."),
+        *(fork_replies or [_reply(tool_calls=[_call("call_f1", "cw_other"), _call("call_f2", "cw_offer")]),
+                           _reply("Offered.")]),
     ]
     requests: list = []
     client = MagicMock()
     client.chat.completions.create.side_effect = lambda **kw: (requests.append(kw), replies.pop(0))[1]
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
-        patch("model_tools.get_tool_definitions", return_value=[_tool("cw_offer"), _tool("cw_other")]),
+        patch("model_tools.get_tool_definitions",
+              return_value=[_tool("cw_offer"), _tool("cw_other"), _tool("delegate_task")]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
@@ -403,7 +454,7 @@ def _run_turn_with_fork(monkeypatch, **fork_kwargs):
         parent._cached_system_prompt = "You are helpful."
         parent.skip_background_review = True
         result = parent.run_conversation("what is the answer?")
-        handle = _settled(probe.handles[0], 30)
+        handle = _settled(next((h for h in probe.handles if h is not None), None), 30)
     side_question_lease._leases.clear()
     return SimpleNamespace(result=result, handle=handle, probe=probe, requests=requests, usage=usage, parent=parent)
 
@@ -436,3 +487,43 @@ def test_real_fork_stops_at_its_input_budget(monkeypatch):
     run = _run_turn_with_fork(monkeypatch, input_budget=1)
     assert run.handle.outcome == "budget_exhausted"
     assert len(run.requests) == 3  # the crossing request completes; no further provider call
+
+
+def test_real_fork_never_reaches_a_delegate_worker(monkeypatch):
+    """A plugin asks for a fork holding delegate_task (advertised to the session), whose model then
+    delegates a child that would use cw_other. The request is refused with the token unspent; the
+    retry without it runs, and its delegate_task call is denied at dispatch. No child worker ever
+    runs cw_other outside the whitelist, and no approval reaches an interactive callback (a
+    delegate worker's copied context holds neither the whitelist nor the auto-deny)."""
+    import contextvars
+
+    from hermes_cli.plugins import get_pre_tool_call_directive
+    from run_agent import AIAgent
+    from tools.terminal_tool import _get_approval_callback, set_approval_callback
+
+    delegations: list = []
+
+    def _delegate(agent, args):  # what a child worker would see from its copied context
+        delegations.append(threading.Thread(target=contextvars.copy_context().run, args=(lambda: delegations.append({
+            "cw_other": get_pre_tool_call_directive("cw_other", {}),
+            "approval": getattr(_get_approval_callback(), "__name__", None)}),)))
+        delegations[-1].start()
+        delegations[-1].join()
+        return json.dumps({"results": []})
+
+    interactive: list = []
+    monkeypatch.setattr(AIAgent, "_dispatch_delegate_task", _delegate)
+    set_approval_callback(lambda *a, **k: interactive.append(a) or "approve")
+    try:
+        run = _run_turn_with_fork(monkeypatch, attempts=(["cw_offer", "delegate_task"], ["cw_offer"]), fork_replies=[
+            _reply(tool_calls=[_call("call_d", "delegate_task", json.dumps({"goal": "run cw_other"}))]),
+            _reply("Delegated."),
+        ])
+    finally:
+        set_approval_callback(None)
+    assert delegations == [] and interactive == []
+    assert run.probe.handles[0] is None and run.probe.handles[1] is run.handle
+    assert [c["tool"] for c in run.probe.calls] == ["cw_offer"]  # the live call only
+    denied = [m for m in run.requests[3]["messages"] if m.get("role") == "tool" and m.get("tool_call_id") == "call_d"]
+    assert denied and "delegate_task was denied" in str(denied[0]["content"])
+    assert run.handle.outcome == "ok" and run.handle.actions == ()

@@ -277,6 +277,19 @@ def test_a_refused_install_drops_the_kept_inspection_so_the_dialog_reads_the_new
     assert inspect_plugin_source(URL, catalog_name="gizmo")["sha"] == repinned
 
 
+def test_a_reviewed_commit_force_pushed_away_asks_for_a_fresh_review(home, repo):
+    """Retrying the same commit can never succeed; the dialog must read the source again instead."""
+    reviewed = _commit(repo, {"plugin.js": "export default { v: 1 }\n"})
+    _git(repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "--amend", "-m", "rewritten")
+    _git(repo, "reflog", "expire", "--expire=now", "--all")
+    _git(repo, "gc", "-q", "--prune=now")
+
+    result = install.install_desktop_plugin(URL, ref=reviewed)
+
+    assert result["ok"] is False and result.get("source_moved") is True, result
+    assert not (_root(home) / "gizmo").exists()
+
+
 def test_the_published_plugin_carries_no_git_metadata(home, repo):
     sha = _commit(repo, {"plugin.js": "export default {}\n"})
 

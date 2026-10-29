@@ -113,7 +113,16 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
             clone = Path(tmp) / "plugin"
             # A catalog entry is fetched at its own pin, as the agent installer fetches it: an
             # annotated-tag pin names the tag object, and only its peeled commit is what the dialog read.
-            head = pc._clone_plugin_repo(clone, git_url, catalog_sha or sha, subdir)
+            try:
+                head = pc._clone_plugin_repo(clone, git_url, catalog_sha or sha, subdir)
+            except pc.PluginOperationError as exc:
+                # The repository cloned but holds no reviewed commit any more (force-pushed away): only a
+                # fresh review can fix that, as Electron's twin answers.
+                if catalog_sha or not (clone / ".git").is_dir():
+                    raise
+                raise pc.PluginSourceMoved(
+                    f"The commit you reviewed ({sha[:12]}) could not be checked out; the source may have changed "
+                    f"since you reviewed it. Re-open the install dialog to review it again. {exc}") from exc
             if head != sha:
                 raise pc.PluginSourceMoved(
                     "The catalog's reviewed commit changed since the dialog read it; inspect it again.")

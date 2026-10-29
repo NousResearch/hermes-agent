@@ -1280,7 +1280,7 @@ npm install
 npm run dev
 ```
 
-The Vite dev server at `http://localhost:5173` proxies `/api` requests, WebSockets included, to the FastAPI backend at `http://127.0.0.1:9119` (set `HERMES_DASHBOARD_URL` to use another backend). It reads the session token from the backend server-side, and it presents WebSocket upgrades from its own page with the backend's origin, so the backend does not need to trust port `5173`. Vite's own CORS is turned off, so other local pages cannot read the token from the dev server either.
+The Vite dev server at `http://localhost:5173` proxies `/api` requests, WebSockets included, to the FastAPI backend at `http://127.0.0.1:9119` (set `HERMES_DASHBOARD_URL` to use another backend). It reads the session token from the backend server-side. It forwards WebSocket upgrades with their `Host` and `Origin` unchanged, so the page's Origin names the host and port it dialled and the backend admits it as same-origin without trusting port `5173`. This holds when `HERMES_DASHBOARD_URL` points at a port forward to the backend (for example `http://127.0.0.1:8000` through `ssh -L 8000:localhost:9119`). Vite's own CORS is turned off, so other local pages cannot read the token from the dev server either.
 
 The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-style components. Production builds output to `hermes_cli/web_dist/` which the FastAPI server serves as a static SPA.
 

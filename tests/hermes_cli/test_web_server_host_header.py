@@ -304,16 +304,21 @@ def test_other_local_ports_can_neither_read_nor_open_a_socket(
 
 
 @pytest.mark.parametrize("origin, trusted", [
-    ("http://127.0.0.1:9119", True),    # the dev page's own upgrade, as the proxy presents it
-    ("http://localhost:5173", True),    # the same upgrade without the rewrite: Origin names the Host
+    # The dev page's own upgrade. web/vite.config.ts proxies /api (ws: true) with neither
+    # changeOrigin nor an Origin rewrite, so this exact pair reaches the backend both when
+    # HERMES_DASHBOARD_URL is the backend (http://127.0.0.1:9119) and when it is a port forward to
+    # it (http://127.0.0.1:8000 through ssh -L 8000:localhost:9119).
+    ("http://localhost:5173", True),
+    # What an Origin rewrite to HERMES_DASHBOARD_URL produced: the forward's port is not the bound
+    # one and no longer names the Host, so the dev page lost its sockets through a forward.
+    ("http://127.0.0.1:8000", False),
     ("http://127.0.0.1:5173", False),   # same port, different host: not the page the proxy serves
     ("http://localhost:3000", False),   # another local page using the proxy: passed through as is
 ])
 def test_dashboard_vite_dev_proxy_needs_no_trusted_dev_port(monkeypatch, origin, trusted):
-    """``web/`` `npm run dev` serves the SPA from Vite and proxies /api (ws: true) without changing
-    Host. The browser's Origin is Vite's, so web/vite.config.ts rewrites it to the backend's own
-    origin for upgrades from Vite's own page (Origin host == Host) and leaves every other page's
-    Origin alone. The backend then admits the dev page as same-origin with no :5173 grant."""
+    """``web/`` `npm run dev` serves the SPA from Vite and proxies /api without changing Host or
+    Origin. The dev page's Origin then names the Host it dials, which the backend admits as
+    same-origin with no :5173 grant, whichever address the proxy reaches the backend through."""
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 

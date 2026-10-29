@@ -199,9 +199,10 @@ def ws_client_reason(ws, state) -> Optional[str]:
 # any website read/modify config and secrets; ANY local port would let a page previewed from another
 # port (an agent-built site, Live Server, a compromised dev app) read index.html's session token and
 # drive /api/pty. No fixed dev port is trusted either: 3000, 5173 and 5174 are where most local dev
-# servers land (Vite takes 5174 when 5173 is busy). The dashboard's Vite dev server presents its own
-# page's upgrades with this backend's origin (web/vite.config.ts), so it needs no grant here. The
-# WebSocket Origin gate applies the same rule (ws_host_origin_reason).
+# servers land (Vite takes 5174 when 5173 is busy). The dashboard's Vite dev server proxies with
+# Host and Origin unchanged (web/vite.config.ts), so its page's upgrades name the Host they dial and
+# ws_host_origin_reason admits them; it needs no grant here. The WebSocket Origin gate applies the
+# same rule (ws_host_origin_reason).
 
 
 def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:

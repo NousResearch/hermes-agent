@@ -432,6 +432,23 @@ class TestBytePreservation:
         assert out == content
         assert "# web" in out
 
+    def test_byte_preservation_context_aware_veto_fires(self):
+        # Veto coverage (review finding): at origin/main this shape is won
+        # by context_aware, which splices the unnamed '# keep' clause away;
+        # with the recovery gate the boundary veto fires, count==0 and the
+        # file comes back byte-identical. RED at base, GREEN with the fix.
+        content = (
+            "key: alpha\n"
+            "daemon_reload: tru   # keep\n"
+            "state: restarted\n"
+        )
+        old = "daemon_reload: tru\nstate: restarted"
+        new = "daemon_reload: true\nstate: restarted"
+        out, count, _strategy, _err = fuzzy_find_and_replace(content, old, new)
+        assert count == 0, (
+            "context_aware splice accepted boundary clause outside old_string")
+        assert out == content
+
 
 class TestEscapeDriftGuard:
     """Tests for the escape-drift guard that catches bash/JSON serialization

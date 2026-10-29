@@ -1124,6 +1124,17 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
+        from tools.environments.docker_session_env import session_exec_env
+
+        # Session identity is per exec even without profile-scoped passthrough.
+        # Resolve after cached init/config values so neither can override this turn.
+        session_values, session_unsets = session_exec_env()
+        env_values.update(session_values)
+        for name in session_unsets:
+            env_values.pop(name, None)
+        cmd.extend(_name_only_env_args(session_values))
+        unset_names = tuple(sorted(set(unset_names) - session_values.keys()))
+        cmd_string = prepend_unset(cmd_string, session_unsets)
         cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)

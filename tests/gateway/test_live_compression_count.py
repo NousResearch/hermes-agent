@@ -12,7 +12,17 @@ from gateway.run_turn_runner import TurnRunner
 from gateway.session_usage import seed_compression_count
 
 
-def _runner(live, *, authority=True):
+def _authority(live, *, generation=0, executing_generation=0):
+    """Just the authority fields ``_carry_live_compression_count`` / ``_adopt_turn_agent`` read."""
+    return SimpleNamespace(
+        sessions={"s1": live},
+        executing={"s1": executing_generation},
+        db=SimpleNamespace(get_session=lambda _sid: {"runtime_generation": generation}),
+        adopt_agent=lambda sid, gen, agent: None,
+    )
+
+
+def _runner(live, *, authority=True, **authority_fields):
     """A TurnRunner with just the fields ``_event_callback_sync`` reads."""
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(
@@ -20,7 +30,7 @@ def _runner(live, *, authority=True):
         _loop_for_step=None,
     )
     turn._approval_owner = (
-        (SimpleNamespace(sessions={"s1": live}), "s1", 0) if authority else None
+        (_authority(live, **authority_fields), "s1", 0) if authority else None
     )
     return turn
 
@@ -63,3 +73,37 @@ def test_a_turn_without_an_owning_session_is_a_noop():
     _runner(live, authority=False)._event_callback_sync("session:compress", {"compression_count": 2})
 
     assert not hasattr(live, "compression_count")
+
+
+def test_a_late_event_after_the_claim_ended_is_dropped():
+    """The agent thread outlived its running claim (evicted or timed out): it must not write."""
+    live = SimpleNamespace(compression_count=0)  # a fresh conversation, as /new leaves it
+    _runner(live, executing_generation=None)._event_callback_sync(
+        "session:compress", {"compression_count": 2})
+
+    assert live.compression_count == 0
+
+
+def test_a_late_event_after_new_is_dropped():
+    """/new zeroes the count and bumps the generation; a summary from the old conversation is stale."""
+    live = SimpleNamespace(compression_count=0)
+    _runner(live, generation=1)._event_callback_sync("session:compress", {"compression_count": 2})
+
+    assert live.compression_count == 0
+
+
+def test_a_boolean_is_not_a_compression_count():
+    live = SimpleNamespace()
+    _runner(live)._event_callback_sync("session:compress", {"compression_count": True})
+
+    assert not hasattr(live, "compression_count")
+
+
+def test_the_adoption_path_seeds_the_successor():
+    """Every authority-owned turn seeds its agent, not only local viewers (messaging, muted turns)."""
+    live = SimpleNamespace(compression_count=4)
+    agent = SimpleNamespace(context_compressor=SimpleNamespace(compression_count=0))
+
+    _runner(live)._adopt_turn_agent(agent)
+
+    assert agent.context_compressor.compression_count == 4

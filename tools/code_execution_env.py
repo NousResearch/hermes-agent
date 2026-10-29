@@ -68,7 +68,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
         is_env_passthrough = lambda _: False
-        resolve_passthrough_value = lambda _name, _fallback: None
+        resolve_passthrough_value = lambda _name, _fallback, **_kw: None
         scoped_passthrough_additions = lambda _present: {}
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
@@ -80,7 +80,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain
     _dropped_hermes = []
     for k, v in source_env.items():
         if is_passthrough(k):
-            resolved = resolve_passthrough_value(k, v)
+            resolved = resolve_passthrough_value(k, v, client_toolchain=k in toolchain)
             if resolved is not None:
                 scrubbed[k] = resolved
             continue

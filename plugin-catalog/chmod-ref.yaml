@@ -1,6 +1,6 @@
 name: chmod-ref
 repo: https://github.com/olric3015/hermes-plugins
-sha: 4f68d1bea4eb85a414d2e0ecdd37a022e2508f7e
+sha: d2f543a0979eee73202a3fe06bb2c722b04d5765
 subdir: chmod-ref
 description: "@chmod: context references that explain a file permission mode for the model: @chmod:<mode> takes an octal mode (755, 0755, 4755), ls -l text (-rwsr-xr-x, with the file type letter and a trailing + . or @) or an st_mode as stat and git write it (100644), and attaches both forms, each class's rights in words (directory rights named as such), what setuid, setgid and the sticky bit do and where they are ignored, and notes such as a mode everyone can change, one private to the owner, or a class holding rights the class before it lacks; @chmod:\"644 u+x,go-w\" applies a symbolic change step by step the way GNU chmod does (u g o a, + - =, r w x X s t, copies like u=g), @chmod:\"100644 100755\" shows what changes between two modes, and @chmod:\"umask 027\" shows what new files and directories get; the TUI and Desktop composer preview a mode as you type it. Disclosure — reads only the text of the reference itself, using Python's re; it never looks at a file on disk; no network, no files read or written, no permission changed, no subprocess, no credentials read; the plugin keeps no copy of what you write, but the @chmod: reference and the explanation become part of the message sent to your model provider and saved in the session history; register() only adds the @chmod: reference provider."
 maintainer: olric3015
@@ -9,6 +9,7 @@ category: tools
 requires_hermes: ">=0.21.7"
 docs_url: https://github.com/olric3015/hermes-plugins/tree/main/chmod-ref
 version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/d2f543a0979eee73202a3fe06bb2c722b04d5765/docs/chmod-ref-card.png
 platforms: []
 capabilities:
   provides_tools: []

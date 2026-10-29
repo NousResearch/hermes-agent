@@ -14,7 +14,6 @@ import shlex
 import signal
 import stat
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -31,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import _termux_safe_tempdir
 
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
@@ -1105,11 +1105,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     return temp_dir.rstrip("/") or "/"
             except Exception as exc:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
-        for key in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
-            candidate = os.environ.get(key)
-            if candidate and candidate.startswith("/"):
-                return candidate.rstrip("/") or "/"
-        return tempfile.gettempdir()
+        return _termux_safe_tempdir()
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files

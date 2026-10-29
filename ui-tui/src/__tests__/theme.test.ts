@@ -328,6 +328,25 @@ describe('fromSkin', () => {
     expect(theme.color.text).toBe('ansi256(136)')
   })
 
+  it('warns and falls back to derived when diff_added_word equals diff_added background', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const theme = fromSkin(
+      {
+        diff_added: '#ffffff',
+        diff_added_word: '#ffffff'
+      },
+      {}
+    )
+
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('skin warning: diff_added/diff_added_word background (#ffffff) equals its foreground')
+    )
+    expect(theme.color.diffAddedWord).not.toBe('#ffffff')
+    consoleWarnSpy.mockRestore()
+  })
+
   it('maps ui_ color keys + cascades to status', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { color } = fromSkin({ ui_ok: '#008000' }, {})

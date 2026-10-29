@@ -932,6 +932,45 @@ export function fromSkin(
     syntaxComment: c('syntax_comment') ?? c('banner_dim') ?? derived.syntaxComment
   }
 
+  // 3.5 Guard: warn when a skin sets background == foreground for paired tokens.
+  //    diff_added/diff_removed are backgrounds, diff_added_word/diff_removed_word
+  //    are the word-foreground overrides. If they match, text is invisible.
+  //    Same for status_bar_bg vs status_bar_text, selection_bg vs ui_text.
+  {
+    const warnPair = (bgKey: keyof typeof assembled, wordKey: keyof typeof assembled, skinKey: string) => {
+      const bg = assembled[bgKey]
+      const word = assembled[wordKey]
+      const bgHex = toHex(parseColor(bg)!)
+      const wordHex = toHex(parseColor(word)!)
+
+      if (bgHex === wordHex) {
+        console.warn(
+          `[hermes] skin warning: ${skinKey} background (${bgHex}) equals its foreground. Text will be invisible. Using contrast-safe derived fallback.`
+        )
+        assembled[wordKey] = derived[wordKey]
+      }
+    }
+
+    // diff foreground/background pairs (skins can author either; derive the other)
+    if (c('diff_added') && c('diff_added_word')) {
+      warnPair('diffAdded', 'diffAddedWord', 'diff_added/diff_added_word')
+    }
+
+    if (c('diff_removed') && c('diff_removed_word')) {
+      warnPair('diffRemoved', 'diffRemovedWord', 'diff_removed/diff_removed_word')
+    }
+
+    // status bar foreground/background pair
+    if (c('status_bar_bg') && c('status_bar_text')) {
+      warnPair('statusBg', 'statusFg', 'status_bar_bg/status_bar_text')
+    }
+
+    // selection background vs text pair
+    if (c('selection_bg') && c('ui_text')) {
+      warnPair('selectionBg', 'text', 'selection_bg/ui_text')
+    }
+  }
+
   // 4. Guard: contrast floors against the real background + fill polarity.
   //    Wrong-polarity fills fall back to the DERIVED value, which is
   //    polarity-correct by construction (mixed from the background itself).

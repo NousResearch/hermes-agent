@@ -22,36 +22,35 @@ editors or ship built-in presets.
 - Native tools: `write_file` (create the YAML), `read_file` / `search_files`
   (inspect existing skins), `terminal` (activate via `hermes config set`).
 
-## How to Run
-
-1. Pick a lowercase, hyphen-safe `name` (e.g. `synthwave`).
-2. Copy `templates/skin.yaml` and fill in the palette (keep every key — missing
-   keys inherit the `default` skin).
-3. `write_file` it to `<hermes-home>/skins/<name>.yaml`.
-4. Activate it (see Procedure). Confirm the change landed.
-
 ## Quick Reference — element → key
 
 Hex (`#rrggbb`). Theming is **semantic**: one key colors every element that plays
 that role, so match the element to its key. To recolor a specific element, set the
 key in its row (element-specific keys fall back to the shared one when unset).
 
-| Visible element | Key to set | Falls back to |
-|---|---|---|
-| App background (whole TUI + GUI) | `background` | terminal default |
-| **Tool-call marker** (`●`, tool spinner) | `ui_tool` | `ui_accent` |
-| **Thinking / reasoning text** | `ui_thinking` | `banner_dim` |
-| Accent — headings, links, chevrons, `Σ` | `ui_accent` / `banner_accent` | — |
-| Heading / primary text | `banner_title` / `ui_primary` | — |
-| Body / label text, user messages | `ui_text` / `banner_text`, `ui_label` | — |
-| Muted / secondary, tree connectors | `banner_dim` | — |
-| Borders, rules, gutters | `ui_border` / `banner_border` | — |
-| Prompt symbol color | `prompt` | `banner_text` |
-| Success / warn / error | `ui_ok` / `ui_warn` / `ui_error` | — |
-| Status bar text + usage | `status_bar_text`, `status_bar_good/warn/bad/critical` | — |
-| Diff add/remove (line + word) | `diff_added` / `diff_removed` / `diff_added_word` / `diff_removed_word` | built-in |
-| Code syntax (string/number/keyword/comment) | `syntax_string` / `syntax_number` / `syntax_keyword` / `syntax_comment` | accent/text/border/muted |
-| Completion menu | `completion_menu_bg` / `completion_menu_current_bg` / `…_meta_bg` | — |
+|| Visible element | Key to set | Falls back to |
+||---|---|---|
+|| App background (whole TUI + GUI) | `background` | terminal default |
+|| **Tool-call marker** (`●`, tool spinner) | `ui_tool` | `ui_accent` |
+|| **Thinking / reasoning text** | `ui_thinking` | `banner_dim` |
+|| Accent — headings, links, chevrons, `Σ` | `ui_accent` / `banner_accent` | — |
+|| Heading / primary text | `banner_title` / `ui_primary` | — |
+|| Body / label text, user messages | `ui_text` / `banner_text`, `ui_label` | — |
+|| Muted / secondary, tree connectors | `banner_dim` | — |
+|| Borders, rules, gutters | `ui_border` / `banner_border` | — |
+|| Prompt symbol color | `prompt` | `banner_text` |
+|| Success / warn / error | `ui_ok` / `ui_warn` / `ui_error` | — |
+|| Status bar text + usage | `status_bar_text`, `status_bar_good/warn/bad/critical` | — |
+|| Diff add/remove (line + word) | `diff_added` / `diff_removed` / `diff_added_word` / `diff_removed_word` | built-in |
+|| Code syntax (string/number/keyword/comment) | `syntax_string` / `syntax_number` / `syntax_keyword` / `syntax_comment` | accent/text/border/muted |
+|| Completion menu | `completion_menu_bg` / `completion_menu_current_bg` / `…_meta_bg` | — |
+
+**Diff tokens** (`diff_added`, `diff_removed`, `diff_added_word`, `diff_removed_word`):
+- `diff_added` / `diff_removed` are **background fills** (the hunk highlight).
+- `diff_added_word` / `diff_removed_word` are **foreground text colors**.
+- These pairs **must differ** — if background equals foreground, diff lines are
+  invisible (the text has no contrast). The runtime validates this at load time
+  and falls back to the derived contrast-safe color, emitting a warning.
 
 Note the sharing: `ui_accent` colors tool markers **and** headings/links/chevrons,
 so to recolor *only* tool calls (the classic "change the gold `●`") set `ui_tool`.

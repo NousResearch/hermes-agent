@@ -11,6 +11,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from websockets.protocol import State
 
 
 def event(kind, seq=1, sid='s', admission=None):
@@ -20,6 +21,8 @@ def event(kind, seq=1, sid='s', admission=None):
 
 
 class ResumeWire:
+    state = State.OPEN  # GatewayClient.rpc reads the socket state before it sends
+
     def __init__(self, burst):
         self.burst = burst
         self.frames = asyncio.Queue()
@@ -77,6 +80,8 @@ async def test_resume_answer_behind_a_burst_stays_reachable(monkeypatch, consume
 
 
 class PostAckWire:
+    state = State.OPEN  # GatewayClient.rpc reads the socket state before it sends
+
     def __init__(self):
         self.frames = asyncio.Queue()
         self.submit_id = None

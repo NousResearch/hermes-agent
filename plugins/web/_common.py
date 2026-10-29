@@ -7,7 +7,9 @@ slots) lazily at call time so monkeypatching the source module keeps working.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
@@ -65,6 +67,80 @@ def page_error(url: str, error: str) -> dict[str, Any]:
 
 def extract_fail(urls: list[str], error: str) -> list[dict[str, Any]]:
     return [page_error(u, error) for u in urls]
+
+
+# --- Origin HTTP status (the target page's answer, not the vendor API's) ---
+# Scraping vendors report the target's own status inside a successful API reply (Firecrawl
+# ``metadata.statusCode``, Parallel ``errors[].http_status_code``, Exa ``statuses[].error``).
+# Unchecked, a 403/404 page reads as a successful (often empty) extraction: the agent can't tell
+# "blocked" from "blank" and the error page is cached as content. The backend did its job, so an
+# origin error never triggers the keyless rescue (``is_origin_http_error``).
+_ORIGIN_HTTP_ERROR_RE = re.compile(r"HTTP \d{3} from origin(?::|$)")
+
+
+def is_origin_http_error(error: Any) -> bool:
+    """True for an ``error`` string built by ``origin_http_error`` (the target page's own answer)."""
+    return isinstance(error, str) and _ORIGIN_HTTP_ERROR_RE.match(error) is not None
+
+
+def origin_http_error(status: Any, reason: Any = None) -> Optional[str]:
+    """``HTTP <status> from origin[: reason]`` when the target answered >= 400, else None."""
+    if isinstance(status, bool):
+        return None
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return None
+    if code < 400:
+        return None
+    detail = str(reason or "").strip()
+    return f"HTTP {code} from origin: {detail}" if detail else f"HTTP {code} from origin"
+
+
+# Vendors that fetch the page themselves also report its status in their own words: Exa
+# ``CRAWL_HTTP_<code>`` / ``CRAWL_NOT_FOUND``; Keenable mirrors the target's code as its own HTTP
+# status with a message about the target. Read as vendor errors, an origin 429 looked like the
+# vendor throttling us and walked the keyless ring.
+_EXA_CRAWL_STATUS_RE = re.compile(r"\bCRAWL_(?:HTTP_(\d{3})|(NOT_FOUND))\s*$")
+_KEENABLE_ORIGIN_MESSAGE_RE = re.compile(r"the (?:target server|page does not exist)\b", re.IGNORECASE)
+
+
+def exa_crawl_status(text: Any) -> Optional[int]:
+    """The origin status an Exa crawl error tag ends with (``CRAWL_HTTP_429`` → 429, ``CRAWL_NOT_FOUND`` → 404)."""
+    match = _EXA_CRAWL_STATUS_RE.search(str(text or ""))
+    if match is None:
+        return None
+    return int(match.group(1)) if match.group(1) else 404
+
+
+def keenable_origin_error(status: Any, body: str) -> Optional[str]:
+    """``HTTP <status> from origin: <message>`` when a Keenable fetch error describes the target's
+    answer; None for Keenable's own refusals (its rate limit for this client, auth, 5xx)."""
+    try:
+        data = json.loads(body or "")
+    except ValueError:
+        return None
+    message = str(data.get("message") or "").strip() if isinstance(data, dict) else ""
+    return origin_http_error(status, message) if _KEENABLE_ORIGIN_MESSAGE_RE.match(message) else None
+
+
+def with_origin_status(entry: dict[str, Any], status: Any, reason: Any = None) -> dict[str, Any]:
+    """Set ``error`` on an extract entry whose target answered >= 400; the error page body
+    stays in ``content`` (it can still explain the refusal)."""
+    if error := origin_http_error(status, reason):
+        entry["error"] = error
+    return entry
+
+
+def vendor_error_entry(url: str, *, status: Any = None, reason: Any = None, body: Any = None) -> dict[str, Any]:
+    """Per-URL failure from a vendor's own error list. Names the origin status when the vendor
+    reports one (body kept as content; ``reason`` is a vendor tag like ``http_error`` that adds
+    nothing to the code); otherwise the vendor's body/reason is the error text."""
+    if origin := origin_http_error(status):
+        entry = {**page_error(url, origin), "content": str(body or "")}
+    else:
+        entry = page_error(url, str(body or reason or "extraction failed"))
+    return {**entry, "metadata": {"sourceURL": url}}
 
 
 # --- Keyless ring hand-off (shared by exa / parallel / keenable) ---------------

@@ -56,7 +56,7 @@ jobs:
       - name: Tag and draft
         env:
           GH_TOKEN: ${{ github.token }}
-          # The daily canary publishes once its candidate is built and smoked; the suites report.
+          # The daily canary waits for suites to finish but permits unrelated suite failures.
           REQUIRE_GREEN: ${{ github.event_name == 'workflow_dispatch' && inputs.require_green && 'true' || 'false' }}
         run: |
           git config user.name "github-actions[bot]"

@@ -394,6 +394,15 @@ async function sweepOnce(requireLoaded = true): Promise<void> {
 
       for (const profile of refused) {
         const previous = refusals.get(profile)
+
+        // One sweep can refuse the same profile once per stored id (up to
+        // SWEEP_CONCURRENCY probes run at once): those are one refusal of the
+        // profile, not several. Only a refusal after the previous wait has
+        // ended grows it, so an existing record still in the future is kept.
+        if (previous && Date.now() < previous.retryAt) {
+          continue
+        }
+
         const waitMs = refusalWaitMs(previous?.waitMs)
 
         refusals.set(profile, { retryAt: Date.now() + waitMs, waitMs })

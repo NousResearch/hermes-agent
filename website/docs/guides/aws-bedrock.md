@@ -23,6 +23,8 @@ Hermes routes each model family through the API that serves it best:
 
 All three routes share the same AWS credential chain and region resolution — no separate configuration is needed. Requests to the Mantle endpoint are authenticated with `AWS_BEARER_TOKEN_BEDROCK` when set, or SigV4-signed via the standard boto3 credential chain otherwise.
 
+On the native Claude route, `AWS_BEARER_TOKEN_BEDROCK` takes precedence over IAM keys and `AWS_PROFILE`. In a multi-profile gateway, this selection uses the active profile's credentials. If that profile has no bearer, its configured IAM credentials are used even when the launch environment contains a bearer. Standalone runs retain the default AWS credential chain when no bearer is set. This applies to auxiliary Claude calls, including context compression and title generation.
+
 ## Prerequisites
 
 - **AWS credentials** — any source supported by the [boto3 credential chain](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html):

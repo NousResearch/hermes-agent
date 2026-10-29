@@ -154,6 +154,7 @@ import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
+import { SidebarHistoryButton } from './history-button'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
@@ -199,6 +200,7 @@ import { useServerSessionSearch } from './use-server-session-search'
 // dominating the sidebar before the user asks to see it.
 const NON_SESSION_INITIAL_ROWS = 3
 const NON_SESSION_LOAD_STEP = 10
+const RECENT_SESSION_LIMIT = 10
 
 // How long after connecting to warm the project tree for someone who isn't in
 // the grouped view. Long enough that the flat list — the thing actually on
@@ -662,10 +664,7 @@ export function ChatSidebar({
     [scopedSessions, filtersNarrow, sessionMatchesFilters]
   )
 
-  // Recents by activity (last_active || started_at). User send stamps
-  // last_active immediately. Ordering by status doesn't sort here — it re-slots
-  // rows *inside* whatever dividers are on, via sortOrderIds below — so the
-  // date buckets stay chronological either way.
+  // Choose recent membership by activity before applying within-group ordering.
   const sortedSessions = useMemo(
     () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
     [visibleSessions]
@@ -776,11 +775,10 @@ export function ChatSidebar({
     }
   }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
 
-  // Recents render in recency order. The hand-picked order is layered on per
-  // date group inside the section (orderRowsWithinGroups) rather than baked
-  // into the list here, so a drag ranks a row among its own day's chats
-  // instead of flattening the whole sidebar into an undated manual mode.
-  const agentSessions = unpinnedAgentSessions
+  // Bound only the ordinary flat view; explicit filters, archives and project
+  // navigation retain their full result sets. Pins were removed before slicing.
+  const compactRecents = !filtersNarrow && !showArchived && !agentsGrouped && projectScope === ALL_PROJECTS
+  const agentSessions = compactRecents ? unpinnedAgentSessions.slice(0, RECENT_SESSION_LIMIT) : unpinnedAgentSessions
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -1375,8 +1373,7 @@ export function ChatSidebar({
   const connectionsRegistry = useStore($connectionsRegistry)
   const profileColors = useStore($profileColors)
 
-  // The flat Sessions list always shows ALL recent sessions; Projects is a
-  // parallel grouped view, not a filter on this one — nothing is hidden here.
+  // Projects is a separate view; the flat list includes project-owned sessions.
   const displayAgentSessions = agentSessions
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
@@ -1390,6 +1387,7 @@ export function ChatSidebar({
   // sessions list from under it would just fold un-archived rows back in.
   const hasMoreSessions =
     !showArchived &&
+    (!compactRecents || agentSessions.length < RECENT_SESSION_LIMIT) &&
     (showAllProfiles
       ? Object.values(sessionProfilesTruncated).some(Boolean)
       : Boolean(sessionProfilesTruncated[profileScope]))
@@ -1408,13 +1406,11 @@ export function ChatSidebar({
 
     try {
       const startVisible = displayRecentsCountRef.current
-      const targetVisible = startVisible + SIDEBAR_SESSIONS_PAGE_SIZE
+      const targetVisible = compactRecents ? RECENT_SESSION_LIMIT : startVisible + SIDEBAR_SESSIONS_PAGE_SIZE
       let lastLoaded = loadedRecentsCountRef.current
 
-      // Project-less recents can be sparse in the global recent stream (because
-      // project-scoped sessions are filtered out in the UI). Keep paging until
-      // we actually reveal a full page of visible rows, or the backend window
-      // stops growing.
+      // Pins and explicit filters can leave a sparse page. Stop at the visible
+      // target or when the backend window stops growing.
       for (let attempt = 0; attempt < 6; attempt += 1) {
         await Promise.resolve(onLoadMoreSessions())
         await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
@@ -1435,7 +1431,7 @@ export function ChatSidebar({
     } finally {
       setRecentsLoadMorePending(false)
     }
-  }, [onLoadMoreSessions, recentsLoadMorePending])
+  }, [onLoadMoreSessions, recentsLoadMorePending, compactRecents])
 
   // Archived rows are excluded from the sessions query, so the view has to
   // fetch its own set.
@@ -1706,6 +1702,7 @@ export function ChatSidebar({
         </SidebarGroup>
 
         <SidebarStorageCorruptNotice />
+        <SidebarHistoryButton />
 
         {showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">

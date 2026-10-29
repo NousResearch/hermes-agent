@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,10 +8,12 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $sidebarShowArchived, $sidebarStatusFilter } from '@/store/layout'
 import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
+import { $sessionProfilesTruncated } from '@/store/session'
 import {
   $currentCwd,
   $messagingSessions,
@@ -23,6 +25,7 @@ import {
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
+import { $archivedSessions } from '@/store/sidebar-archive'
 import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -41,7 +44,12 @@ const sessionRows = [
   makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
 ]
 
-const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: () => Promise<void> = noopAsync) =>
+const renderSidebar = (
+  pathname: string,
+  currentView: AppView,
+  onRetrySessions: () => Promise<void> = noopAsync,
+  onLoadMoreSessions: () => void = noop
+) =>
   render(
     <MemoryRouter initialEntries={[pathname]}>
       <SidebarProvider>
@@ -50,7 +58,7 @@ const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: 
           onArchiveSession={noop}
           onBranchSession={noop}
           onDeleteSession={noop}
-          onLoadMoreSessions={noop}
+          onLoadMoreSessions={onLoadMoreSessions}
           onManageCronJob={noop}
           onNavigate={noop}
           onNewSessionInWorkspace={noop}
@@ -62,6 +70,196 @@ const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: 
       </SidebarProvider>
     </MemoryRouter>
   )
+
+describe('compact recent sessions', () => {
+  beforeEach(() => {
+    setSidebarAgentsGrouped(false)
+    setSidebarGrouping('date')
+    $sidebarStatusFilter.set([])
+    $sidebarShowArchived.set(false)
+    $projectScope.set(ALL_PROJECTS)
+    setShowAllProfiles(false)
+    $sessionsLoading.set(false)
+    $sessionProfilesTruncated.set({ default: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    $sessions.set([])
+    $sidebarStatusFilter.set([])
+    $sidebarShowArchived.set(false)
+    $archivedSessions.set([])
+    $sessionProfilesTruncated.set({})
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('does not offer load more when ten recent rows already fill the bound', () => {
+    $sessionProfilesTruncated.set({ default: true })
+    $sessions.set(
+      Array.from({ length: 15 }, (_, index) =>
+        makeSessionInfo({
+          id: `page-${index}`,
+          title: `Page ${index}`,
+          last_active: 100 - index,
+          profile: 'default'
+        })
+      )
+    )
+    renderSidebar('/', 'chat')
+    expect(screen.queryByRole('button', { name: /Load more/ })).toBeNull()
+  })
+
+  it('stops paging as soon as ten unpinned rows are available', async () => {
+    const rows = Array.from({ length: 20 }, (_, index) =>
+      makeSessionInfo({
+        id: `paged-${index}`,
+        title: `Paged ${index}`,
+        last_active: 100 - index,
+        profile: 'default'
+      })
+    )
+
+    $sessions.set(rows.slice(0, 4))
+    $sessionProfilesTruncated.set({ default: true })
+
+    const loadMore = vi.fn(() => {
+      $sessions.set(rows)
+    })
+
+    renderSidebar('/', 'chat', noopAsync, loadMore)
+    fireEvent.click(screen.getByRole('button', { name: /Load more/ }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Load more/ })).toBeNull())
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 100))
+    })
+    expect(loadMore).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('Paged 9')).toBeTruthy()
+    expect(screen.queryByText('Paged 10')).toBeNull()
+  })
+
+  it('keeps every explicit search result, including older sessions beyond the recent bound', () => {
+    $sessions.set(
+      Array.from({ length: 14 }, (_, index) =>
+        makeSessionInfo({
+          id: `search-${index}`,
+          title: `Findable ${index}`,
+          last_active: 100 - index,
+          profile: 'default'
+        })
+      )
+    )
+    renderSidebar('/', 'chat')
+    expect(screen.queryByText('Findable 13')).toBeNull()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Findable' } })
+
+    for (let index = 0; index < 14; index += 1) {
+      expect(screen.getByText(`Findable ${index}`)).toBeTruthy()
+    }
+  })
+
+  it('does not cap explicit status-filter results or their pagination', () => {
+    $sidebarStatusFilter.set(['idle'])
+    $sessionProfilesTruncated.set({ default: true })
+    $sessions.set(
+      Array.from({ length: 14 }, (_, index) =>
+        makeSessionInfo({
+          id: `filter-${index}`,
+          title: `Filtered ${index}`,
+          last_active: 100 - index,
+          profile: 'default'
+        })
+      )
+    )
+    renderSidebar('/', 'chat')
+    expect(screen.getByText('Filtered 13')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Load more/ })).toBeTruthy()
+  })
+
+  it('keeps pagination available when pinned rows leave fewer than ten unpinned sessions loaded', () => {
+    $sessionProfilesTruncated.set({ default: true })
+    $sessions.set(
+      Array.from({ length: 12 }, (_, index) =>
+        makeSessionInfo({
+          id: `sparse-${index}`,
+          title: `Sparse ${index}`,
+          last_active: 100 - index,
+          profile: 'default',
+          pinned: index < 5
+        })
+      )
+    )
+    renderSidebar('/', 'chat')
+    expect(screen.getByText('Sparse 11')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Load more/ })).toBeTruthy()
+  })
+
+  it('does not cap the explicit archived view', () => {
+    $sidebarShowArchived.set(true)
+    $archivedSessions.set(
+      Array.from({ length: 14 }, (_, index) =>
+        makeSessionInfo({
+          id: `archive-${index}`,
+          title: `Archived ${index}`,
+          last_active: 100 - index,
+          profile: 'default',
+          archived: true
+        })
+      )
+    )
+    renderSidebar('/', 'chat')
+    expect(screen.getByText('Archived 13')).toBeTruthy()
+  })
+
+  it('applies one recent bound before grouping all profiles, not ten per profile', () => {
+    setShowAllProfiles(true)
+    $sessions.set(
+      Array.from({ length: 14 }, (_, index) =>
+        makeSessionInfo({
+          id: `profile-${index}`,
+          title: `Profile row ${index}`,
+          last_active: 100 - index,
+          profile: index % 2 ? 'work' : 'default'
+        })
+      )
+    )
+    renderSidebar('/', 'chat')
+
+    for (let index = 0; index < 10; index += 1) {
+      expect(screen.getByText(`Profile row ${index}`)).toBeTruthy()
+    }
+
+    expect(screen.queryByText('Profile row 10')).toBeNull()
+    expect(screen.queryByText('Profile row 13')).toBeNull()
+    setShowAllProfiles(false)
+  })
+
+  it('shows ten latest unpinned sessions without keeping an older active session as an eleventh row', () => {
+    setSidebarAgentsGrouped(false)
+    setSidebarGrouping('date')
+    $sessionsLoading.set(false)
+    $sessions.set(
+      Array.from({ length: 14 }, (_, index) =>
+        makeSessionInfo({
+          id: `recent-${index}`,
+          title: `Recent ${index}`,
+          last_active: 100 - index,
+          started_at: 100 - index,
+          profile: 'default',
+          pinned: index < 2
+        })
+      )
+    )
+    $selectedStoredSessionId.set('recent-13')
+    renderSidebar('/', 'chat')
+
+    for (let index = 0; index < 12; index += 1) {
+      expect(screen.getByText(`Recent ${index}`)).toBeTruthy()
+    }
+
+    expect(screen.queryByText('Recent 12')).toBeNull()
+    expect(screen.queryByText('Recent 13')).toBeNull()
+  })
+})
 
 const currentButtons = () =>
   screen.queryAllByRole('button').filter(button => button.classList.contains('bg-(--ui-control-active-background)'))

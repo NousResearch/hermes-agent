@@ -553,7 +553,8 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
     res = spec.handler(backend, action, args, **(dict(delivery_mode=args.get("delivery_mode"), bring_to_front=bool(args.get("bring_to_front")))
                                                  if spec.input else dict(fence=fence, session_id=session_id)))
     return res if isinstance(res, str) or (isinstance(res, dict) and res.get("_multimodal")) else _maybe_follow_capture(
-        backend, res, bool(args.get("capture_after", spec.destructive)), fence, session_id=session_id)
+        backend, res, bool(args.get("capture_after", spec.input or action in {"focus_app", "launch_app", "run_steps"})),
+        fence, session_id=session_id)
 
 # ── Response shaping ────────────────────────────────────────────────────────
 def _classify_action_result(res: ActionResult) -> dict[str, Any]:

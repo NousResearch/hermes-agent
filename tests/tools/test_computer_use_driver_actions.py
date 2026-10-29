@@ -98,16 +98,18 @@ def test_batch_hard_blocks_reject_before_any_driver_call(driver, step, monkeypat
 def test_new_actions_use_existing_approval_classification(driver, monkeypatch, action, params, destructive):
     approval = Mock(return_value=None)
     monkeypatch.setattr(tool, "_request_approval", approval)
-    invoke({"action": action, **params, "capture_after": False})
+    invoke({"action": action, **params})
     assert approval.call_count == int(destructive)
     if destructive:
         assert approval.call_args.args[0] == action
+    if action == "clipboard_write":
+        driver.capture.assert_not_called()
 
 
 @pytest.mark.parametrize("action,params,expected", [
     ("click", {"coordinate": [10, 20]}, 1),
     ("launch_app", {"name": "Editor"}, 1),
-    ("clipboard_write", {"text": "hi"}, 1),
+    ("clipboard_write", {"text": "hi"}, 0),
     ("run_steps", {"steps": [{"tool": "press_key", "args": {"key": "tab"}}]}, 1),
     ("capture", {}, 1),
     ("wait", {"seconds": 0}, 0),
@@ -127,6 +129,7 @@ def test_capture_after_defaults(driver, action, params, expected):
     ("click", {"coordinate": [10, 20]}, False),
     ("launch_app", {"name": "Editor"}, False),
     ("clipboard_read", {}, True),
+    ("clipboard_write", {"text": "hi"}, True),
     ("verify_state", {"pid": 42, "window_id": 7, "expect": [{}]}, True),
 ])
 def test_explicit_capture_after_wins(driver, action, params, capture_after):

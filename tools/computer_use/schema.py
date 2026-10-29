@@ -216,8 +216,8 @@ _PROPERTIES: dict[str, Any] = {
     "capture_after": {
         "type": "boolean",
         "description": (
-            "Take a follow-up capture and include it in the response. Defaults true for state-changing "
-            "actions and false for observations. Explicit false skips the capture."
+            "Take a follow-up capture and include it in the response. Defaults true for window-changing "
+            "actions and false for observations and clipboard_write. An explicit value overrides the default."
         ),
     },
 }
@@ -233,7 +233,7 @@ COMPUTER_USE_SCHEMA: dict[str, Any] = {
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
         "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
-        "index; state-changing actions include a follow-up capture by default (capture_after=false skips it). Image "
+        "index; window-changing actions include a follow-up capture by default (capture_after=false skips it). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
         "syntax when the user asks to see it — not for captures used only for control."
     ),

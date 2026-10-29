@@ -9192,6 +9192,51 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    # Protected-git-roots guard: inject the set of git toplevels that this
+    # worker must NOT run destructive git commands (stash/reset --hard/checkout
+    # <rev>/etc.) against.  The terminal tool's guard reads this env var and
+    # blocks matching commands fail-closed, even under subagent_auto_approve.
+    # Sources: board default_workdir + project primary repo (when present).
+    # The worker's own workspace is EXCLUDED (it's a linked worktree on its
+    # own branch — destructive ops there are scoped to that branch only).
+    _pg_roots: list = []
+    try:
+        import subprocess as _subprocess
+        _bd_meta = read_board_metadata(board=board)
+        _bd_workdir = (_bd_meta.get("default_workdir") or "").strip()
+        if _bd_workdir and os.path.isdir(_bd_workdir):
+            _r = _subprocess.run(
+                ["git", "-C", _bd_workdir, "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if _r.returncode == 0:
+                _toplevel = _r.stdout.strip()
+                if _toplevel:
+                    _pg_roots.append(_toplevel)
+        # Project primary path (if this task belongs to a project).
+        if task.project_id:
+            try:
+                from hermes_cli import projects_db as _pdb
+                with _pdb.connect_closing() as _pconn:
+                    _proj = _pdb.get_project(_pconn, task.project_id)
+                if _proj and _proj.primary_path:
+                    _pp = str(_proj.primary_path).strip()
+                    if os.path.isdir(_pp):
+                        _r2 = _subprocess.run(
+                            ["git", "-C", _pp, "rev-parse", "--show-toplevel"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if _r2.returncode == 0:
+                            _t2 = _r2.stdout.strip()
+                            if _t2 and _t2 not in _pg_roots:
+                                _pg_roots.append(_t2)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if _pg_roots:
+        env["HERMES_PROTECTED_GIT_ROOTS"] = os.pathsep.join(_pg_roots)
+
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the
     # quiet chat run into the Ink TUI, whose no-TTY bail-out exits 0 without
@@ -9808,6 +9853,22 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")
+
+    # Git workspace safety note — only surfaced when the guard is active.
+    # Reminds the worker to use a temporary worktree instead of destructive
+    # git ops on the board's main checkout (incident 2026-10-28 t_5d25eb97).
+    _pg_roots_env = os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip()
+    if _pg_roots_env:
+        lines.append(
+            "**Git restriction:** `git stash`, `git reset --hard`, "
+            "`git checkout <rev/branch>`, and similar destructive commands are "
+            f"**blocked** inside the protected checkout(s) `{_pg_roots_env}`. "
+            "To inspect a specific revision, use "
+            "`git worktree add /tmp/review-<id> <rev>` or `git show <rev>:<path>` "
+            "instead."
+        )
+        lines.append("")
+
 
     if task.body and task.body.strip():
         lines.append("## Body")

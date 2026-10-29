@@ -41,7 +41,10 @@ test.skipIf(process.platform === 'win32')(
           logPath: path.join(directory, 'spawn.log')
         })
 
-        await exec(command, { shell, env: { ...process.env, HOME: directory, HERMES_HOME: directory } })
+        // A runner launched from a dev shell may export the variable itself; the spawn must not inherit it.
+        const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory, HERMES_HOME: directory }
+        delete env.HERMES_DESKTOP_DEV_SERVER
+        await exec(command, { shell, env })
 
         assert.equal(await readFile(reportPath, 'utf8'), expected)
       }

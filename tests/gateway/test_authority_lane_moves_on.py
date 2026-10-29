@@ -60,8 +60,8 @@ async def _chat(adapter, source, sent, text):
 
 
 def _app():
-    from gateway.session_contract import Principal
-    return Principal('app-viewer', 'default', frozenset(
+    from gateway.session_contract import SessionActor
+    return SessionActor('app-viewer', 'default', frozenset(
         {'session:read', 'session:submit', 'session:control', 'session:approve', 'session:respond'}), 'viewer')
 
 

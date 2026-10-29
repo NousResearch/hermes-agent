@@ -8,14 +8,14 @@ import sqlite3
 import threading
 import pytest
 
-from gateway.session_contract import Principal, Submission
+from gateway.session_contract import SessionActor, Submission
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 from tests.waiting import async_wait_until
 
 # The competing writer holds the lock until the test has watched the loop run (``go``); this is
 # only the ceiling after which a stalled loop gets it back and the test fails instead of hanging.
 _HOLD_CEILING_S = 30.0
-VIEWER = Principal('human', 'owned', frozenset({'session:read', 'session:submit'}), 'viewer')
+VIEWER = SessionActor('human', 'owned', frozenset({'session:read', 'session:submit'}), 'viewer')
 
 
 async def _settling_behind_a_held_writer(tmp_path, monkeypatch):

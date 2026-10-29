@@ -38,7 +38,7 @@ async def test_connection_preserves_server_grant(tmp_path, binding):
 
 @pytest.mark.asyncio
 async def test_question_response_does_not_grant_execution_control(tmp_path):
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
     from tools import clarify_gateway
 
@@ -53,7 +53,7 @@ async def test_question_response_does_not_grant_execution_control(tmp_path):
         row = claim_session_input(db, epoch=epoch, session_id='s')
         generation = row['generation']
         ref = SessionRef('owned', 's')
-        actor = Principal('human', 'owned', frozenset({'session:read', 'session:respond'}), 'viewer')
+        actor = SessionActor('human', 'owned', frozenset({'session:read', 'session:respond'}), 'viewer')
         await authority.attach(actor, ref)
         entry = clarify_gateway.register('scoped-question', 'scoped-route', 'Choose', ['a', 'b'])
         try:

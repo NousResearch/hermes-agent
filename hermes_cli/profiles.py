@@ -20,6 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
+from hermes_cli.profiles_clone_ignore import _clone_skills_ignore, _non_exportable_entries
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
@@ -106,31 +107,12 @@ _PLACEHOLDER_ENV = (
 )
 
 
-def _non_exportable_entries(directory: str, contents: list) -> set:
-    """Entries under *directory* that must never be copied out of a profile: bytecode caches,
-    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
-    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
-    ``.sock`` name (or a FIFO, or a device node) would abort the whole export or clone with
-    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
-    ignored: set = set()
-    for entry in contents:
-        if entry == "__pycache__" or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
-            ignored.add(entry)
-            continue
-        try:
-            mode = os.lstat(os.path.join(directory, entry)).st_mode
-        except OSError:
-            ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
-            continue
-        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
-            ignored.add(entry)
-    return ignored
-
-
 def _clone_all_copytree_ignore(source_dir: Path):
     """copytree ignore for --clone-all: history artifacts for any source, infrastructure
-    only when the source is the default profile (see the two exclude sets above)."""
+    only when the source is the default profile (see the two exclude sets above), and the
+    skills-root rules on the ``skills/`` subtree."""
     source_resolved = source_dir.resolve()
+    ignore_skills = _clone_skills_ignore(source_dir / "skills")
     root_exclude = set(_CLONE_ALL_HISTORY_EXCLUDE_ROOT)
     if source_resolved == _get_default_hermes_home().resolve():
         root_exclude |= _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
@@ -142,7 +124,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        ignored = _non_exportable_entries(directory, names)
+        ignored = ignore_skills(directory, names)
         if at_root:
             ignored.update(root_exclude & set(names))
         return ignored
@@ -1309,6 +1291,10 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
     config files, installed skills (the dashboard's "clone from default" must keep bundled
     AND user-installed skills), and memory/identity files from *source_dir*.
 
+    Active skills travel; the curator's ``skills/.archive/`` does not — it is the source
+    profile's retired-skill history, not a new profile's state
+    (:data:`_CLONE_SKILL_ROOT_EXCLUDE`, #145929).
+
     ``sync_imports`` also copies the source's ``import-sync.json`` (the manifest the agent-importers
     plugin's ``hermes import-agent`` writes) so the clone stays registered against the same external trees
     and ``hermes -p <clone> import-agent --sync`` keeps pulling from them. The link is to the
@@ -1324,7 +1310,8 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
     _strip_multiplex_flag(profile_dir / "config.yaml")
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
+        _copytree_keep_junctions(source_skills, profile_dir / "skills",
+                                 _clone_skills_ignore(source_skills), dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     _clone_plugins(source_dir, profile_dir)

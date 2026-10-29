@@ -932,6 +932,7 @@ def _print_post_update_notices_and_self_heals() -> None:
     Windows bin launchers, cua-driver refresh) that run after the summary."""
     from hermes_cli.update_cmd import _m, _print_curator_first_run_notice, _print_curator_recent_run_notice
     from hermes_cli import _launchers
+    from hermes_cli.update_session_reset_notice import print_session_reset_update_notice
 
     def _migrate_windows_bin_path() -> None:
         # Windows launchers into the managed bin dir: in-checkout launchers were swept by the
@@ -940,6 +941,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         migrate_windows_bin_path(_m().PROJECT_ROOT)
 
     for message, step in (
+        ('Session reset policy notice failed: %s', print_session_reset_update_notice),
         # v23 FTS layout is opt-in (existing indexes untouched); surface the command here.
         ('FTS optimize notice failed: %s', _print_fts_optimize_available_notice),
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),

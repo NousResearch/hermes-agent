@@ -28,7 +28,8 @@ import {
 } from '@hermes/plugin-sdk'
 
 // Native completion notification.
-import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
+import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame, setSilencedKinds } from './completion-notify'
+import { $kanbanNotifyPrefs, bindNotifyPrefs, type KanbanNotifyPrefs, silencedKindsFor } from './notify-prefs'
 import type {
   BoardExportResult,
   BoardImportResult,
@@ -225,6 +226,16 @@ export function bindApi(
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
+
+  // Which terminal events raise a popup (Settings ▸ Plugins ▸ Kanban). Blocked
+  // tasks are on by default; switching them off only drops the toast/OS banner,
+  // the event still advances completion-notify's cursor.
+  unsubs.push(bindNotifyPrefs(storage))
+
+  const syncSilenced = (prefs: KanbanNotifyPrefs) => setSilencedKinds(silencedKindsFor(prefs))
+  syncSilenced($kanbanNotifyPrefs.get())
+  unsubs.push($kanbanNotifyPrefs.listen(syncSilenced))
+  unsubs.push(() => setSilencedKinds([]))
 
   eventCursorByBoard.clear()
 

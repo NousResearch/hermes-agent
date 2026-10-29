@@ -376,12 +376,16 @@ function rememberSentId(id) {
   recentlySentIds.remember(id);
 }
 
+// Receipts get their own bound: one reply to a large group brings a receipt per member, and in the
+// shared queue that burst evicted inbound messages still waiting for the next poll.
+const deliveryQueue = [];
+
 function enqueueDeliveryStatus(args) {
   const event = deliveryStatusEvent({ ...args, isOwnSend: id => recentlySentIds.has(id) });
   if (!event) return;
-  messageQueue.push(event);
-  if (messageQueue.length > MAX_QUEUE_SIZE) {
-    messageQueue.shift();
+  deliveryQueue.push(event);
+  if (deliveryQueue.length > MAX_QUEUE_SIZE) {
+    deliveryQueue.shift();
   }
 }
 
@@ -848,7 +852,7 @@ app.use((req, res, next) => {
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
-  const msgs = messageQueue.splice(0, messageQueue.length);
+  const msgs = messageQueue.splice(0, messageQueue.length).concat(deliveryQueue.splice(0, deliveryQueue.length));
   res.json(msgs);
 });
 

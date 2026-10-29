@@ -392,3 +392,33 @@ def test_a_bot_chat_rebuild_satisfies_a_pending_refresh(profile, monkeypatch):
     history, third = _turn(srv, home, "chat-bot2", "third", history)
     assert third == rebuilt
     assert builds == []
+
+
+def _rotate(srv, home, session_id):
+    """Fill a session, then compact it with rotation (``compression.in_place: false``)."""
+    warm = _agent(srv, home, session_id)
+    history = []
+    try:
+        for i in range(14):
+            history, _ = _turn(srv, home, session_id, f"turn {i} " + f"lorem ipsum dolor {i} " * 200,
+                               history, agent=warm)
+        warm.compression_in_place = False
+        compressed, _ = warm._compress_context(history, None, force=True)
+        assert warm.session_id != session_id
+        return warm.session_id, compressed
+    finally:
+        warm.close()
+
+
+def test_rotated_compression_keeps_the_refresh_epoch_and_session_flag_targets_the_tip(profile, monkeypatch):
+    srv, home, project = profile
+    _refresh_prompts(monkeypatch, home)  # a past profile-wide request
+    child, history = _rotate(srv, home, "chat-rot")
+    builds = _count_builds(monkeypatch)
+    history, _ = _turn(srv, home, child, "after eviction", history)
+    assert builds == []  # the child satisfies the past request; no extra cache break
+
+    _update_profile(home, project)
+    _refresh_prompts(monkeypatch, home, "--session", "chat-rot")  # the conversation's original id
+    _, refreshed = _turn(srv, home, child, "next", history)
+    _assert_updated(refreshed)

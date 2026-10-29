@@ -1320,6 +1320,8 @@ def _cmd_refresh_prompts(db, args):
         if not session_id:
             print(f"No session matches {target!r}.")
             return 1
+        # A compressed conversation continues on its tip; a request keyed on the ended root never fires.
+        session_id = db.get_compression_tip(session_id) or session_id
         row = db.get_session(session_id) or {}
         count = 1 if row.get("system_prompt") else 0
     else:

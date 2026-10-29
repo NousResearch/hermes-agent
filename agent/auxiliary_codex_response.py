@@ -51,5 +51,19 @@ def _parse_codex_final_response(
         usage = SimpleNamespace(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
             total_tokens=_u("total_tokens"))
+        for source_field, target_field in (
+            ("input_tokens_details", "prompt_tokens_details"),
+            ("output_tokens_details", "completion_tokens_details"),
+        ):
+            if isinstance(resp_usage, dict):
+                if source_field in resp_usage:
+                    setattr(usage, target_field, resp_usage[source_field])
+            else:
+                fields_set = getattr(resp_usage, "model_fields_set", None)
+                if (
+                    (fields_set is None or source_field in fields_set)
+                    and hasattr(resp_usage, source_field)
+                ):
+                    setattr(usage, target_field, getattr(resp_usage, source_field))
     return text_parts, tool_calls_raw, usage, finish_reason
 

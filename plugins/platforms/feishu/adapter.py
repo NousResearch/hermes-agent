@@ -1530,10 +1530,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
         self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._chat_info_cache: dict[str, dict[str, Any]] = {}
-        # Auto-mention: track the last inbound sender per group chat.
-        # Only bot senders trigger auto-@ + text mode; human replies keep card formatting.
-        self._last_inbound_sender: dict[str, dict[str, Any]] = {}  # chat_id → {open_id, name, is_bot}
-        self._auto_mentioned_chats: set[str] = set()  # chat_ids where @tag already injected this turn
+        # Auto-mention: track inbound sender by message_id (precise, no cross-talk).
+        # On send(), reply_to_message_id → look up who sent the triggering message → inject @tag.
+        # Bot senders → force text mode (card <at> is invisible to bots).
+        # Human senders → keep card mode (card <at> has visual effect for humans).
+        # Framework pushes have no reply_to_message_id → never trigger auto-mention.
+        self._inbound_sender_by_msg: OrderedDict[str, dict[str, Any]] = OrderedDict()  # msg_id → {open_id, name, is_bot}
+        self._INBOUND_SENDER_CACHE_SIZE = 500
+        self._auto_mentioned_msgs: set[str] = set()  # msg_ids where @tag already injected
         self._mention_name_map: dict[str, dict[str, str]] = {}  # chat_id → {lowercase_name → open_id}
         self._chat_members_cache: dict[str, tuple[float, dict[str, str]]] = {}  # chat_id → (ts, {lowercase_name → open_id})
         self._CHAT_MEMBERS_TTL = 300  # 5 min cache
@@ -1867,28 +1871,27 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
 
-        # --- Auto-mention bots in group chat replies ---
-        # When the last inbound message in this chat was from a bot AND this send is
-        # an agent reply (has reply_to_message_id from stream_consumer), force text mode
-        # and inject @tag so the bot receives a real mention event.
-        # The reply_to_message_id gate excludes framework pushes (status notices, error
-        # notifications, cronjob outputs) which don't carry this field.
-        # Card content is unreadable to bots and card <at> doesn't produce mention events.
-        # The @tag is injected only on the FIRST send (tracked via _auto_mentioned_chats),
-        # but ALL sends for this bot-triggered turn stay in text mode.
+        # --- Auto-mention sender in group chat replies ---
+        # Look up who sent the message we're replying to (by message_id).
+        # Bot sender → inject @tag + force text mode (card <at> invisible to bots).
+        # Human sender → inject @tag + keep card mode (card <at> works for humans).
+        # No reply_to_message_id (framework push) → skip entirely.
         force_text_for_bot = False
-        _has_reply_to = bool((metadata or {}).get("reply_to_message_id"))
-        _last_sender = self._last_inbound_sender.get(chat_id) if _has_reply_to else None
-        if _last_sender and _last_sender.get("is_bot"):
-            force_text_for_bot = True
-            sender_oid = _last_sender.get("open_id", "")
-            sender_name = _last_sender.get("name") or "Bot"
-            if sender_oid and chat_id not in self._auto_mentioned_chats:
+        _reply_to_id = (metadata or {}).get("reply_to_message_id")
+        _trigger_sender = self._inbound_sender_by_msg.get(_reply_to_id) if _reply_to_id else None
+        if _trigger_sender:
+            sender_oid = _trigger_sender.get("open_id", "")
+            sender_name = _trigger_sender.get("name") or "User"
+            sender_is_bot = _trigger_sender.get("is_bot", False)
+            if sender_is_bot:
+                force_text_for_bot = True
+            if sender_oid and _reply_to_id not in self._auto_mentioned_msgs:
                 at_tag = f'<at user_id="{sender_oid}">{sender_name}</at> '
                 formatted = at_tag + formatted
-                self._auto_mentioned_chats.add(chat_id)
-                logger.info("[Feishu] Auto-mention bot %s (%s) in group %s, forcing text mode",
-                            sender_name, sender_oid, chat_id)
+                self._auto_mentioned_msgs.add(str(_reply_to_id))
+                logger.info("[Feishu] Auto-mention %s %s (%s) in group %s%s",
+                            "bot" if sender_is_bot else "user", sender_name, sender_oid,
+                            chat_id, ", forcing text mode" if sender_is_bot else "")
 
         # --- Resolve @name patterns in group chat content ---
         # Scan for @name text (not already inside an <at> tag), look up name in merged
@@ -3087,13 +3090,15 @@ class FeishuAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
 
-        # --- Track sender for auto-mention in group replies ---
-        if chat_type != "p2p" and chat_id:
+        # --- Track sender by message_id for auto-mention in group replies ---
+        if chat_type != "p2p" and chat_id and message_id:
             sender_name = sender_profile.get("user_name") or ""
-            self._last_inbound_sender[chat_id] = {
+            self._inbound_sender_by_msg[message_id] = {
                 "open_id": sender_primary, "name": sender_name, "is_bot": is_bot,
             }
-            self._auto_mentioned_chats.discard(chat_id)  # reset for new inbound turn
+            # LRU eviction
+            while len(self._inbound_sender_by_msg) > self._INBOUND_SENDER_CACHE_SIZE:
+                self._inbound_sender_by_msg.popitem(last=False)
             name_map = self._mention_name_map.setdefault(chat_id, {})
             if sender_name:
                 name_map[sender_name.lower()] = sender_primary

@@ -26,7 +26,13 @@ class AnthropicProfile(ProviderProfile):
             return None
         try:
             req = urllib.request.Request("https://api.anthropic.com/v1/models")
-            req.add_header("x-api-key", api_key)
+            from agent.anthropic_adapter import _is_oauth_token
+
+            if _is_oauth_token(api_key):
+                req.add_header("Authorization", f"Bearer {api_key}")
+                req.add_header("anthropic-beta", "oauth-2025-04-20")
+            else:
+                req.add_header("x-api-key", api_key)
             req.add_header("anthropic-version", "2023-06-01")
             req.add_header("Accept", "application/json")
             with open_credentialed_url(req, timeout=timeout) as resp:

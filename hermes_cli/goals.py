@@ -1690,7 +1690,7 @@ def run_kanban_goal_loop(
     This function performs NO SessionDB persistence — a worker process is
     ephemeral, so the turn budget lives in a local counter. It is fully
     decoupled from the CLI for testability: callers inject ``run_turn``
-    (str -> str), ``task_status_fn`` (() -> str|None), and ``block_fn``
+    (str -> str or structured run result), ``task_status_fn`` (() -> str|None), and ``block_fn``
     (reason: str -> None).
 
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
@@ -1738,6 +1738,8 @@ def run_kanban_goal_loop(
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
         verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        if _transport_failed:
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": "judge transport failed"}
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -1754,6 +1756,7 @@ def run_kanban_goal_loop(
                     )
                 except Exception as exc:
                     _log(f"kanban goal loop: block_fn failed ({exc})")
+                    return {"outcome": "stopped", "turns_used": turns_used, "reason": "block write failed"}
                 return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
             prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
             nudged_to_finalize = True
@@ -1771,11 +1774,22 @@ def run_kanban_goal_loop(
                 )
             except Exception as exc:
                 _log(f"kanban goal loop: block_fn failed ({exc})")
+                return {"outcome": "stopped", "turns_used": turns_used, "reason": "block write failed"}
             return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
 
         # Run another turn in the same session.
         try:
-            last_response = run_turn(prompt) or ""
+            turn_result = run_turn(prompt)
+            if isinstance(turn_result, dict):
+                if turn_result.get("failed"):
+                    return {
+                        "outcome": "stopped", "turns_used": turns_used + 1,
+                        "reason": "worker turn failed", "failed": True,
+                        "failure_reason": turn_result.get("failure_reason"),
+                    }
+                last_response = turn_result.get("final_response") or ""
+            else:
+                last_response = turn_result or ""
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"run_turn error: {type(exc).__name__}"}

@@ -51,6 +51,7 @@ export interface BatteryInfo {
 
 export interface AccountUsageMeterInfo {
   available: boolean
+  unavailableReason?: string
   windows: AccountUsageMeterWindow[]
 }
 

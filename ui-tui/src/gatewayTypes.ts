@@ -76,6 +76,7 @@ export type CommandDispatchResponse =
 
 export interface SystemUsageMeterProvider {
   available: boolean
+  unavailable_reason?: string
   windows: SystemUsageMeterWindow[]
 }
 

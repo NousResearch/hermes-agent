@@ -1942,6 +1942,10 @@ def init_agent(
         }
     else:
         compression_model_thresholds = {}
+    _raw_model_token_caps = _compression_cfg.get("model_token_caps", {})
+    compression_model_token_caps = ContextCompressor._coerce_model_token_caps(
+        _raw_model_token_caps
+    )
     # Absolute token cap: when set, compression triggers at the lower of
     # the ratio-based threshold and this absolute count. Clamped to the
     # model's context length at apply-time so a cap above the window is
@@ -2397,6 +2401,7 @@ def init_agent(
             max_tokens=agent.max_tokens,
             model_thresholds=compression_model_thresholds,
             threshold_tokens_cap=compression_threshold_tokens,
+            model_token_caps=compression_model_token_caps,
             proactive_prune_tokens=compression_proactive_prune_tokens,
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,

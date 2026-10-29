@@ -1451,6 +1451,7 @@ DEFAULT_CONFIG = {
                                       # floored at 0.75 (raise-only) so compaction
                                       # doesn't fire with half the window still free;
                                       # set this above 0.75 to override the floor.
+        "model_token_caps": {},       # Absolute caps by model substring (longest match wins).
         "threshold_tokens": None,     # absolute token cap — when set, compression
                                       # triggers at the lower of the ratio-based
                                       # threshold and this token count. Clamped to
@@ -8994,6 +8995,10 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
             return False, suggested_full
 
         return False, None
+
+    # Model names are user-defined map keys, rather than fixed schema fields.
+    if segments[:2] == ["compression", "model_token_caps"]:
+        return True, None
 
     # ── Deeper validation ────────────────────────────────────────────
     # Walk DEFAULT_CONFIG along the user's segments. Stop at:

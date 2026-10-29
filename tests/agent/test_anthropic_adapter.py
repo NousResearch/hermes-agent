@@ -2194,11 +2194,10 @@ class TestRoleAlternation:
 
 
 class TestThinkingBlockSignatureManagement:
-    """Tests for the thinking block handling strategy:
-    strip from old turns, preserve latest signed, downgrade unsigned."""
+    """Preserve intact signed native turns; sanitize invalid or foreign thinking."""
 
-    def test_thinking_stripped_from_non_last_assistant(self):
-        """Thinking blocks are removed from all assistant messages except the last."""
+    def test_signed_thinking_preserved_on_non_last_assistant(self):
+        """Intact prior turns retain signatures for append-only cache stability."""
         messages = [
             {
                 "role": "assistant",
@@ -2229,10 +2228,10 @@ class TestThinkingBlockSignatureManagement:
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 2
 
-        # First (non-last) assistant: no thinking blocks
+        # The completed prior tool turn remains byte-stable and signed.
         first_types = [b.get("type") for b in assistants[0]["content"]]
-        assert "thinking" not in first_types
-        assert "redacted_thinking" not in first_types
+        assert "thinking" in first_types
+        assert next(b for b in assistants[0]["content"] if b.get("type") == "thinking")["signature"] == "sig_old"
         assert "tool_use" in first_types  # tool_use should survive
 
         # Last assistant: thinking block preserved with signature
@@ -2423,9 +2422,9 @@ class TestThinkingBlockSignatureManagement:
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 3
 
-        # First two: no thinking blocks
+        # Earlier complete assistant turns keep their signed blocks.
         for a in assistants[:2]:
-            assert not any(
+            assert any(
                 b.get("type") in {"thinking", "redacted_thinking"}
                 for b in a["content"]
                 if isinstance(b, dict)

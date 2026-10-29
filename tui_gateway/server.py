@@ -14799,7 +14799,11 @@ def _(rid, params: dict) -> dict:
     def read(provider: str) -> dict:
         snapshot = fetch_account_usage(provider)
         if not snapshot or not snapshot.available:
-            return {"available": False, "windows": []}
+            unavailable = {"available": False, "windows": []}
+            reason = getattr(snapshot, "unavailable_reason", None)
+            if reason:
+                unavailable["unavailable_reason"] = reason
+            return unavailable
 
         windows = []
         for window in snapshot.windows:

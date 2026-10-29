@@ -1215,6 +1215,14 @@ def resolve_model_threshold(
     return default
 
 
+def resolve_model_token_cap(model: str, model_token_caps: dict[str, int] | None) -> int | None:
+    """Resolve the longest matching positive absolute token cap."""
+    if not model or not model_token_caps:
+        return None
+    matches = [key for key in model_token_caps if key and key in model]
+    return int(model_token_caps[max(matches, key=len)]) if matches else None
+
+
 class ContextCompressor(ContextEngine):
     """Default context engine — compresses conversation context via lossy summarization.
 
@@ -1833,10 +1841,34 @@ class ContextCompressor(ContextEngine):
         is clamped to the current context length so a cap larger than
         the model's window is a no-op (the ratio-based threshold wins).
         """
-        if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
-            _effective_cap = min(self.threshold_tokens_cap, self.context_length)
+        caps = [
+            cap
+            for cap in (
+                self.threshold_tokens_cap,
+                resolve_model_token_cap(self.model, self.model_token_caps),
+            )
+            if cap is not None and cap > 0
+        ]
+        if caps:
+            _effective_cap = min(min(caps), self.context_length)
             if _effective_cap < self.threshold_tokens:
                 self.threshold_tokens = _effective_cap
+
+    @staticmethod
+    def _coerce_model_token_caps(value: Any) -> dict[str, int]:
+        if not isinstance(value, dict):
+            return {}
+        result = {}
+        for key, cap in value.items():
+            if not isinstance(key, str) or not key.strip() or isinstance(cap, bool):
+                continue
+            try:
+                parsed = int(cap)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0 and str(parsed) == str(cap).strip():
+                result[key] = parsed
+        return result
 
     @staticmethod
     def _effective_threshold_percent(
@@ -1914,6 +1946,7 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
         threshold_tokens_cap: Any = None,
+        model_token_caps: dict[str, int] | None = None,
         proactive_prune_tokens: int = 0,
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
@@ -1945,6 +1978,7 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(
             threshold_tokens_cap,
         )
+        self.model_token_caps = self._coerce_model_token_caps(model_token_caps)
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         # Proactive tool-result pruning (cost-oriented; runs INDEPENDENTLY of the

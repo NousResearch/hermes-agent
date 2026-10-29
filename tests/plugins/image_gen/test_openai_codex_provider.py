@@ -144,7 +144,7 @@ class TestGenerate:
         result = provider.generate("a cat", aspect_ratio="portrait")
         assert result["success"] is True
 
-        assert captured["model"] == "gpt-5.5"
+        assert captured["model"] == "gpt-5.6-luna"
         assert captured["store"] is False
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"

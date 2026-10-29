@@ -1152,6 +1152,25 @@ def test_system_usage_meter_returns_both_providers_when_one_is_unavailable(monke
     }
 
 
+def test_system_usage_meter_preserves_unavailable_reason(monkeypatch):
+    from agent.account_usage import AccountUsageSnapshot
+
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        lambda provider: AccountUsageSnapshot(
+            provider=provider, source="test", fetched_at=datetime.now().astimezone(),
+            unavailable_reason="Usage endpoint returned HTTP 429. Rate limited; wait before retrying.",
+        ),
+    )
+    monkeypatch.setattr(server, "_usage_meter_cache", None)
+    monkeypatch.setattr(
+        "gateway.usage_meter_notifications.observe_usage_meter_reading", lambda *a: None,
+    )
+    result = server._methods["system.usage_meter"]("usage-error", {})["result"]
+    assert result["claude"]["available"] is False
+    assert "429" in result["claude"].get("unavailable_reason", "")
+
+
 def test_system_usage_meter_caches_dual_provider_reading(monkeypatch):
     from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 

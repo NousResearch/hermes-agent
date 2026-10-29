@@ -31,7 +31,13 @@ const normalizeProvider = (provider: SystemUsageMeterProvider | undefined): Acco
       })
     : []
 
-  return { available: provider?.available === true && windows.length > 0, windows }
+  return {
+    available: provider?.available === true && windows.length > 0,
+    ...(typeof provider?.unavailable_reason === 'string'
+      ? { unavailableReason: provider.unavailable_reason }
+      : {}),
+    windows
+  }
 }
 
 export const toUsageMeterInfo = (response: null | SystemUsageMeterResponse): null | UsageMeterInfo =>

@@ -758,6 +758,8 @@ def redeem_codex_reset_credit(
 
 
 def _fetch_anthropic_account_usage(api_key: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
+    # Match the running agent's account instead of silently consulting another
+    # ambient Claude login. Never fall back if an explicit credential is invalid.
     if api_key is not None:
         token = str(api_key or "").strip()
     else:
@@ -794,7 +796,10 @@ def _fetch_anthropic_account_usage(api_key: Optional[str] = None) -> Optional[Ac
         util = window.get("utilization")
         if util is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        # Anthropic's OAuth usage endpoint reports utilization directly on a
+        # 0..100 percentage scale. Values at or below 1 are low percentages,
+        # not fractions (for example, 1.0 means 1%, not 100%).
+        used = float(util)
         windows.append(
             AccountUsageWindow(
                 label=label,
@@ -906,9 +911,34 @@ def fetch_account_usage(
         if normalized == "openai-codex":
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
+            if base_url:
+                from urllib.parse import urlsplit
+
+                endpoint = urlsplit(str(base_url))
+                if endpoint.scheme != "https" or endpoint.hostname != "api.anthropic.com":
+                    return AccountUsageSnapshot(
+                        provider="anthropic", source="oauth_usage_api", fetched_at=_utc_now(),
+                        unavailable_reason="Account usage is unavailable for a non-native Anthropic endpoint.",
+                    )
             return _fetch_anthropic_account_usage(api_key=api_key)
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
-    except Exception:
+    except Exception as exc:
+        if normalized == "anthropic":
+            # Do not hide a throttled/unreachable meter, or leak response bodies
+            # and credentials through diagnostics. This is NOT a zero-usage reading.
+            if isinstance(exc, httpx.HTTPStatusError):
+                status = exc.response.status_code
+                reason = f"Usage endpoint returned HTTP {status}."
+                if status == 429:
+                    reason += " Rate limited; wait before retrying."
+                elif status in (401, 403):
+                    reason += " Check OAuth authentication and usage-read permissions."
+            else:
+                reason = f"Usage lookup failed ({type(exc).__name__})."
+            return AccountUsageSnapshot(
+                provider="anthropic", source="oauth_usage_api",
+                fetched_at=_utc_now(), unavailable_reason=reason,
+            )
         return None
     return None

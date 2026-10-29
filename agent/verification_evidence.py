@@ -8,7 +8,6 @@ blocks completion, and never upgrades targeted checks into "repo green".
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import sqlite3
 import tempfile
@@ -29,7 +28,6 @@ _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
-_SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 
 
 @dataclass(frozen=True)
@@ -151,17 +149,35 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def _split_segment_tokens(command: str, *, posix: bool = True) -> list[list[str]]:
-    segments: list[list[str]] = []
-    for segment in _SHELL_SPLIT_RE.split(command.strip()):
-        if not segment:
-            continue
-        try:
-            tokens = shlex.split(segment, posix=posix)
-        except ValueError:
-            continue
-        if tokens:
-            segments.append(tokens)
-    return segments
+    """Recognize simple commands/AND lists whose success cannot mask a failure.
+
+    Keep quotes while locating operators: profile text and echoed commands are
+    data. This is not a shell evaluator; reject ambiguous control flow rather
+    than using the final command's exit status as proof that a test passed.
+    """
+    operators = ";&|<>()\n"
+    lexer = shlex.shlex(command.strip(), posix=False, punctuation_chars=operators)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    segments: list[list[str]] = [[]]
+    try:
+        for token in lexer:
+            if token == "&&":
+                if not segments[-1]:
+                    return []
+                segments.append([])
+            elif token.startswith("#") or all(char in operators for char in token):
+                # Pipes, OR lists, background jobs, heredocs and subsequent
+                # statements can hide a failed or unexecuted verification.
+                return []
+            else:
+                segments[-1].append(token)
+        if not segments[-1]:
+            return []
+        return [shlex.split(" ".join(segment), posix=posix) for segment in segments]
+    except ValueError:
+        return []
 
 
 def _clean_token(token: str) -> str:
@@ -191,12 +207,37 @@ def _find_subsequence(tokens: list[str], needle: list[str]) -> Optional[int]:
 def _strip_command_prefix(tokens: list[str]) -> list[str]:
     """Remove harmless command prefixes before matching canonical commands."""
     remaining = list(tokens)
-    if remaining and remaining[0] == "env":
-        remaining = remaining[1:]
-    while remaining and "=" in remaining[0] and not remaining[0].startswith("-"):
-        remaining = remaining[1:]
-    while remaining and remaining[0] in {"command", "time", "noglob"}:
-        remaining = remaining[1:]
+    while remaining:
+        command = remaining[0]
+        # Recognize system wrappers, not arbitrary executables named env/bash.
+        for prefix in ("/usr/bin/", "/bin/"):
+            if command.startswith(prefix):
+                command = command[len(prefix):]
+                break
+        if "=" in remaining[0] and not remaining[0].startswith("-"):
+            remaining = remaining[1:]
+        elif command in {"command", "time", "noglob"}:
+            remaining = remaining[1:]
+        elif command == "env":
+            remaining = remaining[1:]
+            while remaining and remaining[0].startswith("-"):
+                option = remaining.pop(0)
+                if option == "--":
+                    break
+                if option not in {"-", "-i", "--ignore-environment"}:
+                    # Do not guess at options that can replace the command or cwd.
+                    return []
+        elif command == "sandbox-exec":
+            remaining = remaining[1:]
+            while remaining and remaining[0].startswith("-"):
+                # Profile text/path is data, never another command to inspect.
+                if remaining[0] not in {"-p", "-f"} or len(remaining) < 2:
+                    return []
+                remaining = remaining[2:]
+        elif command in {"bash", "sh"}:
+            return [command, *remaining[1:]]
+        else:
+            break
     return remaining
 
 

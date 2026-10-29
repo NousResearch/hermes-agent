@@ -1,8 +1,13 @@
 import json
+import shlex
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from agent.verification_evidence import (
     classify_verification_command,
@@ -152,6 +157,101 @@ def test_shell_wrappers_match_but_echo_does_not(tmp_path, monkeypatch):
     assert wrapped.canonical_command == "scripts/run_tests.sh"
     assert wrapped.scope == "targeted"
     assert echoed is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX env and bash")
+@pytest.mark.parametrize("outcome, exit_code", [("pass", 0), ("fail", 1)])
+def test_isolated_script_result_reaches_verification_guard(
+    tmp_path, monkeypatch, outcome, exit_code
+):
+    from agent.verification_stop import build_verify_on_stop_nudge
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _node_project(tmp_path)
+    script = tmp_path / "scripts" / "run_tests.sh"
+    script.write_text('#!/bin/sh\nprintf "isolated check\\n"\ntest "$1" = pass\n')
+    changed_paths = [str(script)]
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=changed_paths)
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=changed_paths)
+
+    argv = [
+        "/usr/bin/env", "-i", f"HOME={home}", "PATH=/usr/bin:/bin",
+        "/bin/bash", "scripts/run_tests.sh", outcome, "tests/test_widget.py",
+    ]
+    result = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert result.returncode == exit_code, result.stderr
+
+    event = record_terminal_result(
+        command=shlex.join(argv), cwd=tmp_path, session_id="s1",
+        exit_code=result.returncode, output=result.stdout,
+    )
+    assert event is not None
+    expected = "passed" if exit_code == 0 else "failed"
+    assert event["status"] == expected
+    assert event["scope"] == "targeted"
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == expected
+    assert verification_status(session_id="other", cwd=tmp_path)["status"] == "unverified"
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=changed_paths)
+    assert (nudge is None) == (exit_code == 0)
+
+
+@pytest.mark.parametrize("wrapper", [
+    "sandbox-exec -p '(version 1) (allow default) (deny network*)'",
+    "/usr/bin/sandbox-exec -f '/tmp/profile with spaces.sb'",
+    "/usr/bin/sandbox-exec -p \"$VERIFY_SANDBOX\" /usr/bin/env -i HOME=/tmp/check",
+    "command env -i sandbox-exec -p '(version 1) (allow default)' env --ignore-environment",
+])
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_classifies_sandbox_wrapped_verification(tmp_path, monkeypatch, wrapper, exit_code):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    evidence = classify_verification_command(
+        f"{wrapper} /bin/bash scripts/run_tests.sh tests/test_widget.py",
+        cwd=tmp_path, session_id="s1", exit_code=exit_code,
+    )
+    assert evidence is not None
+    assert evidence.canonical_command == "scripts/run_tests.sh"
+    assert evidence.scope == "targeted"
+    assert evidence.status == ("passed" if exit_code == 0 else "failed")
+
+
+@pytest.mark.parametrize("suffix", [" || true", "; true", "\ntrue", " | tee /tmp/check.log", " &"])
+def test_masked_verification_exit_is_not_passing_evidence(tmp_path, monkeypatch, suffix):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    command = "/usr/bin/env -i /bin/bash scripts/run_tests.sh tests/test_widget.py" + suffix
+    assert classify_verification_command(command, cwd=tmp_path, exit_code=0) is None
+
+
+@pytest.mark.parametrize("command", [
+    "echo '; scripts/run_tests.sh tests/test_widget.py ;'",
+    "sandbox-exec -p 'data; scripts/run_tests.sh tests/test_widget.py; data' /bin/echo idle",
+    "cat <<'END'\nscripts/run_tests.sh tests/test_widget.py\nEND",
+    "/tmp/env -i scripts/run_tests.sh tests/test_widget.py",
+    "/tmp/bash scripts/run_tests.sh tests/test_widget.py",
+    "env --help scripts/run_tests.sh tests/test_widget.py",
+    "env -S 'scripts/run_tests.sh tests/test_widget.py'",
+    "sandbox-exec --unknown scripts/run_tests.sh tests/test_widget.py",
+    "/bin/bash -c 'echo scripts/run_tests.sh tests/test_widget.py'",
+])
+def test_wrapper_data_is_not_executed_verification(tmp_path, monkeypatch, command):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    assert classify_verification_command(command, cwd=tmp_path, exit_code=0) is None
+
+
+def test_sandbox_profile_semicolon_is_data_in_success_chain(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    command = (
+        "printf setup && sandbox-exec -f '/tmp/profile; note.sb' "
+        "/bin/bash scripts/run_tests.sh tests/test_widget.py"
+    )
+    evidence = classify_verification_command(command, cwd=tmp_path, exit_code=0)
+    assert evidence is not None
+    assert evidence.status == "passed"
+    assert evidence.scope == "targeted"
 
 
 def test_uv_run_pytest_matches_detected_pytest(tmp_path, monkeypatch):

@@ -200,7 +200,17 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
     ]
 
 
-def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
+@pytest.mark.parametrize('kanban,reason,failed,expected', [
+    (False, None, True, 1),
+    (True, 'billing', True, 75),
+    (True, 'rate_limit', True, 75),
+    (True, 'authentication', True, 1),
+    (True, None, False, 0),
+])
+@pytest.mark.parametrize('goal_mode', [False, True])
+def test_quiet_single_query_main_finalizes_while_preserving_exit_code(
+    monkeypatch, kanban, reason, failed, expected, goal_mode,
+):
     calls = []
 
     import cli as cli_mod
@@ -209,8 +219,9 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
         calls.append(("run", user_message, conversation_history))
         return {
             "final_response": "",
-            "error": "provider failed",
-            "failed": True,
+            "error": "provider failed" if failed else None,
+            "failed": failed,
+            "failure_reason": reason,
         }
 
     class FakeCLI:
@@ -252,7 +263,15 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
             return True
 
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    if kanban:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fixture")
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    if goal_mode and kanban:
+        monkeypatch.setenv("HERMES_KANBAN_GOAL_MODE", "1")
+    monkeypatch.setattr(
+        cli_mod, "_run_kanban_goal_loop_q",
+        lambda *args: calls.append("goal-loop"),
+    )
     monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
     monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -264,7 +283,8 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     with pytest.raises(SystemExit) as exc_info:
         cli_mod.main(query="hello", quiet=True, toolsets="terminal")
 
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == expected
+    assert ("goal-loop" in calls) == (goal_mode and kanban and not failed)
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")

@@ -2559,13 +2559,7 @@ def _manage_thinking_signatures(
         and not _is_nous_portal_endpoint(base_url)
     )
 
-    last_assistant_idx = None
-    for i in range(len(result) - 1, -1, -1):
-        if result[i].get("role") == "assistant":
-            last_assistant_idx = i
-            break
-
-    for idx, m in enumerate(result):
+    for m in result:
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
@@ -2585,17 +2579,17 @@ def _manage_thinking_signatures(
                     continue
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
+        elif _is_third_party:
             # Third-party: strip ALL thinking blocks (signatures are proprietary).
-            # Direct Anthropic: strip from non-latest assistant messages only.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
         else:
-            # Latest assistant on direct Anthropic: keep signed, downgrade unsigned
-            # to text so the reasoning isn't lost.
+            # Native Anthropic / Portal: preserve every structurally intact
+            # signed turn so appending messages does not rewrite the cache prefix.
+            # Downgrade unsigned reasoning to text without inventing signatures.
             #
             # Exception: if orphan-stripping (or another structural mutation) removed
             # a tool_use block from THIS turn, every thinking signature on it was

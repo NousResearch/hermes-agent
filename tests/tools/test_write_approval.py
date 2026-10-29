@@ -195,10 +195,11 @@ _REVIEWED = "Staging DB: pg-staging-2 (old cluster, retiring)"
 
 
 def _review_stages_remove(shape):
-    """Seed memory, then stage a remove the way the unattended background review does."""
+    """Seed memory, then stage a background-review remove with the configured gate enabled."""
     from tools.memory_tool import MemoryStore, memory_tool
     from tools.skill_provenance import (reset_current_write_origin, reset_review_attended,
                                         set_current_write_origin, set_review_attended)
+    _set_approval("memory", True)
     store = MemoryStore(); store.load_from_disk()
     for entry in (_KEPT, _REVIEWED):
         assert store.add("memory", entry)["success"]
@@ -219,11 +220,11 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     """Approval re-ran the staged old_text search against the file as it is THEN, so it
     deleted the newer entry the live agent had written in place, which the approver never saw."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import load_on_disk_store, memory_tool
+    from tools.memory_tool import load_on_disk_store
     from tools import write_approval as wa
     store, pid = _review_stages_remove(shape)
     newer = "Staging DB: pg-staging-3 (migrated 2026-09-20, creds in vault 'stg')"
-    assert json.loads(memory_tool(action="patch", old_text=_REVIEWED, content=newer, store=store))["success"]
+    assert store.patch("memory", _REVIEWED, newer)["success"]
 
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
 

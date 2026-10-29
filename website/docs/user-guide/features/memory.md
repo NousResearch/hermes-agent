@@ -290,6 +290,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  background_review_allow_deletes: false # opt in to unattended memory consolidation/removal
   prefetch_spill_enabled: false  # external recall stays intact unless explicitly enabled
 ```
 
@@ -353,13 +354,26 @@ This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
 
-A staged `patch` or `remove` (the background review stages these even with the
-gate off) records the full entry it targets, and `/memory pending` shows it.
-Approval applies to exactly that entry: if it changed after the write was staged,
-the write is refused and stays pending for you to reject. A `replace`/`patch`/`remove`
-staged before this pinning existed has no verifiable target and is refused too:
-reject it and recreate the change. `/memory approve` lists the full text of
-every entry it overwrote or removed.
+With `write_approval: false` (the default), background-review additions apply
+automatically. Destructive consolidation (`patch`/`remove`, including batches)
+is staged unless `memory.background_review_allow_deletes: true` is explicitly
+set. The opt-in is limited to unattended background review: foreground writes
+and attended `/refine` are unchanged. `write_approval: true` takes precedence
+and stages every background write, even when destructive curation is enabled.
+
+The default is conservative because an unattended review can misclassify a
+useful memory as redundant. To let it maintain a compact memory automatically,
+set the per-profile option:
+
+```yaml
+memory:
+  background_review_allow_deletes: true
+```
+
+To stop future unattended destructive edits, set it back to `false` (or remove
+the key). This does not restore entries already removed or rewritten; restore
+the active profile's `$HERMES_HOME/memories/MEMORY.md` or `USER.md` from your
+backup if needed, then start a new session to reload the restored snapshot.
 
 ## Background review notifications (`display.memory_notifications`)
 

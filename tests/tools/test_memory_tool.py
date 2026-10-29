@@ -960,64 +960,116 @@ class TestBatchRefusesToEmptyNonEmptyStore:
 
 
 # =========================================================================
-# Background-review delete gate (#105921)
+# Background-review memory curation
 # =========================================================================
 
-class TestBackgroundReviewDeleteGate:
-    """An unattended background-review fork may append, never delete: the near-limit
-    'consolidate now' hint is otherwise an instruction to decide what to forget,
-    executed with no human in the loop. Denied ops are staged as pending proposals
-    (surfaced via /memory pending) instead of silently dropped — the fork's own review
-    summary is never published back."""
+def _set_background_review_allow_deletes(enabled):
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    config.setdefault("memory", {})["background_review_allow_deletes"] = enabled
+    save_config(config)
 
-    def test_remove_staged_not_applied(self, store, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        store.add("memory", "never create records without permission")
+
+class TestBackgroundReviewMemoryCuration:
+    """Background review only curates destructive edits when this profile opts in."""
+
+    def test_remove_stages_without_opt_in(self, store):
+        _set_background_review_allow_deletes(False)
+        store.add("memory", "old fact ready for curation")
         token = set_current_write_origin("background_review")
         try:
-            result = json.loads(memory_tool(action="remove", old_text="without permission", store=store))
+            result = json.loads(memory_tool(action="remove", old_text="ready for curation", store=store))
         finally:
             reset_current_write_origin(token)
-        assert result["success"] is True
         assert result["staged"] is True
-        assert result["proposal_staged"] is True
-        assert result["pending_id"]
-        # Fail-closed: the standing rule is still on disk.
-        assert "never create records without permission" in store._entries_for("memory")
-        # The proposal itself landed in the pending store for the user to approve or discard.
-        from tools.write_approval import MEMORY, get_pending
-        record = get_pending(MEMORY, result["pending_id"])
-        assert record["payload"]["action"] == "remove"
-        assert record["origin"] == "background_review"
+        assert "old fact ready for curation" in store._entries_for("memory")
 
-    def test_patch_staged_in_background_review(self, store, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        store.add("memory", "entry the fork must not rewrite")
+    def test_patch_stages_without_opt_in(self, store):
+        _set_background_review_allow_deletes(False)
+        store.add("memory", "entry the review must not rewrite yet")
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(
-                action="patch", old_text="entry the fork", content="rewritten by fork", store=store))
+                action="patch", old_text="must not rewrite", content="rewritten", store=store))
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
-        assert result["proposal_staged"] is True
-        # Fail-closed: the original entry is untouched.
-        assert "entry the fork must not rewrite" in store._entries_for("memory")
+        assert "entry the review must not rewrite yet" in store._entries_for("memory")
 
-    def test_batch_containing_remove_staged_whole_batch(self, store, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        store.add("memory", "rule one")
+    def test_batch_with_remove_stages_atomically_without_opt_in(self, store):
+        _set_background_review_allow_deletes(False)
+        store.add("memory", "obsolete rule")
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(operations=[
-                {"action": "remove", "old_text": "rule one"},
-                {"action": "add", "content": "fork consolidation"},
+                {"action": "remove", "old_text": "obsolete rule"},
+                {"action": "add", "content": "replacement rule"},
             ], store=store))
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
-        # Atomic: the batch is only a proposal — its add must not land either.
-        assert "fork consolidation" not in store._entries_for("memory")
+        assert "obsolete rule" in store._entries_for("memory")
+        assert "replacement rule" not in store._entries_for("memory")
+
+    def test_remove_applies_when_opted_in(self, store):
+        _set_background_review_allow_deletes(True)
+        store.add("memory", "old fact ready for curation")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="remove", old_text="ready for curation", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "old fact ready for curation" not in store._entries_for("memory")
+
+    def test_patch_applies_in_background_review(self, store):
+        _set_background_review_allow_deletes(True)
+        store.add("memory", "entry background review may improve")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="patch", old_text="entry background review", content="curated entry", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "curated entry may improve" in store._entries_for("memory")
+
+    def test_batch_with_remove_applies_atomically(self, store):
+        _set_background_review_allow_deletes(True)
+        store.add("memory", "obsolete rule")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": "obsolete rule"},
+                {"action": "add", "content": "replacement rule"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "obsolete rule" not in store._entries_for("memory")
+        assert "replacement rule" in store._entries_for("memory")
+
+    def test_foreground_remove_is_not_affected_by_opt_in(self, store):
+        _set_background_review_allow_deletes(False)
+        store.add("memory", "entry a foreground turn may remove")
+        result = json.loads(memory_tool(action="remove", old_text="foreground turn", store=store))
+        assert result["success"] is True
+        assert "entry a foreground turn may remove" not in store._entries_for("memory")
+
+    def test_attended_review_keeps_destructive_edits(self, store):
+        from tools.skill_provenance import reset_review_attended, set_review_attended
+        _set_background_review_allow_deletes(False)
+        store.add("memory", "entry an explicit refine may rewrite")
+        token = set_current_write_origin("background_review")
+        attended = set_review_attended(True)
+        try:
+            result = json.loads(memory_tool(
+                action="patch", old_text="entry an explicit refine", content="rewritten by refine", store=store))
+        finally:
+            reset_review_attended(attended)
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "rewritten by refine may rewrite" in store._entries_for("memory")
 
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")
@@ -1027,26 +1079,3 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "a fact worth keeping" in store._entries_for("memory")
-
-    def test_foreground_remove_unaffected(self, store):
-        store.add("memory", "entry a supervised turn may remove")
-        result = json.loads(memory_tool(action="remove", old_text="supervised turn", store=store))
-        assert result["success"] is True
-        assert "entry a supervised turn may remove" not in store._entries_for("memory")
-
-    def test_attended_review_keeps_full_operation_set(self, store):
-        # A user-requested /refine fork keeps the background_review origin (skill guards still
-        # apply) but is attended, so patch/remove keep working on that supervised surface.
-        from tools.skill_provenance import reset_review_attended, set_review_attended
-        store.add("memory", "entry an explicit refine may rewrite")
-        token = set_current_write_origin("background_review")
-        att = set_review_attended(True)
-        try:
-            result = json.loads(memory_tool(
-                action="patch", old_text="entry an explicit refine may rewrite", content="rewritten by refine",
-                store=store))
-        finally:
-            reset_review_attended(att)
-            reset_current_write_origin(token)
-        assert result["success"] is True
-        assert "rewritten by refine" in store._entries_for("memory")

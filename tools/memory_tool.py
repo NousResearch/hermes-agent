@@ -178,15 +178,10 @@ def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``patch``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    """Stage unattended consolidation unless this profile explicitly permits it."""
     from tools.skill_provenance import is_unattended_review
 
-    if not is_unattended_review():
+    if not is_unattended_review() or get_builtin_memory_config().get("background_review_allow_deletes", False):
         return None
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
@@ -207,7 +202,8 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             origin=wa.current_origin())
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
+            "message": ("Background review may not delete memory entries unattended unless "
+                        "memory.background_review_allow_deletes is enabled. The proposed "
                         f"{'batch' if operations is not None else action} was staged for your approval — "
                         "review it with /memory pending (approve to apply, discard to drop)."),
         }, ensure_ascii=False)
@@ -216,7 +212,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         FAILURE_CLASS.set("gate_refused")
         return tool_error(
             "Background review may not delete memory entries ('patch'/'remove', including in a "
-            "batch); 'add' is still available.", success=False)
+            "batch); enable memory.background_review_allow_deletes to permit it.", success=False)
 
 
 def memory_tool(action: str | None = None, target: str = "memory", content: str | None = None, old_text: str | None = None,

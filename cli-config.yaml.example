@@ -1030,6 +1030,10 @@ memory:
   # External prefetch only: opt in to head/tail previews using hooks.output_spill.
   # Defaults to keeping the full provider-ranked recall. Restart to apply changes.
   prefetch_spill_enabled: false
+
+  # Background self-improvement may consolidate/delete built-in memories only when opted in.
+  # False keeps unattended destructive edits staged; write_approval still gates every write.
+  background_review_allow_deletes: false
   
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens

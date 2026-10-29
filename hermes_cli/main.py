@@ -1474,6 +1474,70 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+    _refuse_local_bot_chat_writer(args)
+
+
+def _refuse_local_bot_chat_writer(args) -> None:
+    """LOCAL PATCH (no competing Bot Chat writer) — local/TUI counterpart of
+    ``hermes_cli.gateway_chat._refuse_bot_chat_writer``.
+
+    The local path opens its own session row over the profile's ``state.db`` instead of
+    dialling the authority, so it becomes exactly the second Bot Chat writer that the
+    authority refuses as ``runtime_coordination_required``. Agent traffic must use the
+    ``message_agent`` tool, which delivers over RPC into the running gateway.
+
+    Runs AFTER ``-c``/``--resume`` resolution and inspects the RESOLVED session's title,
+    so quoting, ``HERMES_HOME``, an absolute argv[0], a bare ``-c`` breadcrumb and a raw
+    ``--resume <id>`` all funnel through it. Only refuses when this profile's gateway is
+    actually live, so a dead gateway leaves the CLI usable for repairs; ``--force-writer``
+    is the escape hatch for a wedged one.
+    """
+    if getattr(args, "force_writer", False):
+        return
+    sid = getattr(args, "resume", None)
+    if not sid:
+        return
+    try:
+        from pathlib import Path as _Path
+
+        from hermes_constants import get_process_hermes_home
+
+        home = _Path(get_process_hermes_home())
+        title = _session_title_for_id(home, str(sid))
+        if not title or title.strip().casefold() != "bot chat":
+            return
+        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+
+        discovery = discover_gateway_endpoint(home, timeout=5)
+        if discovery.state != "ready" or discovery.endpoint is None:
+            return  # no live authority to conflict with — repairs stay possible
+    except Exception:
+        return  # never block the CLI on a diagnostic failure
+    print(
+        "Refusing to open 'Bot Chat' as a CLI session writer: this profile's gateway is live "
+        "and already owns that chat, so a second writer gets refused as "
+        "'runtime_coordination_required' and can wedge agent deliveries. To message an agent, "
+        "use the message_agent tool (it delivers over RPC into the running authority). "
+        "Pass --force-writer only to recover a wedged gateway.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _session_title_for_id(home, session_id: str) -> str:
+    """Stored title of ``session_id`` in ``home``'s session store ("" when unknown)."""
+    from pathlib import Path as _Path
+
+    from hermes_state import SessionDB
+
+    db_path = _Path(home) / "state.db"
+    if not db_path.is_file():
+        return ""
+    db = SessionDB(db_path=db_path, read_only=True)
+    try:
+        return str(db.get_session_title(session_id) or "").strip()
+    finally:
+        db.close()
 
 
 def _apply_in_dir(args) -> None:

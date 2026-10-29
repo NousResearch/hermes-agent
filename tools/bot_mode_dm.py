@@ -120,18 +120,47 @@ def message_agent_tool_schema() -> dict:
     }
 
 
+def is_orchestrator_home(home: str | os.PathLike | None) -> bool:
+    """True when ``home`` is the DEFAULT profile of a Bot-Mode-managed install.
+
+    LOCAL PATCH (orchestrator DM access). The default profile is the only agent that
+    talks to a human on a messaging platform AND directs the other bots, so it gets
+    ``message_agent`` in every one of its sessions — not just its canonical Bot Chat.
+    Without this the orchestrator has to shell out ``hermes chat -c "Bot Chat"`` to
+    reach the tool, and that CLI process becomes a second session writer of its own
+    Bot Chat, which the authority then refuses with ``runtime_coordination_required``.
+
+    Named profiles are deliberately NOT covered: they keep the stock Bot-Chat-only
+    gate, so no horizontal bot-to-bot traffic appears. Never raises.
+    """
+    try:
+        from tools.bot_mode_probe import _profile_name, is_bot_mode_managed
+
+        if not is_bot_mode_managed(home):
+            return False
+        return _profile_name(Path(home or _default_home())) == "default"
+    except Exception:  # pragma: no cover — must never break a turn
+        logger.debug("is_orchestrator_home failed", exc_info=True)
+        return False
+
+
 def message_agent_authorized(agent: Any) -> bool:
     """The ``message_agent`` gate: a protocol-enabled agent whose session is a managed
-    Bot-Mode canonical Bot Chat. Session-stable, so it is prompt-cache safe to re-evaluate
+    Bot-Mode canonical Bot Chat, or any session of the managed install's default profile
+    (see ``is_orchestrator_home``). Session-stable in both arms — the title and the agent's
+    own home are fixed for the session's life — so it is prompt-cache safe to re-evaluate
     on every tool-snapshot rebuild. Never raises."""
     try:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
         from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
+        home = _agent_home(agent)
         # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
         # legacy protocol text gets an empty section but must still get the tool.
-        return _session_title(agent) == BOT_CHAT_TITLE and is_bot_mode_managed(_agent_home(agent))
+        if _session_title(agent) == BOT_CHAT_TITLE and is_bot_mode_managed(home):
+            return True
+        return is_orchestrator_home(home)
     except Exception:  # pragma: no cover — must never break a turn
         logger.debug("message_agent_authorized failed", exc_info=True)
         return False
@@ -209,9 +238,10 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         )
         from tools.bot_relay import _hermes_cli
 
-        if _session_title(agent) != BOT_CHAT_TITLE:
-            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
-                        "This session is not one; do not retry.")
+        if _session_title(agent) != BOT_CHAT_TITLE and not is_orchestrator_home(home):
+            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session, "
+                        "or in any session of the orchestrator (default) profile. "
+                        "This session is neither; do not retry.")
         if not is_bot_mode_managed(home):
             return _err("This install is not Bot-Mode-managed (no bot roster); "
                         "message_agent is unavailable. Do not retry.")

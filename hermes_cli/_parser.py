@@ -289,6 +289,11 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "want 'send to this named thread, making it if needed'."))
     add("--worktree", "-w", action="store_true", default=SUPPRESS,
         help="Run in an isolated git worktree (for parallel agents on the same repo)")
+    add("--force-writer", action="store_true", default=SUPPRESS, help=(
+        "LOCAL PATCH escape hatch: open a canonical 'Bot Chat' as a CLI session writer "
+        "even though this profile's gateway is live and owns it. Normally refused, because "
+        "a second writer gets 'runtime_coordination_required' and can wedge agent deliveries "
+        "(use the message_agent tool instead). Only for recovering a wedged gateway."))
     inherited(chat_parser, "--accept-hooks", action="store_true", default=SUPPRESS, help=(
         "Auto-approve any unseen shell hooks declared in config.yaml "
         "without a TTY prompt (see also HERMES_ACCEPT_HOOKS env var and "

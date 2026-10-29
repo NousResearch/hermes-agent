@@ -158,6 +158,35 @@ async def _resume_latest(client, args):
                                  "or list sessions with `hermes sessions list`.") from None
 
 
+def _refuse_bot_chat_writer(args, title):
+    """LOCAL PATCH (no competing Bot Chat writer).
+
+    A CLI session writer on a canonical ``Bot Chat`` is exactly the conflict the
+    authority reports as ``runtime_coordination_required``: the profile's own gateway
+    already owns that chat and admits turns through ``bot_relay.deliver``, so a second
+    writer either loses the race or wedges deliveries. Agent-to-agent traffic must go
+    through ``message_agent`` (RPC into the live authority) instead.
+
+    Checked here, AFTER argument parsing, so quoting, ``HERMES_HOME``, an absolute
+    argv[0] and ``--continue`` cannot route around it — the title is a resolved value
+    by now, not a substring of the command line. We are already inside
+    ``connect_gateway()``, which means this profile's authority is reachable and live;
+    when no gateway is running this code path never executes and the CLI stays usable
+    for repairs. ``--force-writer`` is the deliberate escape hatch for a wedged
+    authority.
+    """
+    if not title or str(title).strip().casefold() != "bot chat":
+        return
+    if getattr(args, "force_writer", False):
+        return
+    raise GatewayClientError(
+        "Refusing to open 'Bot Chat' as a CLI session writer: this profile's gateway is live "
+        "and already owns that chat, so a second writer gets refused as "
+        "'runtime_coordination_required' and can wedge deliveries. To message an agent, use the "
+        "message_agent tool (it delivers over RPC into the running authority). "
+        "Pass --force-writer only to recover a wedged gateway.")
+
+
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
     query = getattr(args, "query", None) or getattr(args, "q", None)
@@ -171,6 +200,7 @@ async def run_gateway_chat(args, emitter=None):
     async with connect_gateway() as client:
         description = await client.rpc("runtime.describe")
         title = continue_title(args)
+        _refuse_bot_chat_writer(args, title)
         create_if_missing = bool(title and getattr(args, "create_if_missing", False))
         latest = wants_latest(args)
         if latest:

@@ -41,6 +41,7 @@ from agent.context_compressor_tail import (
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
+from agent.context_compressor_state import CompressorDurableStateMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -2148,7 +2149,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 class ContextCompressor(
     SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
-    ProactivePruneMixin, CompactionWindowMixin, ContextEngine,
+    ProactivePruneMixin, CompressorDurableStateMixin, CompactionWindowMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -2407,19 +2408,6 @@ class ContextCompressor(
             logger.debug("%s lookup failed%s: %s", label, suffix, exc)
         return False, default
 
-    def _durable_write(self, method: str, label: str, *args) -> bool:
-        """Best-effort write of a durable per-session value; True only when the write succeeded."""
-        setter = getattr(getattr(self, "_session_db", None), method, None)
-        if not getattr(self, "_session_id", "") or not callable(setter):
-            return False
-        session_id = self._session_id
-        try:
-            setter(session_id, *args)
-            return True
-        except Exception as exc:
-            suffix = "" if isinstance(exc, sqlite3.Error) else " (non-sqlite)"
-            logger.debug("%s persist failed%s: %s", label, suffix, exc)
-        return False
 
     def _load_durable(self, attr: str, method: str, label: str, coerce, default, *args) -> None:
         """Restore ``self.<attr>`` from the bound row; a non-numeric row resets it to ``default``."""

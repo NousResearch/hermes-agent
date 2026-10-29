@@ -107,7 +107,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
-| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the status call (`agents.sessions.setStatus` on slack-sdk 3.44+, `assistant.threads.setStatus` on older SDKs) fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
+| `assistant:write` | Slack's assistant / agent messaging experience and its suggested prompts (`hermes slack manifest` adds it for both experiences). Not needed for the working-state status line ("is thinking…"): its call, `assistant.threads.setStatus`, has accepted plain `chat:write` since [March 2026](https://docs.slack.dev/changelog/2026/03/05/set-status-scope-update). |
 
 ---
 
@@ -501,10 +501,10 @@ platforms:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
+| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message, sent with `assistant.threads.setStatus` (needs only `chat:write`). If Slack rejects the call, the gateway log shows a warning naming Slack's error, once per workspace and error. Set `typing_indicator: false` to disable the status line entirely. |
 
 :::note Where the status renders
-The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — the status API (`agents.sessions.setStatus` / `assistant.threads.setStatus`) does not control those, and both can appear at the same time.
+The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — the status API (`assistant.threads.setStatus`) does not control those, and both can appear at the same time.
 :::
 
 The same key customizes Google Chat's visible working-state marker message
@@ -538,7 +538,7 @@ display:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
+| `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Same status call and scope as the static status line. |
 
 ### Native Streaming (live-typing replies)
 

@@ -10,6 +10,7 @@ import json
 from contextlib import asynccontextmanager
 
 import pytest
+from websockets.protocol import State
 
 from hermes_cli import gateway_client
 from hermes_cli.gateway_client import GatewayClient, GatewayClientError
@@ -76,6 +77,8 @@ async def test_a_consumer_that_stops_draining_is_still_failed_with_the_queue_bou
 class CardOwner:
     """A Kanban card's owner as the worker's socket sees it: ``kanban.run`` subscribes the socket,
     the card's turn streams ``events`` frames, and the next receipt poll finds it terminal."""
+
+    state = State.OPEN  # GatewayClient.rpc reads the socket state before it sends
 
     def __init__(self, events):
         self.events = events

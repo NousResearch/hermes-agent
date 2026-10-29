@@ -1218,3 +1218,63 @@ class TestRouterRewriteTruncationMessageIsHonest:
             "the output length limit — the honest-message fix must not blank "
             "out the accurate case (#91717 scenario 1)."
         )
+
+
+# ── Clean stream-end with a usage frame but no finish chunk (#132362) ──────
+
+class TestCleanStreamEndAfterUsageFrame:
+    """Providers deliver the usage frame in a tail chunk (include_usage).
+    A stream cut around the tail arrives with usage present and no finish
+    chunk (Agnes AI, 3 confirmed instances over 5 days). The clean-EOF
+    guard used to require ``usage_obj is None`` on the theory that a usage
+    object proves the provider finished, so these cuts were stamped ``stop``;
+    for reasoning-only turns the clean-stop promotion then shipped the
+    truncated monologue as the visible reply.
+
+    The narrowing is reasoning-channel only: for text-only streams the
+    healthy vLLM tail is wire-identical to a cut (content chunk plus a
+    choiceless usage frame, no finish chunk) and #91373 pins that as a
+    completion. All three observed #132362 cuts had empty ``content`` with
+    the partial text in ``reasoning``."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_usage_frame_reasoning_only_cut_routes_to_stub(
+        self, _mock_close, mock_create,
+    ):
+        def _cut_after_usage():
+            # Reasoning-only deltas, then the usage frame, then the
+            # generator RETURNS mid-generation — the exact signature in
+            # #132362 (empty content, partial text in reasoning, usage
+            # billed) that used to be promoted as a complete reply.
+            yield SimpleNamespace(choices=[
+                SimpleNamespace(index=0,
+                                delta=SimpleNamespace(content=None, tool_calls=None,
+                                                      reasoning_content="I'll start by checking the config", reasoning=None),
+                                finish_reason=None),
+            ], model=None, usage=None)
+            yield SimpleNamespace(choices=[], model=None, usage=SimpleNamespace(
+                prompt_tokens=3, completion_tokens=9, total_tokens=12))
+            # falls off the end — clean close, usage frame delivered, finish chunk missing
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _cut_after_usage()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID, (
+            "A reasoning-only cut that carries a usage frame must reach the "
+            "partial-stream stub, not the stop-stamped promotion that ships "
+            "the truncated thought as the answer (#132362)."
+        )
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.reasoning_content == (
+            "I'll start by checking the config")
+        assert response.usage is not None
+        assert response._clean_eof is True

@@ -170,8 +170,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # ── Async RPC dispatch: slow handlers (seconds to minutes) would leave approval.respond and
 # session.interrupt unread in the stdin pipe, so only THESE go to a small thread pool; everything else
 # stays inline so fast-path ordering stays sane (write_json is _stdout_lock-guarded). Why each is slow:
-# billing/subscription/usage = blocking portal (+Stripe) round-trips; complete.* = git ls-files /
-# prompt_toolkit import + skill scan; model.options = credential pool + pricing + provider probe;
+# billing/subscription/usage = blocking portal (+Stripe) round-trips; complete.* / commands.catalog =
+# git ls-files / prompt_toolkit import + skill scan; model.options = credential pool + pricing + provider probe;
 # pet.* = network or PNG decode (generate = several image-model round-trips); reload.mcp /
 # mcp.servers.* = rediscovery, cold npx spawn, ~30s OAuth wait; profiles.* = skill-tree walk + state.db
 # open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
@@ -184,7 +184,7 @@ _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
-    "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
+    "browser.manage", "cli.exec", "commands.catalog", "complete.path", "complete.slash", "llm.oneshot", "model.options",
     "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
     "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
     "mcp.servers.oauth.start",

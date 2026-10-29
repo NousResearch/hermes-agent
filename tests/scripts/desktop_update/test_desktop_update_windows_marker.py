@@ -56,20 +56,35 @@ def _creation_time(pid: int) -> str:
 
 
 def _protected_pid() -> int:
-    """A live pid that grants only limited query rights (a SYSTEM/protected service): what
-    Get-Process .StartTime needs is denied, what CIM/GetProcessTimes need is granted."""
+    """A live SYSTEM/protected pid whose creation time Windows PowerShell's Get-Process .StartTime
+    cannot read from this token while Win32_Process.CreationDate (CIM) can: the A1 case.
+
+    Which pids those are depends on the token. A non-elevated developer shell gets no rights at
+    all on csrss/smss/services/lsass, so StartTime reads $null there; .NET Framework reads
+    StartTime with limited query rights, so a pid granting those (what an elevated runner gets on
+    the same services) is NOT the A1 case. Pick by the observed StartTime/CIM split first; only a
+    token that sees no such pid falls back to a pid granting only limited query rights. Prefer the
+    named services, then the oldest pid, so the owner outlives the test."""
     import ctypes
     k32 = ctypes.windll.kernel32
     k32.OpenProcess.restype = ctypes.c_void_p
-    names = ('csrss.exe', 'smss.exe', 'wininit.exe', 'services.exe', 'lsass.exe', 'MsMpEng.exe')
+    preferred = ('csrss.exe', 'smss.exe', 'wininit.exe', 'services.exe', 'lsass.exe', 'MsMpEng.exe')
     rows = subprocess.run(
         ['powershell', '-NoProfile', '-Command',
-         'Get-CimInstance Win32_Process | ForEach-Object { \'{0} {1}\' -f $_.ProcessId, $_.Name }'],
-        capture_output=True, text=True, timeout=60, check=True,
+         'Get-CimInstance Win32_Process | ForEach-Object { '
+         '$p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; '
+         '$st = $false; if ($p) { try { $st = $null -ne $p.StartTime } catch {} }; '
+         '$ct = if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks } else { 0 }; '
+         '\'{0} {1} {2} {3}\' -f $_.ProcessId, $ct, [int]$st, $_.Name }'],
+        capture_output=True, text=True, timeout=120, check=True,
     ).stdout.splitlines()
+    candidates = []
     for row in rows:
-        pid, _, name = row.strip().partition(' ')
-        if name not in names:
+        pid, ticks, start_time_readable, name = row.strip().split(' ', 3)
+        if int(pid) in (0, 4, os.getpid()) or not int(ticks):
+            continue
+        if start_time_readable == '0':
+            candidates.append((0, name not in preferred, int(ticks), int(pid)))
             continue
         full = k32.OpenProcess(0x0400, False, int(pid))         # PROCESS_QUERY_INFORMATION
         limited = k32.OpenProcess(0x1000, False, int(pid))      # ..._LIMITED_INFORMATION
@@ -77,8 +92,11 @@ def _protected_pid() -> int:
             if handle:
                 k32.CloseHandle(ctypes.c_void_p(handle))
         if limited and not full:
-            return int(pid)
-    pytest.fail('no process here grants only limited query rights: ' + ', '.join(rows[:40]))
+            candidates.append((1, name not in preferred, int(ticks), int(pid)))
+    if candidates:
+        return min(candidates)[3]
+    pytest.fail('no SYSTEM/protected process here hides its StartTime or grants only limited '
+                'query rights: ' + ', '.join(rows[:40]))
 
 
 def _dead_pid() -> int:

@@ -123,6 +123,18 @@ it('dispatches the macOS ⌃⌘ browser defaults, including ⌃⌘W over an inte
   expect(closeTab).toHaveBeenCalledOnce()
 })
 
+it('uses literal Ctrl+H on macOS without claiming Cmd+H (Hide)', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+  const { press } = await mountKeybinds()
+  const { $commandPaletteOpen, $commandPalettePage } = await import('@/store/command-palette')
+
+  expect(press({ key: 'h', code: 'KeyH', ctrlKey: false, metaKey: true }).defaultPrevented).toBe(false)
+  expect($commandPaletteOpen.get()).toBe(false)
+  expect(press({ key: 'h', code: 'KeyH' }).defaultPrevented).toBe(true)
+  expect($commandPaletteOpen.get()).toBe(true)
+  expect($commandPalettePage.get()).toBe('history')
+})
+
 it('keeps an Option remap on macOS, where Firefox reports Option as AltGraph', async () => {
   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
   const { press } = await mountKeybinds()
@@ -137,7 +149,7 @@ it('keeps an Option remap on macOS, where Firefox reports Option as AltGraph', a
   expect($commandPaletteOpen.get()).toBe(true)
 })
 
-it('steps the session switcher with Alt+] and commits when Alt is released', async () => {
+it('keeps browser tab cycling out of saved sessions, including modifier release', async () => {
   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
   const { $selectedStoredSessionId, $sessions } = await import('@/store/session')
   const { $switcherOpen, switcherActive } = await import('@/store/session-switcher')
@@ -152,16 +164,17 @@ it('steps the session switcher with Alt+] and commits when Alt is released', asy
 
   expect(press({ key: ']', code: 'BracketRight', altKey: true, ctrlKey: false }).defaultPrevented).toBe(true)
   expect(press({ key: ']', code: 'BracketRight', altKey: true, ctrlKey: false }).defaultPrevented).toBe(true)
-  expect($switcherOpen.get()).toBe(true)
+  expect($switcherOpen.get()).toBe(false)
 
   release(']', { altKey: true })
-  expect($switcherOpen.get()).toBe(true)
+  expect($switcherOpen.get()).toBe(false)
   release('Alt')
   expect($switcherOpen.get()).toBe(false)
   expect(switcherActive()).toBe(false)
+  expect($selectedStoredSessionId.get()).toBe('a')
 })
 
-it('keeps the switcher step held while another key is released', async () => {
+it('holding a browser cycle chord never reveals the saved-session HUD', async () => {
   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
   const { $selectedStoredSessionId, $sessions } = await import('@/store/session')
   const { $switcherOpen, SWITCHER_REVEAL_MS } = await import('@/store/session-switcher')
@@ -178,7 +191,8 @@ it('keeps the switcher step held while another key is released', async () => {
   press({ key: ']', code: 'BracketRight', altKey: true, ctrlKey: false })
   release('a', 'KeyA', { altKey: true })
   act(() => vi.advanceTimersByTime(SWITCHER_REVEAL_MS))
-  expect($switcherOpen.get()).toBe(true)
+  expect($switcherOpen.get()).toBe(false)
+  expect($selectedStoredSessionId.get()).toBe('a')
 
   release(']', 'BracketRight', { altKey: true })
   release('Alt', 'AltLeft')

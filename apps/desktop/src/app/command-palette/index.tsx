@@ -72,6 +72,7 @@ import {
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
+import { $activeConnectionId } from '@/store/connections'
 import { completeFlow, recordAction } from '@/store/desktop-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
@@ -593,6 +594,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // rewrites these stores on every progress line, and only a changed string
   // should rebuild the palette's groups.
   const connection = useStore($connection)
+  const connectionId = useStore($activeConnectionId)
   const desktopVersion = useStore($desktopVersion)
   const clientStatus = useStore($updateStatus)
   const clientApply = useStore($updateApply)
@@ -671,13 +673,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // invalidate these keys — every open must revalidate. The cached page
   // still paints instantly; the live-store overlay below covers the gap.
   const sessionsQuery = useQuery({
-    queryKey: ['command-palette', 'sessions'],
+    queryKey: ['command-palette', 'sessions', connectionId],
     queryFn: () => listAllProfileSessions(200, 1, 'exclude'),
     staleTime: 0
   })
 
   const archivedQuery = useQuery({
-    queryKey: ['command-palette', 'archived'],
+    queryKey: ['command-palette', 'archived', connectionId],
     queryFn: () => listAllProfileSessions(200, 0, 'only'),
     staleTime: 0
   })
@@ -734,6 +736,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   useEffect(() => {
     if (pendingPage) {
       setPage(pendingPage)
+      setSearch('')
       $commandPalettePage.set(null)
     }
   }, [pendingPage])
@@ -1406,6 +1409,32 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // and point a root item at it via `to`.
   const subPages = useMemo<Record<string, PalettePage>>(
     () => ({
+      history: {
+        title: t.keybinds.actions['session.history'],
+        placeholder: t.sidebar.searchPlaceholder,
+        groups: [
+          {
+            heading: t.sidebar.pinned,
+            items: pinnedSessions.map(session => ({
+              icon: Pin,
+              id: `history-pinned-${session.id}`,
+              keywords: sessionKeywords(session, 'pinned'),
+              label: session.title,
+              runWithEvent: goSession(session.id)
+            }))
+          },
+          {
+            heading: t.commandCenter.sections.sessions,
+            items: sessions.map(session => ({
+              icon: MessageCircle,
+              id: `history-${session.id}`,
+              keywords: sessionKeywords(session),
+              label: session.title,
+              runWithEvent: goSession(session.id)
+            }))
+          }
+        ]
+      },
       theme: {
         title: t.settings.appearance.themeTitle,
         placeholder: t.settings.appearance.themeDesc,
@@ -1511,6 +1540,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     }),
     [
       availableThemes,
+      goSession,
+      pinnedSessions,
+      sessions,
       mode,
       previewTheme,
       resolvedMode,
@@ -1631,8 +1663,10 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           }
         }}
       >
-        <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
-        <Command className="bg-transparent" loop shouldFilter={false}>
+        <DialogPrimitive.Title className="sr-only">
+          {activePage?.title ?? t.commandCenter.paletteTitle}
+        </DialogPrimitive.Title>
+        <Command className="bg-transparent" label={placeholder} loop shouldFilter={false}>
           <HighlightWatcher onValue={handleHighlight} />
           {activePage && (
             <button

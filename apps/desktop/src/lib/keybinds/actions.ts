@@ -180,6 +180,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
   hostAction('session.next', 'session', ['ctrl+tab', 'ctrl+pagedown'], { mac: 'mod+ctrl+]', other: 'alt+]' }),
   hostAction('session.prev', 'session', ['ctrl+shift+tab', 'ctrl+pageup'], { mac: 'mod+ctrl+[', other: 'alt+[' }),
+  // Literal Control on macOS: Cmd+H must remain the OS Hide command.
+  { id: 'session.history', category: 'session', defaults: ['ctrl+h'] },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },

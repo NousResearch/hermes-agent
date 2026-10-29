@@ -76,12 +76,22 @@ def chat_error_response(
 
         exc = error if isinstance(error, Exception) else Exception(str(error))
         reason = classify_api_error(exc, provider=provider or "", model=model or "").reason.value
+
+    # Put the executable sentence inside Details, not the payload's head. A provider
+    # error is often an HTML page with the real explanation after it (see
+    # api_error_summary._explanation_after_html); _short() would cut at 300 chars into
+    # the HTML head and drop exactly the part that says what to do.
+    from agent.api_error_summary import _explanation_after_html
+
+    raw = str(error)
+    details = _explanation_after_html(raw) or _short(raw, 300)
+
     lead = t(
         f"cli.error.{_REASON_KEYS.get(reason, _UNKNOWN_KEY)}",
         provider=provider or t("cli.error.the_provider"),
         model=model or t("cli.error.the_current_model"),
     )
-    return t("cli.error.with_details", lead=lead, details=_short(refusal_text(error), 300))
+    return t("cli.error.with_details", lead=lead, details=details)
 
 
 def agent_init_failure_message(error: BaseException) -> str:

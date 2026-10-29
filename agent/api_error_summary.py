@@ -73,6 +73,45 @@ def _http_prefix(error: Exception) -> str:
     return f"HTTP {status_code}: " if status_code else ""
 
 
+# An HTML error page whose real explanation is appended after it. LiteLLM and several
+# gateway proxies render the upstream's HTML page and then print the JSON error that
+# caused it: ``... </html>\nLiteLLM: model group 'x' failed ... no fallback model group
+# was found for it``. The HTML head says nothing the status code did not already say;
+# that trailing sentence is the only part that tells the user what to do.
+#
+# Two details the real payload forced:
+# * nginx parks an HTML comment after ``</html>`` to defeat browser error page padding,
+#   so comments must be stripped before looking for the sentence;
+# * the payload may arrive un-decoded (literal ``\n`` from the provider's JSON), so the
+#   trailer is unescaped once before matching.
+_HTML_TRAILER_MARKER = re.compile(r"(?:LiteLLM|litellm)\s*:\s*")
+_HTML_END = re.compile(r"</html\s*>", re.IGNORECASE)
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _explanation_after_html(raw: str) -> str:
+    """Return the human sentence a gateway printed after an HTML error page, or ``""``.
+
+    Bounded to 400 characters and collapsed to one line. Deliberately conservative: it
+    only fires when the text after the closing ``</html>`` names LiteLLM, so a bare
+    nginx/Cloudflare page still goes down the ``<title>`` path.
+    """
+    end = _HTML_END.search(raw)
+    if not end:
+        return ""
+    tail = _HTML_COMMENT.sub(" ", raw[end.end():])
+    tail = tail.replace("\\n", "\n").replace('\\"', '"')
+    marker = _HTML_TRAILER_MARKER.search(tail)
+    if not marker:
+        return ""
+    sentence = tail[marker.end():]
+    sentence = sentence.split("<", 1)[0]
+    # Cut at the next JSON/payload boundary rather than mid-word.
+    sentence = re.split(r'["\']\s*[,}]|\n\s*["\']?\w+["\']?\s*:', sentence, maxsplit=1)[0]
+    sentence = re.sub(r"\s+", " ", sentence).strip().strip("\"'}")
+    return sentence[:400]
+
+
 class ApiErrorSummaryMixin:
     """Provider error -> user/log-safe summary (see module docstring)."""
 
@@ -177,6 +216,13 @@ class ApiErrorSummaryMixin:
         prefix = _http_prefix(error)
         # Cloudflare / proxy HTML pages: grab the <title> (and Ray ID) for a clean summary
         if "<!DOCTYPE" in raw or "<html" in raw:
+            # A gateway often wraps a JSON error inside an HTML page (LiteLLM puts the
+            # real sentence after the closing tag). Keep the executable part: it is the
+            # only thing that says WHY, and the HTML head alone says nothing the status
+            # code did not already say.
+            trailer = _explanation_after_html(raw)
+            if trailer:
+                return redact_sensitive_text(trailer)
             m = re.search(r"<title[^>]*>([^<]+)</title>", raw, re.IGNORECASE)
             title = m.group(1).strip() if m else "HTML error page (title not found)"
             ray = re.search(r"Cloudflare Ray ID:\s*<strong[^>]*>([^<]+)</strong>", raw)
@@ -222,8 +268,12 @@ class ApiErrorSummaryMixin:
                         return redact_sensitive_text(f"{prefix}{str(payload['message'])[:300]}")
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
-        # Fallback: truncate the raw string but give more room than 200 chars
-        return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        # Fallback: truncate the raw string but give more room than 200 chars.
+        # Redact first: an unstructured payload (often a raw httpx body string) can echo the
+        # Authorization header the provider rejected, and this path returns it to the user.
+        return ApiErrorSummaryMixin._decorate_xai_entitlement_error(
+            redact_sensitive_text(f"{prefix}{raw[:500]}")
+        )
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never invoke them in log

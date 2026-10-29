@@ -1,5 +1,6 @@
 /**
- * The browser tab title of the browser-hosted Desktop (Webapp).
+ * The document title shared by native Desktop windows and browser tabs.
+ * Browser tabs also carry session status:
  *
  * In a browser the tab strip is the one surface that stays visible while the
  * user is in another tab or app, so the title carries the same signals the
@@ -10,10 +11,10 @@
  * a count of unread finished sessions, then one mark — `⚠` when anything is
  * blocked on the user, else `●` while a turn runs — then the session.
  *
- * Browser-hosted only: Electron mirrors `document.title` into the native window
- * title, which is a separate decision. Unsent drafts never name the tab — their
- * text is composer content, and a title lands in browser history and synced
- * tab lists.
+ * Electron mirrors the focused caption into the native window title without
+ * browser status marks. Auxiliary windows keep their own titles. Unsent drafts
+ * never name the document — their text is composer content, and a title lands
+ * in browser history and synced tab lists.
  */
 
 import { computed } from 'nanostores'
@@ -22,7 +23,14 @@ import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-sh
 import { hostHas } from '@/lib/host-capabilities'
 
 import { normalizeProfileKey } from './profile'
-import { $sessions, sessionMatchesStoredId } from './session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  $unlistedSessionOwnerRows,
+  ownerLookupSessionRows,
+  sessionMatchesStoredId
+} from './session'
 import { $unreadSessionCount } from './session-dot-state'
 import { $focusedStoredSessionId } from './session-focus'
 import { $attentionSessionIds, $sessionTiles, $workingSessionIds } from './session-states'
@@ -50,13 +58,21 @@ export function browserTabTitle({ caption, needsInput, unread, working }: Browse
 }
 
 const $focusedCaption = computed(
-  [$focusedStoredSessionId, $sessions, $sessionTiles, $workspaceOwnerLabels],
-  (focused, sessions, tiles) => {
+  [
+    $focusedStoredSessionId,
+    $sessions,
+    $cronSessions,
+    $messagingSessions,
+    $unlistedSessionOwnerRows,
+    $sessionTiles,
+    $workspaceOwnerLabels
+  ],
+  (focused, _sessions, _cron, _messaging, _unlisted, tiles) => {
     if (!focused) {
       return ''
     }
 
-    const row = sessions.find(session => sessionMatchesStoredId(session, focused))
+    const row = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, focused))
     const tile = tiles.find(candidate => candidate.storedSessionId === focused)
     // Hidden relationship chats (canonical Bot Chats) are absent from the list;
     // their tab keeps a stable title, which the owner label then replaces.
@@ -80,14 +96,20 @@ const $browserTabTitle = computed(
     browserTabTitle({ caption, needsInput: attention.length > 0, unread, working: working.length > 0 })
 )
 
-/** Keep the tab title in step with session status. A no-op outside a browser
- *  host; returns the unsubscribe. */
+const $nativeWindowTitle = computed($focusedCaption, caption =>
+  browserTabTitle({ caption, needsInput: false, unread: 0, working: false })
+)
+
+/** Keep the document title in step with the focused session. Electron mirrors
+ *  it into the native window title; only browser tabs carry status marks. */
 export function installBrowserTabTitle(): () => void {
-  if (typeof document === 'undefined' || !hostHas('tabTitleStatus')) {
+  if (typeof document === 'undefined' || new URLSearchParams(window.location.search).has('win')) {
     return () => {}
   }
 
-  return $browserTabTitle.subscribe(title => {
+  const titleStore = hostHas('tabTitleStatus') ? $browserTabTitle : $nativeWindowTitle
+
+  return titleStore.subscribe(title => {
     if (document.title !== title) {
       document.title = title
     }

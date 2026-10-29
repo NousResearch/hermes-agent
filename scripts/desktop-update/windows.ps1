@@ -72,6 +72,7 @@ param(
     [int]$ProbeTimeoutSeconds = 60,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
+    [switch]$SelfTestLogConcurrency,
     [switch]$SelfTestMarker,
     [switch]$SelfTestWorkingDirectory,
     [string]$HandoffRun = "",
@@ -89,7 +90,7 @@ if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey
 }
 $targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLogConcurrency -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
@@ -103,10 +104,74 @@ $MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
 $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
+$script:HandoffLogMutex = $null
+# One mutex per log path (case-normalized: the same HERMES_HOME spelled
+# differently must still serialize), hashed because a mutex name cannot carry
+# path characters.
+$handoffLogHash = ""
+$handoffSha = [System.Security.Cryptography.SHA1]::Create()
+try {
+    $handoffLogHash = [BitConverter]::ToString($handoffSha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($LogPath.ToLowerInvariant())), 0, 8).Replace("-", "")
+} finally { $handoffSha.Dispose() }
+$script:HandoffLogMutexName = "Global\HermesHandoffLog-$handoffLogHash"
+# Lines the log could not take yet, oldest first (Write-HandoffLog).
+$script:PendingLogLines = New-Object System.Collections.Generic.List[string]
+
+function Sync-HandoffLog {
+    # Append every pending line in one write, oldest first. False while another process still
+    # holds the log: the lines stay queued for the next attempt instead of being dropped.
+    if ($script:PendingLogLines.Count -eq 0) { return $true }
+    $held = $false
+    try {
+        $mutex = $script:HandoffLogMutex
+        if (-not $mutex) {
+            # Named, so every writer's own instance joins the same OS object;
+            # lazily created because runspaces cannot share the parent's
+            # instance. Created unsignalled: ownership comes from WaitOne.
+            $mutex = $script:HandoffLogMutex = New-Object System.Threading.Mutex($false, $script:HandoffLogMutexName)
+        }
+        try { $held = $mutex.WaitOne(5000) }
+        catch [System.Threading.AbandonedMutexException] { $held = $true }  # a writer died mid-append; the wait still granted ownership
+        # AppendData with full sharing: never conflicts with a reader, and lands at end-of-file
+        # atomically even beside a writer that skipped the mutex (its wait timed out).
+        $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append,
+            [System.Security.AccessControl.FileSystemRights]::AppendData,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete), 4096, [System.IO.FileOptions]::None)
+        try {
+            # Encoded only once the file is open: a held log retried on every poll of a long step
+            # must not re-encode the whole growing queue each time.
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes((($script:PendingLogLines -join "`r`n") + "`r`n"))
+            $fs.Write($bytes, 0, $bytes.Length)
+        } finally { $fs.Dispose() }
+    } catch {
+        return $false
+    } finally {
+        if ($held) { try { $script:HandoffLogMutex.ReleaseMutex() } catch {} }
+    }
+    $script:PendingLogLines.Clear()
+    return $true
+}
+
+function Complete-HandoffLog([int]$Seconds = 10) {
+    # Before exiting: a holder that outlives the run would otherwise take the last lines with it.
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while (-not (Sync-HandoffLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+}
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
-    try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    # Add-Content is unsafe once a second writer is live: PowerShell caches a
+    # content writer per path, so the second writer (an overlapping hand-off
+    # process, or any future runspace writer) gets a handle the first already
+    # consumed -- Windows PowerShell 5.1 floods "stream is not readable"
+    # errors while PowerShell 7 silently loses lines (#126152). A named mutex
+    # serializes appends across processes and runspaces. Any other holder (a
+    # scanner on the just-closed file, a reader opened without write sharing)
+    # still fails an append: that line waits in the queue and lands, in order,
+    # with the next append that succeeds. A relayed stage is marked seen before
+    # it is logged, so a dropped line there was never written again.
+    $script:PendingLogLines.Add($line)
+    [void](Sync-HandoffLog)
     if ($MarkerOp) { return }   # a helper op's stdout is its one verdict line
     if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
     Write-Host $line
@@ -118,12 +183,19 @@ function Write-HandoffLog([string]$Message) {
 New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
 try { . (Join-Path $PSScriptRoot 'marker.ps1') } catch {
     Write-HandoffLog "Update aborted: $PSScriptRoot\marker.ps1 could not be loaded ($($_.Exception.Message)). Nothing was changed. Repair the installation and try again."
+    Complete-HandoffLog
     exit 3
 }
 
-# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch.
-if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; exit 0 }   # Start-MarkerCustodian's watcher
-if ($MarkerOp) { exit (Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun) }
+# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch. Each releases the
+# marker lock before it returns; the log flush comes after. A reclaim/withdraw flush is short
+# because Electron bounds the whole helper (MARKER_HELPER_TIMEOUT_MS); its verdict is already out.
+if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; Complete-HandoffLog; exit 0 }   # Start-MarkerCustodian's watcher
+if ($MarkerOp) {
+    $markerOpCode = Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun
+    Complete-HandoffLog 3
+    exit $markerOpCode
+}
 
 # The Desktop's identity is pinned now: a reused pid later is not "still open".
 $script:DesktopCt = $null
@@ -133,7 +205,7 @@ if ($DesktopPid -gt 0) {
     $script:DesktopSeenAlive = $desktopProbe.Alive
     $script:DesktopCt = $desktopProbe.Ct
 }
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLogConcurrency) {
     $script:MarkerClaim = Invoke-MarkerClaim
 }
 
@@ -706,8 +778,9 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             run_id     = $script:ResultRunId
             started_at = $script:StartedAt
             warnings   = @($script:Warnings)
+            release_holders = @($script:ReleaseHolders)
             finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        } | ConvertTo-Json -Compress
+        } | ConvertTo-Json -Compress -Depth 4
         [System.IO.File]::WriteAllText($tmp, $obj, (New-Object System.Text.UTF8Encoding $false))
         if ([System.IO.File]::Exists($ResultPath)) {
             [System.IO.File]::Replace($tmp, $ResultPath, [NullString]::Value)
@@ -724,6 +797,9 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
 # Post-commit follow-ups (contract C3): each failed step after `hermes update`
 # exited 0 becomes a warning, never a failed update.
 $script:Warnings = New-Object System.Collections.Generic.List[string]
+# A plain array: Windows PowerShell 5.1's @() over a non-empty List[object] throws
+# "Argument types do not match".
+$script:ReleaseHolders = @()
 $script:FollowupText = New-Object System.Collections.Generic.List[string]
 $script:ManualFollowup = $false
 $script:Committed = $false
@@ -747,6 +823,30 @@ function Wait-DesktopExit([int]$Seconds) {
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
     }
     return -not (Test-DesktopAlive)
+}
+
+function Get-DesktopWorkingDirectory {
+    # The relaunched Desktop and everything it spawns (WSL/ssh helpers, IME
+    # cloud helpers that outlive it) inherit this directory. Never the exe's
+    # folder: Windows refuses to rename a directory that is a live process's
+    # cwd, so one such helper blocks every later swap of release\win-unpacked (#101789).
+    if ($env:USERPROFILE) { return $env:USERPROFILE }
+    return [Environment]::GetFolderPath('UserProfile')
+}
+
+function Restore-UserProxyEnv {
+    # Port of restoreUserProxyEnv (electron/updater/system-proxy-env.ts): the Desktop handed its
+    # system proxy to the update only. HERMES_UPDATE_SYSTEM_PROXY names the variables it added and
+    # HERMES_UPDATE_USER_NO_PROXY holds the user's own NO_PROXY it extended.
+    foreach ($key in ("$env:HERMES_UPDATE_SYSTEM_PROXY" -split ',')) {
+        if (@('HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY') -contains $key) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
+    }
+    $saved = [Environment]::GetEnvironmentVariable('HERMES_UPDATE_USER_NO_PROXY', 'Process')
+    if ($null -ne $saved) {
+        [Environment]::SetEnvironmentVariable('NO_PROXY', $saved, 'Process')
+        Remove-Item Env:HERMES_UPDATE_USER_NO_PROXY -ErrorAction SilentlyContinue
+    }
+    Remove-Item Env:HERMES_UPDATE_SYSTEM_PROXY -ErrorAction SilentlyContinue
 }
 
 function Start-DesktopRelaunch {
@@ -778,7 +878,7 @@ function Start-DesktopRelaunch {
     # attach -- same detachment explorer.exe gives a normal launch.
     $spawned = $false
     try {
-        $workDir = Split-Path -Parent $RelaunchExe
+        $workDir = Get-DesktopWorkingDirectory
         $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
             CommandLine      = ('"{0}"' -f $RelaunchExe)
             CurrentDirectory = $workDir
@@ -879,13 +979,15 @@ function Start-DesktopRelaunch {
             Write-HandoffLog "WARNING: explorer relaunch failed: $($_.Exception.Message); falling back"
         }
     }
+    # Only the tethered rung below inherits this script's env; the relaunched app gets the user's own.
+    Restore-UserProxyEnv
     if (-not $spawned) {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --
             # a tethered Desktop beats no Desktop. Unlike the WMI and explorer rungs it inherits
             # this script's environment: the stage relay is the update's, never the app's.
             Remove-Item Env:HERMES_UPDATE_STATUS_FILE -ErrorAction SilentlyContinue
-            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
+            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Get-DesktopWorkingDirectory) -PassThru
             Start-Sleep -Milliseconds 1500
             if ($p -and -not $p.HasExited) { $spawned = $true }
             elseif ($p) { Write-HandoffLog "WARNING: fallback relaunch exited immediately" }
@@ -1182,6 +1284,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
         Update-MarkerHeartbeat
+        [void](Sync-HandoffLog)
         if ((Get-Date) -ge $nextStageCheck) {
             Sync-ChildStage
             $nextStageCheck = (Get-Date).AddSeconds(1)
@@ -1356,7 +1459,7 @@ exit 7
     # Writes straight to the console stream, holding nothing: a step that is
     # merely loud. `hermes update` is this shape -- the Electron/vite build
     # alone is megabytes. Few large lines rather than many small ones on
-    # purpose: Write-HandoffLog is one Add-Content per line and runs inside the
+    # purpose: Write-HandoffLog is one file append per line and runs inside the
     # measured window, so line-heavy output would time the logger instead of
     # the drain.
     $floodSource = @'
@@ -1507,6 +1610,85 @@ exit 3
     exit 0
 }
 
+# ── -SelfTestLogConcurrency: Write-HandoffLog under concurrent writers ─────
+# Add-Content drops lines (and on 5.1, errors) once a second writer is live
+# (#126152). Run the REAL function from a runspace pool -- every writer then
+# holds its own lazy mutex instance against the same named OS mutex, which is
+# exactly what an overlapping hand-off process or future runspace writer does
+# -- and hold the file to the exact writers*lines count with no torn lines.
+if ($SelfTestLogConcurrency) {
+    $writers = 8
+    $linesEach = 100
+    $target = Join-Path $TempDir ("handoff-log-concurrency-{0}.log" -f $PID)
+    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+
+    # Single-quoted halves on purpose: the function text carries $-tokens that
+    # must survive verbatim into the runspace script. Extracted from this
+    # file's AST because ${function:...} stringifies to the body only, which
+    # would leave the runspace without a callable definition.
+    $fnAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null).FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @("Write-HandoffLog", "Sync-HandoffLog", "Complete-HandoffLog")
+    }, $true)
+    if (-not $fnAst -or $fnAst.Count -ne 3) {
+        Write-Host "LOG-CONCURRENCY SELF-TEST: FAIL -- the hand-off log writer definitions were not found in this script"
+        exit 1
+    }
+    $fnText = (@($fnAst) | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
+    $body = @'
+param([string]$TargetLog, [string]$MutexName, [int]$Count, [int]$WriterId)
+$LogPath = $TargetLog
+$script:HandoffLogMutexName = $MutexName
+$script:HandoffLogMutex = $null
+$script:PendingLogLines = New-Object System.Collections.Generic.List[string]
+$script:ConsoleInput = $false
+
+'@ + $fnText + @'
+
+for ($i = 0; $i -lt $Count; $i++) { Write-HandoffLog ("w$WriterId line$i") }
+Complete-HandoffLog
+'@
+    $pool = [runspacefactory]::CreateRunspacePool(1, $writers)
+    $pool.Open()
+    $handles = @()
+    try {
+        foreach ($w in 1..$writers) {
+            $ps = [powershell]::Create()
+            $ps.RunspacePool = $pool
+            [void]$ps.AddScript($body).AddArgument($target).AddArgument($script:HandoffLogMutexName).AddArgument($linesEach).AddArgument($w)
+            $handles += @{ PS = $ps; Handle = $ps.BeginInvoke() }
+        }
+        foreach ($h in $handles) {
+            try { $h.PS.EndInvoke($h.Handle) } catch {}
+            $h.PS.Dispose()
+        }
+    } finally {
+        $pool.Close()
+        $pool.Dispose()
+    }
+
+    $problems = @()
+    $lines = @()
+    if (Test-Path -LiteralPath $target) { $lines = @(Get-Content -LiteralPath $target) }
+    if ($lines.Count -ne ($writers * $linesEach)) {
+        $problems += "expected $($writers * $linesEach) lines, found $($lines.Count) -- concurrent writers lost or duplicated lines"
+    }
+    foreach ($w in 1..$writers) {
+        $mine = @($lines | Where-Object { $_ -match " w$w line\d+$" })
+        if ($mine.Count -ne $linesEach) { $problems += "writer $w contributed $($mine.Count) of $linesEach lines" }
+    }
+    # A torn interleave leaves a line without its timestamp prefix + payload shape.
+    $intact = @($lines | Where-Object { $_ -cmatch "^\d{4}-\d{2}-\d{2}T\S+ w\d+ line\d+$" })
+    if ($intact.Count -ne $lines.Count) { $problems += "$($lines.Count - $intact.Count) lines are torn or malformed" }
+
+    if ($problems.Count -gt 0) {
+        Write-Host "LOG-CONCURRENCY SELF-TEST: FAIL -- $($problems -join '; ')"
+        exit 1
+    }
+    Write-Host "LOG-CONCURRENCY SELF-TEST: PASS writers=$writers linesEach=$linesEach file=$target"
+    exit 0
+}
+
 $savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
     # -- 0. The marker was claimed before anything else (top of script) -----
@@ -1629,8 +1811,11 @@ try {
         Write-HandoffLog "could not probe update --help; running without --keep-stash"
     }
     # The update's receipt carries this id (update_receipt._launcher_correlation_id):
-    # Get-CommittedReceiptOutcome finds THIS run's receipt by it.
-    $script:UpdateCorrelation = if ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
+    # Get-CommittedReceiptOutcome finds THIS run's receipt by it, and the Desktop's
+    # close-holder consent is bound to -HandoffRun. That run id beats an inherited
+    # one: a Desktop the Start-Process rung relaunched carried the previous run's
+    # id, under which its next retry's consent could never match (#101789).
+    $script:UpdateCorrelation = if ($HandoffRun) { $HandoffRun } elseif ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
     $env:HERMES_UPDATE_CORRELATION_ID = $script:UpdateCorrelation
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
@@ -1706,7 +1891,25 @@ try {
     # (exit 0); the CLI prints one whole "Desktop app build owed:" line for it. The user is on
     # the new Hermes but this app was not rebuilt: a manual outcome, never plain success.
     if (-not $desktopBuildFailed -and $res.Output -match '(?m)^\s*Desktop app build owed: ') {
-        Add-Followup "build: the Desktop app build is owed by the committed update" "the Desktop app could not be rebuilt, so it still runs its old build. Run 'hermes desktop --force-build' in a terminal to rebuild it; the update log has the build error." -Manual
+        # #101789: a program that is not part of Hermes (an IME cloud helper, an AV
+        # component) has its working folder inside release\ and Windows refuses the swap.
+        # hermes_cli/desktop_release_holders.py names each one on its own line; the
+        # relaunched Desktop offers to close exactly those and retry, never silently.
+        # pid + start time identify the exact process the user is asked about; the start time
+        # stays the CLI's invariant text (no locale-dependent number parsing here). An exe of
+        # 'path unreadable' (a protected process) becomes empty: the Desktop offers no Close for it.
+        foreach ($m in [regex]::Matches(($res.Output -join "`n"), '(?m)^\s*Desktop app folder held by: (.+?) \(pid (\d+), started ([0-9.]+), (.+)\)\s*$')) {
+            $holderExe = if ($m.Groups[4].Value -eq 'path unreadable') { '' } else { $m.Groups[4].Value }
+            $script:ReleaseHolders += [pscustomobject]@{ name = $m.Groups[1].Value; pid = [int]$m.Groups[2].Value; start_time = $m.Groups[3].Value; exe = $holderExe }
+        }
+        if ($script:ReleaseHolders.Count -gt 0) {
+            $holderNames = (@($script:ReleaseHolders) | ForEach-Object { "$($_.name) (pid $($_.pid))" }) -join ', '
+            # A holder with no readable program path cannot be closed from the Desktop dialog.
+            $closeOffer = if (@($script:ReleaseHolders | Where-Object { $_.exe }).Count -gt 0) { 'Close it and update again, or choose to close it below.' } else { 'Close it yourself (Task Manager) and update again.' }
+            Add-Followup "build: the Desktop app folder is in use by $holderNames" "the Desktop app could not be replaced because $holderNames is using its folder. It is not part of Hermes, so it was left running. $closeOffer" -Manual
+        } else {
+            Add-Followup "build: the Desktop app build is owed by the committed update" "the Desktop app could not be rebuilt, so it still runs its old build. Run 'hermes desktop --force-build' in a terminal to rebuild it; the update log has the build error." -Manual
+        }
     }
 
     # Every other owed follow-up of the committed update (a gateway still on the old code, a
@@ -1777,6 +1980,14 @@ try {
         $finalCode = 0
     }
 } finally {
+    # This run's id is ours, not the relaunched Desktop's: the Start-Process rung
+    # would hand it on to every update that Desktop starts.
+    Remove-Item -LiteralPath Env:HERMES_UPDATE_CORRELATION_ID -ErrorAction SilentlyContinue
+    if (@('claimed', 'adopted') -contains $script:MarkerClaim -and $InstallRoot) {
+        # #101789: a Desktop "close and retry" consent belongs to this run alone. One its swap
+        # never reached (a failed build) must not let a later update close the program unasked.
+        Remove-Item -LiteralPath (Join-Path $InstallRoot 'apps\desktop\release\.close-holders-consent.json') -Force -ErrorAction SilentlyContinue
+    }
     # Truth ordering (sibling contract to posix.sh finish()):
     #   1. durable result + marker removal (the relaunched Desktop consumes
     #      the result on boot and must not park on our marker);
@@ -1846,5 +2057,6 @@ try {
         }
     }
     if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
+    Complete-HandoffLog
 }
 exit $finalCode

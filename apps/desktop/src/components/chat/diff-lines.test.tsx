@@ -26,7 +26,10 @@ import { ErrorBoundary } from '@/components/error-boundary'
 
 import { FileDiffPanel } from './diff-lines'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const DIFF = [
   'diff --git a/file.ts b/file.ts',
@@ -53,6 +56,11 @@ function renderQuietly(node: Parameters<typeof render>[0]) {
 
 describe('FileDiffPanel survives a failed lazy syntax-diff chunk', () => {
   it('degrades to the plain colored diff instead of taking down the surrounding boundary', async () => {
+    // Highlighting waits until the card is on screen, and the test setup's inert IntersectionObserver
+    // (jsdom has none) never reports one: without an observer the card highlights at once, so the
+    // failing chunk really mounts.
+    vi.stubGlobal('IntersectionObserver', undefined)
+
     const { container } = renderQuietly(
       <ErrorBoundary fallback={() => <div>{WORKSPACE_FALLBACK_TEXT}</div>} label="workspace">
         <FileDiffPanel diff={DIFF} path="file.ts" />

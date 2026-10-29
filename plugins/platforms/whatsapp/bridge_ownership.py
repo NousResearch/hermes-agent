@@ -16,8 +16,9 @@ def port_is_free(port: int) -> bool:
     Contract: this answers for the bridge's own bind semantics, not for an arbitrary binder. On
     POSIX the bridge (Express/libuv) sets SO_REUSEADDR, so a port holding only TIME-WAIT entries
     reads as free here even though a binder without SO_REUSEADDR would get EADDRINUSE; a live
-    listener still reads as busy. Its only callers are this module's bridge-port allocation and
-    ownership checks. Do not reuse it to gate a process that binds without SO_REUSEADDR.
+    listener still reads as busy. Its callers are this module's bridge-port allocation and
+    ownership checks and the adapter's pre-spawn wait for the old bridge to release its port.
+    Do not reuse it to gate a process that binds without SO_REUSEADDR.
     """
     with socket.socket() as sock:
         # A just-stopped bridge can leave its accepted TCP connections in TIME-WAIT. The Node

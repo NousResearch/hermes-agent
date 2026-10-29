@@ -1,8 +1,11 @@
 import { EventEmitter } from 'node:events'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { MacStrategy, type MacStrategyDeps, prepareMacInstall } from './mac'
+import { MacStrategy, type MacStrategyDeps, prepareMacInstall, squirrelZipLimit } from './mac'
 
 function fixture() {
   const events: string[] = []
@@ -137,6 +140,41 @@ describe('macOS strategy', () => {
     await expect(strategy.check()).rejects.toThrow('already in progress')
     release()
     await applying
+  })
+
+  it.each(['update.zip', 'Hermes.ZIP', 'latest'])(
+    'refuses a %s the buffering Squirrel.Mac would crash on, before it touches the backends',
+    async name => {
+      const { deps, events } = fixture()
+      const dir = await mkdtemp(path.join(tmpdir(), 'hermes-mac-zip-'))
+
+      try {
+        const zip = path.join(dir, name)
+        await writeFile(zip, Buffer.alloc(16))
+        vi.mocked(deps.updater.downloadUpdate).mockImplementation(async () => {
+          events.push('download')
+
+          return [zip]
+        })
+
+        deps.zipLimitBytes = 16
+        await expect(new MacStrategy(deps).apply()).rejects.toThrow('too large for the built-in macOS installer')
+        expect(events).toEqual(['check', 'download'])
+
+        events.length = 0
+        deps.zipLimitBytes = 17
+        expect(await new MacStrategy(deps).apply()).toMatchObject({ ok: true, handedOff: true })
+        expect(events).toEqual(['check', 'download', 'verify', 'stop', 'install'])
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('limits zips only on Electron builds whose Squirrel.Mac buffers the download', () => {
+    expect(squirrelZipLimit('40.10.2')).toBe(2 ** 30)
+    expect(squirrelZipLimit('44.6.0')).toBe(2 ** 30)
+    expect(squirrelZipLimit('44.7.0')).toBeUndefined()
   })
 })
 

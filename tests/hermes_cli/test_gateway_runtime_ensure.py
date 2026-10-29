@@ -319,6 +319,40 @@ def test_native_windows_spawn_never_retries_without_breakaway(tmp_path, monkeypa
     assert calls[0]["creationflags"] == windows_detach_flags()
 
 
+def _absent_owner_home(tmp_path, monkeypatch):
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    return home
+
+
+@pytest.mark.platforms("windows")
+def test_breakaway_refusal_names_the_winerror(tmp_path, monkeypatch):
+    """A job that forbids breakaway reaches the client with the OS's own refusal, not a bare code."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    home = _absent_owner_home(tmp_path, monkeypatch)
+    def denied(argv, **kwargs):
+        raise OSError(13, "Access is denied", None, 5)  # CreateProcess in a job without BREAKAWAY_OK
+    monkeypatch.setattr(start.subprocess, "Popen", denied)
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (result.state, result.reason_code, result.detail) == (
+        "inaccessible", "windows_breakaway_unavailable", "WinError 5: Access is denied")
+
+
+def test_unopenable_stdio_log_is_not_a_breakaway_refusal(tmp_path, monkeypatch):
+    """Only CreateProcess's refusal is the job's verdict: a start that cannot open its log says so."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    home = _absent_owner_home(tmp_path, monkeypatch)
+    (home / "logs" / "gateway-stdio.log").mkdir(parents=True)  # a directory: open("ab") fails on every host
+    spawned = []
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (result.state, result.reason_code) == ("inaccessible", "stdio_log_unavailable")
+    assert result.detail and not spawned
+
+
 @pytest.mark.platforms("macos")
 def test_native_launchd_ambiguous_domains_cannot_start(tmp_path, monkeypatch):
     from hermes_cli.gateway_runtime_service import discover_existing_gateway_service, RuntimeStartError

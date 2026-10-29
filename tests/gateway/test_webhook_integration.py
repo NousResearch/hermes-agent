@@ -203,3 +203,87 @@ class TestCrossPlatformDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+
+# ===================================================================
+# Todoist: X-Todoist-Hmac-SHA256 is a base64 HMAC-SHA256 of the raw body,
+# keyed with the app's client secret (developer.todoist.com, "Webhooks").
+# ===================================================================
+
+from tests.waiting import async_wait_until
+
+
+def _todoist_signature(body: bytes, secret: str) -> str:
+    """Compute X-Todoist-Hmac-SHA256 for *body* using *secret* (base64, not hex)."""
+    import base64
+    return base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+
+
+TODOIST_NOTE_PAYLOAD = {
+    "event_name": "note:added",
+    "user_id": "2671355",
+    "event_data": {"id": "6XR4GqQQCW6Gv9h4", "item_id": "6XR4H993xv8H5qCR", "content": "A"},
+    "initiator": {"id": "2671355", "email": "me@example.com"},
+}
+
+
+class TestTodoistSignature:
+
+    @pytest.mark.asyncio
+    async def test_todoist_signed_post_is_accepted(self):
+        secret = "todoist-client-secret"
+        routes = {
+            "todoist": {
+                "secret": secret,
+                "prompt": "Todoist {event_name}: {event_data.content}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        captured_events: list[MessageEvent] = []
+
+        async def _capture(event: MessageEvent):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        body = json.dumps(TODOIST_NOTE_PAYLOAD).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Todoist-Webhooks",
+                    "X-Todoist-Hmac-SHA256": _todoist_signature(body, secret),
+                },
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+            assert data["route"] == "todoist"
+
+        await async_wait_until(lambda: len(captured_events) == 1, timeout=2)
+        assert "Todoist note:added: A" in captured_events[0].text
+
+    @pytest.mark.asyncio
+    async def test_todoist_bad_signature_is_rejected(self):
+        secret = "todoist-client-secret"
+        routes = {"todoist": {"secret": secret, "prompt": "x", "deliver": "log"}}
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+        app = _create_app(adapter)
+        body = json.dumps(TODOIST_NOTE_PAYLOAD).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Todoist-Hmac-SHA256": _todoist_signature(body, "wrong-secret"),
+                },
+            )
+            assert resp.status == 401
+        adapter.handle_message.assert_not_called()

@@ -109,6 +109,15 @@ def decompose_triage_task(
     if root_assignee is not None:
         root_assignee = _canonical_assignee(root_assignee)
     _validate_children_graph(children)
+    # Reject a reserved, unspawnable assignee on the root or any child BEFORE
+    # the fan-out txn, so a bad name cannot half-build a graph. Raising here
+    # surfaces to the decomposer as "DB rejected graph" rather than stranding
+    # the children in a lane that never spawns.
+    from hermes_cli.kanban_assignee_gate import (
+        require_spawnable_assignee, require_spawnable_children,
+    )
+    require_spawnable_assignee(root_assignee, surface="kanban decompose root")
+    require_spawnable_children(children, surface="kanban decompose")
 
     # ONE txn so the fan-out is atomic; helpers that open their own write_txn
     # (create_task, link_tasks, add_comment) must not be called in here.

@@ -141,6 +141,18 @@ class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
     config values that must invalidate the cached agent on change."""
 
+    def test_max_tail_message_floor_is_extracted(self):
+        """``compression.max_tail_message_floor`` is baked into the agent at construction, so a
+        mid-gateway edit MUST invalidate the cached agent (an active gateway must not reuse an
+        agent constructed with the old floor). The all-subkeys plumbing test was purged upstream
+        as low-value; this pins just the new key's contract."""
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"compression": {"max_tail_message_floor": 20}}
+        )
+        assert out["compression.max_tail_message_floor"] == 20
+
     def test_missing_keys_yield_the_shipped_default(self):
         """An absent key carries the value in force — DEFAULT_CONFIG's — for every documented key."""
         from gateway.run import GatewayRunner

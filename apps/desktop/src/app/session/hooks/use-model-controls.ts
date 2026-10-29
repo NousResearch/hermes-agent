@@ -275,21 +275,35 @@ export function useModelControls({
       const before = readSnapshot()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
+      // Optimistic paint of the session state the composer pill actually reads. The pill's label
+      // comes from the per-session view's `$model`, which for a LIVE session is
+      // `primaryField(state => state.model, $currentModel)` — the SESSION STATE's model, not the
+      // global `$currentModel` draft the setters below write. Painting only the draft left the
+      // label showing the previous model until session.info landed, and until the session was
+      // left and re-entered when it did not (#142037). session.info still confirms and stays
+      // authoritative; the wire stamp belongs to the old route, so it is withdrawn until it
+      // re-stamps. The focused-tile path has always done this; the primary path now matches it.
+      const paintSessionState = (model: string, provider: string, wire: string) => {
+        if (!liveSessionId) {
+          return
+        }
+
+        sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+          ...state,
+          model,
+          provider,
+          reasoningEffortWire: wire
+        }))
+      }
+
       const paintSelection = () => {
         if (touchesPrimary) {
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
-        } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
-          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: selection.model,
-            provider: selection.provider,
-            reasoningEffortWire: ''
-          }))
         }
+
+        paintSessionState(selection.model, selection.provider, '')
       }
 
       const cacheSelection = (provider: string, model: string) => {
@@ -303,14 +317,11 @@ export function useModelControls({
           // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
           setCurrentModelSource(snapshot.source)
-        } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: snapshot.model,
-            provider: snapshot.provider,
-            reasoningEffortWire: snapshot.reasoningEffortWire
-          }))
         }
+
+        // Roll the optimistic session-state paint back with the draft, or a failed pick leaves
+        // the pill on a model the gateway rejected.
+        paintSessionState(snapshot.model, snapshot.provider, snapshot.reasoningEffortWire)
 
         cacheSelection(snapshot.provider, snapshot.model)
       }

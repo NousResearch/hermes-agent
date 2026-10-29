@@ -3127,3 +3127,33 @@ class TestRedirectHeaderStripper:
             location="https://origin.example.test/other")
         assert next_request.headers["authorization"] == "Bearer x"
         assert next_request.headers["x-tenant"] == "t"
+
+
+class TestCancelWaitersClosedLoop:
+    """``_cancel_waiters`` must not leak ``RuntimeError`` when a task's loop is closed."""
+
+    def test_cancel_on_closed_loop_does_not_escape(self):
+        from tools.mcp_tool_server_run import MCPServerRunMixin
+
+        async def _parked():
+            await asyncio.Event().wait()
+
+        dead_loop = asyncio.new_event_loop()
+        parked = dead_loop.create_task(_parked())
+        dead_loop.run_until_complete(asyncio.sleep(0))
+        dead_loop.close()
+        assert not parked.done()
+
+        # Must not raise even though parked.cancel() hits the closed loop.
+        asyncio.run(MCPServerRunMixin._cancel_waiters(parked))
+
+    def test_live_task_is_still_cancelled(self):
+        from tools.mcp_tool_server_run import MCPServerRunMixin
+
+        async def _test():
+            task = asyncio.ensure_future(asyncio.Event().wait())
+            await asyncio.sleep(0)
+            await MCPServerRunMixin._cancel_waiters(task)
+            assert task.cancelled()
+
+        asyncio.run(_test())

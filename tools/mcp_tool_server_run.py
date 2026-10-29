@@ -29,10 +29,13 @@ class MCPServerRunMixin:
 
     @staticmethod
     async def _cancel_waiters(*tasks: asyncio.Task) -> None:
+        """Cancel and await wait tasks. ``cancel()`` stays inside the ``try``: it schedules via
+        ``loop.call_soon()`` and raises ``RuntimeError('Event loop is closed')`` when the task's
+        loop was already closed (e.g. a parked task finalized after ``_stop_mcp_loop()``)."""
         for t in tasks:
             if not t.done():
-                t.cancel()
                 try:
+                    t.cancel()
                     await t
                 except (asyncio.CancelledError, Exception):
                     pass

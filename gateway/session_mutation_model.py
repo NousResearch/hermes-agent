@@ -81,7 +81,10 @@ async def prepare_model(authority, live, payload, prepared):
         held = bound_route_holds(frozen.get('model'), frozen, followed, config)
         # Every other route-bound key follows the profile's current route.
         kept = ('api_key', 'api', 'api_key_from') if held else ()
-        moved = tuple(k for k in ROUTE_BOUND_KEYS if k not in kept)
+        # The same {old (section, index): new} remap shape a frozen pick builds — identity here:
+        # a following session's secrets stay at the profile's own path (never re-committed under
+        # it), so the secret-path remap below is a no-op; only the model-block drops above read it.
+        moved = {k: k for k in ROUTE_BOUND_KEYS if k not in kept}
         frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in moved}
         # The profile's inline key and its private-secret pointer are not copied into the receipt:
         # its secrets stay at the profile's own path, never re-committed under this session.

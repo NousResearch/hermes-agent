@@ -723,3 +723,37 @@ async def test_a_deferred_model_pick_that_was_refused_is_no_pick_when_an_open_ad
         release.set()
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_following_bot_chat_model_pick_commits_over_its_bound_secrets(home):
+    """Regression: a following Bot Chat's model pick crashed in the secret-path remap — the
+    follow branch's ``moved`` names the route-bound keys dropped from the model block, not a
+    remap table, so Desktop's per-session switch answered ``internal error`` every time."""
+    _profile(home, 'old-model', 1, 'old-key', mcp_servers={
+        'probe': {'url': 'http://127.0.0.1:1/mcp', 'headers': {'Authorization': 'Bearer sk-mcp'}}})
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    runner._resolve_session_agent_runtime = lambda **k: (None, {})
+    try:
+        created = await owner.dispatch({'id': 'gui-pick', 'method': 'session.create', 'params': dict(
+            request_id='gui-pick', source='gui', cwd=str(home), follow_profile_config=True)})
+        assert 'result' in created, created
+        sid = created['result']['session_id']
+        live = authority.sessions[sid]
+        assert _follows(runner, live)
+        assert _key(runner, authority, live) == 'old-key'
+        from gateway.session_policy import policy_for_source
+        assert policy_for_source(runner, live.source).config_secret_ref, 'the bound secret store is empty'
+        snap = authority.db.get_session(sid)
+        response = await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': dict(
+            session_id=sid, request_id='pick', operation='model',
+            payload={'model': 'new-model'}, expected_revision=snap['runtime_revision'],
+            expected_generation=snap['runtime_generation'])})
+        assert 'result' in response, response
+        _profile(home, 'new-model', 2, 'new-key')
+        assert _route(runner, live) == ('new-model', 'http://127.0.0.1:2/v1', 'new-key')
+        assert _key(runner, authority, live) == 'new-key'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

@@ -189,6 +189,43 @@ describe('ModelPill width', () => {
   })
 })
 
+describe('ModelPill menu width', () => {
+  async function openMenuClass() {
+    const surface = document.createElement('div')
+    surface.dataset.composerTarget = 'main'
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    surface.append(editor)
+    document.body.append(surface)
+
+    try {
+      render(<ModelPill disabled={false} model={modelState({ modelMenuContent: <MenuChoice /> })} />)
+      editor.focus()
+      await act(async () => {
+        requestModelMenuToggle()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+
+      const choice = await screen.findByText('Choose model')
+
+      return choice.closest('[role="menu"]')?.className ?? ''
+    } finally {
+      surface.remove()
+    }
+  }
+
+  it('uses a content-driven width with a compact minimum and viewport cap', async () => {
+    const className = await openMenuClass()
+
+    expect(className).toContain('w-max')
+    expect(className).toContain('min-w-72')
+    expect(className).toContain('max-w-[min(32rem,calc(100vw-1rem))]')
+    expect(className.split(/\s+/)).not.toContain('w-72')
+  })
+})
+
 // The `composer.modelPill` slot: a provider may override the pill's LABEL
 // (compact reasoning label, custom naming) while the pill keeps its chrome,
 // pin dot, and menu. A declining provider leaves the core label untouched.

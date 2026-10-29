@@ -46,7 +46,7 @@ Two tools, pick one:
 
 - A Node test fails and you need to see intermediate state
 - ui-tui crashes or behaves wrong and you want to inspect React/Ink state pre-render
-- tui_gateway child processes (`_SlashWorker`, PTY bridge workers) misbehave
+- The TUI's Node side misbehaves (`tui_gateway` and its `_SlashWorker` / PTY bridge workers are Python — use `python-debugpy` for those)
 - You need to inspect a value in a closure that `console.log` can't reach without patching
 - Perf: attach to a running process to capture a CPU profile or heap snapshot
 
@@ -90,7 +90,7 @@ The `debug>` prompt accepts:
 
 ## Attaching to a Running Process
 
-When the process is already running (e.g. a long-lived dev server or the TUI gateway):
+When a Node process you started is already running and you know its PID (e.g. a long-lived dev server). For `hermes --tui`, see "Debugging a running `hermes --tui`" below.
 
 ```bash
 # 1. Send SIGUSR1 to enable the inspector on an existing process
@@ -99,8 +99,8 @@ kill -SIGUSR1 <pid>
 
 # 2. Attach the debugger CLI
 node inspect -p <pid>
-# or by URL
-node inspect ws://127.0.0.1:9229/<uuid>
+# or by host:port (node inspect does not take the ws:// URL; it would run it as a script)
+node inspect 127.0.0.1:9229
 ```
 
 To start a process with the inspector from the beginning:
@@ -219,22 +219,27 @@ When it pauses, `repl` → inspect `props`, state refs, `useInput` handler value
 
 ### Debugging a running `hermes --tui`
 
-The TUI spawns Node from the Python CLI. Easiest path:
+The launcher runs the TUI as a Node child process (`node --expose-gc <tui-dir>/dist/entry.js`). Don't look it up with `pgrep -f … | head -1` and `kill -SIGUSR1`: every TUI on the machine matches, and so does a `bash -c` shell whose command line contains the pattern (the one an agent terminal runs the lookup in), so you can end up signalling or attaching to the wrong process. Start this launch with the inspector already on instead. The launcher runs Node through `$HERMES_NODE` when it names an executable file, so a small wrapper adds `--inspect-brk` to exactly this TUI's Node process:
 
 ```bash
-# 1. Launch TUI
-hermes --tui &
-TUI_PID=$(pgrep -f 'ui-tui/dist/entry' | head -1)
+# 1. Wrapper: run the real node with the inspector on an OS-assigned loopback port
+REAL_NODE=${HERMES_NODE:-$(command -v node)}
+mkdir -p ~/.hermes/cache/scratch
+printf '#!/bin/sh\nunset HERMES_NODE\nexec "%s" --inspect-brk=127.0.0.1:0 "$@"\n' "${REAL_NODE:?node not found}" > ~/.hermes/cache/scratch/node-inspect-tui.sh
+chmod 700 ~/.hermes/cache/scratch/node-inspect-tui.sh
 
-# 2. Enable inspector on that Node PID
-kill -SIGUSR1 "$TUI_PID"
-
-# 3. Find the WS URL
-curl -s http://127.0.0.1:9229/json/list | jq -r '.[0].webSocketDebuggerUrl'
-
-# 4. Attach
-node inspect ws://127.0.0.1:9229/<uuid>
+# 2. Launch the TUI through it, in its own terminal (in Hermes: terminal(background=true, pty=true))
+HERMES_NODE=~/.hermes/cache/scratch/node-inspect-tui.sh hermes --tui
 ```
+
+Before the UI draws, that terminal prints `Debugger listening on ws://127.0.0.1:<port>/<uuid>` and the TUI waits for a debugger. Attach from another terminal using that port (not the `ws://` URL):
+
+```bash
+node inspect 127.0.0.1:<port>
+# debug> set breakpoints with sb(...), then cont
+```
+
+No `Debugger listening` line means this launch did not go through the wrapper: the launcher rebuilt a checkout's TUI first (that path uses the build environment's `node`; run plain `hermes --tui` once, quit, then relaunch), it was started with `--dev`, or a packaged launcher (Nix, Termux) sets `HERMES_NODE` itself. The wrapper's `node` must meet the TUI's `engines.node` requirement, and the wrapper unsets `HERMES_NODE` so the gateway and anything the TUI starts run normally. The port is valid only while this launch is alive; relaunch rather than reattach to an old number. Anything that can reach it can run code inside the TUI, provider keys included, so quit the TUI and delete the wrapper when done.
 
 Interacting with the TUI (typing in its window) continues to advance execution; your debugger can pause it on a breakpoint at any `sb(...)`.
 
@@ -283,9 +288,9 @@ require('fs').writeFileSync('~/.hermes/cache/scratch/heap.heapsnapshot', chunks.
 
 2. **`--inspect` vs `--inspect-brk`.** `--inspect` starts the inspector but doesn't pause; your script races past your first breakpoint if you attach too late. Use `--inspect-brk` when you need to set breakpoints before any code runs.
 
-3. **Port collisions.** Default is `9229`. If multiple Node processes are inspecting, pass `--inspect=0` (random port) and read the actual URL from `/json/list`:
+3. **Port collisions.** Default is `9229`. If multiple Node processes are inspecting, pass `--inspect=127.0.0.1:0` (OS-assigned port) and read the port from the `Debugger listening on ws://127.0.0.1:<port>/…` line that process prints to stderr. `/json/list` only describes the endpoint you query, not every target on the host:
    ```bash
-   curl -s http://127.0.0.1:9229/json/list   # lists all inspectable targets on the host
+   curl -s http://127.0.0.1:<port>/json/list   # targets behind this one port
    ```
 
 4. **Child processes.** `--inspect` on a parent does NOT inspect its children. Use `NODE_OPTIONS='--inspect-brk' node parent.js` to propagate to every child; be aware they all need unique ports (Node auto-increments when `NODE_OPTIONS='--inspect'` is inherited).
@@ -300,7 +305,7 @@ require('fs').writeFileSync('~/.hermes/cache/scratch/heap.heapsnapshot', chunks.
 
 After setting up a debug session, verify:
 
-- [ ] `curl -s http://127.0.0.1:9229/json/list` returns exactly the target you expect
+- [ ] `curl -s http://127.0.0.1:<port>/json/list` (the port your process printed) returns exactly the target you expect
 - [ ] First breakpoint actually hits (if it doesn't, you likely missed `--inspect-brk` or attached after execution completed)
 - [ ] Source listing at pause shows the right file (mismatch = sourcemap issue, see pitfall 1)
 - [ ] `exec process.pid` in `repl` returns the PID you meant to attach to

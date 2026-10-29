@@ -66,9 +66,16 @@ def main() -> int:
             on_state = next((s for s in states if s != "/Off"), "/Yes")
             value = on_state if value else "/Off"
         fill[name] = value
+    # Flattening bakes only the fields it is handed and the widgets are removed
+    # afterwards, so fields the JSON leaves out are baked with their current value.
+    to_write = fill
+    if args.flatten:
+        to_write = {name: info["/V"] for name, info in field_info.items()
+                    if info.get("/V") not in (None, "")}
+        to_write.update(fill)
     for page in writer.pages:
         writer.update_page_form_field_values(
-            page, fill, flags=1 if args.flatten else 0,
+            page, to_write, flags=1 if args.flatten else 0,
             auto_regenerate=False, flatten=args.flatten)
 
     root = writer._root_object

@@ -821,12 +821,13 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     try:
         from gateway.session_context import get_bound_session_source
         source = get_bound_session_source()
+    except Exception:
+        logger.debug("Gateway source lookup failed; continuing without source context", exc_info=True)
+    else:
         required = ("platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id")
         if all(isinstance(source.get(k), str) and source[k].strip() for k in required):
             if source["session_id"] == ids.session_id:
                 dispatch_kwargs["trusted_gateway_source"] = source
-    except Exception:
-        pass
     if function_name == "execute_code":
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.

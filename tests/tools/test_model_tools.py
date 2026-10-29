@@ -285,6 +285,15 @@ class TestExecuteToolBoundGatewaySource:
         assert "trusted_gateway_source" not in captured["kwargs"]
         assert captured["permit"] is False
 
+    def test_source_lookup_failure_does_not_block_ordinary_tool_dispatch(self, monkeypatch):
+        def fail_lookup():
+            raise RuntimeError("source context unavailable")
+
+        monkeypatch.setattr("gateway.session_context.get_bound_session_source", fail_lookup)
+        captured = self._execute_and_capture(monkeypatch, {"query": "hello"})
+        assert "trusted_gateway_source" not in captured["kwargs"]
+        assert captured["permit"] is False
+
     def test_rotated_session_id_does_not_forward_source(self, monkeypatch):
         from gateway.session_context import clear_session_vars, set_session_vars
 

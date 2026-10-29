@@ -466,56 +466,18 @@ class PluginContext(PluginCapabilityCtxMixin):
         description: str = "", emoji: str = "", override: bool = False,
         requires_gateway_source_context: bool = False,
     ) -> Optional[PluginRegistration]:
-        """Register a tool in the global registry and track it as plugin-provided. ``override=True``
-        replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
-        needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
-        if override and not self._tool_override_allowed(name):
-            raise PluginToolOverrideError(
-                f"Plugin {self.manifest.name!r} cannot override built-in tool {name!r}. Set "
-                f"plugins.entries.{self.plugin_id}.allow_tool_override: true "
-                f"in config.yaml to allow this plugin to replace built-in tools."
-            )
-        from tools.registry import registry
-        scope = self._manager.scope_key
-        previous = registry.snapshot_registration(name, scope=scope)
-        if previous is None and not override and registry.get_entry(name, scope=scope) is not None:
-            logger.warning("Plugin %s tried to shadow global tool %s without override=True",
-                           self.manifest.name, name)
-            return None
-        source_gate = None
-        if requires_gateway_source_context is True:
-            manager = self._manager
-            manifest = self.manifest
-            plugin_id = self.plugin_id
-            def source_gate():
-                try:
-                    if manifest.source == "bundled":
-                        return False
-                    with _plugin_home_scope(manager.home_path):
-                        if manager._runs_in_plugin_host(manifest) is not True:
-                            return False
-                        entry = _plugin_settings_entry(load_config_readonly() or {}, plugin_id)
-                    return entry is not None and entry.get("allow_gateway_source_context") is True
-                except Exception:
-                    return False
-        registry.register(
-            name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
-            requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope, gateway_source_consent=source_gate,
-            requires_gateway_source_context=requires_gateway_source_context is True,
+        """Register a plugin tool and track it for unload/reload.
+
+        ``override=True`` replaces a same-named built-in and requires the
+        operator's explicit ``plugins.entries.<plugin_id>.allow_tool_override``
+        opt-in. Gateway source context likewise requires explicit profile
+        consent and hosted isolation.
+        """
+        from hermes_cli.plugin_tool_registration import register_plugin_tool
+        return register_plugin_tool(
+            self, name, toolset, schema, handler, check_fn, requires_env, is_async,
+            description, emoji, override, requires_gateway_source_context,
         )
-        registered = registry.snapshot_registration(name, scope=scope)
-        handle = None
-        if registered is not None and registered is not previous and registered.handler is handler:
-            self._manager._plugin_tool_names.add(name)
-            handle = self._manager._track_scoped_registration(
-                self.manifest, "tool", name, registry, registered, previous,
-                finalize=lambda: self._manager._remove_tool_name_if_unowned(name),
-            )
-        logger.debug("Plugin %s registered tool: %s%s", self.manifest.name, name,
-                     " (override)" if override else "")
-        return handle
 
     def call_mcp(
         self, server: str, tool: str, arguments: Optional[dict[str, Any]] = None,

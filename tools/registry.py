@@ -1057,6 +1057,7 @@ class ToolRegistry:
                             current = self._lookup(name, scope or self.current_scope_key(), explicit_scope=scope is not None)
                             allowed = current is entry and entry._source_dispatch_gate.acquire()
                 except Exception:
+                    logger.debug("Gateway source validation failed; denying source context for %s", name, exc_info=True)
                     allowed = False
                 if allowed:
                     kwargs["trusted_gateway_source"] = dict(source)

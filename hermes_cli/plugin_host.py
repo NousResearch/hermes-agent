@@ -231,7 +231,7 @@ class PluginHost:
             try:
                 channel.call("shutdown", {}, timeout=_SHUTDOWN_GRACE_SECS)
             except Exception:
-                pass
+                logger.debug("Plugin host shutdown RPC failed; closing channel", exc_info=True)
             channel.close("shutdown")
         if proc is not None:
             try:
@@ -413,7 +413,7 @@ class PluginHost:
                         kwargs["trusted_gateway_source"] = dict(source)
                         break
             except Exception:
-                pass
+                logger.debug("Plugin host source validation failed; denying source context", exc_info=True)
         return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)},
                           generation=generation)
 
@@ -520,7 +520,7 @@ class PluginHost:
                         else:
                             binding.gate.revoke()
             except Exception:
-                pass  # Missing or ambiguous proof is denial; ordinary registration still works.
+                logger.debug("Plugin host source binding issuance failed; denying binding", exc_info=True)
         return encoded
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:

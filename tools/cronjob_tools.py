@@ -1188,11 +1188,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "timezone": {
                 "type": "string",
-                "description": "Optional IANA timezone for the job's schedule, e.g. 'Asia/Hong_Kong' or 'America/New_York': the cron expression is then read as THIS zone's wall clock, whatever the profile's own timezone is. Use it for a job that must fire at a fixed local time in another market. Omit to inherit the profile timezone. On update, '' clears the pin."
-            },
-            "grace_minutes": {
-                "type": ["integer", "string"],
-                "description": "Optional catch-up window override for a cron job, in minutes (0-1440). The default is half the job's period, clamped to 2-120 minutes. 0 means never catch up: a missed occurrence is skipped instead of being run late. Cron schedules only. On update, '' (empty string) restores the computed window."
+                "description": "Optional IANA zone (e.g. 'America/New_York') the cron expression is read in, instead of the profile's. On update, '' clears."
             },
             "attach_to_session": {
                 "type": "boolean",

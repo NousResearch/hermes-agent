@@ -4,7 +4,6 @@ import json
 import pytest
 
 from tools.cronjob_tools import (
-    CRONJOB_SCHEMA,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -851,13 +850,6 @@ class TestScheduleKnobToolSurface:
         job = self._stored()
         assert "timezone" not in job, "'' clears the pin; the key is dropped"
         assert "grace_minutes" not in job
-
-    def test_grace_schema_accepts_a_string_so_the_model_can_clear_it(self):
-        """``''`` means "restore the computed window"; an integer-only schema would leave the
-        model no way to express it (the sanitizer normalizes ``type: [...]`` per provider)."""
-        prop = CRONJOB_SCHEMA["parameters"]["properties"]["grace_minutes"]
-        assert "string" in prop["type"] and "integer" in prop["type"]
-        assert "''" in prop["description"]
 
     def test_grace_on_a_non_cron_schedule_is_an_error(self):
         created = json.loads(cronjob(

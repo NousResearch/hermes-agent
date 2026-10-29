@@ -3707,6 +3707,71 @@ def check_protected_git_roots_guard(command: str, session_cwd: str) -> Optional[
     return {"approved": False, "message": msg, "status": "blocked"}
 
 
+def _pg_resolve_path(path: str, session_cwd: str) -> str:
+    """Resolve a command/path token using the effective shell cwd."""
+    path = os.path.expanduser(path.strip("\"'"))
+    if not os.path.isabs(path):
+        path = os.path.join(session_cwd or os.getcwd(), path)
+    return os.path.realpath(path)
+
+
+def _pg_write_targets(command: str, session_cwd: str) -> list[str]:
+    """Extract explicit destination paths for common shell write forms."""
+    targets: list[str] = []
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = []
+    if not tokens:
+        return targets
+    for match in re.finditer(r"(?:>>?|\|&?)\s*(['\"]?)([^\s;|&'\"]+)\1", command):
+        targets.append(_pg_resolve_path(match.group(2), session_cwd))
+    # Common heredoc/python bypass: open("path", "w"), including append and
+    # exclusive-create modes. This is limited to explicit write modes.
+    for match in re.finditer(
+        r"\bopen\(\s*(['\"])([^'\"]+)\1\s*,\s*['\"][wax+]+['\"]",
+        command,
+    ):
+        targets.append(_pg_resolve_path(match.group(2), session_cwd))
+    for index, token in enumerate(tokens):
+        if os.path.basename(token) == "tee":
+            targets.extend(_pg_resolve_path(value, session_cwd)
+                           for value in tokens[index + 1:] if not value.startswith("-"))
+    write_commands = {"cp", "mv", "rsync", "rm", "rmdir", "truncate",
+                      "sed", "perl", "patch", "install", "ln"}
+    for index, token in enumerate(tokens):
+        name = os.path.basename(token)
+        if name not in write_commands:
+            continue
+        if name in {"sed", "perl"} and not any(
+                flag in tokens[index + 1:index + 3] for flag in ("-i", "-pi")):
+            continue
+        operands = [value for value in tokens[index + 1:] if not value.startswith("-")]
+        if operands:
+            targets.append(_pg_resolve_path(operands[-1], session_cwd))
+    return targets
+
+
+def check_protected_root_write_guard(command: str, session_cwd: str) -> Optional[dict]:
+    """Block known direct writes into protected checkouts."""
+    raw_roots = os.environ.get("HERMES_PROTECTED_GIT_ROOTS", "").strip()
+    if not raw_roots:
+        return None
+    roots = [root for root in raw_roots.split(os.pathsep) if root.strip()]
+    effective_cwd = _pg_effective_cwd(command, session_cwd)
+    for target in _pg_write_targets(command, effective_cwd):
+        hit, root = _pg_is_inside_protected_root(target, roots)
+        if hit:
+            msg = (
+                f"BLOCKED: write to protected checkout `{root}` is forbidden "
+                f"(target: `{target}`). Work in your linked worktree "
+                f"`{os.path.join(root, '.worktrees')}` instead."
+            )
+            logger.warning("Protected-root write guard blocked %s", target)
+            return {"approved": False, "message": msg, "status": "blocked"}
+    return None
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:

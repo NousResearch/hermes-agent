@@ -255,6 +255,7 @@ def _reset_cached_sudo_passwords() -> None:
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
     check_protected_git_roots_guard as _check_protected_git_roots,
+    check_protected_root_write_guard as _check_protected_root_write,
 )
 
 
@@ -2384,6 +2385,14 @@ def terminal_tool(
                 "output": "",
                 "exit_code": -1,
                 "error": _pg_block.get("message", "Blocked by protected-git-roots guard"),
+                "status": "blocked",
+            }, ensure_ascii=False)
+        _pg_write_block = _check_protected_root_write(command, cwd)
+        if _pg_write_block is not None:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _pg_write_block.get("message", "Blocked by protected-root write guard"),
                 "status": "blocked",
             }, ensure_ascii=False)
 

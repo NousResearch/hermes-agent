@@ -9396,6 +9396,15 @@ def _default_spawn(
                 pass
     except Exception:
         pass
+    # A persistent `dir` workspace may intentionally be the protected root
+    # itself. The worker must be able to edit its assigned workspace, so do
+    # not export that exact path as a protected root.
+    try:
+        _workspace_real = os.path.realpath(workspace)
+        _pg_roots = [root for root in _pg_roots
+                     if os.path.realpath(root) != _workspace_real]
+    except Exception:
+        pass
     if _pg_roots:
         env["HERMES_PROTECTED_GIT_ROOTS"] = os.pathsep.join(_pg_roots)
 

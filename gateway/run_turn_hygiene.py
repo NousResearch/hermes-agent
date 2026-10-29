@@ -359,7 +359,8 @@ class GatewayTurnHygieneMixin:
             # ONLY if the worker ends without committing anything.
             _sid, _skey, _agent = session_entry.session_id, session_key, attempt.agent
 
-            def _hyg_adopt_or_space_retry(_fut, _gw=self, _sid=_sid, _skey=_skey, _agent=_agent):
+            def _hyg_adopt_or_space_retry(_fut, _gw=self, _sid=_sid, _skey=_skey, _agent=_agent,
+                                          _entry=session_entry, _source=source):
                 try:
                     _exc = _fut.exception()
                 except (asyncio.CancelledError, Exception):
@@ -379,6 +380,14 @@ class GatewayTurnHygieneMixin:
                         _reset_hygiene_failure_streak(_gw, _skey)
                     except Exception as _rs_err:
                         logger.debug("hygiene streak reset after deferred adoption failed: %s", _rs_err)
+                    # The adopted summary rebuilt the token prefix: warm the local provider's
+                    # prefix cache while the session is idle (no-op for cloud routes).
+                    with suppress(Exception):
+                        from gateway.compression_warmup import schedule_compression_warmup
+                        schedule_compression_warmup(
+                            _gw, session_key=_skey, session_entry=_entry, source=_source,
+                            reason="hygiene-deferred-adoption",
+                        )
                 else:
                     # Nothing to adopt (summary failed / fence refused / superseded): flat spacing so
                     # sustained traffic doesn't spawn and abandon a compressor every turn.

@@ -1257,6 +1257,20 @@ Sessions that are mid-turn, the `protect_recent` most recently used ones, and an
 Agent cache pressure: anon RSS 6802MB over budget 6656MB — evicting 5 LRU session(s): ...
 ```
 
+## Gateway Prefix-Cache Warmup
+
+A compression commit rewrites the transcript, so the next turn's request is a brand-new token prefix. On a local model server (oMLX, llama.cpp, vLLM, Ollama) that prefix misses the server's paged prefix cache, and the first turn after a manual `/compress` or a deferred hygiene adoption pays a full cold prefill — measured ~23K tokens ≈ 41s TTFT on a 35B, versus 1-4s for a cache-hit turn.
+
+When this is enabled, the gateway replays the rebuilt context once with `max_tokens=1` while the session is idle, so the server stores the prefix before your next message arrives. The response is discarded — nothing is written to the transcript, the session store, or the cached agent. This is cache filling, not conversation.
+
+```yaml
+gateway:
+  prefix_cache_warmup:
+    enabled: false          # default off — opt in
+```
+
+Only a local route benefits: cloud providers bill per token and manage their own prompt caches, so warming them would be pure cost. The warmup also waits for the session to go idle before firing — a local server's serial queue would otherwise pay the prefill twice instead of hiding it — and is abandoned if the session stays busy.
+
 ## Context Engine
 
 The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](../developer-guide/context-compression-and-caching.md)). Plugin engines can replace it with alternative strategies.

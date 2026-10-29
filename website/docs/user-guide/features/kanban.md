@@ -411,6 +411,30 @@ hermes kanban unblock  t_abc t_def
 hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
 
+### Guarded controls for integrations
+
+`show --json` and `kanban_show` include `latest_event_id` and an `id` on each
+event. An integration can pass that observed token to the existing block or
+unblock operation: `--expected-event-id` on the CLI, `expected_event_id` on
+the tools or Python API. The transition checks the task's latest event in
+its write transaction and refuses a stale request without changing state.
+Guarded CLI operations target one task; their reason comment is recorded
+only after an accepted transition. Ordinary unguarded commands keep their
+existing behavior.
+
+Retain the original token when retrying an activation. Reading a new token
+after a newer Stop is a new resume decision, not a safe retry. A guarded
+`needs_input` block records a fresh Stop even when the task is already
+blocked, preserving its existing block classification and counters.
+`needs_input` can also stop dependency-waiting, scheduled, and queued review
+work. Unblocking still rechecks dependencies and preserves the review phase.
+
+The token is concurrency control, not authorization or proof that external
+effects have stopped. Worker run ownership, board scope, and normal
+operator permissions still apply. Stopping a running card ends its native
+run; inspect retained process and effect evidence before replacing its
+executor.
+
 :::note Where an unblocked task lands
 `unblock` restores the safe source phase: **`review`** for reviewer-origin work
 whose parents are complete, **`ready`** for implementation work whose parents

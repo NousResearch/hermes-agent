@@ -427,7 +427,7 @@ _TASK_SUMMARY_FIELDS = tuple(
     "created_at started_at completed_at current_run_id model_override provider_override".split())
 _RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
 _COMMENT_FIELDS = ("author", "body", "created_at")
-_EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
+_EVENT_FIELDS = ("id", "kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
 _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
@@ -675,9 +675,11 @@ def _handle_show(args: dict, **kw) -> str:
                 "the board, then kanban_show(task_id=<id>) for full state."),
         })
     with _board(args.get("board")) as (kb, conn):
+        events = kb.list_events(conn, tid)
         task = _existing_task(kb, conn, tid)
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
+            "latest_event_id": events[-1].id if events else None,
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
             # gate is not holding it and kanban_complete will refuse.
@@ -686,7 +688,7 @@ def _handle_show(args: dict, **kw) -> str:
             "children": kb.child_ids(conn, tid),
             "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
             # Capped; full log via CLI.
-            "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
+            "events": [_fields(e, _EVENT_FIELDS) for e in events[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
             # Same string build_worker_context hands the dispatcher at spawn time.
             "worker_context": kb.build_worker_context(conn, tid)})
@@ -834,8 +836,9 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
+                           expected_event_id=args.get("expected_event_id"))
+        _check(ok, f"could not block {tid} (state or expected event changed)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
         if kind == "dependency" and landed_kind != kind:
@@ -1267,7 +1270,8 @@ def _handle_unblock(args: dict, **kw) -> str:
     tid = str(tid)
     _enforce_worker_task_ownership(tid)
     with _board(args.get("board")) as (kb, conn):
-        _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+        _check(kb.unblock_task(conn, tid, expected_event_id=args.get("expected_event_id")),
+               f"could not unblock {tid} (state or expected event changed)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 

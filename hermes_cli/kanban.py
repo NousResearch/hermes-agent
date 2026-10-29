@@ -478,11 +478,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
     graph = None
     want_json = getattr(args, "json", False)
     with kbc.connect_closing() as conn:
+        # Capture the token before the remaining reads: an intervening writer
+        # makes a guarded control stale, never blesses a state we did not read.
+        events = kb.list_events(conn, args.task_id)
         task = kb.get_task(conn, args.task_id)
         if not task:
             return _err(f"no such task: {args.task_id}")
         comments = kb.list_comments(conn, args.task_id)
-        events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id, **rsk)
@@ -494,8 +496,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if want_json:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
+            "latest_event_id": events[-1].id if events else None,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
-            "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
+            "events": [_obj_dict(e, ("id", "kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
         })
         return 0
@@ -970,12 +973,15 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     )
 
 
-def _commented(conn, reason: Optional[str], author, prefix: str, op):
-    """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
+def _commented(conn, reason: Optional[str], author, prefix: str, op, *, after: bool = False):
+    """Record the reason before an operation, or after an accepted guarded one."""
     def run(tid):
-        if reason:
+        if reason and not after:
             kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
-        return op(tid)
+        result = op(tid)
+        if reason and after and result:
+            kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
+        return result
     return run
 
 
@@ -984,6 +990,9 @@ def _cmd_block(args: argparse.Namespace) -> int:
     kind = getattr(args, "kind", None)
     author = _profile_author()
     ids = _bulk_ids(args)
+    expected_event_id = getattr(args, "expected_event_id", None)
+    if expected_event_id is not None and len(ids) != 1:
+        return _err("--expected-event-id requires exactly one task", 2)
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
         def ok_msg(tid):
@@ -1002,7 +1011,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid),
+            expected_event_id=expected_event_id), after=expected_event_id is not None)
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 
@@ -1023,11 +1033,15 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     ids, rc = _require_ids(args)
     if rc:
         return rc
+    expected_event_id = getattr(args, "expected_event_id", None)
+    if expected_event_id is not None and len(ids) != 1:
+        return _err("--expected-event-id requires exactly one task", 2)
     reason = _stripped_or_none(getattr(args, "reason", None))
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(
+            conn, tid, expected_event_id=expected_event_id), after=expected_event_id is not None)
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 

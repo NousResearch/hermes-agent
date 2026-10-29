@@ -180,6 +180,8 @@ KANBAN_BLOCK_SCHEMA = _schema(
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "expected_event_id": {"type": "integer", "minimum": 1,
+                              "description": "Optional latest_event_id from show. Refuse if this task changed; retain the same token on retry."},
         "reason": _prop("string", (
                 "What you need answered or what stopped you, in one or "
                 "two sentences. Don't paste the whole conversation; the "
@@ -530,6 +532,8 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     ),
     {
         "task_id": _prop("string", "Blocked task id to move to ready or parent-gated todo."),
+        "expected_event_id": {"type": "integer", "minimum": 1,
+                              "description": "Optional latest_event_id from show. A newer Stop or other event refuses this resume; do not refresh it on a retry."},
     },
     ["task_id"],
 )

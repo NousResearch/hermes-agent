@@ -209,7 +209,8 @@ def _watch_submitter(db, run_id):
     """The dispatcher's spawned worker is this attempt's handle: killing it (an operator, a
     timeout, an OOM kill) must end the attempt, as it did when the worker ran the agent itself.
     Exiting hard leaves no ``worker_result``, so the dead-worker sweep books this run's crash.
-    The run row is re-read each tick: the dispatcher records the pid only after its spawn returns."""
+    The run row is re-read each tick: the dispatcher records the pid only after its spawn returns.
+    Terminal reaping clears that mutable handle, so retain the same run's immutable spawn identity."""
     import os
     from hermes_cli.kanban_db_dispatch import _worker_alive
 
@@ -218,6 +219,10 @@ def _watch_submitter(db, run_id):
             while not _TURNS_DONE.wait(1.0):
                 try:
                     row = conn.execute('SELECT worker_pid, worker_started_at FROM task_runs WHERE id=?', (run_id,)).fetchone()
+                    if row and not row[0]:
+                        row = conn.execute("SELECT json_extract(payload, '$.pid'), json_extract(payload, '$.started_at') "
+                            "FROM task_events WHERE run_id=? AND kind IN ('spawned','worker_registered') "
+                            "ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
                 except sqlite3.Error:
                     continue
                 if row and row[0] and row[0] != os.getpid() and not _worker_alive(row[0], row[1]):

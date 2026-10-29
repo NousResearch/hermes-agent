@@ -594,8 +594,10 @@ class TestConfidentialClient:
         assert "client_secret" not in kwargs["data"]
         # PKCE still present.
         assert kwargs["data"]["code_verifier"] == "the-verifier"
-        # Header is exactly the pre-feature value.
-        assert kwargs["headers"] == {"Accept": "application/json"}
+        # Header is exactly the shared JSON_HEADERS value: Accept json, and
+        # identity encoding (auth bodies must not depend on the IdP's CDN
+        # compressing correctly).
+        assert kwargs["headers"] == {"Accept": "application/json", "Accept-Encoding": "identity"}
 
     # -- basic (default & explicit) ----------------------------------------
 

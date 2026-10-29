@@ -595,3 +595,70 @@ class TestHeicDetection:
         path, _mime, err = vt._normalize_to_supported_image(broken, "image/avif")
         assert path is None
         assert "AV1" in err or "Pillow" in err
+
+
+class TestPercentEncodedLocalPath:
+    """Issue #98428 (second variant): a model re-emits a path it was handed in
+    URL-encoded form — a skill file says ``Name Last - CV.pdf`` and the tool call
+    arrives as ``Name%20Last%20-%20CV.pdf``. That string is a literal miss on
+    disk, so a file that exists resolves as ``SourceNotFound``. The decoded
+    spelling is a candidate only: it must never shadow a filename that genuinely
+    contains ``%20``, and the credential guard must still see what is read.
+    """
+
+    @pytest.mark.asyncio
+    async def test_percent_encoded_path_resolves_underlying_file(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "Name Last - CV.png"
+        img.write_bytes(PNG)
+        res = await isrc.resolve_image_source(
+            str(img).replace(" ", "%20"), isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_file_uri_with_percent_encoding_resolves(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "my pic.png"
+        img.write_bytes(PNG)
+        res = await isrc.resolve_image_source(
+            "file://" + str(img).replace(" ", "%20"), isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_literal_percent_name_is_not_shadowed(self, tmp_path, monkeypatch):
+        """Decoding is a candidate, not a rewrite: when a file with the literal
+        name exists it is the one read (the decoy would fail image validation)."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        literal = tmp_path / "a%20b.png"
+        literal.write_bytes(PNG)
+        (tmp_path / "a b.png").write_bytes(CORRUPT_PNG)
+        res = await isrc.resolve_image_source(str(literal), isrc.ResolveContext())
+        assert res.data == PNG
+
+    @pytest.mark.asyncio
+    async def test_percent_encoded_missing_file_still_not_found(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        with pytest.raises(isrc.SourceNotFound):
+            await isrc.resolve_image_source(
+                str(tmp_path / "nope nope.png").replace(" ", "%20"), isrc.ResolveContext())
+
+    @pytest.mark.asyncio
+    async def test_percent_encoded_credential_path_still_blocked(self, tmp_path, monkeypatch):
+        """Decoding runs before the credential guard, so the guard must be handed
+        the decoded target — otherwise an encoded credential path walks around it."""
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        home.mkdir(parents=True, exist_ok=True)
+        creds = home / "auth.json"
+        creds.write_bytes(PNG)
+        # Encoded spelling that decodes back to the same credential store path.
+        encoded = str(creds).replace("/", "%2F")
+        with pytest.raises(isrc.SourceUnsafe):
+            await isrc.resolve_image_source(encoded, isrc.ResolveContext())

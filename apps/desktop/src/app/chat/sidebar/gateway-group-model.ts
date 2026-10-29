@@ -11,7 +11,7 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $profileColors, $profiles, normalizeProfileKey } from '@/store/profile'
-import { $sessionsLoadError } from '@/store/session'
+import { $sessionProfilesFailed, $sessionsLoadError, isSessionProfileUnread } from '@/store/session'
 
 import type { SidebarSessionGroup } from './projects/workspace-groups'
 
@@ -140,7 +140,8 @@ export function withEmptyProfileGroups(
 }
 
 /** Owner groups for the recents list. Every listed profile keeps its section even with no chats,
- *  unless the list is a narrowed view (filters, archive) or failed to load. */
+ *  unless the list is a narrowed view (filters, archive) or failed to load, or that profile's own
+ *  scan failed (empty there means unread, not "No sessions yet"). */
 export function useGatewaySessionGroups(sessions: SessionInfo[], enabled: boolean, narrowed = true) {
   const registry = useStore($connectionsRegistry)
   const colors = useStore($profileColors)
@@ -156,6 +157,7 @@ export function useGatewaySessionGroups(sessions: SessionInfo[], enabled: boolea
   const localIsPrimary = windowIsBase ? primary.mode !== 'remote' : registry.primary === LOCAL_CONNECTION_ID
   const showArchived = useStore($sidebarShowArchived)
   const loadError = useStore($sessionsLoadError)
+  const failed = useStore($sessionProfilesFailed)
   const includeEmptyProfiles = !narrowed && !showArchived && !loadError
 
   return useMemo(() => {
@@ -169,14 +171,30 @@ export function useGatewaySessionGroups(sessions: SessionInfo[], enabled: boolea
       return groups
     }
 
-    const owner = profileListConnectionId(apiConnectionId, isBrowserHostedDesktop(), localIsPrimary)
+    const browserHosted = isBrowserHostedDesktop()
+    const owner = profileListConnectionId(apiConnectionId, browserHosted, localIsPrimary)
+    // Scan errors carry no connection id and only the aggregate base's reach the renderer (registry
+    // sources drop theirs), so they speak for that pool alone, never a secondary's profiles.
+    const ownsErrors = browserHosted || owner === null || (windowIsBase && owner === primary.connectionId)
 
     return withEmptyProfileGroups(
       groups,
-      profiles.map(profile => profile.name),
+      profiles.map(profile => profile.name).filter(name => !(ownsErrors && isSessionProfileUnread(failed, name))),
       owner,
       registry,
       colors
     )
-  }, [sessions, enabled, includeEmptyProfiles, registry, colors, profiles, apiConnectionId, localIsPrimary])
+  }, [
+    sessions,
+    enabled,
+    includeEmptyProfiles,
+    registry,
+    colors,
+    profiles,
+    failed,
+    apiConnectionId,
+    localIsPrimary,
+    windowIsBase,
+    primary.connectionId
+  ])
 }

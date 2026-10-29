@@ -10,7 +10,7 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { setPrimaryGatewayConnection } from '@/store/gateway'
 import { $sidebarRowMeta, setSidebarGrouping } from '@/store/layout'
 import { $profiles, $showAllProfiles } from '@/store/profile'
-import { $connection, $sessionProfilesUsage, $sessions } from '@/store/session'
+import { $connection, $sessionProfilesUsage, $sessions, setSessionProfilesFailed } from '@/store/session'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { ChatSidebar } from './index'
@@ -47,6 +47,7 @@ afterEach(() => {
   $connection.set(null)
   setPrimaryGatewayConnection(null)
   setApiRequestConnection(null)
+  setSessionProfilesFailed([])
   $showAllProfiles.set(false)
   $sidebarRowMeta.set([])
   $sessionProfilesUsage.set({})
@@ -194,3 +195,113 @@ it.each([
     expect(window.document.querySelectorAll('[data-gateway-group-empty]')).toHaveLength(1)
   }
 )
+
+// A profile whose scan failed while another profile's rows loaded was not read: "No sessions yet"
+// would be a claim about a store nobody could open.
+it('gives a profile whose scan failed no empty "No sessions yet" section', () => {
+  mount()
+  act(() => {
+    $connectionsRegistry.set(null)
+    $profiles.set([
+      { name: 'default', is_default: true },
+      { name: 'quiet', is_default: false },
+      { name: 'work', is_default: false }
+    ] as typeof $profiles.value)
+    $showAllProfiles.set(true)
+    setSidebarGrouping('profile')
+    setSessionProfilesFailed([{ profile: 'work' }])
+    $sessions.set([
+      makeSessionInfo({ id: 'one', profile: 'default', title: 'only chat', last_active: Date.now() / 1000 })
+    ])
+  })
+
+  const groups = [...window.document.querySelectorAll('[data-gateway-group]')].map(group =>
+    group.getAttribute('data-gateway-group')
+  )
+
+  expect(groups.sort()).toEqual([JSON.stringify([null, 'default']), JSON.stringify([null, 'quiet'])])
+})
+
+// Scan errors name no gateway and only the aggregate base's (the registry primary's) reach the
+// renderer, so they never hide a foregrounded secondary's own profile that happens to share the
+// name, nor one on a window primary booted on another registered route.
+it.each([
+  { window: 'local', mode: 'local' },
+  { window: 'remote-b', mode: 'remote' }
+] as const)(
+  "keeps a secondary's empty section for a profile that failed on the primary ($window window)",
+  ({ window: windowPrimary, mode }) => {
+    mount()
+    act(() => {
+      setPrimaryGatewayConnection({ connectionId: windowPrimary, mode })
+      setApiRequestConnection('remote-b')
+      $connectionsRegistry.set({
+        version: 2,
+        primary: 'local',
+        secureTokenStorage: true,
+        connections: [
+          { id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null },
+          { id: 'remote-b', label: 'Homelab', kind: 'remote', tokenSet: false, tokenPreview: null }
+        ]
+      })
+      $profiles.set([
+        { name: 'default', is_default: true },
+        { name: 'work', is_default: false }
+      ] as typeof $profiles.value)
+      $showAllProfiles.set(true)
+      setSidebarGrouping('profile')
+      setSessionProfilesFailed([{ profile: 'work' }])
+      $sessions.set([
+        makeSessionInfo({
+          id: 'one',
+          connection_id: 'remote-b',
+          profile: 'default',
+          title: 'only chat',
+          last_active: Date.now() / 1000
+        })
+      ])
+    })
+
+    const groups = [...window.document.querySelectorAll('[data-gateway-group]')].map(group =>
+      group.getAttribute('data-gateway-group')
+    )
+
+    expect(groups.sort()).toEqual([JSON.stringify(['remote-b', 'default']), JSON.stringify(['remote-b', 'work'])])
+  }
+)
+
+// The primary's own errors still apply while it is in front under its registry id.
+it('skips the empty section of a profile that failed on a registry primary in front', () => {
+  mount()
+  act(() => {
+    setPrimaryGatewayConnection({ connectionId: 'remote-1', mode: 'remote' })
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'remote-1',
+      secureTokenStorage: true,
+      connections: [{ id: 'remote-1', label: 'Homelab', kind: 'remote', tokenSet: false, tokenPreview: null }]
+    })
+    $profiles.set([
+      { name: 'default', is_default: true },
+      { name: 'work', is_default: false }
+    ] as typeof $profiles.value)
+    $showAllProfiles.set(true)
+    setSidebarGrouping('profile')
+    setSessionProfilesFailed([{ profile: 'work' }])
+    $sessions.set([
+      makeSessionInfo({
+        id: 'one',
+        connection_id: 'remote-1',
+        profile: 'default',
+        title: 'only chat',
+        last_active: Date.now() / 1000
+      })
+    ])
+  })
+
+  const groups = [...window.document.querySelectorAll('[data-gateway-group]')].map(group =>
+    group.getAttribute('data-gateway-group')
+  )
+
+  expect(groups).toEqual([JSON.stringify(['remote-1', 'default'])])
+})

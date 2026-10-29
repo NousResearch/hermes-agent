@@ -1936,7 +1936,17 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
         return False
     until = pool.next_available_at(model=fb_model)
-    return until is None or until - time.time() > 600
+    exhausted = until is None or until - time.time() > 600
+    if exhausted and fb_provider == "openai-codex":
+        # Weekly windows can reopen early. Reuse the pool's throttled upstream
+        # check before discarding a candidate on persisted status alone.
+        try:
+            if pool.lift_reopened_cooldowns(model=fb_model) is True:
+                return False
+        except Exception as exc:
+            logger.debug("Fallback quota recovery probe failed: %s", type(exc).__name__)
+        # An unavailable or failed probe never bypasses the exhaustion guard.
+    return exhausted
 
 
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:

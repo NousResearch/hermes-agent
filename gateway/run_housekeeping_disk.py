@@ -27,7 +27,7 @@ _RETRY_AFTER_REPEATED_FAILURE = 86400
 class _Hold(NamedTuple):
     until: float
     failures: int  # undelivered posts in a row
-    targets: frozenset  # the home channels it was posted to
+    targets: frozenset[tuple]  # the configured home channels when it was posted
 
 
 # Per home. Kept in memory, not in the snooze file: that file is what the CLI, TUI and Desktop read,
@@ -67,13 +67,19 @@ def maybe_post_auto_prune_prompt(runner, loop) -> None:
     profile); the database estimate runs only for a profile that can actually receive it."""
     if runner is None or loop is None:
         return
+    from gateway.run_shutdown import _notice_target_key
     from hermes_cli import prune_advisor
     from hermes_constants import get_routing_process_hermes_home
 
+    # Configured home channels, not live ones: an adapter that drops and reconnects must not
+    # reset the hold, while /sethome (which rewrites the config in memory) does.
     targets_by_profile: dict = {}
-    for profile, platform, _cfg, home_ch, _transport in runner._served_home_channel_transports():
-        targets_by_profile.setdefault(profile, set()).add(
-            (getattr(platform, "value", platform), home_ch.chat_id, home_ch.thread_id))
+    for profile, platform, platform_cfg in runner._served_home_channel_configs():
+        home_ch = platform_cfg.home_channel
+        if home_ch and home_ch.chat_id:
+            targets_by_profile.setdefault(profile, set()).add(
+                _notice_target_key(platform.value, home_ch.chat_id, home_ch.thread_id))
+    reachable = {profile for profile, *_rest in runner._served_home_channel_transports()}
     homes: dict = {None: get_routing_process_hermes_home()}
     homes.update(getattr(runner, "_served_profile_homes", None) or {})
     for profile, home in homes.items():
@@ -83,11 +89,9 @@ def maybe_post_auto_prune_prompt(runner, loop) -> None:
         now = time.time()
         if hold is not None and hold.targets != targets:  # a new home channel is asked at once
             hold = None
-        if hold is not None and now < hold.until:
+        if (hold is not None and now < hold.until) or profile not in reachable:
             continue
-        advice = None
-        if targets and prune_advisor.should_ask(Path(home)) is not None:
-            advice = prune_advisor.advise(Path(home))
+        advice = prune_advisor.advise(Path(home))
         if advice is None:  # nothing to ask, so the next low-disk spell starts a fresh run
             _GATEWAY_HOLD.pop(key, None)
             continue

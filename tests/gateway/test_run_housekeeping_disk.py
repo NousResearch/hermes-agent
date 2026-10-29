@@ -62,20 +62,27 @@ def gateway_loop():
 
 
 def _runner(outcome):
-    """*outcome* is what each send returns, or raises when it is an exception."""
+    """*outcome* is what each send returns, or raises when it is an exception. The home channel
+    stays configured while ``connected`` is False; only its live transport goes away."""
     sends = []
 
     async def send(platform, home_channel, transport, message, failure_fmt):
-        sends.append(home_channel.chat_id)
+        sends.append((home_channel.chat_id, home_channel.thread_id))
         if isinstance(runner.outcome, Exception):
             raise runner.outcome
         return runner.outcome
 
+    def configs():
+        yield None, Platform.TELEGRAM, SimpleNamespace(home_channel=runner.home_channel)
+
+    def transports():
+        if runner.connected:
+            yield None, Platform.TELEGRAM, None, runner.home_channel, SimpleNamespace(adapter=None)
+
     runner = SimpleNamespace(
-        outcome=outcome, home_channel=SimpleNamespace(chat_id="c1", thread_id=None),
+        outcome=outcome, connected=True, home_channel=SimpleNamespace(chat_id="c1", thread_id=None),
         _send_home_channel_message=send, _served_profile_homes={},
-        _served_home_channel_transports=lambda: iter(
-            [(None, Platform.TELEGRAM, None, runner.home_channel, SimpleNamespace(adapter=None))]))
+        _served_home_channel_configs=configs, _served_home_channel_transports=transports)
     return runner, sends
 
 
@@ -111,13 +118,31 @@ def test_unreachable_home_channel_is_asked_again_after_an_hour_then_daily(home, 
     assert not prune_advisor.snoozed(home)
 
 
-def test_changing_the_home_channel_asks_on_the_next_tick(home, clock, gateway_loop):
+@pytest.mark.parametrize("new_home", [("c2", None), ("c1", "topic-2")], ids=["other_chat", "other_topic"])
+def test_changing_the_home_channel_asks_on_the_next_tick(home, clock, gateway_loop, new_home):
     runner, sends = _runner(False)
     _tick(runner, gateway_loop)
-    runner.home_channel = SimpleNamespace(chat_id="c2", thread_id=None)  # /sethome
+    runner.home_channel = SimpleNamespace(chat_id=new_home[0], thread_id=new_home[1])
     clock[0] += MINUTE
     _tick(runner, gateway_loop)
-    assert sends == ["c1", "c2"]
+    assert sends == [("c1", None), new_home]
+
+
+@pytest.mark.parametrize("first_post", ["undelivered", "delivered_snooze_unsaved"])
+def test_a_dropping_connection_keeps_the_wait(home, clock, gateway_loop, monkeypatch, caplog, first_post):
+    runner, sends = _runner(first_post != "undelivered")
+    if first_post == "delivered_snooze_unsaved":
+        def disk_full(*_args, **_kwargs):
+            raise OSError(28, "No space left on device")
+        monkeypatch.setattr(prune_advisor, "snooze", disk_full)
+    with caplog.at_level(logging.WARNING, logger=rhd.__name__):
+        _tick(runner, gateway_loop)
+        for minute in range(1, 50):  # the adapter drops and reconnects on alternate ticks
+            runner.connected = minute % 2 == 0
+            clock[0] += MINUTE
+            _tick(runner, gateway_loop)
+    assert len(sends) == 1
+    assert len(_warnings(caplog)) == (1 if first_post == "undelivered" else 0)
 
 
 @pytest.mark.parametrize("ends_by", ["disk_freed", "question_delivered"])
@@ -164,7 +189,8 @@ def test_delivered_question_waits_a_week_even_when_the_snooze_cannot_be_saved(ho
 
 
 @pytest.mark.parametrize("case", ["warnings_off", "send_raises"])
-def test_attempt_that_sent_nothing_waits_without_re_reading_the_store(home, clock, gateway_loop, monkeypatch, case):
+def test_attempt_that_sent_nothing_is_retried_after_an_hour_without_re_reading_the_store(
+        home, clock, gateway_loop, monkeypatch, case):
     import gateway.warning_notifications as wn
     if case == "warnings_off":
         monkeypatch.setattr(wn, "warning_notifications_enabled", lambda *_a, **_k: False)
@@ -178,4 +204,8 @@ def test_attempt_that_sent_nothing_waits_without_re_reading_the_store(home, cloc
     clock[0] += MINUTE
     _tick(runner, gateway_loop)
     assert len(estimates) == 1
-    assert len(sends) == (0 if case == "warnings_off" else 1)
+    assert not prune_advisor.snoozed(home)
+    clock[0] += HOUR
+    _tick(runner, gateway_loop)
+    assert len(estimates) == 2
+    assert len(sends) == (0 if case == "warnings_off" else 2)

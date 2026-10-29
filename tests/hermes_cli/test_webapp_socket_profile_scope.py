@@ -17,6 +17,7 @@ import base64
 import io
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +45,20 @@ def _home(home, label):
         "portal_base_url": "https://portal.nousresearch.com",
         "inference_base_url": "https://inference-api.nousresearch.com/v1",
     }}}))
+
+
+class _ServedProfiles(dict):
+    """The runner's served-profile registry (home -> authority) as ``SessionAuthorities`` exposes it;
+    none of them still starting."""
+
+    def __iter__(self):
+        return iter(list(self.values()))
+
+    def for_home(self, home):
+        return self.get(Path(home).resolve())
+
+    def starting(self, _profile):
+        return None
 
 
 @pytest.fixture
@@ -76,9 +91,9 @@ def gateway(tmp_path, monkeypatch):
     previous = secret_scope.is_multiplex_active()
     launch_profile_policy.activate_multi_profile_hosting()
 
-    by_home, dbs = {}, []
+    by_home, dbs = _ServedProfiles(), []
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=True))
-    runner.session_authorities = SimpleNamespace(for_home=lambda home: by_home.get(Path(home).resolve()))
+    runner.session_authorities = by_home
     for home in (launch, b):
         db = SessionDB(home / "state.db")
         dbs.append(db)
@@ -153,6 +168,24 @@ class _Socket:
         return next(frame for frame in self.sent if frame.get("id") == req_id)
 
 
+class _ManyRequestSocket(_Socket):
+    """A socket that stays open until every frame it sent has been answered; ``on_reply`` sees each id."""
+
+    def __init__(self, authority, frames, on_reply, ticket_home=None):
+        super().__init__(authority, frames, ticket_home)
+        self._unanswered = {frame["id"] for frame in frames}
+        self._on_reply = on_reply
+
+    async def send_text(self, text):
+        frame = json.loads(text)
+        self.sent.append(frame)
+        if frame.get("id") is not None:
+            self._on_reply(frame["id"])
+            self._unanswered.discard(frame["id"])
+            if not self._unanswered:
+                self._answered.set()
+
+
 def _billing_state_over_socket(gateway, ticket_home):
     from hermes_cli.web_routers import chat_ws
     ws = _Socket(gateway.authority, [{"jsonrpc": "2.0", "id": "bill", "method": "billing.state", "params": {}}],
@@ -171,6 +204,50 @@ def test_billing_state_on_a_webapp_socket_reaches_its_tickets_profile_portal(gat
         assert reply["result"]["logged_in"] is True, reply
         assert hits and set(hits) == {f"{label}-portal.invalid"}, (label, hits)
     assert "no profile secret scope" not in caplog.text
+
+
+@pytest.mark.parametrize("ticket", [None, "b"], ids=["launch-socket", "b-ticket-socket"])
+def test_a_long_verb_naming_another_profile_does_not_hold_the_socket_while_its_secrets_load(gateway, monkeypatch,
+                                                                                           ticket):
+    """Loading a profile's external secret source (``op``/``bws``) can take seconds. A long verb that
+    names profile ``b``, on a launch socket or on b's own ticket socket, is handed to the worker pool
+    and loads it there: the socket's next request (an interrupt, say) is answered meanwhile, not
+    queued behind the load."""
+    from hermes_cli import env_loader
+    from hermes_cli.web_routers import chat_ws
+    from tui_gateway import server
+    release, loading, first_load_done = threading.Event(), threading.Event(), threading.Event()
+    loads, quick_answered_while_loading = [], []
+
+    def held_external_source(home):
+        loads.append(threading.current_thread().name)
+        loading.set()
+        release.wait(5)
+        first_load_done.set()
+        return {}
+
+    def quick(rid, params):
+        loading.wait(5)  # answer only once some load has started, so the check below cannot race it
+        return server._ok(rid, {})
+
+    def on_reply(req_id):
+        if req_id == "quick":
+            quick_answered_while_loading.append(bool(loads) and not first_load_done.is_set())
+            release.set()
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", held_external_source)
+    monkeypatch.setitem(server._methods, "probe.slow", server._profile_scoped(lambda rid, params: server._ok(rid, {})))
+    monkeypatch.setattr(server, "_LONG_HANDLERS", server._LONG_HANDLERS | {"probe.slow"})
+    monkeypatch.setitem(server._methods, "probe.quick", quick)
+    ws = _ManyRequestSocket(gateway.authority, [
+        {"jsonrpc": "2.0", "id": "slow", "method": "probe.slow", "params": {"profile": "b"}},
+        {"jsonrpc": "2.0", "id": "quick", "method": "probe.quick", "params": {}},
+    ], on_reply, ticket and getattr(gateway, ticket))
+
+    asyncio.run(chat_ws.gateway_ws(ws))
+
+    assert "result" in ws.reply("slow") and "result" in ws.reply("quick"), ws.sent
+    assert quick_answered_while_loading == [True], loads
+    assert loads and all(name.startswith("tui-rpc") for name in loads), loads
 
 
 def test_a_profile_ticket_with_no_authority_bound_is_refused_not_served_as_the_launch_profile(gateway):

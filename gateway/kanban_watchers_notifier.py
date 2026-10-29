@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.i18n import t
 
-from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger, notify_reason_max_chars
 from gateway.wake import session_owned_by_profile
 
 
@@ -78,12 +78,12 @@ _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|w
 
 
 def _safe_review_reason(value: Any, limit: int = 160) -> str:
-    """Return a mobile-friendly review reason safe for external delivery."""
+    """Return a mobile-friendly review reason safe for external delivery (``limit`` 0 = no clip)."""
     from agent.redact import redact_sensitive_text
 
     reason = redact_sensitive_text("" if value is None else str(value), force=True, redact_url_credentials=True)
     reason = " ".join(_LOCAL_PATH_RE.sub("[local path]", reason).split())
-    if len(reason) > limit:
+    if limit > 0 and len(reason) > limit:
         reason = reason[: limit - 1].rstrip() + "…"
     return reason
 
@@ -376,9 +376,12 @@ def _payload(ev: Any, key: str) -> Any:
 
 def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
     """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
-    value, or ``""`` when absent."""
+    value, or ``""`` when absent. ``limit <= 0`` leaves the value unclipped."""
     value = _payload(ev, key)
-    return t(msg_key, value=str(value)[:limit]) if value else ""
+    if not value:
+        return ""
+    text = str(value)
+    return t(msg_key, value=text if limit <= 0 else text[:limit])
 
 
 _NL = "\n{}"
@@ -416,7 +419,7 @@ def _fmt_review_requested(ev, n) -> tuple:
 
 def _fmt_changes_requested(ev, n) -> tuple:
     payload = ev.payload or {}
-    reason = _safe_review_reason(payload.get("reason"))
+    reason = _safe_review_reason(payload.get("reason"), notify_reason_max_chars())
     reviewer = _safe_review_reason(payload.get("reviewer"), 48)
     implementer = _safe_review_reason(payload.get("implementer"), 48)
     reason_text = reason or t("gateway.kanban.ping.changes_default_reason")
@@ -444,7 +447,7 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
         "gateway.kanban.ping.triage", head=n.head,
         why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
         recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
-        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
+        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", notify_reason_max_chars()),
     )
     return msg, None, None
 
@@ -472,7 +475,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (
-        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
+        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", notify_reason_max_chars())),
         None, None,
     ),
     "gave_up": _fmt_gave_up,

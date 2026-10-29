@@ -93,7 +93,9 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | CLI commands, subcommands, flags, "how do I run X" | `references/cli-reference.md` |
 | In-session slash commands | `references/slash-commands.md` |
 | Provider setup, API keys, OAuth | `references/providers-and-models.md` |
+| Make a model or provider the default (config write + end-to-end check) | `references/model-provider-switching.md` |
 | config.yaml sections, toolsets, voice/STT/TTS | `references/configuration.md` |
+| A toolset won't enable on a platform; free TTS/STT backends | `references/toolsets-and-voice-backends.md` |
 | AGENTS.md / .hermes.md / CLAUDE.md project rules | `references/project-context-files.md` |
 | Secret redaction, PII, approval modes, "reset permissions" | `references/security-privacy.md` |
 | Delegation, cron, curator, kanban | `references/background-systems.md` |
@@ -105,10 +107,13 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | Pet mascots — install, select, scale, diagnose | `references/petdex.md` |
 | Windows-specific issues (keybinds, WinError 10106, BOM) | `references/windows-quirks.md` |
 | Debugging: voice, tools missing, gateway, aux models | `references/troubleshooting.md` |
+| Read-only sweep of an installed Hermes (config, gateway, toolsets, traps) | `references/setup-review.md` |
+| `~/.hermes` large, `state.db`/WAL growth, backup and cleanup | `references/disk-and-backup-hygiene.md` |
 | Contributing code: adding tools, slash commands, tests | `references/contributor-guide.md` |
 | delegate_task "capped at N" reports | `references/delegate-task-concurrency-diagnosis.md` |
 | "Can app X use my Nous Portal subscription/OAuth?" | `references/portal-auth-for-third-party-apps.md` |
 | Connecting a messaging platform (Telegram, Discord, Slack, WhatsApp, …) | docs: `/user-guide/messaging` |
+| Telegram bot silent — `polling conflict` / `terminated by other getUpdates request` | `references/telegram-polling-conflicts.md` |
 
 The reference list above is not the feature list — it is the set of topics that
 need more than their docs page. For everything else Hermes ships, fetch

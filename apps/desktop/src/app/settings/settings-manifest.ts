@@ -88,6 +88,11 @@ export const SETTINGS_MANIFEST = {
       'sessionDensity'
     ),
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
+    sidebarScreenPortal: appearanceSetting(
+      'window-layout',
+      ['screen', 'portal', 'sidebar', 'sessions', 'computer', 'hide'],
+      'sidebarScreenPortal'
+    ),
     appActions: appearanceSetting(
       'window-layout',
       ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],

@@ -12,7 +12,7 @@
 import { Codicon, host, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
 import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
 
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
@@ -208,10 +208,16 @@ export function ScreenPortal({ bot }: { bot: RosterRow }) {
   )
 }
 
+const subscribeSidebarScreenPortal = (listener: () => void) =>
+  host.settings.subscribe('sidebar.screenPortalVisible', listener)
+
+const sidebarScreenPortalVisible = () => host.settings.get('sidebar.screenPortalVisible')
+
 /** Sessions-sidebar variant: the gateway/profile group hands us its route; find the
  *  bot that owns it, or synthesize a scoped row so a profile outside the current
  *  roster filter still gets its portal (the portal only needs a routable row). */
 export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }) {
+  const visible = useSyncExternalStore(subscribeSidebarScreenPortal, sidebarScreenPortalVisible)
   const roster = useValue($lastRoster)
   const { connectionId, profile } = route
 
@@ -237,5 +243,6 @@ export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }
     [connectionId, profile, roster]
   )
 
-  return <ScreenPortal bot={bot} />
+  // Gate the child, not its button: hidden sidebar cards need no status fetch or event listeners.
+  return visible ? <ScreenPortal bot={bot} /> : null
 }

@@ -313,6 +313,9 @@ export const arSettings = {
       }
     },
     appearance: {
+      sidebarScreenPortalTitle: 'Screen في الشريط الجانبي للجلسات',
+      sidebarScreenPortalDesc:
+        'عرض بطاقة Screen لكل ملف تعريف في الجلسات. تظل Screen متاحة في Bots عند إخفائها. يُحفظ على هذا الجهاز.',
       chatTextScaleTitle: 'حجم نص المحادثة',
       chatTextScaleDesc:
         'يضبط حجم نص المحادثة ومحرر الرسائل نسبةً إلى مقياس الواجهة. يبقى حجم الأشرطة الجانبية وعناصر التحكم كما هو.',

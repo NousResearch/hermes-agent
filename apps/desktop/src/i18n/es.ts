@@ -1004,6 +1004,9 @@ export const esOverrides = {
       sessionDensityComfortable: 'Cómoda',
       sessionDensityDetailed: 'Detallada',
       tabStripTitle: 'Barra de pestañas',
+      sidebarScreenPortalTitle: 'Screen en la barra lateral de sesiones',
+      sidebarScreenPortalDesc:
+        'Muestra la tarjeta Screen de cada perfil en Sesiones. Screen sigue disponible en Bots cuando se oculta. Se guarda en este dispositivo.',
       tabStripDesc:
         'Muestra pestañas encima de una zona. Auto las oculta si hay un solo panel, salvo que haya otra zona de chat o de mosaico abierta.',
       tabStripAuto: 'Auto',

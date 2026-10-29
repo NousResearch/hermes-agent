@@ -1007,6 +1007,9 @@ export const frOverrides = {
       sessionDensityComfortable: 'Confortable',
       sessionDensityDetailed: 'Détaillée',
       tabStripTitle: "Barre d'onglets",
+      sidebarScreenPortalTitle: 'Screen dans la barre latérale des sessions',
+      sidebarScreenPortalDesc:
+        'Afficher la carte Screen de chaque profil dans Sessions. Screen reste accessible dans Bots lorsque la carte est masquée. Enregistré sur cet appareil.',
       tabStripDesc:
         "Affiche les onglets au-dessus d'une zone. Le mode automatique les masque lorsqu'une zone ne contient qu'un seul panneau.",
       tabStripAuto: 'Automatique',

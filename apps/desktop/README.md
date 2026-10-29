@@ -70,6 +70,13 @@ settings row links to the relevant system pane and offers Retry. If macOS asks
 to restart the app after granting access, do so before retrying. Review the
 attachment before sending, especially when the captured window is sensitive.
 
+## Sessions sidebar Screen cards
+
+Under **Settings → Appearance → Window & layout**, turn off **Screen in Sessions
+sidebar** to hide the Screen card above each profile's sessions. The preference
+is saved on this device and is on by default. Screen remains available in Bots;
+hiding the sidebar card does not stop a screen or close an open Screen pane.
+
 ## Requirements
 
 Bundled packages provide Python 3.14 and their supported dependencies.

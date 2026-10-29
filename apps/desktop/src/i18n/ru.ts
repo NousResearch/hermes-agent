@@ -493,6 +493,9 @@ export const ruOverrides = {
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',
       tabStripTitle: 'Панель вкладок',
+      sidebarScreenPortalTitle: 'Screen в боковой панели сессий',
+      sidebarScreenPortalDesc:
+        'Показывать карточку Screen для каждого профиля в сессиях. После скрытия Screen остаётся доступен в Bots. Сохраняется на этом устройстве.',
       tabStripDesc:
         'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',
       tabStripAuto: 'Авто',

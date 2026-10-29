@@ -513,6 +513,9 @@ export const jaOverrides = {
       sessionDensityComfortable: '標準',
       sessionDensityDetailed: '詳細',
       tabStripTitle: 'タブバー',
+      sidebarScreenPortalTitle: 'セッションのサイドバーにScreenを表示',
+      sidebarScreenPortalDesc:
+        'セッション内の各プロファイルにScreenカードを表示します。非表示にしてもBotsからScreenにアクセスできます。このデバイスに保存されます。',
       tabStripDesc:
         'ゾーンの上にタブを表示します。自動では、他にチャットやタイルのゾーンがない限り、ペインが1つのときに隠します。',
       tabStripAuto: '自動',

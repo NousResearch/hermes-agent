@@ -734,6 +734,8 @@ export const zhOverrides = {
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',
       tabStripTitle: '标签栏',
+      sidebarScreenPortalTitle: '在会话侧边栏显示Screen',
+      sidebarScreenPortalDesc: '在会话中显示每个配置的Screen卡片。隐藏后仍可在Bots中访问Screen。设置保存在此设备上。',
       tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签，除非还开着其他聊天或磁贴分区。',
       tabStripAuto: '自动',
       tabStripAlways: '始终',

@@ -975,6 +975,9 @@ export const en: Translations = {
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
       tabStripTitle: 'Tab Strip',
+      sidebarScreenPortalTitle: 'Screen in Sessions sidebar',
+      sidebarScreenPortalDesc:
+        'Show the Screen card for each profile in Sessions. Screen remains available in Bots when hidden. Saved on this device.',
       tabStripDesc:
         'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',
       tabStripAuto: 'Auto',

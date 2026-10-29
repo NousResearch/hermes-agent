@@ -302,6 +302,9 @@ export const zhHantSettings = {
       sessionDensityComfortable: '舒適',
       sessionDensityDetailed: '詳細',
       tabStripTitle: '分頁列',
+      sidebarScreenPortalTitle: '在工作階段側邊欄顯示Screen',
+      sidebarScreenPortalDesc:
+        '在工作階段中顯示每個設定檔的Screen卡片。隱藏後仍可在Bots中存取Screen。設定儲存在此裝置上。',
       tabStripDesc: '在分區上方顯示分頁。自動模式會在分區只有一個面板時隱藏分頁，除非還開著其他聊天或磚塊分區。',
       tabStripAuto: '自動',
       tabStripAlways: '一律',

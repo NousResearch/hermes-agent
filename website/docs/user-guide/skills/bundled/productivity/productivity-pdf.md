@@ -21,7 +21,7 @@ PDF files: create, read, merge, fill, OCR, edit text.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `pdf`, `documents`, `forms`, `ocr`, `text-extraction`, `reportlab`, `pypdf`, `pdfplumber`, `pymupdf`, `marker` |
-| Related skills | [`docx`](../../bundled/productivity/productivity-docx.md), [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`powerpoint`](../../bundled/productivity/productivity-powerpoint.md) |
+| Related skills | [`microsoft-office`](../../bundled/productivity/productivity-microsoft-office.md) |
 
 ## Reference: full SKILL.md
 

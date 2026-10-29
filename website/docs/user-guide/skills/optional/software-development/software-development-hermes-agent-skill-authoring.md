@@ -14,8 +14,8 @@ Author in-repo SKILL.md files: frontmatter and structure.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/software-development/hermes-agent-skill-authoring` |
+| Source | Optional — install with `hermes skills install official/software-development/hermes-agent-skill-authoring` |
+| Path | `optional-skills/software-development/hermes-agent-skill-authoring` |
 | Version | `2.0.0` |
 | Author | Hermes Agent |
 | License | MIT |

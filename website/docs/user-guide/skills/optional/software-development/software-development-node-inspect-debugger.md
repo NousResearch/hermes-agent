@@ -14,14 +14,14 @@ Debug Node.js via --inspect + Chrome DevTools Protocol CLI.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/software-development/node-inspect-debugger` |
+| Source | Optional — install with `hermes skills install official/software-development/node-inspect-debugger` |
+| Path | `optional-skills/software-development/node-inspect-debugger` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `debugging`, `nodejs`, `node-inspect`, `cdp`, `breakpoints`, `ui-tui` |
-| Related skills | [`systematic-debugging`](../../bundled/software-development/software-development-systematic-debugging.md), [`python-debugpy`](../../bundled/software-development/software-development-python-debugpy.md) |
+| Related skills | [`systematic-debugging`](../../bundled/software-development/software-development-systematic-debugging.md), [`python-debugpy`](../../optional/software-development/software-development-python-debugpy.md) |
 
 ## Reference: full SKILL.md
 

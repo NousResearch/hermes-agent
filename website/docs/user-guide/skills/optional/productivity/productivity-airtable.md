@@ -14,8 +14,8 @@ Airtable REST API via curl. Records CRUD, filters, upserts.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/productivity/airtable` |
+| Source | Optional — install with `hermes skills install official/productivity/airtable` |
+| Path | `optional-skills/productivity/airtable` |
 | Version | `1.1.0` |
 | Author | community |
 | License | MIT |

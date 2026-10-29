@@ -14,8 +14,8 @@ Karpathy's LLM Wiki: build/query interlinked markdown KB.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/research/llm-wiki` |
+| Source | Optional — install with `hermes skills install official/research/llm-wiki` |
+| Path | `optional-skills/research/llm-wiki` |
 | Version | `2.1.0` |
 | Author | Hermes Agent |
 | License | MIT |

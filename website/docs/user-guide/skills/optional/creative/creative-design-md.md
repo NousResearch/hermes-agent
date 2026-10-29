@@ -14,8 +14,8 @@ Author/validate/export Google's DESIGN.md token spec files.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/creative/design-md` |
+| Source | Optional — install with `hermes skills install official/creative/design-md` |
+| Path | `optional-skills/creative/design-md` |
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |

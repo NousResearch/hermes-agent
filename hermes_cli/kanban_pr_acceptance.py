@@ -7,14 +7,23 @@ receipts only after rechecking the captured run/status/contract under its lock.
 login: :func:`_gh_env` resolves that profile's own credentials/config for the
 subprocess — a multi-profile host's default ``gh`` login cannot read another
 org's private repos (#122689).
+
+``gh`` failures are typed. Identity refusals stay ``auth``. A rate-limit 403 is
+``rate_limited`` (checked before the 401/403/404 identity match). A missing
+``gh`` binary is ``capability``, a connection failure is ``network``, and any other ``gh``
+exit is ``provider_error`` with a fixed rc sentence. Generic ``infra`` is only
+the final net. stderr is never stored — it only classifies.
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
 from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
@@ -35,24 +44,95 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         command += ["-f", "query=" + query]
     if paginate:
         command += ["--paginate", "--slurp"]
+    path = endpoint.split("?")[0]
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
+    except FileNotFoundError:
+        raise _AcceptanceFailure(
+            "capability",
+            "gh CLI is not installed or not on PATH; install GitHub CLI to use PR completion contracts.",
+        ) from None
+    except subprocess.TimeoutExpired:
+        raise _AcceptanceFailure(
+            "network",
+            "GitHub API request timed out; check the network and retry completion.",
+        ) from None
     except subprocess.CalledProcessError as exc:
-        # 401/403/404 = the login cannot see this repository (wrong profile identity
-        # or missing grant), not a transient API failure. Persist only the status
-        # code + endpoint, never gh's stderr (credentials/host details).
+        # stderr classifies only. A rate-limited 403 names both "rate limit" and
+        # HTTP 403, so the rate-limit check wins; otherwise 401/403/404 is an
+        # identity refusal, and so is a GraphQL NOT_FOUND repository (read from
+        # stdout). The persisted detail never includes stderr.
+        low = (exc.stderr or "").lower()
+        if "rate limit" in low:
+            raise _AcceptanceFailure(
+                "rate_limited",
+                "GitHub API rate limit exhausted; wait for the reset window and retry completion.",
+            ) from None
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
-            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
-        if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
-            raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
-        raise
+            raise _GateAuthError(f"HTTP {denied[1]} on {path}") from None
+        not_found = _graphql_target_failure(exc.stdout)
+        if not_found is not None:
+            return not_found
+        if exc.returncode == 4 or "gh auth login" in low:
+            raise _GateAuthError(f"gh has no login for {path}") from None
+        if any(signature in low for signature in (
+                "dial tcp", "proxyconnect tcp", "tls handshake timeout", "i/o timeout",
+                "connection reset by peer", "network is unreachable", "no such host")):
+            raise _AcceptanceFailure(
+                "network", "GitHub API connection failed; check the network and retry completion.",
+            ) from None
+        logger.warning("gh api failed for %s (rc=%s); stderr suppressed", path, exc.returncode)
+        raise _AcceptanceFailure("provider_error", f"GitHub API call failed (rc={exc.returncode}).") from None
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
+        messages = [str(e.get("message", "")) for e in value["errors"] if isinstance(e, dict)]
+        if any("bad credentials" in message.lower() for message in messages):
+            raise _GateAuthError("GraphQL rejected the acceptance credential") from None
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
+
+
+def _graphql_target_failure(stdout: str | None) -> dict | None:
+    """Classify known GraphQL identity failures and absent acceptance targets.
+
+    Real ``gh api graphql`` exits 1 whenever the response carries ``errors``, and a
+    repository the login cannot read comes back as HTTP 200 with a NOT_FOUND error,
+    so stderr never says HTTP 404. Returning the answer (``repository: null``) lets
+    the caller's null-repository check classify it as ``auth``."""
+    try:
+        value = json.loads(stdout or "")
+    except ValueError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    errors = value.get("errors") or []
+    if not isinstance(errors, list) or not errors or not all(isinstance(e, dict) for e in errors):
+        return None
+    if any(e.get("type") in {"FORBIDDEN", "UNAUTHORIZED", "BAD_CREDENTIALS"}
+           or "bad credentials" in str(e.get("message", "")).lower() for e in errors):
+        raise _GateAuthError("GraphQL rejected the acceptance credential")
+    data = value.get("data")
+    if not isinstance(data, dict) or "repository" not in data:
+        return None
+    repository = data["repository"]
+    missing_path = ["repository"] if repository is None else ["repository", "pullRequest"]
+    missing_target = repository is None or (isinstance(repository, dict)
+                                            and "pullRequest" in repository and repository["pullRequest"] is None)
+    if missing_target and all(e.get("type") == "NOT_FOUND" and e.get("path") == missing_path for e in errors):
+        return value
+    return None
+
+
+class _AcceptanceFailure(Exception):
+    """Typed ``gh`` failure whose ``detail`` is safe to persist."""
+
+    def __init__(self, classification: str, detail: str):
+        super().__init__(detail)
+        self.classification = classification
+        self.detail = detail
 
 
 class _GateAuthError(RuntimeError):
@@ -127,6 +207,9 @@ def collect_acceptance(contract: str, published_pr: str | None,
             # A private repo the login cannot read resolves to null, not an error.
             raise _GateAuthError(f"HTTP 404 on graphql {repo}")
         pr = repository["pullRequest"]
+        if pr is None:
+            receipt["detail"] = "The declared pull request does not exist; correct the completion contract or published PR."
+            return receipt
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
@@ -177,6 +260,9 @@ def collect_acceptance(contract: str, published_pr: str | None,
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
+        return receipt
+    except _AcceptanceFailure as exc:
+        receipt.update(classification=exc.classification, detail=exc.detail)
         return receipt
     except _GateAuthError as exc:
         login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"

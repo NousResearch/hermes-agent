@@ -750,6 +750,7 @@ const sidebars: SidebarsConfig = {
         'guides/tips',
         'guides/secure-hermes-on-a-work-machine',
         'guides/local-llm-on-mac',
+        'guides/custom-openai-compatible-router',
         'guides/daily-briefing-bot',
         'guides/team-telegram-assistant',
         'guides/python-library',

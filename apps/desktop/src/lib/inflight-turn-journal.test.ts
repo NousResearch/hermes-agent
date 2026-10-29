@@ -151,6 +151,43 @@ describe('persistInFlightTurnState', () => {
     expect(tail?.parts).toEqual([{ type: 'text', text: 'partial answer grew' }])
   })
 
+  it('checkpoints overdue commits without timer delivery and retains quiet-tail and settle behavior', () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+
+    const commit = (text: string) =>
+      persistInFlightTurnState(
+        journalState({
+          messages: [user('u1', 'do the thing'), assistant('assistant-stream-1', text, { pending: true })]
+        })
+      )
+
+    commit('first')
+    for (now = 1; now < 400; now += 1) {
+      commit(`progress-${now}`)
+    }
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+
+    // Time passed, but Chromium has not delivered the trailing timer.
+    commit('checkpoint')
+    expect(recoverInFlightTurnJournal('stored-1', [user('u1', 'do the thing')]).messages.map(chatMessageText)).toEqual([
+      'do the thing',
+      'checkpoint'
+    ])
+
+    now = 401
+    commit('quiet tail')
+    expect(chatMessageText(readInFlightTurnJournal('stored-1')!.messages[1])).toBe('checkpoint')
+    vi.advanceTimersByTime(400)
+    expect(chatMessageText(readInFlightTurnJournal('stored-1')!.messages[1])).toBe('quiet tail')
+
+    commit('pending before settle')
+    persistInFlightTurnState(journalState({ busy: false, streamId: null }))
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    vi.advanceTimersByTime(400)
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
   it('preserves a long user prompt exactly so recovery still matches its transcript row', () => {
     const prompt = 'prompt '.repeat(8_000)
 

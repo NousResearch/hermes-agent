@@ -14,15 +14,21 @@ import { computed } from 'nanostores'
 import type { HermesActiveWork } from '@/global'
 import { $sessions } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $voiceStreamPaintOwners } from '@/store/voice-stream-paint'
 
-const $activeWork = computed([$workingSessionIds, $sessions], (workingIds, sessions): HermesActiveWork => {
-  const titleById = new Map(sessions.map(session => [session.id, session.title?.trim() ?? '']))
+const $activeWork = computed(
+  [$workingSessionIds, $sessions, $autoSpeakReplies, $voiceStreamPaintOwners],
+  (workingIds, sessions, autoSpeak, voiceOwners): HermesActiveWork => {
+    const titleById = new Map(sessions.map(session => [session.id, session.title?.trim() ?? '']))
 
-  return {
-    count: workingIds.length,
-    titles: workingIds.map(id => titleById.get(id) ?? '').filter(Boolean)
+    return {
+      count: workingIds.length,
+      titles: workingIds.map(id => titleById.get(id) ?? '').filter(Boolean),
+      ...(autoSpeak || voiceOwners > 0 ? { voiceActive: true } : {})
+    }
   }
-})
+)
 
 if (typeof window !== 'undefined') {
   // `$sessions` republishes on unrelated churn (previews, heartbeats), so only

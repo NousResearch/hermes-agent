@@ -357,6 +357,7 @@ from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.pause import build_pause_parser
+from hermes_cli.main_forward import _forward_command
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -1802,25 +1803,6 @@ def cmd_proxy(args):
     rc = _cmd_proxy(args)
     if isinstance(rc, int) and rc != 0:
         raise SystemExit(rc)
-
-
-def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = False, doc: str = ""):
-    """A ``hermes <cmd>`` handler that hands ``args`` to ``<module>.<attr>``.
-
-    Imports at CALL time so fast paths never pay for it and
-    ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (kanban/project/mcp propagate).
-    """
-
-    def _cmd(args):
-        import importlib
-
-        result = getattr(importlib.import_module(module), attr)(args)
-        return result if forward_return else None
-
-    _cmd.__name__ = _cmd.__qualname__ = name
-    _cmd.__doc__ = doc or None
-    return _cmd
 
 
 cmd_setup = _forward_command("cmd_setup", "hermes_cli.setup", "run_setup_wizard", doc='Interactive setup wizard.')

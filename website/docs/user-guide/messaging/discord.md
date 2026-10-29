@@ -784,6 +784,26 @@ The buttons disable themselves once a choice is made so duplicate clicks don't d
 
 Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
 
+`approvals.discord_prompt_timeout` controls Discord's interactive button views for
+command approvals, clarification questions, update prompts, and slash-command
+confirmations. It defaults to 300 seconds, with a minimum of 30 seconds and the same
+platform-safe upper bound as `approvals.timeout`.
+
+`approvals.timeout` separately controls how long a command waits for approval. To
+allow one hour for both the command and its Discord buttons, set both in the owning
+profile's `config.yaml`:
+
+```yaml
+approvals:
+  timeout: 3600
+  discord_prompt_timeout: 3600
+```
+
+Each command-approval card answers its own request. Its controls retire when that
+request is answered, cancelled, or expires, even if the Discord view timeout is
+longer. A shorter Discord timeout retires the buttons without extending or ending
+the underlying approval wait.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

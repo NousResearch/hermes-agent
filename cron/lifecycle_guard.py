@@ -952,6 +952,29 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
                 break
 
 
+def _interpreter_is_shell(script_text: str) -> bool:
+    """Whether the kernel would hand *script_text* to a POSIX shell when it is executed.
+
+    A missing shebang counts as shell: ``execve`` fails with ENOEXEC and the caller's shell runs the
+    file itself. A shebang naming another interpreter (``python3``, ``node``, ``perl`` …), directly
+    or through ``env`` (``-S`` and other options skipped), means the text is that language, not
+    shell: tokenizing it as shell turns string literals into fake command words
+    (``os.path.expanduser("~/x.db")`` leaves ``~/x.db`` in command position). Paths found there are
+    still read and scanned by the walk, but as mentions, which never fail closed."""
+    if not script_text.startswith("#!"):
+        return True
+    words = script_text[2:].split("\n", 1)[0].split()
+    if not words:
+        return True
+    interpreter = _executable_name(words[0])
+    if interpreter == "env":
+        rest = [word for word in words[1:] if not word.startswith("-") and "=" not in word]
+        if not rest:
+            return True
+        interpreter = _executable_name(rest[0])
+    return interpreter in _SHELL_EXECUTABLES
+
+
 # --- referenced-script reading ----------------------------------------------------------------
 
 def _has_binary_magic(data: bytes) -> bool:
@@ -1176,7 +1199,10 @@ def _contains_unsafe_gateway_action(
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):
+        # Only a shell script's own command words are executions; inside an interpreter script every
+        # path is a mention (read and scanned, never a fail-closed verdict on its own).
+        child_executed = candidate_executed and _interpreter_is_shell(script_text)
+        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, child_executed):
             return True
     return False
 

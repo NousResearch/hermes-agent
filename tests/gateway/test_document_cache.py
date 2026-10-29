@@ -63,6 +63,12 @@ class TestCacheDocumentFromBytes:
         path = cache_document_from_bytes(b"data", "")
         assert Path(path).read_bytes() == b"data"
 
+    @pytest.mark.parametrize("control", ["\x00", "\t", "\n", "\r", "\x1b", "\x7f", "\x85", "\x9f"])
+    def test_control_characters_are_removed_from_the_cached_name(self, control):
+        path = Path(cache_document_from_bytes(b"data", f"{control}re{control}port.pdf{control}"))
+        prefix, token, name = path.name.split("_", 2)
+        assert (prefix, len(token), name, path.read_bytes()) == ("doc", 12, "report.pdf", b"data")
+
 
 # ---------------------------------------------------------------------------
 # TestCleanupDocumentCache

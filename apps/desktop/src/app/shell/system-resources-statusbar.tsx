@@ -28,6 +28,19 @@ function vramPercent(used: number | null | undefined, total: number | null | und
   return used != null && total ? Math.round((used / total) * 100) : null
 }
 
+// Multi-card formatters live apart from gb()/gbLong(): the single-card path
+// must render byte-identically to upstream, so the single-path helpers keep
+// their 'G'/' GB' spellings and the aggregate chip/sections get their own.
+// `bytes != null` (not truthiness) on purpose: a zero reading is a real
+// number and renders 0.0, never '—'.
+function gib(bytes: number | null | undefined): string {
+  return bytes != null ? (bytes / (1 << 30)).toFixed(1) : '—'
+}
+
+function gibLong(bytes: number | null | undefined): string {
+  return bytes != null ? `${(bytes / (1 << 30)).toFixed(1)} GiB` : '—'
+}
+
 function gpuReadings(hardware: LocalHardware | null): LocalHardwareGpu[] {
   if (hardware?.gpus && hardware.gpus.length > 0) {
     return hardware.gpus
@@ -67,6 +80,30 @@ function MeterRow({ label, percent, value }: { label: string; percent: number | 
           <div
             className="h-full rounded-full bg-primary transition-[width] duration-500"
             style={{ width: `${Math.max(1, Math.min(100, percent))}%` }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Multi-card sections use this instead of MeterRow: a zero reading is a real
+// number, so its meter renders at 0 width (MeterRow clamps to 1% so a
+// non-zero single card never vanishes).
+function MultiMeterRow({ label, percent, value }: { label: string; percent: number | null; value: string }) {
+  return (
+    <div className="grid gap-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="truncate text-muted-foreground">{label}</span>
+
+        <span className="shrink-0 whitespace-nowrap tabular-nums text-foreground">{value}</span>
+      </div>
+
+      {percent !== null && (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+          <div
+            className="h-full rounded-full bg-primary transition-[width] duration-500"
+            style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
           />
         </div>
       )}
@@ -157,13 +194,35 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
   const ramPercent =
     hardware?.ram_total_bytes && ramUsed != null ? Math.round((ramUsed / hardware.ram_total_bytes) * 100) : null
 
+  // Aggregates across the physical cards; a missing reading keeps the
+  // aggregate unknown rather than silently becoming zero or a partial sum.
+  const meanUtil =
+    gpus.length && gpus.every(gpu => gpu.util_percent != null)
+      ? Math.round(gpus.reduce((sum, gpu) => sum + gpu.util_percent!, 0) / gpus.length)
+      : null
+
+  const usedVram =
+    gpus.length && gpus.every(gpu => gpu.vram_used_bytes != null)
+      ? gpus.reduce((sum, gpu) => sum + gpu.vram_used_bytes!, 0)
+      : null
+
+  const totalVram =
+    gpus.length && gpus.every(gpu => gpu.vram_total_bytes != null)
+      ? gpus.reduce((sum, gpu) => sum + gpu.vram_total_bytes!, 0)
+      : null
+
+  const aggregateTitle =
+    'GPU utilization: arithmetic mean across all GPUs. VRAM: sum of physical used/total memory, not pooled inference capacity. Missing readings are shown as —.'
+
   // Compact bar label: the numbers a local-inference user glances at.
-  // One card keeps "GPU 34% · 18G/32G". Several cards name each index so
-  // the second adapter is not invisible in the chip either.
+  // One card keeps "GPU 34% · 18G/32G" byte-identically. Several cards show
+  // the aggregate only — mean utilization plus the summed physical VRAM;
+  // the per-card detail belongs in the popover, and the tooltip says the
+  // VRAM total is physical memory, not pooled inference capacity.
   const label = !hardware
     ? copy.loading
     : multi
-      ? gpus.map(gpu => `GPU${gpu.index} ${gpu.util_percent ?? 0}%`).join(' · ')
+      ? `Σ GPU ${meanUtil == null ? '—' : `${meanUtil}%`} · VRAM ${gib(usedVram)}/${gib(totalVram)} GiB`
       : hasGpu
         ? `GPU ${hardware.gpu_util_percent ?? 0}%${
             hardware.vram_used_bytes != null
@@ -178,6 +237,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     icon: <Activity className="size-3" />,
     id: 'system-resources',
     label,
+    title: multi ? aggregateTitle : undefined,
     menuAlign: 'end',
     menuClassName: multi ? 'w-80 p-0' : 'w-64 p-0',
     menuContent: (
@@ -195,25 +255,60 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
           )}
         </div>
 
-        {multi
-          ? gpus.map(gpu => (
-              <div className="grid gap-3" data-gpu-index={gpu.index} data-slot="system-resources-gpu" key={gpu.index}>
-                <div className="flex min-w-0 items-baseline justify-between gap-2">
-                  <p className="shrink-0 font-medium text-foreground">{`GPU ${gpu.index}`}</p>
+        {multi ? (
+          <>
+            {/* Grouped, bordered per-GPU sections: the card name is the
+                section heading, and unknown readings show — instead of
+                masquerading as 0. */}
+            {gpus.map(gpu => (
+              <section
+                aria-label={`GPU ${gpu.index} · ${gpu.name}`}
+                className="grid min-w-0 gap-2"
+                key={gpu.index}
+                style={{
+                  border: '1px solid var(--ui-border)',
+                  borderRadius: 6,
+                  padding: 10,
+                  background: 'var(--ui-bg-tertiary)'
+                }}
+              >
+                <h3 className="min-w-0 font-medium text-foreground" style={{ overflowWrap: 'anywhere' }} title={gpu.name}>
+                  GPU {gpu.index} · {gpu.name}
+                </h3>
 
-                  <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">{gpu.name}</span>
-                </div>
+                <MultiMeterRow
+                  label={copy.gpuUtilization}
+                  percent={gpu.util_percent}
+                  value={gpu.util_percent == null ? '—' : `${gpu.util_percent}%`}
+                />
 
-                <MeterRow label={copy.gpuUtilization} percent={gpu.util_percent} value={`${gpu.util_percent ?? 0}%`} />
-
-                <MeterRow
+                <MultiMeterRow
                   label={copy.gpuMemory}
                   percent={vramPercent(gpu.vram_used_bytes, gpu.vram_total_bytes)}
-                  value={`${gbLong(gpu.vram_used_bytes)} / ${gbLong(gpu.vram_total_bytes)}`}
+                  value={`${gibLong(gpu.vram_used_bytes)} / ${gibLong(gpu.vram_total_bytes)}`}
                 />
-              </div>
-            ))
-          : hasGpu && (
+              </section>
+            ))}
+
+            {gpus.length > 1 && (
+              <section aria-label="GPU aggregate" className="grid min-w-0 gap-2" title={aggregateTitle}>
+                <h3 className="font-medium text-foreground">Σ All GPUs</h3>
+
+                <MultiMeterRow
+                  label="Mean utilization"
+                  percent={meanUtil}
+                  value={meanUtil == null ? '—' : `${meanUtil}%`}
+                />
+
+                <MultiMeterRow
+                  label="Total VRAM"
+                  percent={null}
+                  value={`${gibLong(usedVram)} / ${gibLong(totalVram)}`}
+                />
+              </section>
+            )}
+          </>
+        ) : hasGpu && (
               <>
                 <MeterRow
                   label={copy.gpuUtilization}

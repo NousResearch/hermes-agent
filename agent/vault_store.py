@@ -695,9 +695,12 @@ class VaultStore:
 
 
 def _stored_origin_match(rec: dict[str, Any]) -> str:
-    """Only a payment card marked exactly ``any_site`` is one; an unknown or misplaced value reads as exact,
-    so an edited or newer record never widens (an origin-less card then refuses with ``no_origin``)."""
-    return ANY_SITE if rec.get("origin_match") == ANY_SITE and rec.get("kind") == "payment" else "exact"
+    """Only an origin-less payment card marked exactly ``any_site`` is one; an unknown or misplaced value, or
+    one beside a saved origin, reads as exact, so an edited or newer record never widens (an origin-less
+    card then refuses with ``no_origin``; a card with an origin stays bound to it)."""
+    if rec.get("origin_match") == ANY_SITE and rec.get("kind") == "payment" and not rec.get("origin"):
+        return ANY_SITE
+    return "exact"
 
 
 def get_vault_store() -> VaultStore:

@@ -12,8 +12,9 @@ paid per request) and available wherever a browser is. Its actions:
   the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script)
-  — except a card the user saved for any site, which fills only on the page
-  whose origin the user confirms for that fill; the re-assert pins that origin —
+  — except a card the user saved for any site, which fills only on the current
+  tab (never another open tab), whose origin the user confirms for that fill;
+  the re-assert pins that origin —
   the field is chosen by the ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv) — or, for a plugin browser with no CDP
   endpoint, through its registered ``BrowserPageBackend`` (Camofox's REST evaluate) — and the tool
@@ -246,14 +247,13 @@ def _secure_checkout_origin(origin: str) -> bool:
 
 
 def _any_site_page_origin(task_id: str) -> str | dict[str, Any]:
-    """The page a card saved for any site may go to: the supervisor's current tab, or the open tab that holds a
-    card form, read from the one page session that will also write. Refused before the user is asked when
-    there is no supervisor or the page is not https. The caller's payment confirmation names this origin."""
+    """The page a card saved for any site may go to: the supervisor's CURRENT tab, read from the one page
+    session that will also write. It never searches or switches tabs (a background tab another page opened
+    must not become the checkout). Refused before the user is asked when there is no supervisor, the page is
+    not https, or the current tab has no card form. The caller's payment confirmation names this origin."""
     if _ensure_supervisor(task_id) is None:
         return {"success": False, "error_type": "supervisor_required",
                 "error": "No browser page session for this task. Open the checkout page with the browser first."}
-    if not _parse_json_result(_eval_js(task_id, _TAB_PROBES["payment"]).get("result")):
-        _focus_bound_origin(task_id, "", "payment")
     origin = _current_page_origin(task_id)
     if not origin:
         return {"success": False,
@@ -262,6 +262,10 @@ def _any_site_page_origin(task_id: str) -> str | dict[str, Any]:
         return {"success": False, "error_type": "insecure_origin",
                 "error": f"Refused: {origin} is not an https page. A card saved for any site is filled only on "
                          "https checkouts."}
+    if not _parse_json_result(_eval_js(task_id, _TAB_PROBES["payment"]).get("result")):
+        return {"success": False, "error_type": "no_card_form_on_current_tab",
+                "error": f"Refused: the current tab ({origin}) has no card form. A card saved for any site is "
+                         "filled only on the current tab; navigate to or activate the checkout tab first."}
     return origin
 
 
@@ -271,8 +275,9 @@ def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[s
     else the refusal to return. Manager items may bind several websites; matching is exact and
     nothing wildcard or parent-domain is inferred. The caller hands the returned origin to ``build_fill_js``,
     which re-asserts it inside the page immediately before the write (navigation between check and fill).
-    The one exception is a card the user saved for any site: see ``_any_site_page_origin``."""
-    if meta.any_site:
+    The one exception is a card the user saved for any site, and only for the card fill itself
+    (``probe_kind == "payment"``): see ``_any_site_page_origin``. Every other kind takes the exact path."""
+    if meta.any_site and probe_kind == "payment":
         return _any_site_page_origin(task_id)
     allowed = saved_origins(meta)
     if not allowed:

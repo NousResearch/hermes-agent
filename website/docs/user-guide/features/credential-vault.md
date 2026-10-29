@@ -80,10 +80,15 @@ cannot spend. Address fills need no confirmation.
 
 **A card for any site.** A personal card used across many shops can be saved
 once instead of once per shop: run `hermes vault add`, choose `payment`, type
-`any` at the site question and confirm. Each fill then names the exact page
-(for example "Fill payment card 'Visa' on https://shop.example.com") and asks
-you; approving covers that one fill only. Only https pages qualify, and
-headless sessions are refused as for every card. This is local-vault only. It
+`any` at the site question and confirm. Such a card is filled only on the
+browser tab the agent is currently on; Hermes never looks for, or switches to,
+another open tab. Each fill names that tab's exact site (for example "Fill
+payment card 'Visa' on https://shop.example.com") and asks you; approving
+covers that one fill only. Only https pages qualify, and headless sessions are
+refused as for every card. If the current tab has no card form (for example
+the card fields live in an embedded payment frame), the fill is refused before
+you are asked (`no_card_form_on_current_tab`), so the agent has to navigate to
+or switch to the checkout tab first. This is local-vault only. It
 is weaker than an exact site against look-alike shops: an exact-site card is
 refused on `shop-example.com` without asking, while an any-site card relies on
 you reading the site in the prompt, so an exact site stays the recommendation.

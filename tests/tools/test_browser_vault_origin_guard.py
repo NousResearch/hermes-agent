@@ -46,12 +46,46 @@ _ADDRESS_CONTROLS = [
 ]
 
 
+def _payment_probe() -> str:
+    from tools.browser_vault_tool import _TAB_PROBES
+
+    return _TAB_PROBES["payment"]
+
+
+_PAYMENT_PROBE = _payment_probe()
+
+
+class _TwoTabBrowser:
+    """A supervisor over several open tabs, like the real one: its page session is bound to one tab (the
+    current one), ``focus_page`` re-binds it the way ``CDPSupervisor.focus_page`` does (``origin=""`` = any
+    http(s) tab, first one whose ``accept`` probe is truthy), and every evaluation runs on the bound tab."""
+
+    def __init__(self, *tabs: _FakePage):
+        self.tabs, self.current, self.focused = list(tabs), tabs[0], []
+
+    def focus_page(self, origin: str, accept=None) -> dict:
+        for tab in self.tabs:
+            if not tab.href.startswith(("http://", "https://")):
+                continue
+            if origin and normalize_origin(tab.href) != origin:
+                continue
+            if accept and not tab.evaluate_runtime(accept).get("result"):
+                continue
+            self.current = tab
+            self.focused.append(tab.href)
+            return {"ok": True, "url": tab.href}
+        return {"ok": False, "error": "no open page"}
+
+    def evaluate_runtime(self, expression: str) -> dict:
+        return self.current.evaluate_runtime(expression)
+
+
 class _FakePage:
     """The supervisor's view of one open tab: answers origin reads and input inspection, and records every
     secret-bearing fill script as a write."""
 
-    def __init__(self, href: str, controls: list[dict]):
-        self.href, self.controls, self.writes = href, controls, []
+    def __init__(self, href: str, controls: list[dict], card_form: bool = True):
+        self.href, self.controls, self.writes, self.card_form = href, controls, [], card_form
 
     def focus_page(self, origin: str, accept=None) -> dict:
         return {"ok": bool(origin) and normalize_origin(self.href) == origin, "url": self.href}
@@ -59,6 +93,8 @@ class _FakePage:
     def evaluate_runtime(self, expression: str) -> dict:
         if expression.strip() == "window.location.href":
             return {"ok": True, "result": self.href}
+        if expression == _PAYMENT_PROBE:  # "does this tab hold a card form?"
+            return {"ok": True, "result": self.card_form}
         if "expectedOrigin" in expression:  # the fill script (build_fill_js)
             self.writes.append(expression)
             return {"ok": True, "result": json.dumps({"filled": 1})}
@@ -245,6 +281,64 @@ class TestAnySiteCard:
         assert '"https://shop.example"' in write  # the in-page assert names the confirmed origin
         assert backend.resolved == ["secret"]
         assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
+
+
+    def test_any_site_card_never_switches_to_a_background_tab_with_a_card_form(self, vault):
+        """The agent is on the shop's checkout (its card fields live in a hosted iframe, so the top document
+        has none); a background tab on another https site holds a card input. The card is refused on the
+        current tab before the user is asked: no tab switch, no prompt, nothing resolved or written."""
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        shop = _FakePage("https://legit-shop.example/checkout", [], card_form=False)
+        evil = _FakePage("https://evil.example/pay", _CARD_CONTROLS)
+        browser = _TwoTabBrowser(shop, evil)
+        with _on_page(browser), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_card_form_on_current_tab"
+        assert "legit-shop.example" in out["error"] and "evil.example" not in out["error"]
+        consent.assert_not_called()
+        assert backend.resolved == [] and shop.writes == [] and evil.writes == []
+        assert browser.focused == [] and browser.current is shop
+
+    def test_any_site_card_with_no_card_form_on_the_only_tab_is_refused_before_asking(self, vault):
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/cart", [], card_form=False)
+        with _on_page(page), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_card_form_on_current_tab"
+        consent.assert_not_called()
+        assert backend.resolved == [] and page.writes == []
+
+    def test_any_site_card_handle_does_not_pass_the_one_time_code_guard(self, vault):
+        """Only the card fill (which asks the user) may take the any-site path: enter_code with a card
+        handle is refused like any origin-less item, before anything is resolved, asked or written."""
+        from tools import browser_vault_tool
+
+        store, backend, asked = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/verify", _OTP_CONTROLS)
+        with _on_page(page):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_origin"
+        assert backend.resolved == [] and page.writes == [] and asked == []
+
+    @pytest.mark.parametrize("probe_kind", ["otp", "login", "address"])
+    def test_any_site_path_is_for_the_card_fill_only(self, vault, probe_kind):
+        from tools import browser_vault_tool
+
+        store, _, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/checkout", _CARD_CONTROLS)
+        with _on_page(page):
+            out = browser_vault_tool._bound_page_origin("t", meta, probe_kind)
+        assert isinstance(out, dict) and out["error_type"] == "no_origin"
+        with _on_page(page):
+            assert browser_vault_tool._bound_page_origin("t", meta, "payment") == "https://shop.example"
 
     def test_any_site_card_declined_resolves_and_writes_nothing(self, vault):
         from tools import browser_vault_tool

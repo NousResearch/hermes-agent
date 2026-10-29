@@ -164,6 +164,18 @@ class TestVaultStore:
             assert meta.origin_match == "exact" and meta.any_site is False, meta.id
             assert "origin_match" not in meta.to_dict()
 
+    def test_any_site_beside_a_saved_origin_reads_as_exact(self, store):
+        """``add_item`` never writes both, but a record that has them (hand edit, another build) fails closed:
+        the card stays bound to its saved origin instead of the wider mode winning."""
+        rec = {"id": "vault_e", "kind": "payment", "label": "x", "origin": "https://shop.example",
+               "origin_match": "any_site", "created_at": "2026-01-01T00:00:00Z", "identifier_type": None,
+               "identifier": None, "secret": {}}
+        with store._locked():
+            store._write_all([rec])
+        [meta] = store.list_items()
+        assert meta.origin_match == "exact" and meta.any_site is False
+        assert meta.origin == "https://shop.example" and "origin_match" not in meta.to_dict()
+
     def test_unknown_kind_rejected(self, store):
         with pytest.raises(VaultError):
             store.add_item(kind="totp", label="x", secret={})

@@ -683,6 +683,31 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
 
+def _provider_reported_cost(usage: Any) -> Optional[Decimal]:
+    """Cost the provider itself charged for this response, when it says so.
+
+    xAI returns ``usage.cost_in_usd_ticks`` (1e-10 USD units) on every completion;
+    OpenAI-compatible relays often return ``usage.cost``/``total_cost``. A
+    provider-reported figure beats any price table, so it must be recorded as
+    actual spend rather than an estimate.
+    """
+    raw = getattr(usage, "raw_usage", None)
+    if not isinstance(raw, dict):
+        return None
+    for key, scale in (("cost_in_usd_ticks", Decimal("1e-10")),
+                       ("cost", Decimal(1)), ("total_cost", Decimal(1))):
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+            continue
+        try:
+            amount = Decimal(str(value)) * scale
+        except (ValueError, ArithmeticError):  # pragma: no cover - defensive
+            continue
+        if amount >= 0:
+            return amount
+    return None
+
+
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
@@ -690,6 +715,14 @@ def estimate_usage_cost(
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
     reported = profile.get_usage_cost(model_name, usage) if profile else None
+    if reported is None:
+        _raw_cost = _provider_reported_cost(usage)
+        if _raw_cost is not None:
+            reported = CostResult(
+                amount_usd=_raw_cost, status="actual", source="provider_cost_api",
+                label=format_cost_label(_raw_cost),
+                notes=("Provider-reported cost for this response.",),
+            )
     if reported is not None:
         return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)

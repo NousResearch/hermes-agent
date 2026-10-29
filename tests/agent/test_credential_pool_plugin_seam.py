@@ -141,3 +141,39 @@ def test_plugin_refresh_adopts_peer_rotation_without_spending_token(plugin_profi
     adopted = second._refresh_entry(second.entries()[0], force=True)
     assert (adopted.access_token, adopted.refresh_token) == ("tok-2", "rt-2")
     assert calls == ["rt-1"]
+
+
+@pytest.fixture
+def key_profiles():
+    seen = []
+
+    def refresh_credential(entry):
+        seen.append(entry.access_token)
+        return {"access_token": "key-2"}
+
+    providers.register_provider(ProviderProfile(name="example-key", auth_type="api_key",
+                                                base_url="https://example.invalid/v1",
+                                                refresh_credential=refresh_credential))
+    providers.register_provider(ProviderProfile(name="example-key-nohook", auth_type="api_key",
+                                                base_url="https://example.invalid/v1"))
+    yield seen
+    for name in ("example-key", "example-key-nohook"):
+        providers._REGISTRY.pop(name, None)
+    providers._PROVIDER_LIST_CACHE = None
+
+
+@pytest.mark.parametrize("provider, status, key, calls", [
+    ("example-key", STATUS_OK, "key-2", ["key-1"]),
+    ("example-key-nohook", STATUS_EXHAUSTED, "key-1", []),
+], ids=["hook-renews-replaced-key", "no-hook-benches"])
+def test_refused_api_key_renews_through_profile_hook(key_profiles, provider, status, key, calls):
+    """An API key the provider's service replaced is renewed when a request using it is refused, so the
+    row is not benched with the stale key; a provider without the hook still benches it."""
+    pool = CredentialPool(provider, [PooledCredential(provider=provider, id="key123", label="acme",
+                                                      auth_type="api_key", priority=0, source="manual",
+                                                      access_token="key-1")])
+    pool._persist()
+    pool.try_refresh_matching(api_key_hint="key-1")
+    row = PooledCredential.from_dict(provider, read_credential_pool(provider)[0])
+    assert (row.last_status, row.access_token) == (status, key)
+    assert key_profiles == calls

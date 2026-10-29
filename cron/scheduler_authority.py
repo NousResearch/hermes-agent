@@ -158,7 +158,7 @@ def reconcile_pending(*, allow_connect=True):
     from cron.executions import execution_owner_live, get_execution
     from cron.jobs import get_job, pause_job
     from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
-                                _save_compose_deliver, _fire_secret_scope)
+                                _save_compose_deliver, fire_secret_scope)
     from cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
     from utils import atomic_json_write
     import logging
@@ -226,7 +226,12 @@ def reconcile_pending(*, allow_connect=True):
             # profile's scope - exactly as _run_one_job_body does - so the home-target env
             # override resolves instead of raising UnscopedSecretError and deferring this
             # receipt forever (every retry hit the same wall).
-            with _fire_secret_scope():
+            #
+            # The scope is bound, NOT degraded: if the home target still cannot be resolved the
+            # read raises and the surrounding ``except Exception`` defers this receipt loudly.
+            # It must never resolve to an empty target list, which would book the receipt and
+            # delete the journal while the output is never delivered - a silent drop.
+            with fire_secret_scope():
                 _save_compose_deliver(delivery, fence, answer, output, adapters=None, loop=None,
                                      verbose=False, execution_token=None)
                 fail_empty_response(delivery, answer)

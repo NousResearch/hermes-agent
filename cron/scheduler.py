@@ -3234,7 +3234,17 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     home = Path(_get_hermes_home())
     hydrate_profile_secret_sources(home)
     scope_token = set_secret_scope(owner_secret_scope(home), profile_home=str(home))
-    context_token = set_multiplex_context(True) if routed_profile_fire() else None
+    try:
+        context_token = set_multiplex_context(True) if routed_profile_fire() else None
+    except Exception:
+        # The scope is ALREADY bound here. Letting this propagate would leave THIS profile's
+        # secret mapping bound for the rest of the context, and a multiplex gateway's ticker
+        # thread services several profiles in one context - so the NEXT profile's tick could
+        # read the PREVIOUS profile's secrets. That is exactly the cross-profile leak
+        # ``agent.secret_scope`` exists to prevent. Reset before re-raising.
+        from agent.secret_scope import reset_secret_scope
+        reset_secret_scope(scope_token)
+        raise
     return scope_token, context_token
 
 
@@ -3257,6 +3267,18 @@ def _fire_secret_scope():
         yield
     finally:
         _reset_fire_secret_scope(tokens)
+
+
+def fire_secret_scope():
+    """Public: run a block under the firing profile's secret scope.
+
+    Public wrapper over the private ``_fire_secret_scope`` so other modules do not reach into
+    a private name for a scope-lifetime primitive. Which profile's secrets are readable is a
+    security decision, so it gets a public, documented entry point - the same convention the
+    codebase already uses for ``owner_secret_scope``, ``build_profile_secret_scope`` and
+    ``set_secret_scope``.
+    """
+    return _fire_secret_scope()
 
 
 def _start_owned_run(job: dict, execution_id: str) -> Optional[contextvars.Token]:

@@ -433,23 +433,18 @@ def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> 
     job-owning profile's secret scope (run_one_job sets it), so this resolves the OWNING profile's
     value, not the host environ. ``os.getenv`` only if the scope module is missing."""
     try:
-        from agent.secret_scope import get_secret, UnscopedSecretError
+        from agent.secret_scope import get_secret
     except Exception:
         get_secret = None  # type: ignore
 
-        class UnscopedSecretError(Exception):
-            """The scope module is unavailable, so this error can never be raised."""
-
     def read(name: str) -> str:
-        try:
-            value = (get_secret(name, "") or "") if get_secret is not None else os.getenv(name, "")
-        except UnscopedSecretError:
-            # An unscoped read in a multiplex gateway must NOT fall back to os.environ - that
-            # would resolve ANOTHER profile's value. Treat it as "no env override" instead: the
-            # caller then falls through to the config.yaml home channel, which is the documented
-            # next step in the chain. Deferring the entire delivery on this is strictly worse -
-            # it strands the receipt forever, which is the bug this closes.
-            value = ""
+        # An unscoped read in a multiplex gateway raises UnscopedSecretError and MUST keep
+        # raising: it must not fall back to os.environ (that is another profile's value) and it
+        # must not degrade into "" (unset). "" would let the caller resolve an EMPTY target
+        # list, which books the receipt and deletes the journal while the output is never
+        # delivered - a silent drop, strictly worse than the loud deferral this bug had.
+        # The caller that owns the secret scope is responsible for binding one.
+        value = (get_secret(name, "") or "") if get_secret is not None else os.getenv(name, "")
         return value.strip() if strip else value
 
     value = read(env_var + suffix)

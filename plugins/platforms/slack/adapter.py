@@ -3086,7 +3086,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _is_block_payload_rejection(error: BaseException) -> bool:
         """Errors recoverable by retrying without ``blocks`` (an enhancement over ``text``, so a
         rejected/oversized payload must not drop the whole response)."""
-        recoverable_codes = {"invalid_blocks", "msg_too_long", "too_many_blocks"}
+        recoverable_codes = _BLOCK_REJECTION_CODES
         response_get = getattr(getattr(error, "response", None), "get", None)
         if callable(response_get):
             try:
@@ -6717,6 +6717,21 @@ async def _standalone_send_media(
     return result
 
 
+_BLOCK_REJECTION_CODES = frozenset({"invalid_blocks", "msg_too_long", "too_many_blocks"})
+
+
+def _standalone_blocks(pconfig, message: str) -> Optional[list]:
+    """Block Kit for an out-of-process send under the same ``markdown_blocks`` / ``rich_blocks``
+    opt-ins as the live adapter, so ``hermes send`` / cron output renders tables like a gateway
+    reply. Feedback buttons stay off: no turn exists for a click to rate."""
+    if not message:
+        return None
+    adapter = SlackAdapter.__new__(SlackAdapter)
+    adapter.config = PlatformConfig(
+        extra={**(getattr(pconfig, "extra", None) or {}), "feedback_buttons": False})
+    return adapter._maybe_blocks(message)
+
+
 def _standalone_format_mrkdwn(text: str) -> str:
     """``format_message`` without a live adapter; falls back to the raw text."""
     if not text:
@@ -6780,8 +6795,15 @@ async def _standalone_send(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = _standalone_post_kwargs(chat_id, formatted, unfurl_kwargs, thread_id)
+            blocks = _standalone_blocks(pconfig, message)
+            if blocks:
+                payload["blocks"] = blocks
             for tok in tokens:
                 data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
+                if "blocks" in payload and data.get("error") in _BLOCK_REJECTION_CODES:
+                    # Blocks are an enhancement over ``text``: a rejected layout must not drop the send.
+                    payload.pop("blocks")
+                    data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
                 if data.get("ok"):
                     return {
                         "success": True, "platform": "slack", "chat_id": chat_id,

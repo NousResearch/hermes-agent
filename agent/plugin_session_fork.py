@@ -101,7 +101,7 @@ class PluginForkHandle:
         return f"PluginForkHandle(plugin_id={self.plugin_id!r}, outcome={self._outcome!r})"
 
 
-@dataclass
+@dataclass(eq=False)  # identity: a job is a member of its parent's registry set
 class _ForkJob:
     plugin_id: str
     capture: Any  # SideQuestionCapture
@@ -113,15 +113,23 @@ class _ForkJob:
     timeout: Optional[float]
     run: Any  # background_review._BackgroundReviewRun
     handle: PluginForkHandle = field(init=False)
+    # Guarded by ``_lock``: the idle-queue slot while deferred; ``launched`` once ``_launch``
+    # admitted the job, after which only its worker settles the handle.
+    queue_key: Optional[str] = field(default=None, init=False)
+    dispatch: Optional[Callable[[], None]] = field(default=None, init=False)
+    launched: bool = field(default=False, init=False)
 
     @property
     def origin(self) -> str:
         return f"plugin_fork:{self.plugin_id}"
 
 
-# Launched forks live on their parent as ``_plugin_fork_runs`` (a set of runs, guarded by
-# ``_lock``): the next live turn cancels them (background_review).
-# Deferred (queued) jobs per idle-queue key: a newer one supersedes the queued one.
+# Every fork of a parent, deferred, launching or running, is registered on the parent as
+# ``_plugin_fork_jobs`` (a set guarded by ``_lock``) until its worker exits or a fence settles it,
+# so the next live turn fences all of them (background_review). ``_plugin_forks_fenced_turn`` is
+# the turn the last interrupt fenced: a fork of that turn still on its way to registration is
+# refused when it gets there. Deferred jobs are also indexed per idle-queue key: a newer one
+# supersedes the queued one.
 _queued: dict[str, _ForkJob] = {}
 _lock = threading.Lock()
 
@@ -209,57 +217,120 @@ def _defer(job: _ForkJob, parent: Any) -> None:
 
     def _dispatch() -> None:
         with _lock:
-            if _queued.get(key) is job:
-                del _queued[key]
+            if _queued.get(key) is not job:  # fenced or superseded while queued
+                return
+            del _queued[key]
         _launch(job)
 
+    previous = fenced = None
     with _lock:
-        previous, _queued[key] = _queued.get(key), job
-    if previous is not None:
-        previous.handle._settle("superseded")
-    job.handle._outcome = "deferred"
-    QUEUE.enqueue(parent, key, {"task_cfg": job.task_cfg}, dispatch=_dispatch)
+        refusal = _launch_refusal(parent, job)
+        if refusal is None:
+            previous = _queued.get(key)
+            if previous is not None:
+                fenced = _fence_locked(previous, "superseded")
+            job.queue_key, job.dispatch, _queued[key] = key, _dispatch, job
+            _register_locked(parent, job)
+            job.handle._outcome = "deferred"
+            QUEUE.enqueue(parent, key, {"task_cfg": job.task_cfg}, dispatch=_dispatch)
+    if refusal is not None:
+        job.handle._settle(refusal)
+    if fenced is not None:
+        _after_fence(previous, *fenced, message="plugin fork superseded", tool_reason="plugin fork superseded")
 
 
 def _launch(job: _ForkJob) -> None:
+    from agent.background_review import finish_background_review_run
     from agent.memory_provider import spawn_context_thread
 
     parent = job.capture.parent_ref()
-    if parent is None or job.run.cancel_requested.is_set():
-        job.handle._settle("refused:parent_gone" if parent is None else "cancelled")
-        return
     with _lock:
-        runs = getattr(parent, "_plugin_fork_runs", None)
-        if runs is None:
-            runs = parent._plugin_fork_runs = set()
-        runs.add(job.run)
-    job.handle._outcome = "running"
+        # Check and registration under one lock: an interrupt either ran first (the check sees its
+        # fence) or runs after (it finds the job registered and fences it).
+        refusal = _launch_refusal(parent, job)
+        if refusal is None:
+            _register_locked(parent, job)
+            job.launched = True
+            job.handle._outcome = "running"
+        else:
+            _unregister_locked(parent, job)
+    if refusal is not None:
+        job.handle._settle(refusal)
+        finish_background_review_run(parent, job.run)
+        return
     # Spawned inside the captured turn context, so the worker binds that profile + secret scope.
     job.capture.context.copy().run(lambda: spawn_context_thread(
         _run_job, name=f"plugin-fork:{job.plugin_id}", args=(job,)).start())
 
 
-def _cancel_job(job: _ForkJob) -> None:
-    from agent.background_review import _interrupt_background_review
+def _launch_refusal(parent: Any, job: _ForkJob) -> Optional[str]:
+    """Why ``job`` may not start now (caller holds ``_lock``), or None. A fork of a turn an
+    interrupt already fenced, or of a turn the parent has moved past, is cancelled: that interrupt
+    ran before the job was registered, so it could not fence the job itself."""
+    if parent is None:
+        return "refused:parent_gone"
+    turn = job.capture.turn_id
+    if (job.run.cancel_requested.is_set() or getattr(parent, "_current_turn_id", turn) != turn
+            or getattr(parent, "_plugin_forks_fenced_turn", None) == turn):
+        return "cancelled"
+    return None
 
+
+def _register_locked(parent: Any, job: _ForkJob) -> None:
+    jobs = getattr(parent, "_plugin_fork_jobs", None)
+    if jobs is None:
+        jobs = parent._plugin_fork_jobs = set()
+    jobs.add(job)
+
+
+def _unregister_locked(parent: Any, job: _ForkJob) -> None:
+    (getattr(parent, "_plugin_fork_jobs", None) or set()).discard(job)
+
+
+def _fence_locked(job: _ForkJob, outcome: str) -> tuple[Any, bool]:
+    """Cancel ``job`` (caller holds ``_lock``): ``(admitted fork to interrupt or None, never
+    launched)``. No worker will ever settle a job that never launched, so it is settled with
+    ``outcome`` and unregistered here, and its queued dispatch becomes a no-op."""
     fork = job.run.cancel()
+    if job.launched:
+        return fork, False
+    if job.queue_key is not None and _queued.get(job.queue_key) is job:
+        del _queued[job.queue_key]
+    _unregister_locked(job.capture.parent_ref(), job)
+    job.handle._settle(outcome)
+    return None, True
+
+
+def _after_fence(job: _ForkJob, fork: Any, never_launched: bool, *, message: str, tool_reason: str) -> None:
+    """The fence's unlocked half: interrupt an admitted fork; for a job that never launched, free
+    its idle-queue slot and publish its request exit (so the canceller does not wait on it)."""
+    from agent.background_review import _interrupt_background_review, finish_background_review_run
+    from agent.review_idle_queue import QUEUE
+
     if fork is not None:
-        _interrupt_background_review(fork, message="plugin fork cancelled", tool_reason="plugin fork cancelled")
-    if job.handle.outcome == "deferred":
-        job.handle._settle("cancelled")
+        _interrupt_background_review(fork, message=message, tool_reason=tool_reason)
+    if never_launched:
+        if job.queue_key is not None:
+            QUEUE.discard(job.queue_key, job.dispatch)
+        finish_background_review_run(job.capture.parent_ref(), job.run)
+
+
+def _cancel_job(job: _ForkJob) -> None:
+    with _lock:
+        fork, never_launched = _fence_locked(job, "cancelled")
+    _after_fence(job, fork, never_launched, message="plugin fork cancelled", tool_reason="plugin fork cancelled")
 
 
 def interrupt_plugin_forks(agent: Any, *, message: str, tool_reason: str) -> list:
-    """Fence/interrupt every launched fork of ``agent``; the runs to await (``request_done``)."""
-    from agent.background_review import _interrupt_background_review
-
+    """Fence every fork of ``agent`` (deferred, launching or running) and refuse any fork of the
+    current turn not registered yet; the runs to await (``request_done``)."""
     with _lock:
-        runs = list(getattr(agent, "_plugin_fork_runs", None) or ())
-    for run in runs:
-        fork = run.cancel()
-        if fork is not None:
-            _interrupt_background_review(fork, message=message, tool_reason=tool_reason)
-    return runs
+        agent._plugin_forks_fenced_turn = getattr(agent, "_current_turn_id", None)
+        jobs = list(getattr(agent, "_plugin_fork_jobs", None) or ())
+        fenced = [(job, *_fence_locked(job, "cancelled")) for job in jobs]
+    for job, fork, never_launched in fenced:
+        _after_fence(job, fork, never_launched, message=message, tool_reason=tool_reason)
+    return [job.run for job in jobs]
 
 
 def _pin_capture(fork: Any, capture: Any) -> None:
@@ -371,7 +442,7 @@ def _run_job(job: _ForkJob) -> None:
             _track_child(parent, fork, register=False)
         finish_background_review_run(parent, job.run)
         with _lock:
-            getattr(parent, "_plugin_fork_runs", set()).discard(job.run)
+            _unregister_locked(parent, job)
         _TURN_ORIGIN.reset(origin_token)
         _set_thread_approval_callback(None)
         text = (result or {}).get("final_response") if isinstance(result, dict) else None

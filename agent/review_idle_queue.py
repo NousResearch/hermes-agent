@@ -114,6 +114,14 @@ class ReviewIdleQueue:
         with self._lock:
             return len(self._pending)
 
+    def discard(self, session_key: str, dispatch: Callable[[], None]) -> None:
+        """Drop the session's pending item when it is still ``dispatch``'s (a fenced plugin fork);
+        a newer item that replaced it stays queued."""
+        with self._lock:
+            item = self._pending.get(session_key)
+            if item is not None and item.dispatch is dispatch:
+                del self._pending[session_key]
+
     def _ensure_thread(self) -> None:
         with self._lock:
             if self._thread is None or not self._thread.is_alive():

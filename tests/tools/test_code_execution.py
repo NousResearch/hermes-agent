@@ -114,6 +114,16 @@ class TestHermesToolsGeneration(unittest.TestCase):
             self.assertIn(f"def {tool}(", src)
 
 
+def test_file_transport_module_starts_without_rpc_dir(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.delenv("HERMES_RPC_DIR", raising=False)
+    script = tmp_path / "hermes_tools.py"
+    script.write_text(generate_hermes_tools_module([], transport="file"), encoding="utf-8")
+    result = subprocess.run([sys.executable, "-I", str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
 
 
 

@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import re
 import shlex
 import shutil
@@ -152,7 +153,7 @@ def _is_volatile_mount_spec(spec: str) -> bool:
     if _is_windows_drive_path(source):
         return False  # drive-letter hosts can never be the POSIX process tempdir
     try:
-        temp_root = os.path.realpath(tempfile.gettempdir())
+        temp_root = os.path.realpath(_termux_safe_tempdir())
         source_abs = os.path.realpath(os.path.abspath(os.path.expanduser(source)))
         return source_abs == temp_root or source_abs.startswith(temp_root + os.sep)
     except OSError:  # unreadable source — treat as stable, fail the safe way

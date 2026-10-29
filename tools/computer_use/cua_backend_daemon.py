@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import shutil
 import subprocess
 import sys
@@ -127,7 +128,7 @@ class _EmbeddedCuaDaemon:
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
         self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
-                            else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
+                            else os.path.join(_termux_safe_tempdir(), f"hc-{token}.sock"))
 
     def child_env(self) -> dict[str, str]:
         env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}

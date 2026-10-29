@@ -267,12 +267,42 @@ _check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: set[Callable] = set()
+# Bumped by invalidate_check_fn_cache(): anything derived from the dropped verdicts is void.
+_check_fn_epoch = 0
+# Earliest expiry of the verdicts consulted inside check_fn_verdict_window() (None outside one).
+_verdict_expiry: ContextVar[Optional[list]] = ContextVar("check_fn_verdict_expiry", default=None)
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
     return fn
+
+
+def check_fn_cache_epoch() -> int:
+    """Changes whenever ``invalidate_check_fn_cache()`` drops the cached verdicts."""
+    return _check_fn_epoch
+
+
+@contextmanager
+def check_fn_verdict_window():
+    """Yield a one-item list holding the earliest expiry (``time.monotonic``) of the cached
+    ``check_fn`` verdicts consulted inside the block, ``inf`` when none was. A result filtered on
+    those verdicts must not be reused past it: reusing it would replay a verdict this cache has
+    already expired. A grace-served True expires at once, because the registry re-probes it on the
+    next call. ``no_cache_check_fn`` probes are config-backed and set no expiry."""
+    sink = [float("inf")]
+    token = _verdict_expiry.set(sink)
+    try:
+        yield sink
+    finally:
+        _verdict_expiry.reset(token)
+
+
+def _note_verdict_expiry(deadline: float) -> None:
+    sink = _verdict_expiry.get()
+    if sink is not None and deadline < sink[0]:
+        sink[0] = deadline
 
 
 def _fn_label(fn: Callable) -> object:
@@ -352,6 +382,7 @@ def _check_fn_cached(fn: Callable) -> bool:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
+            _note_verdict_expiry(cached[0] + _CHECK_FN_TTL_SECONDS)
             return cached[1]
     exc_info = None
     try:
@@ -369,10 +400,12 @@ def _check_fn_cached(fn: Callable) -> bool:
             _check_fn_last_good[cache_key] = now
             _check_fn_ever_good.add(cache_key)
             _check_fn_cache[cache_key] = (now, True)
+            _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → flake: serve last-good True, do NOT cache (next call re-probes).
+            _note_verdict_expiry(now)
             logger.warning(
                 "check_fn %s failed (%s) within %.0fs of last success; "
                 "treating as transient and keeping tool(s) available",
@@ -399,6 +432,7 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
+        _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
         return False
 
 
@@ -421,7 +455,9 @@ def _memo_check(fn: Callable, memo: dict[Callable, bool]) -> bool:
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
+    global _check_fn_epoch
     with _check_fn_cache_lock:
+        _check_fn_epoch += 1
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
         _check_fn_ever_good.clear()

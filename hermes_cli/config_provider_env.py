@@ -63,11 +63,14 @@ def _provider_entries() -> dict:
 
 def sync_registered_providers() -> None:
     """Provider discovery's completion hook: add the env vars of process-wide plugin providers it
-    registered (entry points enabled in config). Reads the registry as it stands, never config;
+    registered (entry points enabled in config). Reads the process-wide registry and its source
+    record as they stand: never config, never discovery. Not ``provider_source()``: that one is
+    profile-aware and scans the bound home's plugin dirs, whose isolation check reads config.
     ``$HERMES_HOME`` plugins (per profile) are not process-wide and are left out."""
     import providers
     from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
-    profiles = [p for name, p in list(providers._REGISTRY.items()) if providers.provider_source(name) != "bundled"]
+    sources = dict(providers._SOURCES)
+    profiles = [p for name, p in list(providers._REGISTRY.items()) if sources.get(name) != "bundled"]
     entries = _entries_for(profiles, _STATIC_NAMES | _PROVIDER_NAMES | set(_CATALOG or ()))
     for var, entry in entries.items():
         dict.__setitem__(OPTIONAL_ENV_VARS, var, entry)

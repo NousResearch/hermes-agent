@@ -82,6 +82,36 @@ def is_intentional_silence_response(response: Any) -> bool:
     return any(c in LIVE_GATEWAY_SILENT_MARKERS for c in _canonical_silence_candidates(response))
 
 
+def _split_trailing_line(text: str) -> tuple[str, str]:
+    """``(head, last line)`` of ``text`` with trailing blank space ignored; head is ``""`` when
+    there is only one line."""
+    head, _, tail = text.rstrip().rpartition("\n")
+    return head.rstrip(), tail
+
+
+def strip_trailing_silence_marker(response: Any) -> Any:
+    """Drop a silence marker that closes a real reply on its own line.
+
+    ``"Here is the answer.\\n\\nNO_REPLY"`` delivers ``"Here is the answer."``: the model
+    answered, then also said it has nothing more to add, and the token is not meant for the
+    reader. A bare marker is returned unchanged (that is the silence verdict, decided by
+    :func:`is_intentional_silence_response`), and a marker inside a line is prose.
+    """
+    if not isinstance(response, str):
+        return response
+    head, tail = _split_trailing_line(response)
+    return head if head.strip() and is_intentional_silence_response(tail) else response
+
+
+def ends_with_partial_silence_marker(text: Any) -> bool:
+    """True while a streamed reply's last line could still become a trailing silence marker
+    (``"answer\\n\\nNO_RE"``), so a stream preview never shows a marker it later retracts."""
+    if not isinstance(text, str):
+        return False
+    head, tail = _split_trailing_line(text)
+    return bool(head.strip()) and is_partial_silence_marker(tail)
+
+
 def is_autonomous_silence_response(response: Any) -> bool:
     """Loose silence matcher for autonomous lanes (cron, webhook).
 

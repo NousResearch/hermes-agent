@@ -24,8 +24,10 @@ def _bot_mode_delivery_text(response: Any, *, successful: bool) -> Any:
     Mode delivery boundary.  Failed turns intentionally fail open so their
     diagnostic text is never swallowed.
     """
-    from gateway.response_filters import is_intentional_silence_response
-    return "" if successful and is_intentional_silence_response(response) else response
+    from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+    if not successful:
+        return response
+    return "" if is_intentional_silence_response(response) else strip_trailing_silence_marker(response)
 
 
 def _is_bot_mode_session(session: dict) -> bool:

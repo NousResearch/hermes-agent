@@ -209,8 +209,7 @@ capabilities:
 the plugin integrates into Hermes, and that company is well known or reputable.
 `community`: everything else. Only Nous maintainers set `official` or
 `verified`; a contributor PR that sets either is changed to `community` in
-review (the `/plugin-catalog/` CODEOWNERS review is the gate; no CI check
-inspects the tier value).
+review (maintainer review is the gate; no CI check inspects the tier value).
 
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the

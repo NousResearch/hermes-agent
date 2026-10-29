@@ -31,14 +31,22 @@ class _ButtonAdapter:
         self.sends: list[str] = []
         self.edits: list[tuple] = []
         self.card_metadata: list[Any] = []
+        self.card_request_ids: list[Any] = []
         self.send_metadata: list[Any] = []
         self._editable = editable
+
+    def max_message_length_for_chat(self, chat_id: str) -> int:
+        return 4096
+
+    def message_len_fn_for_chat(self, chat_id: str):
+        return len
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
         return None
 
     async def send_exec_approval(self, *a: Any, **k: Any) -> SendResult:
         self.card_metadata.append(k.get("metadata"))
+        self.card_request_ids.append(k.get("request_id"))
         return SendResult(success=True, message_id="card-1")
 
     async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
@@ -105,6 +113,16 @@ def test_timeout_edits_the_card_to_say_the_command_did_not_run(pending_entry, tm
     assert adapter.sends == [], "an editable card needs no extra message"
     # ``notify`` is A2A's turn-final marker; an approval card must not carry it (#132516).
     assert adapter.card_metadata == [{"thread_id": "t1"}]  # no notify: A2A's turn-final marker
+
+
+def test_prompt_carries_request_identity(pending_entry):
+    adapter = _ButtonAdapter()
+    data = dict(pending_entry.data, timeout_s=3600)
+    _runner(adapter)._approval_notify_sync(data)
+
+    assert adapter.card_request_ids == [pending_entry.data["request_id"]]
+    # Platform metadata stays the thread routing only: the relay forwards it verbatim.
+    assert adapter.card_metadata == [{"thread_id": "t1"}]
 
 
 @pytest.mark.parametrize("text_fallback", [False, True])

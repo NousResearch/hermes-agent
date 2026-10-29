@@ -94,6 +94,8 @@ export interface ApprovalRequest extends KeyedPrompt {
   /** One short line under the folder or site. */
   risk?: string
   serverRequestId?: string
+  // Guardian-LLM explanation of why the command escalated ('' / absent = none).
+  smartReason?: string
   smartDenied?: boolean
   /** The folder (`access`) or site (`network`) the card names. */
   target?: ApprovalTarget
@@ -223,6 +225,7 @@ interface PendingApprovalPayload {
   path?: unknown
   request_id?: unknown
   risk?: unknown
+  smart_reason?: unknown
   smart_denied?: boolean
 }
 
@@ -477,6 +480,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
         requestId: pending.request_id,
         sessionId,
+        smartReason: typeof pending.smart_reason === 'string' ? pending.smart_reason : undefined,
         smartDenied: pending.smart_denied === true,
         ...approvalKindFields(pending as Record<string, unknown>)
       })

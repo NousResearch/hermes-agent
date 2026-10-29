@@ -24,6 +24,7 @@ export function restorePendingApproval(response: SessionResumeResult, sessionId:
     description: pending.description ?? 'dangerous command',
     requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
     sessionId,
+    smartReason: typeof pending.smart_reason === 'string' ? pending.smart_reason : undefined,
     smartDenied: pending.smart_denied === true,
     ...kindFields
   })

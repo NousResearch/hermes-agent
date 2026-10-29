@@ -52,6 +52,7 @@ export const approval: Handler = ctx => {
     requestId: str(p.request_id) || undefined,
     serverRequestId: request.id,
     sessionId: sessionId || null,
+    smartReason: str(p.smart_reason) || undefined,
     smartDenied: p.smart_denied === true,
     ...kindFields
   }

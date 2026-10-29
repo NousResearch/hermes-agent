@@ -16,6 +16,8 @@ teardown (``forget_session``) and never rebuilt by late frames.
 from __future__ import annotations
 
 import json
+import os
+import re
 import threading
 import uuid
 from collections import OrderedDict, deque
@@ -48,6 +50,130 @@ _replay_next_seq: dict[str, int] = {}
 # compute-host bridge echo) still gets a seq and a watermark but is never retained, so it cannot rebuild a
 # ring that nothing would free until FIFO eviction. One str per closed session, like _replay_next_seq.
 _replay_forgotten: set[str] = set()
+
+# ── durable turn spool ───────────────────────────────────────────────────────────────
+# A bounded in-memory ring cannot serve a reconnect that outlasts it, and the transcript is
+# only written to SQLite at turn end, so a client that reconnects mid-turn has nothing to
+# refetch. Every event frame is therefore ALSO appended to a per-session spool file and
+# `events_since` serves the gap from it. This is the resumable-stream pattern the ecosystem
+# uses (record every chunk in a log, resume by offset), with a file as the log.
+#
+# Nothing here is a source of truth: the spool is a replay tail, bounded per session and
+# deleted at teardown. A missing or unreadable spool degrades to today's behaviour.
+_SPOOL_DIR_NAME = ("runtime", "event_spool")
+_SPOOL_MAX_BYTES = 2 * 1024 * 1024
+_SPOOL_KEEP_LINES = 16384
+_spool_bytes: dict[str, int] = {}
+_spool_lock = threading.Lock()
+
+
+def _spool_dir() -> str:
+    home = os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+    return os.path.join(home, *_SPOOL_DIR_NAME)
+
+
+def _spool_path(sid: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", sid or "")[:120] or "session"
+    return os.path.join(_spool_dir(), f"{safe}.jsonl")
+
+
+def _spool_append(sid: str, seq: int, payload: bytes) -> None:
+    """Append one frame to the session's spool. Best-effort: replay must never break a turn."""
+    if not sid:
+        return
+    path = _spool_path(sid)
+    try:
+        with _spool_lock:
+            size = _spool_bytes.get(sid)
+            if size is None:
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+            line = str(seq).encode("ascii") + b"\t" + payload + b"\n"
+            try:
+                handle = open(path, "ab")
+            except FileNotFoundError:
+                # The cached size said the file was there; it was removed under us (a test reset,
+                # a teardown, an operator). Recreate the directory rather than silently drop the
+                # turn's replay tail.
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                handle = open(path, "ab")
+            with handle:
+                handle.write(line)
+                size += len(line)
+            _spool_bytes[sid] = size
+            if size > _SPOOL_MAX_BYTES:
+                _spool_trim(sid, path)
+    except OSError:
+        return
+
+
+def _spool_trim(sid: str, path: str) -> None:
+    """Keep the newest _SPOOL_KEEP_LINES lines when a spool outgrows its cap (caller holds lock)."""
+    try:
+        with open(path, "rb") as handle:
+            lines = handle.readlines()[-_SPOOL_KEEP_LINES:]
+        with open(path, "wb") as handle:
+            handle.writelines(lines)
+        _spool_bytes[sid] = sum(len(line) for line in lines)
+    except OSError:
+        _spool_bytes.pop(sid, None)
+
+
+def _spool_read(sid: str, last_seen: int) -> list[tuple[int, bytes]]:
+    """Frames with seq > last_seen still on disk. Caller is a reconnect, so cost is fine."""
+    if not sid:
+        return []
+    path = _spool_path(sid)
+    out: list[tuple[int, bytes]] = []
+    try:
+        with open(path, "rb") as handle:
+            for line in handle:
+                head, sep, payload = line.partition(b"\t")
+                if not sep:
+                    continue
+                try:
+                    seq = int(head)
+                except ValueError:
+                    continue
+                if seq > last_seen:
+                    out.append((seq, payload.rstrip(b"\n")))
+    except OSError:
+        return []
+    return out
+
+
+def _spool_next_after(sid: str, last_seen: int) -> int | None:
+    """Smallest seq on disk greater than *last_seen*, or None.
+
+    Returned as a seq rather than a boolean because contiguity is the question: the spool can
+    hold a hole (an oversized frame is never written), and then the next seq is not last_seen+1.
+    """
+    if not sid:
+        return None
+    try:
+        with open(_spool_path(sid), "rb") as handle:
+            for line in handle:
+                head = line.partition(b"\t")[0]
+                try:
+                    seq = int(head)
+                except ValueError:
+                    continue
+                if seq > last_seen:
+                    return seq
+    except OSError:
+        return None
+    return None
+
+
+def _spool_forget(sid: str) -> None:
+    try:
+        os.unlink(_spool_path(sid))
+    except OSError:
+        pass
+    with _spool_lock:
+        _spool_bytes.pop(sid, None)
 
 
 def replay_epoch() -> str:
@@ -100,6 +226,8 @@ def _stamp_event(obj: dict) -> None:
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
                 _drop_ring_locked(next(iter(_replay_buffers)))
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
+            # Not spooled either: one frame over the cap is not a replayable unit, and writing it
+            # would only push the real turn out of the spool.
             _replay_evicted_through[sid] = seq
             return
         buf.append((seq, payload, size))
@@ -120,6 +248,8 @@ def _stamp_event(obj: dict) -> None:
                         _replay_evicted_through.get(evict_sid, 0), evicted_seq
                     )
                     break
+    # The ring is the fast path; the spool is what makes a reconnect that outlasts it work.
+    _spool_append(sid, seq, payload)
 
 
 def _drop_ring_locked(sid: str) -> None:
@@ -135,6 +265,9 @@ def _drop_ring_locked(sid: str) -> None:
         return
     _replay_total_bytes -= _replay_buffer_bytes.pop(sid, 0)
     _replay_evicted_through[sid] = max(_replay_evicted_through.get(sid, 0), _replay_next_seq.get(sid, 0))
+    # A dropped ring also drops its durable tail. Eviction here means the session is idle and
+    # past the session cap (or torn down), so the transcript is its source of truth again.
+    _spool_forget(sid)
 
 
 def forget_session(sid: str) -> None:
@@ -153,18 +286,48 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
     Returning the full JSON-RPC envelope would make every replayed event fail the
     client's ``event.type`` gate and be silently dropped. Decode after releasing the ring lock so a
     large replay cannot block concurrent event stamping.
+
+    When the ring has evicted past *last_seen* the durable spool fills the gap, so a reconnect
+    that outlasts the ring still gets the whole turn instead of a refetch it cannot satisfy.
     """
+    sid = sid or ""
     with _replay_lock:
-        buf = _replay_buffers.get(sid or "")
+        buf = _replay_buffers.get(sid)
         snapshots = [(seq, payload) for seq, payload, _size in buf if seq > last_seen] if buf else []
+        evicted = _replay_evicted_through.get(sid, 0)
+    if last_seen < evicted and sid not in _replay_forgotten:
+        seen = {seq for seq, _payload in snapshots}
+        for seq, payload in _spool_read(sid, last_seen):
+            if seq not in seen:
+                snapshots.append((seq, payload))
+                seen.add(seq)
+        snapshots.sort(key=lambda item: item[0])
     return [_thaw_params(payload, seq) for seq, payload in snapshots]
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:
-    """True when events between *last_seen* and the ring's oldest retained seq were
-    evicted — the client must refetch history instead of trusting the replay."""
+    """True when a seq after *last_seen* is no longer servable, so the client must refetch.
+
+    Ring eviction alone is not a gap any more: the durable spool still holds the turn. The
+    question is whether anything can serve the *contiguous* range from last_seen + 1, so
+    compare the oldest seq either source still has against that.
+    """
+    sid = sid or ""
     with _replay_lock:
-        return last_seen < _replay_evicted_through.get(sid or "", 0)
+        latest = _replay_next_seq.get(sid, 0)
+    if last_seen >= latest:
+        return False
+    if sid in _replay_forgotten:
+        return True
+    with _replay_lock:
+        buf = _replay_buffers.get(sid)
+        ring_next = next((seq for seq, _p, _s in buf if seq > last_seen), None) if buf else None
+    candidates = [seq for seq in (ring_next, _spool_next_after(sid, last_seen)) if seq is not None]
+    if not candidates:
+        return True
+    # Servable only if the very next seq is there; anything larger means a hole the client must
+    # close by refetching history.
+    return min(candidates) != last_seen + 1
 
 
 def latest_seq(sid: str) -> int:
@@ -174,9 +337,14 @@ def latest_seq(sid: str) -> int:
 
 
 def reset_replay_state() -> None:
-    """Test hook."""
+    """Test hook. Also drops the durable spool, or a later run in the same process inherits
+    files whose seq numbering it no longer shares."""
     with _replay_lock:
         global _replay_total_bytes
+        for sid in list(_replay_forgotten | set(_replay_buffers) | set(_replay_next_seq)):
+            _spool_forget(sid)
+        with _spool_lock:
+            _spool_bytes.clear()
         _replay_buffers.clear()
         _replay_buffer_bytes.clear()
         _replay_evicted_through.clear()

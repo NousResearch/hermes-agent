@@ -297,6 +297,67 @@ class TestGuardActive:
 
 
 # ---------------------------------------------------------------------------
+# Nested shell-wrapper bypass (probe finding — double-quoted inner payload)
+# ---------------------------------------------------------------------------
+
+class TestNestedShellWrapperBypass:
+    """bash -c 'sh -c "cd <root> && git …"' must be blocked.
+
+    The outer shell's closing ``"'`` caused the regex end-anchor to miss the
+    ``git stash`` / ``git reset --hard`` token at depth 1.  Only after full
+    recursive unwrapping (depth 2) does the clean payload
+    ``cd <root> && git stash`` appear where the anchor matches.
+    """
+
+    @pytest.fixture(autouse=True)
+    def set_protected_root(self, tmp_path, monkeypatch):
+        self._root = tmp_path / "mainrepo"
+        self._root.mkdir()
+        monkeypatch.setenv("HERMES_PROTECTED_GIT_ROOTS", str(self._root))
+
+    def _guard(self, command: str, cwd: str | None = None):
+        from tools.approval import check_protected_git_roots_guard
+        return check_protected_git_roots_guard(command, cwd or "/tmp")
+
+    def test_nested_bash_sh_cd_stash_blocked(self):
+        """bash -c 'sh -c "cd <root> && git stash"' from /tmp must be blocked."""
+        cmd = f'bash -c \'sh -c "cd {self._root} && git stash"\''
+        result = self._guard(cmd)
+        assert result is not None, (
+            f"Guard did not fire for doubly-nested wrapper: {cmd!r}"
+        )
+        assert result["approved"] is False
+
+    def test_nested_bash_sh_cd_reset_blocked(self):
+        """bash -c 'sh -c "cd <root> && git reset --hard"' from /tmp must be blocked."""
+        cmd = f'bash -c \'sh -c "cd {self._root} && git reset --hard"\''
+        result = self._guard(cmd)
+        assert result is not None, (
+            f"Guard did not fire for doubly-nested wrapper: {cmd!r}"
+        )
+        assert result["approved"] is False
+
+    def test_nested_bash_sh_cd_checkout_blocked(self):
+        """bash -c 'sh -c "cd <root> && git checkout main"' from /tmp must be blocked."""
+        cmd = f'bash -c \'sh -c "cd {self._root} && git checkout main"\''
+        result = self._guard(cmd)
+        assert result is not None, (
+            f"Guard did not fire for doubly-nested checkout: {cmd!r}"
+        )
+        assert result["approved"] is False
+
+    def test_nested_safe_cwd_outside_root_allowed(self, tmp_path):
+        """Nested wrapper pointing outside protected root must be allowed."""
+        safe = tmp_path / "safe"
+        safe.mkdir()
+        cmd = f'bash -c \'sh -c "cd {safe} && git stash"\''
+        result = self._guard(cmd)
+        assert result is None, (
+            f"Guard incorrectly fired for wrapper pointing outside root: {cmd!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Integration: terminal_tool JSON response format
 # ---------------------------------------------------------------------------
 

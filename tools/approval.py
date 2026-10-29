@@ -3510,6 +3510,38 @@ def _pg_effective_cwd(command: str, session_cwd: str, _depth: int = 0) -> str:
     return cwd
 
 
+def _pg_scan_deny(text: str, _depth: int = 0) -> "str | None":
+    """Recursively scan *text* (and its shell-wrapper inner payloads) for any
+    pattern in ``_PROTECTED_GIT_DENY``.
+
+    Returns the first matching description, or ``None``.
+
+    The recursion is needed because a doubly-nested wrapper such as::
+
+        bash -c 'sh -c "cd /protected && git stash"'
+
+    produces ``git stash"`` at the first unpack level (the trailing ``"``
+    prevents the regex's end-anchor from matching).  Only at the *second*
+    unpack level do we get the clean payload ``cd /protected && git stash``
+    where ``git stash$`` matches.  Recursion is capped at depth 6.
+    """
+    # Direct scan of the current text level.
+    for pat, desc in _PROTECTED_GIT_DENY:
+        if pat.search(text):
+            return desc
+    # Recurse into shell-wrapper payloads.
+    if _depth >= 6:
+        return None
+    for seg in _iter_top_level_shell_segments(text):
+        inner = _pg_extract_shell_c_payload(seg.strip())
+        if inner is None:
+            continue
+        result = _pg_scan_deny(inner, _depth + 1)
+        if result is not None:
+            return result
+    return None
+
+
 def check_protected_git_roots_guard(command: str, session_cwd: str) -> Optional[dict]:
     """Fail-closed guard for kanban workers: block destructive git commands on
     protected checkouts.
@@ -3588,29 +3620,12 @@ def check_protected_git_roots_guard(command: str, session_cwd: str) -> Optional[
         return None  # cwd and explicit git paths are outside protected roots
 
     # Check whether the command matches any protected git deny pattern.
-    # Primary: scan the entire command text so semicolon chains,
-    # `sh -c "..."`, `command git ...`, and `\git ...` wrappers are caught.
-    # Secondary: also scan each top-level segment's shell-wrapper inner
-    # payload — single-quoted wrappers (``bash -c '...'``) have a closing
-    # quote at the end of the raw command, which can prevent the stash/push
-    # pattern's terminal anchor from matching the outer text.
-    hit_desc: Optional[str] = None
-    for pat, desc in _PROTECTED_GIT_DENY:
-        if pat.search(command):
-            hit_desc = desc
-            break
-
-    if hit_desc is None:
-        for seg in _iter_top_level_shell_segments(command):
-            inner = _pg_extract_shell_c_payload(seg.strip())
-            if inner is None:
-                continue
-            for pat, desc in _PROTECTED_GIT_DENY:
-                if pat.search(inner):
-                    hit_desc = desc
-                    break
-            if hit_desc is not None:
-                break
+    # Uses _pg_scan_deny() which recursively unwraps nested shell wrappers
+    # (e.g. ``bash -c 'sh -c "cd <root> && git stash"'``) so that doubly-
+    # quoted payloads whose terminal ``"'`` characters prevent the regex's
+    # end-anchor from matching the outer text are still caught at the
+    # innermost expansion level.
+    hit_desc = _pg_scan_deny(command)
 
     if hit_desc is None:
         return None  # command is safe (e.g. git log, git status, git stash list)

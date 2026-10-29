@@ -904,6 +904,17 @@ def _converse_replay_policy(model: Optional[str]) -> str:
     return "strip" if any(p in lowered for p in _CONVERSE_REPLAY_STRIP_PATTERNS) else "unsigned"
 
 
+def _minted_outside_claude(issuer: Optional[str]) -> bool:
+    return issuer is not None and _converse_replay_policy(issuer) != "signed"
+
+
+def reasoning_minted_outside_claude(msg: dict) -> bool:
+    """True when a non-Claude Converse model stamped this turn's reasoning. Claude gets none of it on either
+    Bedrock wire (Converse here, AnthropicBedrock in anthropic_message_convert): it cannot open another
+    family's sealed blobs. Unstamped turns (Claude's own AnthropicBedrock turns, older sessions) are False."""
+    return _minted_outside_claude(_issuer(msg))
+
+
 def _unsigned_reasoning(block: dict) -> Optional[dict]:
     reasoning = block.get("reasoningContent")
     if not isinstance(reasoning, dict):
@@ -943,7 +954,7 @@ def _reasoning_filter(policy: str, issuer: Optional[str], own: bool, *, in_loop:
     if own:
         return _verbatim if in_loop or policy in ("unsigned", "issuer") else prior
     if issuer is not None:
-        return _without_reasoning if policy == "signed" and _converse_replay_policy(issuer) != "signed" else prior
+        return _without_reasoning if policy == "signed" and _minted_outside_claude(issuer) else prior
     return loop if in_loop else prior
 
 

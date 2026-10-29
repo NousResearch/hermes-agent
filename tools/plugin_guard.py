@@ -322,8 +322,7 @@ def _tracked_bytecode(plugin_dir: Path) -> set[str]:
     try:
         out = subprocess.run(
             ["git", "-c", "core.fsmonitor=false", "-C", str(plugin_dir), "ls-files", "-z", "--", "*.pyc", "*.pyo"],
-            capture_output=True, check=True, timeout=60, stdin=subprocess.DEVNULL,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).stdout
+            capture_output=True, check=True, timeout=60, stdin=subprocess.DEVNULL).stdout
     except (OSError, subprocess.SubprocessError):
         return set()
     return {os.fsdecode(p) for p in out.split(b"\0") if p}

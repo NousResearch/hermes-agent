@@ -63,6 +63,13 @@ class TestWriteDenyPrefixes:
         path = os.path.join(str(Path.home()), ".ssh", "some_key")
         assert _is_write_denied(path) is True
 
+    def test_windows_appdata_credential_stores(self):
+        """gcloud, the GitHub CLI and Gpg4win keep credentials under %APPDATA% on Windows."""
+        roaming = os.path.join(str(Path.home()), "AppData", "Roaming")
+        for rel in (("gcloud", "application_default_credentials.json"), ("GitHub CLI", "hosts.yml"),
+                    ("gnupg", "pubring.kbx")):
+            assert _is_write_denied(os.path.join(roaming, *rel)) is True, rel
+
 
     def test_systemd_prefix(self, tmp_path):
         # On NixOS, /etc/systemd is a symlink into /nix/store, so

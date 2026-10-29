@@ -1,0 +1,37 @@
+name: hermes-ios
+title: Hermes-iOS-sim
+repo: https://github.com/akinduroifedayo/Hermes-iOS-sim
+sha: 7f48cf060e76eae29a2bdef77c2969ba6ca9898f
+subdir: plugin
+version: "1.0.0"
+description: >-
+  Build and visually iterate on native iOS apps in Hermes Desktop through
+  localhost. Runs Xcode commands and a pinned preview server; known dependency
+  security limitations are disclosed in the README.
+maintainer: akinduroifedayo
+tier: community
+category: desktop
+platforms:
+  - macos
+docs_url: https://github.com/akinduroifedayo/Hermes-iOS-sim/blob/7f48cf060e76eae29a2bdef77c2969ba6ca9898f/README.md
+known_issues:
+  - >-
+    Localhost only. Never expose, forward, or tunnel the preview port.
+    serve-sim 0.1.48 lacks Host validation and exposes unauthenticated simulator
+    control routes. Localhost does not eliminate malicious-browser risks.
+  - >-
+    Requires Xcode, an iOS Simulator runtime, Node.js 20+, and npm.
+    No minimum compatible Hermes version or independent-Mac qualification is established.
+  - >-
+    Uses the read-only undocumented worker_config_snapshot host API for
+    lifecycle selection; host changes can break automatic cleanup.
+capabilities:
+  provides_tools:
+    - ios_iteration
+    - ios_setup
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware:
+    - tool_execution
+  requires_env: []

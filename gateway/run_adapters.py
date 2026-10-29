@@ -817,7 +817,12 @@ class GatewayAdapterLifecycleMixin:
             from gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = self._create_adapter(platform, platform_config)
+            # Construction blocks too — create_adapter runs the dependency installer, and a plugin's
+            # _build_adapter may reload config (Telegram's _resolve_notifications_mode() called
+            # load_gateway_config()). Left on the loop it stalled every other request, including
+            # session.resume, which the desktop abandons after 30 s.
+            adapter = await self._run_in_executor_with_context(
+                self._create_adapter, platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.

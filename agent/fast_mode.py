@@ -94,12 +94,16 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
 
 
 def fast_mode_unprovisioned(api_error: Any, api_kwargs: Any) -> bool:
-    """True for a 429 on a ``speed: "fast"`` request whose fast-mode limit header is 0. The
-    organization has no fast capacity for the model, so waiting or rotating keys cannot help."""
-    if getattr(api_error, "status_code", None) != 429 or not isinstance(api_kwargs, dict):
+    """True when a fast request is rejected because the organization has not enabled fast
+    mode or has no fast capacity for the model. Waiting or rotating keys cannot help."""
+    status = getattr(api_error, "status_code", None)
+    if status not in (400, 429) or not isinstance(api_kwargs, dict):
         return False
     if (api_kwargs.get("extra_body") or {}).get("speed") != "fast":
         return False
+    if status == 400:
+        message = str(getattr(api_error, "body", None) or api_error).lower()
+        return "fast mode is not enabled for your organization" in message
     headers = getattr(getattr(api_error, "response", None), "headers", None)
     if headers is None:
         return False

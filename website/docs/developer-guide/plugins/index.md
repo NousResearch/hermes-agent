@@ -1557,6 +1557,25 @@ The kanban lifecycle hooks fire **after** the board DB change commits, so a call
 
 The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
+### Mandatory human consent from `pre_tool_call`
+
+A policy plugin that requires a fresh human answer can return
+`{"action": "approve", "approval_policy": "mandatory", "message": "...", "rule_key": "..."}`.
+Feature-detect `"mandatory" in hermes_cli.plugins.VALID_TOOL_APPROVAL_POLICIES`
+before relying on it; ordinary `approve` still honors yolo, off mode and remembered grants.
+
+The mandatory policy uses the configured approval transport or the native gateway/CLI
+prompt, offers only once/deny and never persists a session or permanent grant. No human
+channel, timeout, cancellation or delivery failure blocks the call. Only a fresh once
+answer permits execution; any plugin veto still wins, and mandatory takes priority over
+ordinary approve. The prompt shows a secret-redacted copy of the effective arguments;
+the same detached argument snapshot is returned to the dispatcher for execution.
+
+A concrete consumer is an owner/role policy gate that names the principle its proposed
+file write or delegated operation violates, while keeping all approval UI and transport
+host-owned. It can return block on hosts without the mandatory policy rather than weaken
+its contract to a bypassable ordinary approve.
+
 ### `pre_llm_call` context injection
 
 This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.

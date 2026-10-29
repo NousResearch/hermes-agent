@@ -1563,6 +1563,23 @@ class TestForceReloadSymmetry:
         assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
         hold.set()
 
+    def test_final_policy_timeout_has_hook_specific_block_message(self, monkeypatch):
+        from hermes_cli.plugins_dispatch import _FINAL_POLICY_TIMEOUT_BLOCK_MESSAGE
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1)
+        hold = threading.Event()
+
+        def hung_policy(**_kwargs):
+            hold.wait(timeout=10.0)
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call_final"] = [hung_policy]
+
+        result = mgr.invoke_hook("pre_tool_call_final", tool_name="terminal", args={})
+
+        assert result == [{"action": "block", "message": _FINAL_POLICY_TIMEOUT_BLOCK_MESSAGE}]
+        hold.set()
+
     def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
         self, monkeypatch
     ):

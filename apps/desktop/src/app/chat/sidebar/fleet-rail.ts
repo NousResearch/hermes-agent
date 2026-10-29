@@ -48,15 +48,22 @@ export function fleetRouteKey(connectionId: string, profile: string): string {
  * - A gateway the roster neither lists as a source nor attributes agents to
  *   was collapsed into another registration of the same backend (install_id
  *   match) → skipped, never shown twice.
+ * - A gateway the user hid in Settings → Gateways → skipped. This is the only
+ *   visibility filter, and it runs after the active-connection skip so the
+ *   source this window is running on can never be hidden: the hide is how a
+ *   user tidies the rail, not a way to strand themselves off a backend (#96532).
  */
 export function buildRestGroups({
   activeConnectionId,
   connections,
+  hidden,
   order = [],
   roster
 }: {
   activeConnectionId: null | string
   connections: readonly DesktopRegistryConnection[]
+  /** Connection ids the user hid from the rail. Purely presentational. */
+  hidden?: ReadonlySet<string>
   order?: readonly string[]
   roster: DesktopAgentRoster | null
 }): FleetGroup[] {
@@ -64,6 +71,10 @@ export function buildRestGroups({
 
   for (const connection of sortConnectionsForDisplay(connections)) {
     if (connection.id === activeConnectionId) {
+      continue
+    }
+
+    if (hidden?.has(connection.id)) {
       continue
     }
 

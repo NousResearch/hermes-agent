@@ -34,6 +34,13 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import {
+  $projectLabelMode,
+  $showEmptyWorktreeLanes,
+  type ProjectLabelMode,
+  setProjectLabelMode,
+  setShowEmptyWorktreeLanes
+} from '@/store/sidebar-project-display'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -422,6 +429,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
+  const projectLabelMode = useStore($projectLabelMode)
+  const showEmptyWorktreeLanes = useStore($showEmptyWorktreeLanes)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
@@ -508,6 +517,11 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  const projectLabelOptions = [
+    { id: 'short', label: a.projectLabelShort },
+    { id: 'full', label: a.projectLabelFull }
+  ] as const satisfies readonly { id: ProjectLabelMode; label: string }[]
 
   const interfaceModeOptions = INTERFACE_MODES.map(id => ({
     id,
@@ -727,6 +741,25 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={t.interfaceMode.hint}
               id={settingElementId(ids.interfaceMode)}
               title={t.interfaceMode.title}
+            />
+          )}
+
+          {show('window-layout') && (
+            <ListRow
+              action={<SegmentedControl onChange={setProjectLabelMode} options={projectLabelOptions} value={projectLabelMode} />}
+              description={a.projectLabelDesc}
+              id={settingElementId(ids.projectLabel)}
+              title={a.projectLabelTitle}
+            />
+          )}
+
+          {show('window-layout') && (
+            <ToggleRow
+              checked={showEmptyWorktreeLanes}
+              description={a.showEmptyWorktreeLanesDesc}
+              id={settingElementId(ids.showEmptyWorktreeLanes)}
+              label={a.showEmptyWorktreeLanesTitle}
+              onChange={setShowEmptyWorktreeLanes}
             />
           )}
 

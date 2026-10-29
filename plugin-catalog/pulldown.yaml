@@ -1,0 +1,20 @@
+name: pulldown
+title: Pulldown
+repo: https://github.com/anthony-maio/pulldown
+sha: ca16dc479714e59f8b361e8dd1c3714110b9da75
+subdir: src/pulldown/hermes_plugin
+description: Read public pages as bounded Markdown with source metadata and explicit Chromium rendering.
+maintainer: anthony-maio
+tier: community
+category: web
+requires_hermes: ">=0.22.2"
+version: "0.1.0"
+docs_url: https://github.com/anthony-maio/pulldown/blob/ca16dc479714e59f8b361e8dd1c3714110b9da75/src/pulldown/hermes_plugin/README.md
+known_issues:
+  - Requires a separate Python 3.10+ environment containing Pulldown 0.5.0 and a configured python_path. Rendering also requires Playwright and Chromium.
+capabilities:
+  provides_tools:
+    - pulldown_fetch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

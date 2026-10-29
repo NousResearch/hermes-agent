@@ -8,6 +8,8 @@ export const RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE = 'data-renderer-animations-pa
 export function createRendererLoopPauseController(onChange: () => void, { pauseWhenUnfocused = false } = {}) {
   let windowPaused = false
   let windowFocused = document.hasFocus()
+  let disposed = false
+  let sawWindowStatePush = false
 
   const onVisibilityChange = () => onChange()
 
@@ -25,7 +27,7 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
     }
   }
 
-  const offWindowState = window.hermesDesktop?.onWindowStateChanged?.((payload: WindowStatePayload) => {
+  const applyWindowState = (payload: WindowStatePayload | undefined) => {
     const next = payload?.isMinimized === true || payload?.isVisible === false
 
     if (windowPaused === next) {
@@ -34,7 +36,30 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
 
     windowPaused = next
     onChange()
+  }
+
+  const offWindowState = window.hermesDesktop?.onWindowStateChanged?.((payload: WindowStatePayload) => {
+    sawWindowStatePush = true
+    applyWindowState(payload)
   })
+
+  // #127647: the bridge above reports changes only, and only the main window
+  // gets a seed push after load — a session window created (or restored)
+  // already minimized never receives one, so a controller seeded only by
+  // pushes believes the window is shown and keeps hidden animations running.
+  // Pull the current snapshot once. A live push that already arrived is
+  // preferred over the pull's snapshot, so the pull only lands while no push
+  // has been seen. A missing getWindowState (an older preload) or a failed
+  // invoke leaves the push-only behaviour intact.
+  void Promise.resolve(window.hermesDesktop?.getWindowState?.())
+    .then((payload: WindowStatePayload | undefined) => {
+      if (!disposed && !sawWindowStatePush) {
+        applyWindowState(payload)
+      }
+    })
+    .catch(() => {
+      void 0
+    })
 
   document.addEventListener('visibilitychange', onVisibilityChange)
 
@@ -45,6 +70,7 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
 
   return {
     dispose: () => {
+      disposed = true
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)

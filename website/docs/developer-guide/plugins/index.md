@@ -1615,6 +1615,25 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
 | `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
 
+### Mandatory human consent from `pre_tool_call`
+
+A policy plugin that requires a fresh human answer can return
+`{"action": "approve", "approval_policy": "mandatory", "message": "...", "rule_key": "..."}`.
+Feature-detect `"mandatory" in hermes_cli.plugins.VALID_TOOL_APPROVAL_POLICIES`
+before relying on it; ordinary `approve` still honors yolo, off mode and remembered grants.
+
+The mandatory policy uses the configured approval transport or the native gateway/CLI
+prompt, offers only once/deny and never persists a session or permanent grant. No human
+channel, timeout, cancellation or delivery failure blocks the call. Only a fresh once
+answer permits execution; any plugin veto still wins, and mandatory takes priority over
+ordinary approve. The prompt shows a secret-redacted copy of the effective arguments;
+the same detached argument snapshot is returned to the dispatcher for execution.
+
+A concrete consumer is an owner/role policy gate that names the principle its proposed
+file write or delegated operation violates, while keeping all approval UI and transport
+host-owned. It can return block on hosts without the mandatory policy rather than weaken
+its contract to a bypassable ordinary approve.
+
 ### `pre_llm_call` context injection
 
 When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.

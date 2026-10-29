@@ -99,12 +99,14 @@ def _shortened_path(path: str) -> str:
     try:
         abs_path = os.path.abspath(os.path.expanduser(path))
         cwd, home = os.getcwd(), os.path.expanduser("~")
+        cwd_prefix = os.path.join(cwd, "")
+        home_prefix = os.path.join(home, "")
         if abs_path == cwd:
             return "."
-        if abs_path.startswith(cwd + os.sep):
-            return abs_path[len(cwd) + 1 :]
-        if abs_path.startswith(home + os.sep):
-            return "~/" + abs_path[len(home) + 1 :]
+        if abs_path.startswith(cwd_prefix):
+            return abs_path[len(cwd_prefix) :]
+        if abs_path.startswith(home_prefix):
+            return "~/" + abs_path[len(home_prefix) :]
         return abs_path
     except Exception:
         return path

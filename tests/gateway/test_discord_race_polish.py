@@ -63,13 +63,18 @@ async def test_concurrent_joins_do_not_double_connect():
     from plugins.platforms.discord import adapter as discord_mod
     with patch.object(discord_mod, "VoiceReceiver",
                       MagicMock(return_value=MagicMock(start=lambda: None))):
-        with patch.object(discord_mod.asyncio, "ensure_future",
-                          lambda _c: asyncio.create_task(asyncio.sleep(0))):
+        async def listen(_guild):
+            await release_listener.wait()
+
+        release_listener = asyncio.Event()
+        with patch.object(adapter, "_voice_listen_loop", listen):
             t1 = asyncio.create_task(adapter.join_voice_channel(channel))
             t2 = asyncio.create_task(adapter.join_voice_channel(channel))
             await asyncio.sleep(0.05)
             release.set()
             r1, r2 = await asyncio.gather(t1, t2)
+            release_listener.set()
+            await adapter._voice_listen_tasks[42]
 
     assert connect_count[0] == 1, (
         f"expected 1 channel.connect() call, got {connect_count[0]} — "

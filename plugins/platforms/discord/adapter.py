@@ -3789,7 +3789,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         return bool(mixers) and mixers.get(guild_id) is not None
 
     async def join_voice_channel(self, channel, *, text_channel_id: int | None = None, source: dict | None = None) -> bool:
-        """Join a voice channel; returns True on success. ``text_channel_id`` stores the
+        """Join a voice channel; returns True once its receiver and listener are running. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""
         if not self._client or not DISCORD_AVAILABLE:
             return False
@@ -3801,27 +3801,33 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
                 self._bind_voice_text_channel(guild_id, text_channel_id, source)
-                return True
+                return self.is_listening_in_voice_channel(guild_id)
             vc = await channel.connect()
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
             self._bind_voice_text_channel(guild_id, text_channel_id, source)
+            receiver = None
             try:
                 receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-                receiver.start()
                 self._voice_receivers[guild_id] = receiver
+                receiver.start()
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
                     self._voice_listen_loop(guild_id)
                 )
             except Exception as e:
-                logger.warning("Voice receiver failed to start: %s", e)
+                logger.warning("Voice receiver failed to start (guild=%d, error_type=%s)", guild_id, type(e).__name__)
+                await self._abort_voice_join(guild_id, vc, receiver)
+                return False
             # Mixer is best-effort; failure falls back to one-shot FFmpegPCMAudio playback.
             if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
                 try:
                     await self._install_voice_mixer(guild_id, vc)
                 except Exception as e:
                     logger.warning("Voice mixer failed to start: %s", e)
-            return True
+            ready = self.is_listening_in_voice_channel(guild_id)
+            if not ready:
+                await self._abort_voice_join(guild_id, vc, receiver)
+            return ready
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
@@ -4039,8 +4045,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            logger.error("Voice listen loop error: %s", e, exc_info=True)
+        except Exception as e:  # health: allow BLE001 -- Speech ingress exceptions/tracebacks may contain private content; log type only.
+            logger.error("Voice listen loop error (guild=%d, error_type=%s)", guild_id, type(e).__name__)
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes, captured_for: int | None):
         """Convert PCM -> WAV -> STT -> callback; dropped if the binding moved off *captured_for* during STT."""
@@ -4057,7 +4063,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             transcript = result.get("transcript", "").strip()
             if not transcript or is_whisper_hallucination(transcript):
                 return
-            logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            logger.info("Voice input received (guild=%d, user=%d, characters=%d)", guild_id, user_id, len(transcript))
             if getattr(self, "_voice_text_channels", {}).get(guild_id) != captured_for:
                 logger.info("Dropping voice input from user %d: binding moved during transcription", user_id)
                 return
@@ -4065,18 +4071,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 await self._voice_input_callback(
                     guild_id=guild_id, user_id=user_id, transcript=transcript,
                 )
-        except Exception as e:
-            # Surface ffmpeg's captured stderr from CalledProcessError, else log just says "exit status N".
-            _ff_err = getattr(e, "stderr", None)
-            if _ff_err:
-                if isinstance(_ff_err, bytes):
-                    _ff_err = _ff_err.decode("utf-8", "replace")
-                logger.warning(
-                    "Voice input processing failed: %s (ffmpeg: %s)",
-                    e, _ff_err.strip(), exc_info=True,
-                )
-            else:
-                logger.warning("Voice input processing failed: %s", e, exc_info=True)
+        except Exception as e:  # health: allow BLE001 -- Provider/callback exceptions and tracebacks may contain private speech; log type only.
+            # Provider/callback exceptions and stderr can contain the transcript too.
+            logger.warning("Voice input processing failed (guild=%d, user=%d, error_type=%s)",
+                           guild_id, user_id, type(e).__name__)
         finally:
             try:
                 os.unlink(wav_path)

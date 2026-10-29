@@ -82,7 +82,10 @@ def _publish_tool_snapshot(
         current_defs = _agent_tool_defs(agent)
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
-            new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
+            # Registry unchanged since the last snapshot: a registered tool can only be new here
+            # because its check_fn flipped, and tools[] stays frozen for that (#101367).
+            held = prefix_registered if snapshot_generation == published_gen else frozenset()
+            new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered, held)
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
@@ -297,11 +300,13 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     return changed
 
 
-def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:
+def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set,
+                             held: frozenset | set = frozenset()) -> tuple[list, set]:
     """Fold a fresh tool snapshot into a live one without moving existing bytes. Ordered by
     ``current_defs`` (the cached request prefix): a name already sent keeps its slot and the
     schema bytes already sent; a name only in the live list is kept if still registered
-    (``check_fn`` flapped), else dropped; a name only in the fresh list is appended at the tail.
+    (``check_fn`` flapped), else dropped; a name only in the fresh list is appended at the tail
+    unless it is in ``held`` (a registered tool whose ``check_fn`` merely flipped to True).
 
     A refreshed schema is not substituted in place. Tool JSON is rendered ahead of the
     conversation, so one changed description means the next prompt no longer starts with the
@@ -323,7 +328,7 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
         replacement = fresh.pop(name, None)
         if replacement is not None or name in BRIDGE_TOOL_NAMES or (name and name in registered_names):
             merged.append(entry)
-    merged.extend(fresh.values())
+    merged.extend(entry for name, entry in fresh.items() if name not in held)
     return merged, {_def_name(t) for t in merged}
 
 

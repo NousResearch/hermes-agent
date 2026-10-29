@@ -21,6 +21,19 @@ let freeTierScope: string | undefined
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+/** Feed the dead-id prune the profiles the gateway serves. The prune store is
+ *  imported lazily: it consumes the API barrel while its store graph initializes,
+ *  which a status poll must not be made to provide. */
+async function noteServedProfiles(names: readonly string[] | null | undefined): Promise<void> {
+  try {
+    ;(await import('@/store/dead-session-prune')).noteServedProfiles(names)
+  } catch {
+    // The list never reaches the prune, which then keeps "no list known" — the
+    // behaviour it had before the set existed. The next accepted status tries
+    // again; this is ambient data, not something to surface to the user.
+  }
+}
+
 export function useStatusSnapshot(
   gatewayState: string | undefined,
   requestGateway: GatewayRequester,
@@ -152,6 +165,10 @@ export function useStatusSnapshot(
           // usually-unchanged snapshot, and a fresh object for the same content
           // re-renders every consumer for nothing.
           setStatusSnapshot(previous => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next))
+          // The served set decides which profiles the dead-id sweep may probe.
+          // Rides the same accepted answer (a signed-out body omits it, and null
+          // keeps "every profile served" for a standalone or older gateway).
+          void noteServedProfiles(next.gateway_shared_with)
           const warning: boolean = Boolean(statusResult.value.shared_profile_warning)
 
           // Keep dismissal until the conflict clears. A new overlap can warn again.

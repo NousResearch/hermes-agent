@@ -1,4 +1,5 @@
 import { compactNumber } from '@hermes/shared'
+import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { PanelEmpty } from '@/app/overlays/panel'
@@ -22,6 +23,7 @@ export interface LocalConnectorDialogProps {
   controller: McpServersController
   installFields?: readonly InstallField[]
   installing?: boolean
+  localAccounts?: ReactNode
   onClose: () => void
   onConnect: () => void
   onInstall: (env: Record<string, string>) => void
@@ -35,6 +37,7 @@ export function LocalConnectorDialog({
   controller,
   installFields,
   installing,
+  localAccounts,
   onClose,
   onConnect,
   onInstall,
@@ -59,6 +62,7 @@ export function LocalConnectorDialog({
 
   return (
     <ConnectorDialog
+      accounts={localAccounts}
       advanced={owned ? <LocalAdvanced controller={controller} name={name} onRemove={onRemoveServer} /> : undefined}
       card={card}
       cost={localCost(controller, name)}

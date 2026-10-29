@@ -6,6 +6,8 @@ export const deConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   addAnother: 'Weiteres Konto hinzufügen',
   aliasLabel: 'Kontoname',
   aliasHint: 'Kleinbuchstaben, Ziffern und Bindestriche, höchstens 32. Zum Beispiel arbeit oder privat.',
+  localHint:
+    'Erstellt eine separate direkte MCP-Verbindung, keinen gehosteten Connector. Dieser Name kennzeichnet ihre Tools; wählen Sie das gewünschte Konto oder den Arbeitsbereich auf der Anmeldeseite des Anbieters. Bei einem Fehler oder Abbruch bleibt der neue Eintrag zum Wiederholen oder Entfernen verfügbar.',
   aliasInvalid:
     'Verwenden Sie Kleinbuchstaben, Ziffern und Bindestriche, beginnend mit einem Buchstaben oder einer Ziffer.',
   aliasTaken: 'Dieser Name wird bereits verwendet.',

@@ -130,6 +130,23 @@ describe('dead-session prune and a profile the gateway does not serve', () => {
       expect($pinnedSessionIds.get()).toEqual(['qa-chat'])
     })
 
+    it('several chats refused in one sweep still start with a 30 s wait, not a longer one', async () => {
+      // QA had three saved chats. One sweep checks up to four at once, so the profile refuses
+      // several times in the same sweep: that is one refusal of the profile, not three.
+      vi.useFakeTimers()
+      $pinnedSessionIds.set(['qa-chat-1', 'qa-chat-2', 'qa-chat-3'])
+      qaRefused(REFUSALS['today (generic ticket error)'])
+
+      await __runDeadSessionPrunePass()
+      getSessionMock.mockClear()
+
+      vi.setSystemTime(Date.now() + 31_000)
+      await __runDeadSessionPrunePass()
+
+      expect(probesOf('qa')).toBeGreaterThan(0)
+      expect($pinnedSessionIds.get()).toEqual(['qa-chat-1', 'qa-chat-2', 'qa-chat-3'])
+    })
+
     it('still retries on the next sweep when the whole gateway is not answering', async () => {
       // Every probe fails, including the active profile's: that is the gateway, not one profile.
       // Existing behavior (dead-session-prune.test.ts "defers on non-404 probe failures") stays.

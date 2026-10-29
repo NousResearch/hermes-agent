@@ -27,8 +27,8 @@ import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
-import { sessionMutationScopeFromRow, sessionOwnerRowKey } from '@/store/session-request-router'
-import { forgetSessionUnread } from '@/store/session-unread'
+import { sessionMutationScopeFromRow } from '@/store/session-request-router'
+import { forgetSessionUnread, sessionUnreadCleanupIds } from '@/store/session-unread'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
@@ -193,10 +193,11 @@ function ArchivedSessionsSettings({
       const actionScope = archivedSessionScope(settingsOwner, session)
       const actionRowKey = rowKey(session)
 
-      const unreadCleanupIds =
-        sessions.filter(row => row.id === session.id).length > 1
-          ? [sessionOwnerRowKey(session)]
-          : [session.id, session._lineage_root_id]
+      const unreadCleanupIds = sessionUnreadCleanupIds(
+        session,
+        [session.id, session._lineage_root_id],
+        sessions
+      )
 
       const ok = await confirm({
         confirmLabel: s.deletePermanently,

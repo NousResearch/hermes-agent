@@ -105,7 +105,10 @@ import {
   requestForOwnedSession,
   sessionTileOwnerRoute
 } from '@/store/session-states'
-import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
+import {
+  $sessionSeenCounts,
+  $unreadFinishedMarkers
+} from '@/store/session-unread'
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
@@ -508,11 +511,25 @@ describe('connection-qualified session deletion', () => {
     ['delete', (actions: HarnessHandle) => actions.removeSession('shared-session')],
     ['archive', (actions: HarnessHandle) => actions.archiveSession('shared-session')]
   ] as const)('routes a bare current-session %s to its runtime owner when stored ids collide', async (_, mutate) => {
-    const ownerA = storedSession({ connection_id: 'source-a', id: 'shared-session', profile: 'worker' })
-    const ownerB = storedSession({ connection_id: 'source-b', id: 'shared-session', profile: 'worker' })
+    const ownerA = storedSession({
+      _lineage_root_id: 'root-a',
+      connection_id: 'source-a',
+      id: 'shared-session',
+      profile: 'worker'
+    })
+
+    const ownerB = storedSession({
+      _lineage_root_id: 'root-b',
+      connection_id: 'source-b',
+      id: 'shared-session',
+      profile: 'worker'
+    })
+
     let actions: HarnessHandle | null = null
 
     setSessions([ownerA, ownerB])
+    $sessionSeenCounts.set({ worker: { 'root-a': 2, 'root-b': 3 } })
+    $unreadFinishedMarkers.set({ worker: ['root-a', 'root-b'] })
     recordSessionEventScope({ connectionId: 'source-b', profile: 'worker', session_id: 'runtime-shared' })
     vi.mocked(deleteSession).mockResolvedValue({ ok: true })
     vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
@@ -544,6 +561,10 @@ describe('connection-qualified session deletion', () => {
     }
 
     expect($sessions.get()).toEqual([ownerA])
+    expect($sessionSeenCounts.get().worker?.['root-a']).toBe(2)
+    expect($sessionSeenCounts.get().worker?.['root-b']).toBeUndefined()
+    expect($unreadFinishedMarkers.get().worker).toContain('root-a')
+    expect($unreadFinishedMarkers.get().worker).not.toContain('root-b')
     clearAllSessionStates()
   })
 

@@ -408,8 +408,8 @@ function useSessionActions({
         if (unread || isUnread) {
           // Clear the transient family dot immediately (and ack the persisted
           // watermark/marker so a list refresh doesn't repaint it)…
-          markSessionRead(sessionId)
-          ackStoredSessionId(sessionId)
+          markSessionRead(session ?? sessionId)
+          ackStoredSessionId(session ?? sessionId)
 
           // …and retire the persisted watermark when the row carries one.
           if (unread) {

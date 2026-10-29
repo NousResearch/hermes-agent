@@ -134,7 +134,7 @@ import {
   type TileDock
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
-import { forgetSessionUnread } from '@/store/session-unread'
+import { forgetSessionUnread, sessionUnreadCleanupIds } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
@@ -3161,7 +3161,7 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
       const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
       const mutationIds = typeof target === 'string' ? removedIds : []
-      const unreadCleanupIds = targetKey ? [targetKey] : removedIds
+      const unreadCleanupIds = removed ? sessionUnreadCleanupIds(removed, removedIds, ownerRows) : removedIds
 
       // Pin sync resolves the immutable mutation owner synchronously from the
       // loaded row. Remove the pin before dropping that row, or the implicit
@@ -3408,7 +3408,7 @@ export function useSessionActions({
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
       const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
-      const archivedTargetKey = typeof target === 'string' ? null : sessionOwnerRowKey(target)
+      const archivedUnreadIds = archived ? sessionUnreadCleanupIds(archived, archivedIds, ownerRows) : archivedIds
       const mutationIds = typeof target === 'string' ? archivedIds : []
 
       // Pin sync resolves the immutable mutation owner synchronously from the
@@ -3431,7 +3431,7 @@ export function useSessionActions({
         await archiveSessionWithOwner(storedSessionId, archived, profile, setSessionArchived)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
-        forgetSessionUnread(archivedTargetKey ? [archivedTargetKey] : archivedIds, profile)
+        forgetSessionUnread(archivedUnreadIds, profile)
 
         // An archived session is hidden from the sidebar; its tile must go too.
         // Bare tile/runtime maps cannot distinguish duplicate owner rows.

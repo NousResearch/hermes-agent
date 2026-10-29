@@ -53,10 +53,9 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
-def _route_deferred_call(agent, tc, provider_data) -> bool:
+def _route_deferred_call(agent, tc) -> bool:
     """Rewrite a call to a deferred tool by its real name into the ``tool_call`` bridge call, so
     the executor's scope check, schema probe and hooks run on it as on a model-written one."""
-    from agent.tool_call_batches import replace_native_tool_blocks
     from agent.tool_executor import _tool_search_scoped_names
     from tools.tool_search_catalog import TOOL_CALL_NAME
 
@@ -73,8 +72,6 @@ def _route_deferred_call(agent, tc, provider_data) -> bool:
         return False
     tc.function.name = TOOL_CALL_NAME
     tc.function.arguments = json.dumps({"calls": [{"name": name, "arguments": args}]}, ensure_ascii=False)
-    if provider_data:
-        replace_native_tool_blocks(provider_data, {coalesce_tool_call_id(tc): [tc]})
     agent._vprint(f"{agent.log_prefix}🔧 Routed deferred tool '{name}' through '{TOOL_CALL_NAME}'",
                   force=True, diagnostic=True)
     return True
@@ -129,7 +126,7 @@ def validate_tool_calls(
     repaired_ids = set()
     for tc in tool_calls:
         if tc.function.name not in valid_names:
-            if _route_deferred_call(agent, tc, getattr(assistant_message, "provider_data", None)):
+            if _route_deferred_call(agent, tc):
                 repaired_ids.add(id(tc))
                 continue
             repaired = agent._repair_tool_call(tc.function.name)
@@ -138,6 +135,11 @@ def validate_tool_calls(
                               force=True, diagnostic=True)
                 tc.function.name = repaired
                 repaired_ids.add(id(tc))
+    # Signed-thinking turns replay the native sidecar blocks, not tool_calls: every rename must reach them.
+    if repaired_ids and (provider_data := getattr(assistant_message, "provider_data", None)):
+        from agent.tool_call_batches import replace_native_tool_blocks
+        replace_native_tool_blocks(provider_data, {coalesce_tool_call_id(tc): [tc] for tc in tool_calls
+                                                   if id(tc) in repaired_ids})
     # Counted here, before any exit or normalization, so every emitted call is seen once as the model sent it.
     from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
     record_tool_call_quality(agent, tool_calls, repaired_ids)

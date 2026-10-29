@@ -15,7 +15,9 @@ it('a level picked while a reply streams applies from the next message instead o
   $notifications.set([])
 
   const requestGateway = vi.fn(async (method: string) =>
-    method === 'config.set' ? { ok: true, operation: 'reasoning', status: 'deferred', value: 'high' } : { providers: [] }
+    method === 'config.set'
+      ? { ok: true, operation: 'reasoning', status: 'deferred', value: 'high' }
+      : { providers: [] }
   )
 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -29,7 +31,10 @@ it('a level picked while a reply streams applies from the next message instead o
     { wrapper }
   )
 
-  result.current.controller.setOptions({ effort: 'high' }, { isActive: true, model: 'gemini-3.1-pro', provider: 'google' })
+  result.current.controller.setOptions(
+    { effort: 'high' },
+    { isActive: true, model: 'gemini-3.1-pro', provider: 'google' }
+  )
 
   await waitFor(() =>
     expect($notifications.get()).toContainEqual(

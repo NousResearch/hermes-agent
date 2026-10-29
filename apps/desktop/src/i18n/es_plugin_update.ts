@@ -4,7 +4,8 @@ import type { PluginUpdateTranslations } from './types_plugin_update'
 export const esPluginUpdate: PluginUpdateTranslations = {
   folderAccess: {
     title: 'Acceso a carpetas',
-    hint: (name: string) => `${name} puede leer y modificar archivos en estas carpetas. Revocar el acceso surte efecto al instante.`,
+    hint: (name: string) =>
+      `${name} puede leer y modificar archivos en estas carpetas. Revocar el acceso surte efecto al instante.`,
     revoke: 'Revocar',
     revokeLabel: (path: string) => `Revocar el acceso a ${path}`,
     revoked: (name: string, path: string) => `${name} ya no puede usar ${path}.`,
@@ -30,5 +31,5 @@ export const esPluginUpdate: PluginUpdateTranslations = {
   updateScanConfirm: 'Actualizar de todos modos',
   updateScanBlocked: (name: string) =>
     `El análisis de seguridad bloqueó la actualización de ${name} (veredicto «peligroso»). No se puede omitir.`,
-  updatedGit: (name: string) => `${name} se actualizó al último commit.`,
+  updatedGit: (name: string) => `${name} se actualizó al último commit.`
 }

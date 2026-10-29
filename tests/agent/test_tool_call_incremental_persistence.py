@@ -388,6 +388,98 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+def test_sequential_dispatch_passes_the_latest_user_turn_to_registered_tools():
+    agent = _make_agent()
+    assistant_message = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call(name="web_search", call_id="current-turn")],
+    )
+    messages = [
+        {"role": "user", "content": "an older request"},
+        {"role": "assistant", "content": "older response"},
+        {"role": "user", "content": "Save this to Postable Tests"},
+    ]
+    observed = {}
+
+    def _capture_dispatch(_name, _args, _task_id, **kwargs):
+        observed.update(kwargs)
+        return "ok"
+
+    agent._flush_messages_to_session_db = MagicMock()
+    with (
+        patch("model_tools.handle_function_call", side_effect=_capture_dispatch),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_sequential(
+            assistant_message, messages, "task-current-user"
+        )
+
+    assert observed["session_id"] == agent.session_id
+    assert observed["user_task"] == "Save this to Postable Tests"
+
+
+def test_concurrent_dispatch_passes_the_latest_user_turn_to_registered_tools():
+    agent = _make_agent()
+    messages = [
+        {"role": "user", "content": "an older request"},
+        {"role": "assistant", "content": "older response"},
+        {"role": "user", "content": "yes please"},
+    ]
+    observed = {}
+
+    def _capture_dispatch(_name, _args, _task_id, **kwargs):
+        observed.update(kwargs)
+        return "ok"
+
+    with patch("model_tools.handle_function_call", side_effect=_capture_dispatch):
+        result = agent._invoke_tool(
+            "web_search",
+            {},
+            "task-current-user",
+            tool_call_id="concurrent-turn",
+            messages=messages,
+            pre_tool_block_checked=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
+
+    assert result == "ok"
+    assert observed["session_id"] == agent.session_id
+    assert observed["user_task"] == "yes please"
+
+
+def test_non_string_latest_user_turn_fails_closed_for_dispatch_context():
+    agent = _make_agent()
+    messages = [
+        {"role": "user", "content": "an older request"},
+        {"role": "assistant", "content": "older response"},
+        {"role": "user", "content": [{"type": "text", "text": "yes please"}]},
+    ]
+    observed = {}
+
+    def _capture_dispatch(_name, _args, _task_id, **kwargs):
+        observed.update(kwargs)
+        return "ok"
+
+    with patch("model_tools.handle_function_call", side_effect=_capture_dispatch):
+        result = agent._invoke_tool(
+            "web_search",
+            {},
+            "task-non-string-user",
+            tool_call_id="non-string-turn",
+            messages=messages,
+            pre_tool_block_checked=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
+
+    assert result == "ok"
+    assert observed["user_task"] == ""
+
+
 def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 

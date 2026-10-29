@@ -53,6 +53,7 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     _context_pruned_argument_paths,
     _plan_tool_batch_segments,
+    latest_user_task,
     make_tool_result_message,
 )
 from tools.terminal_tool_lifecycle import get_active_env
@@ -1728,6 +1729,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                user_task=latest_user_task(messages),
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,

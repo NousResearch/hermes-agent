@@ -121,13 +121,14 @@ def test_a_second_install_refuses_until_force_replaces_it(home, repo):
     assert "v: 2" in (_root(home) / "gizmo" / "plugin.js").read_text(encoding="utf-8")
 
 
-def test_only_an_https_source_is_installed(home, repo):
+def test_a_local_folder_source_is_installed_like_the_cli_installs_it(home, repo):
+    """Private plugins live behind ssh keys or in local folders: the Webapp takes every scheme the CLI does."""
     sha = _commit(repo, {"plugin.js": "export default {}\n"})
 
-    for source in (repo.as_uri(), "http://example.invalid/acme/gizmo.git", "git@example.invalid:acme/gizmo.git"):
-        result = install.install_desktop_plugin(source, ref=sha)
-        assert result["ok"] is False and "https://" in result["error"], (source, result)
-    assert not _root(home).joinpath("gizmo").exists()
+    result = install.install_desktop_plugin(repo.as_uri(), ref=sha)
+
+    assert result["ok"] is True, result
+    assert (_root(home) / result["plugin_name"] / "plugin.js").is_file()
 
 
 def test_a_link_out_of_the_clone_is_refused(home, repo, tmp_path):

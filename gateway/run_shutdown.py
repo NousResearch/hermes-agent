@@ -1794,7 +1794,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             cleanup_all_environments()
 
         def _cleanup_browsers() -> None:
-            from tools.browser_tool_lifecycle import cleanup_all_browsers
+            from tools.browser_session_lifecycle import cleanup_all_browsers
             cleanup_all_browsers()
 
         _step("cleanup_all_environments", _cleanup_environments)
@@ -2059,10 +2059,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
-        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
-        # default executor) never touch self._executor, so the join above cannot see them. A writer that
-        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
-        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
+        # Cron jobs (scheduler pool), API-server runs (their own unbounded executor, never joined at disconnect)
+        # and deferred hygiene workers (the loop's default executor) never touch self._executor, so the join above
+        # cannot see them. A writer that outlived the drain is mid-write for the same #101093 reasons; the drain
+        # spent its budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
         # taken before the adapters were released; a run whose handler task was cancelled at disconnect
         # has already left it, so that term under-counts — the live worker-scoped count below covers
         # the cancelled-handler case (#116535).
@@ -2109,8 +2109,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     async def _stop_persist_exit_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Clean-shutdown marker, restart markers, terminal runtime status; process bootstrap
         releases PID/lock ownership after the writer drain."""
-        from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
-        from utils import atomic_json_write
+        from gateway.run import _hermes_home, _shutdown_gateway_health_export
         if getattr(self, "_startup_cleanup_only", False):  # start never ran: keep startup_failed + crash markers
             return _shutdown_gateway_health_export(self)
         # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
@@ -2125,15 +2124,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if ctx.active_agents:
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
         if self._restart_requested and self._restart_command_source is None:
+            # One writer for the marker (gateway/restart_notice.py): the CLI restart stamps the same
+            # file, and a rename on either side must not strand the other's write.
+            from gateway.restart_notice import write_planned_restart_marker
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
-                atomic_json_write(
-                    _planned_restart_notification_path(),
-                    {
-                        "requested_at": time.time(),
-                        "via_service": bool(self._restart_via_service),
-                        "detached": bool(self._restart_detached),
-                    },
-                    indent=None,
+                write_planned_restart_marker(
+                    via_service=bool(self._restart_via_service),
+                    detached=bool(self._restart_detached),
                 )
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.

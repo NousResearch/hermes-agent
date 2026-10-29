@@ -143,6 +143,20 @@ class GatewayBusySessionMixin:
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
 
+    def _take_wake_admitted_before_drain(self, session_key: str, adapter: Any) -> Optional[MessageEvent]:
+        """Pop the first wake admitted before the drain began from the pending slot, else from the
+        overflow FIFO, keeping the slot filled while overflow remains; every other event stays
+        queued. Its producer holds a receipt and will not retry it, so a follow-up ahead of it that
+        the drain rejects must not strand it."""
+        slot = getattr(adapter, "_pending_messages", None)
+        if slot and getattr(slot.get(session_key), "_admitted_before_drain", False) is True:
+            return self._promote_queued_event(session_key, adapter, slot.pop(session_key))
+        overflow = self._overflow_queue(session_key) or []
+        for index, event in enumerate(overflow):
+            if event._admitted_before_drain is True:
+                return overflow.pop(index)
+        return None
+
     def _defer_past_exhaustion_reset(
         self, result: Any, adapter: Any, source: SessionSource, session_key: str, pending_event: MessageEvent,
     ) -> None:
@@ -1161,6 +1175,7 @@ class GatewayBusySessionMixin:
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
+                media_filenames=list(getattr(event, "media_filenames", []) or []),
                 reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,

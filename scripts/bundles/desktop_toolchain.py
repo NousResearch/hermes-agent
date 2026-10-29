@@ -32,7 +32,7 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
              "HERMES_PYTHON_SRC_ROOT", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
              "UV_CACHE_DIR", "NPM_CONFIG_CACHE", "NPM_EXECPATH", "NPM_NODE_EXECPATH",
              "NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG", "NPM_CONFIG_PREFIX",
-             "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE", "CARGO_HOME", "RUSTUP_HOME"}
+             "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE", "CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR"}
     result = {key: value for key, value in env.items() if key.upper() not in _INSTALL_ENV | owned}
     canonical = {key.upper(): value for key, value in env.items()}
     # Rustup must still find the runner's installed toolchain after HOME moves.
@@ -51,6 +51,10 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
         "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
         "XDG_DATA_HOME": str(home / "data"), "XDG_STATE_HOME": str(home / "state"),
         "UV_CACHE_DIR": str(cache / "python/runtime"),
+        # Rust sdists (obstore via maturin) otherwise compile into target/ inside uv's
+        # nested sdist cache entry; on Windows that pushes build-script paths past
+        # MAX_PATH and link.exe fails with LNK1104. A job-local root keeps them short.
+        "CARGO_TARGET_DIR": str(work / "cargo"),
         # vcpkg's default binary cache is under LOCALAPPDATA, which moved into the
         # job-local home above; keep its archives in the transported native domain.
         "VCPKG_DEFAULT_BINARY_CACHE": str(cache / "native/vcpkg-archives"),
@@ -120,9 +124,32 @@ def prepare_tools(source: Path, work: Path, cache: Path,
             raise FileNotFoundError(f"PM did not prepare a native {name} executable")
         binaries[name] = installed.binary
     prepared = pm.env_for("python", "npm", base_env=prepared)
+    uv_cache = native_cache_path(cache, prepared)
+    if os.name == "nt":
+        uv_cache = short_alias(uv_cache, work / "uv")
     prepared.update({"HERMES_PYTHON": str(binaries["python"]), "HERMES_NODE": str(binaries["node"]),
-                     "UV_CACHE_DIR": str(native_cache_path(cache, prepared))})
+                     "UV_CACHE_DIR": str(uv_cache)})
     return binaries["python"], binaries["node"], prepared
+
+
+def short_alias(directory: Path, link: Path) -> Path:
+    """Reach a transported cache directory through a short job-local junction.
+
+    uv builds each sdist in <cache>/sdists-v10/pypi/<name>/<version>/<id>/src, and
+    MSVC link.exe cannot open paths past MAX_PATH, so a deep cache root pushes
+    native build outputs over 260 characters (LNK1104). uv keeps the spelling it
+    is given, so builds run under the junction while the bytes stay in the cache.
+    """
+    import _winapi
+
+    from pm.filesystem import is_junction
+
+    directory.mkdir(parents=True, exist_ok=True)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if is_junction(link):
+        os.rmdir(link)  # Removes only the reparse point, never the cache behind it.
+    _winapi.CreateJunction(str(directory), str(link))
+    return link
 
 
 def _msvc_identity() -> dict[str, str] | None:

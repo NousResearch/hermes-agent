@@ -3,6 +3,7 @@ from hermes_state_local_migration import validate_legacy_row
 from hermes_state_mutation_binding import authorize_history
 from hermes_state_runtime import RuntimeStoreError
 
+from gateway.owner_identity import same_owner
 from gateway.session_route_recovery import _messaging_platform, mountable
 
 # Local labels (a cron run is a canonical local session whose last viewer is its own fire).
@@ -93,14 +94,34 @@ def _closed_local_session(authority, actor, row, tip):
     owner = tip.get('chat_id')
     live = authority.sessions.get(owner) if owner else None
     if live is None:
-        return None
-    try:
-        handle = authority._handle(SessionRef(authority.profile_id, owner))
-        authority.authorize(actor, handle.ref, 'session:read')
-    except RuntimeStoreError:
-        return None
-    if not closed_and_unviewed(authority, owner, handle):
-        return None
+        if not owner or not _stored_closed(authority, actor, owner):
+            return None
+    else:
+        try:
+            handle = authority._handle(SessionRef(authority.profile_id, owner))
+            authority.authorize(actor, handle.ref, 'session:read')
+        except RuntimeStoreError:
+            return None
+        if not closed_and_unviewed(authority, owner, handle):
+            return None
     return {'id': owner, 'session_id': owner, 'resolved_id': owner, 'title': tip.get('title') or row.get('title') or '',
             'source': tip['source'], 'started_at': row.get('started_at'),
             'message_count': row.get('message_count', 0), 'model': tip.get('model'), 'running': False}
+
+
+def _stored_closed(authority, actor, owner):
+    """Boot leaves an ended session unrestored and a listing never restores one (a worker thread): judge
+    its stored receipt as ``authorize`` and ``closed_and_unviewed`` would after a restore. No viewer."""
+    from hermes_state_local import local_receipt
+    from hermes_state_runtime import list_session_admissions
+    if actor.profile_id != authority.profile_id or 'session:read' not in actor.capabilities:
+        return False
+    try:
+        receipt = local_receipt(authority.db, owner)
+        row = authority.db.get_session(receipt['entry']['session_id'])
+    except (RuntimeStoreError, KeyError, TypeError):
+        return False
+    return (receipt.get('profile_id') == authority.profile_id
+            and (same_owner(receipt.get('principal_id'), actor.subject) or 'session:operator' in actor.capabilities)
+            and row is not None and row['ended_at'] is not None
+            and not list_session_admissions(authority.db, session_id=owner))

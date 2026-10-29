@@ -75,7 +75,7 @@ hermes acp --check
 
 ### 浏览器工具（可选）
 
-浏览器工具（`browser_navigate`、`browser_click` 等）依赖 `agent-browser` npm 包和 Chromium，这些不包含在 Python wheel 中。通过以下命令安装：
+浏览器工具（`browser_exec` 以及 CDP 工具 `browser_cdp`、`browser_dialog`、`browser_vault`）需要本地 Chromium，它不包含在 Python wheel 中。通过以下命令安装：
 
 ```bash
 hermes acp --setup-browser           # 交互式（下载约 400 MB 前会提示确认）
@@ -86,9 +86,8 @@ hermes acp --setup-browser --yes     # 非交互式接受下载
 
 具体操作：
 
-- 若缺少 Node.js 22 LTS，将其安装到 `~/.hermes/node/`
-- 将 `npm install -g agent-browser @askjo/camofox-browser` 安装到该前缀（无需 sudo — `npm` 的 `--prefix` 指向用户可写的 Hermes 管理 Node）
-- 安装 Playwright Chromium，或在检测到系统 Chrome/Chromium 时使用已有版本
+- 通过包管理器安装 Hermes 固定版本的 Chromium（`chromium` 包）；不涉及 Node.js 或 npm
+- 当 `browser_exec` 首次需要浏览器时，Hermes 会自行启动该 Chromium
 
 该引导过程是幂等的——重复运行速度很快，已完成的步骤会被跳过。
 

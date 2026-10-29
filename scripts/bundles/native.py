@@ -167,7 +167,7 @@ def prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         prepared_path(out).unlink(missing_ok=True)
         (out / "manifest.json").unlink(missing_ok=True)
         return _prepare_native(out=out, ref=ref, source=Path(source).resolve(),
-                               cache=Path(cache).resolve(), tools=tools, env=env)
+                               cache=Path(cache).absolute(), tools=tools, env=env)
 
 
 def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,

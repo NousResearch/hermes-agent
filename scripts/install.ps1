@@ -7,10 +7,9 @@
 #   -SkipSetup            deprecated alias for -NonInteractive
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
-#   -SkipBrowser          do not install the browser tools (agent-browser +
-#                         Chromium); remembered by later
-#                         installs and `hermes update`, undone by
-#                         `hermes pm install agent-browser`
+#   -SkipBrowser          do not install the browser (Chromium); remembered by
+#                         later installs and `hermes update`, undone by
+#                         `hermes pm install chromium`
 #   -SkipComputerUse      do not install the computer-use driver (cua-driver);
 #                         remembered the same way, undone by
 #                         `hermes pm install cua-driver`
@@ -38,8 +37,8 @@ param(
     [switch]$Json,
     [switch]$IncludeDesktop,
     # Same opt-out as install.sh --skip-browser: PM records it, so later
-    # installs and `hermes update` keep the browser tools off until
-    # `hermes pm install agent-browser` opts back in.
+    # installs and `hermes update` keep the browser off until
+    # `hermes pm install chromium` opts back in.
     [switch]$SkipBrowser,
     [switch]$SkipComputerUse,
     # Print the paths this install would use, as JSON on stdout, and exit
@@ -82,17 +81,17 @@ $RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://gi
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
 # Derived from pm/lock.json. DO NOT EDIT BY HAND:
 # run scripts/gen-bootstrap-pins.py after a pin bump.
-$script:UvPinVersion = "0.12.3"
+$script:UvPinVersion = "0.13.5"
 $script:UvPinFiles = @{
     "win32-x64" = @{
-        Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
-        Sha256 = "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
+        Url    = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-pc-windows-msvc.zip"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a"
+        Sha256 = "a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a"
     }
     "win32-arm64" = @{
-        Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-pc-windows-msvc.zip"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
-        Sha256 = "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
+        Url    = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-aarch64-pc-windows-msvc.zip"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/09f47edf90726084a70f9426f6e3ca4f46e9bf7cbf23b1716ec64d60b055fae3"
+        Sha256 = "09f47edf90726084a70f9426f6e3ca4f46e9bf7cbf23b1716ec64d60b055fae3"
     }
 }
 
@@ -1287,6 +1286,8 @@ function Invoke-BootstrapPm {
         # Bare $SkipBrowser, like $InstallDir: under iex/scriptblock entry the
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
+        # Legacy spelling on purpose: the stable PM this script installs by
+        # default rejects 'chromium', and newer PMs read 'agent-browser' as 'chromium'.
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
         if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
@@ -1540,7 +1541,9 @@ function New-DesktopShortcuts {
         }
                 $sc = $shell.CreateShortcut($lnkPath)
                 $sc.TargetPath = $TargetExe
-                $sc.WorkingDirectory = $workDir
+                # Not the exe's folder: the Desktop's children inherit it, and a helper
+                # that outlives the app then blocks the next update's swap (#101789).
+                $sc.WorkingDirectory = $env:USERPROFILE
                 $sc.IconLocation = $iconLocation
                 $sc.Description = 'Hermes Agent'
                 $sc.Save()

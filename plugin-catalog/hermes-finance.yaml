@@ -1,0 +1,42 @@
+name: hermes-finance
+title: Hermes Finance
+repo: https://github.com/arspesk/hermes-finance
+sha: "9c5a10562aaa9f625240d9a59e197cd01187fec5"
+subdir: hermes_plugin
+version: "0.2.5"
+description: "Personal-finance tools over your own local hermes-finance database: spending, budgets, transactions, net worth, bills, loans, investments, cash flow, goals and categorization rules (read-only), a bank sync on request, and four writes (file a transaction, add a rule, set a budget cap, track a bill) that each wait for your approval and are blocked under cron and other unattended runs. Needs a separate trusted app checkout prepared with Python 3.12 and `uv sync`, set as HERMES_FINANCE_APP_DIR. Disclosure — reads open the separate hermes-finance app's SQLite database outside the plugin directory, and the plugin imports that app checkout's code into the Hermes process, so it runs whatever that checkout contains, not the catalog pin. `finance_sync` runs the app's sync, which calls Plaid with your optional Plaid keys and fetches security logos from financialmodelingprep.com (ticker symbols leave the machine). `hermes finance completion`, started by the app's Ask panel, sends that conversation and your finance results to your profile's own model. The opt-in report jobs (`hermes finance crons plan/apply`) write profile-owned entry scripts and run the app on a schedule. They call Plaid and, with a live read-only key, Alpaca (GET-only); they look up car and home values through NHTSA, Wikimedia/OpenStreetMap and, only if you switch them on, Carfax (in the local Chrome at 127.0.0.1:9222) and Redfin. The daily job's agent applies transaction categorizations through the app's own CLI without a per-change approval card. The four approval-gated writes stay blocked in cron. Nothing moves money or places trades. The optional Plaid and Alpaca keys are read through Hermes's secret scope only; the plugin opens no key file. Installing starts no server, sync or job. No telemetry, no update check, no Python dependencies in Hermes."
+maintainer: "arspesk"
+tier: community
+category: tools
+docs_url: https://github.com/arspesk/hermes-finance/blob/9c5a10562aaa9f625240d9a59e197cd01187fec5/README.md#install-as-a-hermes-plugin
+image: https://raw.githubusercontent.com/arspesk/hermes-finance/9c5a10562aaa9f625240d9a59e197cd01187fec5/docs/assets/catalog-banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/arspesk/hermes-finance/9c5a10562aaa9f625240d9a59e197cd01187fec5/docs/assets/screenshots/overview-light.png
+  - https://raw.githubusercontent.com/arspesk/hermes-finance/9c5a10562aaa9f625240d9a59e197cd01187fec5/docs/assets/screenshots/overview-dark.png
+readme: false
+platforms: []
+known_issues:
+  - "Needs a trusted hermes-finance app checkout prepared with Python 3.12 and `uv sync`; set HERMES_FINANCE_APP_DIR to it."
+  - "`hermes plugins validate` warns (rule 9) about imports of gateway.session_context, tools.approval, cron.jobs and cron.scheduler: they keep approvals blocked in unattended runs and drive the opt-in report jobs; no core function is patched."
+capabilities:
+  provides_tools:
+    - finance_spend
+    - finance_budget_status
+    - finance_transactions
+    - finance_networth
+    - finance_bills
+    - finance_loans
+    - finance_holdings
+    - finance_cashflow
+    - finance_status
+    - finance_goals
+    - finance_rules
+    - finance_sync
+    - finance_set_category
+    - finance_add_rule
+    - finance_set_cap
+    - finance_track_bill
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

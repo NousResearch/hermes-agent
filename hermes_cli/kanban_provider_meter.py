@@ -133,6 +133,7 @@ def remediate_candidate(
     *,
     minimum_remaining_percent: int = 10,
     _credentials: Optional[Mapping[str, Tuple[Optional[str], Optional[str]]]] = None,
+    _out_readings: Optional[dict] = None,
 ) -> ProviderMeterCandidate | None:
     """Fetch provider meters and return the execution override, if safe.
 
@@ -180,6 +181,8 @@ def remediate_candidate(
         else:
             # Quota exhausted, auth error, or no data — fail-closed.
             readings[provider] = None
+    if _out_readings is not None:
+        _out_readings.update(readings)
     return choose_available_candidate(
         candidates, readings, minimum_remaining_percent=minimum_remaining_percent
     )

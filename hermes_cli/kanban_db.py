@@ -9388,6 +9388,35 @@ def _read_assignee_credentials(
             except Exception:
                 pass
 
+        # 2b-fallback. The pool entry may be *temporarily* exhausted due to a
+        # non-quota worker error (HTTP 400 billing notice, 403, 5xx, network).
+        # _resolve_anthropic_pool_token skips exhausted entries, so a 400 that
+        # just happened would block the meter query for the whole exhaustion TTL.
+        # Fix: read pool entries directly, skipping only genuine quota exhaustion
+        # (429, 402) and permanently-dead entries.  The token itself is still
+        # valid for authenticating meter queries.
+        if "anthropic" not in result:
+            try:
+                from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
+                _ant_pool = load_pool("anthropic")
+                for _entry in _ant_pool._entries:
+                    _tok = (getattr(_entry, "access_token", None) or "").strip()
+                    if not _tok:
+                        continue
+                    if _entry.last_status == STATUS_DEAD:
+                        continue
+                    # Only skip quota-exhausted entries; 400/401/403/5xx exhaustion
+                    # is a worker runtime error, NOT a meter signal.
+                    if (
+                        _entry.last_status == STATUS_EXHAUSTED
+                        and _entry.last_error_code in (429, 402)
+                    ):
+                        continue
+                    result["anthropic"] = (_tok, None)
+                    break
+            except Exception:
+                pass
+
         # 2c. openai-codex — runtime resolver handles singleton + pool fallback
         #     under the hermes_home-scoped HERMES_HOME override.
         try:
@@ -9400,6 +9429,22 @@ def _read_assignee_credentials(
                 )
         except Exception:
             pass
+
+        # 2c-validate. resolve_codex_runtime_credentials returns tokens even when
+        # the pool entry is STATUS_DEAD or STATUS_EXHAUSTED (device_code exhausted,
+        # 401, etc.) — it only checks last_error_reset_at, not last_status.
+        # Cross-check: if the pool has entries but _available_entries returns nothing,
+        # no usable credential exists and codex must be excluded from candidates.
+        if "openai-codex" in result:
+            try:
+                from agent.credential_pool import load_pool
+                _codex_pool = load_pool("openai-codex")
+                if _codex_pool.has_credentials() and not _codex_pool._available_entries(
+                    clear_expired=False, refresh=False
+                ):
+                    del result["openai-codex"]
+            except Exception:
+                pass
 
         # 2d. Codex API-key env var fallback.
         if "openai-codex" not in result:
@@ -9414,6 +9459,24 @@ def _read_assignee_credentials(
                 pass
 
     return result
+
+
+def _serialize_meter_readings(readings: dict) -> dict:
+    """Serialize AccountUsageSnapshot readings to a JSON-safe dict for event payloads."""
+    out: dict = {}
+    for provider, snap in readings.items():
+        if snap is None:
+            out[provider] = None
+        else:
+            out[provider] = {
+                "available": snap.available,
+                "unavailable_reason": snap.unavailable_reason,
+                "windows": [
+                    {"label": w.label, "used_percent": w.used_percent}
+                    for w in snap.windows
+                ],
+            }
+    return out
 
 
 def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = None) -> Task:
@@ -9504,6 +9567,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
             candidates,
             minimum_remaining_percent=int(settings.get("minimum_remaining_percent", 10)),
             _credentials=creds,
+            _out_readings=(out_readings := {}),
         )
 
         if selected is None:
@@ -9513,6 +9577,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
                         _append_event(conn, task.id, "provider_meter_remediation", {
                             "from": task.provider_override,
                             "to": None,
+                            "outcome": "deferred",
                             "reason": "no_headroom",
                             "checked_providers": list(creds.keys()),
                         })
@@ -9539,6 +9604,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
                         "from_model": task.model_override,
                         "to_model": selected.model,
                         "reason": "switched",
+                        "readings": _serialize_meter_readings(out_readings),
                     })
             except Exception:
                 pass

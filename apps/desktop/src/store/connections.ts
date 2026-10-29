@@ -25,6 +25,7 @@ import {
   $newChatProfile,
   $newChatRoute,
   $showAllProfiles,
+  applyUnifiedInboxDefault,
   captureNewChatSource,
   currentNewChatIntent,
   ensureGatewayAgent,
@@ -151,6 +152,10 @@ function rehomeNewChatDraft(profile: string, keepExplicitRoute = false): void {
 
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
   $connectionsRegistry.set(registry)
+  // A multi-connection registry defaults the sidebar to the unified
+  // all-profiles view — unless the user has already chosen a scope.
+  // Idempotent; a single-connection registry keeps the legacy scope.
+  applyUnifiedInboxDefault(registry.connections.length)
 }
 
 /** Refresh the renderer cache from Electron's local registry. No backend is contacted. */

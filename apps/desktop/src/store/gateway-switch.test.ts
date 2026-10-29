@@ -19,6 +19,7 @@ import {
   setCurrentCwdTransient,
   setFreshDraftReady,
   setMessagingSessions,
+  setSelectedStoredSessionId,
   setSessionProfilesTruncated,
   setSessions,
   setSessionsLoading
@@ -68,7 +69,7 @@ vi.mock(import('@/store/profile'), async importOriginal => {
   }
 })
 
-const { invalidateProfileListFetches } = await import('@/store/profile')
+const { $showAllProfiles, invalidateProfileListFetches } = await import('@/store/profile')
 
 describe('wipeSessionListsForGatewaySwitch', () => {
   beforeEach(() => {
@@ -458,5 +459,81 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
       '[gateway-switch] cannot repaint the active source because no switch lifecycle is registered'
     )
     debug.mockRestore()
+  })
+})
+
+describe('wipeSessionListsForGatewaySwitch preserveSessionLists (the unified view keeps its rows across a switch)', () => {
+  beforeEach(() => {
+    $gatewaySwitching.set(false)
+    $showAllProfiles.set(true)
+    setSessions([
+      { id: 's1', title: 'local chat', profile: 'default', connection_id: 'local' },
+      { id: 's2', title: 'homelab chat', profile: 'omer', connection_id: 'homelab' }
+    ] as never[])
+    setSessionProfilesTruncated({ default: true, omer: true })
+    setCronSessions([{ id: 'c1', title: 'cron', profile: 'default' } as never])
+    setMessagingSessions([{ id: 'm1', title: 'tg', profile: 'default' } as never])
+    $stalledSessionIds.set(['s1'])
+    setSessionsLoading(false)
+    setFreshDraftReady(false)
+  })
+
+  afterEach(() => {
+    $showAllProfiles.set(false)
+    resetSessionsLimit()
+    setSessions([])
+    setCronSessions([])
+    setMessagingSessions([])
+    $stalledSessionIds.set([])
+    setSessionsLoading(true)
+    $gatewaySwitching.set(false)
+    setActiveSessionId('s1')
+    setSelectedStoredSessionId(null)
+  })
+
+  it('keeps the previous source rows in the unified view (no empty flash)', () => {
+    wipeSessionListsForGatewaySwitch({ preserveSessionLists: true })
+
+    expect($sessions.get()).toHaveLength(2)
+    expect($sessionProfilesTruncated.get()).toEqual({ default: true, omer: true })
+    // Per-slice row lists are preserved too — the refresh re-derives them.
+    expect($cronSessions.get()).toHaveLength(1)
+    expect($messagingSessions.get()).toHaveLength(1)
+  })
+
+  it('still severs runtime-id-bound bindings even when rows are preserved', () => {
+    setActiveSessionId('s1')
+    setSelectedStoredSessionId('s1')
+
+    wipeSessionListsForGatewaySwitch({ preserveSessionLists: true })
+
+    // Runtime ids belong to the OUTGOING backend; only durable rows survive.
+    expect($activeSessionId.get()).toBeNull()
+    expect($stalledSessionIds.get()).toEqual([])
+    expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it('arms the skeleton merge so a preserved list still reconciles', () => {
+    wipeSessionListsForGatewaySwitch({ preserveSessionLists: true })
+
+    expect($sessionsLoading.get()).toBe(true)
+    expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
+  })
+
+  it('beginGatewaySwitch derives the option from the unified scope at commit time', () => {
+    $showAllProfiles.set(true)
+    const keptToken = beginGatewaySwitch()
+
+    expect(keptToken).toBeDefined()
+    expect($sessions.get()).toHaveLength(2)
+    endGatewaySwitch(keptToken)
+
+    // A scoped switch keeps the legacy full wipe (upstream constraint).
+    $showAllProfiles.set(false)
+    setSessions([{ id: 's1', title: 'x', profile: 'default' } as never])
+    const wipedToken = beginGatewaySwitch()
+
+    expect($sessions.get()).toEqual([])
+    endGatewaySwitch(wipedToken)
   })
 })

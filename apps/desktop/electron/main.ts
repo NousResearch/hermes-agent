@@ -427,6 +427,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
+import { createPooledRegistrySessionSources } from './pooled-registry-session-sources'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { registerPreparedSubmissions } from './prepared-submissions'
@@ -471,11 +472,11 @@ import {
   isAllProfilesSessionListRequest,
   isRemoteSessionRequestPath,
   mergeRegistrySessionRows,
-  type RegistrySessionSource,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
+  spliceRegistrySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -501,13 +502,13 @@ import {
   type QuitTeardownTask
 } from './quit-teardown'
 import {
-  boundedInstallId,
   createPrimaryInstallIdResolver,
   INSTALL_ID_NEGATIVE_TTL_MS,
   INSTALL_ID_TTL_MS,
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
+import { createRegistrySessionEnumeration } from './registry-session-enumeration'
 import { releaseHolderRetry } from './release-holder-consent'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -15933,6 +15934,16 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
     total += await mergeRegistrySessionRows(registrySources, remoteParams, getRegistryJson, merged, profileTotals, identity)
   }
 
+  // A registry connection this refresh could not read (cold, asleep,
+  // unreachable) falls back to the rows the federated index last saw instead of
+  // silently contributing nothing. Live rows win (spliced by (profile, id)).
+  const readable = new Set<string>(registrySources.map(source => source.connectionId))
+  const indexedRows = registrySessionEnumeration.coldRows(searchParams, readable)
+
+  if (indexedRows.length) {
+    total += spliceRegistrySessionRows(merged, indexedRows, profileTotals).added
+  }
+
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
@@ -15942,61 +15953,24 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. SSH sources contribute one
-// backend per pooled (connection, profile) scope; remote/cloud sources are one
-// shared host (any pooled scope's descriptor serves the cross-profile read).
-// The primary local connection is excluded for the legacy unpinned path — the
-// primary aggregate carries local rows there. A registry-pinned aggregate opts
-// in so forced-local backends remain visible when the legacy primary is remote.
-async function pooledRegistrySessionSources(includeLocal = false): Promise<RegistrySessionSource[]> {
-  const registry = readDesktopConnectionsRegistry()
-  const sources: RegistrySessionSource[] = []
+// straight from the backend pool, never dialing (see the module).
+const pooledRegistrySessionSources = createPooledRegistrySessionSources({
+  pool: backendPool,
+  probeInstallId: probeConnectionInstallId,
+  readRegistry: readDesktopConnectionsRegistry
+})
 
-  for (const connection of registry.connections) {
-    if (connection.kind === 'local' && !includeLocal) {
-      continue
-    }
-
-    const prefix = backendScopePrefix(connection.id)
-
-    const pooled = [...backendPool.entries()].filter(
-      ([key, entry]) => key.startsWith(prefix) && entry.connectionPromise
-    )
-
-    if (pooled.length === 0) {
-      continue
-    }
-
-    const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
-
-    const perProfile = connection.kind === 'ssh' || (includeLocal && connection.kind === 'local')
-
-    for (const [key, entry] of perProfile ? pooled : pooled.slice(0, 1)) {
-      try {
-        // Already-resolved for a connected backend; a still-dialing entry is
-        // skipped via the timeout guard rather than blocking the sidebar.
-        const descriptor = await Promise.race([
-          entry.connectionPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
-        ])
-
-        backends.push({
-          descriptor,
-          profileLabel: perProfile ? key.slice(prefix.length) || 'default' : null
-        })
-      } catch {
-        // Dead or still-connecting backend — contributes nothing this refresh.
-      }
-    }
-
-    if (backends.length) {
-      const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
-      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
-    }
-  }
-
-  return sources
-}
+// Persistent index of each non-primary connection's last-seen sessions, fed by a
+// bounded background enumerator: a connection that is cold right now still
+// shows its history. Inert for a single-connection registry.
+// HERMES_DESKTOP_REGISTRY_ENUMERATION=0 turns the background dialing off.
+const registrySessionEnumeration = createRegistrySessionEnumeration({
+  dial: connectionId =>
+    backendDialClaims.run(backendScopeKey(connectionId, 'default'), () => ensureRegistryBackend(connectionId, 'default')),
+  getJson: (descriptor, path, timeoutMs) => getJsonForBackend(descriptor, path, { timeoutMs }),
+  readRegistry: readDesktopConnectionsRegistry,
+  userDataDir: () => app.getPath('userData')
+})
 
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).
 const primaryBackendInstallId = createPrimaryInstallIdResolver({
@@ -17861,6 +17835,11 @@ app.whenReady().then(() => {
   keepAwake.restore()
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
+
+  if (process.env.HERMES_DESKTOP_REGISTRY_ENUMERATION !== '0') {
+    registrySessionEnumeration.start()
+  }
+
   f12Blocked = readPersistedDisableF12()
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.
@@ -18125,6 +18104,7 @@ app.on('before-quit', event => {
 
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()
+  registrySessionEnumeration.stop()
 
   // A detached remote updater can outlive this Electron process. Do not tear
   // down its SSH observer/restore transaction at the generic SSH shutdown

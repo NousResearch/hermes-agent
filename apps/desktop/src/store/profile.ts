@@ -8,7 +8,17 @@ import { persistStore } from '@/lib/persist-store'
 import { initialGatewayProfile } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
-import { arraysEqual, persistBoolean, persistStringArray, persistStringRecord, storedBoolean, storedStringArray, storedStringRecord } from '@/lib/storage'
+import {
+  arraysEqual,
+  persistBoolean,
+  persistStringArray,
+  persistStringRecord,
+  provisionalPreferenceKeys,
+  readKey,
+  storedBoolean,
+  storedStringArray,
+  storedStringRecord
+} from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { registryConnectionKind } from '@/store/connection-registry-state'
 import {
@@ -948,11 +958,64 @@ export const messagingTotalsKey = (messagingProfile: string, sourceId: string): 
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
-// Opt-in unified view. When false, scope follows the live gateway profile, so
+// Unified view. When false, scope follows the live gateway profile, so
 // single-profile users (who never see the switcher) are completely unaffected.
+// Opt-in by the user, or defaulted on for a multi-connection registry
+// (applyUnifiedInboxDefault below).
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
 
-persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value, options), false)
+// True only while applyUnifiedInboxDefault writes the atom: that value is
+// derived from the registry, not chosen, so it is persisted PROVISIONALLY —
+// the machine's shared preferences never take it (persistStore's contract).
+let seedingUnifiedDefault = false
+
+persistStore(
+  $showAllProfiles,
+  (value, options) =>
+    persistBoolean(
+      SHOW_ALL_PROFILES_STORAGE_KEY,
+      value,
+      seedingUnifiedDefault ? { ...options, provisional: true } : options
+    ),
+  false
+)
+
+/**
+ * Default the unified (all-profiles) view for a registry holding more than one
+ * connection: one federated inbox is the first thing a multi-connection user
+ * should see, not a toggle they must discover. Runs on every registry
+ * publication, so it must be idempotent and must never fight the user:
+ *
+ *  - a stored value that is the user's own (written by a user change, so not
+ *    marked provisional) is never touched — an explicit opt-out survives every
+ *    later publication, and so does an explicit opt-in;
+ *  - otherwise the atom tracks the registry (on for >1 connection, off for
+ *    ≤1), written provisionally so the default never becomes a "choice" the
+ *    shared preferences would then replicate to other clients.
+ *
+ * A single-connection registry therefore keeps exactly the legacy scope.
+ */
+export function applyUnifiedInboxDefault(connectionCount: number): void {
+  const stored = readKey(SHOW_ALL_PROFILES_STORAGE_KEY)
+
+  if (stored !== null && !provisionalPreferenceKeys().has(SHOW_ALL_PROFILES_STORAGE_KEY)) {
+    return
+  }
+
+  const wanted = connectionCount > 1
+
+  if ($showAllProfiles.get() === wanted) {
+    return
+  }
+
+  seedingUnifiedDefault = true
+
+  try {
+    $showAllProfiles.set(wanted)
+  } finally {
+    seedingUnifiedDefault = false
+  }
+}
 
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the

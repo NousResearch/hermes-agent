@@ -1370,7 +1370,7 @@ export function ChatSidebar({
   // Recents and every messaging platform resolve owner groups the same way
   // ([connectionId, profile]), so a platform's groups line up with recents.
   const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
-  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped)
+  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped, filtersNarrow)
   const connectionsRegistry = useStore($connectionsRegistry)
   const profileColors = useStore($profileColors)
 

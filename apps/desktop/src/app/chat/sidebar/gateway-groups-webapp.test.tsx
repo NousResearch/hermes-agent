@@ -89,3 +89,44 @@ it('names the Webapp gateway section after the host instead of its raw `local` i
   expect(groupOf(/\$3\.00/)).toBe(JSON.stringify(['local', 'default']))
   expect(groupOf(/\$1\.25/)).toBe(JSON.stringify(['local', 'work']))
 })
+
+// A profile with no chats still gets its own section, sourced from the profile list, on both hosts.
+it.each([
+  { host: 'Webapp', browser: true, connectionId: 'local' },
+  { host: 'native Desktop', browser: false, connectionId: null }
+])('shows a profile with no chats as its own section ($host)', ({ browser, connectionId }) => {
+  if (browser) {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  }
+
+  mount()
+  act(() => {
+    $connectionsRegistry.set(null)
+    $profiles.set([
+      { name: 'default', is_default: true },
+      { name: 'quiet', is_default: false }
+    ] as typeof $profiles.value)
+    $showAllProfiles.set(true)
+    setSidebarGrouping('profile')
+    $sessions.set([
+      makeSessionInfo({
+        id: 'one',
+        ...(connectionId ? { connection_id: connectionId } : {}),
+        profile: 'default',
+        title: 'only chat',
+        last_active: Date.now() / 1000
+      })
+    ])
+  })
+
+  const quiet = window.document.querySelector(
+    `[data-gateway-group='${JSON.stringify([connectionId, 'quiet'])}']`
+  ) as HTMLElement | null
+
+  expect(quiet).toBeTruthy()
+  expect(within(quiet!).getByText('quiet')).toBeTruthy()
+  expect(within(quiet!).getByText('No sessions yet')).toBeTruthy()
+  expect(window.document.querySelectorAll('[data-gateway-group-empty]')).toHaveLength(1)
+  expect(within(quiet!).getByRole('button', { name: 'New session in quiet' })).toBeTruthy()
+  expect(screen.getByText('only chat')).toBeTruthy()
+})

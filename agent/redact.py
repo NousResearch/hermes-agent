@@ -463,6 +463,19 @@ _PYTHON_REPR_SECRET_KEYS = frozenset({
     "raw_secret",
     "secret_input",
     "key_material",
+    # Credential-shaped names ending in "key" (#143974).
+    "aws_secret_access_key",
+    "secret_key",
+    "private_key",
+    "privatekey",
+    "signing_key",
+    "signingkey",
+    "encryption_key",
+    "encryptionkey",
+    "master_key",
+    "masterkey",
+    "hmac_key",
+    "hmackey",
 })
 _PYTHON_REPR_ENV_SUFFIXES = (
     "_API_KEY",

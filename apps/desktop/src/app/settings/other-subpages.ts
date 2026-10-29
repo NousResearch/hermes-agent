@@ -1,10 +1,10 @@
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 
 import type { SettingsSubpage } from './subpages'
 
 // Gateway tasks and search rows that only native Desktop can act on; the Webapp's
 // Gateways page is just its serving host (see WebappGatewaySettings).
-export const nativeHostOnly = () => !isBrowserHostedDesktop()
+export const nativeHostOnly = () => hostHas('gatewayManagement')
 
 // Pages with separate tasks expose content-only subpages. Billing keeps its
 // existing capability-gated bview=overview|plans flow rather than adding a

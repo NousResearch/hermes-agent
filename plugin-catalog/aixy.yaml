@@ -1,0 +1,31 @@
+name: aixy
+repo: https://github.com/aixy-tech/aixy-hermes-plugin
+sha: "38422435bb065bd6649f9d1288506b57790ab0eb"
+title: Aixy
+description: >-
+  Guided Aixy inference setup with optional MCP tools: hermes aixy setup selects an available
+  model or route, and hermes aixy mcp connects tools later. MCP is skipped by default.
+  Disclosure — exposes CLI commands only, with no automatic hooks or runtime tools. Explicit
+  inference setup sends the project key in an authenticated GET /models to the configured Aixy
+  gateway (https://api.aixy-gateway.com/v1 by default), rejects redirects, and asks before
+  updating the selected Hermes profile's provider and main model settings. The key is stored
+  through Hermes' credential writer as AIXY_API_KEY; provider settings contain a variable
+  reference. Model requests send Hermes' opaque conversation scope in X-Aixy-Session-ID for
+  grouping in Aixy Activity. No inference requests are sent during setup. Optional MCP setup starts the
+  installed Hermes CLI as a child process for browser OAuth, credential storage and tool
+  selection against the independent MCP endpoint (https://api.aixy-gateway.com/mcp by default).
+  The child uses the selected profile, disables inherited unattended and YOLO flags, and
+  receives no key in command arguments. Setup requires an interactive terminal. No additional
+  dependencies, telemetry, persistent background processes or self-updater.
+maintainer: aixy-tech
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+version: "0.1.2"
+docs_url: https://github.com/aixy-tech/aixy-hermes-plugin#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

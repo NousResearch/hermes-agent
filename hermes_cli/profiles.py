@@ -21,7 +21,7 @@ from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_arc
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, removal_error_message, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -1793,7 +1793,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # 5. Clear active_profile if it pointed to this profile
     _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+        raise RuntimeError(removal_error_message(profile_dir, remove_error)) from remove_error
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the

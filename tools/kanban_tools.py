@@ -784,6 +784,16 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
                 f"change). Retry kanban_complete with a non-empty summary or result describing "
                 f"what was done.")
+        except kb.UnboundPrClaimError as pr_err:
+            # The completion evidence cites a PR the card's completion_contract
+            # does not bind. Nothing was mutated; the audit event already
+            # landed. The worker retries with the bound PR (or the bound
+            # repo's PR) instead of stalling.
+            return tool_error(
+                f"kanban_complete blocked: {pr_err}. Your task is still in-flight (no state "
+                f"change). The completion evidence must cite only the PR bound by the card's "
+                f"completion_contract ({pr_err.contract}). Retry kanban_complete citing that "
+                f"PR (or the bound repo's PR) in the summary/result/metadata.")
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or

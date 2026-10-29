@@ -2603,6 +2603,22 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class UnboundPrClaimError(ValueError):
+    """``complete_task`` refused: the completion evidence cites a GitHub PR
+    that the card's ``completion_contract`` does not bind. A ``ValueError`` so
+    tool error handlers treat it as recoverable — the worker retries with the
+    bound PR (or the bound repo's PR) instead of stalling."""
+
+    def __init__(self, task_id: str, pr_url: str, contract: str):
+        self.task_id = task_id
+        self.pr_url = pr_url
+        self.contract = contract
+        super().__init__(
+            f"completion blocked: {task_id} cites PR {pr_url}, which is not bound "
+            f"by the card's completion_contract ({contract})"
+        )
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2668,6 +2684,9 @@ def complete_task(
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
+    )
+    _gate_unbound_pr_claim(
+        conn, task_id, result=result, summary=summary, metadata=metadata,
     )
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
@@ -2805,6 +2824,72 @@ def _gate_empty_completion(
             },
         )
     raise EmptyCompletionError(task_id)
+
+
+def _gate_unbound_pr_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str],
+    summary: Optional[str],
+    metadata: Optional[dict],
+) -> None:
+    """Refuse a completion whose evidence cites a GitHub PR the card's
+    ``completion_contract`` does not bind.
+
+    The contract is the card's publication claim: ``local-only`` cards make
+    no PR claim, ``owner/repo`` binds every PR of that repo, and an exact PR
+    URL binds that one PR. A completion that cites a PR outside the bound
+    scope would let a worker close a publication card on a sibling PR (or a
+    PR of another repo) whose CI the card never declared — the green
+    acceptance check would then run against the bound PR, not the one the
+    evidence actually points at. Fail closed: any PR-shaped URL in the
+    evidence must be inside the bound scope, or the completion is refused
+    after an auditable event.
+    """
+    from hermes_cli.kanban_pr_acceptance import _PR
+    row = conn.execute(
+        "SELECT status, completion_contract, result FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return
+    contract = row["completion_contract"] or "local-only"
+    if contract == "local-only":
+        return
+    if row["status"] == "review":
+        # A human vouches for the card; the approval is the record.
+        return
+    text = "\n".join(
+        part for part in (result, summary, row["result"]) if part
+    )
+    if isinstance(metadata, dict):
+        text += "\n" + json.dumps(metadata, default=str)
+    cited = {m.group(0) for m in _PR.finditer(text)}
+    if not cited:
+        return
+    if _PR.fullmatch(contract):
+        allowed = {contract}
+    else:
+        owner, repo = contract.split("/", 1)
+        allowed = {
+            f"https://github.com/{owner}/{repo}/pull/{n}"
+            for n in re.findall(r"(\d+)", "\n".join(cited))
+        }
+    unbound = sorted(cited - allowed)
+    if not unbound:
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_unbound_pr",
+            {
+                "contract": contract,
+                "unbound_prs": unbound,
+                "result_preview": _first_line(result, 200) or None,
+                "summary_preview": _first_line(summary, 200) or None,
+            },
+        )
+    raise UnboundPrClaimError(task_id, unbound[0], contract)
 
 
 def _stage_completion_artifacts(

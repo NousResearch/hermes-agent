@@ -7,7 +7,10 @@ source. So ``container_persistent: false`` mounted no ``/workspace`` at all, and
 ``profile:<name>`` container bound to whichever session's cwd created it first.
 """
 import json
+import os
+import uuid
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
@@ -303,6 +306,56 @@ def test_managed_worker_turn_runs_in_its_sessions_workspace(home, tmp_path, monk
     assert seen['task_id'] == 'worker-s1'
     assert ':ws:' in seen['plan'][0]
     assert seen['plan'][1] == str(ws1)
+
+
+@pytest.mark.parametrize('persistent', [False, True])
+def test_managed_worker_kanban_turns_run_in_their_sessions_workspace(home, tmp_path, monkeypatch, persistent):
+    # The same worker's kanban lane: its first turn, in-place retry and goal turn run in the session's workspace
+    # too. Unbound, each ran as a fresh task with nothing mounted, or in the shared persistent container (#91568).
+    from agent import kanban_turn_recovery
+    from gateway import session_kanban
+    from gateway.session_policy import policy_scope
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect_closing
+    card = tmp_path / 'card'
+    card.mkdir()
+    policy = _policy(home, card, persistent=persistent)
+    monkeypatch.delenv('HERMES_KANBAN_TURN_RECOVERY', raising=False)
+    monkeypatch.setattr(kanban_turn_recovery, 'RECOVERY_DELAYS_SECONDS', (0.0,))
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt', lambda *a, **k: ('', [], []))
+    monkeypatch.setattr('hermes_cli.goals.run_kanban_goal_loop', lambda **kw: kw['run_turn']('next'))
+    kb.init_db()
+    with connect_closing(kb.kanban_db_path()) as conn:
+        task_id = kb.create_task(conn, title='card', assignee='default')
+        task = kb.claim_task(conn, task_id, claimer='private-host:owner')
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, 'worker_bound', {'pid': os.getpid(), 'claim_lock': task.claim_lock},
+                             run_id=task.current_run_id)
+    context = {'db': str(kb.kanban_db_path()), 'task_id': task_id, 'run_id': task.current_run_id,
+               'claim_lock': task.claim_lock, 'skills': [], 'context': '', 'goal_mode': True, 'goal_text': 'g',
+               'goal_max_turns': 2}
+    results = [{'failed': True, 'failure_retryable': True, 'failure_reason': 'timeout', 'error': 'stream died',
+                'messages': [{'role': 'user', 'content': 'go'}]},
+               {'completed': True, 'final_response': 'done'}, {'completed': True, 'final_response': 'next done'}]
+    seen = []
+
+    class Agent:
+        session_id = 'local-k'
+        _session_db = SimpleNamespace(get_messages_as_conversation=lambda _sid: [])
+
+        def run_conversation(self, text, task_id=None, **kwargs):
+            # An unbound turn runs as a fresh task id (agent/turn_context.py).
+            seen.append(_plan(task_id or str(uuid.uuid4())))
+            return results.pop(0)
+
+    frame = {'policy': {**asdict(policy), 'kanban_json': json.dumps(context)}, 'text': 'go',
+             'route': 'agent:main:local:dm:local-k', 'scope': {'session_id': 'local-k'}}
+    with policy_scope(policy):  # agent/managed_worker.py: policy_scope(policy), no session key bound
+        session_kanban.run_worker_turns(Agent(), frame, [])
+    # First turn, retry and goal turn: the session's own container, mounting the card at /workspace.
+    key = seen[0][0]
+    assert seen == [(key, str(card))] * 3
+    assert ':ws:' in key if persistent else key == 'local-k'
 
 
 def test_secondary_profiles_managed_worker_turn_keys_its_own_workspace_container(home, tmp_path, monkeypatch):

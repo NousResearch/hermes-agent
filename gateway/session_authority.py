@@ -173,6 +173,9 @@ class SessionAuthority:
         self.rotated_owners = {}
         # Route key -> [lock, holder + waiters] of the native admissions in flight (``_route_turn``, ``keyed_turn``).
         self._route_turns = {}
+        # session id -> monotonic expiry of a retiring workspace mark (#134889 TUI-27): a launcher
+        # removing this session's worktree asked the owner to take no new work in it meanwhile.
+        self.retiring_workspaces = {}
         # Per route: how many messaging /stop and /new fenced it (``fence_route``). Kept for the
         # owner's life (one int per chat that ever got one): an input or command turn holding an older
         # value never commits, and a reset entry could read as an old epoch again.
@@ -675,6 +678,12 @@ class SessionAuthority:
         only): committed as ``kanban_card_v1``, it lets a card attempt lost across an owner restart
         settle interrupted (#134889 KB-8). Never a payload field: a client cannot supply it."""
         self.authorize(actor, request.ref, 'session:submit')
+        from gateway.session_workspace_retiring import retiring as workspace_retiring
+        if workspace_retiring(self, request.ref.session_id):
+            # The launcher is removing this session's workspace right now (#134889 TUI-27): a new
+            # turn would be admitted and fail later with ``workspace_unavailable``, taking the
+            # prompt and refusing it after the fact. Refuse here, by name, instead.
+            raise RuntimeStoreError('workspace_retiring')
         async with self.sessions[request.ref.session_id].mutation_lock:
             # Deletion can retire this session while the caller waits on its writer.
             self.authorize(actor, request.ref, 'session:submit')
@@ -777,6 +786,22 @@ class SessionAuthority:
         from gateway.session_ingress_media import release_admission_media
         await asyncio.to_thread(release_admission_media, self.db, admission_id)
         return self._receipt(row)
+
+    async def retire_workspace(self, actor, ref, path, retiring):
+        """Mark (or clear) this session's workspace as retiring (#134889 TUI-27).
+
+        A launcher that removes the session's worktree calls this before the removal, so a submit
+        that lands in that window is refused by name instead of being admitted into a directory
+        that is about to disappear. The owner resolves the session's own workspace: the caller
+        names the tree it removes, and only the session that works in it is marked.
+        """
+        self.authorize(actor, ref, 'session:control')
+        from gateway.session_workspace_retiring import mark, same_path, workspace_of
+        cwd = workspace_of(self, ref.session_id)
+        if not cwd or not same_path(cwd, path):
+            raise RuntimeStoreError('workspace_mismatch')
+        mark(self, ref.session_id, retiring=retiring)
+        return {'session_id': ref.session_id, 'retiring': retiring}
 
     async def cancel_or_claimed(self, actor, ref, admission_id):
         """Cancel a row the caller read ``queued``: None once cancelled, else the started row the

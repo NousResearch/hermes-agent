@@ -539,6 +539,7 @@ from hermes_cli.worktree_ops import (
     _setup_worktree,
     _worktree_has_unpushed_commits,
     _worktree_is_dirty,
+    mark_workspace_retiring,
     release_lsp_clients,
 )
 
@@ -586,8 +587,16 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     # Release the tree's language servers while the path still exists, then unlock so `remove`
     # isn't blocked by the lock placed at creation. Fail-soft.
     release_lsp_clients(wt_path)
+    # Tell the owner this tree is going away: a submit that lands while it is removed is refused by
+    # name instead of being admitted into a directory that is about to disappear (#134889 TUI-27).
+    # Best-effort and silent: the removal must never wait on it.
+    session_id = _active_agent_ref.session_id if _active_agent_ref else None
+    if session_id:
+        mark_workspace_retiring(wt_path, session_id)
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
+    if session_id:
+        mark_workspace_retiring(wt_path, session_id, retiring=False)
     _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
     _cprint(f"\033[32m{_t('cli.worktree.cleaned_up', path=wt_path)}\033[0m")
 

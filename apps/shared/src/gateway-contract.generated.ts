@@ -4685,6 +4685,16 @@ export interface SessionPruneResult {
   routing_deleted?: number | null
   skipped?: number | null
 }
+/** The tree a launcher is about to remove, and whether the mark goes up or comes down. */
+export interface WorkspaceRetireParams {
+  session_id: string
+  path: string
+  retiring: boolean
+}
+export interface WorkspaceRetireResult {
+  session_id: string
+  retiring: boolean
+}
 export interface CommandObserveParams {
   session_id: string
   name: string
@@ -6885,6 +6895,8 @@ export interface CanonicalRpcMethods {
   /** The session.usage dict on demand: what main's classic CLI read off its agent. */
   'session.stats': { params: SessionStatsParams; result: SessionStats }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
+  /** Mark this session's workspace as retiring (a launcher removing its worktree): the owner takes no new work in it until the removal finished. */
+  'session.workspace.retire': { params: WorkspaceRetireParams; result: WorkspaceRetireResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
   /** Adopt a registered execution after verifying the live producer claim. */
@@ -6940,6 +6952,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.resume',
   'session.stats',
   'session.steer',
+  'session.workspace.retire',
   'shell.exec',
   'worker.adopt',
   'worker.persist',

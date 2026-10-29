@@ -273,6 +273,8 @@ class AuthorityConnection:
         handlers['clarify.lock'] = partial(clarify_lock, self)
         from gateway.session_connections import handlers as connection_handlers
         handlers.update(connection_handlers(self))
+        from gateway.session_workspace_retiring import handlers as retiring_handlers
+        handlers.update(retiring_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
         from gateway.session_onboarding import handlers as onboarding_handlers

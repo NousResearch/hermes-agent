@@ -99,6 +99,39 @@ def release_lsp_clients(wt_path: str) -> None:
         logger.debug("LSP release for worktree %s failed: %s", wt_path, e)
 
 
+def mark_workspace_retiring(path: str, session_id: Optional[str] = None, *, retiring: bool = True) -> bool:
+    """Tell the owner that this tree is going away, so it takes no new work meanwhile (#134889 TUI-27).
+
+    A submit that lands while ``git worktree remove`` runs is admitted and only fails later, when
+    the turn tries to run in a directory that is gone: the prompt is taken and refused after the
+    fact. The mark refuses it up front, by name.
+
+    Only an owner that is already running is told: this never starts a gateway, and a launcher
+    that cannot reach one (its own backend is gone with it) has no race to close. Best-effort: a
+    refused mark must never block the removal.
+    """
+    if not session_id:
+        return False
+    try:
+        import asyncio
+        from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint, gateway_profile_home
+        from hermes_constants import get_hermes_home
+        discovery = discover_gateway_endpoint(gateway_profile_home(get_hermes_home()), timeout=2.0)
+        if not attachable(discovery) or discovery.endpoint is None:
+            return False
+        from hermes_cli.gateway_client import connect_gateway
+
+        async def _mark() -> None:
+            async with connect_gateway(discovery.endpoint) as client:
+                await client.rpc('session.workspace.retire', session_id=session_id, path=path, retiring=retiring)
+
+        asyncio.run(_mark())
+        return True
+    except Exception as e:  # health: allow BLE001 -- a best-effort mark must never block the removal
+        logger.debug("workspace-retiring mark for %s failed: %s", path, e)
+        return False
+
+
 def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str) -> None:
     """Sweep the leftovers of a failed/timed-out ``git worktree add`` (fail-soft).
 

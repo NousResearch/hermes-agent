@@ -1,0 +1,17 @@
+name: aimlapi
+repo: https://github.com/aimlapi/hermes-provider-aimlapi
+sha: 2d0022fc24fe19b00f13851827166d258b55e1ed
+subdir: aimlapi
+description: aimlapi.com — one OpenAI-compatible API for 1000+ models; /model picker lists the hottest and tool-capable chat models, and on builds with model_setup_flow `hermes model` can sign you up and top up in the browser. Disclosure — sends your prompts and AIMLAPI_API_KEY to api.aimlapi.com, a third-party API that routes to upstream vendors (OpenAI, Anthropic, Google, DeepSeek, …), billed in prepaid aimlapi.com credits; the guided setup sends your email to aimlapi.com, opens an aimlapi.com / Stripe checkout and creates new accounts as partner checkouts under this integration's partner id. Opt-in AIMLAPI_ATTRIBUTION=1 adds integration attribution headers.
+maintainer: aimlapi.com
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/aimlapi/hermes-provider-aimlapi#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - AIMLAPI_API_KEY

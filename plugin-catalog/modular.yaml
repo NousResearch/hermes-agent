@@ -1,13 +1,13 @@
 name: modular
 repo: https://github.com/tommyjtl/hermes-modular-provider
-sha: 6a80b25381fd86c989a52440947c5d0d277a877b
+sha: 826e05f9071d43f51c60ed27e73d060299e4cd1b
 subdir: ""
 description: "Modular Cloud model-provider plugin — OpenAI-compatible API for open models (MiniMax, DeepSeek, Gemma), with per-model reasoning controls."
 maintainer: tommyjtl
 tier: community
 category: models
 docs_url: https://github.com/tommyjtl/hermes-modular-provider#readme
-version: "0.1.0"
+version: "0.1.1"
 readme: true
 capabilities:
   provides_tools: []

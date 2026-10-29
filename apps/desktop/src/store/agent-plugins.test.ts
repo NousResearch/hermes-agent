@@ -1,6 +1,8 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { GATEWAY_NOT_CONNECTED_MESSAGE } from '@/api/client'
+
 import {
   $agentPlugins,
   $agentPluginsProfile,
@@ -60,6 +62,43 @@ describe('installAgentPlugin', () => {
       ok: false,
       timedOut: true
     })
+  })
+
+  it('counts only a backend refusal that placed nothing as refused, never another error or a dropped connection', async () => {
+    const answered = async (reply: () => Promise<unknown>) =>
+      (await installAgentPlugin(vi.fn(reply) as never, { identifier: 'demo' })).refused
+
+    const refusal = (data?: Record<string, unknown>) => () =>
+      Promise.reject(new JsonRpcGatewayError('install refused', { code: 5026, data }))
+
+    expect(await answered(refusal({ placed: false }))).toBe(true)
+    expect(await answered(refusal({ reason: 'source_moved', placed: false }))).toBe(true)
+    // An error raised once the tree went to the package manager, or from a backend older than `placed`,
+    // may follow a replaced tree.
+    expect(await answered(refusal())).toBe(false)
+    expect(await answered(refusal({ reason: 'source_moved' }))).toBe(false)
+    expect(await answered(refusal({ placed: 'false' }))).toBe(false)
+    expect(await answered(async () => ({ ok: false, error: 'already exists' }))).toBeFalsy()
+    expect(await answered(() => Promise.reject(new Error('WebSocket heartbeat acknowledgement timed out')))).toBe(false)
+    expect(await answered(() => Promise.reject(new Error('Hermes gateway connection closed')))).toBe(false)
+
+    // The request resends after a dropped connection, so a missing connection may follow an attempt that
+    // already reached the backend: no proof that nothing installed.
+    expect(await answered(() => Promise.reject(new Error(GATEWAY_NOT_CONNECTED_MESSAGE)))).toBe(false)
+  })
+
+  it('reads a landed tree only from the backend prefix at the start, never from git text quoting it', async () => {
+    const landed = async (message: string) =>
+      (
+        await installAgentPlugin(
+          vi.fn(() => Promise.reject(new JsonRpcGatewayError(message, { code: 5026 }))) as never,
+          { identifier: 'demo' }
+        )
+      ).landed
+
+    expect(await landed('enable refused: dependency conflict')).toBe(true)
+    expect(await landed('install refused: git clone failed: remote: enable refused: x')).toBe(false)
+    expect(await landed('install refused: git clone failed\nenable refused: x')).toBe(false)
   })
 
   const reviewed = 'e404b6816b20237a82f6fbe2749b5a576cf75dba'

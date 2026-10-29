@@ -367,6 +367,97 @@ def test_managed_local_runtime_defers_and_a_newer_fork_supersedes(forks, consent
     assert _settled(second).outcome == "ok" and forks.built[0]["fork"].seen["prompt"] == "q2"
 
 
+@pytest.fixture
+def idle_queue(monkeypatch):
+    """A real idle queue whose dispatcher thread never starts: the test dispatches by hand."""
+    queue = review_idle_queue.ReviewIdleQueue()
+    monkeypatch.setattr(queue, "_ensure_thread", lambda: None)
+    monkeypatch.setattr(review_idle_queue, "QUEUE", queue)
+    monkeypatch.setattr(review_idle_queue, "review_targets_managed_local", lambda agent, cfg: True)
+    return queue
+
+
+def test_next_live_turn_cancels_a_deferred_fork_that_then_never_launches(forks, consented, idle_queue, caplog):
+    parent = _agent()
+    handle = _ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q")
+    assert handle.outcome == "deferred" and idle_queue.pending_count() == 1
+    dispatch = idle_queue._pending[f"sess:plugin_fork:{PLUGIN}"].dispatch
+
+    background_review.cancel_background_review_for_live_turn(parent)
+    assert handle.done and handle.outcome == "cancelled" and handle.cancelled
+    assert idle_queue.pending_count() == 0  # its queue slot is released
+    assert "did not acknowledge cancellation" not in caplog.text  # nothing left to await
+    dispatch()  # a dispatcher that popped it before the fence: still never launches
+    assert forks.built == [] and not parent._plugin_fork_jobs
+
+
+def test_deferred_fork_cancel_probe(forks):
+    """The R1 probe, verbatim in shape: defer, next-turn interrupt, then the queued dispatch."""
+    import contextvars
+
+    from agent.side_question_request import SideQuestionCapture
+
+    parent = SimpleNamespace(session_id="sess")
+    capture = SideQuestionCapture(parent_ref=lambda: parent, messages=[], system_prompt="sys",
+                                  system_prompt_static=None, tools=[], session_id="sess", turn_id="turn-1",
+                                  runtime=(), context=contextvars.copy_context())
+    run = background_review._BackgroundReviewRun()
+    job = plugin_session_fork._ForkJob(PLUGIN, capture, "q", frozenset(), 1, None, {}, None, run)
+    job.handle = plugin_session_fork.PluginForkHandle(PLUGIN, lambda: plugin_session_fork._cancel_job(job))
+    queued, launched = [], []
+    with patch("agent.review_idle_queue.QUEUE.enqueue", lambda agent, key, kwargs, dispatch=None: queued.append(dispatch)):
+        plugin_session_fork._defer(job, parent)
+        interrupted = plugin_session_fork.interrupt_plugin_forks(parent, message="next turn", tool_reason="next turn")
+        with patch.object(plugin_session_fork, "_launch", launched.append):
+            queued[0]()
+    assert (job.handle.outcome, job.handle.done, len(interrupted), run.cancel_requested.is_set()) == \
+        ("cancelled", True, 1, True)
+    assert launched == [] and run.request_done.is_set()
+
+
+def test_an_interrupt_racing_launch_registration_still_fences_the_fork(forks, consented, monkeypatch):
+    """A barrier inside the seam: the next turn's interrupt fires after ``_launch`` checked the job
+    and before it registered it. The interrupt cannot finish inside the seam; it lands once the job
+    is registered and fences it, so the fork never makes a request."""
+    parent = _agent()
+    in_seam, interrupted = threading.Event(), threading.Event()
+    check = plugin_session_fork._launch_refusal
+
+    def _seam(p, job):
+        refusal = check(p, job)
+        in_seam.set()
+        interrupted.wait(2.0)  # an unfenced seam lets the interrupt complete right here
+        return refusal
+
+    def _next_turn():
+        assert in_seam.wait(10)
+        plugin_session_fork.interrupt_plugin_forks(parent, message="next turn", tool_reason="next turn")
+        interrupted.set()
+
+    monkeypatch.setattr(plugin_session_fork, "_launch_refusal", _seam)
+    racer = threading.Thread(target=_next_turn)
+    racer.start()
+    handle = _ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q")
+    racer.join(10)
+    assert interrupted.is_set() and _settled(handle).outcome == "cancelled"
+    assert not any(built["fork"].started.is_set() for built in forks.built)
+
+
+def test_a_fork_of_a_fenced_turn_is_refused_at_launch(forks, consented):
+    """The interrupt runs before the turn id moves on; a fork of that turn arriving afterwards (it
+    redeemed the token just before) is cancelled. The next turn's own fork runs."""
+    parent = _agent()
+    token = issue_side_question_token(parent, [], "turn-1")
+    plugin_session_fork.interrupt_plugin_forks(parent, message="next turn", tool_reason="next turn")
+    assert _settled(_ctx(consented).fork_session(token, "q")).outcome == "cancelled"
+
+    token = issue_side_question_token(parent, [], "turn-1b")
+    parent._current_turn_id = "turn-1b"
+    handle = _ctx(consented).fork_session(token, "q")
+    assert _settled(handle).outcome == "ok"
+    assert forks.built and not parent._plugin_fork_jobs
+
+
 # ── 4. end to end through real discovery, a real turn and a real fork ────────────────────
 
 _E2E_PLUGIN = '''

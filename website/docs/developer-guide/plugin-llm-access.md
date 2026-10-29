@@ -695,8 +695,9 @@ when nothing was started.
   context window); `input_budget` can only lower that bound.
 * Dangerous-command approvals are auto-denied, and nothing the fork does
   is written to the transcript or the session database.
-* The fork is cancelled as soon as the session starts its next turn.
-  `timeout` (seconds, at most 1800) adds a wall clock.
+* The fork is cancelled as soon as the session starts its next turn,
+  whether it is running, starting or still deferred; a deferred fork
+  then never launches. `timeout` (seconds, at most 1800) adds a wall clock.
 * `task` names one of this plugin's own
   [`register_auxiliary_task`](#task-routed-auxiliary-calls) lanes: the
   fork then runs on that lane's model, resolved like

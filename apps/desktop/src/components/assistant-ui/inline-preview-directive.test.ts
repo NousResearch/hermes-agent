@@ -5,6 +5,7 @@ import {
   directiveFrameHeight,
   evaluateIntent,
   frameSizeFromMessage,
+  frameWidth,
   INTENT_THROTTLE_MS,
   intentAckMessage,
   intentScript,
@@ -25,6 +26,28 @@ describe('directiveFrameHeight', () => {
     expect(directiveFrameHeight('50')).toBe(120)
     expect(directiveFrameHeight('480')).toBe(480)
     expect(directiveFrameHeight('99999')).toBe(1200)
+  })
+})
+
+describe('frameWidth', () => {
+  it('lets CSS fill the column before any measurement lands', () => {
+    expect(frameWidth(null, 0)).toBeUndefined()
+    expect(frameWidth(null, 1200)).toBeUndefined()
+  })
+
+  it('shrink-wraps a fixed widget and fills the column for a fluid page', () => {
+    expect(frameWidth(320, 1200)).toBe(320)
+    expect(frameWidth(1200, 1200)).toBe(1200)
+  })
+
+  it('never spills past the column when the window shrinks', () => {
+    expect(frameWidth(1600, 900)).toBe(900)
+  })
+
+  it('caps at the reading column when full-width replies are off', () => {
+    expect(frameWidth(1600, 900, false)).toBe(640)
+    expect(frameWidth(320, 900, false)).toBe(320)
+    expect(frameWidth(640, 0, false)).toBe(640)
   })
 })
 

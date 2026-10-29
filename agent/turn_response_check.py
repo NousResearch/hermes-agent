@@ -101,6 +101,7 @@ def check_api_response(
     """Verify ``response`` in the original order. The retry buffer is NOT cleared on success
     (bytes back != usable content); ``_preflight_compression_blocked``/``_last_preflight_pressure``
     reset only when the usage fold re-arms the compression budget."""
+    from agent.conversation_loop import _arm_fallback_restart
     from agent.turn_recovery import validate_response_shape
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ResponseCheckVerdict:
@@ -187,6 +188,12 @@ def check_api_response(
         truncated_tool_call_retries = _tv.truncated_tool_call_retries
         retry_count = _tv.retry_count
         compression_attempts = _tv.compression_attempts
+        if _retry.restart_with_rebuilt_messages:
+            # Match other route-switch exits: the next request builder reads
+            # this loop prompt, not the agent's newly rewritten prompt cache.
+            active_system_prompt = _arm_fallback_restart(
+                agent, api_messages, active_system_prompt, _retry,
+            )
         if _tv.action in ("return", "break", "continue"):
             return _verdict(_tv.action, _tv.result)
 

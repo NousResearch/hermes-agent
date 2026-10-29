@@ -71,6 +71,8 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -9292,6 +9294,22 @@ def _resolve_assignee_home(assignee: str) -> Path:
     return _get_profiles_root() / normalized
 
 
+def _jwt_expired_for_meter(token: object) -> bool:
+    """Return True only when a JWT has a definitely expired ``exp`` claim."""
+    if not isinstance(token, str):
+        return False
+    parts = token.strip().split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        claims = json.loads(payload.decode("utf-8"))
+        exp = claims.get("exp")
+        return isinstance(exp, (int, float)) and exp <= time.time()
+    except (binascii.Error, ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+
 def _read_assignee_credentials(
     hermes_home: Path,
 ) -> dict[str, tuple[Optional[str], Optional[str]]]:
@@ -9400,7 +9418,20 @@ def _read_assignee_credentials(
                 from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
                 _ant_pool = load_pool("anthropic")
                 for _entry in _ant_pool._entries:
-                    _tok = (getattr(_entry, "access_token", None) or "").strip()
+                    _tok = (
+                        getattr(_entry, "runtime_api_key", None)
+                        or getattr(_entry, "access_token", None)
+                        or ""
+                    ).strip()
+                    if not _tok:
+                        _source = str(getattr(_entry, "source", "") or "")
+                        _env_name = _source.rsplit(":", 1)[-1].strip().upper()
+                        if _env_name in {
+                            "ANTHROPIC_TOKEN",
+                            "CLAUDE_CODE_OAUTH_TOKEN",
+                            "ANTHROPIC_API_KEY",
+                        }:
+                            _tok = (env_vars.get(_env_name) or "").strip()
                     if not _tok:
                         continue
                     if _entry.last_status == STATUS_DEAD:
@@ -9444,11 +9475,32 @@ def _read_assignee_credentials(
         _codex_fail_closed = False
         if "openai-codex" in result:
             try:
-                from agent.credential_pool import load_pool
+                from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
                 _codex_pool = load_pool("openai-codex")
-                if _codex_pool.has_credentials() and not _codex_pool._available_entries(
-                    clear_expired=False, refresh=False
-                ):
+                _raw_codex_entries = getattr(_codex_pool, "_entries", ())
+                if not isinstance(_raw_codex_entries, (list, tuple)):
+                    # Preserve fail-closed behavior for pool implementations
+                    # that cannot expose their entries for inspection.
+                    _codex_pool._available_entries(clear_expired=False, refresh=False)
+                    raise RuntimeError("codex pool entries unavailable for validation")
+                _codex_entries = list(_raw_codex_entries)
+                _codex_invalid = False
+                if _codex_entries:
+                    _codex_invalid = not any(
+                        (
+                            getattr(_entry, "last_status", None) != STATUS_DEAD
+                            and not (
+                                getattr(_entry, "last_status", None) == STATUS_EXHAUSTED
+                                and getattr(_entry, "last_error_code", None) in (401, 403)
+                            )
+                            and not _jwt_expired_for_meter(
+                                getattr(_entry, "runtime_api_key", None)
+                                or getattr(_entry, "access_token", None)
+                            )
+                        )
+                        for _entry in _codex_entries
+                    )
+                if _codex_invalid:
                     del result["openai-codex"]
                     _codex_fail_closed = True
             except Exception:

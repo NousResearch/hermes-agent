@@ -848,3 +848,76 @@ class TestCredentialValidationFailClosed:
         assert creds["openai-codex"] == ("env-api-key", None), (
             f"Expected ('env-api-key', None), got {creds['openai-codex']!r}"
         )
+
+
+class TestCredentialPoolAuthStoreIntegration:
+    """Exercise the profile auth.json + .env schema used by real workers."""
+
+    @staticmethod
+    def _write_auth(home: Path, *, anthropic_status: str = "exhausted", codex_token: str = "") -> None:
+        providers = {}
+        codex_pool = []
+        if codex_token:
+            providers["openai-codex"] = {"tokens": {"access_token": codex_token}}
+            codex_pool.append({
+                "id": "codex-device",
+                "label": "openai-codex",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "device_code",
+                "access_token": codex_token,
+            })
+        (home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": providers,
+            "credential_pool": {
+                "anthropic": [{
+                    "id": "borrowed-anthropic",
+                    "label": "ANTHROPIC_TOKEN",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "env:ANTHROPIC_TOKEN",
+                    "access_token": "",
+                    "last_status": anthropic_status,
+                    "last_error_code": 400,
+                }],
+                "openai-codex": codex_pool,
+            },
+        }), encoding="utf-8")
+
+    def test_borrowed_anthropic_entry_uses_profile_env_after_400(self, tmp_path):
+        home = tmp_path / "judo"
+        home.mkdir()
+        self._write_auth(home)
+        (home / ".env").write_text("ANTHROPIC_TOKEN=profile-anthropic-token\n", encoding="utf-8")
+
+        with (
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials", side_effect=RuntimeError("none")),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+        ):
+            creds = _read_assignee_credentials(home)
+
+        assert creds["anthropic"] == ("profile-anthropic-token", None)
+
+    def test_expired_codex_singleton_is_not_resurrected(self, tmp_path):
+        home = tmp_path / "judo"
+        home.mkdir()
+        expired = "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.signature"
+        self._write_auth(home, codex_token=expired)
+
+        with (
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  return_value={"api_key": expired, "base_url": None}),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+        ):
+            creds = _read_assignee_credentials(home)
+
+        assert "openai-codex" not in creds

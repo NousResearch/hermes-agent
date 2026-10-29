@@ -7,6 +7,7 @@ description: "Honcho is memory infrastructure for building stateful agents that 
 maintainer: plastic-labs
 tier: community
 category: memory
+featured: true
 image: https://raw.githubusercontent.com/plastic-labs/honcho/e2d2aba182862deeb846e5cd4a30a41bce0ed82a/hermes-plugin-honcho/docs/banner.png
 docs_url: https://docs.honcho.dev/v3/guides/integrations/hermes
 capabilities:

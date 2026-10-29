@@ -1,10 +1,13 @@
 """Behavioral tests for the single-card Feishu per-turn progress rail."""
+import queue
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-import queue
+
+import pytest
 
 from gateway.config import Platform
 from gateway.run_turn_runner import TurnRunner
+from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 
 
@@ -77,11 +80,40 @@ def test_native_callbacks_preserve_full_command_in_started_event():
 
 def test_progress_callback_preserves_log_mode_events_for_feishu():
     ctx = _ctx()
-    ctx.feishu_progress_card_enabled = True
-    ctx.progress_queue = None
     ctx.log_queue = queue.Queue()
     runner = TurnRunner(MagicMock(), ctx)
 
     runner.progress_callback("tool.started", "terminal", "git status", {})
 
     assert ctx.log_queue.get_nowait().endswith('terminal: "git status"')
+    assert ctx.progress_queue.empty()  # the ID-bearing callback alone drives the card
+
+
+@pytest.mark.parametrize(
+    ("display", "expected_mode", "expected_card"),
+    [
+        ({}, "new", True),
+        ({"tool_progress": "log"}, "log", True),
+        ({"tool_progress": "off"}, "off", False),
+        ({"platforms": {"feishu": {"tool_progress": "off"}}}, "off", False),
+        ({"tool_progress_overrides": {"feishu": "off"}}, "off", False),
+    ],
+)
+def test_feishu_card_follows_operator_progress_intent(monkeypatch, display, expected_mode, expected_card):
+    from gateway import run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": display})
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {Platform.FEISHU: SimpleNamespace(platform=Platform.FEISHU)}
+    runner.config = SimpleNamespace()
+    runner._session_db = None
+    source = SessionSource(platform=Platform.FEISHU, chat_id="oc_test", chat_type="dm", thread_id=None)
+
+    settings = runner._run_agent_display_settings(source)
+
+    assert settings.progress_mode == expected_mode
+    assert settings.feishu_progress_card_enabled is expected_card
+    if expected_mode == "log":
+        assert settings.log_queue is not None
+    if not expected_card:
+        assert settings.needs_progress_queue is False

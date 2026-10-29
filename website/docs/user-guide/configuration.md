@@ -2830,6 +2830,12 @@ web:
   # call attempts the chosen backend again (never sticky).
   keyless_rescue: true
 
+  # Ordered fallback chain (default: empty = off). When the selected backend
+  # fails a call, that call tries these in order before the keyless rescue;
+  # extract re-sends only the URLs still failing. Never cached, never sticky.
+  search_fallback_chain: ["exa", "tavily"]
+  extract_fallback_chain: ["exa"]
+
   # Pin Exa/Parallel to a tier (set by the hermes tools Free/Paid rows).
   # free = always the anonymous endpoint; paid = always the keyed SDK path;
   # unset = auto (key present -> paid, otherwise free).

@@ -12,13 +12,41 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def home(tmp_path):
+def home(tmp_path, monkeypatch):
+    monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
     h = tmp_path / "home"
     h.mkdir()
     return h
 
 
 class TestRouting:
+
+    def test_default_is_file(self, home):
+        assert cb.get_config_backend().name == "file"
+        assert cb.supports_file_tooling() is True
+
+    def test_unknown_backend_fails_closed(self, home, monkeypatch):
+        # No config value can select the backend, and an unknown one never falls back to the file.
+        monkeypatch.setenv(cb.BACKEND_ENV, "bogus")
+        with pytest.raises(cb.ConfigBackendUnavailable):
+            cb.get_config_backend()
+        with pytest.raises(cb.ConfigBackendUnavailable):
+            cb.read_config_doc(home / "config.yaml")
+
+    def test_unconfigured_remote_backend_fails_closed_on_read(self, home, monkeypatch):
+        # Selected from the env alone; without its plane identity the first read exits, and the
+        # local config.yaml is never used as a fallback (D2).
+        from plugins.config_backends import remote
+        (home / "config.yaml").write_text("a: 1\n", encoding="utf-8")
+        monkeypatch.setenv(cb.BACKEND_ENV, "remote")
+        monkeypatch.delenv("HERMES_CONFIG_INSTANCE_ID", raising=False)
+        remote._reset_for_tests()
+        try:
+            assert cb.get_config_backend().name == "remote"
+            with pytest.raises(cb.ConfigBackendUnavailable, match="Remote Config"):
+                cb.read_config_doc(home / "config.yaml")
+        finally:
+            remote._reset_for_tests()
 
     def test_explicit_non_config_file_never_reaches_the_backend(self, home, monkeypatch):
         # Only ``<home>/config.yaml`` is a user layer; any other file is read where it is.
@@ -28,6 +56,52 @@ class TestRouting:
         other = home / "import-source.yaml"
         other.write_text("a: 1\n", encoding="utf-8")
         assert cb.read_config_doc(other) == {"a": 1}
+
+
+class TestBootstrapSelector:
+    """The one bootstrap (``_ensure_bootstrap_env``) keeps the .env selector rules #134362 had in
+    ``_dotenv_backend_override``: the launch home's ``.env`` overrides a stale shell value, an
+    explicitly empty value resets to ``file``, an absent key leaves the shell value alone."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_bootstrap(self, home, monkeypatch):
+        from plugins.config_backends import remote
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_CONFIG_INSTANCE_ID", raising=False)
+        monkeypatch.setattr(cb, "_BOOTSTRAPPED", False)
+        remote._reset_for_tests()
+        yield
+        remote._reset_for_tests()
+
+    @pytest.mark.parametrize("shell, dotenv, expected", [
+        ("remote", "HERMES_CONFIG_BACKEND=file\n", "file"),       # stale shell value, .env says file
+        ("remote", "HERMES_CONFIG_BACKEND=\n", "file"),           # explicit empty value resets
+        (None, "HERMES_CONFIG_BACKEND=remote\n", "remote"),       # .env-only remote selects remote
+        ("remote", "OTHER=1\n", "remote"),                        # absent key keeps the shell value
+    ])
+    def test_dotenv_selector(self, home, monkeypatch, shell, dotenv, expected):
+        if shell is None:
+            monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
+        else:
+            monkeypatch.setenv(cb.BACKEND_ENV, shell)
+        (home / ".env").write_text(dotenv, encoding="utf-8")
+        assert cb.get_config_backend().name == expected
+
+    def test_dotenv_backend_override_is_gone(self):
+        # One mechanism: the bootstrap replaces #134362's per-call .env override.
+        assert not hasattr(cb, "_dotenv_backend_override")
+
+
+class TestRemoteBackendShape:
+
+    def test_remote_backend_is_not_a_file_backend(self):
+        # probe_config_readable and every FileBackend-typed path must never treat the remote
+        # layer as a local file.
+        from plugins.config_backends.remote.backend import RemoteBackend
+        assert not issubclass(RemoteBackend, cb.FileBackend)
+        for member in ("read_user_doc", "read_user_doc_readonly", "version", "exists",
+                       "probe_readable", "write_changes"):
+            assert callable(getattr(RemoteBackend, member, None)), member
 
 
 class TestFileBackend:
@@ -178,6 +252,26 @@ class TestPipelinesConsultTheBackend:
         assert [op for op, h in backend.calls if op == "write" and h == home] == ["write", "write"]
         text = (home / "config.yaml").read_text(encoding="utf-8")
         assert "# hand-tuned" in text and "other-model" in text and "kawaii" in text
+
+
+class TestFileTooling:
+
+    def test_file_backend_allows_it(self, home):
+        cb.require_file_tooling("x")
+
+    def test_backend_without_a_file_refuses_it(self, home, monkeypatch):
+        class NoFile(cb.FileBackend):
+            name = "nofile"
+
+            def supports_file_tooling(self):
+                return False
+        monkeypatch.setattr(cb, "get_config_backend", NoFile)
+        from hermes_cli.config_backups import backup_config
+        (home / "config.yaml").write_text("a: 1\n", encoding="utf-8")
+        assert backup_config(home / "config.yaml", "test") is None
+        with pytest.raises(cb.ConfigBackendUnavailable, match="Profile clone"):
+            from hermes_cli.profiles import _resolve_clone_source
+            _resolve_clone_source(None)
 
 
 class TestReaderGate:

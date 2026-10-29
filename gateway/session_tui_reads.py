@@ -182,7 +182,13 @@ async def context_breakdown(connection, ref, params) -> dict:
 
 def _stored_breakdown(row, conversation, usage) -> dict:
     """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin, beside its
-    stored usage. Tools are measured as the next agent restores them (``pinned_tool_defs``)."""
+    stored usage. Tools are measured as the next agent restores them (``pinned_tool_defs``).
+
+    Stored usage carries no window size (the session DB keeps cumulative counters, not the compressor's
+    ``context_length``), so an agentless read falls back to the window the session's own model resolves to
+    today (``_stored_context_max``). Without that the fields come back 0 and every client drops the meter
+    instead of painting it: ``statusbar.tsx::contextBarLabel`` returns '' on a falsy ``context_max``.
+    """
     from agent.context_breakdown import stored_context_breakdown
     from tools.mcp_tool_agent import pinned_tool_defs
     breakdown = {'categories': [], 'estimated_total': 0}
@@ -193,10 +199,40 @@ def _stored_breakdown(row, conversation, usage) -> dict:
         except (TypeError, ValueError):
             pin = None  # a pin hash whose row was swept resolves to itself
         breakdown = stored_context_breakdown(prompt, pinned_tool_defs(pin), conversation)
-    return {**breakdown, 'context_max': int(usage.get('context_max') or 0),
-            'context_percent': int(usage.get('context_percent') or 0), 'context_used': int(usage.get('context_used') or 0),
-            'context_estimated': bool(usage.get('context_estimated', False)),
-            'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or '')}
+    context_max, context_source = int(usage.get('context_max') or 0), str(usage.get('context_source') or '')
+    if not context_max:
+        # Fall back to the model's window and say so: ``estimated`` marks the percentage as derived rather
+        # than reported by a provider, the same distinction the resident path draws for a catalog window.
+        context_max, fallback_source = _stored_context_max(row)
+        if context_max:
+            context_source = fallback_source
+    return {**breakdown, 'context_max': context_max,
+            'context_percent': int(usage.get('context_percent') or 0),
+            'context_used': int(usage.get('context_used') or 0),
+            'context_estimated': bool(usage.get('context_estimated', False)) or bool(context_source and
+                                                                                    not usage.get('context_max')),
+            'context_source': context_source or 'provider_usage', 'model': str(usage.get('model') or '')}
+
+
+def _stored_context_max(row) -> tuple:
+    """The window this session's model resolves to now, for a session with no resident agent: the row's
+    model through the same resolver the gateway warms up with (``_resolve_gateway_model_context``, which
+    answers both the window and where it came from). ``(0, '')`` when the row names no model or the
+    resolver fails, so the caller keeps the contract's zeros rather than inventing a window."""
+    model = str(row.get('model') or '') if isinstance(row, dict) else ''
+    if not model:
+        return 0, ''
+    try:
+        from gateway.run import _resolve_gateway_model_context
+    except Exception:
+        return 0, ''
+    with contextlib.suppress(Exception):
+        resolved = _resolve_gateway_model_context(model)
+        length = int(resolved.context_length or 0)
+        if length > 0:
+            # ``catalog``/``detected``/``default`` are all a model-side window, not a provider report.
+            return length, str(resolved.context_source or 'detected')
+    return 0, ''
 
 
 def _agent_context_marks(agent) -> tuple:

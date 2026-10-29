@@ -52,11 +52,21 @@ def _fg(hex_color: str, bold: bool = False) -> str:
 
 
 def _brand_glyph() -> tuple[str, str]:
-    """(glyph, name) from the skin's response label, e.g. ``" ☤ Hermes "`` → ("☤", "Hermes")."""
+    """(glyph, name) from the skin's response label, e.g. ``" ☤ Hermes "`` → ("☤", "Hermes").
+
+    When the label carries only a glyph and no name (a symbol-only response
+    label), that glyph IS the mark — falling back to the built-in caduceus here
+    would silently discard the skin's choice.
+    """
     from hermes_cli.skin_engine import get_active_skin
     label = get_active_skin().get_branding("response_label", " ☤ Hermes ")
     parts = label.split(None, 1)
-    return (parts[0], parts[1].strip()) if len(parts) == 2 else ("☤", label.strip() or "Hermes")
+    if len(parts) == 2:
+        return (parts[0], parts[1].strip())
+    stripped = label.strip()
+    if stripped:
+        return (stripped, "")
+    return ("☤", "Hermes")
 
 
 def prompt_glyph() -> str:
@@ -108,8 +118,9 @@ def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
 def answer_label(timestamp: str = "") -> str:
     """The rows that open an answer: the accent bar, then the skin's brand glyph + name."""
     glyph, name = _brand_glyph()
+    mark = f"{glyph} {name}" if name else glyph
     stamp = f" {_DIM}{timestamp}{_RST}" if timestamp else ""
-    return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
+    return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{mark}{_RST}{stamp}"
 
 
 def _full_title(text: str) -> str:

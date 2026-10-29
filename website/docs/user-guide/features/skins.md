@@ -101,6 +101,7 @@ Text strings used throughout the CLI interface.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `agent_name` | Name shown in banner title and status display | `Hermes Agent` |
+| `icon` | The mark rendered before the agent name on the splash, in the TUI's status line, and before the model name in the CLI status bar. A bare glyph, not text — font support is the terminal's job. | `☤` |
 | `welcome` | Welcome message shown at CLI startup | `Welcome to Hermes Agent! Type your message or /help for commands.` |
 | `goodbye` | Message shown on exit | `Goodbye! ☤` |
 | `response_label` | Label on the response box header | ` ☤ Hermes ` |
@@ -216,6 +217,7 @@ spinner:
 
 branding:
   agent_name: "Cyber Agent"
+  icon: "⚡"
   response_label: " ⚡ Cyber "
 
 tool_prefix: "▏"

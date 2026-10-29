@@ -497,7 +497,11 @@ const ComposerPane = memo(function ComposerPane({
 
       {nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint nativeMode t={ui.theme} />}
 
-      {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>☤ {ui.status}</Text>}
+      {!composer.empty && !ui.sid && (
+        <Text color={ui.theme.color.muted}>
+          {ui.theme.brand.icon} {ui.status}
+        </Text>
+      )}
 
       <AmbientDock placement="dock-bottom" />
       <StatusRulePane at="bottom" composer={composer} nativeMode={nativeMode} status={status} />

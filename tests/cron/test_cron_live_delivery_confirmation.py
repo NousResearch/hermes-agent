@@ -171,6 +171,36 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
     return error, router_calls, standalone_calls
 
 
+class TestCronRunReferenceHeader:
+    def test_wrapped_result_shows_actual_run_id_in_copyable_header(self):
+        job = {**_job(), "execution_id": "actual-run-456"}
+        error, calls, _ = _run(
+            job, "Report body", _SendResult(message_id=1),
+            cron_cfg={"wrap_response": True},
+        )
+        assert error is None
+        assert len(calls) == 1
+        text = calls[0]["text"]
+        assert text.startswith(
+            "Cronjob Response: Ghost Delivery\n"
+            "```\njob: 92e639af907f | run: actual-run-456\n```\n"
+            "-------------\n\nReport body"
+        )
+
+    def test_missing_execution_id_keeps_legacy_header_without_fake_run(self):
+        _, calls, _ = _run(
+            _job(), "Report body", _SendResult(message_id=1),
+            cron_cfg={"wrap_response": True},
+        )
+        assert "(job_id: 92e639af907f)" in calls[0]["text"]
+        assert "run:" not in calls[0]["text"]
+
+    def test_unwrapped_delivery_keeps_body_unchanged(self):
+        job = {**_job(), "execution_id": "actual-run-456"}
+        _, calls, _ = _run(job, "Report body", _SendResult(message_id=1))
+        assert calls[0]["text"] == "Report body"
+
+
 class TestFilteredResultIsNotDelivered:
     FILTERED = {"success": True, "filtered": "silence_narration", "delivered": False}
 

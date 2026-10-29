@@ -232,6 +232,7 @@ export const ruOverrides = {
       'session.new': 'Новый сеанс',
       'session.newTab': 'Новая вкладка сеанса',
       'session.newWindow': 'Новое окно',
+      'session.history': 'История сеансов',
       'session.next': 'Следующий сеанс',
       'session.prev': 'Предыдущий сеанс',
       'session.slot.1': 'Переключить на недавний сеанс 1',

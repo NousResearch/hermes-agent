@@ -65,6 +65,182 @@ def _resolve_proxy_url(target_hosts=None) -> str | None:
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
 
 
+# F5 (2026-10-23 gateway DM outage): the host advertises IPv6 but has NO global IPv6
+# address — only a link-local ``fe80::/64`` on ens18.  DNS hands out
+# ``AAAA api.telegram.org = 2001:67c:4e8:f004::9``, which this host cannot route.
+#
+# MEASURED, not assumed (2026-10-24, kanban t_d2133284):
+#   * the unroutable AAAA attempt costs ~8ms — the kernel rejects it instantly with
+#     "Network is unreachable" because there is no route, so it does NOT burn the
+#     retry budget the way a *blackholed* AAAA would;
+#   * glibc's RFC 3484 defaults already return the A record FIRST (no global IPv6
+#     source address means IPv6 is demoted), so the hostname path is not
+#     IPv6-first on this host either;
+#   * 10 consecutive HTTPS requests to api.telegram.org through plain httpx:
+#     10/10 succeeded in 4.29s total (~0.43s each).
+#
+# So the "IPv6-first burns the retry budget" framing in the original card is
+# DISPROVEN on this host.  The residual defect that IS real and worth fixing:
+#
+#   The primary transport resolves the hostname through anyio's ``connect_tcp``,
+#   which resolves ALL families and applies Happy Eyeballs (RFC 6555) — it starts
+#   the IPv6 attempt first and only starts the IPv4 attempt if the first has not
+#   connected within 250ms.  On a host whose IPv6 path blackholes (a route that
+#   exists but silently drops, e.g. a firewall REJECT with a DROP rule, or a
+#   transit provider that blackholes) every connect pays that 250ms penalty.
+#
+# The fix is an IPv4-only network backend for the Telegram transport: it resolves
+# the hostname with ``AF_INET`` and connects to the resulting literal, while the
+# request's Host header and TLS SNI stay ``api.telegram.org`` (exactly what
+# ``curl --resolve`` does).  The backend is only installed when the host has NO
+# global-scoped IPv6 address, so a host with real IPv6 keeps dual-stack behaviour.
+#
+# The global-IPv6 test reads ``/proc/net/if_inet6`` — one file read, no subprocess,
+# no ``ip -6 route`` parsing, and it reports the actual SCOPE of each address
+# (00 = global, 20 = link, 10 = host, 40 = site).
+
+
+def _host_has_global_ipv6() -> bool:
+    """True when this host holds a global-scoped IPv6 address.
+
+    A link-local ``fe80::/64`` cannot carry internet traffic, so an AAAA record
+    resolved on such a host is unroutable.  The check is conservative: any failure
+    to determine the answer returns True (keep the default dual-stack behaviour)
+    rather than silently disabling IPv6 on a host that needs it.
+
+    ``/proc/net/if_inet6`` lines are:
+        ``<32-hex addr> <ifindex> <prefixlen> <scope> <flags> <ifname>``
+    with scope 00 = global, 10 = host, 20 = link, 40 = site.  Only scope 00 counts.
+    """
+    try:
+        with open("/proc/net/if_inet6", "r", encoding="ascii") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                if parts[3] == "00":  # scope 00 = global
+                    return True
+        return False
+    except Exception:
+        return True
+
+
+try:
+    from httpcore._backends.anyio import AnyIOBackend as _AnyIOBackend
+except Exception:  # pragma: no cover - httpcore layout changed
+    _AnyIOBackend = None
+
+
+class _IPv4OnlyBackend(_AnyIOBackend if _AnyIOBackend is not None else object):
+    """An httpcore network backend that connects to IPv4 literals only.
+
+    anyio's ``connect_tcp`` resolves every family and applies Happy Eyeballs
+    (RFC 6555): the IPv6 attempt starts first and the IPv4 attempt only starts
+    if the first has not connected within 250ms.  On a host whose IPv6 path
+    blackholes (a route that exists but silently drops) every connect pays that
+    250ms penalty.  Resolving IPv4-only here removes that failure mode while
+    leaving TLS verification and the Host header pointed at the real hostname.
+    """
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                host, port, family=socket.AF_INET, type=socket.SOCK_STREAM,
+            )
+        except Exception:
+            # Fall back to the inherited resolution path (anyio) on resolver failure.
+            return await super().connect_tcp(
+                host, port, timeout=timeout, local_address=local_address,
+                socket_options=socket_options,
+            )
+        if not infos:
+            return await super().connect_tcp(
+                host, port, timeout=timeout, local_address=local_address,
+                socket_options=socket_options,
+            )
+        last_error = None
+        for _family, _socktype, _proto, _canonname, sockaddr in infos:
+            try:
+                return await super().connect_tcp(
+                    sockaddr[0], port, timeout=timeout, local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except Exception as exc:  # try the next A record
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        return await super().connect_tcp(
+            host, port, timeout=timeout, local_address=local_address,
+            socket_options=socket_options,
+        )
+
+
+def _ipv4_only_network_backend():
+    """An httpcore network backend that connects to IPv4 literals only.
+
+    Returns ``None`` when the host has a global-scoped IPv6 address (the default
+    dual-stack behaviour is then correct) or when httpcore's backend API is
+    unavailable.
+    """
+    if _AnyIOBackend is None:
+        return None
+    if _host_has_global_ipv6():
+        return None
+    return _IPv4OnlyBackend()
+
+
+def _build_transport(**transport_kwargs) -> httpx.AsyncHTTPTransport:
+    """Build an httpx transport, IPv4-only when the host has no global IPv6.
+
+    A proxy owns the socket, so forcing the TARGET onto IPv4 would be wrong
+    (the proxy resolves the name itself) — the proxy case keeps httpx's stock
+    transport.
+
+    The IPv4-only pool is installed by REPLACING the transport's ``_pool``
+    attribute with an ``httpcore.AsyncConnectionPool`` built with the
+    IPv4-only backend.  httpx's ``AsyncHTTPTransport.handle_async_request``
+    only ever touches ``self._pool``, so this is a supported injection point
+    and it avoids mutating the global ``httpcore.AsyncConnectionPool``
+    attribute (which would race any other thread constructing a transport).
+
+    Any failure to build the IPv4-only pool falls back to the stock transport:
+    this optimisation must never break Telegram delivery.
+    """
+    transport = httpx.AsyncHTTPTransport(**transport_kwargs)
+    if transport_kwargs.get("proxy"):
+        return transport
+    backend = _ipv4_only_network_backend()
+    if backend is None:
+        return transport
+    try:
+        import httpcore
+
+        original_pool = transport._pool
+        limits = transport_kwargs.get("limits") or httpx.Limits()
+        pool = httpcore.AsyncConnectionPool(
+            ssl_context=original_pool._ssl_context,
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=limits.keepalive_expiry,
+            http1=original_pool._http1,
+            http2=original_pool._http2,
+            uds=original_pool._uds,
+            local_address=original_pool._local_address,
+            retries=original_pool._retries,
+            network_backend=backend,
+            socket_options=transport_kwargs.get("socket_options"),
+        )
+    except Exception:
+        logger.debug("Falling back to the default httpx transport (IPv4-only backend unavailable)",
+                     exc_info=True)
+        return transport
+
+    # The replacement pool is a distinct object; the original one is unused
+    # from here on (it holds no connections yet) so it does not need closing.
+    transport._pool = pool
+    return transport
+
+
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """Reach the Bot API via known IPv4 literals first, dual-stack hostname last. Host + SNI stay on
     api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize()."""
@@ -81,7 +257,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
         transport_kwargs.setdefault("socket_options", tcp_keepalive_socket_options())
         self._transport_kwargs = transport_kwargs
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._primary = _build_transport(**transport_kwargs)
         self._primary_lock = asyncio.Lock()
         self._primary_closed = False
         # Built on demand and discarded on failure — see _reset_fallback.
@@ -96,7 +272,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         async with self._fallback_lock:
             transport = self._fallbacks.get(ip)
             if transport is None:
-                transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+                transport = _build_transport(**self._transport_kwargs)
                 self._fallbacks[ip] = transport
             return transport
 
@@ -105,7 +281,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         async with self._primary_lock:
             if self._primary_closed or transport is not self._primary:
                 return
-            self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+            self._primary = _build_transport(**self._transport_kwargs)
         try:
             await transport.aclose()
         except Exception as exc:

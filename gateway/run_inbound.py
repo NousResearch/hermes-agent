@@ -23,6 +23,11 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.cron_echo import CRON_ENVELOPE_HEADER, CronEchoSuppressor
+from gateway.inbound_preprocess_deadline import (
+    EXPIRED,
+    resolve_inbound_preprocess_timeout,
+    run_with_inbound_preprocess_deadline,
+)
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
@@ -1794,16 +1799,46 @@ class GatewayInboundMixin:
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+        # The pre-turn enrichment budget comes from the gateway config so operators can
+        # tune (or opt out of) it without an env var per service.
+        _preprocess_budget = resolve_inbound_preprocess_timeout(getattr(self, "config", None))
         if image_paths:
-            message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
+            # Pre-turn enrichment runs BEFORE run_conversation, so it is outside the
+            # turn-liveness watchdog's scope. Bound it: a hung vision call must not
+            # hold the inbound pipeline forever with no supervisor able to notice.
+            # (2026-10-23 gateway DM outage, kanban t_d2133284.)
+            enriched = await run_with_inbound_preprocess_deadline(
+                self._enrich_inbound_images(source, session_key, message_text, image_paths),
+                timeout_s=_preprocess_budget,
+                what="image enrichment",
+            )
+            if enriched is not EXPIRED and enriched is not None:
+                message_text = enriched
         if audio_paths:
-            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+            enriched = await run_with_inbound_preprocess_deadline(
+                self._enrich_inbound_voice(event, source, message_text, audio_paths),
+                timeout_s=_preprocess_budget,
+                what="voice transcription",
+            )
+            if enriched is not EXPIRED and enriched is not None:
+                message_text = enriched
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         if "@" in message_text:
-            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
-            if message_text is None:
+            expanded = await run_with_inbound_preprocess_deadline(
+                self._expand_inbound_context_references(source, session_key, message_text),
+                timeout_s=_preprocess_budget,
+                what="@ context reference expansion",
+            )
+            # ``_expand_inbound_context_references`` returns ``None`` to mean "refused
+            # — drop the message". A deadline expiry must NOT drop the message: it
+            # continues with the un-expanded text (degraded, but delivered).
+            if expanded is EXPIRED:
+                pass
+            elif expanded is None:
                 return None
+            else:
+                message_text = expanded
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         return self._prepend_inbound_reply_context(event, source, message_text)

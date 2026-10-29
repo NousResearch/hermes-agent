@@ -85,6 +85,24 @@ _VISION_DOWNLOAD_TIMEOUT = _read_vision_setting("HERMES_VISION_DOWNLOAD_TIMEOUT"
 if _VISION_DOWNLOAD_TIMEOUT is None:
     _VISION_DOWNLOAD_TIMEOUT = 30.0
 
+# Wall-clock budget for the image-PREPARATION step (materialize → normalize → validate →
+# crop), i.e. everything before the vision LLM call.
+#
+# Why this exists (2026-10-23 gateway DM outage, kanban t_d2133284): a Telegram DM
+# arrived at 22:18:16 and the gateway went silent for 27 minutes. The last log line was
+# "Pre-analyzing 1 image(s) via vision_analyze"; the temp image file was written
+# completely (a valid, finished JPEG), so the hang was inside the prep steps that follow.
+# Those steps run on the asyncio DEFAULT executor, which the gateway shares with 185
+# other ``asyncio.to_thread`` call sites (20 workers on a 16-core host) — so a pool
+# saturated by other stuck blocking calls makes the vision prep wait forever, with no
+# timeout of its own to break the wait.
+#
+# The prep is bounded here so the hang is caught at its narrowest point rather than
+# only at the outer pipeline deadline.
+_VISION_PREP_TIMEOUT = _read_vision_setting("HERMES_VISION_PREP_TIMEOUT", "prep_timeout", float)
+if _VISION_PREP_TIMEOUT is None:
+    _VISION_PREP_TIMEOUT = 90.0
+
 # Hard cap on downloaded media (50 MB): bounds memory/disk against attacker-hosted files.
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
@@ -638,10 +656,23 @@ async def _prepare_image(
     """Resolve → materialize → normalize → (validate) → (crop). Raises ``_ImagePrepError``.
     Unsupported formats (SVG, BMP) become PNG BEFORE encoding — an unsupported media_type baked
     into immutable history would 400 on every resume. The crop runs BEFORE any downscale so the
-    region keeps the full resolution budget. On error no temp file is left."""
+    region keeps the full resolution budget. On error no temp file is left.
+
+    The whole prep is bounded by ``_VISION_PREP_TIMEOUT``: the prep steps run on the asyncio
+    default executor, which the gateway shares with ~185 other ``to_thread`` call sites, so a
+    saturated pool otherwise makes this wait forever. (2026-10-23 DM outage, kanban t_d2133284.)
+    """
     from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
     try:
-        resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
+        resolved = await asyncio.wait_for(
+            resolve_image_source(image_url, ResolveContext(task_id=task_id)),
+            timeout=_VISION_PREP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise _ImagePrepError(
+            f"Timed out after {int(_VISION_PREP_TIMEOUT)}s preparing the image source. The source "
+            "could not be read in time; try re-sending the image or a smaller file."
+        ) from None
     except ImageResolutionError as exc:
         raise _ImagePrepError(str(exc)) from exc
     temp_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
@@ -649,7 +680,10 @@ async def _prepare_image(
     await asyncio.to_thread(_write_private_bytes, path, resolved.data)
     mime, size_bytes, crop_offset = resolved.mime, len(resolved.data), {}
     try:
-        normalized_path, mime, norm_err = await asyncio.to_thread(_normalize_to_supported_image, path, mime)
+        normalized_path, mime, norm_err = await asyncio.wait_for(
+            asyncio.to_thread(_normalize_to_supported_image, path, mime),
+            timeout=_VISION_PREP_TIMEOUT,
+        )
         if norm_err or normalized_path is None:
             raise _ImagePrepError(norm_err or "Image normalization failed.")
         if normalized_path != path:
@@ -657,18 +691,29 @@ async def _prepare_image(
             path = normalized_path
             size_bytes = path.stat().st_size
         if validate_decode:
-            decode_error = await _run_encode_on_cpu_executor(
-                _validate_raster_image_decodable, path,
-                _VISION_MAX_VALIDATED_FRAME_COUNT, _VISION_MAX_VALIDATED_AGGREGATE_PIXELS)
+            decode_error = await asyncio.wait_for(
+                _run_encode_on_cpu_executor(
+                    _validate_raster_image_decodable, path,
+                    _VISION_MAX_VALIDATED_FRAME_COUNT, _VISION_MAX_VALIDATED_AGGREGATE_PIXELS),
+                timeout=_VISION_PREP_TIMEOUT,
+            )
             if decode_error:
                 raise _ImagePrepError(decode_error)
         if region is not None:
-            cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
-                _crop_image_region, path, region, offset_out=crop_offset)
+            cropped_path, cropped_mime, crop_err = await asyncio.wait_for(
+                asyncio.to_thread(_crop_image_region, path, region, offset_out=crop_offset),
+                timeout=_VISION_PREP_TIMEOUT,
+            )
             if crop_err or cropped_path is None:
                 raise _ImagePrepError(crop_err or "Region crop failed.")
             _unlink_quietly(path)
             path, mime, size_bytes = cropped_path, cropped_mime, cropped_path.stat().st_size
+    except asyncio.TimeoutError:
+        _unlink_quietly(path)
+        raise _ImagePrepError(
+            f"Timed out after {int(_VISION_PREP_TIMEOUT)}s preparing the image. The image could "
+            "not be processed in time; try a smaller image."
+        ) from None
     except BaseException:
         _unlink_quietly(path)
         raise

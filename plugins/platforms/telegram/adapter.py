@@ -2149,6 +2149,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         try:
             if not app:
                 raise RuntimeError("Telegram application was torn down during reconnect")
+            # F3 (t_d2133284): the predecessor's getUpdates session may still be held on
+            # Telegram's servers.  A new poller started inside that window is 409'd, and
+            # the 409 ladder then fights for the token (the 2026-10-23 race: rebuilt at
+            # 00:01:27, first poll 409'd at 00:01:43, five retries, then a fatal that
+            # discarded the held inbound queue).  Wait the window out first.
+            await self._await_previous_session_release()
+            if self._teardown_started:
+                return
             # The reconnect preserves Telegram's pending queue (drop_pending_updates=False),
             # so anything the human sent while we were not polling comes back on the wire.
             # Arm the redelivery counter so the journal records how many came back (#11023).
@@ -2650,7 +2658,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Snapshot whether WE transition to fatal: a concurrent retry task suspended past the entry
         # guard reaches this branch too. Only the first transition notifies.
         _already_fatal = self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict"
-        self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
+        # F3 (t_d2133284): retryable=True.  A polling conflict means "another getUpdates session
+        # holds this token" — exactly the condition the reconnect watcher exists to resolve —
+        # and it is TRANSIENT by construction (Telegram's session window is ~30 s).
+        #
+        # Marking it non-retryable had three consequences, all observed on 2026-10-23:
+        #   * ``_set_fatal_error``'s non-retryable branch DISCARDED the held inbound queue,
+        #     deleting the messages that were waiting to be delivered (Bryan's four
+        #     unanswered DMs);
+        #   * ``_queue_retryable_fatal_platform`` refuses a non-retryable fatal, so NOTHING
+        #     ever retried the platform;
+        #   * the runner's stranded check is gated on ``fatal_error_retryable``, so the
+        #     gateway did not exit with failure either — systemd had no reason to restart
+        #     it, and one 409 could silence a bot until a human intervened.
+        #
+        # Retryable keeps the held queue, puts the platform back on the reconnect watcher's
+        # list, and lets the gateway exit with failure so the service manager restarts it.
+        self._set_fatal_error("telegram_polling_conflict", message, retryable=True)
         try:
             if self._app and self._app.updater:
                 await _await_with_thread_deadline(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
@@ -3318,6 +3342,44 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         logger.info(
             "[%s] Webhook server listening on %s:%d%s", self.name, webhook_host or "* (all interfaces, IPv4+IPv6)",
             webhook_port, webhook_path)
+
+    async def _await_previous_session_release(self) -> None:
+        """Wait out the predecessor's getUpdates session before starting a new poller.
+
+        Telegram allows exactly one getUpdates session per bot token.  When the adapter is
+        REBUILT (the polling stall watchdog's hand-off), the predecessor's long-poll may
+        still be held on Telegram's servers: the server terminates the OLD session only
+        when the NEW one arrives, so a new poller started too early is 409'd and the
+        409-recovery ladder then has to fight for the token.
+
+        Telegram's session window is ~30 s.  Waiting it out before the first poll turns
+        the race into a clean reconnect.  The wait is bounded and skipped when no
+        predecessor ever polled with this token, so a cold boot is not delayed.
+
+        The 2026-10-23 evidence: the adapter was rebuilt at 00:01:27, the replacement
+        connected at 00:01:41, and the first 409 landed at 00:01:43 — 2 s after the
+        connect, deep inside the window.  Five conflict retries followed (200 s of
+        waiting) and ended in a fatal that discarded the held inbound queue.
+        """
+        if self._teardown_started:
+            return
+        # Nothing to wait for when no predecessor ever polled with this token.
+        if not getattr(self, "_polling_generation_started_monotonic", None):
+            return
+        wait_s = float(getattr(self, "_RECONNECT_SESSION_RELEASE_WAIT_SECONDS", 35.0))
+        if wait_s <= 0:
+            return
+        logger.info(
+            "[%s] Waiting %.0fs for the previous getUpdates session to be released before "
+            "reconnecting (a new poller started too early is 409'd).",
+            self.name, wait_s,
+        )
+        deadline = asyncio.get_running_loop().time() + wait_s
+        while not self._teardown_started:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(1.0, remaining))
 
     async def _start_polling_mode(self, *, is_reconnect: bool) -> None:
         """Clear any stale webhook and start resilient long polling."""

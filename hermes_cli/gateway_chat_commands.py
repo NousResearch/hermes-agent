@@ -44,8 +44,9 @@ def _user_turns(snapshot):
     kind other than a typed /steer, never a compaction handoff carrier, never a row a compression
     archived (shown in the snapshot's history, not a turn to rewind to)."""
     from agent.context_compressor import is_user_originated_turn
+    from agent.message_metadata import display_kind_row
     return [row for row in snapshot.get("messages", [])
-            if type(row.get("row_id")) is int and row.get("display_kind") in (None, "", "steer")
+            if type(row.get("row_id")) is int and display_kind_row(row.get("display_kind")).user_originated
             and not row.get("archived") and is_user_originated_turn(row)]
 
 

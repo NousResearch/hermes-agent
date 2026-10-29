@@ -9,6 +9,7 @@ import sys
 from rich.markup import escape as _escape
 
 from agent.i18n import t
+from agent.message_metadata import DISPLAY_KINDS, display_kind_row
 from utils import base_url_host_matches
 
 
@@ -164,11 +165,7 @@ def _tool_calls_summary(tool_calls) -> str:
 
 # display_kind -> catalog key of the recap event line (resolved at call time); ``hidden`` rows
 # are skipped before this lookup.
-_RESUME_EVENT_KEYS = {
-    "model_switch": "cli.resume.event_model_changed",
-    "async_delegation_complete": "cli.resume.event_delegation_completed",
-    "process_complete": "cli.resume.event_process_finished",
-    "auto_continue": "cli.resume.event_resumed_interrupted"}
+_RESUME_EVENT_KEYS = {row.display_kind: row.resume_event for row in DISPLAY_KINDS if row.resume_event}
 
 def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     """Displayable ``(role, text)`` recap entries from stored history, truncated per the
@@ -196,7 +193,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
             continue
         if display_kind in _RESUME_EVENT_KEYS:
             metadata = msg.get("display_metadata") or {}
-            label = metadata.get("display_text") if display_kind in ("async_delegation_complete", "process_complete") else None
+            label = metadata.get("display_text") if display_kind_row(display_kind).producer_notice else None
             entries.append(("event", _sanitize_display_text(label or t(_RESUME_EVENT_KEYS[display_kind]))))
             continue
         if role == "user":

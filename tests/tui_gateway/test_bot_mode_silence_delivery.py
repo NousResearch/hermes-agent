@@ -44,6 +44,28 @@ def test_live_bot_chat_completion_empties_marker_only_for_successful_turns(monke
     assert payload["text"] == "NO_REPLY"
 
 
+def test_bot_chat_receipt_still_names_the_saved_row_when_a_trailing_marker_is_dropped(monkeypatch):
+    """The delivered copy drops the marker; the stored row keeps it, and the receipt must
+    still bind this turn to that row."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    monkeypatch.setattr(srv, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(srv, "render_message", lambda _text, _cols: None)
+    monkeypatch.setattr(srv, "_clear_inflight_turn", lambda _session: None)
+    session = {"pending_title": None, "session_key": "k", "history_lock": contextlib.nullcontext(),
+               "agent": SimpleNamespace(_session_title_hint="Bot Chat")}
+    raw = "Paris.\n\nNO_REPLY"
+    rows = [{"role": "user", "content": "q", "_row_id": 7, _DB_PERSISTED_MARKER: True},
+            {"role": "assistant", "content": raw, "_row_id": 8, _DB_PERSISTED_MARKER: True}]
+    st = _turn({"final_response": raw, "messages": rows})
+    st.agent._persist_user_message_idx = 0
+    st.history, st.compression_count = [], None
+
+    payload, _, _ = srv._complete_turn_payload(session, st, None, 80)
+
+    assert payload["text"] == "Paris."
+    assert payload["persisted_turn"]["final_assistant_row_id"] == 8
+
+
 def test_live_bot_chat_stream_holds_back_partial_silence_marker(monkeypatch):
     """Mirror of stream_consumer's hold-back: a marker never reaches message.delta, prose that
     diverges from every marker is flushed intact once it diverges."""

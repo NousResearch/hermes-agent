@@ -128,6 +128,11 @@ let
     inherit hermesNpmLib generatedIcons;
   };
 
+  # The store is read-only, so the Webapp is built here and never by `hermes webapp`.
+  hermesWebapp = callPackage ./webapp.nix {
+    inherit hermesNpmLib;
+  };
+
   bundledSkills = lib.cleanSourceWith {
     src = ../skills;
     filter = path: _type: !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
@@ -225,6 +230,7 @@ let
       frontends = {
         tui = "${hermesTui}/lib/hermes-tui";
         web = toString hermesWeb;
+        webapp = toString hermesWebapp;
       };
       ref = if dirty then null else rev;
       stamp = toString installStampFile;
@@ -387,6 +393,7 @@ stdenv.mkDerivation (finalAttrs: {
       inherit
         hermesTui
         hermesWeb
+        hermesWebapp
         hermesNpmLib
         hermesVenv
         agentBuilderSrc

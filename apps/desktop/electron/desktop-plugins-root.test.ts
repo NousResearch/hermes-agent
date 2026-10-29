@@ -220,6 +220,121 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(raw.repo).toBe('file:///srv/raw.git')
   })
 
+  it('copies a root-layout package (plugin.js at the package root) as the installers publish it, minus .git and __pycache__', async () => {
+    // plugin.yaml + __init__.py + a ROOT plugin.js: the probe reports both halves, so a local-backend
+    // install puts the agent half down alone and counts on this pass for the desktop one.
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const pkg = path.join(home, 'plugins', 'radar')
+    write(path.join(pkg, 'plugin.yaml'), 'name: radar')
+    write(path.join(pkg, '__init__.py'), 'def register(ctx):\n    pass\n')
+    write(path.join(pkg, 'plugin.js'), 'root entry')
+    write(path.join(pkg, 'panel.js'), 'asset')
+    write(path.join(pkg, '__pycache__', 'x.pyc'), 'pyc')
+    write(path.join(pkg, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/o/radar\n')
+    // A root entry beside a link would publish whatever the link names: refused, never copied.
+    const leaky = path.join(home, 'plugins', 'leaky')
+    write(path.join(leaky, 'plugin.js'), 'x')
+    write(path.join(home, 'secret'), 's')
+    fs.symlinkSync(path.join(home, 'secret'), path.join(leaky, 'secret'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    try {
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'radar')])
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(fs.readFileSync(path.join(appRoot, 'radar', 'plugin.js'), 'utf8')).toBe('root entry')
+    expect(fs.readFileSync(path.join(appRoot, 'radar', 'panel.js'), 'utf8')).toBe('asset')
+    expect(fs.existsSync(path.join(appRoot, 'radar', '.git'))).toBe(false)
+    expect(fs.existsSync(path.join(appRoot, 'radar', '__pycache__'))).toBe(false)
+    expect(fs.existsSync(path.join(appRoot, 'leaky'))).toBe(false)
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'radar', PACKAGE_MARKER), 'utf8'))
+    expect(marker).toMatchObject({ package: 'radar', source: pkg, repo: 'https://github.com/o/radar' })
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+
+    fs.rmSync(path.join(pkg, 'plugin.js'))
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'radar')])
+    expect(fs.existsSync(path.join(appRoot, 'radar'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'publishes a real copy of a LINKED root-layout checkout, keeps its marker out of the checkout, and prunes it with the link',
+    async () => {
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const checkout = path.join(home, 'src', 'radar')
+      write(path.join(checkout, 'plugin.yaml'), 'name: radar')
+      write(path.join(checkout, 'plugin.js'), 'root entry')
+      fs.mkdirSync(path.join(home, 'plugins'), { recursive: true })
+      const link = path.join(home, 'plugins', 'radar')
+      fs.symlinkSync(checkout, link)
+      const target = path.join(appRoot, 'radar')
+
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([target])
+      expect(fs.lstatSync(target).isSymbolicLink()).toBe(false)
+      expect(fs.readFileSync(path.join(target, 'plugin.js'), 'utf8')).toBe('root entry')
+      expect(JSON.parse(fs.readFileSync(path.join(target, PACKAGE_MARKER), 'utf8'))).toMatchObject({
+        linked: true,
+        package: 'radar',
+        source: link
+      })
+      expect(fs.existsSync(path.join(checkout, PACKAGE_MARKER))).toBe(false)
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+
+      fs.unlinkSync(link)
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([target])
+      expect(fs.existsSync(target)).toBe(false)
+      expect(fs.readdirSync(checkout).sort()).toEqual(['plugin.js', 'plugin.yaml'])
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'replaces an earlier copy that kept the checkout link, and drops it once the package link is gone',
+    async () => {
+      // What a pass that copied the link itself left: <appRoot>/radar -> the checkout, marker inside it.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const checkout = path.join(home, 'src', 'radar')
+      const link = path.join(home, 'plugins', 'radar')
+      const target = path.join(appRoot, 'radar')
+      write(path.join(checkout, 'plugin.js'), 'root entry')
+      const ghost = { linked: true, package: 'radar', source: link, sourceMtimeMs: Date.now() + 60_000 }
+      write(path.join(checkout, PACKAGE_MARKER), JSON.stringify(ghost))
+      fs.mkdirSync(path.join(home, 'plugins'), { recursive: true })
+      fs.mkdirSync(appRoot, { recursive: true })
+      fs.symlinkSync(checkout, link)
+      fs.symlinkSync(checkout, target)
+
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([target])
+      expect(fs.lstatSync(target).isSymbolicLink()).toBe(false)
+      expect(fs.readFileSync(path.join(target, 'plugin.js'), 'utf8')).toBe('root entry')
+
+      // The same leftover once the package link is gone: the link in the app root goes, the checkout stays.
+      fs.rmSync(target, { force: true, recursive: true })
+      fs.symlinkSync(checkout, target)
+      fs.unlinkSync(link)
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([target])
+      expect(fs.existsSync(target)).toBe(false)
+      expect(fs.readFileSync(path.join(checkout, 'plugin.js'), 'utf8')).toBe('root entry')
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')('never stamps a marker into a plugin the user linked into the app root', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const own = path.join(home, 'src', 'pkg')
+    write(path.join(own, 'plugin.js'), 'same')
+    write(path.join(home, 'plugins', 'pkg', 'desktop', 'plugin.js'), 'same')
+    fs.mkdirSync(appRoot, { recursive: true })
+    fs.symlinkSync(own, path.join(appRoot, 'pkg'))
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+    expect(fs.existsSync(path.join(own, PACKAGE_MARKER))).toBe(false)
+    expect(fs.lstatSync(path.join(appRoot, 'pkg')).isSymbolicLink()).toBe(true)
+  })
+
   it('never overwrites a standalone plugin the user installed under the same name', async () => {
     const home = makeHome()
     const appRoot = path.join(home, 'desktop-plugins')

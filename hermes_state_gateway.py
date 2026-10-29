@@ -473,7 +473,7 @@ class SessionGatewayMixin:
         """List gateway sessions (rows with a session_key): newest row per key, one live
         mapping per routing key. ``platform`` filters on ``source``."""
         # Full rows carry token/cost totals — drain queued async accounting deltas first.
-        self.flush_token_counts()
+        self.flush_for_read()
         query = f"""
             SELECT sessions.*,
                    COALESCE(sp.prompt, sessions.system_prompt)

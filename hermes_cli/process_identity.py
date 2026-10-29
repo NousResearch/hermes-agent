@@ -304,6 +304,14 @@ def _pid_alive_matches(
         proc = psutil.Process(int(pid))
         # ``strict`` is positive proof (an exact epoch birth); a clock step only withholds it.
         if strict:
+            # Windows: skip the status() read entirely. psutil's Windows status path
+            # (NtQuerySystemInformation) does not release the GIL, so under load it freezes every
+            # other Python thread in the process for minutes (#142085) — and Windows has no POSIX
+            # zombies, so the STATUS_ZOMBIE comparison had nothing to contribute there anyway. The
+            # non-strict branch right below already makes this exact skip.
+            if os.name == "nt":
+                return (create_time is not None and process_birth(proc) == create_time
+                        and proc.is_running())
             return (create_time is not None and process_birth(proc) == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the

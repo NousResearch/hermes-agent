@@ -25,7 +25,7 @@ from tools.environments.local_env_policy import (
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env,
-    strip_profile_gate_env)
+    strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -300,6 +300,7 @@ def _finalize_child_env(env: dict) -> dict:
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
+    strip_supervised_process_identity(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
@@ -381,9 +382,10 @@ def build_subprocess_env(
     strip_launch_profile: bool = False) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
-    ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base
-    byte-for-byte (git credential flows, ``bws``/``op``); ``inherit_profile_home``
-    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
+    ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base's secrets
+    (git credential flows, ``bws``/``op``); ``inherit_profile_home``
+    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win. Both modes
+    drop the supervised process's own identity (:func:`strip_supervised_process_identity`).
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
     acts for a routed profile sees only that profile's declared names, never the launch profile's.
@@ -407,6 +409,7 @@ def build_subprocess_env(
         _apply_profile_home(env)
     if extra:
         env.update(extra)
+    strip_supervised_process_identity(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
@@ -511,9 +514,12 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     # LAUNCH profile's source supplied is not the target profile's to see; the caller's scope
     # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
     # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
-    # it last, with override, so it beats the user's own .env) — leave them in place.
+    # it last, with override, so it beats the user's own .env) — leave them in place. Neither is
+    # the config backend's deployment (which backend, which plane, which instance): it is the
+    # instance's, and a child without it reads the target profile's config from another backend.
+    from hermes_cli.config_backend import deployment_env_names
     from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
-    managed_names = {key.upper() for key in managed_dotenv_keys()}
+    managed_names = {key.upper() for key in managed_dotenv_keys()} | set(deployment_env_names())
     residue_names = {
         key.upper() for key in
         set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())

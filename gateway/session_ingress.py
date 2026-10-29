@@ -2,16 +2,17 @@
 import asyncio
 import logging
 from contextvars import ContextVar
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
 from gateway.session_ingress_review import (adopt_review_completion, complete_review_delivery,
                                             complete_settled_review, forget_review_waiter,
                                             hand_over_review_completion,
                                             hand_review_completion_to_waiter, note_review_waiter,
                                             release_failed_review, take_review_completion)
+from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -303,7 +304,7 @@ async def execute_admission(authority, ref, row):
     event._gateway_review_completes_on_event = True
     handed = False
     try:
-        with await _execution_scope(authority, home):
+        async with _admission_scope(authority, home, row, event, captured):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
@@ -373,6 +374,15 @@ def _launch_body_if_launch_owner(authority):
     return launch_body()
 
 
+@asynccontextmanager
+async def _admission_scope(authority, home, row, event, captured):
+    """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
+    turn (``session_producer_lifecycle``; a no-op for every other admission)."""
+    async with producer_turn(authority, row, event, captured):
+        with await _execution_scope(authority, home):
+            yield
+
+
 async def _execution_scope(authority, home):
     """Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
     config, secrets, state.db), never the launch profile's ambient scope; native provenance
@@ -415,9 +425,13 @@ async def deliver_settled(authority, admission_id):
         if held is not None:
             # Fenced unknown: no answer is owed, so no later boot may deliver one either.
             await _release_turn_marker(authority, held)
-        # Nothing owed by this drain: the committed outcome IS what an API caller, a local viewer
-        # or a finite turn reads, so the drain's own review completion is delivered.
-        complete_settled_review(authority, admission_id, delivery_succeeded=True)
+        try:
+            # Settled with nothing (left) to send: its reply streamed, or it had none.
+            await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
+        finally:
+            # Nothing owed by this drain: the committed outcome IS what an API caller, a local viewer
+            # or a finite turn reads, so the drain's own review completion is delivered.
+            complete_settled_review(authority, admission_id, delivery_succeeded=True)
         return
     adapter, event, session_key, response, home = delivery
     delivered = False
@@ -431,12 +445,16 @@ async def deliver_settled(authority, admission_id):
         authority.pending_deliveries.pop(admission_id, None)
         # The ledgered send already released the marker; an empty or failed send owes no more.
         await _release_turn_marker(authority, event)
-        complete_settled_review(authority, admission_id, delivery_succeeded=delivered)
+        try:
+            await close_producer_turn(
+                authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
+        finally:
+            complete_settled_review(authority, admission_id, delivery_succeeded=delivered)
 
 
 async def deliver_response(adapter, event, session_key, response):
-    """Send ``response``; True when it went out, read as the adapter task reads its own turn:
-    nothing to send is delivered (the reply went out on its own), a reply nothing attempted is not."""
+    """Send a turn's reply; whether it was delivered (``_process_message_background``'s verdict:
+    nothing to send, or at least one send that succeeded)."""
     from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
@@ -449,8 +467,7 @@ async def deliver_response(adapter, event, session_key, response):
                                        metadata, ttl > 0, ttl, results.append)
     await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
                                        record_delivery=results.append)
-    attempted = [result for result in results if result is not None]
-    return any(bool(getattr(result, 'success', False)) for result in attempted)
+    return any(getattr(result, 'success', False) for result in results if result is not None)
 
 
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):

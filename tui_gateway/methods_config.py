@@ -467,7 +467,9 @@ def _(rid, params: dict) -> dict:
             api_key_text = "" if callable(api_key) else str(api_key or "").strip()
             if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
                     or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                return fail(f"No usable credentials found for {blamed}.", runtime.get("source"))
+                from hermes_cli.runtime_readiness import missing_credentials_suffix
+                return fail(f"No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}",
+                            runtime.get("source"))
             from hermes_cli.anon_auth import route_is_welcome_host
             # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.

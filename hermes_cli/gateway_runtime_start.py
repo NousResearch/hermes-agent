@@ -30,6 +30,13 @@ DAEMON_STRIPPED_ENV = (
     # A terminal's shell under a systemd service (gnome-terminal-server, a user unit) carries these; the
     # unmanaged daemon would then identify as "systemd" and maintenance would refuse it as supervised.
     "INVOCATION_ID", "JOURNAL_STREAM",
+    # Same for any process below a launchd/--external-supervisor gateway (its agents' tools, scripts they
+    # run): the daemon would identify as "launchd", never arm --idle-exit, and outlive every client.
+    # HERMES_S6_SUPERVISED_CHILD stays: without it `gateway run` in an s6 container redirects to s6.
+    "XPC_SERVICE_NAME", "LAUNCHD_SOCKET", "HERMES_LAUNCHD_LABEL",
+    "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_SUPERVISED_CHILD",
+    # systemd's notify socket and watchdog name the unit's main process: the daemon would feed them.
+    "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
 )
 
 
@@ -68,6 +75,8 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # name. Launch-only approval/context/config flags ride the launching session's frozen
     # policy, not the shared daemon or every later session.
     from gateway.session_context import _VAR_MAP  # the launching turn's session identity, too
+    from tools.environments.local_env_policy import carry_gateway_profile_pin
+    carry_gateway_profile_pin(env)  # the supervisor markers go; the daemon's tools keep their pin
     for key in (*DAEMON_STRIPPED_ENV, *_VAR_MAP):
         env.pop(key, None)
     remaining(deadline)

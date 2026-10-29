@@ -59,7 +59,7 @@ def _as_an_older_build(monkeypatch):
 async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path, monkeypatch, handed_off_by, history):
     """``reset``: a local ``/new`` moved the chat to a new segment and its receipt names that one. A
     handoff carries the conversation the user is looking at: the lane continues the post-``/new``
-    segment (the title follows it), and the earlier segment is that lane's read-only history, never a
+    segment (the title follows it), and the earlier segment is that lane's (detached) history, never a
     local row no receipt restores."""
     from gateway.config import Platform
     from gateway.session_authority import initialize_session_authority
@@ -69,7 +69,6 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
     from gateway.session_local_title import resolve_titled_session
     from hermes_state_local import POLICY_PREFIX, local_receipt
     from hermes_state_local_migration import LEGACY_PREFIX
-    from hermes_state_runtime import RuntimeStoreError
 
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -103,8 +102,7 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
         # The Desktop that ran /handoff still holds the chat open.
         warm.authorize(owner, ref, 'session:read')
         if history == 'reset':  # its pre-/new segment is the lane's history now
-            with pytest.raises(RuntimeStoreError, match='session_superseded'):
-                warm.authorize(owner, ref, 'session:control')
+            warm.authorize(owner, ref, 'session:control')  # Teknium's ruling: writable, detached off the lane
         else:
             warm.authorize(owner, ref, 'session:control')
             assert transcript_target(warm, ref) == warm.physical_target(ref)
@@ -121,11 +119,10 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
         assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone() is None
     tip = cold.db.get_session(cold.physical_target(head))
     assert json.loads(tip['origin_json'])['platform'] == 'telegram'
-    if history == 'reset':  # the earlier segment opens read-only on that lane
+    if history == 'reset':  # the earlier segment opens off that lane
         cold.authorize(webapp, ref, 'session:read')
-        assert cold.sessions[ref.session_id].route == route
-        with pytest.raises(RuntimeStoreError, match='session_superseded'):
-            cold.authorize(webapp, ref, 'session:control')
+        assert cold.sessions[ref.session_id].detached  # Teknium's ruling: off that lane, on its own key
+        cold.authorize(webapp, ref, 'session:control')  # Teknium's ruling: writable, detached off the lane
 
 
 @pytest.mark.asyncio
@@ -215,20 +212,18 @@ async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path
     """After the platform's own ``/new`` the handed-off chat is that lane's history: the canonical
     title moves aside at once, so the Bots row's roster and its registry lookup agree at every step
     (warm, cold) and its click mints a fresh Bot Chat; the Desktop still viewing the old one is
-    read-only (its route names the new conversation)."""
+    detached onto its own key (Teknium's ruling: still writable, never reaching the chat)."""
     from gateway.session_authority import initialize_session_authority
     from gateway.session_bot import _target
     from gateway.session_controls import AuthorityConnection
-    from hermes_state_runtime import RuntimeStoreError
     runner, warm, owner, ref, telegram, route = await _handed_off_bot_chat(tmp_path)
     assert await _bot_row(warm, owner) == ref.session_id
     runner.session_store.reset_session(route)  # Telegram's /new
     assert await _bot_row(warm, owner) is None
     newer = warm.register(telegram)
     assert newer != ref and warm.sessions[newer.session_id].route == route
-    assert warm.sessions[ref.session_id].superseded and warm.agent(ref) is None
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        warm.authorize(owner, ref, 'session:control')
+    assert warm.sessions[ref.session_id].detached and warm.agent(ref) is None
+    warm.authorize(owner, ref, 'session:control')  # Teknium's ruling: writable, detached off the lane
 
     cold_runner = _Runner(tmp_path)
     cold = await initialize_session_authority(cold_runner, profile_id='fixture', instance_id='cold')
@@ -253,11 +248,10 @@ async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path
 @pytest.mark.asyncio
 async def test_a_second_chat_handed_off_to_the_same_home_chat_supersedes_the_first(tmp_path):
     """Desktop A handed off its Bot Chat H to the Telegram home chat; Desktop B then hands off its
-    own open chat Y there. The lane names Y now: H is history, read-only for the Desktop still
+    own open chat Y there. The lane names Y now: H is history, detached for the Desktop still
     viewing it (a Stop or turn through it would act on Y), and its canonical title moves aside."""
     from gateway.session_authority import initialize_session_authority
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import RuntimeStoreError
     runner, warm, owner, ref, telegram, route = await _handed_off_bot_chat(tmp_path)
     other = create_local_session(warm, owner, {'request_id': 'other-chat', 'source': 'gui', 'cwd': str(tmp_path),
                                                'model': 'frozen', 'toolsets': []})
@@ -265,22 +259,19 @@ async def test_a_second_chat_handed_off_to_the_same_home_chat_supersedes_the_fir
     assert await _handoff(runner, warm, other.session_id, telegram) == route
     assert warm.logical_owner(runner.session_store.lookup_by_session_key(route).session_id) == other.session_id
     warm.authorize(owner, other, 'session:submit')
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        warm.authorize(owner, ref, 'session:submit')
+    warm.authorize(owner, ref, 'session:submit')  # Teknium's ruling: writable, detached off the lane
     assert warm.agent(ref) is None
     assert await _bot_row(warm, owner) is None
 
     # H handed off there again: the lane names H once more, and Y is the one that is history now.
     await _handoff(runner, warm, ref.session_id, telegram)
     warm.authorize(owner, ref, 'session:submit')
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        warm.authorize(owner, other, 'session:submit')
+    warm.authorize(owner, other, 'session:submit')  # Teknium's ruling: writable, detached off the lane
 
     cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
     cold.authorize(owner, ref, 'session:control')
     cold.authorize(owner, other, 'session:read')
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        cold.authorize(owner, other, 'session:control')
+    cold.authorize(owner, other, 'session:control')  # Teknium's ruling: writable, detached off the lane
 
 
 @pytest.mark.asyncio
@@ -390,20 +381,19 @@ async def test_a_platform_resume_of_a_local_conversation_continues_its_current_h
 @pytest.mark.parametrize('takeover', ['another chat handed off', "the platform's /new"])
 @pytest.mark.parametrize('door', ['/handoff', 'platform /resume'])
 @pytest.mark.parametrize('history', ['plain', 'reset'])
-async def test_a_moved_conversation_is_read_only_once_its_lane_is_taken_over(tmp_path, history, door, takeover,
+async def test_a_moved_conversation_stays_writable_once_its_lane_is_taken_over(tmp_path, history, door, takeover,
                                                                              opened):
     """Bot Chat X (``reset``: a local ``/new`` moved it to X2) moves onto a Telegram lane, which
     continues its head, writable there. Once that lane is taken over (another chat handed off to
     it, or the platform's ``/new`` and its next inbound) the head is the lane's history, however it
     was mounted: the Desktop that followed it, a viewer or the lane's inbound after a restart. Its
-    only route is the lane's, so a turn or a Stop through it would act on the new conversation:
-    read stays open, submit and control are refused, warm and after a restart."""
+    route was the lane's, so it detaches onto its own key (Teknium's ruling): read, submit and control
+    stay open and act on it alone, warm and after a restart."""
     from gateway.platforms.event import MessageEvent
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Principal, SessionRef
     from gateway.session_local import create_local_session
     from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
@@ -443,18 +433,17 @@ async def test_a_moved_conversation_is_read_only_once_its_lane_is_taken_over(tmp
     for authority in (warm, cold):
         authority.authorize(owner, head, 'session:read')
         for capability in ('session:submit', 'session:control'):
-            with pytest.raises(RuntimeStoreError, match='session_superseded'):
-                authority.authorize(owner, head, capability)
+            authority.authorize(owner, head, capability)  # Teknium's ruling: writable, detached off the lane
         assert authority.agent(head) is None  # never the lane's running agent
 
 
 @pytest.mark.asyncio
-async def test_a_moved_conversation_mounted_by_startup_recovery_is_read_only_once_its_lane_is_taken_over(
+async def test_a_moved_conversation_mounted_by_startup_recovery_stays_writable_once_its_lane_is_taken_over(
         tmp_path, monkeypatch):
     """Bot Chat A moves onto a Telegram chat and stays there for months: its idle local routing entry
     is pruned (``session_store_max_age_days``). A restart finds the lane's input still queued, so
     startup recovery is what mounts A, and the lane's next inbound reuses that mount. Once another
-    chat is handed off to the lane, A is its history: a viewer's turn would run as that chat's."""
+    chat is handed off to the lane, A is its history, detached: a viewer's turn runs on A alone."""
     from datetime import datetime, timedelta
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.platforms.event import MessageEvent
@@ -464,7 +453,6 @@ async def test_a_moved_conversation_mounted_by_startup_recovery_is_read_only_onc
     from gateway.session_contract import Principal
     from gateway.session_ingress_context import native_callback, register_transport_home
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import RuntimeStoreError
     from tests.gateway.test_command_bypass_active_session import _StubAdapter
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
     monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
@@ -510,8 +498,8 @@ async def test_a_moved_conversation_mounted_by_startup_recovery_is_read_only_onc
         await _handoff(runner, cold, chat(cold, 'Chat B').session_id, telegram)
         cold.authorize(owner, a, 'session:read')
         for capability in ('session:submit', 'session:control'):
-            with pytest.raises(RuntimeStoreError, match='session_superseded'):
-                cold.authorize(owner, a, capability)
+            cold.authorize(owner, a, capability)  # Teknium's ruling: writable, detached off the lane
+        assert cold.sessions[a.session_id].detached and cold.agent(a) is None  # never the lane's
     finally:
         runner.session_store.close_all_db_handles()
 
@@ -521,12 +509,11 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
     """Bot Chat A moves onto Telegram chat 4242, chat B is handed off there in turn (A is that chat's
     history now), then an admin's ``/resume --all Chat A`` brings A to chat 77. Its mount follows it:
     a turn or a Stop through it acts on chat 77, never on B, which holds 4242; and once chat 77 moves
-    on (its ``/new``) A is that chat's history, read-only again."""
+    on (its ``/new``) A is that chat's history, detached again."""
     from gateway.platforms.event import MessageEvent
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Principal
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import RuntimeStoreError
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
@@ -542,8 +529,8 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
     a = chat('Chat A')
     await _handoff(runner, warm, a.session_id, first)
     await _handoff(runner, warm, chat('Chat B').session_id, first)
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        warm.authorize(owner, a, 'session:submit')
+    warm.authorize(owner, a, 'session:submit')  # Teknium's ruling: writable, detached off the lane
+    assert warm.sessions[a.session_id].detached and warm.agent(a) is None  # never chat 4242's
     await _resume_gateway(runner, warm)._handle_resume_command(
         MessageEvent(text='/resume --all Chat A', source=second))
     route = runner.session_store._generate_session_key(second)
@@ -556,8 +543,8 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
     runner.session_store.reset_session(route)
     warm.register(second)
     for capability in ('session:submit', 'session:control'):
-        with pytest.raises(RuntimeStoreError, match='session_superseded'):
-            warm.authorize(owner, a, capability)
+        warm.authorize(owner, a, capability)  # Teknium's ruling: writable, detached off the lane
+    assert warm.sessions[a.session_id].route != route and warm.agent(a) is None  # never chat 77's
 
 
 @pytest.mark.asyncio

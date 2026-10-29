@@ -1,7 +1,6 @@
 import type { DesktopProfileRoute } from '@/global'
-import { requireBrowserConnection } from '@/lib/browser-connection'
 
-import { readJson } from './storage'
+import { browserStartupProfileKey, readBrowserStartupProfile, requireProfileRoute } from './browser-startup-profile'
 
 interface BrowserProfileOptions {
   basePath: string
@@ -25,36 +24,10 @@ export function createBrowserProfileBridge({
   openWindow
 }: BrowserProfileOptions): Pick<Window['hermesDesktop'], 'openWindow' | 'profile'> {
   // localStorage supplies origin isolation; the base path separates colocated servers.
-  const storageKey = `hermes:webapp:default-profile:${basePath || '/'}`
+  const storageKey = browserStartupProfileKey(basePath)
   const listeners = new Set<(route: DesktopProfileRoute | null) => void>()
 
-  const requireRoute = (value: unknown): DesktopProfileRoute => {
-    if (!value || typeof value !== 'object') {
-      throw new Error('A profile route is required.')
-    }
-
-    const { connectionId, profile } = value as Record<string, unknown>
-
-    if (typeof profile !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile)) {
-      throw new Error('Invalid profile name.')
-    }
-
-    if (connectionId !== null && typeof connectionId !== 'string') {
-      throw new Error('Invalid connection id.')
-    }
-
-    requireBrowserConnection(connectionId)
-
-    return { connectionId, profile }
-  }
-
-  const readDefault = (): DesktopProfileRoute | null => {
-    try {
-      return requireRoute(readJson(storageKey))
-    } catch {
-      return null
-    }
-  }
+  const readDefault = (): DesktopProfileRoute | null => readBrowserStartupProfile(basePath)
 
   const remember = async (profile: string | null) => {
     const selected = profile?.trim() || null
@@ -69,7 +42,7 @@ export function createBrowserProfileBridge({
   return {
     openWindow: async options => {
       const url = new URL(window.location.href)
-      setUrlProfile(url, options === undefined ? currentProfile() : requireRoute(options).profile)
+      setUrlProfile(url, options === undefined ? currentProfile() : requireProfileRoute(options).profile)
 
       url.searchParams.delete('win')
       url.searchParams.delete('watch')
@@ -81,7 +54,7 @@ export function createBrowserProfileBridge({
       get: async () => ({ profile: currentProfile() }),
       getDefault: async () => readDefault(),
       setDefault: async value => {
-        const route = requireRoute(value)
+        const route = requireProfileRoute(value)
         window.localStorage.setItem(storageKey, JSON.stringify(route))
         listeners.forEach(listener => listener(route))
 

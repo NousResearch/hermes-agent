@@ -1131,6 +1131,10 @@ def _run_prompt_submit(
         "kind=%s chars=%s images=%d",
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
+    # The turn's wire identity: _emit stamps its message.* frames from it (stream_segments.py), so the
+    # frames are the same here and in a compute-host child; dropped in run_body's finally.
+    from tui_gateway.stream_segments import SESSION_KEY, TurnSegments  # bound functions run in server's globals
+    session[SESSION_KEY] = segments = TurnSegments()
     if not muted:
         _emit("message.start", sid)
 
@@ -1188,6 +1192,8 @@ def _run_prompt_submit(
                     if not st.error_retained:
                         _clear_inflight_turn(session)
                     _release_hosted_room_turn_slot(session)
+                    if session.get(SESSION_KEY) is segments:
+                        session.pop(SESSION_KEY)
                 # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
                 # agent.session_id is re-read because compression may have rotated it (an
                 # accepted/finished pair whose id changed IS a rotation trace).
@@ -1236,6 +1242,8 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
+            if session.get(SESSION_KEY) is segments:
+                session.pop(SESSION_KEY)
     return can_start
 
 

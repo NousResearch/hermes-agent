@@ -13,6 +13,7 @@ the realistic runtime context. See the conftest module docstring.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 
 from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, poll_container
@@ -97,7 +98,11 @@ except urllib.error.HTTPError as h:
     end = time.monotonic() + deadline_s
     last_err = ""
     while time.monotonic() < end:
-        r = docker_exec_sh(container, probe, timeout=10)
+        try:
+            r = docker_exec_sh(container, probe, timeout=10)
+        except subprocess.TimeoutExpired as exc:
+            last_err = f"docker exec stalled: {exc}"  # a busy daemon: retry until the deadline
+            continue
         if r.returncode == 0 and r.stdout.strip():
             lines = r.stdout.split("\n", 1)
             try:

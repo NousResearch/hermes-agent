@@ -675,7 +675,13 @@ async def gateway_ws(ws: WebSocket) -> None:
         # every profile), so its socket may select any served sibling too.
         identity = {**identity, 'profile_scope': 'host'}
     ticket_home = getattr(ws, "_hermes_ticket_profile_home", None)
-    if ticket_home and authority is not None and identity is not None:
+    served = authority
+    if ticket_home and authority is None:
+        # Only the gateway mints a profile-bound ticket, and it unbinds its authority while the
+        # listener stops: serving the launch profile now would answer the tab for the wrong one.
+        await ws.close(code=1013)
+        return
+    if ticket_home and identity is not None:
         # A Webapp tab's ticket names its profile (``webapp.issue_gateway_ticket``): bind the socket
         # to that home's authority, as a native ticket does (``gateway/run_api.py``), so a request
         # that names no profile is answered for the tab's profile, not the launch profile.
@@ -685,12 +691,20 @@ async def gateway_ws(ws: WebSocket) -> None:
             return
         ws.scope['hermes.session_authority'] = served
         identity = {**identity, 'profile_id': served.profile_id, 'instance_id': served.instance_id}
-    await handle_ws(
-        ws,
-        auth_identity=identity,
-        operator=True,  # The dashboard upgrade gate above has verified this operator.
-        subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
-    )
+    # The socket runs in the served profile's scope, as a native ticket's does (``gateway/run_api.py``):
+    # legacy handlers (billing, usage, subscription) read that profile's secrets with no scope of
+    # their own, and a multiplexed gateway refuses an unscoped read.
+    profile_scope = contextlib.nullcontext()
+    if served is not None:
+        from gateway.session_authorities import owner_scope
+        profile_scope = owner_scope(served)
+    with profile_scope:
+        await handle_ws(
+            ws,
+            auth_identity=identity,
+            operator=True,  # The dashboard upgrade gate above has verified this operator.
+            subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+        )
 
 
 # --- /api/pub + /api/events: the PTY-side tui_gateway.entry opens /api/pub

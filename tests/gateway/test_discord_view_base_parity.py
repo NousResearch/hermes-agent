@@ -78,6 +78,33 @@ async def test_unauthorized_click_uses_the_shared_notice(monkeypatch, name, call
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,call",
+    [
+        ("slash", lambda v, i: v._resolve(i, "once", None, "x")),
+        ("update", lambda v, i: v._respond(i, "y", None, "x")),
+        ("clarify", lambda v, i: v._resolve_choice(i, 0, "a")),
+        ("clarify", lambda v, i: v._on_other(i)),
+    ],
+)
+async def test_answered_view_is_released(monkeypatch, tmp_path, name, call):
+    """An answer stops the view: its timeout can't later stamp "expired" over the answer, and
+    a long ``discord_prompt_timeout`` doesn't keep answered views registered (exec cards:
+    test_discord_approval_lifecycle)."""
+    from tools import slash_confirm
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(slash_confirm, "resolve", AsyncMock(return_value=None))
+    view = _views()[name]
+    monkeypatch.setattr(view, "_check_auth", lambda _interaction: True)
+    interaction = _interaction()
+    await call(view, interaction)
+    interaction.response.edit_message.assert_awaited_once()
+    assert view.resolved is True
+    assert view.is_finished()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["exec", "slash", "update", "clarify"])
 async def test_on_timeout_disables_and_greys_embed(name):
     view = _views()[name]
@@ -88,7 +115,12 @@ async def test_on_timeout_disables_and_greys_embed(name):
     assert view.resolved is True
     assert all(child.disabled for child in view.children)
     assert embed.footer
-    msg.edit.assert_awaited_once_with(embed=embed, view=view)
+    assert embed.color is not None
+    # Exec cards remove controls entirely so competing timeout edits cannot
+    # reattach a retired approval view.
+    msg.edit.assert_awaited_once_with(embed=embed, view=None if name == "exec" else view)
+    if name == "exec":
+        assert view.is_finished()
 
 
 @pytest.mark.asyncio

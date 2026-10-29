@@ -60,3 +60,18 @@ async def test_text_prompt_is_never_edited_in_place():
     assert [kind for kind, _ in calls] == ["send"]
     await settle_mod._post_timeout_notice(ctx, "ls", "card-9", 300)
     assert ("edit", "card-9") in calls
+
+
+@pytest.mark.asyncio
+async def test_timeout_notice_uses_platform_approval_expiry():
+    calls = []
+
+    class _Adapter:
+        async def expire_exec_approval(self, chat_id, message_id, content):
+            calls.append((chat_id, message_id, content))
+            return SimpleNamespace(success=True)
+
+    ctx = SimpleNamespace(_status_adapter=_Adapter(), _status_chat_id="c", _status_thread_metadata=None)
+    await settle_mod._post_timeout_notice(ctx, "ls", "card-9", 3600)
+    assert len(calls) == 1
+    assert calls[0][:2] == ("c", "card-9")

@@ -863,7 +863,8 @@ class GatewayAgent:
             self.connection.reattach(turn.session_id, abandon=self._stop(turn))
         self.connection.start()
         self._sync_show_reasoning()
-        return self._lost_turn_notice()
+        notice = self._lost_turn_notice()
+        return f"Your message was not sent.\n{notice}" if notice else ""
 
     def _lost_turn_notice(self):
         from hermes_cli.gateway_chat_view import pending_lines

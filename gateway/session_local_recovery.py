@@ -28,6 +28,16 @@ def local_adapter_map(authority):
     return profile_adapters.setdefault(name, {})
 
 
+def local_adapter(authority):
+    """The LOCAL adapter *authority*'s local sessions, and the conversations its chats moved past
+    (gateway/session_detached.py), deliver through: created on first use."""
+    adapters = local_adapter_map(authority)
+    if (adapter := adapters.get(Platform.LOCAL)) is None:
+        from gateway.session_local import LocalSessionAdapter
+        adapter = adapters[Platform.LOCAL] = LocalSessionAdapter(authority)
+    return adapter
+
+
 def local_source(authority, chat_id, user_id):
     """LOCAL SessionSource for a session owned by *authority*. A served secondary's local sessions
     carry its profile so ``build_session_key`` namespaces them (``agent:<name>:local:...``) and the
@@ -164,11 +174,7 @@ def restore_local_session(authority, sid):
         if isinstance(exc, RuntimeStoreError):
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
         raise _ReceiptRefused('storage_unavailable') from exc
-    adapters = local_adapter_map(authority)
-    adapter = adapters.get(Platform.LOCAL)
-    if adapter is None:
-        adapter = LocalSessionAdapter(authority)
-        adapters[Platform.LOCAL] = adapter
+    adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)
@@ -194,6 +200,8 @@ def restore_local_session(authority, sid):
           or live.source.to_dict() != source.to_dict()
           or adapter.policies.get(chat_id) != policy):
         raise RuntimeStoreError('storage_unavailable')
+    elif _route_already_restored(store, route, target, receipt.get('lineage', [sid])):
+        pass  # every claim of a live session lands here: no write, so no wait on the store lock
     else:
         with store._lock:
             current = store._entry_locked(route)
@@ -208,6 +216,15 @@ def restore_local_session(authority, sid):
             else:
                 current.session_id = target
     return SessionRef(authority.profile_id, sid)
+
+
+def _route_already_restored(store, route, target, lineage):
+    """The loaded route already names *target*, a lineage member: the locked branch would only
+    re-assign the same id. Read without ``store._lock`` (one dict lookup, atomic under the GIL),
+    because worker threads hold that lock across state.db writes and the restore runs on the loop.
+    Any other shape takes the lock and is re-checked there."""
+    current = store._entries.get(route)
+    return current is not None and current.session_id == target and target in lineage
 
 
 def transcript_target(authority, ref):
@@ -263,6 +280,17 @@ async def prepare_history(authority, ref):
     """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
     target = transcript_target(authority, ref)
     return target, await asyncio.to_thread(display_rows, authority.db, target)
+
+
+def omitted_history_state(db, target):
+    """``(todo_state, message_count)`` of a resume that omits its transcript: the physical *target*'s stored
+    count and its todo plan. Skips the display-row lineage read; the todo lookup still walks the lineage's
+    todo rows (removed ones included, so an undone plan stays gone)."""
+    from tui_gateway.tool_progress import _todo_state_from_db
+    row = db.get_session(target)
+    if row is None:  # deleted since the attach resolved it
+        raise RuntimeStoreError('not_found')
+    return _todo_state_from_db(db, target), int(row.get('message_count') or 0)
 
 
 def _merge_live_in_stored_order(display, live):

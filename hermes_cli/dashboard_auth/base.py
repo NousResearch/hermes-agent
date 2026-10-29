@@ -105,13 +105,18 @@ class DashboardAuthProvider(ABC):
     Subclasses MUST set ``name`` (stable lowercase id) and ``display_name``. Capability flags:
     ``supports_password`` (credential form + ``complete_password_login``; OAuth methods may be
     ``NotImplementedError`` stubs), ``supports_token`` (``verify_token`` for the token-auth seam),
-    ``supports_session`` (False for token-only credentials such as drain, never offered a login).
+    ``supports_session`` (False for token-only credentials such as drain, never offered a login),
+    ``interactive_login`` (False for a provider that verifies credentials but has no browser
+    sign-in flow — kept out of the login page, ``/api/auth/providers`` and the auto-SSO redirect
+    even though its ``verify_session`` is real; a session provider presenting a provisioned
+    shared token is the bundled consumer).
     """
     name: str = ""
     display_name: str = ""
     supports_password: bool = False
     supports_token: bool = False
     supports_session: bool = True
+    interactive_login: bool = True
 
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...

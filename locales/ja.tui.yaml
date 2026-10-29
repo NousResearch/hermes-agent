@@ -1338,6 +1338,7 @@ userMessages.promptTimeout.vaultCode: "確認コード入力プロンプトを�
 userMessages.promptTimeout.vaultSaveLogin: "ログイン保存プロンプトを閉じました: 時間内に応答がなかったため、何も保存されていません。準備ができたら、もう一度リクエストを送ってください。"
 userMessages.promptTimeout.vaultUnlockPrompt: "ロック解除プロンプトを閉じました: 時間内に入力がなかったため、パスワードマネージャーはロックされたままです。解除の準備ができたら、もう一度リクエストを送ってください。"
 userMessages.rpc.launchCredentialsChanged: "このチャットは開始時の API キーをもう使えないため（変更または削除されました）、実行されませんでした。チャットが自動で別のキーに切り替わることはありません。/new と入力して、現在のキーで新しいチャットを始めてください。"
+userMessages.rpc.methodUnavailable: "この Hermes バックエンドは {0} を提供していないため、実行されませんでした。"
 userMessages.rpc.notConnected: "Hermes に接続していないため送信されませんでした。自動的に再接続しますので、少し待ってから再度お試しください。続く場合は /logs と入力してください。"
 userMessages.rpc.sessionHasChildren: "このチャットには、削除すると一緒に消えてしまう子セッション（サブエージェントの実行など）があるため、削除されませんでした。"
 userMessages.rpc.sessionNotFound: "このチャットはバックエンドから切り離されています（アイドル状態が続いたか、バックエンドが再起動しました）。履歴は保存されています。/resume と入力すると再び開けます。"

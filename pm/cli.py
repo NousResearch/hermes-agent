@@ -820,6 +820,72 @@ def cmd_repair(args) -> int:
     return 0
 
 
+def _extra_requirements(project: Path, extras: list[str]) -> list[str]:
+    """The pinned requirements of declared extras, self-references expanded.
+
+    Pins, not the whole lock, define the environment: an identity over uv.lock
+    would build a new generation on every Hermes update, and superseded side
+    generations are never reclaimed while a caller may still run from them.
+    """
+    import re
+    import tomllib
+
+    declared = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    name = declared["project"]["name"]
+    table = declared["project"].get("optional-dependencies", {})
+    requirements: list[str] = []
+    pending, seen = list(extras), set()
+    while pending:
+        extra = pending.pop()
+        if extra in seen:
+            continue
+        if extra not in table:
+            raise ValueError(f"{extra!r} is not an extra declared in {project / 'pyproject.toml'}")
+        seen.add(extra)
+        for requirement in table[extra]:
+            own = re.fullmatch(rf"{re.escape(name)}\[([^\]]+)\]", requirement.replace(" ", ""))
+            if own:
+                pending.extend(own.group(1).split(","))
+            else:
+                requirements.append(requirement)
+    return requirements
+
+
+def cmd_environment(args) -> int:
+    """Make a named side environment current and print its interpreter.
+
+    Shell callers (skills) cannot import PM: the terminal's `python` is rarely
+    Hermes's own. Concurrent callers serialize on PM's per-environment lock and
+    a rebuild lands in a new generation, so a running caller keeps its files.
+    """
+    import contextlib
+    import os
+
+    import pm
+
+    if bool(args.extra) == bool(args.requirement):
+        print("hermes pm environment: pass --extra or --requirement (not both)", file=sys.stderr)
+        return 2
+    # stdout carries only the interpreter path, for PY=$(hermes pm environment ...);
+    # progress from PM and its uv children goes to stderr at both levels.
+    sys.stdout.flush()
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            requirements = _extra_requirements(repo_root(), args.extra) if args.extra else args.requirement
+            python = pm.ensure_environment(args.name, requirements, explicit=True)
+    except (InstallError, ValueError) as exc:
+        print(f"hermes pm environment: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+    print(python)
+    return 0
+
+
 def cmd_bundle(args) -> int:
     from scripts.bundles.native import stage_native
     return stage_native(args)
@@ -880,6 +946,17 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("repair", help="rebuild the recorded dependency environment without changing its graph")
     p.set_defaults(func=cmd_repair)
+
+    p = sub.add_parser(
+        "environment", help="make a named side environment current and print its python",
+        description="Build or reuse HERMES_HOME/environments/NAME, an isolated venv that never "
+                    "touches Hermes's own: --extra installs the pins of a declared extra, "
+                    "--requirement an ad hoc bounded requirement (both repeatable). "
+                    "Prints only the interpreter path on stdout.")
+    p.add_argument("name")
+    p.add_argument("--extra", action="append", default=[], metavar="EXTRA")
+    p.add_argument("--requirement", action="append", default=[], metavar="REQ")
+    p.set_defaults(func=cmd_environment)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
     p.set_defaults(func=cmd_gc)

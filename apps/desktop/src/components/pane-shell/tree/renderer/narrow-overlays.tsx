@@ -15,7 +15,7 @@ import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 import { cn } from '@/lib/utils'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $paneStates } from '@/store/panes'
@@ -141,7 +141,7 @@ export function NarrowOverlays() {
           // The browser host's titlebar Hide names the zone (its alias) while a
           // zone mate may be showing; native close names one pane, as on main.
           const currentTree = $layoutTree.get()
-          const targetZone = currentTree && isBrowserHostedDesktop() ? findGroupOfPane(currentTree, match.id) : null
+          const targetZone = currentTree && hostHas('narrowOverlayChrome') ? findGroupOfPane(currentTree, match.id) : null
 
           return current && (current.id === match.id || targetZone?.panes.includes(current.id)) ? null : current
         }
@@ -209,7 +209,7 @@ export function NarrowOverlays() {
       {/* A touch screen has no hover to leave the overlay by, so the browser
           host closes it on a tap outside. Native Desktop lets that click reach
           the app and keeps the overlay until Escape, the toggle or hover-out. */}
-      {revealed && isBrowserHostedDesktop() && (
+      {revealed && hostHas('tapOutsideDismiss') && (
         <div
           aria-hidden="true"
           className="absolute inset-0 z-30"
@@ -281,7 +281,7 @@ export function NarrowOverlays() {
           // (macOS traffic lights); the spacer above keeps that band
           // draggable, mirroring TreeGroup's reservation.
           style={{
-            paddingTop: isBrowserHostedDesktop()
+            paddingTop: hostHas('narrowOverlayChrome')
               ? titlebarHeight
               : wcOverlap
                 ? wcOverlap.y + wcOverlap.height

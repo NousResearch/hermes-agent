@@ -191,7 +191,8 @@ export function registerFsIpc({
       resolveGitBinary(),
       identifier,
       await desktopPluginsRoot(),
-      Boolean(payload?.force)
+      Boolean(payload?.force),
+      typeof payload?.sha === 'string' ? payload.sha : undefined
     )
   })
 

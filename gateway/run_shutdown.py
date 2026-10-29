@@ -2059,10 +2059,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
-        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
-        # default executor) never touch self._executor, so the join above cannot see them. A writer that
-        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
-        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
+        # Cron jobs (scheduler pool), API-server runs (their own unbounded executor, never joined at disconnect)
+        # and deferred hygiene workers (the loop's default executor) never touch self._executor, so the join above
+        # cannot see them. A writer that outlived the drain is mid-write for the same #101093 reasons; the drain
+        # spent its budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
         # taken before the adapters were released; a run whose handler task was cancelled at disconnect
         # has already left it, so that term under-counts — the live worker-scoped count below covers
         # the cancelled-handler case (#116535).

@@ -12,11 +12,10 @@ every cold row of this profile that carries a ``session_key`` and a messaging-pl
   else its columns, rebuild the source.
 
 Either way the source is revived through ``_restored_source``, so delivery stays pinned to the
-persisted receiving bot. A row the lane moved past mounts READ-ONLY (``LiveSession.superseded``): its
-only route is the lane's current key, which names the newer conversation, so a Stop, an agent lookup
-or a turn through it would act on that conversation. One gateway owns every session and never
-crosses them, so writes are refused by name (``session_superseded``) rather than given a private
-route that no adapter would deliver to (#140183 review F2). A compression continuation is never
+persisted receiving bot. A row the lane moved past mounts DETACHED (gateway/session_detached.py): the
+lane's current key names the newer conversation, so the row runs on a key of its own instead, its
+turns and Stop act on it alone and its replies reach its app viewers only, never the chat
+(Teknium's ruling: a chat's ``/new`` never locks the apps out of its old conversation). A compression continuation is never
 mounted under its physical id: the lane's turns publish to the lineage root (``logical_owner``), so
 ``session.resume`` maps it to that root, as normal admission does. Rows without a ``session_key`` (subagents) have nothing to rebuild a lane
 from. LOCAL rows (cron, CLI, TUI) restore from their private receipt and API rows from their binding
@@ -110,39 +109,22 @@ def _mount_plan(authority, sid):
 def restore_routed_session(authority, sid):
     """Publish *sid* as its lane would after a restart; None when this row is not one a route or a
     messaging-platform row can stand for."""
+    from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionRef
     plan = _mount_plan(authority, sid)
     if plan is None:
         return None
     route, entry, routed = plan
-    superseded = routed is None and _names_another_conversation(authority, sid, route)
     authority._require_admission_open()
     # Re-pin the persisted receiving bot so delivery after a restart goes through it or nowhere,
     # never the default bot by heuristic (gateway/AGENTS.md § Identity survives the process).
     source = authority.runner._restored_source(entry)
-    authority.sessions.setdefault(sid, mount(authority, sid, source, route, superseded=superseded,
-                                             history_mount=True))
+    if sid not in authority.sessions:
+        live = authority.sessions[sid] = LiveSession(source, route)
+        if routed is None and _names_another_conversation(authority, sid, route):
+            from gateway.session_detached import detach
+            detach(authority, live, sid)  # the lane moved past it: its turns stay off the chat
     return SessionRef(authority.profile_id, sid)
-
-
-def mount(authority, sid, source, route, **flags):
-    """The live entry of *sid* on *route*, however it is mounted (the lane's inbound, startup recovery
-    of its queued input, a cold open, an automation wake): ``handed_off`` comes from the row
-    (``moved_local``), so a moved local conversation goes read-only once its lane takes up another
-    one, whichever path mounted it first (#143286)."""
-    from gateway.session_authority import LiveSession
-    return LiveSession(source, route, handed_off=moved_local(authority, sid, source), **flags)
-
-
-def moved_local(authority, sid, source):
-    """*sid* is a local conversation (created by a local surface) published on a messaging lane:
-    ``/handoff`` or a platform ``/resume`` moved it there. That provenance is the row's, not the
-    path that mounts it (the Desktop that followed it, the lane's inbound, a cold open), so every
-    mount of it goes read-only once the lane takes up another conversation (#143286)."""
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
-    if source is None or source.platform == Platform.LOCAL:
-        return False
-    return (authority.db.get_session(sid) or {}).get('created_source') in LEGACY_LOCAL_SOURCES
 
 
 def mountable(authority, sid):
@@ -182,7 +164,7 @@ def superseded_hand_off(authority, ref):
     route = (authority.db.get_session(ref.session_id) or {}).get('session_key')
     # The routing entry moves at the platform's /new; the lane publishes its new conversation (and so
     # supersedes a mounted one) only at its next inbound.
-    return bool(live is not None and live.superseded) or _names_another_conversation(authority, ref.session_id, route)
+    return bool(live is not None and live.detached) or _names_another_conversation(authority, ref.session_id, route)
 
 
 async def conversation_head(runner, session_id):
@@ -209,6 +191,6 @@ def follow_hand_off(authority, source, route, owner, local_owner):
     if held is None or held.source is None or held.source.platform != Platform.LOCAL:
         held = None
     elif local_owner != owner:
-        held.source, held.route, held.handed_off = source, route, True
+        held.source, held.route = source, route
     if held is not None or owner in authority.sessions:
         authority._publish_route(source, owner, route)

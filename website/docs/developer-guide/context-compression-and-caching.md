@@ -412,8 +412,8 @@ map.
 ### Codex gpt-5.x / Astra threshold autoraise
 
 The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
-(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
-GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
+(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and smaller
+windows through some resellers). At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
 OAuth (`provider: openai-codex`) and the model is one of those families (Astra
 matches any slug containing `astra`; the opt-in `-900k` picker variants are
@@ -501,7 +501,7 @@ narrow, re-checked on every request:
   Astra variants and other GPT-6 models are excluded. gpt-5.1/5.2 return HTTP 500 or stall the stream when the
   field is present (no structured rejection to downgrade on, verified live Aug 2026).
 - **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
-  (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
+  (Codex subscription OAuth) only. xAI, plugin providers, OpenRouter, relays, and
   local servers never see the field.
 
 For Astra, both the resolved `openai-codex` provider and an official HTTPS

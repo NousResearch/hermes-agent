@@ -3,6 +3,7 @@ from hermes_state_local_migration import validate_legacy_row
 from hermes_state_mutation_binding import authorize_history
 from hermes_state_runtime import RuntimeStoreError
 
+from gateway.owner_identity import same_owner
 from gateway.session_route_recovery import _messaging_platform, mountable
 
 # Local labels (a cron run is a canonical local session whose last viewer is its own fire).
@@ -121,6 +122,6 @@ def _stored_closed(authority, actor, owner):
     except (RuntimeStoreError, KeyError, TypeError):
         return False
     return (receipt.get('profile_id') == authority.profile_id
-            and (receipt.get('principal_id') == actor.subject or 'session:operator' in actor.capabilities)
+            and (same_owner(receipt.get('principal_id'), actor.subject) or 'session:operator' in actor.capabilities)
             and row is not None and row['ended_at'] is not None
             and not list_session_admissions(authority.db, session_id=owner))

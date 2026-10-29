@@ -311,7 +311,7 @@ class GatewayModelCommandsMixin:
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
             t("gateway.model.provider_label", provider=result.provider_label or result.target_provider),
         ]
-        # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
+        # Provider-aware chain: Codex OAuth, Nous and profile live-catalog caps win over the raw models.dev entry.
         mi = result.model_info
         model_cfg: dict = {}
         config_ctx = None

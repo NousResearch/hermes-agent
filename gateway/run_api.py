@@ -337,6 +337,12 @@ def _restart_wait_read(runner, scope) -> bool:
     return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
 
 
+def _restart_wait_socket_ticket(runner, scope) -> bool:
+    from gateway.drain_control import restart_wait_socket_ticket
+    return scope['type'] == 'http' and restart_wait_socket_ticket(
+        runner, scope.get('method'), scope.get('path'), scope.get('query_string', b'').decode('latin-1'))
+
+
 class GatewayRuntimeAPI:
     """Redeem private local tickets at the existing WS subprotocol boundary.
 
@@ -381,7 +387,8 @@ class GatewayRuntimeAPI:
             and (self.runner._draining or descriptor['state'] == 'draining')
             and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
         if ((descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket
-                and not _restart_wait_read(self.runner, scope)):
+                and not _restart_wait_read(self.runner, scope)
+                and not _restart_wait_socket_ticket(self.runner, scope)):
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
@@ -421,8 +428,16 @@ class GatewayRuntimeAPI:
         ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
         if reason == 'none' or ws.headers.get('origin'):
             if draining_socket:
-                await ws.close(code=1013)
-                return
+                # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
+                # surface that mints browser tickets redeems one there (elsewhere the loopback gate
+                # takes ``?token=``).
+                from hermes_cli.web_server_surface import policy
+                admitted_in_wait = (reason == 'ok' and 'internal' not in ws.query_params
+                                    and policy(state).gateway_ticket
+                                    and restart_wait_open(self.runner))
+                if not admitted_in_wait:
+                    await ws.close(code=1013)
+                    return
             return await self.app(scope, receive, send)
         if (reason != 'ok' or not _embedded_chat_enabled()
                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None

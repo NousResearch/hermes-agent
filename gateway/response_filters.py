@@ -143,6 +143,13 @@ def display_metadata_for_event(event: Any) -> dict:
     return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
 
 
+def persisted_user_metadata_for_event(event: Any) -> dict:
+    """The user row's display metadata: ``display_metadata_for_event`` plus the canonical admission's
+    ``submission_id``, which lets a client match a send whose ack it never received to its stored row."""
+    from gateway.session_display import admission_submission
+    return {**display_metadata_for_event(event), **admission_submission(event)}
+
+
 def is_machinery_display_kind(display_kind: Any) -> bool:
     """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
 

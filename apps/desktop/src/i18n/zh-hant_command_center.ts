@@ -323,6 +323,7 @@ export const zhHantCommandCenter = {
     exportNeedsHost: name => `瀏覽器無法儲存設定檔封存。請在 Hermes 主機上執行：hermes profile export ${name}`,
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
+    notServedHere: '此處未提供',
     switchToProfile: name => `切換至 ${name}`,
     switchToConnection: name => `切換至 ${name}`,
     switchConnectionFailed: name => `無法連線至 ${name}`,

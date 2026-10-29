@@ -57,6 +57,12 @@ via `tasks/get`.
 
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to
   widen unless you configure a token *and* set `A2A_HOST`.
+  Without a token it also refuses browser-originated POSTs (`Origin`,
+  cross-site `Sec-Fetch-Site`, a missing or non-JSON `Content-Type`).
+- **No token ⇒ loopback `Host` only.** Every route refuses a `Host` that is
+  not a loopback name (`localhost`, `127.x.x.x`, `[::1]`) or the
+  `A2A_PUBLIC_URL` host, so a DNS-rebound page cannot reach it. Only set
+  `A2A_PUBLIC_URL` to a name you control.
 - **Per-peer tokens**: `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each
   remote agent its own credential; that authenticated name (never anything
   in the request body) drives rate limiting, trust, and audit.

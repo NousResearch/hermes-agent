@@ -34,8 +34,25 @@ class _SshFsConfig:
     timeout: int
 
 
-_CACHE_LOCK = threading.RLock()
+# ``_CACHE_LOCK`` guards only the dicts and is never held across a dial or cleanup, so one
+# unreachable host cannot stall file requests on every other SSH profile. A dial or cleanup holds
+# its profile's lock plus that endpoint's lock: profiles on one user@host:port share a control
+# socket, and one profile's cleanup would otherwise unlink the socket another profile's dial just
+# created. At most one endpoint lock is held at a time, always inside the profile's lock.
+_CACHE_LOCK = threading.Lock()
 _BACKENDS: dict[str, tuple[_SshFsConfig, SshWorkspaceFs]] = {}
+_DIAL_LOCKS: dict[str, threading.Lock] = {}
+_ENDPOINT_LOCKS: dict[tuple[str, str, int], threading.Lock] = {}
+
+
+def _lock_for(locks: dict, key) -> threading.Lock:
+    with _CACHE_LOCK:
+        return locks.setdefault(key, threading.Lock())
+
+
+def _endpoint(config: _SshFsConfig) -> tuple[str, str, int]:
+    """The key ``SSHEnvironment`` derives its control socket from."""
+    return config.user, config.host, config.port
 
 
 class SshWorkspaceFs:
@@ -280,24 +297,31 @@ def get_ssh_workspace_fs(profile_key: str, terminal_config: dict[str, Any]) -> S
     if not config.host or not config.user:
         raise SshWorkspaceFsError("ECONN", "SSH host and user are required")
 
-    with _CACHE_LOCK:
-        cached = _BACKENDS.get(profile_key)
-        if cached and cached[0] == config:
-            return cached[1]
+    with _lock_for(_DIAL_LOCKS, profile_key):
+        with _CACHE_LOCK:
+            cached = _BACKENDS.get(profile_key)
+            if cached and cached[0] == config:
+                return cached[1]
+            _BACKENDS.pop(profile_key, None)
+        # Close the replaced connection before dialing: the control socket is keyed on
+        # user@host:port only, so a dial with new credentials would otherwise ride the old master.
         if cached:
-            cached[1]._env.cleanup()
+            with _lock_for(_ENDPOINT_LOCKS, _endpoint(cached[0])):
+                cached[1]._env.cleanup()
         try:
-            env = SSHEnvironment(
-                host=config.host,
-                user=config.user,
-                cwd=config.cwd,
-                timeout=config.timeout,
-                port=config.port,
-                key_path=config.key_path,
-                sync_files=False,
-            )
+            with _lock_for(_ENDPOINT_LOCKS, _endpoint(config)):
+                env = SSHEnvironment(
+                    host=config.host,
+                    user=config.user,
+                    cwd=config.cwd,
+                    timeout=config.timeout,
+                    port=config.port,
+                    key_path=config.key_path,
+                    sync_files=False,
+                )
         except Exception as exc:
             raise SshWorkspaceFsError("ECONN", "Could not connect to the SSH workspace") from exc
         backend = SshWorkspaceFs(env)
-        _BACKENDS[profile_key] = (config, backend)
+        with _CACHE_LOCK:
+            _BACKENDS[profile_key] = (config, backend)
         return backend

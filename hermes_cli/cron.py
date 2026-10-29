@@ -246,6 +246,8 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
         ("Changed", mon_state.get("last_changed_at") if monitor_source else ""),
         ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
          if job.get("no_agent") else ""),
+        ("Timezone", job.get("timezone")),
+        ("Grace", f"{job['grace_minutes']} min" if job.get("grace_minutes") is not None else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
@@ -732,6 +734,20 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
     workdir = str(job.get("workdir") or "").strip()
     if workdir and not Path(workdir).expanduser().exists():
         issues.append(f"workdir not found: {workdir}")
+    if job.get("timezone"):
+        from cron.jobs_time import zone_for_job
+        if zone_for_job(job) is None:
+            issues.append(f"timezone {job['timezone']!r} is not a valid IANA zone; "
+                          "the job falls back to the profile timezone")
+    if job.get("grace_minutes") is not None:
+        from cron.jobs_time import normalize_grace_minutes
+        try:
+            normalize_grace_minutes(job.get("grace_minutes"))
+        except ValueError as exc:
+            issues.append(f"grace_minutes is unusable ({exc})")
+        else:
+            if (job.get("schedule") or {}).get("kind") != "cron":
+                issues.append("grace_minutes has no effect on a non-cron schedule")
     return issues
 
 
@@ -762,7 +778,8 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
-                   ("interpreter", "interpreter"))
+                   ("interpreter", "interpreter"), ("timezone", "timezone"),
+                   ("grace_minutes", "grace_minutes"))
 
 
 def _job_api_kwargs(args) -> dict[str, Any]:
@@ -776,6 +793,7 @@ _JOB_DETAIL_LINES = (
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
+    ("timezone", "  Timezone: {} (schedule runs on this zone's wall clock)"),
     ("workdir", "  Workdir: {}"),
     ("interpreter", "  Python: {}"))
 

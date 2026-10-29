@@ -392,6 +392,8 @@ class CLIInitMixin:
     def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         from cli import _hermes_home
+        from hermes_cli.left_core_migration import serve_notices_on_stderr
+        serve_notices_on_stderr()
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use

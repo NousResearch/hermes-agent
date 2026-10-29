@@ -1,6 +1,8 @@
 """Private local creation receipts in the canonical runtime transaction owner."""
 import json
+import threading
 import time
+from collections import OrderedDict
 
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
@@ -326,11 +328,48 @@ def local_lineage_index(conn):
     return superseded, heads
 
 
+def _lineage_version(conn):
+    # data_version sees OTHER connections' commits; total_changes sees this connection's writes.
+    return conn.total_changes, conn.execute('PRAGMA main.data_version').fetchone()[0]
+
+
+def _copy_lineage_index(value):
+    superseded, heads = value
+    return set(superseded), {key: (owner, list(lineage)) for key, (owner, lineage) in heads.items()}
+
+
+def _cached_local_lineage_index(db, conn):
+    # Owned by this SessionDB, not a process-global path/id cache. Bound retained connections
+    # across read-pool churn and close/reopen; a closed/replaced connection cannot match a new one.
+    cache, lock = db.__dict__.setdefault('_local_lineage_cache', (OrderedDict(), threading.Lock()))
+    if conn.in_transaction:
+        # A snapshot or uncommitted answer must never outlive its transaction (including rollback).
+        with lock:
+            cache.pop(conn, None)
+        return local_lineage_index(conn)
+    version = _lineage_version(conn)
+    with lock:
+        saved = cache.get(conn)
+        if saved is not None and saved[0] == version:
+            cache.move_to_end(conn)
+            return _copy_lineage_index(saved[1])
+    value = local_lineage_index(conn)
+    # A concurrent writer may commit between the receipt scan and the end_reason reads. Never
+    # publish that in-flight projection as a stable cache entry; the next call must rebuild it.
+    if not conn.in_transaction and _lineage_version(conn) == version:
+        with lock:
+            cache[conn] = (version, value)
+            cache.move_to_end(conn)
+            if len(cache) > 8:
+                cache.popitem(last=False)
+    return _copy_lineage_index(value)
+
+
 def exclude_superseded_segments(db, where_clauses, params):
     """Drop earlier reset segments from a listing or count query (one conversation, one row),
     in SQL before paging; returns ``heads`` for :func:`annotate_local_lineages`."""
     with db._read_ctx() as conn:
-        superseded, heads = local_lineage_index(conn)
+        superseded, heads = _cached_local_lineage_index(db, conn)
     if superseded:
         where_clauses.append("s.id NOT IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(sorted(superseded)))

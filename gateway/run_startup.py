@@ -45,7 +45,7 @@ def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
     from gateway.run import _profile_runtime_scope
     from hermes_cli.left_core_migration import recover_at_startup
     with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
-        recover_at_startup()
+        recover_at_startup(gateway_start=True)
 
 
 def recover_left_core_at_gateway_start() -> None:
@@ -55,7 +55,7 @@ def recover_left_core_at_gateway_start() -> None:
     so a platform plugin it gets starts its adapter in the same gateway start."""
     from hermes_cli.left_core_migration import recover_at_startup
     from hermes_constants import get_default_hermes_root, get_hermes_home
-    recover_at_startup()
+    recover_at_startup(gateway_start=True)
     root = Path(get_default_hermes_root())
     if root.resolve() != Path(get_hermes_home()).resolve():
         recover_left_core_in(root)

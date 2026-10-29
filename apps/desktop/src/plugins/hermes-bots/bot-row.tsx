@@ -187,7 +187,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // resolved the pinned canonical chat, preview THAT session — not the
   // profile's most recent (but unrelated) activity. Liveness checks above
   // keep last_session semantics: any recent activity means the bot is alive.
-  const { fromBot } = previewKind(previewSession?.preview)
+  const { fromBot } = previewKind(previewSession?.preview, $lastRoster.get(), bot.connectionId)
 
   // DM previews read like DMs: strip the delivery prefix, keep the message.
   const displayPreview = stripPreviewMarkdown(

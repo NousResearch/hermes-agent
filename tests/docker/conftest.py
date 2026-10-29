@@ -242,7 +242,12 @@ def poll_container(
     end = time.monotonic() + deadline_s
     last = ""
     while time.monotonic() < end:
-        r = docker_exec_sh(container, probe, user=user, timeout=10)
+        try:
+            r = docker_exec_sh(container, probe, user=user, timeout=10)
+        except subprocess.TimeoutExpired:
+            # A stalled ``docker exec`` (busy daemon on a loaded runner) is one failed attempt,
+            # not the verdict: keep polling until the deadline like any other non-zero probe.
+            continue
         last = r.stdout
         if r.returncode == 0:
             return True, last

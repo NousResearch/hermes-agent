@@ -11,6 +11,7 @@ scoped or not, exactly as before.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,9 @@ class SessionAuthorities:
         self.launch_key = hermes_home_key(launch_home)
         self._by_key: dict[str, object] = {}
         self._names: dict[str, str | None] = {}
+        # One event per slot reserved by ``add(home, None)`` while its authority is being built: set
+        # when ``replace`` fills the slot or ``remove`` drops it (the build failed).
+        self._starting: dict[str, asyncio.Event] = {}
         # A multiplexing runtime (configured, or one that ever served a second home) keeps the
         # scoped-lookup contract after its secondaries are removed: an unserved home is None.
         self.multiplexed = bool(multiplexed)
@@ -36,6 +40,8 @@ class SessionAuthorities:
             raise RuntimeError(f'duplicate session authority for {home}')
         self._by_key[key] = authority
         self._names[key] = name
+        if authority is None:
+            self._starting[key] = asyncio.Event()
         if key != self.launch_key:
             self.multiplexed = True
 
@@ -45,6 +51,7 @@ class SessionAuthorities:
         if key not in self._by_key or self._by_key[key] is not None:
             raise RuntimeError(f'no reserved session authority slot for {home}')
         self._by_key[key] = authority
+        self._end_start(key)
 
     def remove(self, home):
         """Drop *home*'s slot (a parked boot, a hot-unserved profile); returns the authority or None.
@@ -53,7 +60,24 @@ class SessionAuthorities:
         if key == self.launch_key:
             raise RuntimeError('the launch session authority cannot be removed')
         self._names.pop(key, None)
+        self._end_start(key)
         return self._by_key.pop(key, None)
+
+    def _end_start(self, key) -> None:
+        started = self._starting.pop(key, None)
+        if started is not None:
+            started.set()
+
+    def starting(self, profile):
+        """``(key, started)`` for the reserved slot *profile* names while its authority is still being
+        built, else None. ``started`` is set once the build ends: filled, or dropped because it failed."""
+        from hermes_cli.profiles import profile_matches_home
+        return next(((key, started) for key, started in list(self._starting.items())
+                     if profile_matches_home(profile, Path(key))), None)
+
+    def starting_homes(self) -> list[str]:
+        """Keys of every slot whose authority is still being built (a snapshot, as in ``serving``)."""
+        return list(self._starting)
 
     def profile_name(self, authority):
         """Served profile name for *authority*; None for the launch profile (its adapters are
@@ -62,10 +86,14 @@ class SessionAuthorities:
         return None if key == self.launch_key else self._names.get(key)
 
     def __len__(self) -> int:
-        return len(self._by_key)
+        return sum(authority is not None for authority in self._by_key.values())
 
     def __iter__(self):
-        return iter(self._by_key.values())
+        """The built authorities, retiring ones included. A slot still being built is no authority
+        yet, so iteration and ``len`` skip it (``starting`` names it); membership (``in``) still sees
+        it, so ``add`` refuses a second build of that profile."""
+        # A snapshot, as in ``serving``: other threads walk the set while the loop hot-serves.
+        return (authority for authority in list(self._by_key.values()) if authority is not None)
 
     def __contains__(self, home) -> bool:
         return hermes_home_key(home) in self._by_key

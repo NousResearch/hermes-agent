@@ -263,6 +263,49 @@ def test_spawner_is_dead_tristate():
         assert pi.spawner_is_dead(_entry(1, 1.0)) is None
 
 
+class TestStrictBranchStatusRead:
+    """#142085: the strict branch of ``_pid_alive_matches`` read ``Process.status()`` on Windows,
+    where psutil's NtQuerySystemInformation path does not release the GIL — under load that froze
+    every other Python thread in the process for minutes. The non-strict branch already skipped
+    the read on Windows; the strict branch must too (Windows has no POSIX zombies, so the
+    STATUS_ZOMBIE comparison had nothing to contribute there). Tested on the real host: faking
+    ``os.name`` on POSIX proves nothing about the cost on Windows."""
+
+    @staticmethod
+    def _spy_status(monkeypatch):
+        psutil = pytest.importorskip("psutil")
+        calls = []
+        real_status = psutil.Process.status
+
+        def spy(self):
+            calls.append(self.pid)
+            return real_status(self)
+
+        monkeypatch.setattr(psutil.Process, "status", spy)
+        return calls
+
+    @pytest.mark.platforms("windows")
+    def test_windows_strict_branch_skips_status(self, monkeypatch):
+        calls = self._spy_status(monkeypatch)
+        psutil = pytest.importorskip("psutil")
+        pid = os.getpid()
+        create_time = pi.process_birth(psutil.Process(pid))
+
+        assert pi._pid_alive_matches(pid, create_time, strict=True) is True
+        assert calls == []
+
+    @pytest.mark.platforms("posix")
+    def test_posix_strict_branch_still_probes_status(self, monkeypatch):
+        # Control: on POSIX a zombie keeps its create_time, so the status read is load-bearing.
+        calls = self._spy_status(monkeypatch)
+        psutil = pytest.importorskip("psutil")
+        pid = os.getpid()
+        create_time = pi.process_birth(psutil.Process(pid))
+
+        assert pi._pid_alive_matches(pid, create_time, strict=True) is True
+        assert calls == [pid]
+
+
 # ---------------------------------------------------------------------------
 # Updater rung: _ledger_reapable_backend_pids
 # ---------------------------------------------------------------------------

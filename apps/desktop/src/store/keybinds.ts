@@ -3,7 +3,8 @@ import { atom, computed } from 'nanostores'
 import { $registryVersion } from '@/contrib/registry'
 import { allKeybindActions, defaultBindings, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
 import { canonicalizeCombo } from '@/lib/keybinds/combo'
-import { arraysEqual, persistString, storedString } from '@/lib/storage'
+import { persistStore } from '@/lib/persist-store'
+import { arraysEqual, persistString, storedString, type WriteOptions } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
 
@@ -55,7 +56,7 @@ function loadBindings(): KeybindBindings {
 
 // Persist only the actions whose combos differ from their shipped default, so
 // changing a default never gets shadowed by a stored snapshot.
-function persistBindings(bindings: KeybindBindings): void {
+function persistBindings(bindings: KeybindBindings, options: WriteOptions): void {
   const defaults = defaultBindings()
   const diff: KeybindBindings = {}
 
@@ -79,12 +80,12 @@ function persistBindings(bindings: KeybindBindings): void {
     }
   }
 
-  persistString(STORAGE_KEY, JSON.stringify(diff))
+  persistString(STORAGE_KEY, JSON.stringify(diff), options)
 }
 
 export const $bindings = atom<KeybindBindings>(loadBindings())
 
-$bindings.subscribe(persistBindings)
+persistStore($bindings, persistBindings, defaultBindings())
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {

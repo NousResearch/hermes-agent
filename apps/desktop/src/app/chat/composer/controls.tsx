@@ -5,8 +5,8 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
@@ -30,7 +30,7 @@ export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './c
 // leaves the keyboard as it was. Native Desktop keeps the press's blur, which
 // closes an open completion list and clears a composition the IME never ended.
 const keepEditorFocus = (event: { preventDefault: () => void }) => {
-  if (isBrowserHostedDesktop()) {
+  if (hostHas('keepFocusOnPress')) {
     event.preventDefault()
   }
 }
@@ -136,7 +136,7 @@ export function ComposerControls({
 
   // The browser host's touch-size controls can outgrow a minimal row, so there
   // they pack to the end and wrap. Native Desktop keeps main's single row.
-  const browserHost = isBrowserHostedDesktop()
+  const browserHost = hostHas('touchSizedControls')
 
   return (
     <div

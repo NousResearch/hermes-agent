@@ -24,6 +24,12 @@ BOT_CHAT_TITLE = "Bot Chat"
 _PEER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
+# The @handle Bot Mode shows for a host's default profile, and the body of the 404 a peer returns for
+# a /p/<profile>/ prefix naming no profile it has (UNKNOWN_PROFILE_ERROR in
+# gateway/platforms/api_server_profile_prefix.py; a 'hermes' profile it has but does not serve differs).
+DEFAULT_PROFILE_HANDLE = "hermes"
+_UNKNOWN_PROFILE_ERROR = "Unknown or unconfigured profile"
+
 # One synchronous agent turn can legitimately take minutes.
 DM_TIMEOUT_S = 600
 LIST_TIMEOUT_S = 30
@@ -96,6 +102,43 @@ def _base_url(peer: dict, profile: str | None) -> str:
     return url
 
 
+def _peer_lacks_profile(exc: Exception) -> bool:
+    """True only for the peer's own "no such profile" verdict: the 404 its /p/<profile>/ prefix
+    middleware returns before any handler runs. A handler's 404 (unknown run or session) carries
+    ``{"error": {"message": ...}}`` and a transport failure is no verdict at all."""
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code != 404:
+        return False
+    try:
+        body = json.loads(exc.read().decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(body, dict) and body.get("error") == _UNKNOWN_PROFILE_ERROR
+
+
+def _resolve_base(peer: dict, profile: str | None, key: str, peer_name: str = "") -> str:
+    """The mirror a target addresses. Bot Mode shows a peer's default profile as @hermes
+    (#118076); an upgraded peer aliases ``/p/hermes`` to its default itself, unless it has a real
+    pre-reservation profile named ``hermes``, which keeps the handle. The client never reroutes on
+    its own: an older peer answers the same generic 404 for "no such profile" and for a real
+    ``hermes`` profile it does not serve (parked, standalone), so guessing ``/p/default`` there
+    delivers into the wrong agent. That ambiguous answer becomes an error naming the explicit
+    ``<peer>/default`` address instead."""
+    base = _base_url(peer, profile)
+    if profile != DEFAULT_PROFILE_HANDLE:
+        return base
+    try:
+        _request(f"{base}/health", key)
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+        if _peer_lacks_profile(exc):
+            name = peer_name or "<peer>"
+            raise LookupError(
+                f"Peer '{name}' answered that it serves no '{DEFAULT_PROFILE_HANDLE}' profile. That answer "
+                f"is ambiguous: an up-to-date gateway gives it when it does not serve its default profile, "
+                f"and an older one also when it has a '{DEFAULT_PROFILE_HANDLE}' profile it does not serve. "
+                f"If the peer serves its default profile, address that bot as {name}/default.") from exc
+    return base
+
+
 def _find_bot_chat(base: str, key: str) -> str | None:
     """The remote canonical Bot Chat's session id, or None.
 
@@ -153,6 +196,11 @@ def _parse_target(target: str) -> tuple[str, str | None]:
         raise ValueError("Peer name required (hermes peer dm <peer>[/<agent>] ...)")
     if profile and not _PROFILE_RE.match(profile):
         raise ValueError(f"Invalid agent/profile name: {profile!r}")
+    if profile:
+        # Profile ids are lowercase (normalize_profile_name); 'box/Hermes' must address the
+        # peer's real 'hermes' profile on every peer, including those that compare prefixes exactly.
+        from hermes_cli.profiles import normalize_profile_name
+        profile = normalize_profile_name(profile)
     return peer, profile
 
 
@@ -409,7 +457,11 @@ def cmd_peer(args) -> int:
     except (LookupError, PermissionError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    base = _base_url(peer, profile)
+    try:
+        base = _resolve_base(peer, profile, key, peer_name)
+    except LookupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     if action in {"status", "stop"}:
         return _peer_run_ctl(args, action, peer_name, profile, base, key)
     message = _message_from_args(args)

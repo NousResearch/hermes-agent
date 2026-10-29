@@ -26,12 +26,7 @@ import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
-import {
-  $workspaceMode,
-  $workspaceNewSessionTarget,
-  $workspaceOwnerKey,
-  setWorkspaceScope
-} from '@/components/pane-shell/workspace-scope'
+import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
@@ -104,6 +99,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
+import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -137,6 +133,7 @@ import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
 import { useMessageStream } from '../session/hooks/use-message-stream'
 import { useModelControls } from '../session/hooks/use-model-controls'
+import { useOwnerQueueReconcile } from '../session/hooks/use-owner-queue-reconcile'
 import { usePreviewRouting } from '../session/hooks/use-preview-routing'
 import { usePromptActions } from '../session/hooks/use-prompt-actions'
 import { useRouteResume } from '../session/hooks/use-route-resume'
@@ -730,12 +727,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Runs outside the selected ChatBar so queues belonging to background
   // sessions continue once those sessions are idle. The session dispatcher
   // routes each send to its owner; a disconnected foreground is not a global gate.
-  useBackgroundQueueDrain({
-    enabled: true,
-    runtimeIdByStoredSessionIdRef,
-    selectedStoredSessionId,
-    submitText
-  })
+  // Queues of chats not on screen: drain the local ones, re-read the owner-held ones on each gateway open.
+  useBackgroundQueueDrain({ enabled: true, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, submitText })
+  useOwnerQueueReconcile(requestGateway)
 
   // Session-tile delegate (resume/submit/interrupt/slash + the session verbs
   // the tile TAB menu needs, without touching the primary view).
@@ -993,38 +987,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // The tab-strip "+" and ⌘T share one action: open a new session as its own
-  // tab (stacked into the workspace zone) WITHOUT polluting the session list.
-  // Created `listed: false`, so each new tab's in-memory session stays out of
-  // the sidebar until its first message persists a turn and a refresh surfaces
-  // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
-  // empty tabs are fine since none touch the session list).
-  //
-  // Bot Mode aims the "+" at the selected bot's own profile. Anything short of
-  // an exact route — a group chat's `blocked` target, an orphaned roster row —
-  // falls THROUGH to the ordinary session rather than refusing: the main strip
-  // carries plain session tabs alongside bot chats, so a "+" there must never
-  // be dead just because the sidebar's current selection has nowhere to route.
-  const openNewSessionTab = useCallback(() => {
-    const workspaceOwnerKey = $workspaceOwnerKey.get()
-    const workspaceNewSessionTarget = $workspaceNewSessionTarget.get()
-
-    if ($workspaceMode.get() === 'bots' && workspaceNewSessionTarget?.kind === 'route' && workspaceOwnerKey) {
-      void openNewSessionTile('center', {
-        listed: false,
-        route: workspaceNewSessionTarget.route,
-        workspaceScope: {
-          ownerRoute: workspaceNewSessionTarget.route,
-          workspaceMode: 'bots',
-          workspaceOwnerKey
-        }
-      })
-
-      return
-    }
-
-    void openNewSessionTile('center', { listed: false })
-  }, [openNewSessionTile])
+  // The tab-strip "+" and ⌘T share one action (see `openNewSessionTab`).
+  const openNewSessionTab = useCallback(() => openNewSessionTabAction(openNewSessionTile), [openNewSessionTile])
 
   // Archive the selected session (rebindable `session.archive` hotkey).
   const archiveSelectedSession = useCallback(() => {

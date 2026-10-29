@@ -186,13 +186,15 @@ def run_doctor(args):
                  "└─────────────────────────────────────────────────────────┘"):
         print(color(line, Colors.CYAN))
     total = Finding()
-    for title, check in DOCTOR_CHECKS:
-        if title:
-            _section(title)
-        total.merge(check(should_fix))
-    # Opt-in live probes run AFTER all static checks (`--live`: real network calls; bounded + read-only).
-    with warn_on_error(""):
-        from hermes_cli.doctor_live import maybe_run_live_checks
-        maybe_run_live_checks(args, total.manual_issues)
+    from hermes_cli.left_core_migration import installs_held
+    with installs_held():  # a diagnostic: provider checks resolve through the runtime, which would install
+        for title, check in DOCTOR_CHECKS:
+            if title:
+                _section(title)
+            total.merge(check(should_fix))
+        # Opt-in live probes run AFTER all static checks (`--live`: real network calls; bounded + read-only).
+        with warn_on_error(""):
+            from hermes_cli.doctor_live import maybe_run_live_checks
+            maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))

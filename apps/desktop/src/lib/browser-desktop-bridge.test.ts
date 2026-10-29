@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { reconnectMovedCloudAgent } from '@/app/settings/cloud-team-change'
 import { $connection } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
+import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { desktopGit } from './desktop-git'
@@ -329,7 +330,7 @@ describe('browser-hosted Desktop bridge', () => {
     // A gated host opens the window directly; a launch-link tab hands it a session first.
     win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const { open } = browserOpensWebappWindows()
 
     expect(installBrowserDesktopBridge()).toBe(true)
     await expect(
@@ -395,7 +396,7 @@ describe('browser-hosted Desktop bridge', () => {
     // A gated host opens the window directly; a launch-link tab hands it a session first.
     win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const { open } = browserOpensWebappWindows()
 
     expect(installBrowserDesktopBridge()).toBe(true)
     await expect(win.hermesDesktop!.openSessionWindow('session-1', opts)).resolves.toEqual({ ok: true })
@@ -796,10 +797,12 @@ describe('browser-hosted Desktop bridge', () => {
     const wrapper = new DOMParser().parseFromString(await blobs[0]!.text(), 'text/html')
     const frame = wrapper.querySelector('iframe')!
 
-    expect(wrapper.querySelectorAll('iframe, script')).toHaveLength(1)
+    expect(wrapper.querySelectorAll('iframe, script')).toHaveLength(2)
+    expect(wrapper.querySelector('script')!.src).toContain('/assets/webapp-preview.js')
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
-    expect(frame.hasAttribute('src')).toBe(false)
-    expect(frame.getAttribute('srcdoc')).toBe(
+    expect(frame.src).toContain('/assets/webapp-preview.html')
+    expect(frame.hasAttribute('srcdoc')).toBe(false)
+    expect(frame.getAttribute('data-preview-html')).toBe(
       page.replace('<!doctype html>', '<!doctype html><base href="about:srcdoc">')
     )
   })
@@ -821,7 +824,7 @@ describe('browser-hosted Desktop bridge', () => {
       await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode(page), '.html')
       const wrapper = new DOMParser().parseFromString(await blobs.at(-1)!.text(), 'text/html')
 
-      return wrapper.querySelector('iframe')!.getAttribute('srcdoc')!
+      return wrapper.querySelector('iframe')!.getAttribute('data-preview-html')!
     }
 
     // Without a base of its own, the page inherits the wrapper's blob: URL and href="#sec" goes nowhere.
@@ -857,7 +860,7 @@ describe('browser-hosted Desktop bridge', () => {
     const parsedSrcdocOf = async (page: string) => {
       await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode(page), '.html')
       const wrapper = new DOMParser().parseFromString(await blobs.at(-1)!.text(), 'text/html')
-      const srcdoc = wrapper.querySelector('iframe')!.getAttribute('srcdoc')!
+      const srcdoc = wrapper.querySelector('iframe')!.getAttribute('data-preview-html')!
 
       return { doc: new DOMParser().parseFromString(srcdoc, 'text/html'), srcdoc }
     }
@@ -914,7 +917,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(wrapper).toContain('sandbox="allow-scripts"')
     expect(wrapper).not.toContain('allow-same-origin')
     expect(wrapper).not.toContain('<h1>preview</h1>')
-    expect(wrapper).toContain('srcdoc="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;h1&gt;preview&lt;/h1&gt;"')
+    expect(wrapper).toContain('data-preview-html="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;h1&gt;preview&lt;/h1&gt;"')
     expect(wrapper).not.toMatch(/\ssrc="data:/)
 
     await win.hermesDesktop!.openPreviewInBrowser!(staged)

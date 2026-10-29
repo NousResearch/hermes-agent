@@ -305,7 +305,7 @@ _GIT_CONFIG_OVERRIDES = {
 
 def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
     """Everything that decides which files ``git config --system/--global`` reads, plus the
-    global candidates' mtimes so an edit to ``~/.gitconfig`` is picked up without a restart."""
+    global candidates' ``file_cache_version`` so an edit to ``~/.gitconfig`` is picked up without a restart."""
     home = env.get("HOME", "")
     xdg = env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
     candidates = (
@@ -313,10 +313,11 @@ def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
         env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
         os.path.join(xdg, "git", "config"),
     )
+    from utils import file_cache_version
     stamps = []
     for path in candidates:
         try:
-            stamps.append(os.stat(path).st_mtime_ns)
+            stamps.append(file_cache_version(path))
         except OSError:
             stamps.append(None)
     return (

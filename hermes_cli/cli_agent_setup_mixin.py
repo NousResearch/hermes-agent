@@ -270,7 +270,7 @@ class CLIAgentSetupMixin:
         # process only routes, so it must not run a second JWT exchange per launch.
         with deferred_token_mint():
             try:
-                # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
+                # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, per-model
                 # api_mode) must see the model this CLI will actually send, not config's `default`,
                 # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
                 # sent model cannot use (#112600).

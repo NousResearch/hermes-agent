@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/configuration',
         'user-guide/which-file-does-what',
         'user-guide/managed-scope',
+        'user-guide/remote-config',
         'user-guide/configuring-models',
         {
           type: 'category',

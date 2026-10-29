@@ -17,8 +17,10 @@ import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
 import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
+import { removeDesktopPluginHalf } from '@/store/agent-plugins'
 import {
   $agentPluginBusy,
   $agentPlugins,
@@ -727,7 +729,13 @@ export const PluginsTab = memo(function PluginsTab({
           return
         }
 
-        const result = await uninstallDiskPlugin(record.id)
+        // A browser-hosted tab has no Electron to delete the folder: the host that serves it does.
+        const result = await uninstallDiskPlugin(
+          record.id,
+          isBrowserHostedDesktop()
+            ? ({ name }) => removeDesktopPluginHalf(requestGateway, { name, profile: scope })
+            : undefined
+        )
 
         if (result.ok) {
           notify({ kind: 'success', message: p.uninstalledDesktop(record.name) })
@@ -736,7 +744,7 @@ export const PluginsTab = memo(function PluginsTab({
         }
       })
     },
-    [p]
+    [p, requestGateway, scope]
   )
 
   // The card switch turns the whole package on or off, like a skill's; per-half

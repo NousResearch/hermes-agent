@@ -210,7 +210,18 @@ LOGIN_BACKEND_RULE = ("password-manager login backends are accepted only from pl
 _NON_CATALOG_SOURCES = {"project": "a project .hermes/plugins directory", "entrypoint": "a pip entry point"}
 
 
-def login_backend_provenance_error(manifest) -> str:
+BROWSER_PAGE_BACKEND_RULE = ("browser page backends (which carry browser_vault fill scripts) are accepted only from "
+                             "plugins bundled with Hermes or installed from the Hermes plugin catalog at tier "
+                             "verified or official")
+
+
+def browser_page_backend_provenance_error(manifest) -> str:
+    """Why *manifest*'s plugin may not register a browser page backend, or "" when it may (same record and
+    tiers as :func:`login_backend_provenance_error`: the backend receives secret-bearing fill scripts)."""
+    return login_backend_provenance_error(manifest, rule=BROWSER_PAGE_BACKEND_RULE)
+
+
+def login_backend_provenance_error(manifest, rule: str = LOGIN_BACKEND_RULE) -> str:
     """Why *manifest*'s plugin may not register a login backend, or "" when it may.
 
     Read from the installer-owned ``.install-metadata.json`` record of the CURRENT home's plugins dir, never
@@ -219,19 +230,19 @@ def login_backend_provenance_error(manifest) -> str:
     if manifest.source == "bundled":
         return ""
     if manifest.source in _NON_CATALOG_SOURCES:
-        return f"{LOGIN_BACKEND_RULE}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
+        return f"{rule}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
     record = _install_record(Path(manifest.path)) if manifest.source == "user" and manifest.path else None
     block = (record or {}).get("catalog")
     if not isinstance(block, dict) or not block.get("name"):
-        return (f"{LOGIN_BACKEND_RULE}; this plugin was not installed from the Hermes plugin catalog "
+        return (f"{rule}; this plugin was not installed from the Hermes plugin catalog "
                 "(a local directory or Git URL install)")
     if record.get("allow_removed"):
-        return f"{LOGIN_BACKEND_RULE}; this plugin was installed with --allow-removed"
+        return f"{rule}; this plugin was installed with --allow-removed"
     tier = str(block.get("tier") or "community")
     if tier not in LOGIN_BACKEND_TIERS:
-        return f"{LOGIN_BACKEND_RULE}; catalog entry '{block['name']}' is tier {tier}"
+        return f"{rule}; catalog entry '{block['name']}' is tier {tier}"
     if not block.get("pin"):
-        return f"{LOGIN_BACKEND_RULE}; this install is not at the catalog's reviewed pin (installed with --ref)"
+        return f"{rule}; this install is not at the catalog's reviewed pin (installed with --ref)"
     return ""
 
 
@@ -307,10 +318,12 @@ def refuse_incompatible_catalog_entry(entry: PluginCatalogEntry) -> None:
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
-                          assume_deps_consent: bool = False, before_swap=None) -> tuple:
+                          assume_deps_consent: bool = False, before_swap=None,
+                          inspected_sha: Optional[str] = None) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
     install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
-    pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
+    pin, so ``update_available`` must say so). *inspected_sha*: the commit an install dialog showed; the
+    checkout must be that commit. Returns the core's ``(target, manifest, installed_name)``."""
     from hermes_cli.plugins_cmd import _install_plugin_core
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
@@ -319,7 +332,8 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
         allow_removed=allow_removed, before_swap=before_swap, app_title=entry.title or None,
-        catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
+        catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha},
+        inspected_sha=inspected_sha)
     return target, manifest, installed_name
 
 
@@ -573,14 +587,32 @@ def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
         "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
         "python_dependencies": _list("python_dependencies"), "requires_auth": _list("requires_auth"),
         "oauth": oauth_surface(manifest),
-        "desktop": {"desktop/plugin.js"} if (tree / "desktop" / "plugin.js").is_file() else set(),
+        "desktop": _desktop_surface(tree),
     }
+
+
+def _desktop_surface(tree: Path) -> set:
+    """The desktop entry the tree ships, by the installers' own layout rule (root or ``desktop/``)."""
+    from hermes_cli.desktop_plugin_halves import desktop_source
+    source = desktop_source(tree)
+    return {(source / "plugin.js").relative_to(tree).as_posix()} if source else set()
+
+
+# Surfaces that are one thing however they are spelled: the Desktop half is present or not, and moving
+# it between ``plugin.js`` and ``desktop/plugin.js`` grants nothing new.
+_PRESENCE_SURFACES = frozenset({"desktop"})
+
+
+def _added(surface: str, old: set, new: set) -> set:
+    if surface in _PRESENCE_SURFACES:
+        return set() if old else new
+    return new - old
 
 
 def surface_delta(old: dict[str, set], new: dict[str, set]) -> dict[str, list[str]]:
     """``{surface: [added...]}`` for every surface the new tree widens; empty when nothing widened."""
-    return {k: sorted(new.get(k, set()) - old.get(k, set())) for k in _SURFACE_LABELS
-            if new.get(k, set()) - old.get(k, set())}
+    delta = {k: sorted(_added(k, old.get(k, set()), new.get(k, set()))) for k in _SURFACE_LABELS}
+    return {k: v for k, v in delta.items() if v}
 
 
 def surface_delta_lines(delta: dict[str, list[str]]) -> list[str]:

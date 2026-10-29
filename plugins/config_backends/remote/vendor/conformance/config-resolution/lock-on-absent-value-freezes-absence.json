@@ -1,0 +1,108 @@
+{
+  "fixtureVersion": 1,
+  "name": "lock-on-absent-value-freezes-absence",
+  "description": "Proves rule-3: A lock on a path no level at or above it sets freezes it to absent: lower values under it are stripped and a mapping emptied by stripping is removed.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "tools.disabled"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "tools": {
+          "disabled": [
+            "web"
+          ]
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "tools": {
+          "disabled": [
+            "tts"
+          ],
+          "enabled": [
+            "x"
+          ]
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "tools": {
+        "enabled": [
+          "x"
+        ]
+      }
+    },
+    "provenance": {
+      "tools.enabled": "profile"
+    },
+    "locks": [
+      {
+        "path": "tools.disabled",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "tools.disabled",
+      "value": [],
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "tools.disabled",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "tools",
+      "value": {
+        "enabled": []
+      },
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "tools",
+      "value": {
+        "disabled": [
+          "a"
+        ]
+      },
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "tools.disabled",
+        "lockedBy": "tenant"
+      }
+    }
+  ]
+}

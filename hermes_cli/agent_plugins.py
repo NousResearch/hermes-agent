@@ -520,13 +520,19 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
     )
 
 
-def manifest_config_schema(manifest: Any) -> Any:
-    """Raw ``extensions.com.nousresearch.hermes.config_schema`` of a parsed ``plugin.json`` (Agent
-    Plugins v1 forbids unknown top-level fields), else ``None``. Unvalidated: the settings form
-    filters it, the loader and ``plugins validate`` report what is malformed."""
+def manifest_hermes_extension(manifest: Any) -> dict:
+    """``extensions.com.nousresearch.hermes`` of a parsed ``plugin.json`` (Agent Plugins v1 forbids
+    unknown top-level fields, so Hermes-specific fields such as ``config_keys`` live here), else ``{}``."""
     extensions = manifest.get("extensions") if isinstance(manifest, dict) else None
     hermes = extensions.get(_HERMES_EXTENSION) if isinstance(extensions, dict) else None
-    return hermes.get("config_schema") if isinstance(hermes, dict) else None
+    return hermes if isinstance(hermes, dict) else {}
+
+
+def manifest_config_schema(manifest: Any) -> Any:
+    """Raw ``extensions.com.nousresearch.hermes.config_schema`` of a parsed ``plugin.json``, else
+    ``None``. Unvalidated: the settings form filters it, the loader and ``plugins validate`` report
+    what is malformed."""
+    return manifest_hermes_extension(manifest).get("config_schema")
 
 
 def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPluginDiagnostic, ...]]:

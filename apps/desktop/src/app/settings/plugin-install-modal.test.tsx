@@ -335,6 +335,26 @@ describe('Unified package desktop half on a local backend', () => {
     expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 
+  it('holds both halves to the commit Electron inspected', async () => {
+    const reviewed = '0123456789abcdef0123456789abcdef01234567'
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, sha: reviewed, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install' ? { ok: true, plugin_name: 'pkg' } : { plugins: [] }
+    )
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    await waitFor(() => expect(installDesktopPlugin).toHaveBeenCalled())
+    expect(installCalls()[0]?.[1]).toMatchObject({ action: 'install', inspected_sha: reviewed })
+    expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false, sha: reviewed })
+  })
+
   it('still clones the desktop half for a remote backend', async () => {
     // A remote backend's plugins/ folder is unreadable from this machine, so
     // the separate clone remains the only door for its desktop half.
@@ -371,6 +391,30 @@ describe('Unified package desktop half on a local backend', () => {
     expect($pluginDecisions.get()['pkg-ui']).toBe(true)
     dropPlugin('pkg-ui')
     $pluginDecisions.set({})
+  })
+
+  it('never reports a desktop half installed when the reconcile only pruned the old copy', async () => {
+    // A force reinstall whose new tree dropped its desktop entry: Electron's pass deletes
+    // desktop-plugins/pkg and names it among the folders it touched.
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: true, plugin_name: 'pkg', enabled: false }
+        : { plugins: [] }
+    )
+    reconcileDesktopPlugins.mockImplementation(async () => ['/app/desktop-plugins/pkg'])
+    const desktopPluginsRoot = vi.fn(async () => '/app/desktop-plugins')
+    const readDir = vi.fn(async () => ({ entries: [] }))
+    vi.stubGlobal('hermesDesktop', { desktopPluginsRoot, installDesktopPlugin, probePluginRepo, readDir, reconcileDesktopPlugins })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    expect(await screen.findByText('Desktop plugin install failed')).toBeTruthy()
+    expect(readDir).toHaveBeenCalledWith('/app/desktop-plugins')
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 
   it('does not start the desktop half or offer a retry when the agent install outcome is unknown', async () => {

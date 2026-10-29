@@ -945,13 +945,12 @@ def _pid_exists(pid: int) -> bool:
     psutil, then ctypes ``OpenProcess`` (Windows) / ``os.kill(pid, 0)`` (POSIX). Zombies report
     dead: treating one as alive makes --replace wait forever under systemd Restart=always."""
     pid = int(pid)
+    if os.name == "nt":
+        # ctypes keeps psutil off this hot path (no zombies here). Not a GIL fix: pid_exists measured ~4 us; the
+        # #142085 stall is Process.status() (process_identity). PID 0 is alive to psutil, dead here.
+        return pid_exists_stdlib(pid)
     try:
         import psutil  # type: ignore
-        # Best-effort zombie check: status-read failures fall through to pid_exists().
-        # Windows has no POSIX zombies, and this probe costs ~7 ms per call — once per
-        # registry entry inside the session file lock (#115578). Skip it on Windows and
-        # let pid_exists() below (or the ctypes fallback) decide.
-        probe_zombie = os.name != "nt"
         try:
             # A zombie (defunct) process is still in the process table, so ``psutil.pid_exists()`` returns
             # True for it — but it is already dead: SIGKILL has no effect and it cannot be a running
@@ -961,7 +960,7 @@ def _pid_exists(pid: int) -> bool:
             # #42126). Report zombies as dead so the takeover proceeds. Best-effort: any failure to read
             # status (partial/stub psutil, access denied, transient race) falls through to the authoritative
             # ``pid_exists()`` below rather than raising.
-            if probe_zombie and psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
             return False
@@ -2040,10 +2039,10 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     lock_record = _read_gateway_lock_record(resolved_lock_path)
     # The PID file is advisory beside a HELD lock: a launch-service gateway keeps serving after its
-    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430). The
-    # holder wrote its own identity into the lock at acquisition, so that record validated against
-    # the live process below is the same proof — raising here blocked every following update.
-    records = (_read_pid_record(resolved_pid_path), lock_record) if pid_exists else (lock_record,)
+    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430) or leaves
+    # it behind (#143331); the lock record validated against the live process below is the proof.
+    from gateway.status_pid_records import strict_identity_records
+    records = strict_identity_records(resolved_pid_path, lock_record, pid_exists)
     if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")
     pid = _pid_from_record(records[0])

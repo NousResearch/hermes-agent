@@ -49,7 +49,8 @@ async def test_a_slow_admission_answer_is_awaited_not_failed(monkeypatch, tmp_pa
     owner = _Owner()
     params = {'board': 'b', 'task_id': 't1', 'run_id': 1, 'claim_lock': 'lock'}
     async with GatewayClient(owner) as client:
-        code = await kanban_worker_client._submit_claim(client, params, str(tmp_path / 'kanban.db'))
+        receipt = await kanban_worker_client._await_receipt(client, params, str(tmp_path / 'kanban.db'), kanban_worker_client._Claim(answered=0.0))
+    code = kanban_worker_client._exit_code(receipt, params, str(tmp_path / 'kanban.db'))
     assert code == 0
     # One submission: the wait never resends the claim, and the budget never goes on the wire.
     assert [r['method'] for r in owner.sent] == ['kanban.run']
@@ -84,5 +85,5 @@ async def test_an_owner_that_stalls_after_admitting_fails_the_wait_within_the_lo
     async with GatewayClient(owner) as client:
         with pytest.raises(TimeoutError):
             # The outer 5 s guard only stops an unbounded wait from hanging the test.
-            await real_wait_for(kanban_worker_client._submit_claim(client, params, str(tmp_path / 'kanban.db')), 5)
+            await real_wait_for(kanban_worker_client._await_receipt(client, params, str(tmp_path / 'kanban.db'), kanban_worker_client._Claim(answered=0.0)), 5)
     assert budgets == [budget] and [r['method'] for r in owner.sent] == ['kanban.run']

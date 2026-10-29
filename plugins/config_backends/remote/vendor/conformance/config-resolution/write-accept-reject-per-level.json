@@ -1,0 +1,376 @@
+{
+  "fixtureVersion": 1,
+  "name": "write-accept-reject-per-level",
+  "description": "Proves rule-3, rule-0: Each level holds one lock; a write by level k to a path locked at level j is refused exactly when j is above k.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "k": {
+          "global": 0,
+          "tenant": 0,
+          "group": 0,
+          "principal": 0,
+          "agent": 0
+        }
+      },
+      "locks": [
+        "k.global"
+      ]
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "k.tenant"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {},
+      "locks": [
+        "k.group"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": [
+        "k.principal"
+      ]
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": [
+        "k.agent"
+      ]
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "k": {
+          "global": 1,
+          "tenant": 1,
+          "group": 1,
+          "principal": 1,
+          "agent": 1
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "k": {
+        "global": 0,
+        "tenant": 0,
+        "group": 0,
+        "principal": 0,
+        "agent": 0
+      }
+    },
+    "provenance": {
+      "k.global": "global",
+      "k.tenant": "global",
+      "k.group": "global",
+      "k.principal": "global",
+      "k.agent": "global"
+    },
+    "locks": [
+      {
+        "path": "k.global",
+        "level": "global"
+      },
+      {
+        "path": "k.tenant",
+        "level": "tenant"
+      },
+      {
+        "path": "k.group",
+        "level": "group"
+      },
+      {
+        "path": "k.principal",
+        "level": "principal"
+      },
+      {
+        "path": "k.agent",
+        "level": "agent"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "k.global",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.global",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "k.tenant",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "k.group",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "k.principal",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "k.agent",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "k.global",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.global",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "k.tenant",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.tenant",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "k.group",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "k.principal",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "k.agent",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "k.global",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.global",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "k.tenant",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.tenant",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "k.group",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.group",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "k.principal",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "k.agent",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "k.global",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.global",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "k.tenant",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.tenant",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "k.group",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.group",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "k.principal",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.principal",
+        "lockedBy": "principal"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "k.agent",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "k.global",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.global",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "k.tenant",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.tenant",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "k.group",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.group",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "k.principal",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.principal",
+        "lockedBy": "principal"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "k.agent",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "k.agent",
+        "lockedBy": "agent"
+      }
+    }
+  ]
+}

@@ -1338,6 +1338,7 @@ userMessages.promptTimeout.vaultCode: "Dúnadh leid an chóid fhíoraithe: níor
 userMessages.promptTimeout.vaultSaveLogin: "Dúnadh leid shábháil na logála isteach: níor tugadh freagra in am, mar sin níor sábháladh aon rud. Seol d'iarratas arís nuair a bheidh tú réidh."
 userMessages.promptTimeout.vaultUnlockPrompt: "Dúnadh leid na díghlasála: níor tugadh freagra in am, mar sin d'fhan an bainisteoir pasfhocal faoi ghlas. Seol d'iarratas arís nuair a bheidh tú réidh lena dhíghlasáil."
 userMessages.rpc.launchCredentialsChanged: "Ní féidir leis an gcomhrá seo an eochair API ar tosaíodh leis a úsáid a thuilleadh (athraíodh nó baineadh í), mar sin ní dhearnadh é sin. Ní athraíonn comhrá go heochair eile as a stuaim féin. Clóscríobh /new chun comhrá nua a thosú le d'eochair reatha."
+userMessages.rpc.methodUnavailable: "Ní sholáthraíonn an t-inneall Hermes seo {0}, mar sin ní dhearnadh é sin."
 userMessages.rpc.notConnected: "Níl Hermes ceangailte faoi láthair, mar sin níor seoladh é sin. Athcheanglaíonn sé go huathoibríoch; fan nóiméad agus bain triail eile as, nó clóscríobh /logs má leanann sé seo ar aghaidh."
 userMessages.rpc.sessionHasChildren: "Tá seisiúin linbh (mar ritheanna fo-ghníomhairí) ag an gcomhrá seo a bhainfí freisin dá scriosfaí é, mar sin níor scriosadh é."
 userMessages.rpc.sessionNotFound: "Níl an comhrá seo ceangailte leis an gcúlchóras a thuilleadh (bhí sé díomhaoin nó atosaíodh an cúlchóras). Tá do stair sábháilte: clóscríobh /resume chun é a athoscailt."

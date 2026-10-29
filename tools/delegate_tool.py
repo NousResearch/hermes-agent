@@ -872,6 +872,30 @@ def oneshot_delegate_function(function: dict) -> dict:
     return {**function, "description": description, "parameters": {**params, "properties": properties}}
 
 
+def session_joins_delegation(agent: Any) -> bool:
+    """Whether *agent*'s top-level delegations join in the call because the ``delegate_task`` the model sees is the
+    joined variant (a gateway session with ``delegation.gateway_mode`` inline). Dispatch follows the schema bytes,
+    which ride the session's tools[] pin: a config change can never leave the model reading "results return in
+    this tool call" while children detach, or the reverse. One-shot sessions keep their own fallback (and note)."""
+    if getattr(agent, "_oneshot_session", None) is True:
+        return False
+    for tool in getattr(agent, "tools", None) or ():
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and function.get("name") == "delegate_task":
+            return _ONESHOT_DESCRIPTION_DELIVERY in (function.get("description") or "")
+    return False
+
+
+def adopt_session_delegation_mode(agent: Any) -> None:
+    """Re-freeze *agent*'s inline decision (``agent_joins_delegation``) from the ``delegate_task`` it carries once a
+    fresh agent has restored its session's tools[] pin, so the pin is authoritative: a later rebuild from fresh
+    definitions (compaction boundary, ``/reload-mcp``, Bot Chat refresh) derives the session's variant, not the one
+    the current config would build."""
+    tools = getattr(agent, "tools", None) or ()
+    if any(isinstance(tool, dict) and (tool.get("function") or {}).get("name") == "delegate_task" for tool in tools):
+        agent._delegation_inline = session_joins_delegation(agent)
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 

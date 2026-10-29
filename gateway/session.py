@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
+from gateway.session_detached import detached_route_of
 from gateway.session_identity import transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
@@ -100,6 +101,10 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Wire-INVISIBLE: the key of a conversation its chat moved past, still run from the apps
+    # (gateway/session_detached.py). It replaces the chat's key, so nothing keyed by route reaches
+    # the chat's current conversation, and delivery goes nowhere.
+    detached_route: Optional[str] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -695,6 +700,8 @@ def build_session_key(
     session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
     not in a thread (threads are shared unless ``thread_sessions_per_user``).
     """
+    if detached := detached_route_of(source):
+        return detached
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
     if is_dm and source.platform == Platform.WHATSAPP:
@@ -844,6 +851,9 @@ class SessionStore(
         # session_id -> owning key for ids proven but not yet published in ``_entries`` (a
         # compression child row is written before its reroute is published).
         self._session_owner_hints: dict[str, str] = {}
+        # Called with (key, session id, origin) once a route names another conversation; the owner
+        # wires it so a conversation its chat moved past detaches at once (gateway/session_detached.py).
+        self.route_named = None
         from gateway.session_db_recovery import RecoverableHandleCache
 
         self._db_handle_cache = RecoverableHandleCache(
@@ -901,6 +911,9 @@ class SessionStore(
         """Single-flight session lookup/create per routing key: overlapping calls for one key (even
         concurrent ``force_new``) share the owner's result so only one transition and SQLite row is
         created. ``touch_activity=False`` (internal events) preserves the user-activity clock."""
+        if detached_route_of(source):
+            from gateway.session_detached import detached_entry
+            return detached_entry(self, source)
         session_key = self._generate_session_key(source)
         inflight_lock = self._lazy("_inflight_lock", threading.Lock)
         self._lazy("_inflight_sessions", dict)
@@ -986,6 +999,8 @@ class SessionStore(
         finally:
             if create_kwargs:
                 self._row_settled(create_kwargs["session_id"])
+        if observed is None or decision.entry.session_id != observed.session_id:
+            self._announce_route(session_key, decision.entry)
         return decision.entry
 
     def _apply_route_checks(
@@ -1173,6 +1188,7 @@ class SessionStore(
             )
         finally:
             self._row_settled(session_id)
+        self._announce_route(session_key, new_entry)
         return new_entry
 
     def _replace_route_locked(self, session_key, old_entry, session_id, now, **fields) -> SessionEntry:
@@ -1318,6 +1334,7 @@ class SessionStore(
                 )
         finally:
             self._row_settled(target_session_id)
+        self._announce_route(session_key, new_entry)
         return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> list[SessionEntry]:

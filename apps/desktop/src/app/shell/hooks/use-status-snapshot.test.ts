@@ -527,3 +527,23 @@ describe('useStatusSnapshot', () => {
     expect(requestGateway).not.toHaveBeenCalled()
   })
 })
+
+describe('useStatusSnapshot on a signed-out status read', () => {
+  it('keeps the last full snapshot when a Webapp read comes back signed out', async () => {
+    const full = { active_sessions: 2, auth_required: true, install_id: 'i', version: '1.0.0' }
+    vi.mocked(getStatus).mockImplementation(async () => full as never)
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    const { result } = renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+    expect(result.current.statusSnapshot).toEqual(full)
+
+    // An access token expired since the tab's last gated request: the public route answers signed out.
+    vi.mocked(getStatus).mockImplementation(async () => ({ auth_required: true, version: '1.0.0' }) as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(getStatus).toHaveBeenCalledTimes(2)
+    expect(result.current.statusSnapshot).toEqual(full)
+  })
+})

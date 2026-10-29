@@ -526,6 +526,8 @@ long transcript or a busy terminal.
   the strip's orientation; Home/End move focus, Enter/Space activate, and Tab
   leaves the tabs. Delete invokes an available close action and retains focus
   on a surviving sibling. Restoring a vertical rail retains its tab focus.
+  The collapsed rail keeps the zone context menu on its outer surface; its
+  inner tab list owns vertical keyboard navigation.
 - Tab-header focus belongs to navigation: session activation and queued composer
   focus retries must not redirect it. Explicit composer focus still works.
 - Sidebar keyboard stops are real controls: session title, reorder handle and

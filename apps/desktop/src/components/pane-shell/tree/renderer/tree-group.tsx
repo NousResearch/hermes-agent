@@ -357,6 +357,39 @@ function CompactZoneTabs({ activeId, belowControls, closeable, newTab, node, tab
   )
 }
 
+interface CollapsedZoneRailProps {
+  activeId: string
+  children: ReactNode
+  menu: Omit<ComponentProps<typeof ZoneMenu>, 'children'>
+  railSide: 'left' | 'right'
+}
+
+function CollapsedZoneRail({ activeId, children, menu, railSide }: CollapsedZoneRailProps) {
+  const { t } = useI18n()
+
+  return (
+    <ZoneMenu {...menu}>
+      <div
+        className={cn(
+          'flex h-full min-h-7 w-7 min-w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)',
+          // Strip line faces the content the zone collapsed away from.
+          railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
+        )}
+        onClick={() => restoreTreePane(activeId)}
+        title={t.zones.restore}
+      >
+        <div
+          aria-orientation="vertical"
+          className="flex min-h-0 flex-col overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          role="tablist"
+        >
+          {children}
+        </div>
+      </div>
+    </ZoneMenu>
+  )
+}
+
 export function TreeGroup({
   node,
   parentAxis,
@@ -658,50 +691,34 @@ export function TreeGroup({
           the horizontal strip, just `vertical`. Click a tab to restore +
           activate; click anywhere else on the rail to restore. */}
       {verticalCollapse && (
-        <ZoneMenu {...zoneMenu}>
-          <div
-            className={cn(
-              'flex h-full min-h-7 w-7 min-w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)',
-              // Strip line faces the content the zone collapsed away from.
-              railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
-            )}
-            onClick={() => restoreTreePane(activeId)}
-            title={t.zones.restore}
-          >
-            <div
-              aria-orientation="vertical"
-              className="flex min-h-0 flex-col overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-              role="tablist"
-            >
-              {shown.map(paneId => {
-                const closeable = closeableTab(paneId)
+        <CollapsedZoneRail activeId={activeId} menu={zoneMenu} railSide={railSide}>
+          {shown.map(paneId => {
+            const closeable = closeableTab(paneId)
 
-                return (
-                  <PaneTab
-                    {...tabKeyboardProps(paneId)}
-                    // Match the horizontal minimized strip: no tab is "active"
-                    // while collapsed (there's no content surface to merge into).
-                    aria-label={tabText(paneId)}
-                    aria-selected={paneId === activeId}
-                    data-tree-tab={paneId}
-                    key={paneId}
-                    onActivate={() => activateTab(paneId)}
-                    onClick={event => {
-                      event.stopPropagation()
-                      activateTab(paneId)
-                    }}
-                    onClose={closeable ? () => closeTab(paneId) : undefined}
-                    role="tab"
-                    side={railSide}
-                    vertical
-                  >
-                    <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
-                  </PaneTab>
-                )
-              })}
-            </div>
-          </div>
-        </ZoneMenu>
+            return (
+              <PaneTab
+                {...tabKeyboardProps(paneId)}
+                // Match the horizontal minimized strip: no tab is "active"
+                // while collapsed (there's no content surface to merge into).
+                aria-label={tabText(paneId)}
+                aria-selected={paneId === activeId}
+                data-tree-tab={paneId}
+                key={paneId}
+                onActivate={() => activateTab(paneId)}
+                onClick={event => {
+                  event.stopPropagation()
+                  activateTab(paneId)
+                }}
+                onClose={closeable ? () => closeTab(paneId) : undefined}
+                role="tab"
+                side={railSide}
+                vertical
+              >
+                <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+              </PaneTab>
+            )
+          })}
+        </CollapsedZoneRail>
       )}
 
       {/* Keep the header INSIDE its zone: titlebar drops use the same panel

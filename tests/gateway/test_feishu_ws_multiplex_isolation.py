@@ -187,6 +187,49 @@ def test_receive_loop_death_during_disconnect_is_not_an_error(monkeypatch, caplo
     assert errors == [], [r.getMessage() for r in errors]
 
 
+def test_start_failure_of_live_client_is_logged_with_root_cause(monkeypatch, caplog):
+    """``start()`` raising (bad credentials, unreachable endpoint) used to be swallowed:
+    the supervisor only logged "thread exited unexpectedly" with no cause to diagnose."""
+    _inject_fake_lark_module(monkeypatch)
+
+    class FakeSDKClient:
+        def start(self):
+            raise ConnectionError("simulated endpoint unreachable")
+
+    client = FakeSDKClient()
+    stub = _adapter_stub(_ws_client=client)
+    thread = threading.Thread(target=feishu_adapter._run_official_feishu_ws_client, args=(client, stub), daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "expected the start() failure to be logged"
+    assert errors[0].exc_info is not None
+    assert "simulated endpoint unreachable" in caplog.text
+
+
+def test_start_exit_after_disconnect_is_not_an_error(monkeypatch, caplog):
+    """``disconnect()`` nils ``_ws_client`` and then stops the worker loop, which makes
+    ``start()`` raise — the expected shutdown path, not an ERROR on every graceful stop."""
+    _inject_fake_lark_module(monkeypatch)
+
+    class FakeSDKClient:
+        def start(self):
+            raise RuntimeError("Event loop stopped before Future completed.")
+
+    stub = _adapter_stub(_ws_client=None)
+    thread = threading.Thread(
+        target=feishu_adapter._run_official_feishu_ws_client, args=(FakeSDKClient(), stub), daemon=True
+    )
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors == [], [r.getMessage() for r in errors]
+
+
 def test_receive_loop_normal_return_keeps_start_parked(monkeypatch):
     """The exit-notify wrap must only fire on an exception. When the SDK's own
     reconnect ladder succeeds, the old receive loop *returns* (a fresh one was

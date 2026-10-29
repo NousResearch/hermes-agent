@@ -1,4 +1,5 @@
 import { arDelegationRouting } from './ar_delegation_routing'
+import { arMemoryLayers } from './ar_memory_layers'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -13,6 +14,7 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    memoryLayers: arMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -223,6 +225,17 @@ export const arSettings = {
         versionLabel: 'الإصدار',
         reviewedPin: sha => (sha ? `الإصدار المثبّت المراجَع ${sha}` : 'الإصدار المثبّت المراجَع'),
         latestCommit: 'أحدث إيداع',
+        sourceMoved: sha =>
+          sha
+            ? `تغيّر المستودع منذ مراجعتك له. راجع الإصدار الجديد (الإيداع ${sha}) قبل تثبيته.`
+            : 'تغيّر المستودع منذ مراجعتك له. جارٍ قراءة الإصدار الجديد…',
+        legacyBackendConfirm:
+          'هذه الواجهة الخلفية أقدم من هذا التطبيق، لذا لا يمكنها ضمان أن يكون الإصدار الذي راجعته هو ما سيُثبَّت: إذا تغيّر المستودع منذ ذلك الحين، فسيُثبَّت الإصدار الأحدث بدلًا منه. حدّث الواجهة الخلفية للحصول على هذا الضمان.',
+        installAnyway: 'ثبّت على أي حال',
+        partialInstall: sha =>
+          sha
+            ? `لم يُثبَّت سوى جزء من هذه الإضافة: جزء الوكيل مثبَّت عند الإيداع ${sha}، لكن جزء سطح المكتب لم يتمكن من اللحاق به لأن المستودع تغيّر منذ مراجعتك له. فعّل فرض إعادة التثبيت ضمن «متقدم» لاستبدال الجزأين بالإصدار المعروض، أو ألغِ للإبقاء على جزء الوكيل وحده.`
+            : 'لم يُثبَّت سوى جزء من هذه الإضافة: جزء الوكيل مثبَّت، لكن جزء سطح المكتب لم يتمكن من اللحاق به لأن المستودع تغيّر منذ مراجعتك له. فعّل فرض إعادة التثبيت ضمن «متقدم» لاستبدال الجزأين بالإصدار المعروض، أو ألغِ للإبقاء على جزء الوكيل وحده.',
         nothingToInstall: 'لا تحتوي هذه الحزمة على ما يُثبَّت هنا.'
       }
     },
@@ -728,6 +741,7 @@ export const arSettings = {
         unavailableDetail: reason => `تعذّر على البوابة تقديم تطبيق الويب: ${reason}`,
         restartBusy: 'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
         restartFailed: 'تم الحفظ، لكن تعذّرت إعادة تشغيل البوابة. اختر «إعادة تشغيل البوابة» للمحاولة مجددًا.',
+        restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
         stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
         start: 'تشغيل',
@@ -936,7 +950,8 @@ export const arSettings = {
       deleteConfirm: title => `حذف "${title}" نهائياً؟ لا يمكن التراجع عن هذا.`,
       defaultDirTitle: 'مجلد المشروع الافتراضي',
       defaultDirDesc: 'تبدأ الجلسات الجديدة في هذا المجلد ما لم تختر غيره. اتركه غير مضبوط لاستخدام مجلدك الرئيسي.',
-      defaultDirUpdated: 'تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة (Ctrl/⌘+N) ليطبق التغيير',
+      defaultDirUpdated: shortcut =>
+        `تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة${shortcut ? ` (${shortcut})` : ''} ليطبق التغيير`,
       defaultsTo: label => `الافتراضي هو ${label}.`,
       change: 'تغيير',
       choose: 'اختيار',

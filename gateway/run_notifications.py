@@ -666,7 +666,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     return self._restored_source(entry)
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
-            cached_source = self._get_cached_session_source(session_key)
+            from gateway.session_detached import detached_live_source
+            cached_source = detached_live_source(self, session_key) or self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
             derived = _parse_session_key(session_key) or {}
@@ -857,6 +858,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         Platform.RELAY adapter fronts N logical platforms; native wins), literal ``p.value`` scan as
         fallback for minimal runner stubs / exotic platform strings when the resolver can't run."""
         from gateway.delivery import resolve_delivery_transport
+        from gateway.session_detached import detached_route_of
+        if detached_route_of(source):  # an old conversation's app viewers (gateway/session_detached.py)
+            return self._delivery_adapter_for(source)
         if source is not None:
             owner = self._transport_owner(source)
             if owner is not None:
@@ -909,9 +913,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         gateway route or a refused notice pinned to a permanently-gone session (``_watch_pin_gone``).
         Not transactional: a crash after acceptance can replay (at-least-once).
         """
+        from gateway.session_detached import follow_detached_pin
         from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
         restore_completion_route(self, str(evt.get("session_key") or ""))  # watch notices and heartbeats too
+        queued, evt = evt, await follow_detached_pin(self, evt)  # the drain reads its verdict off *queued*
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.
@@ -994,7 +1000,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if pin_gone and not raise_not_accepted:
                 return None
             if not raise_not_accepted:
-                evt["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
+                queued["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
@@ -1268,6 +1274,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
         restore_completion_route(self, str(evt.get("session_key") or ""))
+        from gateway.session_detached import follow_detached_pin
+        evt = await follow_detached_pin(self, evt)
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False

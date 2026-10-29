@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
@@ -429,7 +429,7 @@ export default function PluginsPage() {
     }
   }, [loadHub, showToast, t.pluginsPage.refreshDashboard]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setAfterTitle(
       <Button
         ghost

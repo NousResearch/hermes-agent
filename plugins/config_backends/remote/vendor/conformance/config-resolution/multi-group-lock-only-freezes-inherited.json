@@ -1,0 +1,82 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-lock-only-freezes-inherited",
+  "description": "Proves d5-lock: The highest-priority locking group has no value at the locked path, so the inherited tenant value is frozen and a lower group's value is discarded.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "model": "t"
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-high",
+      "priority": 30,
+      "values": {},
+      "locks": [
+        "model"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-low",
+      "priority": 5,
+      "values": {
+        "model": "low"
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "model": "t"
+    },
+    "provenance": {
+      "model": "tenant"
+    },
+    "groupProvenance": {},
+    "locks": [
+      {
+        "path": "model",
+        "level": "group",
+        "groupId": "g-high"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "unset",
+      "path": "model",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "model",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-high"
+      }
+    }
+  ]
+}

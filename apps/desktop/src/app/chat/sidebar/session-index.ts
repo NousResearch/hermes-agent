@@ -1,3 +1,5 @@
+import { sessionOwnerPinId } from '@/store/session'
+import { sessionOwnerRowKey } from '@/store/session-request-router'
 import type { SessionInfo } from '@/types/hermes'
 
 /**
@@ -22,6 +24,7 @@ export function buildSessionByAnyId(
   const map = new Map<string, SessionInfo>()
 
   for (const session of [...cronSessions, ...messagingSessions, ...visibleSessions]) {
+    map.set(sessionOwnerPinId(session), session)
     map.set(session.id, session)
 
     if (session._lineage_root_id && !map.has(session._lineage_root_id)) {
@@ -67,27 +70,32 @@ export function resolvePinnedSessions(
   for (const pinId of pinnedSessionIds) {
     const session = sessionByAnyId.get(pinId)
 
-    if (session && !seen.has(session.id)) {
-      seen.add(session.id)
+    const rowKey = session && sessionOwnerRowKey(session)
+
+    if (session && rowKey && !seen.has(rowKey)) {
+      seen.add(rowKey)
       out.push(session)
     }
   }
 
   for (const session of allSessions) {
-    if (session.pinned !== true || seen.has(session.id)) {
+    const rowKey = sessionOwnerRowKey(session)
+
+    if (session.pinned !== true || seen.has(rowKey)) {
       continue
     }
 
     // A pin write of ours the row predates — under either identity, since the
     // fence is keyed on the durable id and the row may surface as its tip.
     if (
+      unconfirmedPinWrites.has(sessionOwnerPinId(session)) ||
       unconfirmedPinWrites.has(session.id) ||
       (session._lineage_root_id != null && unconfirmedPinWrites.has(session._lineage_root_id))
     ) {
       continue
     }
 
-    seen.add(session.id)
+    seen.add(rowKey)
     out.push(session)
   }
 

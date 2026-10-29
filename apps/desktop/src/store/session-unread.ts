@@ -15,9 +15,9 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   sessionMatchesStoredId,
+  sessionOwnerPinId,
   sessionPinId
 } from './session'
-import { sessionOwnerRowKey } from './session-request-router'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 /**
@@ -157,20 +157,28 @@ const rowsFor = (lists: readonly SessionInfo[][]): SessionInfo[] => lists.flat()
 const loadedUnreadRows = (): SessionInfo[] => rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
 let selectedOwnerKey: null | string = null
 
+/** Stable owner + lineage identity for unread persistence. Registry rows reuse
+ * the pin owner key; legacy rows need profile scope without an ephemeral route
+ * binding. */
+const unreadOwnerKey = (row: SessionInfo): string =>
+  row.connection_id?.trim()
+    ? sessionOwnerPinId(row)
+    : JSON.stringify(['owner-unread', profileKeyForRow(row), sessionPinId(row)])
+
 /** Preserve the legacy lineage key while it is unambiguous; duplicate durable
- * ids need the immutable owner-row key or one backend advances another's cursor. */
+ * ids need the immutable owner-lineage key or one backend advances another's cursor. */
 const seenCountKey = (row: SessionInfo, rows: readonly SessionInfo[] = loadedUnreadRows()): string => {
   const durableId = sessionPinId(row)
-  const rowKey = sessionOwnerRowKey(row)
+  const ownerKey = unreadOwnerKey(row)
 
   const ownerCollision = rows.some(
     candidate =>
       profileKeyForRow(candidate) === profileKeyForRow(row) &&
       sessionPinId(candidate) === durableId &&
-      sessionOwnerRowKey(candidate) !== rowKey
+      unreadOwnerKey(candidate) !== unreadOwnerKey(row)
   )
 
-  return ownerCollision ? rowKey : durableId
+  return ownerCollision ? ownerKey : durableId
 }
 
 const isSelected = (row: SessionInfo, selected: null | string): boolean =>
@@ -405,14 +413,21 @@ export function markSessionUnreadFinished(storedSessionId: string, profileHint?:
       (!profileHint || profileKeyForRow(candidate) === normalizeProfileKey(profileHint))
   )
 
-  if (matches.length > 1) {
+  const matchingOwners = new Set(matches.map(unreadOwnerKey))
+
+  if (matchingOwners.size > 1) {
     return
   }
 
-  const row = matches[0]
-  const duplicate = Boolean(row && rows.filter(candidate => sessionMatchesStoredId(candidate, storedSessionId)).length > 1)
-  const transientId = row && duplicate ? sessionOwnerRowKey(row) : storedSessionId
-  const durableId = row && duplicate ? sessionOwnerRowKey(row) : row ? sessionPinId(row) : storedSessionId
+  const row = matches.find(candidate => candidate.id === storedSessionId) ?? matches[0]
+
+  const duplicate = Boolean(
+    row &&
+      new Set(rows.filter(candidate => sessionMatchesStoredId(candidate, storedSessionId)).map(unreadOwnerKey)).size > 1
+  )
+
+  const transientId = row && duplicate ? unreadOwnerKey(row) : storedSessionId
+  const durableId = row && duplicate ? unreadOwnerKey(row) : row ? sessionPinId(row) : storedSessionId
 
   writeUnread(
     transientId,
@@ -426,7 +441,7 @@ export function markSessionUnreadFinished(storedSessionId: string, profileHint?:
 function ackSessionRow(row: SessionInfo): void {
   const profile = profileKeyForRow(row)
   const durableId = sessionPinId(row)
-  const ownerKey = sessionOwnerRowKey(row)
+  const ownerKey = unreadOwnerKey(row)
   const countKey = seenCountKey(row)
 
   selectedOwnerKey = ownerKey
@@ -588,9 +603,13 @@ function ingestRows(rows: readonly SessionInfo[]): void {
     const markers = $unreadFinishedMarkers.get()[profile]
 
     if (markers?.includes(durableId)) {
-      const ownerKeys = rows
-        .filter(candidate => profileKeyForRow(candidate) === profile && sessionPinId(candidate) === durableId)
-        .map(sessionOwnerRowKey)
+      const ownerKeys = [
+        ...new Set(
+          rows
+            .filter(candidate => profileKeyForRow(candidate) === profile && sessionPinId(candidate) === durableId)
+            .map(unreadOwnerKey)
+        )
+      ]
 
       setMarkerBucket(profile, [...markers.filter(id => id !== durableId), ...ownerKeys])
     }
@@ -633,7 +652,7 @@ function ingestRows(rows: readonly SessionInfo[]): void {
     if (
       (selectedMatches.length === 1
         ? row === selectedMatches[0]
-        : selectedOwnerKey === sessionOwnerRowKey(row))
+        : selectedOwnerKey === unreadOwnerKey(row))
     ) {
       if (bucket?.[countKey] !== row.message_count) {
         write(profile, countKey, row.message_count)
@@ -646,7 +665,7 @@ function ingestRows(rows: readonly SessionInfo[]): void {
         const kept =
           countKey === durableId
             ? markers.filter(id => id !== durableId && !sessionMatchesStoredId(row, id))
-            : markers.filter(id => id !== sessionOwnerRowKey(row))
+            : markers.filter(id => id !== unreadOwnerKey(row))
 
         if (kept.length !== markers.length) {
           setMarkerBucket(profile, kept)
@@ -716,7 +735,7 @@ function recomputeUnread(): void {
 
   const unreadKey = (row: SessionInfo) =>
     loadedRows.filter(candidate => sessionMatchesStoredId(candidate, row.id)).length > 1
-      ? sessionOwnerRowKey(row)
+      ? unreadOwnerKey(row)
       : row.id
 
   const selectedRows = selected ? loadedRows.filter(row => sessionMatchesStoredId(row, selected)) : []
@@ -725,13 +744,13 @@ function recomputeUnread(): void {
     Boolean(
       selected &&
         sessionMatchesStoredId(row, selected) &&
-        (selectedRows.length === 1 || selectedOwnerKey === sessionOwnerRowKey(row))
+        (selectedRows.length === 1 || selectedOwnerKey === unreadOwnerKey(row))
     )
 
   const isMarked = (row: SessionInfo, durableId: string): boolean => {
     const bucket = markers[profileKeyForRow(row)]
 
-    return Boolean(bucket?.includes(durableId) || bucket?.includes(row.id) || bucket?.includes(sessionOwnerRowKey(row)))
+    return Boolean(bucket?.includes(durableId) || bucket?.includes(row.id) || bucket?.includes(unreadOwnerKey(row)))
   }
 
   // Watermark + marker unread for chat and cron rows. The selected skip stays
@@ -766,7 +785,7 @@ function recomputeUnread(): void {
     if (
       id !== selected &&
       !unread.includes(id) &&
-      !loadedRows.some(row => sessionMatchesStoredId(row, id) || sessionOwnerRowKey(row) === id)
+      !loadedRows.some(row => sessionMatchesStoredId(row, id) || unreadOwnerKey(row) === id)
     ) {
       unread.push(id)
     }

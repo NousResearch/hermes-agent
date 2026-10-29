@@ -11,10 +11,10 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  sessionOwnerPinId,
   setSelectedStoredSessionId,
   setSessions
 } from './session'
-import { sessionOwnerRowKey } from './session-request-router'
 import { clearAllSessionStates } from './session-states'
 import {
   $sessionSeenCounts,
@@ -167,7 +167,7 @@ describe('persisted unread (session-unread)', () => {
 
     // Only alpha's row is past its watermark; beta's sits exactly on it.
     expect($unreadFinishedSessionIds.get()).toEqual([
-      sessionOwnerRowKey(session({ id: 's1', message_count: 5, profile: 'alpha' }))
+      JSON.stringify(['owner-unread', 'alpha', 's1'])
     ])
     expect($sessionSeenCounts.get()).toEqual({ alpha: { s1: 3 }, beta: { s1: 5 } })
 
@@ -192,8 +192,8 @@ describe('persisted unread (session-unread)', () => {
   it('migrates same-profile same-id unread state per connection and acks only the clicked owner', () => {
     const alpha = session({ connection_id: 'gateway-a', id: 's1', message_count: 5, profile: 'default' })
     const beta = session({ connection_id: 'gateway-b', id: 's1', message_count: 5, profile: 'default' })
-    const alphaKey = sessionOwnerRowKey(alpha)
-    const betaKey = sessionOwnerRowKey(beta)
+    const alphaKey = sessionOwnerPinId(alpha)
+    const betaKey = sessionOwnerPinId(beta)
 
     $sessionSeenCounts.set({ default: { s1: 3 } })
     $unreadFinishedMarkers.set({ default: ['s1'] })
@@ -208,6 +208,28 @@ describe('persisted unread (session-unread)', () => {
     expect($sessionSeenCounts.get().default).toMatchObject({ [alphaKey]: 3, [betaKey]: 5 })
     expect($unreadFinishedMarkers.get()).toEqual({ default: [alphaKey] })
     expect($unreadFinishedSessionIds.get()).toEqual([alphaKey])
+  })
+
+  it('keeps one owner lineage together when another gateway shares its root id', () => {
+    const alphaRoot = session({ connection_id: 'gateway-a', id: 'root', message_count: 5 })
+    const alphaTip = session({ connection_id: 'gateway-a', id: 'tip', _lineage_root_id: 'root', message_count: 5 })
+    const betaRoot = session({ connection_id: 'gateway-b', id: 'root', message_count: 5 })
+    const alphaKey = sessionOwnerPinId(alphaTip)
+    const betaKey = sessionOwnerPinId(betaRoot)
+
+    $sessionSeenCounts.set({ default: { root: 3 } })
+    $unreadFinishedMarkers.set({ default: ['root'] })
+    setSessions([alphaRoot, alphaTip, betaRoot])
+
+    expect($sessionSeenCounts.get().default).toMatchObject({ [alphaKey]: 3, [betaKey]: 3 })
+    expect($unreadFinishedMarkers.get()).toEqual({ default: [alphaKey, betaKey] })
+
+    ackStoredSessionId(alphaTip)
+    setSelectedStoredSessionId('tip')
+
+    expect($sessionSeenCounts.get().default).toMatchObject({ [alphaKey]: 5, [betaKey]: 3 })
+    expect($unreadFinishedMarkers.get()).toEqual({ default: [betaKey] })
+    expect($unreadFinishedSessionIds.get()).toEqual([betaKey])
   })
 
   it('files a live-edge marker with no loaded row under the active gateway profile', () => {

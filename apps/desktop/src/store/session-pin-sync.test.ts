@@ -16,7 +16,14 @@ vi.mock('@/hermes', () => ({
 
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $cronSessions, $messagingSessions, $sessions, applySessionTitle, touchSessionActivity } from '@/store/session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  applySessionTitle,
+  sessionOwnerPinId,
+  touchSessionActivity
+} from '@/store/session'
 
 import { $unconfirmedPinWrites, forgetPinSyncState, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
@@ -77,6 +84,59 @@ describe('watchSessionPins', () => {
       profile: 'work',
       sessionRouteBinding: 'binding-a',
       sessionRouteId: 'bound'
+    })
+  })
+
+  it('pins same-id rows through the clicked gateway owner independently', async () => {
+    const ownerA = row('same', {
+      _desktop_route_binding: 'binding-a',
+      connection_id: 'gateway-a',
+      pinned: false,
+      profile: 'default'
+    })
+
+    const ownerB = row('same', {
+      _desktop_route_binding: 'binding-b',
+      connection_id: 'gateway-b',
+      pinned: false,
+      profile: 'default'
+    })
+
+    $sessions.set([ownerA, ownerB])
+    $pinnedSessionIds.set([sessionOwnerPinId(ownerB)])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('same', true, {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      sessionRouteBinding: 'binding-b',
+      sessionRouteId: 'same'
+    })
+    expect($sessions.get().map(session => session.pinned)).toEqual([false, true])
+
+    patch.mockClear()
+    $pinnedSessionIds.set([sessionOwnerPinId(ownerB), sessionOwnerPinId(ownerA)])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('same', true, {
+      connectionId: 'gateway-a',
+      profile: 'default',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'same'
+    })
+
+    patch.mockClear()
+    $pinnedSessionIds.set([sessionOwnerPinId(ownerA)])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('same', false, {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      sessionRouteBinding: 'binding-b',
+      sessionRouteId: 'same'
     })
   })
 

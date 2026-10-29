@@ -10,7 +10,7 @@ import { useI18n } from '@/i18n'
 import { type SidebarListRow } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { sessionPinId } from '@/store/session'
+import { sessionOwnerPinId } from '@/store/session'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { sessionOwnerRowKey } from '@/store/session-request-router'
 
@@ -168,7 +168,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onArchive: () => onArchiveSession(session),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session),
-      onPin: () => onTogglePin(sessionPinId(session)),
+      onPin: () => onTogglePin(sessionOwnerPinId(session)),
       onToggleUnread: () => onToggleUnread(session),
       onResume: () => onResumeSession(session.id, session),
       reorderable,

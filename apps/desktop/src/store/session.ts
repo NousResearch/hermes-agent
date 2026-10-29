@@ -457,6 +457,53 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+/** Renderer pin identity. Backend session ids are only owner-local, so a local
+ * pin key must retain the immutable gateway/profile boundary as well. */
+export const sessionOwnerPinId = (
+  session: Pick<SessionInfo, '_desktop_route_binding' | '_lineage_root_id' | 'connection_id' | 'id' | 'profile'>
+): string => {
+  const connectionId = session.connection_id?.trim()
+
+  // Route bindings authenticate a single live session route and rotate across
+  // app launches and compression tips. They cannot be persisted as pin owner
+  // identity, so connectionless rows retain their historical lineage-root key.
+  if (!connectionId) {
+    return sessionPinId(session)
+  }
+
+  return JSON.stringify([
+    'owner-pin',
+    connectionId,
+    session.profile?.trim() || 'default',
+    sessionPinId(session)
+  ])
+}
+
+/** Resolve an owner-qualified pin only to its exact row; retain compatibility
+ * with historical bare ids already persisted in localStorage. */
+export const sessionMatchesPinId = (
+  session: Pick<
+    SessionInfo,
+    '_desktop_route_binding' | '_lineage_ids' | '_lineage_root_id' | 'connection_id' | 'id' | 'profile'
+  >,
+  storedPinId: string
+): boolean => storedPinId === sessionOwnerPinId(session) || sessionMatchesStoredId(session, storedPinId)
+
+/** Durable backend id embedded in an owner-qualified renderer pin key. */
+export function durableIdFromPinId(storedPinId: string): string {
+  try {
+    const parsed: unknown = JSON.parse(storedPinId)
+
+    if (Array.isArray(parsed) && parsed.length === 4 && parsed[0] === 'owner-pin' && typeof parsed[3] === 'string') {
+      return parsed[3]
+    }
+  } catch {
+    // Historical bare ids are not JSON.
+  }
+
+  return storedPinId
+}
+
 /** True when a stored/lineage id resolves to this session — it matches either
  *  the live id or the stable lineage root (see sessionPinId). The one place the
  *  "same conversation across compression" test lives. */

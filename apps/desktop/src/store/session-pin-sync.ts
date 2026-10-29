@@ -31,7 +31,9 @@ import {
   $cronSessions,
   $messagingSessions,
   $sessions,
-  sessionMatchesStoredId,
+  durableIdFromPinId,
+  sessionMatchesPinId,
+  sessionOwnerPinId,
   sessionPinId,
   setCronSessions,
   setMessagingSessions,
@@ -114,7 +116,7 @@ function loadedSessionRows(): SessionInfo[] {
  * profile and the next page re-adopts the pin.
  */
 function loadedRowFor(pinId: string): SessionInfo | undefined {
-  const rows = loadedSessionRows().filter(row => sessionMatchesStoredId(row, pinId))
+  const rows = loadedSessionRows().filter(row => sessionMatchesPinId(row, pinId))
   const gateway = normalizeProfileKey($activeGatewayProfile.get())
 
   return rows.find(row => normalizeProfileKey(row.profile) === gateway) ?? rows[0]
@@ -135,7 +137,7 @@ function rowsByPinId(rows: readonly SessionInfo[]): Map<string, SessionInfo> {
   const gateway = normalizeProfileKey($activeGatewayProfile.get())
 
   for (const row of rows) {
-    const pinId = sessionPinId(row)
+    const pinId = sessionOwnerPinId(row)
     const existing = byId.get(pinId)
 
     if (!existing) {
@@ -176,7 +178,7 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
       if (
         typeof row.pinned !== 'boolean' ||
         row.pinned === pinned ||
-        !sessionMatchesStoredId(row, pinId) ||
+        !sessionMatchesPinId(row, pinId) ||
         (owner != null && normalizeProfileKey(row.profile) !== owner)
       ) {
         return row
@@ -201,7 +203,7 @@ function writePin(id: string, pinned: boolean, owner?: ProfileScope): Promise<vo
   unconfirmed.set(id, { at: Date.now(), value: pinned })
   applyRowPinned(id, pinned, owner && typeof owner === 'object' ? owner.profile : owner)
 
-  return setSessionPinnedRemote(id, pinned, owner).then(
+  return setSessionPinnedRemote(durableIdFromPinId(id), pinned, owner).then(
     () => {
       // Deliberately NOT cleared here: a list request issued before this PATCH
       // can still land after the ack carrying the pre-write value. The guard
@@ -242,15 +244,24 @@ function pullRemotePins(): void {
 
     // Pins are keyed on the durable lineage root so they survive compression
     // tip rotation; the row may surface under either identity.
-    const pinId = sessionPinId(row)
-    const heldLocally = local.has(pinId) || local.has(row.id)
+    const pinId = sessionOwnerPinId(row)
+    const durablePinId = sessionPinId(row)
+
+    const heldLocally = local.has(pinId) || local.has(durablePinId) || local.has(row.id)
 
     // A write of ours this page may predate. Confirmed (page agrees) → release
     // the guard, the server has caught up. Contradicted but still inside the
     // cooldown → the page was almost certainly issued before our PATCH, so our
     // write is newer: skip the row. Contradicted past the cooldown → no page
     // ever confirmed us, so stop fencing and let the server win.
-    const guardKey = unconfirmed.has(pinId) ? pinId : unconfirmed.has(row.id) ? row.id : null
+    const guardKey = unconfirmed.has(pinId)
+      ? pinId
+      : unconfirmed.has(durablePinId)
+        ? durablePinId
+        : unconfirmed.has(row.id)
+          ? row.id
+          : null
+
     const guard = guardKey ? unconfirmed.get(guardKey) : undefined
 
     if (guard && guardKey) {
@@ -273,7 +284,7 @@ function pullRemotePins(): void {
 
     // Local intent still waiting on its PATCH (row unresolved when the push
     // pass ran) is also newer than the page — never revert it.
-    if (pending.has(pinId) || pending.has(row.id)) {
+    if (pending.has(pinId) || pending.has(durablePinId) || pending.has(row.id)) {
       continue
     }
 
@@ -287,7 +298,7 @@ function pullRemotePins(): void {
       // reconcile runs, or it re-PATCHes pinned=false the server already has.
       mirrored.delete(pinId)
       mirrored.delete(row.id)
-      unpinSession(local.has(pinId) ? pinId : row.id)
+      unpinSession(local.has(pinId) ? pinId : local.has(durablePinId) ? durablePinId : row.id)
     }
   }
 }

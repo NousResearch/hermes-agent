@@ -2208,6 +2208,29 @@ def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -
     return workers
 
 
+def _is_infrastructure_spawn_failure(exc: BaseException) -> bool:
+    """Whether a spawn failure is a HOST problem, not a CARD problem.
+
+    Two conditions mean the card is fine and the host cannot currently place a
+    worker:
+
+    * ``RestartSafeScopeUnavailable`` — no restart-safe scope could be created
+      (no reachable user D-Bus session, no ``systemd-run``),
+    * ``WorkerScopeBudgetExhausted`` — the host-wide memory budget for worker
+      scopes is exhausted (t_8e8ec4de), so creating another scope would
+      overcommit the host and let the kernel OOM-kill a healthy worker.
+
+    Neither is the card's fault, so neither may spend the card's retry budget
+    (#114720): the card is re-queued and retried on a later tick.
+    """
+    from tools.process_registry import (
+        RestartSafeScopeUnavailable,
+        WorkerScopeBudgetExhausted,
+    )
+
+    return isinstance(exc, (RestartSafeScopeUnavailable, WorkerScopeBudgetExhausted))
+
+
 def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
     """Effective global concurrency cap: explicit config wins, else the
     memory-derived default. All config-parsing callers route through this so
@@ -2512,11 +2535,19 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
-        from tools.process_registry import RestartSafeScopeUnavailable
+        from tools.process_registry import (
+            RestartSafeScopeUnavailable,
+            WorkerScopeBudgetExhausted,
+        )
 
-        # The host refused the spawn (no restart-safe scope): nothing about the
-        # card ran, so it must not spend the card's retry budget (#114720).
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        # The host refused the spawn (no restart-safe scope, or the host-wide
+        # memory budget for worker scopes is exhausted): nothing about the card
+        # ran, so it must not spend the card's retry budget (#114720).
+        #
+        # Both are INFRASTRUCTURE failures, not card failures: the card is fine,
+        # the host is momentarily out of room. The card is re-queued and retried
+        # on a later tick once other scopes have finished.
+        infrastructure = _is_infrastructure_spawn_failure(exc)
         if infrastructure:
             _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(

@@ -105,6 +105,7 @@ def per_worker_memory_max_bytes(
     mb_per_worker: int = MEMORY_GUARD_MB_PER_WORKER,
     fraction: float = MEMORY_BUDGET_FRACTION,
     slice_limit: Optional[int] = None,
+    live_scopes: Optional[int] = None,
 ) -> Optional[int]:
     """Per-worker cgroup ``MemoryMax`` for a host with ``host_bytes`` of RAM.
 
@@ -114,6 +115,14 @@ def per_worker_memory_max_bytes(
       * ``fraction x host_bytes / max_workers`` — the host-wide budget. When
         ``max_workers`` is the concurrency cap the dispatcher will honour, this
         term is what keeps the SUM of concurrent scopes inside the host's budget,
+      * ``fraction x host_bytes / live_scopes`` — the SAME host-wide budget, but
+        counted over EVERY scope that draws a per-worker limit, not just the
+        kanban ones. Cron executions use the same scope mechanism and the same
+        limit, and cron concurrency is unbounded by default, so the kanban cap
+        alone does not describe the real number of scopes claiming memory.
+        ``live_scopes`` is the count of scopes already on the host (plus any
+        reserved headroom); ``None`` means "not measured" and this term is
+        skipped, preserving the pre-existing behaviour.
       * ``fraction x host_bytes / 2`` — even ONE worker may not claim more than
         half the host's budget (a single worker must not starve the control plane),
       * ``MAX_WORKER_MEMORY_MAX_BYTES`` — no single worker may claim the host,
@@ -145,6 +154,13 @@ def per_worker_memory_max_bytes(
             workers = 0
         if workers > 0:
             candidates.append(budget // workers)
+    if live_scopes is not None:
+        try:
+            scopes = int(live_scopes)
+        except (TypeError, ValueError):
+            scopes = 0
+        if scopes > 0:
+            candidates.append(budget // scopes)
     if slice_limit is not None and slice_limit > 0:
         # A slice limit BELOW the per-worker floor is not a usable bound (the
         # worker could never run under it) — ignore it, exactly as
@@ -212,6 +228,132 @@ def budget_is_consistent(
     return total <= int(int(host_bytes) * float(fraction))
 
 
+# ---------------------------------------------------------------------------
+# Live scope accounting (t_8e8ec4de follow-up, 2026-10-29)
+#
+# The invariant above is expressed in terms of the KANBAN concurrency cap, but
+# the scopes that actually claim memory are NOT only kanban workers. Cron jobs
+# are dispatched through the SAME ``hermes-worker-<suffix>`` scope mechanism
+# (``cron/scheduler.py`` -> ``restart_safe_gateway_child_argv``), so every cron
+# execution holds a scope with the SAME per-worker ``MemoryMax`` — and cron
+# concurrency is bounded by ``cron.max_parallel_jobs``, which is unset by
+# default and therefore UNBOUNDED.
+#
+# Measured on the homelab host (2026-10-29): a 3-minute sample saw a peak of
+# 24 concurrent ``hermes-worker-*.scope`` units claiming 33600 MiB against a
+# 5559 MiB budget — a 6x overcommit — while the kanban-only accounting still
+# reported "3 workers x 1400 MiB = 4200 MiB, consistent". The invariant was
+# TRUE and the host was still oversubscribed, because the accounting did not
+# cover the scopes that were really running.
+#
+# So the budget must count EVERY live scope that draws a per-worker limit, not
+# just the kanban subset.
+# ---------------------------------------------------------------------------
+
+# Prefix shared by every scope that draws a per-worker ``MemoryMax``.
+# ``process_registry._build_systemd_scope_argv`` names them all
+# ``hermes-worker-<suffix>``; the kanban dispatcher uses the ``kanban-`` suffix
+# and the cron scheduler uses ``cron-``.
+WORKER_SCOPE_PREFIX = "hermes-worker-"
+
+# The cgroup slice the worker scopes are created under. Every scope that draws
+# a per-worker limit lives directly under it.
+WORKER_SCOPE_SLICE = "app.slice"
+
+
+def live_worker_scope_count(cgroup_root: str = "/sys/fs/cgroup") -> int:
+    """Number of live ``hermes-worker-*`` scopes under the worker slice.
+
+    Counts BOTH kanban and cron scopes, because both draw the same per-worker
+    ``MemoryMax`` and both compete for the same host RAM. This is the number the
+    host-wide budget has to fit, NOT the kanban concurrency cap.
+
+    ``0`` when the cgroup tree cannot be read — the caller then falls back to
+    the static cap rather than inventing a count.
+    """
+    import glob
+    import os
+
+    try:
+        # ``user.slice/user-<uid>.slice/user@<uid>.service/app.slice`` is where
+        # the scopes land for a systemd user session; glob for the slice rather
+        # than hardcoding the uid so the path stays correct for any user.
+        patterns = (
+            f"{cgroup_root}/user.slice/user-*/user@*.service/{WORKER_SCOPE_SLICE}",
+            f"{cgroup_root}/{WORKER_SCOPE_SLICE}",
+        )
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            if not matches:
+                continue
+            total = 0
+            for slice_dir in matches:
+                try:
+                    entries = os.listdir(slice_dir)
+                except OSError:
+                    continue
+                for entry in entries:
+                    if not entry.startswith(WORKER_SCOPE_PREFIX):
+                        continue
+                    if not entry.endswith(".scope"):
+                        continue
+                    total += 1
+            return total
+    except Exception:  # noqa: BLE001
+        return 0
+    return 0
+
+
+def effective_scope_count(
+    host_bytes: Optional[int],
+    *,
+    per_worker_bytes: Optional[int] = None,
+    reserved_scopes: int = 0,
+    max_workers: Optional[int] = None,
+    mb_per_worker: int = MEMORY_GUARD_MB_PER_WORKER,
+    fraction: float = MEMORY_BUDGET_FRACTION,
+) -> Optional[int]:
+    """How many per-worker scopes the host budget can actually carry.
+
+    This is the number the budget must satisfy, and it is the MAXIMUM of:
+
+      * the kanban concurrency cap — the dispatcher will not run more workers
+        than this, and
+      * the number of scopes already live on the host — cron scopes are NOT
+        counted by the kanban cap, so a host running many cron jobs has more
+        scopes in flight than the kanban cap allows.
+
+    ``reserved_scopes`` is the number of scopes the host is expected to keep
+    running alongside (cron headroom); it is added to the live count so a
+    freshly-spawned scope does not immediately push the total over the budget.
+
+    ``None`` when the host RAM is unknown — the caller fails open, so macOS and
+    Windows dev machines are unaffected.
+    """
+    if host_bytes is None:
+        return None
+    try:
+        host = int(host_bytes)
+    except (TypeError, ValueError):
+        return None
+    if host <= 0:
+        return None
+    if per_worker_bytes is None:
+        per_worker_bytes = per_worker_memory_max_bytes(
+            host, max_workers=max_workers, mb_per_worker=mb_per_worker, fraction=fraction
+        )
+    if not per_worker_bytes or per_worker_bytes <= 0:
+        return None
+
+    budget = int(host * float(fraction))
+    carryable = budget // int(per_worker_bytes)
+
+    live = live_worker_scope_count()
+    if live:
+        carryable = max(carryable, live + max(int(reserved_scopes), 0))
+    return max(1, int(carryable))
+
+
 __all__ = [
     "MEMORY_BUDGET_FRACTION",
     "MEMORY_GUARD_MB_PER_WORKER",
@@ -219,8 +361,12 @@ __all__ = [
     "MAX_WORKER_MEMORY_MAX_BYTES",
     "DERIVED_MAX_IN_PROGRESS_FLOOR",
     "DERIVED_MAX_IN_PROGRESS_CEILING",
+    "WORKER_SCOPE_PREFIX",
+    "WORKER_SCOPE_SLICE",
     "host_memory_total_bytes",
     "effective_max_workers",
     "per_worker_memory_max_bytes",
     "budget_is_consistent",
+    "live_worker_scope_count",
+    "effective_scope_count",
 ]

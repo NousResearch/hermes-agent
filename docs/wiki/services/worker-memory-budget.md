@@ -135,6 +135,61 @@ invariant. The per-BOARD cap (`kanban.max_spawn`) is deliberately NOT used:
 scopes from several boards share one host, and the host-level cap is what
 bounds how many scopes can exist at once across all of them.
 
+### The scope budget is an admission check over EVERY scope (2026-10-29)
+
+The invariant above is stated over the **kanban** concurrency cap. That is not
+the whole population of scopes that claim memory.
+
+Cron executions are dispatched through the SAME scope mechanism
+(`cron/scheduler.py` → `restart_safe_gateway_child_argv` →
+`_build_systemd_scope_argv`), so every cron execution holds a scope with the
+SAME per-worker `MemoryMax`. Cron concurrency is bounded by
+`cron.max_parallel_jobs`, which is **unset by default and therefore
+unbounded**.
+
+Measured on the homelab host (2026-10-29), a 3-minute sample of the live
+cgroup tree:
+
+```
+peak 24 concurrent hermes-worker-*.scope  ->  33600 MiB claimed
+budget (0.7 x 7942 MiB)                   ->   5559 MiB
+kanban-only accounting said                ->   3 x 1400 = 4200 MiB  "consistent"
+```
+
+The invariant was **true** and the host was **6x overcommitted**, because the
+accounting did not cover the scopes that were really running.
+
+The fix is an **admission check**, not a resize:
+
+`tools/process_registry.py::worker_scope_budget_exhausted()` counts the live
+`hermes-worker-*` scopes (kanban AND cron), plus one for the scope about to be
+created, and compares that against `budget // per_worker_limit`. When the host
+cannot afford another scope, `restart_safe_gateway_child_argv()` raises
+`WorkerScopeBudgetExhausted` and **no scope is created**.
+
+Why admission and not resizing:
+
+- The `MemoryMax` is read at **scope-creation** time. An existing scope keeps
+  the limit it was created with, so shrinking a NEW scope's limit does not
+  reduce the collective claim — existing scopes still hold theirs.
+- Shrinking the new scope's limit WOULD starve the new worker (at 24 live
+  scopes the limit would fall to 231 MiB, far below the measured 1400 MiB
+  footprint). That re-creates the `t_4d12c8eb` failure: a healthy worker
+  OOM-killed by its own scope mid-task.
+- A scope that is never created costs nothing. A scope created without room
+  costs a healthy worker.
+
+Callers handle the refusal as an **infrastructure** condition, not a failure:
+
+- **Kanban** (`hermes_cli/kanban_db_dispatch.py`) —
+  `_is_infrastructure_spawn_failure()` classifies it alongside
+  `RestartSafeScopeUnavailable`, so the card is re-queued and retried on a
+  later tick WITHOUT spending the card's retry budget (#114720).
+- **Cron** (`cron/scheduler.py`) — `_defer_job_for_scope_budget()` parks the
+  job the way `cron.quota_hold` parks a job behind a closed provider window:
+  the fire is coalesced to a later instant, the claim is released, and NO
+  failure is recorded (no cron incident, no burned repeat).
+
 ### The LSP bounds
 
 Two new `lsp` config keys, both with safe defaults in
@@ -195,6 +250,18 @@ echo "SUM of scope limits: $((SUM/1048576)) MiB"
 The limit is read at SCOPE-CREATION time. Scopes created before the change
 keep the old value until the worker is re-spawned.
 
+### Verify the LIVE scope count (the budget covers every scope, not just kanban)
+
+```bash
+SL=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice
+ls "$SL" | grep -c '^hermes-worker-'
+```
+
+The invariant above is expressed over the KANBAN cap. The scopes that actually
+claim memory include CRON executions — they use the same scope mechanism and
+the same per-worker `MemoryMax`. See "The scope budget is an admission check"
+under Architecture.
+
 ### Check for OOM kills
 
 ```bash
@@ -226,6 +293,7 @@ cd /home/serveradmin/.hermes/hermes-agent
 | `TERMINAL_LOCAL_MEMORY_MAX_MB` | unset | Operator override of the per-worker limit, in MiB. Values below the 64 MiB floor are ignored with a warning. When it TIGHTENS the bound it wins. |
 | `kanban.max_in_progress` | unset (derived) | Explicit host-level concurrency cap. Overrides the derived value; the per-worker limit then shrinks to keep the invariant. |
 | `kanban.max_spawn` | per-board | Per-board concurrency. NOT used for the scope limit — boards share the host. |
+| `cron.max_parallel_jobs` | unset (**unbounded**) | Max concurrent cron executions per profile home. Unset means no limit, so cron scopes can exceed the host budget on their own. Set it (e.g. `2`) to bound the cron side of the scope budget. |
 | `lsp.max_server_heap_mb` | `768` | V8 heap ceiling for Node language servers. `0` disables. |
 | `lsp.max_clients` | `2` | Language-server processes per Hermes process. Clamped to >= 1. |
 
@@ -253,6 +321,30 @@ The scope hit its own `MemoryMax`. Two possible causes:
 
 **Do NOT raise the scope limit.** Raising it while the cap stays put just
 moves the OOM later — the sum of the concurrent scopes still exceeds the host.
+
+### Symptom: a card or cron job is deferred with "memory budget is exhausted"
+
+This is the admission check working as designed, not a failure. The host
+already had as many worker scopes as the budget allows, so no new scope was
+created.
+
+Check what is holding the scopes:
+
+```bash
+SL=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice
+for d in "$SL"/hermes-worker-*.scope; do
+  [ -d "$d" ] || continue
+  echo "$(basename "$d"): max=$(( $(cat "$d/memory.max") /1048576 ))MiB cur=$(( $(cat "$d/memory.current") /1048576 ))MiB"
+done
+```
+
+- **Cron scopes** are the most common cause: `cron.max_parallel_jobs` is unset
+  by default, so cron parallelism is unbounded. Set it in `config.yaml`.
+- **A leaked scope** — a scope whose task is already `done` but whose scope is
+  still alive — holds a full claim against the budget. Check whether the
+  worker process is actually still running.
+- **Long-running workers** legitimately fill the budget. The card or job is
+  retried on a later tick.
 
 ### Symptom: the scope limit looks too small
 

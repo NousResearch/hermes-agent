@@ -223,6 +223,78 @@ def _scope_parent_memory_max_bytes() -> Optional[int]:
     return None
 
 
+def _live_scope_count_for_budget() -> int:
+    """How many scopes are currently drawing a per-worker limit on this host.
+
+    The kanban concurrency cap alone does NOT describe the real number of
+    scopes drawing a per-worker ``MemoryMax``: cron executions are dispatched
+    through the SAME scope mechanism (``cron/scheduler.py`` ->
+    ``restart_safe_gateway_child_argv``), and cron concurrency is bounded by
+    ``cron.max_parallel_jobs`` — which is unset by default, i.e. UNBOUNDED.
+
+    Measured on the homelab host (2026-10-29): a 3-minute sample saw a peak of
+    24 concurrent ``hermes-worker-*.scope`` units claiming 33600 MiB against a
+    5559 MiB budget, while the kanban-only accounting still reported the
+    invariant as satisfied.
+
+    The count INCLUDES the scope that is about to be created, so the scope that
+    would tip the host over the limit is the one that gets refused — otherwise
+    the scope that breaks the budget is the one that was not counted.
+
+    ``0`` when the cgroup tree cannot be read — the caller then keeps the
+    previous (kanban-only) sizing rather than inventing a count.
+    """
+    from hermes_cli import memory_budget
+
+    try:
+        live = memory_budget.live_worker_scope_count()
+    except Exception:  # noqa: BLE001
+        return 0
+    return int(live) + 1
+
+
+def worker_scope_budget_exhausted() -> bool:
+    """Whether this host cannot afford ANOTHER per-worker scope right now.
+
+    The host-wide budget is ``MEMORY_BUDGET_FRACTION x MemTotal``. The number of
+    scopes that fit is ``budget // per_worker_limit``. When the live scope count
+    has already reached that number, creating another scope would push the
+    collective claim past the budget — and the kernel resolves that by
+    OOM-killing whichever scope crosses the line, taking a healthy worker with
+    it (``constraint=CONSTRAINT_MEMCG``).
+
+    This is an ADMISSION check, not a resizing one: the per-worker limit stays
+    at the measured real footprint so a worker is never OOM-killed by its own
+    scope (the ``t_4d12c8eb`` failure mode), and the SCOPE COUNT is what gets
+    bounded. Shrinking the limit instead would not reduce the claim — existing
+    scopes keep the limit they were created with — while it WOULD starve new
+    workers.
+
+    ``False`` when the budget cannot be evaluated (unknown RAM, unreadable
+    cgroup tree) — fail open, so macOS/Windows dev machines are unaffected.
+    """
+    from hermes_cli import memory_budget
+
+    try:
+        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if physical_bytes <= 0:
+        return False
+
+    per_worker = _worker_memory_max_bytes()
+    if not per_worker or per_worker <= 0:
+        return False
+
+    budget = int(physical_bytes * memory_budget.MEMORY_BUDGET_FRACTION)
+    carryable = budget // int(per_worker)
+    if carryable < 1:
+        carryable = 1
+
+    live = _live_scope_count_for_budget()
+    return bool(live > carryable)
+
+
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
 
@@ -524,6 +596,21 @@ class RestartSafeScopeUnavailable(RuntimeError):
     """
 
 
+class WorkerScopeBudgetExhausted(RuntimeError):
+    """The host cannot afford another per-worker scope right now.
+
+    Raised instead of creating a scope that would push the collective
+    ``MemoryMax`` claim past ``MEMORY_BUDGET_FRACTION x MemTotal`` (t_8e8ec4de).
+
+    This is deliberately NOT a degrade: running the child inside the gateway's
+    cgroup instead of its own scope puts it under the gateway unit's 1 GiB cap
+    and reintroduces the ``t_4d12c8eb`` failure (a healthy worker killed by an
+    inherited limit). The caller should DEFER the work and try again when other
+    scopes have finished — a scope that is never created costs nothing, while a
+    scope that is created without room costs a healthy worker.
+    """
+
+
 def _warn_scope_degraded_once(detail: str, *, consequence: str) -> None:
     """Warn once per process: the condition is host-level and the probe verdict
     is cached, so this would otherwise fire on every cron dispatch."""
@@ -632,6 +719,28 @@ def restart_safe_gateway_child_argv(
             "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
             f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
             "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
+        )
+    if worker_scope_budget_exhausted():
+        # The host cannot afford another per-worker scope. Creating one would push
+        # the collective claim past MEMORY_BUDGET_FRACTION x MemTotal, and the
+        # kernel resolves that by OOM-killing whichever scope crosses the line —
+        # taking a HEALTHY worker with it (constraint=CONSTRAINT_MEMCG).
+        #
+        # This FAILS CLOSED rather than degrading: running the child inside the
+        # gateway's cgroup instead of its own scope puts it under the gateway
+        # unit's 1 GiB cap and reintroduces the t_4d12c8eb failure. The caller
+        # defers the work until other scopes finish.
+        #
+        # Refusing to CREATE the scope is the only safe response: the limit is
+        # read at scope-creation time, so shrinking an existing scope's limit is
+        # not possible, and shrinking the NEW scope's limit would not reduce the
+        # claim while it WOULD starve the new worker (t_4d12c8eb).
+        raise WorkerScopeBudgetExhausted(
+            f"the host memory budget for worker scopes is exhausted "
+            f"({_live_scope_count_for_budget()} scopes already drawing a per-worker "
+            "MemoryMax, budget 0.7 x MemTotal). Refusing to create another scope "
+            "rather than overcommitting the host and letting the kernel OOM-kill "
+            "a healthy worker."
         )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:

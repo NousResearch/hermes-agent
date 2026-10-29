@@ -2962,6 +2962,22 @@ def run_one_job(
         try:
             handed_off = _launch_external_cron_worker(job)
         except Exception as handoff_error:
+            # The host-wide memory budget for worker scopes is exhausted: the
+            # scope was deliberately NOT created, because creating it would
+            # overcommit the host and let the kernel OOM-kill a healthy worker
+            # (t_8e8ec4de). Nothing about the job ran, so this is a DEFER, not a
+            # failure — the job is retried on a later tick once other scopes
+            # have finished. Recording it as a failure would open an incident
+            # and burn a repeat for a purely infrastructural condition.
+            from tools.process_registry import WorkerScopeBudgetExhausted
+
+            if isinstance(handoff_error, WorkerScopeBudgetExhausted):
+                logger.warning(
+                    "Job '%s': deferred — the host worker-scope memory budget is "
+                    "exhausted: %s", job["id"], handoff_error,
+                )
+                _defer_job_for_scope_budget(job, str(handoff_error))
+                return False
             # Arbitrary waiter errors must not claim dispatch failure or resend
             # a worker's notice. A recovered unknown execution is different:
             # its worker never committed a terminal outcome.
@@ -3852,6 +3868,72 @@ def _wait_for_external_cron_worker(
                 stale.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _defer_job_for_scope_budget(job: dict, detail: str) -> bool:
+    """Park *job* until the host has room for another worker scope.
+
+    The dispatch was refused because the host-wide memory budget for worker
+    scopes is exhausted (t_8e8ec4de) — nothing about the job ran. This parks
+    the job the way ``cron.quota_hold`` parks a job behind a closed provider
+    window: the fire is coalesced to a later instant, and NO failure is
+    recorded. Recording a failure would open a cron incident and burn a repeat
+    for a purely infrastructural condition that resolves itself once the other
+    scopes finish.
+
+    The claim is released so the job is claimable again, and the next attempt
+    happens on a later tick.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from cron.jobs import _jobs_lock, _parse_aware, compute_next_run, save_jobs
+
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return False
+
+    # How long to wait before the next attempt: long enough for the in-flight
+    # scopes to finish, short enough that a job on a 1-minute cadence is not
+    # silently skipped for long.
+    retry_seconds = 120.0
+
+    def apply(jobs, _i, target):
+        schedule = target.get("schedule") or {}
+        kind = schedule.get("kind")
+        if kind not in {"cron", "interval"} or target.get("state") == "paused":
+            # Not a recurring job: nothing to park it for. Release the claim so
+            # a manual retry is possible and leave the record honest.
+            target["fire_claim"] = None
+            target.pop("pending_slot", None)
+            save_jobs(jobs)
+            return False
+        base = _parse_aware(target.get("next_run_at")) or datetime.now(timezone.utc)
+        window_end = base + timedelta(seconds=retry_seconds)
+        parked = compute_next_run(schedule, window_end.isoformat()) or window_end.isoformat()
+        target["next_run_at"] = parked
+        target["state"] = parked
+        # Release the claim: the job never ran, so it must be claimable again.
+        target["fire_claim"] = None
+        target.pop("pending_slot", None)
+        save_jobs(jobs)
+        logger.warning(
+            "Job '%s': parked until %s — the host worker-scope memory budget is "
+            "exhausted (%s)", target.get("name", target.get("id", "?")), parked, detail,
+        )
+        return True
+
+    try:
+        from cron.jobs import _with_job
+
+        with _jobs_lock():
+            found = _with_job(job_id, apply, missing=None)
+        return bool(found)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Job '%s': could not park the job for the exhausted scope budget: %s",
+            job_id, exc,
+        )
+        return False
 
 
 def _launch_external_cron_worker(job: dict) -> bool:

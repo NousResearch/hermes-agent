@@ -39,6 +39,26 @@ def _finite(v):
     return None if v is None or v != v or v < 0 or v > 1e6 else v
 
 
+def _clip_status_label(text: str, limit: int) -> str:
+    """Ellipsize ``text`` to ``limit`` columns, the last three going to the ellipsis."""
+    return f"{text[:limit - 3]}..." if len(text) > limit else text
+
+
+def _status_bar_model_segment(model_short: str, provider_id: str, show_provider: bool,
+                              styled: bool) -> list:
+    """The model segment, followed by its routing provider when one is shown.
+
+    Styled fragments carry skin classes; the plain renderer concatenates texts only, so its
+    provider fragment uses no class."""
+    if styled:
+        seg = [(_SB, " ☤ "), (_STRONG, model_short)]
+    else:
+        seg = [("", f"☤ {model_short}")]
+    if show_provider and provider_id:
+        seg.append((_DIM if styled else "", f" via {provider_id}"))
+    return seg
+
+
 class CLIStatusBarMixin:
     """Status bar, spinner, turn-summary, pet pane, and prompt-stash rendering for the
     interactive CLI."""
@@ -193,7 +213,12 @@ class CLIStatusBarMixin:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
-        model_name = (getattr(agent, "model", None) or self.model or t("cli.shared.unknown"))
+        from hermes_cli.status_report import resolve_display_identity
+
+        model_name, provider_id = resolve_display_identity(
+            agent=agent, configured_model=self.model,
+            configured_provider=getattr(self, "provider", None))
+        model_name = model_name or t("cli.shared.unknown")
         # Friendly display: reverse-alias from config ``model_aliases:`` first (turns long
         # Palantir RIDs into the user's short name), else slash/length truncation.
         model_short = _reverse_alias_for_display(model_name)
@@ -203,8 +228,8 @@ class CLIStatusBarMixin:
             from hermes_cli.model_switch import format_model_for_display
             model_short = format_model_for_display(model_short)
         model_short = model_short.removesuffix(".gguf")
-        if len(model_short) > 26:
-            model_short = f"{model_short[:23]}..."
+        model_short = _clip_status_label(model_short, 26)
+        provider_id = _clip_status_label(provider_id, 20)
 
         prompt_start = getattr(self, "_prompt_start_time", None)
         turn_live = prompt_start is not None
@@ -212,6 +237,7 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "provider": provider_id,
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -994,9 +1020,9 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
-        prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
+        Fields: model, provider, context_detail, context_pct, cache_hit, latency, tps,
+        compressions, bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only),
+        duration, prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
@@ -1021,6 +1047,7 @@ class CLIStatusBarMixin:
         the two can never drift; ``styled`` selects the graphical context bar."""
         from cli import format_token_count_compact
         model_short = snapshot["model_short"]
+        provider_id = snapshot.get("provider") or ""
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)
         focus_label = snapshot.get("focus_label") or ""
@@ -1040,10 +1067,7 @@ class CLIStatusBarMixin:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
         if _ok("model"):
-            if styled:
-                segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
-            else:
-                segs.append([("", f"☤ {model_short}")])
+            segs.append(_status_bar_model_segment(model_short, provider_id, _ok("provider"), styled))
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

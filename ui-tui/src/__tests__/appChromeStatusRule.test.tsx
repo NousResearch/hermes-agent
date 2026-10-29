@@ -119,6 +119,33 @@ describe('StatusRule model label', () => {
   })
 })
 
+describe('StatusRule provider label', () => {
+  it('renders the routing provider next to the model', () => {
+    expect(textContent(StatusRule({ ...baseProps, modelProvider: 'openrouter' }))).toContain('opus 4.8 via openrouter')
+  })
+
+  it('hides the provider when display.status_bar.fields omits it', () => {
+    const text = textContent(
+      StatusRule({ ...baseProps, modelProvider: 'openrouter', statusBarFields: new Set(['model']) })
+    )
+
+    expect(text).toContain('opus 4.8')
+    expect(text).not.toContain('via openrouter')
+  })
+
+  it('truncates a long provider id instead of pushing it off the bar', () => {
+    const text = textContent(StatusRule({ ...baseProps, modelProvider: 'custom:an-extremely-long-endpoint' }))
+
+    expect(text).toContain('via custom:an-extreme...')
+  })
+
+  it('keeps the provider inside the pinned essentials at a narrow width', () => {
+    const narrow = textContent(StatusRule({ ...baseProps, cols: 40, modelProvider: 'openrouter' }))
+
+    expect(narrow).toContain('via openrouter')
+  })
+})
+
 describe('StatusRule session title', () => {
   it('marks only estimated context occupancy at every visible width', () => {
     for (const cols of [80, 120, 200]) {

@@ -8,9 +8,10 @@ import cli as cli_mod
 from cli import HermesCLI
 
 
-def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
+def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514", provider: str | None = None):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
+    cli_obj.provider = provider
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
@@ -372,6 +373,48 @@ class TestStatusBarFieldConfig:
         assert "12.4K/200K" in text
         assert "🗜️" in text
 
+
+
+class TestStatusBarProvider:
+    """Provider routing identity next to the model on the status bar."""
+
+    def _text(self, provider, fields=None, width=120):
+        cli_obj = _attach_agent(
+            _make_cli(provider=provider),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        if provider is None:
+            cli_obj.agent.provider = None
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": fields or []}}}):
+            return cli_obj._build_status_bar_text(width=width)
+
+    def test_shows_provider_beside_model(self):
+        assert "claude-sonnet-4-20250514 via anthropic" in self._text("anthropic")
+
+    def test_agent_provider_wins_over_the_cli_seed(self):
+        cli_obj = _attach_agent(
+            _make_cli(provider="openrouter"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        assert cli_obj._get_status_bar_snapshot()["provider"] == "anthropic"
+
+    def test_hidden_when_fields_omit_provider(self):
+        text = self._text("anthropic", fields=["model"])
+        assert "via anthropic" not in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_omitted_entirely_when_no_provider_known(self):
+        assert "via " not in self._text(None)
 
 
 class TestCacheHitRate:

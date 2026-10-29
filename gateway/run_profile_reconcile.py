@@ -22,18 +22,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
-from utils import file_signature
+from hermes_cli.config_backend import ConfigBackendUnavailable
+from utils import file_cache_version
 
 logger = logging.getLogger(__name__)
 
 _PROFILE_RESCAN_INTERVAL_SECS = 30.0
-_PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
+_PROFILE_SIGNATURE_FILES = (".env",)  # config.yaml: the config backend's version, below
 # Bound for one own-gateway liveness probe (``live_gateway_pid_for_home``): the control-socket
 # read it can end in has no timeout of its own — on Windows the named pipe stalls there until
 # its peer answers — so the await needs one. A healthy identify answers in milliseconds.
@@ -42,18 +42,24 @@ _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 def _stat_signature(path: Path) -> Optional[tuple]:
     try:
-        return file_signature(os.stat(path))
+        return file_cache_version(path, always_digest=True)  # stored, compared on a later tick
     except OSError:
         return None
 
 
 def profile_serve_signature(home: Path) -> tuple:
-    """Cheap change detector for a served profile's credentials/config: file signature per file."""
-    sig = []
+    """Change detector for a served profile's credentials/config: the config backend's signature
+    of its config layer, then ``file_cache_version`` of ``.env``. Each is hashed every time
+    (``always_digest``) where it is a file: it is compared long after it was taken, and a racy
+    digest going empty would read as a change and reconnect the profile's adapters. A remote layer
+    changes with no local file change, so its signature is the backend's version. A config backend
+    outage raises ``ConfigBackendUnavailable``; the reconcile cycle contains it and retries."""
+    from hermes_cli.config_backend import config_version_or_none, supports_file_tooling
+    cfg = Path(home) / "config.yaml"
+    sig = [_stat_signature(cfg) if supports_file_tooling() else config_version_or_none(cfg)]
     for name in _PROFILE_SIGNATURE_FILES:
         try:
-            st = os.stat(Path(home) / name)
-            sig.append(file_signature(st))
+            sig.append(file_cache_version(Path(home) / name, always_digest=True))
         except OSError:
             sig.append(None)
     return tuple(sig)
@@ -120,7 +126,7 @@ class GatewayProfileReconcileMixin:
                     await self.reconcile_served_profiles(reason="watcher")
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (Exception, ConfigBackendUnavailable):  # a config outage is a SystemExit by design
                 logger.warning("Served-profile reconcile failed; retrying next cycle", exc_info=True)
 
     async def _sync_hooks_on_consent_change(self) -> None:
@@ -398,10 +404,10 @@ class GatewayProfileReconcileMixin:
         steps). Returns the park reason — reservation released — when another gateway owns the home
         (a stray per-profile daemon) or its store cannot be opened; None when served. An
         adapters-only runner (no authority registry) grows the reservation alone."""
-        from gateway.run_runtime import release_profile_home, reserve_profile_home, serve_profile_runtime
+        from gateway.run_runtime import release_profile_home, reserve_profile_home_in_worker, serve_profile_runtime
         from gateway.runtime_ownership import OwnershipConflict
         try:
-            reserve_profile_home(self, name, home)
+            await reserve_profile_home_in_worker(self, name, home)
         except (OwnershipConflict, OSError) as exc:
             logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
             return f"home owned by another gateway: {exc}"
@@ -409,7 +415,7 @@ class GatewayProfileReconcileMixin:
             return None
         try:
             await serve_profile_runtime(self, name, home)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # unservable now: parked, retried by rescan
             if self.session_authorities.for_home(home) is not None:
                 # Retirement of the failed attempt missed its deadline: its writer may still use
                 # this home, so the reservation and authority stay; the profile is parked (no

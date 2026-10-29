@@ -362,6 +362,69 @@ class TestBlockAnchorThreshold:
 
 
 
+class TestBytePreservation:
+    """sys-mepvca: a fuzzy window may only overwrite bytes the old_string named.
+
+    Live failure (ansible build seat, 2 repair turns in one run): the model
+    names a block WITHOUT an anchor line's trailing comment; block_anchor /
+    context_aware accept the window anyway and the splice rewrites the whole
+    comment-bearing line — bytes outside the named old_string, silently gone.
+    A strategy may now accept a window only when it is recoverable
+    byte-for-byte outside old_string: first/last lines may differ by
+    whitespace/Unicode drift alone, interior lines must be byte-equal."""
+
+    def test_byte_preservation_yaml_trailing_comment_survives(self):
+        # context_aware path: the anchor line is 91% similar once the clause
+        # is hidden, so the old behaviour accepted the window and deleted the
+        # comment. The guard must veto it: the clause is outside old_string.
+        content = (
+            "- name: restart app\n"
+            "  ansible.builtin.systemd:\n"
+            "    name: myapp\n"
+            "    state: restarted\n"
+            "    daemon_reload: true    # required after module-path changes\n"
+        )
+        old = (
+            "  ansible.builtin.systemd:\n"
+            "    name: myapp\n"
+            "    state: restarted\n"
+            "    daemon_reload: true"
+        )
+        new = (
+            "  ansible.builtin.systemd:\n"
+            "    name: myapp\n"
+            "    state: restarted\n"
+            "    forced: false\n"
+            "    daemon_reload: true"
+        )
+        out, count, _strategy, _err = fuzzy_find_and_replace(content, old, new)
+        assert count == 0, (
+            f"splice consumed a trailing comment old_string never named: {out!r}")
+        assert out == content  # untouched, model re-reads and resends
+
+    def test_byte_preservation_sudoers_anchor_clause_survives(self):
+        # block_anchor path: anchors match, middle is exact, but the last
+        # line carries a clause old_string does not name.
+        content = (
+            "deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx,\n"
+            "    /usr/bin/apt-get update\n"
+            "    /usr/bin/systemctl reload nginx    # keep reload for logrotate\n"
+            "backup ALL=(ALL) NOPASSWD: /usr/bin/rsync\n"
+        )
+        old = (
+            "deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx,\n"
+            "    /usr/bin/apt-get update\n"
+            "    /usr/bin/systemctl reload nginx"
+        )
+        new = old.replace("/usr/bin/apt-get update",
+                          "    /usr/bin/apt-get update && /usr/bin/apt-get -y upgrade")
+        out, count, _strategy, _err = fuzzy_find_and_replace(content, old, new)
+        assert count == 0, (
+            "similar-anchor splice accepted an unnamed trailing clause")
+        assert out == content
+        assert "    # keep reload for logrotate" in out
+
+
 class TestEscapeDriftGuard:
     """Tests for the escape-drift guard that catches bash/JSON serialization
     artifacts where an apostrophe gets prefixed with a spurious backslash

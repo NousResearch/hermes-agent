@@ -8,8 +8,8 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def request_binding(adapter, request, durable_key):
-    from gateway.platforms.api_server import _make_request_fingerprint
-    return _make_request_fingerprint({'request': durable_key[1],
+    from gateway.platforms.api_server_idempotency import make_request_fingerprint
+    return make_request_fingerprint({'request': durable_key[1],
         'declared_session_key': adapter._parse_session_key_header(request)[0]},
         keys=('request', 'declared_session_key'))
 

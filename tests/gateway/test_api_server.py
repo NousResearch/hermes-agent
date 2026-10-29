@@ -13,7 +13,6 @@ Tests cover:
 """
 
 import asyncio
-import hashlib
 import json
 import time
 import types
@@ -29,9 +28,6 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
-    _api_request_profile,
-    _IdempotencyCache,
-    _derive_chat_session_id,
     _redact_api_error_text,
     _request_agent_overrides,
     _request_relay_metadata,
@@ -100,104 +96,6 @@ class TestResponseStore:
         assert store.get_conversation("chat-a") == "resp_1"
         store.delete("resp_1")
         assert store.get_conversation("chat-a") is None
-
-
-# ---------------------------------------------------------------------------
-# _IdempotencyCache
-# ---------------------------------------------------------------------------
-
-
-class TestIdempotencyCache:
-    @pytest.mark.asyncio
-    async def test_concurrent_same_key_and_fingerprint_runs_once(self):
-        cache = _IdempotencyCache()
-        gate = asyncio.Event()
-        started = asyncio.Event()
-        calls = 0
-
-        async def compute():
-            nonlocal calls
-            calls += 1
-            started.set()
-            await gate.wait()
-            return ("response", {"total_tokens": 1})
-
-        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-
-        await started.wait()
-        assert calls == 1
-
-        gate.set()
-        first_result, second_result = await asyncio.gather(first, second)
-
-        assert first_result == second_result == ("response", {"total_tokens": 1})
-
-
-class TestRunIdempotentProfileScope:
-    """``_idem_cache`` is process-global; under multiplex every profile's ``/p/<profile>/v1/...`` mirror
-    shares it, so the cache key must carry the request's profile/principal scope and logical route."""
-
-    @pytest.mark.asyncio
-    async def test_same_key_different_profiles_do_not_share_a_cached_response(self, adapter, monkeypatch):
-        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
-        request = MagicMock()
-        request.headers = {"Idempotency-Key": "client-supplied-key"}
-        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
-        calls = []
-
-        async def compute():
-            calls.append(1)
-            return (f"response-{len(calls)}", {"total_tokens": len(calls)})
-
-        token_a = _api_request_profile.set("profile-a")
-        try:
-            outcome_a, err_a = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
-                route="chat_completions")
-        finally:
-            _api_request_profile.reset(token_a)
-
-        token_b = _api_request_profile.set("profile-b")
-        try:
-            outcome_b, err_b = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
-                route="chat_completions")
-        finally:
-            _api_request_profile.reset(token_b)
-
-        assert err_a is None and err_b is None
-        assert len(calls) == 2, "each profile must run its own turn, not reuse the other's cached response"
-        assert outcome_a != outcome_b
-
-    @pytest.mark.asyncio
-    async def test_same_key_same_profile_still_dedupes(self, adapter, monkeypatch):
-        """Regression guard: profile-scoping the cache key must not break same-profile dedup,
-        which is the whole point of the Idempotency-Key contract."""
-        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
-        request = MagicMock()
-        request.headers = {"Idempotency-Key": "client-supplied-key"}
-        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
-        calls = []
-
-        async def compute():
-            calls.append(1)
-            return (f"response-{len(calls)}", {"total_tokens": len(calls)})
-
-        token = _api_request_profile.set("profile-a")
-        try:
-            outcome_1, err_1 = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
-                route="chat_completions")
-            outcome_2, err_2 = await adapter._run_idempotent(
-                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
-                route="chat_completions")
-        finally:
-            _api_request_profile.reset(token)
-
-        assert err_1 is None and err_2 is None
-        assert len(calls) == 1, "second call with the same key+profile+fingerprint must reuse the cached response"
-        assert outcome_1 == outcome_2
 
 
 class TestAdapterInit:
@@ -1077,7 +975,6 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert "messages" in data["error"]["message"]
 
-
     @pytest.mark.asyncio
     async def test_chat_completions_stream_passes_request_model_provider_options(self, adapter):
         app = _create_app(adapter)
@@ -1387,49 +1284,6 @@ class TestChatCompletionsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# _derive_chat_session_id unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestDeriveChatSessionId:
-    def test_deterministic(self):
-        """Same inputs always produce the same session ID."""
-        a = _derive_chat_session_id("sys", "hello")
-        b = _derive_chat_session_id("sys", "hello")
-        assert a == b
-
-
-    def test_different_system_prompt(self):
-        a = _derive_chat_session_id("You are a pirate.", "Hello")
-        b = _derive_chat_session_id("You are a robot.", "Hello")
-        assert a != b
-
-    def test_routed_profile_namespaces_the_id_without_moving_default(self):
-        """Two header-less conversations opening with identical text on different profiles must
-        not share one session/sandbox key (#123989); default/standalone ids stay byte-identical
-        so live conversations survive the upgrade."""
-        legacy = "api-" + hashlib.sha256(b"sys\nhello").hexdigest()[:16]
-        assert _derive_chat_session_id("sys", "hello") == legacy
-        assert _derive_chat_session_id("sys", "hello", "default") == legacy
-        research = _derive_chat_session_id("sys", "hello", "research")
-        assert research != legacy
-        assert research == _derive_chat_session_id("sys", "hello", "research")
-
-    def test_launch_profile_prefix_keeps_the_unprefixed_id(self, monkeypatch, tmp_path):
-        """A gateway launched as ``work`` serves ``/p/work/`` and the bare route as ONE profile:
-        both must derive one id, or the same conversation forks by URL."""
-        import hermes_constants
-        from hermes_cli import profiles
-
-        work = tmp_path / "profiles" / "work"
-        work.mkdir(parents=True)
-        monkeypatch.setattr(hermes_constants, "get_routing_process_hermes_home", lambda: work)
-        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: tmp_path / "profiles" / name)
-        assert _derive_chat_session_id("sys", "hello", "work") == _derive_chat_session_id("sys", "hello")
-        assert _derive_chat_session_id("sys", "hello", "research") != _derive_chat_session_id("sys", "hello")
-
-
-# ---------------------------------------------------------------------------
 # /v1/responses endpoint
 # ---------------------------------------------------------------------------
 
@@ -1467,7 +1321,6 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
-
 
     @pytest.mark.asyncio
     async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):

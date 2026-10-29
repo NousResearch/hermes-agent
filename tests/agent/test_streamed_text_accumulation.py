@@ -120,6 +120,51 @@ class TestFireStreamDeltaEmptiness:
         agent._fire_stream_delta("\n\nagain")
         assert hooked == ["hello", "again"]
 
+    @staticmethod
+    def _refusing_agent():
+        # A finite gateway viewer (`chat -q`) is shown each delta, then the callback raises so the
+        # agent books it as undelivered.
+        agent = _make_agent()
+        shown = []
+
+        def refuse(text):
+            shown.append(text)
+            raise RuntimeError("not delivered")
+
+        agent.stream_delta_callback = refuse
+        agent._stream_callback = None
+        return agent, shown
+
+    def test_refused_delivery_keeps_later_newlines(self):
+        agent, shown = self._refusing_agent()
+        for piece in ["\n\nVERDICT: GREEN", "\n\n", "---", "\nnext"]:
+            agent._fire_stream_delta(piece)
+        assert "".join(shown) == "VERDICT: GREEN\n\n---\nnext"
+        assert agent._current_streamed_assistant_text == ""
+
+    def test_refused_delivery_strips_only_the_reply_opening(self):
+        agent, shown = self._refusing_agent()
+        for piece in ["\n", "\nhello", "\nworld"]:
+            agent._fire_stream_delta(piece)
+        assert shown == ["hello", "\nworld"]
+
+    def test_refused_delivery_strips_again_after_tracking_reset(self):
+        agent, shown = self._refusing_agent()
+        agent._fire_stream_delta("hello")
+        agent._reset_stream_delivery_tracking()
+        agent._fire_stream_delta("\n\nagain")
+        assert shown == ["hello", "again"]
+
+    def test_superseded_writer_does_not_mark_stream_started(self):
+        agent = _make_agent()
+        agent.stream_delta_callback = None
+        agent._stream_callback = None
+        agent._enqueue_stream_hook = lambda event, **f: None
+        checks = iter([False, True])
+        agent._stream_writer_superseded = lambda: next(checks, True)
+        agent._fire_stream_delta("late")
+        assert not getattr(agent, "_stream_text_fired", False)
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

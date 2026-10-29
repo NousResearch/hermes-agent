@@ -369,7 +369,10 @@ class StreamDeliveryMixin:
                 text = text.lstrip("\n")
         if not text:
             return
-        self._stream_text_fired = True
+        # Re-check: a retry may have claimed the stream since the check at the top; a superseded writer
+        # must not mark the new stream's opening as already sent.
+        if not self._stream_writer_superseded():
+            self._stream_text_fired = True
         delivered = self._deliver_to_stream_callbacks(text)
         self._enqueue_stream_hook("on_stream_delta", delta=text, kind="text")
         if delivered:

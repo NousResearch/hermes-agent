@@ -53,6 +53,7 @@ def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]])
         return None
     view = CredentialPool(pool.provider, owned)
     view._persisted_token_pairs = pool._persisted_token_pairs
+    view._persisted_priorities = pool._persisted_priorities
     return view
 
 

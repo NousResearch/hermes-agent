@@ -3351,7 +3351,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             and rule
             and rule.ignore_at_all
             and self._contains_at_all(message)
-            and not self._mentions_self(message)
+            and not self._directly_mentions_self(message)
         ):
             return "group_at_all_ignored"
         if require_mention is None:
@@ -3433,16 +3433,19 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             return bool(sender_ids and not (sender_ids & blacklist))
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
-    def _mentions_self(self, message: Any) -> bool:
-        # @_all is Feishu's @everyone placeholder.
+    def _directly_mentions_self(self, message: Any) -> bool:
+        """Match an explicit bot mention without treating @everyone as a bot mention."""
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
-            return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):
             return True
-        normalized = self._normalize(getattr(message, "message_type", "") or "", raw_content, getattr(message, "mentions", None))
+        normalized = self._normalize(getattr(message, "message_type", "") or "", raw_content, mentions)
         return self._post_mentions_bot(normalized.mentions)
+
+    def _mentions_self(self, message: Any) -> bool:
+        # @_all is Feishu's @everyone placeholder for groups without ignore_at_all.
+        raw_content = getattr(message, "content", "") or ""
+        return "@_all" in raw_content or self._directly_mentions_self(message)
 
     @staticmethod
     def _contains_at_all(message: Any) -> bool:

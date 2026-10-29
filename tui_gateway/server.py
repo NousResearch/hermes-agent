@@ -14790,45 +14790,62 @@ def _(rid, params: dict) -> dict:
     import math
     import time
 
-    from agent.account_usage import fetch_account_usage
+    from agent.account_usage import fetch_pool_account_usage
 
     global _usage_meter_cache
 
     providers = {"claude": "anthropic", "codex": "openai-codex"}
 
     def read(provider: str) -> dict:
-        snapshot = fetch_account_usage(provider)
-        if not snapshot or not snapshot.available:
-            unavailable = {"available": False, "windows": []}
-            reason = getattr(snapshot, "unavailable_reason", None)
-            if reason:
-                unavailable["unavailable_reason"] = reason
-            return unavailable
+        pooled = fetch_pool_account_usage(provider)
 
-        windows = []
-        for window in snapshot.windows:
-            try:
-                label = window.label
-                used = window.used_percent
-            except Exception:
-                continue
-            if (
-                not isinstance(label, str)
-                or not isinstance(used, (int, float))
-                or isinstance(used, bool)
-                or not math.isfinite(float(used))
-            ):
-                continue
-            reset_at = getattr(window, "reset_at", None)
-            windows.append(
+        def shape(snapshot) -> dict:
+            if not snapshot or not snapshot.available:
+                unavailable = {"available": False, "windows": []}
+                reason = getattr(snapshot, "unavailable_reason", None)
+                if reason:
+                    unavailable["unavailable_reason"] = reason
+                return unavailable
+            windows = []
+            for window in snapshot.windows:
+                try:
+                    label = window.label
+                    used = window.used_percent
+                except Exception:
+                    continue
+                if (
+                    not isinstance(label, str)
+                    or not isinstance(used, (int, float))
+                    or isinstance(used, bool)
+                    or not math.isfinite(float(used))
+                ):
+                    continue
+                reset_at = getattr(window, "reset_at", None)
+                windows.append(
+                    {
+                        "label": label,
+                        "used_percent": round(max(0.0, min(100.0, float(used)))),
+                        "remaining_percent": round(max(0.0, min(100.0, 100.0 - float(used)))),
+                        "reset_at": reset_at.isoformat() if reset_at is not None else None,
+                    }
+                )
+            return {"available": bool(windows), "windows": windows}
+
+        accounts = []
+        for account in pooled:
+            account_shape = shape(account.snapshot)
+            account_shape.update(
                 {
-                    "label": label,
-                    "used_percent": round(max(0.0, min(100.0, float(used)))),
-                    "remaining_percent": round(max(0.0, min(100.0, 100.0 - float(used)))),
-                    "reset_at": reset_at.isoformat() if reset_at is not None else None,
+                    "label": account.label,
+                    "active": account.active,
+                    "status": account.status,
                 }
             )
-        return {"available": bool(windows), "windows": windows}
+            accounts.append(account_shape)
+        active = next((account for account in pooled if account.active), pooled[0] if pooled else None)
+        result = shape(active.snapshot) if active else {"available": False, "windows": []}
+        result["accounts"] = accounts
+        return result
 
     fresh_result = None
     with _usage_meter_cache_lock:

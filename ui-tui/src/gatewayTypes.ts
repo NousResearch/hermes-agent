@@ -78,6 +78,16 @@ export interface SystemUsageMeterProvider {
   available: boolean
   unavailable_reason?: string
   windows: SystemUsageMeterWindow[]
+  accounts?: SystemUsageMeterAccount[]
+}
+
+export interface SystemUsageMeterAccount {
+  label: string
+  active: boolean
+  status?: string | null
+  available: boolean
+  unavailable_reason?: string
+  windows: SystemUsageMeterWindow[]
 }
 
 export interface SystemUsageMeterResponse {

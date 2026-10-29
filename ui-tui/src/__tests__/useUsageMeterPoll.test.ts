@@ -53,4 +53,23 @@ describe('toUsageMeterInfo', () => {
       codex: { available: false, windows: [] }
     })
   })
+
+  it('normalizes pooled accounts without exposing credential material', () => {
+    const info = toUsageMeterInfo({
+      claude: {
+        available: true,
+        windows: [{ label: 'Current session', used_percent: 12 }],
+        accounts: [
+          { label: 'work', active: true, available: true, windows: [{ label: 'Session', used_percent: 12 }] },
+          { label: 'backup', active: false, available: false, windows: [], unavailable_reason: 'HTTP 429' }
+        ]
+      },
+      codex: { available: false, windows: [] }
+    })
+
+    expect(info?.claude.accounts).toEqual([
+      { label: 'work', active: true, available: true, windows: [{ label: 'Session', usedPercent: 12 }] },
+      { label: 'backup', active: false, available: false, unavailableReason: 'HTTP 429', windows: [] }
+    ])
+  })
 })

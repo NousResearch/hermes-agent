@@ -9,6 +9,7 @@ Direct-SQL setup is used to construct that state deterministically.
 from __future__ import annotations
 
 import argparse
+
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,36 @@ def test_promote_refuses_undone_parent_and_names_the_real_remedy(conn):
     assert err and parent in err
     assert kb.get_task(conn, child).status == "todo"
     assert kb.claim_task(conn, child) is None  # still gated; nothing pretended
+
+
+def test_recompute_ready_preserves_manual_todo_hold_across_cycles(conn):
+    """An explicit backlog hold survives every dispatcher recompute pass."""
+    task_id = kb.create_task(conn, title="parked backlog", assignee="setup")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', todo_hold = 1 WHERE id = ?",
+            (task_id,),
+        )
+
+    assert kb.recompute_ready(conn) == 0
+    assert kb.recompute_ready(conn) == 0
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "todo"
+
+
+@pytest.mark.parametrize("kind", ["dependency_wait", "reclaimed", "timed_out", "crashed"])
+def test_recompute_ready_promotes_lifecycle_todo_after_parent_completes(conn, kind):
+    """Automatic dependency/retry/reclaim/failure todo states are never manual holds."""
+    child, (parent,) = _stuck_todo(conn, parents_done=False)
+    with kb.write_txn(conn):
+        kb._append_event(conn, child, kind, {"retry_status": "ready"})
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (parent,))
+
+    assert kb.recompute_ready(conn) == 1
+    task = kb.get_task(conn, child)
+    assert task is not None
+    assert task.status == "ready"
 
 
 

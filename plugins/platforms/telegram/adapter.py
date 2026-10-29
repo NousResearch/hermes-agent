@@ -151,6 +151,25 @@ from gateway.platforms.base import (
 # Telegram truncates ``answerCallbackQuery`` text at 200 chars; ``BotCommand`` descriptions at 256.
 _TOAST_LIMIT = 200
 _BOT_COMMAND_DESCRIPTION_LIMIT = 256
+_CLARIFY_BUTTON_LABEL_LIMIT = 48
+
+
+def _clarify_button_label(choice: object) -> str:
+    """Return a compact human-readable Telegram label for a clarify choice.
+
+    The callback stays index-based, so labels are presentation only. Strip the
+    recommendation suffix, collapse whitespace, and truncate at a word boundary
+    rather than falling back to opaque numeric buttons.
+    """
+    from tools.clarify_tool import strip_recommended
+
+    label = " ".join(strip_recommended(str(choice)).split()) or "Option"
+    if len(label) <= _CLARIFY_BUTTON_LABEL_LIMIT:
+        return label
+    shortened = label[: _CLARIFY_BUTTON_LABEL_LIMIT - 1].rstrip()
+    if " " in shortened:
+        shortened = shortened.rsplit(" ", 1)[0]
+    return f"{shortened.rstrip()}…"
 
 
 def _unauthorized() -> str:
@@ -4285,16 +4304,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
+        """Render a clarify prompt: short choice-label buttons plus "✏️ Other (type answer)" (flips to
         text-capture mode); without choices, plain question and the gateway text-intercept captures."""
         def build():
             text = f"❓ {_html.escape(question)}"
             keyboard = None
             if choices:
-                # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
+                # Keep full option text in the body while making each tap target self-explanatory.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
+                rows = [[InlineKeyboardButton(_clarify_button_label(choice), callback_data=f"cl:{clarify_id}:{idx}")]
+                        for idx, choice in enumerate(choices)]
                 rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)

@@ -2212,6 +2212,10 @@ class FeishuAdapter(BasePlatformAdapter):
             if action_value.get("hermes_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
+        if isinstance(action_value, dict):
+            replacement_card = action_value.get("hermes_replace_card")
+            if isinstance(replacement_card, dict):
+                return self._card_response(replacement_card)
         return self._card_response()
 
     @staticmethod

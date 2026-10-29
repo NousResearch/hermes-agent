@@ -596,6 +596,48 @@ class TestBrowserVaultTools:
             redact.clear_vault_redaction_values()
 
 
+    @pytest.mark.parametrize("number, groups", [
+        ("4111111111111111", ("4111", "1111", "1111", "1111")),
+        ("378282246310005", ("3782", "822463", "10005")),
+        ("36227206271667", ("3622", "720627", "1667")),
+    ])
+    def test_payment_fill_registers_only_card_secrets_for_redaction(self, store, number, groups):
+        """Every later tool result is scrubbed of the registered values, so a payment fill registers
+        the card number (as typed, spaced or dashed) and CVC, and never the
+        holder name, expiry or postcode, which are common strings elsewhere."""
+        from tools import browser_vault_tool
+        from agent import redact
+
+        meta = store.add_item(kind="payment", label="Card", origin="https://shop.test", secret={**_CARD, "card_number": number})
+        controls = [
+            {"autocomplete": "cc-number", "index": 0, "type": "text"},
+            {"autocomplete": "cc-name", "index": 1, "type": "text"},
+            {"label": "Expiry (MM/YY)", "index": 2, "type": "text"},
+            {"label": "CVC", "index": 3, "type": "text"},
+            {"autocomplete": "postal-code", "index": 4, "type": "text"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://shop.test/checkout"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret",
+                              return_value={"success": True, "result": json.dumps({"filled": 5})}), \
+                 patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+                assert json.loads(browser_vault_tool.browser_vault_fill(meta.id))["success"] is True
+            text = "A User, 94110, renews 2029, month 7, build 1.27.3, date 07/29, ratio 107/290, blog /2025/07/29/"
+            assert redact.redact_sensitive_text(text) == text
+            for secret in (number, " ".join(groups), "-".join(groups)):
+                assert secret not in redact.redact_sensitive_text(f"page says {secret}."), secret
+            assert "cvc 123." not in redact.redact_sensitive_text("cvc 123.")
+        finally:
+            redact.clear_vault_redaction_values()
+
+
 class TestVaultHardening:
     """Read-deny, backup perms-tightening, canonical dir securing.
 

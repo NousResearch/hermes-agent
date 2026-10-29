@@ -28,6 +28,7 @@ vi.mock('@/hermes', async importOriginal => ({
   getProfiles: async () => ({ profiles: [] })
 }))
 
+import { GATEWAY_NOT_CONNECTED_MESSAGE } from '@/api/client'
 import { queryClient } from '@/lib/query-client'
 import { $notifications } from '@/store/notifications'
 import {
@@ -61,6 +62,34 @@ const renderModal = () =>
       </QueryClientProvider>
     </MemoryRouter>
   )
+
+// Native Desktop on a remote backend: the agent half's install throws `refusal`, the desktop half answers
+// `desktopResult`.
+const nativeRemote = (refusal: Error, desktopResult: Record<string, unknown> = { ok: true, pluginName: 'pkg' }) => {
+  requestGateway.mockImplementation(async (method, params) => {
+    if (method === 'plugins.manage' && params?.action === 'install') {
+      throw refusal
+    }
+
+    return { plugins: [] }
+  })
+
+  const probePluginRepo = vi.fn(async () => ({
+    ok: true,
+    agent: true,
+    agentName: 'pkg',
+    desktop: true,
+    desktopName: 'pkg',
+    sha: V1,
+    warnings: []
+  }))
+
+  const installDesktopPlugin = vi.fn(async (_payload: { force?: boolean; sha?: string }) => desktopResult)
+
+  vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo })
+
+  return { installDesktopPlugin, probePluginRepo }
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -202,38 +231,37 @@ describe('native Desktop on a remote backend: the desktop half cannot follow the
       [V2, true]
     ])
   })
+
+  // Each signal alone names the landed tree: the error data's `plugin_name`, and for an older backend the
+  // `enable refused: ` prefix.
+  it.each([
+    [
+      'named in the error data',
+      new JsonRpcGatewayError('dependency conflict', { code: 5026, data: { plugin_name: 'pkg' } })
+    ],
+    ['from an older backend', new JsonRpcGatewayError('enable refused: dependency conflict', { code: 5026 })]
+  ])(
+    'counts an agent half that landed but could not be enabled as in when the desktop half cannot follow (%s)',
+    async (_signal, refusal) => {
+      const { probePluginRepo } = nativeRemote(refusal, {
+        ok: false,
+        sourceMoved: true,
+        error: 'The commit you reviewed could not be checked out.'
+      })
+
+      renderModal()
+      act(() => openPluginInstallRequest({ repo: REPO }))
+      await waitFor(() => expect(installButton()?.disabled).toBe(false))
+      fireEvent.click(installButton()!)
+
+      expect(await screen.findByText(new RegExp(`agent half is in at commit ${V1.slice(0, 12)}`))).toBeTruthy()
+      await waitFor(() => expect(probePluginRepo).toHaveBeenCalledTimes(2))
+      expect(installButton()?.disabled).toBe(true)
+    }
+  )
 })
 
 describe('native Desktop on a remote backend: a refused agent half stops its desktop half', () => {
-  const nativeRemote = (refusal: Error) => {
-    requestGateway.mockImplementation(async (method, params) => {
-      if (method === 'plugins.manage' && params?.action === 'install') {
-        throw refusal
-      }
-
-      return { plugins: [] }
-    })
-
-    const probePluginRepo = vi.fn(async () => ({
-      ok: true,
-      agent: true,
-      agentName: 'pkg',
-      desktop: true,
-      desktopName: 'pkg',
-      sha: V1,
-      warnings: []
-    }))
-
-    const installDesktopPlugin = vi.fn(async (_payload: { force?: boolean; sha?: string }) => ({
-      ok: true,
-      pluginName: 'pkg'
-    }))
-
-    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo })
-
-    return installDesktopPlugin
-  }
-
   const forceInstall = async () => {
     renderModal()
     act(() => openPluginInstallRequest({ repo: REPO }))
@@ -243,7 +271,7 @@ describe('native Desktop on a remote backend: a refused agent half stops its des
   }
 
   it('a forced replacement the backend refuses replaces no desktop half', async () => {
-    const installDesktopPlugin = nativeRemote(
+    const { installDesktopPlugin } = nativeRemote(
       new JsonRpcGatewayError('install refused: consent required for the replacement', {
         code: 5026,
         data: { placed: false }
@@ -260,7 +288,7 @@ describe('native Desktop on a remote backend: a refused agent half stops its des
   it('a forced install that fails after its tree may have been published still gets its desktop half', async () => {
     // Enabling the published tree read a config that changed under it: the agent half is at the new commit,
     // and the error carries no `placed: false`, so the desktop half must follow it.
-    const installDesktopPlugin = nativeRemote(
+    const { installDesktopPlugin } = nativeRemote(
       new JsonRpcGatewayError('config.yaml: plugins.enabled must be a list', { code: 5026 })
     )
 
@@ -273,7 +301,7 @@ describe('native Desktop on a remote backend: a refused agent half stops its des
   it('a forced install whose connection dropped before any answer still gets its desktop half', async () => {
     // A heartbeat failure rejects every pending call with a plain Error: the backend never answered, so its
     // tree may well have landed at the reviewed commit. Only a backend refusal means it did not.
-    const installDesktopPlugin = nativeRemote(new Error('WebSocket heartbeat acknowledgement timed out'))
+    const { installDesktopPlugin } = nativeRemote(new Error('WebSocket heartbeat acknowledgement timed out'))
 
     await forceInstall()
 
@@ -284,7 +312,7 @@ describe('native Desktop on a remote backend: a refused agent half stops its des
   it('a forced install that ends on a missing connection still gets its desktop half', async () => {
     // The request resends after a dropped connection: the first attempt may have landed before the resend
     // found no connection, so this is no proof the agent half is still at its old commit.
-    const installDesktopPlugin = nativeRemote(new Error('Hermes gateway is not connected'))
+    const { installDesktopPlugin } = nativeRemote(new Error(GATEWAY_NOT_CONNECTED_MESSAGE))
 
     await forceInstall()
 

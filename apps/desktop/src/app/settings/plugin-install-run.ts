@@ -317,9 +317,9 @@ function agentStopsInstall(
     : null
 }
 
-/** The outcome of an install that reported errors. The agent half in at the reviewed commit while the desktop
- *  half could not follow it is `partial`: a fresh review would lead the next Install to put the desktop half
- *  down at another commit beside it. */
+/** The outcome of an install that reported errors. The agent half in at the reviewed commit (enabled or only
+ *  landed) while the desktop half could not follow it is `partial`: a fresh review would lead the next Install
+ *  to put the desktop half down at another commit beside it. */
 function failedOutcome(plan: InstallPlan, deps: InstallDeps, report: Report, agentInstalled: boolean): InstallOutcome {
   if (agentInstalled && report.sourceMoved) {
     const sha = plan.withoutReviewedCommit ? '' : (reviewedCommit(plan)?.slice(0, 12) ?? '')
@@ -362,7 +362,7 @@ export async function runPluginInstall(plan: InstallPlan, deps: InstallDeps): Pr
   }
 
   if (report.errors.length > 0) {
-    return failedOutcome(plan, deps, report, Boolean(agentResult?.ok))
+    return failedOutcome(plan, deps, report, Boolean(agentResult?.ok || agentResult?.landed))
   }
 
   // Open chats of the profile already have the plugin's MCP tools and skills; say which servers did not connect.

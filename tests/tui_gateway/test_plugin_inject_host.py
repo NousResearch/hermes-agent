@@ -11,8 +11,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import hermes_yaml as yaml
+import pytest
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from plugins.memory import _ProviderCollector
 from tui_gateway import server
 
 
@@ -75,10 +77,15 @@ def test_tui_injector_slot_does_not_replace_the_gateway_slot():
     assert manager.inject_gateway_message(session_key="kept") is True
 
 
-def test_reported_session_key_is_queued_not_the_ui_session_id(tmp_path, monkeypatch):
+@pytest.mark.parametrize("memory_provider", [False, True])
+def test_reported_session_key_is_queued_not_the_ui_session_id(tmp_path, monkeypatch, memory_provider):
     """The durable session_key, not the ephemeral UI sid, selects the prompt queue."""
     _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
     context, manager = _context()
+    if memory_provider:
+        collector = _ProviderCollector("notify-plugin")
+        collector._context = context
+        context = collector
     gateway = MagicMock(return_value=True)
     manager.set_gateway_message_injector(object(), gateway)
 

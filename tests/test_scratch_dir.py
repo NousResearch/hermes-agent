@@ -29,6 +29,20 @@ def test_termux_temp_dir_skips_missing_terminal_override(tmp_path, monkeypatch):
     assert _termux_safe_tempdir() == str(fallback)
 
 
+def test_termux_temp_dir_skips_unwritable_terminal_override(tmp_path, monkeypatch):
+    from hermes_constants import _termux_safe_tempdir
+
+    inaccessible = tmp_path / "inaccessible"
+    fallback = tmp_path / "fallback"
+    inaccessible.mkdir()
+    fallback.mkdir()
+    monkeypatch.setenv("TERMINAL_TEMP_DIR", str(inaccessible))
+    monkeypatch.setenv("TMPDIR", str(fallback))
+    real_access = os.access
+    monkeypatch.setattr(os, "access", lambda path, mode: path != str(inaccessible) and real_access(path, mode))
+    assert _termux_safe_tempdir() == str(fallback)
+
+
 def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, tmp_path, monkeypatch):
     """The boot hook returns with TMPDIR pointing at a scratch dir that already exists and
     starts exactly one prune process, for that dir; the prompt build starts no other. A routed

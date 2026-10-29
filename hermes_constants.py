@@ -846,7 +846,7 @@ def _termux_safe_tempdir() -> str:
     import tempfile
     for key in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
         candidate = os.environ.get(key)
-        if candidate and candidate.startswith("/") and os.path.isdir(candidate):
+        if candidate and candidate.startswith("/") and os.path.isdir(candidate) and os.access(candidate, os.W_OK | os.X_OK):
             return candidate.rstrip("/") or "/"
     return tempfile.gettempdir()
 

@@ -592,7 +592,7 @@ class TestStaleStagingDirSweep(unittest.TestCase):
         from tools.code_kernel import _sweep_stale_staging_dirs
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("tools.code_kernel.tempfile.gettempdir", return_value=tmp):
+            with patch("tools.code_kernel._termux_safe_tempdir", return_value=tmp):
                 old = Path(tmp, "hermes_kernel_old")
                 young = Path(tmp, "hermes_kernel_young")
                 bystander = Path(tmp, "unrelated_dir")

@@ -79,7 +79,7 @@ KERNEL_RUNNER_SOURCE = f'''\
 import contextlib
 import io
 import json
-from hermes_constants import _termux_safe_tempdir
+import os
 import sys
 import threading
 import traceback

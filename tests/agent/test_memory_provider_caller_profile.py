@@ -515,3 +515,55 @@ def test_untrackable_provider_instance_fails_closed_only_when_multiplexed(homes)
         assert not claim_instance(_NoWeakref(), alpha_home)
     finally:
         reset_multiplex_context(token)
+
+
+# -- Cross-home rebinding with multiplexing OFF (#146293) ---------------------------------------------
+# A multi-profile host that does not turn on the gateway multiplexer (WebUI, desktop backend,
+# embedding app) must not be able to re-initialize a provider instance another live agent still
+# holds. The multiplex-flagged variant is covered above; these pin the multiplexing-off shape.
+
+
+def test_multiplexing_off_second_profile_cannot_rebind_a_live_instance(homes, caplog):
+    alpha_home, beta_home = homes
+    shared = _InstanceScopedProvider()
+    alpha = _manager(alpha_home, shared)
+    beta = _manager(beta_home, shared)  # no `multiplexed` fixture: the guard must not need it
+    # The first owner keeps the instance and its binding; the second got a refusal, not a rebind.
+    assert shared._home == str(alpha_home)
+    assert alpha.providers == [shared] and beta.providers == [], (alpha.providers, beta.providers)
+    assert not beta.has_tool(_HOOK_TOOL)
+    with _Scope(alpha_home):
+        assert json.loads(alpha.handle_tool_call(_HOOK_TOOL, {})) == {"ok": True}
+    assert [e[1] for e in _InstanceScopedProvider.events] == [str(alpha_home)]
+    logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
+    assert "memory_provider_instance_shared" in logged and str(beta_home) in logged, logged
+
+
+def test_multiplexing_off_rebind_refusal_leaves_the_first_agents_store_intact(homes):
+    # The end-to-end damage the issue reports: beta's build must not redirect alpha's writes.
+    alpha_home, beta_home = homes
+    shared = _InstanceScopedProvider()
+
+    class _Recording(_InstanceScopedProvider):
+        writes: list = []
+
+        def handle_tool_call(self, tool_name, args, **kwargs):
+            type(self).writes.append(kwargs["hermes_home"])
+            return super().handle_tool_call(tool_name, args, **kwargs)
+
+    alpha = _manager(alpha_home, shared)
+    _manager(beta_home, shared)  # refused now, where the bug re-pointed `shared` to beta
+    with _Scope(alpha_home):
+        assert json.loads(alpha.handle_tool_call(_HOOK_TOOL, {"content": "alpha private note"})) == {"ok": True}
+    assert _Recording.writes == []
+    assert [e[1] for e in _InstanceScopedProvider.events] == [str(alpha_home)]
+
+
+def test_multiplexing_off_distinct_instances_still_each_serve_their_profile(homes):
+    # The guard refuses a shared INSTANCE, not multi-profile use itself: two instances of the
+    # same class remain fine, which is the contract every conforming provider relies on.
+    alpha_home, beta_home = homes
+    first, second = _InstanceScopedProvider(), _InstanceScopedProvider()
+    alpha, beta = _manager(alpha_home, first), _manager(beta_home, second)
+    assert (first._home, second._home) == (str(alpha_home), str(beta_home))
+    assert alpha.providers == [first] and beta.providers == [second]

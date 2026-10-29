@@ -109,9 +109,14 @@ def _forget(pid: int, ref: weakref.ref) -> None:
 
 
 def claim_instance(provider: Any, home: Any) -> bool:
-    """Record that ``provider`` (the instance) is bound to ``home``. False on a multiplexed process
-    when another profile already bound this same instance (initializing it again would rebind the
-    other profile's store), or when the instance can't be tracked at all (no weak reference)."""
+    """Record that ``provider`` (the instance) is bound to ``home``. False when another profile
+    already bound this same live instance — whatever the multiplex flag says (#146293) — or
+    when the instance can't be tracked at all (no weak reference).
+
+    Rebinding was only ever guarded on the multiplex flag, so a multi-profile host with
+    multiplexing off (WebUI, desktop, an embedding app) silently re-pointed an instance another
+    live agent was still using: cross-profile memory reads/writes with nothing logged. A
+    single-profile process names the same home on every claim, so it is unaffected."""
     from agent.secret_scope import is_multiplex_active
     key = _home_key(home) or str(home)
     multiplexed = is_multiplex_active()
@@ -119,7 +124,7 @@ def claim_instance(provider: Any, home: Any) -> bool:
     with _claims_lock:
         entry = _claims.get(pid)
         owner = entry[1] if entry is not None and entry[0]() is provider else None
-        if owner is not None and owner != key and multiplexed:
+        if owner is not None and owner != key:
             logger.warning("Memory provider '%s' refused for profile home %r (%s): this same provider instance "
                            "is already bound to %r; a provider must give every agent its own instance",
                            getattr(provider, "name", "?"), str(home), SHARED_INSTANCE_REFUSAL, owner)
@@ -132,6 +137,9 @@ def claim_instance(provider: Any, home: Any) -> bool:
                                "tracked (no weak reference support), so sharing it can't be ruled out",
                                getattr(provider, "name", "?"), str(home), SHARED_INSTANCE_REFUSAL)
                 return False
+            # A shared instance can't be RULED OUT without a weak reference, but a single-profile
+            # process (the only supported shape without multiplexing) has one home anyway, so
+            # refusing here would break third-party providers for no isolation gain.
             return True
         _claims[pid] = (ref, key)
     return True

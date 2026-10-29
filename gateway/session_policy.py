@@ -436,8 +436,9 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     model = params.get('model')
     if 'model' in params and (not isinstance(model, str) or not model.strip()):
         _refuse('model', 'must be a non-empty string')
+    terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     cwd = params.get('cwd', str(resolve_agent_cwd()))
-    if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
+    if not _absolute_workspace(cwd, terminal) or not (_container_workspace(cwd, terminal) or Path(cwd).is_dir()):
         _refuse('cwd', 'must be an absolute path to an existing directory')
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
@@ -461,7 +462,6 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
     coding_posture = named and _in_coding_workspace(config, source, cwd)
     enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture, bypass=ignore_user_config)
-    terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
     if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
@@ -496,6 +496,20 @@ def terminal_uses_host_cwd(terminal):
     backend = str(terminal.get('TERMINAL_ENV') or 'local').strip().lower()
     mounts = str(terminal.get('TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     return backend == 'local' or (backend == 'docker' and mounts)
+
+
+def _container_workspace(cwd, terminal):
+    """Container paths belong to the backend, not the gateway's filesystem (#140527)."""
+    from tools.terminal_tool_config import _is_container_backend
+
+    return (isinstance(terminal, dict) and isinstance(cwd, str) and cwd.startswith('/') and not cwd.startswith('//')
+            and _is_container_backend(str(terminal.get('TERMINAL_ENV') or 'local'))
+            and not terminal_uses_host_cwd(terminal))
+
+
+def _absolute_workspace(cwd, terminal):
+    return (isinstance(cwd, str) and '\x00' not in cwd
+            and (Path(cwd).is_absolute() or _container_workspace(cwd, terminal)))
 
 
 def _profile_workspace_cwd(home):
@@ -985,7 +999,7 @@ def restore_policy(data):
         surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
-                or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
+                or not _absolute_workspace(policy.cwd, json.loads(policy.terminal_json))
                 or not isinstance(policy.model, str) or not policy.model.strip()
                 or not isinstance(policy.toolsets, (list, tuple))
                 or any(not isinstance(name, str) for name in policy.toolsets)
@@ -1066,9 +1080,9 @@ def policy_for_source(runner, source):
 
 
 def workspace_ready(policy) -> bool:
-    """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    turn runs in a missing directory."""
-    return Path(policy.cwd).is_dir()
+    """Host workspaces must exist here; container workspaces are checked by their backend."""
+    terminal = json.loads(policy.terminal_json)
+    return _container_workspace(policy.cwd, terminal) or Path(policy.cwd).is_dir()
 
 
 def workspace_unavailable_result(policy) -> dict:

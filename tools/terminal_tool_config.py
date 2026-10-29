@@ -230,6 +230,16 @@ def _is_unusable_container_cwd(cwd: str, *, mounted_host: str | None = None) -> 
         return False
     if _is_mounted_host_cwd(cwd, mounted_host):
         return True
+    # An explicit Docker volume proves that even a host-shaped POSIX path exists in the
+    # container namespace. Keep descendants too, but never a sibling with a shared prefix.
+    if cwd.startswith("/") and _tenv("TERMINAL_ENV") == "docker":
+        from tools.environments.docker import _split_volume_spec
+
+        volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
+        for spec in volumes if isinstance(volumes, list) else ():
+            mount = _split_volume_spec(spec)
+            if mount and translate_mounted_host_path(posixpath.normpath(cwd), posixpath.normpath(mount[1]), mount[1]):
+                return False
     return _is_host_cwd(cwd) or not os.path.isabs(cwd)
 
 

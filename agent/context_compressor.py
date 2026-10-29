@@ -39,7 +39,7 @@ from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
-    elide_keeping_skill_safety_rule, with_skill_safety_rule,
+    elide_keeping_skill_safety_rule, with_skill_safety_rule, tail_cut_progress_floor,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -5098,9 +5098,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 
-        # Floor guarantees progress (>= 1 message claimed); re-align FORWARD only so a raised cut
+        # Floor guarantees progress (>= 1 non-handoff message claimed); re-align FORWARD only so a raised cut
         # can't split a tool group (backward would give the floor's message back).
-        return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
+        return min(n, self._align_boundary_forward(messages, max(cut_idx, tail_cut_progress_floor(self, messages, head_end, cut_idx))))
 
     def has_content_to_compress(self, messages: list[dict[str, Any]]) -> bool:
         """True if a non-empty middle region exists (lets the gateway ``/compress`` guard skip the LLM call)."""
@@ -5484,7 +5484,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return canonical_messages
         prepared = self._take_prepared_summary(
-            messages, compress_start, compress_end, fresh=bool(force or focus_topic or bypass_cooldown),
+            messages, compress_start, fresh=bool(force or focus_topic or bypass_cooldown),
             provider_context=bool(memory_context.strip()),
         )
         if prepared:

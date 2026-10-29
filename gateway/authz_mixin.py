@@ -307,6 +307,14 @@ class GatewayAuthorizationMixin:
         """
         if source is None:
             return None
+        from gateway.session_detached import detached_route_of
+        if detached_route_of(source):
+            # A conversation its chat moved past answers its app viewers only, through the local
+            # adapter's event-stream delivery (gateway/session_detached.py), never the chat.
+            from gateway.session_identity import identity_of
+            identity = identity_of(source)
+            profile = identity.runtime_profile if identity is not None else getattr(source, "profile", None)
+            return self._adapters_for_profile(profile).get(Platform.LOCAL)
         adapter = self._intake_adapter_for(source)
         if adapter is not None:
             return adapter
@@ -498,7 +506,11 @@ class GatewayAuthorizationMixin:
         if adapter is None:
             return False
         extra = _adapter_config_extra(adapter)
-        adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
+        # ``group_allow_from`` is a separate group list (Telegram); an adapter with a single user
+        # allowlist (Discord) declares ``allow_from_covers_groups`` so its groups read ``allow_from``.
+        groups_use_allow_from = getattr(adapter, "allow_from_covers_groups", False) is True
+        group_key = "allow_from" if groups_use_allow_from else "group_allow_from"
+        adapter_allow = extra.get(group_key if is_group else "allow_from")
         if not adapter_allow:
             # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
             # under multiplex only the default profile's list reaches the env (first-writer-wins

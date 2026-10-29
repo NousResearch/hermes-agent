@@ -394,9 +394,8 @@ def _finalize_routing(agent, api_mode, credential_pool):
 
     _base_lower = str(agent.base_url or "").lower()
     if (
-        # GPT-5.x models usually require the Responses API path, but some providers have exceptions (for
-        # example Copilot's gpt-5-mini still uses chat completions). ACP runtimes are excluded: an ACP
-        # client handles its own routing and does not implement the Responses API surface. Keyed on the
+        # GPT-5.x models usually require the Responses API path; a profile's api_mode_for_model may keep one on
+        # chat completions. ACP runtimes are excluded: an ACP client routes itself (no Responses surface). Keyed on the
         # `acp://` scheme AND the profile's external_process auth_type (an `<X>_ACP_BASE_URL` override
         # can carry an https marker), not one vendor, so every ACP client is covered. When api_mode was explicitly
         # provided, respect it — the user knows what their endpoint supports (#10473). Exception: Azure
@@ -740,20 +739,22 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
         client_kwargs["default_query"] = {k: v[0] for k, v in parse_qs(_parsed_url.query).items()}
     if _provider_timeout is not None:
         client_kwargs["timeout"] = _provider_timeout
-    # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the
-    # provider profile's auth_type, not one vendor slug, so out-of-tree external_process
-    # plugin providers get the same launch path as the built-in copilot-acp (#102421).
+    # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the profile's
+    # auth_type, not a vendor slug: every external_process plugin gets this launch path (#102421).
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     if _is_external_process_provider(agent.provider):
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
+    from agent.provider_route_hooks import route_answer
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
         client_kwargs["default_headers"] = _headers_for(api_key, base_url)
+    elif _route_headers := route_answer("client_headers", provider=str(agent.provider or ""), base_url=base_url, scope=agent,
+                                        api_key=api_key if isinstance(api_key, str) else ""):
+        client_kwargs["default_headers"] = _route_headers
     elif "default_headers" not in client_kwargs:
-        # Fall back to profile.default_headers for providers that declare custom headers
-        # (Vercel AI Gateway attribution, Kimi User-Agent on non-kimi.com endpoints).
+        # Static profile.default_headers (Vercel AI Gateway attribution, Kimi UA on non-kimi.com endpoints).
         with suppress(Exception):
             from providers import get_provider_profile as _gpf
             _ph = _gpf(agent.provider)
@@ -977,7 +978,6 @@ _HOST_DEFAULT_HEADERS: list[tuple[str, Callable[[Any, str], dict[str, str]]]] = 
     ("integrate.api.nvidia.com",
      _lazy_headers("agent.auxiliary_client", "build_nvidia_nim_headers", pass_base=True)),
     ("api.routermint.com", _lazy_headers("agent.client_lifecycle", "_routermint_headers")),
-    ("githubcopilot.com", _lazy_headers("hermes_cli.models", "copilot_default_headers")),
     ("api.kimi.com", lambda _k, _b: {"User-Agent": "claude-code/0.1.0"}),
     ("portal.qwen.ai", _lazy_headers("agent.client_lifecycle", "_qwen_portal_headers")),
     ("chatgpt.com", _lazy_headers("agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
@@ -1009,10 +1009,10 @@ def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
 
 
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
-    # A feature that left core for a catalog plugin (Home Assistant) is installed for a home that
-    # used it, once per process, before discovery so its tools are in this agent's snapshot.
+    # A feature that left core (Home Assistant) is installed once per process before discovery, so its tools
+    # are in this snapshot; outcomes wait for a turn someone sees (deliver_kept_startup_notices), maybe not ours.
     from hermes_cli.left_core_migration import recover_at_startup
-    recover_at_startup(say=getattr(agent, "_emit_startup_warning", None))
+    recover_at_startup()
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:
@@ -2079,7 +2079,7 @@ def _init_usage_state(agent):
 # Per-session usage accounting.
 _USAGE_STATE: dict[str, Any] = {
     "_user_turn_count": 0,
-    "_is_user_initiated_turn": False,  # Copilot x-initiator: first call of a user turn = "user"
+    "_is_user_initiated_turn": False,  # first API call of a user turn (provider request_headers attribution)
     # Usage anchors (agent/usage_anchor.py): last response's exact usage + transcript
     # snapshot; invalidated on compaction/session switch so stale anchors never suppress compression.
     "_usage_anchor": None,

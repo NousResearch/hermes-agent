@@ -9,8 +9,7 @@ compressor are untouched, so the prompt cache is too.
 
 At the next automatic threshold compaction ``compress`` takes the completed
 summary if the messages it covers are still the same messages: same session,
-same head boundary, a boundary no later than the current tail cut, and the same
-message structure (roles, tool call and result ids) up to that boundary, each
+same head boundary, and the same message structure (roles, tool call and result ids) up to that boundary, each
 message vouched for by its durable ``message_uid``. The text of a persisted
 message is not compared: plugins rewrite text in place, and a summary written
 before such a rewrite still summarises the same messages. Only a message that
@@ -18,7 +17,9 @@ has no uid on one side (caller-supplied history that is never persisted) is
 compared by text, since nothing else can tell it from a different message. On a hit the summary replaces
 ``messages[start:candidate_end]`` and every message after the candidate
 boundary, however many arrived since the pass started, stays verbatim in the
-tail. On a miss compaction runs inline exactly as without the flag.
+tail. Where the fresh plan would cut does not matter, earlier or later: the
+summary is never redone over a moved cut, and the candidate boundary is the
+tail's start. On a miss compaction runs inline exactly as without the flag.
 
 When no completed summary exists but a running pass fits, compaction waits for
 that pass instead of starting the same summary over: the pass's streamed
@@ -176,16 +177,13 @@ def prefix_identities(messages: list[dict[str, Any]], end: int) -> tuple[_Identi
     return tuple(_message_identity(msg) for msg in messages[:end])
 
 
-def _mismatch(
-    window: _Window, messages: list[dict[str, Any]], session_id: str, start: int, end: int,
-) -> Optional[_Miss]:
-    """Why *window* cannot splice into the planned window ``[start, end)`` of ``messages``, or None."""
+def _mismatch(window: _Window, messages: list[dict[str, Any]], session_id: str, start: int) -> Optional[_Miss]:
+    """Why *window* cannot splice into ``messages`` with the head ending at ``start``, or None. The fresh tail
+    cut is not consulted: the candidate's boundary is where the tail starts (one summary, never redone)."""
     if window.session_id != session_id:
         return _Miss("other_session", "another session")
     if window.compress_start != start:
         return _Miss("head_moved", f"head moved ({window.compress_start} -> {start})")
-    if window.compress_end > end:
-        return _Miss("inside_tail", f"prepared boundary {window.compress_end} is inside the protected tail (cut {end})")
     if window.compress_end > len(messages):
         return _Miss("transcript_shorter", "transcript shorter than the prepared window")
     for idx, ((structure, uid, digest), msg) in enumerate(zip(window.identities, messages)):
@@ -277,10 +275,10 @@ class PreparedCompaction:
             _record("auto_disabled", reason="provider_context")
 
     def take(
-        self, messages: list[dict[str, Any]], session_id: str, start: int, end: int, *, eligible: bool,
+        self, messages: list[dict[str, Any]], session_id: str, start: int, *, eligible: bool,
     ) -> Optional[PreparedSummary]:
-        """The completed candidate when it fits ``compress()``'s planned window, else what a running pass
-        whose window fits publishes while this compaction waits for it, else None. Either way the state is
+        """The completed candidate when it still covers the same messages after ``compress()``'s head, else
+        what a running pass whose window does publishes while this compaction waits for it, else None. Either way the state is
         cleared and a running pass is cancelled: this compaction consumes or supersedes it."""
         self._count_unspliced()
         with self._lock:
@@ -291,11 +289,11 @@ class PreparedCompaction:
             "provider_context" if self._needs_provider_context else "fresh_required", "fresh summary required",
         )
         if reason is None and entry is not None:
-            reason = _mismatch(entry, messages, session_id, start, end)
+            reason = _mismatch(entry, messages, session_id, start)
         waited = None
         try:
             if eligible and (entry is None or reason is not None):
-                if pending is not None and _mismatch(pending.window, messages, session_id, start, end) is None:
+                if pending is not None and _mismatch(pending.window, messages, session_id, start) is None:
                     wait_started = time.monotonic()
                     entry, reason = self._await(pending)
                     waited = time.monotonic() - wait_started
@@ -324,8 +322,8 @@ class PreparedCompaction:
                     _record("discarded", reason=reason.code, wait_seconds=waited)
             return None
         logger.info(
-            "prepared compaction: splice hit session=%s window=%d-%d (fresh cut %d)", session_id, entry.compress_start,
-            entry.compress_end, end,
+            "prepared compaction: splice hit session=%s window=%d-%d", session_id, entry.compress_start,
+            entry.compress_end,
         )
         taken = replace(entry, waited=waited)  # counted as used once adopt() splices it
         with self._lock:

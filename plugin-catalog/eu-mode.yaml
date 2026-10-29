@@ -1,7 +1,7 @@
 name: eu-mode
 repo: https://github.com/AstrowareAI/eu-mode-hermes
 sha: 80f82114ba9fc7e9412303ee4b1c87625fcf93d8
-description: "EU Mode (beta): HaloGuard EU, Astroware's guard API hosted in the EU, checks each message and each reply (allow or block). EU Mode looks for personal data in what users send and masks what it finds before the request reaches the model, then puts the originals back in the reply, on your machine. Disclosure — user and assistant text (not system prompts, tool results, files or images) goes to api.astroware.ai with your own HaloGuard EU key, up to twice per turn; fail-open: if the API does not answer, the message goes on unchecked and not masked, and the reply says so; reads two Hermes settings (session titles, context compression) only to say when they are on; stores SHA-256 fingerprints of blocked messages, never their text."
+description: "EU Mode (beta): HaloGuard EU, Astroware's guard API hosted in the EU, checks each message and each reply (allow or block). EU Mode looks for personal data in what users send and masks what it finds before the request reaches the model, then puts the originals back in the reply, on your machine. Disclosure — on every turn the conversation's user and assistant text (not system prompts, tool results, files or images) goes to api.astroware.ai (or the HALOGUARD_BASE_URL you set) with your own HaloGuard EU key, up to twice per turn (your message, then the reply); fail-open: if the API does not answer, the message goes on unchecked and not masked, and the reply says so; reads two Hermes settings (session titles, context compression) only to say when they are on; stores SHA-256 fingerprints of blocked messages, never their text."
 maintainer: AstrowareAI
 tier: community
 category: general

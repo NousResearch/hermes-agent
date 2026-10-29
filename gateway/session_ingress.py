@@ -375,6 +375,37 @@ async def _execution_scope(authority, home):
     return nullcontext() if scope_home is None else _profile_runtime_scope(scope_home, secrets)
 
 
+def _hand_queued_followup_to_adapter(adapter, session_key: str) -> None:
+    """Drain the follow-up an inline turn queued, the way a finishing adapter task does.
+
+    A turn started by ``admit_automation`` runs inline in the session authority's drain task, so
+    it owns no adapter session task.  Its post-turn hook can still queue the next turn there --
+    ``/goal``'s continuation prompt goes through ``_enqueue_fifo`` into
+    ``adapter._pending_messages`` -- and the only drains of that slot live in the adapter task's
+    tail or in the next inbound message.  Without this, the continuation sits in the slot until
+    the user sends something unrelated.  A live adapter task owns the slot already (its tail
+    drains it), so leave that case alone.
+    """
+    pending = getattr(adapter, "_pending_messages", None)
+    if not pending or not session_key:
+        return
+    # ``_session_tasks`` is the owner map.  ``_active_sessions`` holds guards, which also exist
+    # for command scopes whose exit drains nothing, so presence there does not mean a drain is due.
+    owner = getattr(adapter, "_session_tasks", {}).get(session_key)
+    owner_is_done = getattr(owner, "done", None)
+    if callable(owner_is_done) and not owner_is_done():
+        return
+    queued = pending.pop(session_key, None)
+    if queued is None:
+        return
+    try:
+        adapter._spawn_drain_task(queued, session_key, delay=0.0)
+    except Exception:
+        # Put it back: the next inbound message still drains the slot, so nothing is lost.
+        pending[session_key] = queued
+        logger.warning("Could not resume a queued follow-up for %s", session_key, exc_info=True)
+
+
 async def deliver_settled(authority, admission_id):
     """Send a recovered no-waiter turn's reply after its terminal outcome committed. A send
     failure cannot rewrite that outcome; it is logged, and inference never runs again."""
@@ -406,6 +437,9 @@ async def deliver_settled(authority, admission_id):
         authority.pending_deliveries.pop(admission_id, None)
         # The ledgered send already released the marker; an empty or failed send owes no more.
         await _release_turn_marker(authority, event)
+        # This lane sent the reply itself and owns no adapter session task, so nothing else will
+        # drain what the turn's post-turn hook queued (a /goal continuation, for one).
+        _hand_queued_followup_to_adapter(adapter, session_key)
 
 
 async def deliver_response(adapter, event, session_key, response):

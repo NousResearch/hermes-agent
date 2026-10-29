@@ -1,7 +1,7 @@
 name: hermes-ios
 title: Hermes-iOS-sim
 repo: https://github.com/akinduroifedayo/Hermes-iOS-sim
-sha: 7f48cf060e76eae29a2bdef77c2969ba6ca9898f
+sha: 3a184e5d847dcd1c8363224ec3175498b10988c5
 subdir: plugin
 version: "1.0.0"
 description: >-
@@ -13,12 +13,13 @@ tier: community
 category: desktop
 platforms:
   - macos
-docs_url: https://github.com/akinduroifedayo/Hermes-iOS-sim/blob/7f48cf060e76eae29a2bdef77c2969ba6ca9898f/README.md
+docs_url: https://github.com/akinduroifedayo/Hermes-iOS-sim/blob/3a184e5d847dcd1c8363224ec3175498b10988c5/README.md
 known_issues:
   - >-
     Localhost only. Never expose, forward, or tunnel the preview port.
-    serve-sim 0.1.48 lacks Host validation and exposes unauthenticated simulator
-    control routes. Localhost does not eliminate malicious-browser risks.
+    serve-sim 0.1.49-beta.139.1 requires a loopback Host and runs with shell
+    execution disabled; simulator stream/HID routes remain unauthenticated on
+    loopback. Localhost does not eliminate malicious-browser risks.
   - >-
     Requires Xcode, an iOS Simulator runtime, Node.js 20+, and npm.
     No minimum compatible Hermes version or independent-Mac qualification is established.

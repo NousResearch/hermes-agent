@@ -32,14 +32,20 @@ import { resolveGatewayVersion } from '../../electron/gateway-version'
  * only safe browser equivalents for machine-level capabilities.
  */
 export function installBrowserDesktopBridge(): boolean {
-  if (window.hermesDesktop) {return false}
+  if (window.hermesDesktop) {
+    return false
+  }
 
   const bootstrap = browserBootstrap()
 
-  if (!bootstrap) {return false}
+  if (!bootstrap) {
+    return false
+  }
 
   // A gated host's opener waits for this window to say it booted (createBrowserWindowOpener).
-  if (!bootstrap.privateSession) {announceWebappWindow()}
+  if (!bootstrap.privateSession) {
+    announceWebappWindow()
+  }
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
 
@@ -70,7 +76,9 @@ export function installBrowserDesktopBridge(): boolean {
   const openExternal = async (url: string) => {
     const target = externalUrlTarget(url)
 
-    if (target?.kind === 'web') {window.open(target.url, '_blank', 'noopener,noreferrer')}
+    if (target?.kind === 'web') {
+      window.open(target.url, '_blank', 'noopener,noreferrer')
+    }
   }
 
   const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls, previewUrls })
@@ -99,11 +107,17 @@ export function installBrowserDesktopBridge(): boolean {
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
     notify: async ({ title, body }: { title?: string; body?: string }) => {
-      if (!('Notification' in window)) {return false}
+      if (!('Notification' in window)) {
+        return false
+      }
 
-      if (Notification.permission === 'default') {await Notification.requestPermission()}
+      if (Notification.permission === 'default') {
+        await Notification.requestPermission()
+      }
 
-      if (Notification.permission !== 'granted') {return false}
+      if (Notification.permission !== 'granted') {
+        return false
+      }
       new Notification(title || 'Hermes', { body })
 
       return true
@@ -124,7 +138,9 @@ export function installBrowserDesktopBridge(): boolean {
     },
     settings: createBrowserSettings({ basePath: bootstrap.basePath, currentProfile }),
     requestMicrophoneAccess: async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {return false}
+      if (!navigator.mediaDevices?.getUserMedia) {
+        return false
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach(track => track.stop())
 
@@ -138,7 +154,9 @@ export function installBrowserDesktopBridge(): boolean {
       // The chat's sign-in view for a launch-link tab. Behind the sign-in gate the next ticket
       // request already takes the tab to the login page.
       onSignedOut: () => {
-        if (!bootstrap.authRequired) {failDesktopBoot(WEBAPP_LAUNCH_REQUIRED)}
+        if (!bootstrap.authRequired) {
+          failDesktopBoot(WEBAPP_LAUNCH_REQUIRED)
+        }
       }
     }),
     ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),

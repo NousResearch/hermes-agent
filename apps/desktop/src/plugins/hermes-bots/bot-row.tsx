@@ -334,7 +334,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot, { intent: 'tab' })}>{b.bot.openBotChatInNewTab}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => void openRosterBot(bot, { intent: 'tab' })}>
+          {b.bot.openBotChatInNewTab}
+        </ContextMenuItem>
         <ContextMenuItem onSelect={() => openBotScreen(bot, meta)}>{b.screen.menu}</ContextMenuItem>
         <ContextMenuCheckboxItem
           checked={Boolean(meta?.screenAutoOpen)}

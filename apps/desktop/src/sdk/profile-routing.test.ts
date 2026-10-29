@@ -344,14 +344,20 @@ describe('connection-aware plugin host APIs', () => {
       })
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
-      connectionId: 'source-a', path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
+      connectionId: 'source-a',
+      path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
     })
     expect(hermesApi).toHaveBeenNthCalledWith(3, {
       connectionId: 'source-a',
       path: '/api/sessions/bot-chat',
       method: 'PATCH',
-      body: { hidden: true, profile: 'backend-worker', expected_revision: 31,
-        expected_generation: 5, request_id: expect.any(String) }
+      body: {
+        hidden: true,
+        profile: 'backend-worker',
+        expected_revision: 31,
+        expected_generation: 5,
+        request_id: expect.any(String)
+      }
     })
     expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()

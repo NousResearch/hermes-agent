@@ -15,6 +15,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -111,7 +112,7 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
         # Same containment + interpreter rules as the existing `script` field.
         from cron.scheduler_script import _run_job_script
 
-        return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None,
+        return _run_job_script(monitor_script, workdir=os.path.expanduser(_field(job, "workdir")) or None,
                                interpreter=job.get("interpreter"))
     monitor_url = _field(job, "monitor_url")
     if monitor_url:

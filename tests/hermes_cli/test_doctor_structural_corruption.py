@@ -33,8 +33,8 @@ def test_integrity_damage_classifier_maps_tree_ids_through_rootpage():
     assert integrity_damage_is_structural(["Tree 40 page 40: btreeInitPage() returns error code 11"], master)
     assert integrity_damage_is_structural(["row 1 missing from index sqlite_autoindex_delivery_obligations_1"], master)
     assert integrity_damage_is_structural(["Freelist: invalid page number 167772160"], master)
-    # Unparseable / unknown-tree lines keep the FTS wording (incomplete, never wrong).
-    assert integrity_damage_is_structural(["Tree 999 page 1: garbage", "*** in database main ***"], master) is False
+    # An unknown tree cannot be proven to be derived FTS state, so fail closed.
+    assert integrity_damage_is_structural(["Tree 999 page 1: garbage", "*** in database main ***"], master) is True
 
 
 def _seed(tmp_path, rows=120):

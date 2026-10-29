@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import type { ProjectSummary } from "@/lib/api";
+import { usePageHeader } from "@/contexts/usePageHeader";
 import {
   VariantPicker,
   readVariant,
@@ -13,6 +14,7 @@ import { ProjectsOverview } from "@/components/projects/ProjectsOverview";
 export default function ProjectsPage() {
   const [searchParams] = useSearchParams();
   const initialProjectId = searchParams.get("id") ?? undefined;
+  const { setAfterTitle, setEnd } = usePageHeader();
 
   const [variant, setVariant] = useState<"workbench" | "overview">(readVariant);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -48,45 +50,53 @@ export default function ProjectsPage() {
     writeVariant(v);
   }
 
-  return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* Topbar */}
-      <div className="flex items-center gap-3.5 px-5 h-[52px] shrink-0 border-b border-midground/10">
-        <h1 className="font-mono font-medium tracking-[0.14em] uppercase text-sm">
-          Projects
-        </h1>
-        {!loading && !error && (
-          <span className="font-mono text-[10.5px] uppercase tracking-wider text-midground/40">
-            {projects.length} projects
-            {unassignedCount > 0 && ` · ${unassignedCount} unassigned`}
-          </span>
-        )}
-        <div className="ml-auto">
-          <VariantPicker value={variant} onChange={handleVariantChange} />
-        </div>
-      </div>
+  // Counts + variant picker live in the shared page banner (like Sessions /
+  // Cron) so the route body gets the full viewport height for the workbench.
+  useLayoutEffect(() => {
+    if (loading || error) {
+      setAfterTitle(null);
+      return;
+    }
+    setAfterTitle(
+      <span className="font-mono text-[10.5px] uppercase tracking-wider text-midground/40 whitespace-nowrap">
+        {projects.length} projects
+        {unassignedCount > 0 && ` · ${unassignedCount} unassigned`}
+      </span>,
+    );
+    return () => {
+      setAfterTitle(null);
+    };
+  }, [loading, error, projects.length, unassignedCount, setAfterTitle]);
 
-      {/* Content */}
-      <div className="flex-1 min-h-0 overflow-auto">
-        {variant === "workbench" ? (
-          <div className="h-full">
-            <ProjectsWorkbench
-              projects={projects}
-              unassignedCount={unassignedCount}
-              loading={loading}
-              error={error}
-              initialProjectId={initialProjectId}
-            />
-          </div>
-        ) : (
-          <ProjectsOverview
-            projects={projects}
-            unassignedCount={unassignedCount}
-            loading={loading}
-            error={error}
-          />
-        )}
+  useEffect(() => {
+    setEnd(<VariantPicker value={variant} onChange={handleVariantChange} />);
+    return () => {
+      setEnd(null);
+    };
+  }, [variant, setEnd]);
+
+  if (variant === "workbench") {
+    return (
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden border border-midground/10 rounded-sm">
+        <ProjectsWorkbench
+          projects={projects}
+          unassignedCount={unassignedCount}
+          loading={loading}
+          error={error}
+          initialProjectId={initialProjectId}
+        />
       </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto">
+      <ProjectsOverview
+        projects={projects}
+        unassignedCount={unassignedCount}
+        loading={loading}
+        error={error}
+      />
     </div>
   );
 }

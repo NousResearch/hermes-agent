@@ -419,6 +419,12 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  // Projects workbench is a 3-column viewport-filling layout: each column
+  // scrolls independently, so the route must get the same flex-fill
+  // treatment as /docs instead of the default page-scroll wrapper.
+  const isProjectsRoute =
+    normalizedPath === "/projects" || normalizedPath.startsWith("/projects/");
+  const isFillRoute = isDocsRoute || isProjectsRoute;
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
@@ -772,7 +778,7 @@ export default function App() {
                 isChatRoute
                   ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6",
-                isDocsRoute && "min-h-0 flex-1",
+                isFillRoute && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
@@ -780,8 +786,10 @@ export default function App() {
                 className={cn(
                   "w-full min-w-0",
                   !isChatRoute &&
+                    !isProjectsRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute) &&
+                  isProjectsRoute && "pb-3 sm:pb-4 lg:pb-6",
+                  (isFillRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >

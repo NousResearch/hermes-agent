@@ -202,9 +202,11 @@ export function ProjectsWorkbench({
   ];
 
   return (
-    <div className="grid h-full" style={{ gridTemplateColumns: "230px minmax(0,1fr) 290px" }}>
+    <div
+      className="grid min-h-0 h-full w-full grid-cols-[minmax(200px,16%)_minmax(0,1fr)] lg:grid-cols-[minmax(220px,17%)_minmax(0,1fr)_minmax(260px,22%)] 2xl:grid-cols-[minmax(240px,15%)_minmax(0,1fr)_minmax(300px,20%)]"
+    >
       {/* Rail */}
-      <aside className="border-r border-midground/10 overflow-auto">
+      <aside className="min-h-0 min-w-0 border-r border-midground/10 overflow-y-auto overflow-x-hidden">
         <div className="flex items-center justify-between px-3.5 py-3 pb-2">
           <span className="font-mono text-[10.5px] uppercase tracking-wider text-midground/40">
             Projects
@@ -279,10 +281,10 @@ export function ProjectsWorkbench({
       </aside>
 
       {/* Center */}
-      <div className="flex flex-col min-w-0">
+      <div className="flex flex-col min-w-0 min-h-0">
         {selectedProject ? (
           <>
-            <div className="px-5 pt-4 pb-0 border-b border-midground/10">
+            <div className="shrink-0 px-5 pt-4 pb-0 border-b border-midground/10">
               <h2 className="text-xl font-semibold flex items-center gap-2.5">
                 {selectedProject.name}
                 {selectedProject.boardCounts.doing > 0 && (
@@ -343,7 +345,7 @@ export function ProjectsWorkbench({
             </div>
 
             {/* Pane */}
-            <div className="flex-1 overflow-auto">
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
               {paneError && (
                 <div className="px-5 py-2 text-destructive font-mono text-xs">
                   Error: {paneError}
@@ -537,8 +539,8 @@ export function ProjectsWorkbench({
         )}
       </div>
 
-      {/* Right Inspector — hidden below 1280px */}
-      <aside className="border-l border-midground/10 overflow-auto p-4 flex flex-col gap-4 hidden xl:flex">
+      {/* Right Inspector — hidden below 1024px (folds into 2 columns) */}
+      <aside className="min-h-0 min-w-0 border-l border-midground/10 overflow-y-auto overflow-x-hidden p-4 flex-col gap-4 hidden lg:flex">
         {selectedProject && (
           <>
             <div>

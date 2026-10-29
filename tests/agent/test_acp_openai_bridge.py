@@ -21,6 +21,8 @@ if _REPO_ROOT not in sys.path:
 
 from agent.acp_openai_bridge import (
     StreamChunks,
+    _extract_tool_call_blocks,
+    _find_matching_brace,
     completion_to_stream_chunks,
     extract_tool_calls_from_text,
     render_tool_bridge_sections,
@@ -201,3 +203,147 @@ def test_copilot_prompt_still_carries_the_contract_and_the_tools():
     assert '"name": "memory"' in prompt
     assert '"name": "read_file"' in prompt  # copilot forwards everything
     assert "hi" in prompt
+
+
+# ── nested JSON / in-string delimiters (PR #23888) ───────────────────────────
+#
+# The old lazy-regex extraction stopped at the first ``}`` that happened to be
+# followed by ``</tool_call>``, so any brace inside a string value — or inside a
+# nested ``arguments`` object — truncated the call and json.loads() failed. These
+# pin the brace-depth scanner that replaced it.
+
+
+def test_find_matching_brace_simple():
+    text = '{"a": 1}'
+    assert _find_matching_brace(text, 0) == len(text) - 1
+
+
+def test_find_matching_brace_nested_objects():
+    text = '{"a": {"b": {"c": 2}}}'
+    assert _find_matching_brace(text, 0) == len(text) - 1
+
+
+def test_find_matching_brace_ignores_braces_in_strings():
+    text = '{"a": "}"}'
+    assert _find_matching_brace(text, 0) == len(text) - 1
+
+
+def test_find_matching_brace_ignores_close_tag_in_string():
+    """An in-string ``</tool_call>`` must not be mistaken for the block end."""
+    text = '{"a": "</tool_call>"}'
+    assert _find_matching_brace(text, 0) == len(text) - 1
+
+
+def test_find_matching_brace_handles_escaped_quotes():
+    text = r'{"a": "\"}"}'
+    assert _find_matching_brace(text, 0) == len(text) - 1
+
+
+def test_find_matching_brace_unmatched_returns_minus_one():
+    assert _find_matching_brace('{"a": 1', 0) == -1
+    assert _find_matching_brace("", 0) == -1
+    assert _find_matching_brace('{"a": 1}', 99) == -1
+
+
+def test_extract_block_simple():
+    text = '<tool_call>{"id": "c1"}</tool_call>'
+    blocks = _extract_tool_call_blocks(text)
+    assert len(blocks) == 1
+    start, end, body = blocks[0]
+    assert body == '{"id": "c1"}'
+    assert text[start:end] == text
+
+
+_NESTED = (
+    '{"id": "c1", "type": "function", "function": {"name": "github_api", '
+    '"arguments": {"query": "repo:owner/name } </tool_call> broken"}}}'
+)
+
+
+def test_extract_block_with_close_tag_inside_a_string_value():
+    text = f"<tool_call>{_NESTED}</tool_call>"
+    blocks = _extract_tool_call_blocks(text)
+    assert len(blocks) == 1
+    assert blocks[0][2] == _NESTED
+
+
+def test_extract_block_with_nested_json():
+    nested = '{"id": "c1", "function": {"name": "x", "arguments": {"a": {"b": 1}}}}'
+    blocks = _extract_tool_call_blocks(f"<tool_call>{nested}</tool_call>")
+    assert [b[2] for b in blocks] == [nested]
+
+
+def test_extract_multiple_blocks():
+    a = '{"id": "a"}'
+    b = '{"id": "b", "nested": {"k": "}"}}'
+    blocks = _extract_tool_call_blocks(f"<tool_call>{a}</tool_call> mid <tool_call>{b}</tool_call>")
+    assert [blk[2] for blk in blocks] == [a, b]
+
+
+def test_extract_no_blocks():
+    assert _extract_tool_call_blocks("") == []
+    assert _extract_tool_call_blocks("no calls here") == []
+    assert _extract_tool_call_blocks("<tool_call>not json</tool_call>") == []
+
+
+def test_extract_is_whitespace_tolerant():
+    text = '<tool_call>\n  {"id": "c1"}\n</tool_call>'
+    blocks = _extract_tool_call_blocks(text)
+    assert [b[2] for b in blocks] == ['{"id": "c1"}']
+
+
+def test_extract_requires_a_closing_tag():
+    text = '<tool_call>{"id": "c1"}'
+    assert _extract_tool_call_blocks(text) == []
+
+
+def test_extract_handles_escaped_quotes_in_body():
+    body = r'{"id": "c1", "function": {"name": "x", "arguments": "{\"a\": \"}\"}"}}'
+    blocks = _extract_tool_call_blocks(f"<tool_call>{body}</tool_call>")
+    assert [b[2] for b in blocks] == [body]
+
+
+def test_pipeline_parses_a_call_whose_string_contains_the_close_tag():
+    calls, cleaned = extract_tool_calls_from_text(f"<tool_call>{_NESTED}</tool_call>")
+    assert len(calls) == 1
+    assert calls[0].function.name == "github_api"
+    assert json.loads(calls[0].function.arguments) == {
+        "query": "repo:owner/name } </tool_call> broken"
+    }
+    assert cleaned == ""
+
+
+def test_pipeline_nested_arguments_survive_without_id_or_type():
+    """The bare-JSON fallback needs id+type, so this shape only ever worked if
+    the XML pass itself was brace-aware."""
+    calls, cleaned = extract_tool_calls_from_text(
+        '<tool_call>{"function": {"name": "todo", "arguments": {"items": [{"a": "}"}]}}}</tool_call>'
+    )
+    assert len(calls) == 1
+    assert json.loads(calls[0].function.arguments) == {"items": [{"a": "}"}]}
+    assert cleaned == ""
+
+
+def test_pipeline_leaves_no_dangling_tags_or_braces():
+    text = f"before<tool_call>{_NESTED}</tool_call>after"
+    calls, cleaned = extract_tool_calls_from_text(text)
+    assert len(calls) == 1
+    assert cleaned == "before\nafter"
+    for residue in ("<tool_call>", "</tool_call>", "}}"):
+        assert residue not in cleaned
+
+
+def test_pipeline_standard_text_round_trips():
+    calls, cleaned = extract_tool_calls_from_text(
+        'Hi\n<tool_call>{"id": "c1", "type": "function", "function": '
+        '{"name": "memory", "arguments": "{}"}}</tool_call>\nbye'
+    )
+    assert [c.id for c in calls] == ["c1"]
+    assert cleaned == "Hi\nbye"
+
+
+def test_pipeline_empty_and_no_calls():
+    assert extract_tool_calls_from_text("") == ([], "")
+    calls, cleaned = extract_tool_calls_from_text("<tool_call>{bad}</tool_call>keep me")
+    assert calls == []
+    assert cleaned == "keep me"

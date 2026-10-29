@@ -11,16 +11,13 @@ makes Hermes redo finished work.
 from __future__ import annotations
 
 import json
-import re
 from types import SimpleNamespace
 from typing import Any, Iterable
 
 from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
 
-TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-TOOL_CALL_JSON_RE = re.compile(
-    r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL
-)
+TOOL_CALL_OPEN_TAG = "<tool_call>"
+TOOL_CALL_CLOSE_TAG = "</tool_call>"
 
 TOOL_CALL_CONTRACT = (
     "Available tools (OpenAI function schema). "
@@ -29,9 +26,9 @@ TOOL_CALL_CONTRACT = (
 )
 
 __all__ = [
-    "TOOL_CALL_BLOCK_RE",
+    "TOOL_CALL_CLOSE_TAG",
     "TOOL_CALL_CONTRACT",
-    "TOOL_CALL_JSON_RE",
+    "TOOL_CALL_OPEN_TAG",
     "StreamChunks",
     "build_openai_tool_call",
     "completion_to_stream_chunks",
@@ -120,6 +117,110 @@ def render_tool_bridge_sections(
     return sections
 
 
+def _find_matching_brace(text: str, start: int) -> int:
+    """Index of the ``}`` closing the ``{`` at ``start``, or -1 when unbalanced.
+
+    String- and escape-aware, so braces inside JSON string values or nested objects don't close the
+    object early. This is what the old lazy ``\\{.*?\\}`` regex could not do: it stopped at the first
+    ``}`` that happened to be followed by ``</tool_call>``.
+    """
+    if start >= len(text) or text[start] != "{":
+        return -1
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _extract_tool_call_blocks(text: str) -> list[tuple[int, int, str]]:
+    """Every ``<tool_call>...</tool_call>`` block → ``(start, end, body_json)`` in text order.
+
+    The body runs from the opening tag's first ``{`` through its balanced ``}``, and the closing tag
+    must follow that body. Scanning braces FIRST is what makes a ``</tool_call>`` or ``}`` sitting
+    inside a JSON string value harmless: it is skipped as string content, and only the real tag
+    after the balanced object terminates the block.
+    """
+    blocks: list[tuple[int, int, str]] = []
+    pos = 0
+    while True:
+        open_at = text.find(TOOL_CALL_OPEN_TAG, pos)
+        if open_at < 0:
+            return blocks
+        brace_start = open_at + len(TOOL_CALL_OPEN_TAG)
+        while brace_start < len(text) and text[brace_start] in " \t\n\r":
+            brace_start += 1
+        if brace_start >= len(text) or text[brace_start] != "{":
+            pos = open_at + 1
+            continue
+        brace_end = _find_matching_brace(text, brace_start)
+        if brace_end < 0:
+            pos = open_at + 1
+            continue
+        close_at = brace_end + 1
+        while close_at < len(text) and text[close_at] in " \t\n\r":
+            close_at += 1
+        if not text.startswith(TOOL_CALL_CLOSE_TAG, close_at):
+            pos = open_at + 1
+            continue
+        span_end = close_at + len(TOOL_CALL_CLOSE_TAG)
+        blocks.append((open_at, span_end, text[brace_start:brace_end + 1]))
+        pos = span_end
+
+
+def _looks_like_bare_tool_call(obj: Any) -> bool:
+    """True when ``obj`` has the exact OpenAI ``tool_call`` shape the removed fallback regex matched."""
+    if not isinstance(obj, dict):
+        return False
+    call_id = obj.get("id")
+    return (
+        isinstance(call_id, str)
+        and bool(call_id.strip())
+        and obj.get("type") == "function"
+        and isinstance(obj.get("function"), dict)
+    )
+
+
+def _extract_bare_tool_calls(text: str) -> list[tuple[int, int, str]]:
+    """Every brace-balanced JSON object shaped like a tool call → ``(start, end, raw_json)`` in text order."""
+    found: list[tuple[int, int, str]] = []
+    cursor = 0
+    while True:
+        start = text.find("{", cursor)
+        if start < 0:
+            return found
+        end = _find_matching_brace(text, start)
+        if end < 0:
+            return found
+        raw = text[start:end + 1]
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            obj = None
+        if _looks_like_bare_tool_call(obj):
+            found.append((start, end + 1, raw))
+            cursor = end + 1
+        else:
+            cursor = start + 1
+
+
 def _parse_tool_call(raw_json: str, ordinal: int) -> ChatCompletionMessageToolCall | None:
     """One ``<tool_call>`` JSON body → tool call, or None when malformed. Missing id → ``acp_call_<ordinal>``."""
     try:
@@ -146,14 +247,17 @@ def extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageT
         return [], ""
     extracted: list[ChatCompletionMessageToolCall] = []
     consumed_spans: list[tuple[int, int]] = []
-    for pattern, group in ((TOOL_CALL_BLOCK_RE, 1), (TOOL_CALL_JSON_RE, 0)):
-        for m in pattern.finditer(text):
-            call = _parse_tool_call(m.group(group), len(extracted) + 1)
+    for start, end, body in _extract_tool_call_blocks(text):
+        call = _parse_tool_call(body, len(extracted) + 1)
+        if call is not None:
+            extracted.append(call)
+        consumed_spans.append((start, end))
+    if not extracted:
+        for start, end, body in _extract_bare_tool_calls(text):
+            call = _parse_tool_call(body, len(extracted) + 1)
             if call is not None:
                 extracted.append(call)
-            consumed_spans.append((m.start(), m.end()))
-        if extracted:
-            break
+            consumed_spans.append((start, end))
     if not consumed_spans:
         return extracted, text.strip()
 

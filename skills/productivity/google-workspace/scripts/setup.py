@@ -60,8 +60,10 @@ SCOPES = [
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
-# copy the code from the browser's URL bar (or the page body).
-REDIRECT_URI = "http://localhost:1"
+# copy the code from the browser's URL bar (or the page body). Avoid port 1
+# because browsers block it before showing the code, and avoid 8765 because
+# Hermes already uses that port for local webhook/OAuth listeners.
+REDIRECT_URI = "http://localhost:53135"
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:

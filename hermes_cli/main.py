@@ -2637,6 +2637,13 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # --parent-session: propagate to HermesCLI so the new session row carries
+    # the parent lineage link. This is the primary path for kanban dispatcher-
+    # spawned workers; the dispatcher also sets HERMES_PARENT_SESSION_ID in the
+    # env so HermesCLI.__init__ picks it up even when called without this arg.
+    if getattr(args, "parent_session", None):
+        os.environ["HERMES_PARENT_SESSION_ID"] = args.parent_session
+
     _pin_kanban_board_env()
 
     if use_tui:

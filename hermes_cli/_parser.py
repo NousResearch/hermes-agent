@@ -424,6 +424,18 @@ def build_top_level_parser():
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
     )
+    chat_parser.add_argument(
+        "--parent-session",
+        dest="parent_session",
+        default=None,
+        metavar="SESSION_ID",
+        help=(
+            "Record this session as a child of an existing session. "
+            "Sets parent_session_id on the new session row so worker sessions "
+            "spawned by the kanban dispatcher are traceable back to their "
+            "originating conversation. Silently ignored if the id is invalid."
+        ),
+    )
     _inherited_flag(
         chat_parser,
         "--tui",

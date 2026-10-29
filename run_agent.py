@@ -619,6 +619,34 @@ class AIAgent:
                     _profile_for_session = None
             except Exception:
                 _profile_for_session = None
+            # Guard against cross-profile FK violations: parent_session_id
+            # originates from HERMES_PARENT_SESSION_ID which is set by the
+            # kanban dispatcher using the *creator's* session id — a session
+            # that lives in the creator's profile DB, not this worker's DB.
+            # PRAGMA foreign_keys=ON means inserting an unknown parent_session_id
+            # raises FOREIGN KEY constraint failed (19), which rolls back the
+            # entire create_session call and leaves us with only the bare
+            # 'unknown' fallback row (no source/cwd/system_prompt).  Validate
+            # presence first; when the parent is absent, create without the
+            # link and log once at DEBUG so cross-profile lineage is visible.
+            safe_parent = self._parent_session_id
+            if safe_parent:
+                try:
+                    row = self._session_db._conn.execute(  # type: ignore[attr-defined]
+                        "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                        (safe_parent,),
+                    ).fetchone()
+                    if row is None:
+                        logger.debug(
+                            "parent_session_id %r not found in this profile's DB "
+                            "(cross-profile lineage); creating session without parent link",
+                            safe_parent,
+                        )
+                        safe_parent = None
+                except Exception:
+                    # SessionDB internals may vary; fall back to no-parent
+                    # rather than risk the FK error.
+                    safe_parent = None
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
@@ -626,7 +654,7 @@ class AIAgent:
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
-                parent_session_id=self._parent_session_id,
+                parent_session_id=safe_parent,
                 cwd=_launch_cwd_for_session(source),
                 profile_name=_profile_for_session,
             )

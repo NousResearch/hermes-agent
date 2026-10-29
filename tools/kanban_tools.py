@@ -306,7 +306,11 @@ def heartbeat_current_worker_from_env() -> bool:
             except (TypeError, ValueError):
                 run_id = None
             try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                kb.heartbeat_worker(
+                    conn, tid, note=None, expected_run_id=run_id,
+                    session_id=os.environ.get("HERMES_SESSION_ID") or None,
+                    worker_home=os.environ.get("HERMES_HOME") or None,
+                )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
         finally:
@@ -672,6 +676,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    worker_session_id=os.environ.get("HERMES_SESSION_ID") or None,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -835,6 +840,8 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 tid,
                 note=note,
                 expected_run_id=_worker_run_id(tid),
+                session_id=os.environ.get("HERMES_SESSION_ID") or None,
+                worker_home=os.environ.get("HERMES_HOME") or None,
             )
             if not ok:
                 return tool_error(
@@ -1163,7 +1170,13 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_path = args.get("workspace_path")
     project_id = args.get("project") or args.get("project_id")
     project_source_task_id = None
-    _inherit_project = workspace_kind is None and workspace_path is None
+    # Project inheritance: safe when no literal path is being shared.
+    # ``scratch`` (default) and ``worktree`` (repo-anchored) both produce a
+    # fresh per-task directory, so the project's repo anchor can be inherited
+    # without sharing a checkout.  ``dir`` (explicit workspace_path) is the
+    # only kind where directory sharing is intentional — keep the original
+    # restriction so callers must be explicit about cross-task sharing.
+    _inherit_project = workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")

@@ -3889,6 +3889,147 @@ def _append_event(
     )
 
 
+def _worker_session_id_from_events(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Look up the worker's session_id from the most recent heartbeat event.
+
+    Workers stamp their HERMES_SESSION_ID into heartbeat event payloads
+    (``heartbeat_worker``).  The dispatcher can use this to write
+    end_reason to the correct per-worker session DB even when the worker
+    has already exited (crash / timeout paths).
+
+    Returns None when no heartbeat with a session_id has been recorded.
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT payload FROM task_events
+             WHERE task_id = ? AND kind = 'heartbeat'
+               AND json_extract(payload, '$.session_id') IS NOT NULL
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if not row or not row["payload"]:
+            return None
+        import json as _json
+        payload = _json.loads(row["payload"])
+        return payload.get("session_id") or None
+    except Exception:
+        return None
+
+
+def _worker_home_from_events(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Look up the worker's HERMES_HOME from the most recent heartbeat event.
+
+    Workers stamp their HERMES_HOME into heartbeat event payloads via the
+    ``worker_home`` key (added in D-1c).  The dispatcher can use this to
+    open the correct per-profile state.db when writing end_reason for
+    cross-profile workers (crash / timeout paths where the worker has
+    already exited).
+
+    Returns None when no heartbeat with a worker_home has been recorded.
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT payload FROM task_events
+             WHERE task_id = ? AND kind = 'heartbeat'
+               AND json_extract(payload, '$.worker_home') IS NOT NULL
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if not row or not row["payload"]:
+            return None
+        import json as _json
+        payload = _json.loads(row["payload"])
+        return payload.get("worker_home") or None
+    except Exception:
+        return None
+
+
+
+def _record_kanban_end_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    outcome: str,
+    worker_session_id: Optional[str] = None,
+) -> None:
+    """Write a kanban-specific end_reason to the worker's own session.
+
+    Preferentially records against ``worker_session_id`` (the session the
+    worker itself was running in).  When that is not provided, falls back
+    to the most-recent heartbeat event payload (dispatcher crash / timeout
+    paths) and finally to ``tasks.session_id`` (the originating creator
+    session — legacy fallback only).
+
+    Uses ``SessionDB.end_session`` which is a no-op when the session is
+    already closed (first-writer-wins), so an existing ``ws_orphan_reap``
+    or ``cli_close`` end_reason is preserved.
+
+    ``outcome`` must be one of the four terminal kanban outcomes:
+    completed / crashed / timed_out / gave_up.
+
+    Best-effort: any failure is silently swallowed so it never blocks the
+    surrounding task transition.
+    """
+    _OUTCOME_MAP = {
+        "completed": "kanban_completed",
+        "crashed": "kanban_crashed",
+        "timed_out": "kanban_timeout",
+        "gave_up": "kanban_gave_up",
+    }
+    end_reason = _OUTCOME_MAP.get(outcome)
+    if not end_reason:
+        return
+    try:
+        # Resolution order for the target session:
+        # 1. Caller-supplied worker_session_id (complete path — most accurate).
+        # 2. Most-recent heartbeat event payload (dispatcher crash/timeout paths).
+        # 3. tasks.session_id (creator session — legacy fallback; semantically
+        #    wrong for kanban workers but better than nothing when no heartbeat
+        #    was ever recorded and no explicit id was passed).
+        target_session_id = worker_session_id
+        if not target_session_id:
+            target_session_id = _worker_session_id_from_events(conn, task_id)
+        if not target_session_id:
+            row = conn.execute(
+                "SELECT session_id FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row and row["session_id"]:
+                target_session_id = row["session_id"]
+        if not target_session_id:
+            return
+        from hermes_state import SessionDB
+        # Resolve the correct profile state.db for cross-profile workers.
+        # Resolution order for the target DB path:
+        # 1. worker_home from heartbeat event payload (dispatcher crash/timeout
+        #    paths: the worker stamped HERMES_HOME into every heartbeat so the
+        #    dispatcher can find its state.db after the worker has exited).
+        # 2. Current HERMES_HOME (same-profile path: the worker is calling
+        #    _record_kanban_end_reason itself, or the dispatcher and worker share
+        #    the same profile — falls back to os.environ["HERMES_HOME"] via
+        #    DEFAULT_DB_PATH).
+        worker_home_dir = _worker_home_from_events(conn, task_id)
+        if worker_home_dir:
+            from pathlib import Path as _Path
+            db_path = _Path(worker_home_dir) / "state.db"
+            SessionDB(db_path=db_path).end_session(target_session_id, end_reason)
+        else:
+            SessionDB().end_session(target_session_id, end_reason)
+    except Exception:
+        pass
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4789,6 +4930,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    worker_session_id: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4924,6 +5066,9 @@ def complete_task(
             summary=summary if summary is not None else result,
             metadata=metadata,
         )
+        # Record kanban end_reason on the worker's own session (best-effort).
+        _record_kanban_end_reason(conn, task_id, outcome="completed",
+                                  worker_session_id=worker_session_id)
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
@@ -7186,8 +7331,15 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    worker_home: Optional[str] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
+
+    ``worker_home`` is the worker's HERMES_HOME directory.  When set it is
+    stored in the event payload so the dispatcher can locate the correct
+    per-profile state.db when writing end_reason for cross-profile workers
+    (crash / timeout paths where the worker has already exited).
 
     Called by long-running workers as a liveness signal orthogonal to
     the PID check. A worker that forks a long-lived child (train loop,
@@ -7225,7 +7377,11 @@ def heartbeat_worker(
             )
         _append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            {k: v for k, v in (
+                ("note", note),
+                ("session_id", session_id),
+                ("worker_home", worker_home),
+            ) if v is not None} or None,
             run_id=run_id,
         )
     return True
@@ -7328,6 +7484,8 @@ def enforce_max_runtime(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
                 timed_out.append(tid)
+                # Record kanban end_reason on the originating session.
+                _record_kanban_end_reason(conn, tid, outcome="timed_out")
         # Increment the unified failure counter. Outside the write_txn
         # above because ``_record_task_failure`` opens its own. If the
         # breaker trips, this flips the task ``ready → blocked`` and
@@ -7739,6 +7897,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (row["id"], pid, row["claim_lock"],
                          protocol_violation, error_text)
                     )
+                    # Record kanban end_reason on the originating session.
+                    _record_kanban_end_reason(conn, row["id"], outcome="crashed")
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
     # on top of the event we already emitted).
@@ -7960,6 +8120,8 @@ def _record_task_failure(
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
+            # Record kanban end_reason on the originating session.
+            _record_kanban_end_reason(conn, task_id, outcome="gave_up")
             blocked = True
         else:
             # Below threshold.
@@ -9236,6 +9398,17 @@ def _default_spawn(
         pass
     if _pg_roots:
         env["HERMES_PROTECTED_GIT_ROOTS"] = os.pathsep.join(_pg_roots)
+
+    # Parent-session lineage: if this task was created from within an agent
+    # session (task.session_id is non-NULL), propagate that id so the worker's
+    # new session row is linked back to its originating conversation.  This
+    # makes worker sessions discoverable via parent_session_id without a new
+    # DB column.  HermesCLI.__init__ reads HERMES_PARENT_SESSION_ID and
+    # forwards it to AIAgent → SessionDB.create_session(parent_session_id=...).
+    if task.session_id:
+        env["HERMES_PARENT_SESSION_ID"] = task.session_id
+    else:
+        env.pop("HERMES_PARENT_SESSION_ID", None)
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

@@ -1,0 +1,35 @@
+name: agentmemory
+title: AgentMemory
+repo: https://github.com/rohitg00/agentmemory
+sha: c5b8ebfb32eb6a08fe301d3bb75840f3597b66c8
+subdir: integrations/hermes
+version: "0.9.31"
+description: >-
+  Persistent memory provider with automatic recall, conversation capture, and native
+  memory_save, memory_recall, and memory_search tools. Memory is scoped to the active
+  Hermes profile, project, and message author by default. Requires a separately running
+  AgentMemory server. Disclosure: recall queries, conversation excerpts (up to 500 user
+  and 2,000 assistant characters per turn), native memory writes, workspace paths, and
+  scoped session identifiers are sent to the configured AgentMemory URL (localhost:3111
+  by default). Credentials come through Hermes's scoped secret API. Runs git rev-parse
+  to resolve the project and stores non-secret URL configuration and memory ownership
+  records in the active Hermes home. Remote plaintext HTTP warns but is permitted unless
+  AGENTMEMORY_REQUIRE_HTTPS=1. No telemetry, self-updater, or background daemon is started
+  by the plugin.
+maintainer: rohitg00
+tier: community
+category: memory
+docs_url: https://github.com/rohitg00/agentmemory/blob/c5b8ebfb32eb6a08fe301d3bb75840f3597b66c8/integrations/hermes/README.md
+image: https://raw.githubusercontent.com/rohitg00/agentmemory/c5b8ebfb32eb6a08fe301d3bb75840f3597b66c8/assets/banner.png
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Run hermes memory setup after installation to select AgentMemory and configure the backend credential.
+  - There is no durable offline capture queue. Profile and author filters are application-level scope, not separate server credentials.
+  - Native memory replacement tracking uses POSIX file locking; this entry is limited to Linux and macOS.

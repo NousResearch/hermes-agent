@@ -5,6 +5,13 @@ enabled=true and boots."""
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
+import sys
+import textwrap
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -135,3 +142,43 @@ def test_stop_forwards_recovery_and_preserves_conflict(client, tmp_path, monkeyp
     assert response.status_code == (409 if refuse else 200), response.text
     assert called == [True]
     assert disabled == ([] if refuse else [False])
+
+
+def test_sigterm_handler_calls_shutdown(tmp_path):
+    """SIGTERM must trigger shutdown_local_runtime so the llama-server
+    process tree is cleaned up when the desktop app kills the backend."""
+    script = textwrap.dedent("""\
+        import os, signal, sys, tempfile, json
+        sys.path.insert(0, %r)
+        from hermes_cli.local_runtime import bootstrap
+
+        # Write a marker file when shutdown is called
+        marker = os.path.join(%r, "shutdown_called")
+        orig = bootstrap.shutdown_local_runtime
+        def tracked_shutdown():
+            with open(marker, "w") as f:
+                f.write("called")
+            orig()
+        bootstrap.shutdown_local_runtime = tracked_shutdown
+
+        # Register the handlers as ensure_local_runtime would
+        bootstrap._EXIT_HOOKED = False
+        bootstrap._stop_at_exit()
+
+        # Send SIGTERM to ourselves
+        os.kill(os.getpid(), signal.SIGTERM)
+    """ % (str(tmp_path), str(tmp_path)))
+
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    # Process should terminate from SIGTERM (exit code -15 or 143)
+    assert proc.returncode in (-signal.SIGTERM, 143), (
+        f"Expected SIGTERM termination, got {proc.returncode}: {proc.stderr}"
+    )
+    # Verify shutdown was actually called
+    marker = tmp_path / "shutdown_called"
+    assert marker.exists(), "shutdown_local_runtime was not called on SIGTERM"

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMocks = vi.hoisted(() => ({
@@ -257,5 +257,62 @@ describe("structured reasoning rendering (#59957)", () => {
     expect(text).toContain("<action>tool_call</action>");
     expect(text).toContain('<result>{"ok":true}</result>');
     expect(document.querySelectorAll("pre code").length).toBe(0);
+  });
+});
+
+describe("SessionsPage header slots across navigation", () => {
+  it("leaves the next page's header action in place", async () => {
+    apiMocks.getSessions.mockResolvedValue({ sessions: [], total: 0, limit: 20, offset: 0 });
+    const [{ default: SessionsPage }, { I18nProvider }, { SystemActionsProvider }, { ProfileProvider }, { PageHeaderProvider }, { usePageHeader }] =
+      await Promise.all([
+        import("./SessionsPage"),
+        import("@/i18n"),
+        import("@/contexts/SystemActions"),
+        import("@/contexts/ProfileProvider"),
+        import("@/contexts/PageHeaderProvider"),
+        import("@/contexts/usePageHeader"),
+      ]);
+    function NextPage() {
+      const { setEnd } = usePageHeader();
+      useLayoutEffect(() => {
+        setEnd(<button>Next action</button>);
+        return () => setEnd(null);
+      }, [setEnd]);
+      return null;
+    }
+    function GoNext() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate("/next")}>Go next</button>;
+    }
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root.render(
+        <I18nProvider>
+          <MemoryRouter initialEntries={["/sessions"]}>
+            <SystemActionsProvider>
+              <ProfileProvider>
+                <GoNext />
+                <PageHeaderProvider pluginTabs={[]}>
+                  <Routes>
+                    <Route path="/sessions" element={<SessionsPage />} />
+                    <Route path="/next" element={<NextPage />} />
+                  </Routes>
+                </PageHeaderProvider>
+              </ProfileProvider>
+            </SystemActionsProvider>
+          </MemoryRouter>
+        </I18nProvider>,
+      ),
+    );
+    const header = () => container.querySelector("header")?.textContent ?? "";
+    await waitFor(() => header().includes("Prune old sessions"));
+
+    const goNext = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Go next");
+    await act(async () => click(goNext ?? null));
+
+    expect(header()).toContain("Next action");
+    expect(header()).not.toContain("Prune old sessions");
   });
 });

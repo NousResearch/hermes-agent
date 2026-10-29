@@ -30,11 +30,13 @@ import {
   SOURCE_SWITCH_DIAL_TIMEOUT_MS,
   withTimeout
 } from '@/lib/with-timeout'
+import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 import { isMissingConnectionError, isMissingProfileError } from '@/store/gateway-dial-failures'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
+export { useGatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -222,7 +224,6 @@ interface GatewayRegistryState {
   primaryConnectionMode: 'local' | 'remote' | null
   primaryProfile: string
   activeKey: string
-  activationEpoch: number
   secondaries: Map<string, Secondary>
   // Auth rejection outlives the disposable socket, including background request leases.
   reauthFailures: Map<string, { connectionId: string | null; error: Error }>
@@ -251,7 +252,6 @@ function createRegistryState(): GatewayRegistryState {
     primaryConnectionMode: null,
     primaryProfile: initialGatewayProfile(),
     activeKey: initialGatewayProfile(),
-    activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
     reauthFailures: new Map(),
     dialFailures: new Map(),
@@ -530,7 +530,7 @@ export function isActivePrimary(): boolean {
 
 /** Changes on every active route selection, including same-profile source swaps. */
 export function gatewayActivationEpoch(): number {
-  return Number.isFinite(g.activationEpoch) ? g.activationEpoch : 0
+  return Number.isFinite($gatewayActivationEpoch.get()) ? $gatewayActivationEpoch.get() : 0
 }
 
 export function activeGateway(): HermesGateway | null {
@@ -636,9 +636,9 @@ function setActive(profile: string): void {
 }
 
 function beginGatewayActivation(): number {
-  g.activationEpoch = gatewayActivationEpoch() + 1
+  $gatewayActivationEpoch.set(gatewayActivationEpoch() + 1)
 
-  return g.activationEpoch
+  return $gatewayActivationEpoch.get()
 }
 
 function applyActive(profile: string, activationEpoch: number): boolean {

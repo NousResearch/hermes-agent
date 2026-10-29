@@ -1,6 +1,6 @@
 name: hermes-whatsapp-voice
 repo: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice
-sha: ef3b8be4a79651b6c11a720f20a95b9e2939c92e
+sha: 562572e4927f8c5216df414c786c30d0066a8054
 title: WhatsApp Voice Calls
 description: >-
   Live voice calls with Hermes over WhatsApp, on the linked-device (personal number) setup most
@@ -32,15 +32,16 @@ description: >-
   chat-session call instead of a second text reply (slash commands, media, groups and other chats are
   untouched). Chat-session mode (opt-in) also runs a loopback service inside Hermes's process that
   reads the owner's WhatsApp DM session (system prompt, recent history, tool schemas) and sends it to
-  Gemini, runs the voice's tool calls through Hermes in that session under Hermes's approval flow, and
-  writes the call into that session; it imports private Hermes modules (listed in the repo's
+  Gemini, runs only the tools listed in voice_tools through Hermes in that session, and writes the
+  call into that session. It never answers Hermes approval prompts: a command that needs approval is
+  denied during the call and the owner is told to ask again in the WhatsApp text chat; it imports private Hermes modules (listed in the repo's
   CORE_PATCHES.md) and falls back to the default mode if they change. Optional recording
   (record_calls, off) saves the owner's side of each call as WAV in the plugin's data directory,
   locally only. An advanced voice_api_url setting can point the Live connection at another endpoint,
   which then receives the Gemini key and call audio. No telemetry.
 maintainer: ashwanthbalakrishnan5
 tier: community
-version: "0.2.1"
+version: "0.2.2"
 category: voice
 docs_url: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice#readme
 requires_hermes: ">=0.21.6"

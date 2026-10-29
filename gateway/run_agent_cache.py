@@ -46,6 +46,28 @@ def _tuple_agent(entry: Any) -> Any:
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
+    # Inputs captured when an agent is built. Edits must invalidate its cached instance.
+    _CACHE_BUSTING_CONFIG_KEYS: tuple = (
+        ("model", "context_length"), ("compression", "enabled"),
+        ("compression", "progress_notices"), ("compression", "threshold"),
+        ("compression", "model_thresholds"), ("compression", "threshold_tokens"),
+        ("compression", "codex_gpt55_autoraise"), ("compression", "codex_app_server_auto"),
+        ("compression", "codex_responses_native"),
+        ("compression", "codex_responses_compact_threshold"), ("compression", "in_place"),
+        ("compression", "checkpoint_required"), ("compression", "micro_compact"),
+        ("compression", "micro_compact_every_n_turns"),
+        ("compression", "micro_compact_defrag_threshold_tokens"), ("compression", "target_ratio"),
+        ("compression", "tail_mode"), ("compression", "protect_last_n"),
+        ("compression", "proactive_prune_tokens"),
+        ("compression", "proactive_prune_min_result_chars"),
+        ("compression", "proactive_prune_min_reclaim_tokens"),
+        ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
+        ("memory", "provider"), ("memory", "memory_enabled"),
+        ("memory", "user_profile_enabled"), ("memory", "memory_char_limit"),
+        ("memory", "user_char_limit"), ("memory", "nudge_interval"),
+        ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
+        ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
+
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``

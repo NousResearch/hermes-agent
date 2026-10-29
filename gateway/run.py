@@ -4104,27 +4104,6 @@ class GatewayRunner(
             worker.join(remaining)
         return sum(1 for worker in workers if worker.is_alive())
 
-    # (section, key) config values baked into the agent at construction: a change MUST invalidate the
-    # cached agent or a mid-gateway edit is silently ignored. Add new baked-in settings here.
-    # _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
-    _CACHE_BUSTING_CONFIG_KEYS: tuple = (
-        ("model", "context_length"), ("compression", "enabled"),
-        ("compression", "progress_notices"), ("compression", "threshold"),
-        ("compression", "model_thresholds"), ("compression", "threshold_tokens"),
-        ("compression", "codex_gpt55_autoraise"), ("compression", "codex_app_server_auto"),
-        ("compression", "codex_responses_native"),
-        ("compression", "codex_responses_compact_threshold"), ("compression", "in_place"),
-        ("compression", "checkpoint_required"), ("compression", "micro_compact"),
-        ("compression", "micro_compact_every_n_turns"),
-        ("compression", "micro_compact_defrag_threshold_tokens"), ("compression", "target_ratio"),
-        ("compression", "tail_mode"), ("compression", "protect_last_n"),
-        ("compression", "proactive_prune_tokens"),
-        ("compression", "proactive_prune_min_result_chars"),
-        ("compression", "proactive_prune_min_reclaim_tokens"),
-        ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
-        ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
-        ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
-
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
         """Reset per-turn state on a cached agent before a new turn starts.

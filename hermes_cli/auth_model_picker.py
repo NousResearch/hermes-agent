@@ -210,16 +210,27 @@ class _ModelPickerRows:
         return TOP_TIER_FOOTNOTE
 
 
-def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tuple[list[str], dict[int, str], int]:
+def _picker_order(
+    model_ids: list[str], current_model: str, window_usage,
+    free_ids: Optional[set[str]] = None,
+) -> tuple[list[str], dict[int, str], int]:
     """``(ordered ids, {row index: section heading}, cursor start)`` for the picker.
 
     Window plan: "Recommended" (the plan's featured picks) then "Other models", with the current
     model left in its own section (the cursor starts on it). Everyone else: current first.
+
+    *free_ids* (models the catalog lists as free) float to the front free-first: a stable partition
+    (relative order preserved). Window plan: only within "Other models" — the Recommended head and
+    the section heading indexes stay untouched. ``None``/empty keeps the historical ordering.
     """
     sections: dict[int, str] = {}
     if window_usage is not None:
         from hermes_cli.model_picker_usage import SECTION_OTHER, SECTION_RECOMMENDED, split_recommended
         head, rest = split_recommended(list(dict.fromkeys(model_ids)), window_usage.featured_model_ids)
+        if free_ids:
+            # Free-first inside "Other models" only; head stays in plan order so the
+            # {0, len(head)} heading indexes remain valid without remapping.
+            rest = [m for m in rest if m in free_ids] + [m for m in rest if m not in free_ids]
         ordered = head + rest
         if head:
             sections[0] = SECTION_RECOMMENDED
@@ -230,6 +241,8 @@ def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tup
         ordered = list(dict.fromkeys(
             ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
         ))
+        if free_ids:
+            ordered = [m for m in ordered if m in free_ids] + [m for m in ordered if m not in free_ids]
     return ordered, sections, (ordered.index(current_model) if current_model in ordered else 0)
 
 
@@ -294,7 +307,10 @@ def _prompt_model_selection(
 
     # All models for column-width computation (selectable + unavailable). Plan usage is Nous-only chrome.
     window_usage = usage if sale_chrome else None
-    ordered, sections, start = _picker_order(model_ids, current_model, window_usage)
+    # Free models float to the front of the picker (stable partition inside _picker_order).
+    from agent.plan_limits import is_free
+    free_ids = {mid for mid in model_ids if is_free(mid, pricing)}
+    ordered, sections, start = _picker_order(model_ids, current_model, window_usage, free_ids=free_ids)
 
     rows = _ModelPickerRows(
         ordered + list(_unavailable), pricing, current_model=current_model, sale_chrome=sale_chrome,

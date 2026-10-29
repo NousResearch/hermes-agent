@@ -41,6 +41,31 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
         service_pids = set(_get_service_pids(all_profiles=True))
     except Exception:
         service_pids = set()
+    # Known services have an established restart path. For every other PID,
+    # require positive evidence that it is manual before sending a signal;
+    # custom systemd services and unknown ownership must remain untouched.
+    from hermes_cli.update_cmd import _select_update_manual_gateway_pids
+    candidates = [pid for pid in pids if pid not in service_pids]
+    manual_pids = set(_select_update_manual_gateway_pids(
+        candidates, known_service_pids=set(), systemd_supported=False,
+    ))
+    protected = set(candidates) - manual_pids
+    if protected:
+        from hermes_cli.update_cmd_gateway_ownership import protected_gateway_identity
+        if not hasattr(restart, "protected_gateway_pids"):
+            restart.protected_gateway_pids = set()
+        restart.protected_gateway_pids.update(protected)
+        if not hasattr(restart, "protected_gateway_identities"):
+            restart.protected_gateway_identities = {}
+        for pid in protected:
+            if pid not in restart.protected_gateway_identities:
+                restart.protected_gateway_identities[pid] = protected_gateway_identity(pid)
+        restart.incomplete = True
+        print("  ⚠ Gateway PID(s) " + ", ".join(map(str, sorted(protected)))
+              + " may belong to a service; restart and verify them through their supervisor")
+    pids = [pid for pid in pids if pid in service_pids or pid in manual_pids]
+    if not pids:
+        return []
     labels = {row.get("pid"): str(row.get("profile") or "gateway") for row in fleet if isinstance(row, dict)}
     print()
     print(f"  ⚠ {len(pids)} gateway process(es) still run the pre-update code — requesting a restart")

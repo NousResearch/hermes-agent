@@ -112,4 +112,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Update code and dependencies but defer the fleet restart. Use for updates "
              "running inside a gateway cgroup, then restart gateways separately.",
     )
+    update_parser.add_argument(
+        "--acknowledge-protected-gateway", metavar="TOKEN", default=None,
+        help="After verifying the gateway is recovered and matching receipt rows refer to it, acknowledge that one protected debt and exit.",
+    )
+    update_parser.add_argument(
+        "--acknowledge-gateway-receipt", metavar="TOKEN", default=None,
+        help="After verifying the displayed gateway receipt entry is recovered, acknowledge that exact entry and exit.",
+    )
     update_parser.set_defaults(func=cmd_update)

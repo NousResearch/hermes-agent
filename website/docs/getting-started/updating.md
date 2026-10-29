@@ -450,6 +450,8 @@ A pending restart marker records its own pre-update runtime inventory and target
 
 Legacy markers without an inventory, and malformed or unsupported inventories, cannot be automatically cleared by startup or catch-up reconciliation. Restarting all visible gateways is not enough to establish what that update owed. The warning remains until a later update completes with a new marker containing its own inventory and settles successfully.
 
+If Hermes cannot determine whether a gateway belongs to a systemd service, it leaves that process running and records a restart as owed. Restart the affected gateway through its supervisor or owner, then verify that it is running the updated code. When Hermes cannot verify its identity automatically, the startup warning may show an acknowledgment command for the protected gateway. Run that command only after checking the recovery. If the warning also lists a receipt entry, inspect that specific entry and acknowledge it separately only after verifying it has been resolved. Each displayed token applies to the entry and receipt shown; changes to them can make the token stale. Use the newly displayed command if that happens. Acknowledging one entry does not clear other gateway, service, or backend obligations.
+
 ### Full pre-update backup: `--backup`
 
 For high-value profiles (production gateways, shared team installs) you can opt into a full pre-pull backup of `HERMES_HOME` (config, auth, sessions, skills, pairing):

@@ -22,6 +22,50 @@ from tests.hermes_cli.test_update_pause_record import _child, _reap_children
 _UNIT = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-p2probe.service", "pid": 4242}
 
 
+@pytest.mark.platforms("linux")
+def test_bare_discovery_leaves_systemd_and_unknown_gateways_running(monkeypatch, tmp_path):
+    """The pre-swap pause must not drain, kill, or replay a service or unproved PID."""
+    from gateway import status
+    from hermes_cli import gateway, update_cmd, update_cmd_fleet, update_cmd_posix_pause as pause
+    from hermes_cli import update_fleet_scope
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda **kwargs: set())
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kwargs: [201, 202, 203])
+    monkeypatch.setattr(update_cmd_fleet, "_scoped_manual_gateway_pids", lambda pids: pids)
+    monkeypatch.setattr(update_cmd, "_systemd_service_membership_for_pid", lambda pid: {201: True, 202: None, 203: False}[pid])
+    monkeypatch.setattr(pause, "_supervisor_markers", lambda pid: None)
+    monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda pid: ["hermes", "gateway", "run"])
+    monkeypatch.setattr(update_fleet_scope, "gateway_pid_home", lambda pid: tmp_path)
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: 123)
+
+    bare, notices = pause._discover_bare(set())
+
+    assert [entry["pid"] for entry in bare] == [203]
+    assert len(notices) == 2
+    assert "PID 201" in notices[0] and "systemd service ownership" in notices[0]
+    assert "PID 202" in notices[1] and "unknown systemd ownership" in notices[1]
+    assert all("after the update" in notice for notice in notices)
+
+
+@pytest.mark.platforms("macos")
+def test_bare_discovery_does_not_apply_linux_cgroups_on_macos(monkeypatch, tmp_path):
+    from gateway import status
+    from hermes_cli import gateway, update_cmd, update_cmd_fleet, update_cmd_posix_pause as pause
+    from hermes_cli import update_fleet_scope
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda **kwargs: set())
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kwargs: [203])
+    monkeypatch.setattr(update_cmd_fleet, "_scoped_manual_gateway_pids", lambda pids: pids)
+    monkeypatch.setattr(update_cmd, "_systemd_service_membership_for_pid", lambda pid: pytest.fail("Linux-only probe"))
+    monkeypatch.setattr(pause, "_supervisor_markers", lambda pid: None)
+    monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda pid: ["hermes", "gateway", "run"])
+    monkeypatch.setattr(update_fleet_scope, "gateway_pid_home", lambda pid: tmp_path)
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: 123)
+
+    bare, notices = pause._discover_bare(set())
+
+    assert [entry["pid"] for entry in bare] == [203]
+    assert notices == []
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass
 def test_a_killed_updaters_supervised_units_are_adopted_by_the_next_update(tmp_path):

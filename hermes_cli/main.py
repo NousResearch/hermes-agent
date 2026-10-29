@@ -2277,8 +2277,8 @@ def _update_preflight_handled(args) -> bool:
     from hermes_cli.config import is_managed, managed_error
     from hermes_cli.update_channel import handle_metadata_args
     from hermes_cli.update_cmd_common import _record_stop
-
-    if handle_metadata_args(args, PROJECT_ROOT):
+    from hermes_cli.update_gateway_ack_cli import handle_gateway_ack_args
+    if handle_gateway_ack_args(args, PROJECT_ROOT) or handle_metadata_args(args, PROJECT_ROOT):
         sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")

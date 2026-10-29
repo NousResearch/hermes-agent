@@ -1534,6 +1534,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Only bot senders trigger auto-@ + text mode; human replies keep card formatting.
         self._last_inbound_sender: dict[str, dict[str, Any]] = {}  # chat_id → {open_id, name, is_bot}
         self._mention_name_map: dict[str, dict[str, str]] = {}  # chat_id → {lowercase_name → open_id}
+        self._chat_members_cache: dict[str, tuple[float, dict[str, str]]] = {}  # chat_id → (ts, {lowercase_name → open_id})
+        self._CHAT_MEMBERS_TTL = 300  # 5 min cache
         self._message_text_cache: OrderedDict[str, Optional[str]] = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -1881,6 +1883,23 @@ class FeishuAdapter(BasePlatformAdapter):
                 force_text_for_bot = True
                 logger.info("[Feishu] Auto-mention bot %s (%s) in group %s, forcing text mode",
                             sender_name, sender_oid, chat_id)
+
+        # --- Resolve @name patterns in group chat content ---
+        # Scan for @name text (not already inside an <at> tag), look up name in merged
+        # member map (API humans + learned bots), replace with real <at> tags.
+        # Forces text mode when any mention is resolved.
+        import re as _re
+        _at_pattern = _re.compile(r'(?<!user_id=")@([\w\u4e00-\u9fff]+)')
+        _at_matches = _at_pattern.findall(formatted)
+        if _at_matches and chat_id:
+            _mention_map = await self._resolve_mention_map(chat_id)
+            for raw_name in _at_matches:
+                oid = _mention_map.get(raw_name.lower())
+                if oid:
+                    at_tag = f'<at user_id="{oid}">{raw_name}</at>'
+                    formatted = formatted.replace(f'@{raw_name}', at_tag, 1)
+                    force_text_for_bot = True
+                    logger.info("[Feishu] Resolved @%s → %s in group %s", raw_name, oid, chat_id)
 
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
@@ -2320,6 +2339,59 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
+
+    async def _get_chat_members_map(self, chat_id: str) -> dict[str, str]:
+        """Return {lowercase_name → open_id} for human members of a group chat.
+
+        Results are cached for ``_CHAT_MEMBERS_TTL`` seconds.  Bot members are NOT
+        returned by the Feishu API (documented limitation), so bot mappings come
+        exclusively from ``_mention_name_map`` (accumulated from inbound messages).
+        """
+        import time as _time
+        cached = self._chat_members_cache.get(chat_id)
+        if cached and (_time.time() - cached[0]) < self._CHAT_MEMBERS_TTL:
+            return dict(cached[1])
+        if not self._client:
+            return {}
+        members_map: dict[str, str] = {}
+        try:
+            from lark_oapi.api.im.v1 import GetChatMembersRequestBuilder
+            page_token: str | None = None
+            for _ in range(20):  # safety cap
+                builder = (GetChatMembersRequestBuilder()
+                           .chat_id(chat_id)
+                           .member_id_type("open_id")
+                           .page_size(100))
+                if page_token:
+                    builder = builder.page_token(page_token)
+                request = builder.build()
+                response = await self._run_blocking(self._client.im.v1.chat_members.get, request)
+                if not response or not getattr(response, "success", lambda: False)():
+                    break
+                data = getattr(response, "data", None)
+                items = getattr(data, "items", None) or []
+                for member in items:
+                    name = getattr(member, "name", "") or ""
+                    mid = getattr(member, "member_id", "") or ""
+                    if name and mid:
+                        members_map[name.lower()] = mid
+                page_token = getattr(data, "page_token", None) or None
+                has_more = getattr(data, "has_more", False)
+                if not has_more or not page_token:
+                    break
+            self._chat_members_cache[chat_id] = (_time.time(), members_map)
+        except Exception:
+            logger.debug("[Feishu] Failed to fetch chat members for %s", chat_id, exc_info=True)
+        return dict(members_map)
+
+    async def _resolve_mention_map(self, chat_id: str) -> dict[str, str]:
+        """Merge human members (from API) + bot/learned mappings into one lookup."""
+        merged: dict[str, str] = {}
+        # 1) Human members from API
+        merged.update(await self._get_chat_members_map(chat_id))
+        # 2) Bot + learned mappings from inbound messages (overrides API if conflict)
+        merged.update(self._mention_name_map.get(chat_id, {}))
+        return merged
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""

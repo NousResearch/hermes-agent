@@ -309,6 +309,32 @@ Get a key at [perplexity.ai/account/api](https://www.perplexity.ai/account/api).
 
 ---
 
+### Brave Search (free tier)
+
+Index-backed search from Brave's own index. Search-only — pair it with an extract provider.
+
+```bash
+# ~/.hermes/.env
+BRAVE_SEARCH_API_KEY=your-brave-key-here
+```
+
+Get a key at [brave.com/search/api](https://brave.com/search/api/). The free tier includes 2 000 queries/month.
+
+Brave defaults to US results. To localize them, set any of these optional keys (passed to Brave as-is):
+
+```yaml
+web:
+  search_backend: "brave-free"
+  brave:
+    country: "CA"        # 2-letter country code
+    search_lang: "en"    # language of the results
+    ui_lang: "en-CA"     # language-region for result metadata
+```
+
+Or from the CLI: `hermes config set web.brave.country CA`.
+
+---
+
 ### Exa
 
 Neural search with semantic understanding. Good for research and finding conceptually related content.

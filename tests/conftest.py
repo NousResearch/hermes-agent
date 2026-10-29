@@ -449,6 +449,15 @@ def _reset_foreground_exit_fence():
 
 
 @pytest.fixture(autouse=True)
+def _reset_clarify_filler_guard():
+    """The clarify filler guard remembers each session's last call, and most tests bind no session
+    (one shared key): without a reset, one test's clarify call gates the next test's terse question."""
+    yield
+    if (clarify := sys.modules.get("tools.clarify_tool")) is not None:
+        clarify._last_clarify_at.clear()
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_kanban_memory_guard(request, monkeypatch):
     """Pin the kanban dispatcher's memory guard to "no data" for every test.
 

@@ -1868,15 +1868,17 @@ class FeishuAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
 
         # --- Auto-mention bots in group chat replies ---
-        # When the last inbound message in this chat was from a bot, force text mode
+        # When the last inbound message in this chat was from a bot AND this send is
+        # an agent reply (has reply_to_message_id from stream_consumer), force text mode
         # and inject @tag so the bot receives a real mention event.
+        # The reply_to_message_id gate excludes framework pushes (status notices, error
+        # notifications, cronjob outputs) which don't carry this field.
         # Card content is unreadable to bots and card <at> doesn't produce mention events.
         # The @tag is injected only on the FIRST send (tracked via _auto_mentioned_chats),
         # but ALL sends for this bot-triggered turn stay in text mode.
-        # Safe from cronjob/framework pushes: those target home channels, not group chats
-        # with active bot conversations; _last_inbound_sender is only set by inbound messages.
         force_text_for_bot = False
-        _last_sender = self._last_inbound_sender.get(chat_id)
+        _has_reply_to = bool((metadata or {}).get("reply_to_message_id"))
+        _last_sender = self._last_inbound_sender.get(chat_id) if _has_reply_to else None
         if _last_sender and _last_sender.get("is_bot"):
             force_text_for_bot = True
             sender_oid = _last_sender.get("open_id", "")

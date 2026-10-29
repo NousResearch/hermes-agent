@@ -175,3 +175,25 @@ def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home
     monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
     set_multiplex_active(True)  # conftest resets the latch per test
     assert _sources_rows(home)["onepassword"]["enabled"] is True
+
+
+_CARD = {"card_number": "4111111111111111", "exp_month": "07", "exp_year": "2029", "cvc": "123"}
+
+
+def test_list_carries_any_site_within_the_wire_contract(home):
+    """Full dispatch (contract-checked result): a card saved for any site reaches the Desktop marked as such."""
+    from agent.vault_store import get_vault_store
+
+    meta = get_vault_store().add_item("payment", "Anywhere", dict(_CARD), origin_match="any_site")
+    envelope = srv.handle_request({"id": 1, "method": "vault.list", "params": {}})
+    [item] = _result(envelope)["items"]
+    assert item["id"] == meta.id and item["origin"] is None and item["origin_match"] == "any_site"
+    assert _CARD["card_number"] not in json.dumps(envelope)
+
+
+def test_add_cannot_set_origin_match(home):
+    """Saving a card for any site is a `hermes vault add` choice; the RPC does not accept the scope."""
+    params = {"kind": "payment", "label": "Card", "secret": dict(_CARD), "origin_match": "any_site"}
+    err = _error(srv.handle_request({"id": 1, "method": "vault.add", "params": params}))
+    assert err["code"] == 4000
+    assert _result(srv._methods["vault.list"](2, {}))["items"] == []

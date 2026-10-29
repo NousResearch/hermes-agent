@@ -78,6 +78,18 @@ Headless sessions (cron, webhooks, the API server) cannot confirm and are
 refused, so a prompt injection that reaches a checkout page can ask, but it
 cannot spend. Address fills need no confirmation.
 
+**A card for any site.** A personal card used across many shops can be saved
+once instead of once per shop: run `hermes vault add`, choose `payment`, type
+`any` at the site question and confirm. Each fill then names the exact page
+(for example "Fill payment card 'Visa' on https://shop.example.com") and asks
+you; approving covers that one fill only. Only https pages qualify, and
+headless sessions are refused as for every card. This is local-vault only. It
+is weaker than an exact site against look-alike shops: an exact-site card is
+refused on `shop-example.com` without asking, while an any-site card relies on
+you reading the site in the prompt, so an exact site stays the recommendation.
+The desktop app lists such a card and can remove it; adding one is CLI-only for
+now.
+
 ## Managing what's saved
 
 - **Desktop → Settings → Passwords & Logins**: everything saved, the detected
@@ -163,8 +175,9 @@ vault:
 **Does:** the password never enters the model's context through Hermes: not in
 tool results, logs, the session database, or the CLI arguments of any process.
 Fills happen over the supervised browser session's direct CDP socket and are
-refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write. With the Camofox browser plugin,
+refused unless the page origin exactly matches the saved origin, or, for a card
+saved for any site, unless you confirm that page's origin, checked again inside
+the page immediately before the write. With the Camofox browser plugin,
 which has no CDP endpoint, the same checks run and the fill goes to the Camofox
 tab through its REST evaluate endpoint, only when `CAMOFOX_URL` is loopback or
 HTTPS.

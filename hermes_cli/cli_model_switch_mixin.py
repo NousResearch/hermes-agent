@@ -638,7 +638,13 @@ class CLIModelSwitchMixin:
             "user_provs": user_provs,
             "custom_provs": custom_provs,
             "filter": ""}
-        self._invalidate(min_interval=0.0)
+        # Paint immediately: this is the picker's ONLY entry repaint, and a
+        # user-blocking modal must never be dropped by the _invalidate throttle
+        # or the resize-recovery guard — otherwise the picker never renders
+        # while its key filters are already active, freezing the console with
+        # no visible prompt. Same failure class as #41098; see _invalidate's
+        # docstring for why modals route through _paint_now().
+        self._paint_now()
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
@@ -691,7 +697,10 @@ class CLIModelSwitchMixin:
     def _close_model_picker(self) -> None:
         self._model_picker_state = None
         self._restore_modal_input_snapshot()
-        self._invalidate(min_interval=0.0)
+        # Paint immediately: same rationale as _open_model_picker — a throttled
+        # or resize-suppressed close repaint leaves the picker on screen after
+        # its state is already cleared, which reads as a dead console.
+        self._paint_now()
 
     def _snapshot_model_runtime(self) -> dict:
         """Capture current CLI and agent model runtime for one-turn restore."""

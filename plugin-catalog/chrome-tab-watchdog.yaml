@@ -2,7 +2,7 @@ name: chrome-tab-watchdog
 title: Chrome Tab Watchdog
 repo: https://github.com/web3blind/hermes-chrome-tab-watchdog
 sha: 15b873f13df8275c59a18cbe4a9a2ec71266af50
-description: Conservative Chrome tab cleanup with in-process observation and browser-call leases.
+description: "Conservative Chrome tab cleanup with in-process observation and browser-call leases. Disclosure — runs a background thread inside Hermes that proxies your local Chrome DevTools port (127.0.0.1:9222 → 127.0.0.1:9223, loopback only, you must point browser.cdp_url at it), injects a focus/activity listener into every Chrome page, rewrites browser_exec session names to a per-profile namespace, and a cron script you schedule auto-closes idle, duplicate and blank tabs (including tabs with unsaved text)."
 maintainer: web3blind
 tier: community
 category: automation

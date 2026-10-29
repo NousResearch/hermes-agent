@@ -24,7 +24,7 @@ import {
 } from '@hermes/shared/i18n'
 import { atom } from 'nanostores'
 
-import { isBundledLocale, TRANSLATIONS } from './catalog'
+import { isBundledLocale, loadBundledLocale, TRANSLATIONS } from './catalog'
 import type { Locale, Translations } from './types'
 
 /** Who registered a language: the backend's pack layer, a plugin, or app code. */
@@ -75,7 +75,26 @@ export function normalizeLocaleId(id: string): string {
 }
 
 function baseCatalog(id: Locale): Translations {
-  return isBundledLocale(id) ? TRANSLATIONS[id] : TRANSLATIONS.en
+  if (!isBundledLocale(id)) {
+    return TRANSLATIONS.en
+  }
+
+  const bundled = TRANSLATIONS[id]
+
+  if (bundled) {
+    return bundled
+  }
+
+  // First ask for a language whose catalog is not in the boot graph: fetch it,
+  // and bump the registry version when it lands so translators re-resolve.
+  // English stands in until then, which is what an unregistered locale shows.
+  void loadBundledLocale(id).then(loaded => {
+    if (loaded) {
+      bump()
+    }
+  })
+
+  return TRANSLATIONS.en
 }
 
 function toTree(translations: AppLocaleRegistration['translations'], base: Translations): Record<string, unknown> {

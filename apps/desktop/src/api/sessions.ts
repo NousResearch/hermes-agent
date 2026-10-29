@@ -665,6 +665,51 @@ export function getOlderSessionMessages(
   return getSessionMessages(id, profile, { includeCompacted: true, limit, offset, order: 'latest' })
 }
 
+/**
+ * Character count for the safe-load guard, without serializing the transcript.
+ *
+ * `JSON.stringify(page.messages).length` allocated a copy of every page (a
+ * 500-message page of a long session is several MB) purely to count it, once
+ * per page, for a guard that only needs the order of magnitude. Count the text
+ * instead and add structural overhead: the limit is a memory backstop, not an
+ * exact byte contract.
+ */
+function approximateMessageJsonChars(messages: SessionMessage[]): number {
+  let chars = 2 // the array brackets
+
+  for (const message of messages) {
+    chars += 96 // ids, role, timestamp, keys and punctuation
+
+    const { content } = message
+
+    if (typeof content === 'string') {
+      chars += content.length
+
+      continue
+    }
+
+    if (!Array.isArray(content)) {
+      continue
+    }
+
+    for (const part of content) {
+      chars += 32
+
+      if (typeof part === 'string') {
+        chars += part.length
+
+        continue
+      }
+
+      const text = part && typeof part === 'object' ? (part as { text?: unknown }).text : undefined
+
+      chars += typeof text === 'string' ? text.length : JSON.stringify(part).length
+    }
+  }
+
+  return chars
+}
+
 export async function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
@@ -691,7 +736,7 @@ export async function getAllSessionMessages(
     )
 
     resolvedSessionId = page.session_id
-    jsonChars += (JSON.stringify(page.messages) ?? '').length
+    jsonChars += approximateMessageJsonChars(page.messages)
 
     if (jsonChars > maxJsonChars) {
       throw new Error(
@@ -707,6 +752,10 @@ export async function getAllSessionMessages(
     }
 
     offset += page.messages.length
+
+    // 19 pages for a 9 500-message session: let the renderer breathe between
+    // them so the composer and transcript keep painting while history loads.
+    await new Promise(resolve => setTimeout(resolve, 0))
   }
 
   return { session_id: resolvedSessionId, messages }

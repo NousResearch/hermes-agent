@@ -1,7 +1,13 @@
 import type { ClientSessionState } from '../types'
 
-export const DEFAULT_WARM_SESSION_TRANSCRIPT_COUNT = 24
-export const DEFAULT_WARM_SESSION_TRANSCRIPT_BYTES = 32 * 1024 * 1024
+// How much transcript history stays warm for instant session switching. The
+// cache holds whole `ClientSessionState` objects, and their size is estimated
+// by stringifying them, so a single 5 MB session costs tens of MB of V8 heap.
+// 24 sessions / 32 MB let a normal week of sessions sit in memory at once;
+// 12 / 16 MB still covers the sessions anyone actually flips between (and an
+// evicted session rehydrates from its tail on the next switch).
+export const DEFAULT_WARM_SESSION_TRANSCRIPT_COUNT = 12
+export const DEFAULT_WARM_SESSION_TRANSCRIPT_BYTES = 16 * 1024 * 1024
 
 interface SessionStateCacheLimits {
   maxBytes?: number

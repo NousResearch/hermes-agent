@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { TRANSLATIONS } from './catalog'
+import { BUNDLED_LOCALES, TRANSLATIONS } from './catalog'
 import {
   isLocale,
   isSupportedLocaleValue,
@@ -160,7 +160,9 @@ describe('languages + registry', () => {
     const options = languageOptions()
     const ids = options.map(option => option.id)
 
-    expect(ids.slice(0, 9)).toEqual(Object.keys(TRANSLATIONS))
+    // Catalogs are lazy in the shipped bundle, so `Object.keys(TRANSLATIONS)`
+    // is load order. BUNDLED_LOCALES is the canonical picker order.
+    expect(ids.slice(0, 9)).toEqual([...BUNDLED_LOCALES])
     expect(ids.slice(9)).toEqual(['he', 'pl'])
     expect(options.find(option => option.id === 'pl')).toMatchObject({
       endonym: 'Polski',

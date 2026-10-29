@@ -1,6 +1,12 @@
 import { configure } from '@testing-library/react'
 
+import { BUNDLED_LOCALES, loadBundledLocale } from './src/i18n/catalog'
 import { InertResizeObserver } from './src/test/jsdom'
+
+// Bundled catalogs are lazy in the shipped bundle (see src/i18n/catalog.ts) so
+// the boot graph carries one language instead of nine. Tests read
+// `TRANSLATIONS[locale]` synchronously, so load every catalog once here.
+await Promise.all(BUNDLED_LOCALES.map(id => loadBundledLocale(id)))
 
 // Shared tooltips measure their arrow through Radix's useSize hook.
 // Geometry assertions still belong in a real browser, not this inert observer. Assigned,

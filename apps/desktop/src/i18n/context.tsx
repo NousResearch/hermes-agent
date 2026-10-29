@@ -4,7 +4,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 
 import { getHermesConfigRecord, type HermesConfigRecord, retainConfigReadOrigin, saveHermesConfig } from '@/hermes'
 
-import { TRANSLATIONS } from './catalog'
+import { isBundledLocale, loadBundledLocale, TRANSLATIONS } from './catalog'
 import {
   DEFAULT_LOCALE,
   isRtlLocale,
@@ -20,6 +20,17 @@ import type { Locale, Translations } from './types'
 export interface I18nConfigClient {
   getConfig: () => Promise<HermesConfigRecord>
   saveConfig: (config: HermesConfigRecord) => Promise<{ ok: boolean }>
+}
+
+/**
+ * Make sure a bundled catalog is resident before the locale flips. Non-bundled
+ * ids (backend packs, plugin packs) have nothing to fetch — the registry layers
+ * them in on its own.
+ */
+async function primeCatalog(locale: Locale): Promise<void> {
+  if (isBundledLocale(locale)) {
+    await loadBundledLocale(locale)
+  }
 }
 
 const defaultConfigClient: I18nConfigClient = {
@@ -188,7 +199,13 @@ export function I18nProvider({
 
           // A saved choice needs no machine probe and always takes precedence.
           if (isSupportedLocaleValue(saved)) {
-            setLocaleState(normalizeLocale(saved))
+            const nextLocale = normalizeLocale(saved)
+
+            // Bundled catalogs are lazy now: resolve the chunk before flipping
+            // the locale so the first frame is already in the user's language
+            // instead of flashing English for one paint.
+            await primeCatalog(nextLocale)
+            setLocaleState(nextLocale)
 
             return
           }
@@ -198,7 +215,13 @@ export function I18nProvider({
           const machineProfile = await window.hermesDesktop?.getMachineProfile?.().catch(() => null)
 
           if (!cancelled && !userLocaleRef.current) {
-            setLocaleState(resolveInitialLocale(undefined, machineProfile?.locale))
+            const inferred = resolveInitialLocale(undefined, machineProfile?.locale)
+
+            await primeCatalog(inferred)
+
+            if (!cancelled && !userLocaleRef.current) {
+              setLocaleState(inferred)
+            }
           }
         })
         .catch(error => {
@@ -242,6 +265,15 @@ export function I18nProvider({
 
       userLocaleRef.current = true
       setSaveError(null)
+
+      // Only block the flip when the catalog still has to be fetched (first
+      // switch to a language that is not in the boot graph). A catalog that is
+      // already resident keeps the switch synchronous, and the registry's
+      // version bump repaints anything that resolved the old one.
+      if (isBundledLocale(next) && !TRANSLATIONS[next]) {
+        await primeCatalog(next)
+      }
+
       setLocaleState(next)
       requestedRef.current = next
       $requestedLocale.set(next)

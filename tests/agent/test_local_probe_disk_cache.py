@@ -29,7 +29,7 @@ class TestDiskHelpers:
     def test_expired_entry_is_miss(self):
         MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
         path = _cache_file()
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         for entry in data.values():
             entry["ts"] = time.time() - MM._LOCAL_PROBE_DISK_TTL_SECONDS - 1
         path.write_text(json.dumps(data), encoding="utf-8")
@@ -90,12 +90,32 @@ class TestOllamaNumCtxDiskL2:
         _clear_in_proc()
         MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
         MM._local_probe_disk_put(
-            "ollama_num_ctx", "http://127.0.0.1:11434|llama3", 131072
+            "ollama_num_ctx", "http://127.0.0.1:11434|llama3",
+            {"ollama_shaped": True, "ctx": 131072},
         )
         with patch("httpx.Client") as mock_client:
             ctx = MM.query_ollama_num_ctx("llama3", "http://127.0.0.1:11434/v1")
         assert ctx == 131072
         mock_client.assert_not_called()
+
+    def test_entry_without_a_shape_verdict_is_reprobed(self):
+        """An entry written before the verdict existed cannot be trusted: it may carry a num_ctx
+        a non-Ollama gateway advertised (#142239)."""
+        _clear_in_proc()
+        MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
+        MM._local_probe_disk_put("ollama_num_ctx", "http://127.0.0.1:11434|llama3", 131072)
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            "parameters": "",
+            "model_info": {"llama.context_length": 8192},
+        }
+        client = MagicMock()
+        client.post.return_value = resp
+        client.__enter__ = lambda s: client
+        client.__exit__ = lambda s, *a: False
+        with patch("httpx.Client", return_value=client):
+            ctx = MM.query_ollama_num_ctx("llama3", "http://127.0.0.1:11434/v1")
+        assert ctx == 8192
 
     def test_successful_show_persists(self):
         _clear_in_proc()
@@ -112,7 +132,6 @@ class TestOllamaNumCtxDiskL2:
         with patch("httpx.Client", return_value=client):
             ctx = MM.query_ollama_num_ctx("llama3", "http://127.0.0.1:11434/v1")
         assert ctx == 8192
-        assert (
-            MM._local_probe_disk_get("ollama_num_ctx", "http://127.0.0.1:11434|llama3")
-            == 8192
-        )
+        assert MM._local_probe_disk_get(
+            "ollama_num_ctx", "http://127.0.0.1:11434|llama3"
+        ) == {"ollama_shaped": True, "ctx": 8192}

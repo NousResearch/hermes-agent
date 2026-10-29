@@ -6,7 +6,7 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
 
-from .method_ctx import HandlerRegistry, bind_module
+from .method_ctx import HYDRATE_SECRETS_IF_UNTRIED, HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -1806,14 +1806,14 @@ def _(rid, params: dict) -> dict:
 
 
 # ── billing / subscription ───────────────────────────────────────────
-# All fail-open: a logged-out / unreachable portal yields an ``ok`` envelope with a typed
-# ``error`` (not a JSON-RPC error) so the TUI maps it to copy. ``billing:manage`` routes
-# return error=insufficient_scope on 403, which drives the ``billing.step_up`` device flow.
+# All fail-open: a logged-out / unreachable portal yields an ``ok`` envelope with a typed ``error`` (not a JSON-RPC
+# error) so the TUI maps it to copy; ``billing:manage`` routes answer 403 with error=insufficient_scope (step-up flow).
+# Views Desktop polls every 30s reuse the profile's last ``op``/``bws`` load (a failing source is never cached).
 def _billing_view(name: str, module: str, builder: str, serializer: str, fallback: dict) -> None:
     """Profile-bound read-only view: ``serializer(module.builder())``, ``fallback`` on any error.
     The view module stays a lazy import (startup budget); the serializer is a server global."""
     @method(name)
-    @_profile_scoped
+    @_profile_scoped(hydrate_secrets=HYDRATE_SECRETS_IF_UNTRIED)
     def _(rid, params: dict) -> dict:
         try:
             from importlib import import_module
@@ -1823,7 +1823,7 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
 
 
 @method("billing.state")
-@_profile_scoped
+@_profile_scoped(hydrate_secrets=HYDRATE_SECRETS_IF_UNTRIED)
 def _(rid, params: dict) -> dict:
     """Profile-bound read-only billing view; fail-open. The Nous free tier has no account to
     bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal

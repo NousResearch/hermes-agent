@@ -12,6 +12,9 @@ import types
 # __wrapped__) and re-wrap, otherwise only the wrapper would see server globals.
 _CM_HELPER_CODE = contextlib.contextmanager(lambda: (yield)).__code__
 
+# ``@_profile_scoped(hydrate_secrets=HYDRATE_SECRETS_IF_UNTRIED)``: polled reads (see server._profile_scoped).
+HYDRATE_SECRETS_IF_UNTRIED = "if_untried"
+
 
 def rebind(fn, g: dict, _seen=None):
     """Copy ``fn`` with globals ``g``; closure cells holding same-module functions are rebound too
@@ -57,9 +60,13 @@ class HandlerRegistry:
     def names(self) -> set[str]:
         return {name for name, _ in self._pending}
 
-    def profile_scoped(self, fn):
-        """Drop-in for server.py's ``@_profile_scoped`` (applied at install)."""
+    def profile_scoped(self, fn=None, *, hydrate_secrets: bool | str = True):
+        """Drop-in for server.py's ``@_profile_scoped`` (applied at install);
+        ``@profile_scoped(hydrate_secrets=...)`` passes that option through."""
+        if fn is None:
+            return lambda inner: self.profile_scoped(inner, hydrate_secrets=hydrate_secrets)
         fn._hermes_profile_scoped = True
+        fn._hermes_profile_hydrate_secrets = hydrate_secrets
         return fn
 
     def install(self, server) -> None:
@@ -68,7 +75,8 @@ class HandlerRegistry:
         for name, fn in self._pending:
             real = rebind(fn, g)
             if getattr(fn, "_hermes_profile_scoped", False):
-                real = server._profile_scoped(real)
+                real = server._profile_scoped(
+                    real, hydrate_secrets=getattr(fn, "_hermes_profile_hydrate_secrets", True))
             server.register_method(name, real)
 
 

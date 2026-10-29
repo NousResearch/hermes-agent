@@ -685,6 +685,48 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
     assert captured["cache_ttl_seconds"] == 300
 
 
+def test_a_load_counts_as_tried_only_once_its_values_are_published(tmp_path, monkeypatch):
+    """Polled reads skip the loader lock while ``secret_sources_tried`` is true, so a load must not count
+    as tried before its snapshot is published: a poll in between would build its scope without the values."""
+    import threading
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    (tmp_path / "config.yaml").write_text("secrets:\n  command:\n    enabled: true\n", encoding="utf-8")
+
+    def _apply(_cfg, _home_path, environ=None):
+        environ["OPENAI_API_KEY"] = "vault-key"
+        return ApplyReport(
+            sources=[SourceReport(name="command", label="command",
+                                  result=FetchResult(secrets={"OPENAI_API_KEY": "vault-key"}),
+                                  applied=["OPENAI_API_KEY"])],
+            provenance={"OPENAI_API_KEY": AppliedVar(name="OPENAI_API_KEY", source="command", shape="bulk",
+                                                     overrode_env=False)})
+
+    paused, release = threading.Event(), threading.Event()
+    real_record = env_loader._record_supplied_names
+
+    def held_record(report):  # runs after every source succeeded, before the snapshot is published
+        paused.set()
+        assert release.wait(10)
+        return real_record(report)
+
+    monkeypatch.setattr(reg_module, "apply_all", _apply)
+    monkeypatch.setattr(env_loader, "_record_supplied_names", held_record)
+    loader = threading.Thread(target=env_loader.hydrate_profile_secret_sources, args=(tmp_path,))
+    loader.start()
+    try:
+        assert paused.wait(10)
+        assert env_loader.get_secret_source_values(tmp_path) == {}
+        assert not env_loader.secret_sources_tried(tmp_path)
+    finally:
+        release.set()
+        loader.join(10)
+    assert env_loader.get_secret_source_values(tmp_path) == {"OPENAI_API_KEY": "vault-key"}
+    assert env_loader.secret_sources_tried(tmp_path)
+
+
 @pytest.fixture
 def _fresh_registry():
     from agent.secret_sources import registry as reg_module

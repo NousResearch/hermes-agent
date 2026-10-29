@@ -10,17 +10,13 @@ is perfectly capable of reading. These tests pin the contract:
   itself and never tells it to punt back to the user.
 """
 
-import importlib
-
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.document_context import _build_document_context_note
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-
-gateway_run = importlib.import_module("gateway.run")
-_build_document_context_note = gateway_run._build_document_context_note
 
 
 class TestTextDocumentNote:

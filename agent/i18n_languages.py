@@ -23,6 +23,7 @@ BUNDLED_LANGUAGE_INFO: dict[str, tuple[str, bool]] = {
     "af": ("Afrikaans", False),
     "ar": ("العربية", True),
     "de": ("Deutsch", False),
+    "el": ("Ελληνικά", False),
     "en": ("English", False),
     "es": ("Español", False),
     "fr": ("Français", False),

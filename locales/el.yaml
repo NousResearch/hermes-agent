@@ -1,0 +1,202 @@
+approval:
+  noun:
+    action: "ενέργεια"
+    code: "κώδικας"
+    command: "εντολή"
+  summary:
+    default: "Δεν εκτελέστηκε ({noun})."
+    denied: "Απορρίψατε το αίτημα έγκρισης ({noun}) — δεν εκτελέστηκε."
+    timeout: "Καμία απάντηση εντός {window} — δεν εκτελέστηκε ({noun})."
+slash:
+  agents:
+    description: "Εμφάνιση ενεργών agents και εργασιών σε εκτέλεση"
+  approvals:
+    description: "Προβολή ή ρύθμιση της μόνιμης λειτουργίας έγκρισης επικίνδυνων εντολών"
+  approve:
+    description: "Έγκριση μιας εκκρεμούς επικίνδυνης εντολής"
+  battery:
+    description: "Εναλλαγή ένδειξης μπαταρίας με χρωματικό κώδικα στη γραμμή κατάστασης"
+  bg:
+    description: "Εκτέλεση ενός prompt σε ξεχωριστή συνεδρία στο παρασκήνιο"
+  blueprint:
+    description: "Ρύθμιση αυτοματισμού από πρότυπο blueprint"
+  btw:
+    description: "Κάντε μια δευτερεύουσα ερώτηση για την τρέχουσα συνομιλία χωρίς διακοπή"
+  bundles:
+    description: "Λίστα bundles skills (aliases /<name> για πολλαπλές skills)"
+  busy:
+    description: "Έλεγχος συμπεριφοράς μηνυμάτων ενώ ο Hermes δουλεύει"
+  clear:
+    description: "Καθαρισμός οθόνης και έναρξη νέας συνεδρίας"
+  commands:
+    description: "Περιήγηση σε όλες τις εντολές και skills (σελιδοποιημένο)"
+  config:
+    description: "Προβολή τρέχουσας διαμόρφωσης"
+  copy:
+    description: "Αντιγραφή της τελευταίας απάντησης του βοηθού στο πρόχειρο"
+  cron:
+    description: "Διαχείριση προγραμματισμένων εργασιών"
+  curator:
+    description: "Συντήρηση skills στο παρασκήνιο (status, run, pin, archive, list-archived)"
+  debug:
+    description: "Αποστολή αναφοράς αποσφαλμάτωσης (πληροφορίες συστήματος + αρχεία καταγραφής) και λήψη συνδέσμων κοινής χρήσης"
+  deny:
+    description: "Απόρριψη εκκρεμούς επικίνδυνης εντολής (προαιρετικά με αιτιολόγηση)"
+  diff:
+    description: "Εμφάνιση αλλαγών git στον τρέχοντα κατάλογο"
+  egress:
+    description: "Προβολή κατάστασης Docker egress proxy"
+  export:
+    description: "Εξαγωγή προφίλ (διαμόρφωση, skills, θέμα) σε αρχείο κοινής χρήσης"
+  focus:
+    description: "Εναλλαγή προβολής εστίασης — μόνο το prompt σας και η τελική απάντηση"
+  footer:
+    description: "Εναλλαγή υποσέλιδου μεταδεδομένων runtime του gateway στις τελικές απαντήσεις"
+  goal:
+    description: "Ορίστε έναν μόνιμο στόχο πάνω στον οποίο δουλεύει ο Hermes σε πολλαπλούς γύρους μέχρι να επιτευχθεί"
+  handoff:
+    description: "Παράδοση αυτής της συνεδρίας σε πλατφόρμα μηνυμάτων (Telegram, Discord, κλπ.)"
+  hatch:
+    description: "Δημιουργία νέου κατοικιδίου petdex από περιγραφή"
+  heartbeat:
+    description: "Ορίστε ένα επαναλαμβανόμενο prompt που επανέρχεται σε αυτή τη συνεδρία όταν είναι αδρανής"
+  help:
+    description: "Εμφάνιση διαθέσιμων εντολών (το /help skills εμφανίζει εντολές skills, το /help <κείμενο> φιλτράρει)"
+  hermes:
+    description: "Μιλήστε με τον Hermes ή εκτελέστε μια υποεντολή"
+  history:
+    description: "Προβολή ιστορικού συνομιλίας"
+  image:
+    description: "Επισύναψη τοπικού αρχείου εικόνας για το επόμενο prompt σας"
+  import:
+    description: "Εισαγωγή αρχείου προφίλ κοινής χρήσης ως νέο προφίλ"
+  indicator:
+    description: "Επιλογή στυλ ένδειξης απασχόλησης TUI"
+  init:
+    description: "Δημιουργία ή ενημέρωση οδηγιών έργου AGENTS.md από σάρωση repo"
+  insights:
+    description: "Προβολή στατιστικών χρήσης και αναλύσεων"
+  journey:
+    description: "Άνοιγμα χρονοδιαγράμματος ταξιδιού μάθησης"
+  kanban:
+    description: "Πίνακας συνεργασίας πολλαπλών προφίλ (εργασίες, συνδέσμοι, σχόλια)"
+  learn:
+    description: "Μάθετε μια επαναχρησιμοποιήσιμη skill από οτιδήποτε περιγράψετε (κατάλογοι, URL, αυτή η συνομιλία, σημειώσεις)"
+  login:
+    description: "Σύνδεση με λογαριασμό Nous (διατηρεί τους connectors σας)"
+  loop:
+    description: "Επανάληψη ενός prompt σε επαναλαμβανόμενο διάστημα σε αυτή τη συνεδρία"
+  memory:
+    description: "Ανασκόπηση εκκρεμών εγγραφών μνήμης / εναλλαγή πύλης έγκρισης"
+  moa:
+    description: "Εκτέλεση ενός prompt μέσω του προεπιλεγμένου preset Mixture of Agents, με επαναφορά του μοντέλου σας"
+  model:
+    description: "Εναλλαγή μοντέλου (ισχύει για τη συνεδρία· --global για μόνιμη αλλαγή)"
+  new:
+    description: "Έναρξη νέας συνεδρίας (νέο ID + κενό ιστορικό)"
+  palette:
+    description: "Άνοιγμα της ασαφούς παλέτας εντολών (επίσης Ctrl+P)"
+  paste:
+    description: "Επισύναψη εικόνας από το πρόχειρο"
+  pause:
+    description: "Παύση νέας εργασίας καθολικά (επείγουσα διακοπή)· το '/pause off' συνεχίζει"
+  personality:
+    description: "Ορίστε μια προκαθορισμένη προσωπικότητα"
+  pet:
+    description: "Εναλλαγή ή υιοθεσία κατοικιδίου petdex (/pet, /pet list, /pet <slug>)"
+  plan:
+    description: "Σύνταξη σχεδίου υλοποίησης σε markdown στο .hermes/plans/ χωρίς να εκτελεστεί τίποτα"
+  platform:
+    description: "Παύση, συνέχιση ή λίστα αποτυχημένης πλατφόρμας gateway"
+  platforms:
+    description: "Προβολή κατάστασης πλατφορμών gateway/μηνυμάτων"
+  plugins:
+    description: "Λίστα εγκατεστημένων plugins και κατάστασής τους"
+  profile:
+    description: "Προβολή ενεργού προφίλ και home directory"
+  prompt:
+    description: "Σύνταξη του επόμενου prompt σας στον $EDITOR (markdown) και αποστολή"
+  queue:
+    description: "Προσθήκη prompt στην ουρά για τον επόμενο γύρο, ή διαχείριση των prompts στην ουρά (list/edit/rm/move/clear)"
+  quit:
+    description: "Έξοδος από το CLI (με --delete διαγράφει και το ιστορικό)"
+  reasoning:
+    description: "Διαχείριση επιπέδου συλλογισμού και εμφάνισης"
+  redraw:
+    description: "Αναγκαστική πλήρης ανανέωση UI (αποκαθιστά προβλήματα εμφάνισης του terminal)"
+  refine:
+    description: "Ανασκόπηση αυτής της συνομιλίας τώρα και αποθήκευση μαθημάτων σε μνήμη/skills"
+  reload:
+    description: "Επαναφόρτωση των μεταβλητών .env στην τρέχουσα συνεδρία"
+  reload_mcp:
+    description: "Επαναφόρτωση MCP servers από τη διαμόρφωση"
+  restart:
+    description: "Ομαλή επανεκκίνηση του gateway μετά την εκκένωση ενεργών εκτελέσεων"
+  resume:
+    description: "Συνέχιση προηγούμενης ονομασμένης συνεδρίας"
+  retry:
+    description: "Επανάληψη του τελευταίου μηνύματος (επαναποστολή στον agent)"
+  review:
+    description: "Δημιουργία ανεξάρτητου subagent για ανασκόπηση της δουλειάς που συζητήσαμε (PR, κώδικας, docs)"
+  rollback:
+    description: "Λίστα ή επαναφορά σημείων ελέγχου αρχείων (η επαναφορά διατηρεί τις χειροκίνητες αλλαγές· --all παρακάμπτει)"
+  save:
+    description: "Εξαγωγή της τρέχουσας συνομιλίας (το απλό /save δείχνει χρήση)"
+  sessions:
+    description: "Περιήγηση και συνέχιση προηγούμενων συνεδριών"
+  sethome:
+    description: "Ορίστε αυτό το chat ως home channel"
+  skills:
+    description: "Αναζήτηση, εγκατάσταση, επιθεώρηση ή διαχείριση skills"
+  skin:
+    description: "Προβολή ή αλλαγή skin/θέματος εμφάνισης"
+  snapshot:
+    description: "Δημιουργία ή επαναφορά σημείων κατάστασης της διαμόρφωσης/κατάστασης του Hermes"
+  start:
+    description: "Αναγνώριση pings έναρξης πλατφόρμας χωρίς απάντηση"
+  status:
+    description: "Προβολή πληροφοριών συνεδρίας, μοντέλου, tokens και context"
+  statusbar:
+    description: "Εναλλαγή γραμμής κατάστασης context/μοντέλου"
+  steer:
+    description: "Ένεση μηνύματος μετά την επόμενη κλήση εργαλείου χωρίς διακοπή"
+  stop:
+    description: "Τερματισμός όλων των background processes σε εκτέλεση"
+  subgoal:
+    description: "Προσθήκη ή διαχείριση επιπλέον κριτηρίων στον ενεργό στόχο"
+  subscription:
+    description: "Προβολή του σχεδίου Nous σας και αλλαγή μέσω browser"
+  suggestions:
+    description: "Ανασκόπηση προτεινόμενων αυτοματισμών (αποδοχή/απόρριψη)"
+  timestamps:
+    description: "Εναλλαγή χρονοσήμων [HH:MM] σε μηνύματα και /history"
+  title:
+    description: "Ορισμός τίτλου για την τρέχουσα συνεδρία"
+  tools:
+    description: "Διαχείριση εργαλείων: /tools [list|disable|enable] [όνομα...]"
+  toolsets:
+    description: "Λίστα διαθέσιμων toolsets"
+  topic:
+    description: "Ενεργοποίηση ή επιθεώρηση συνεδριών θεμάτων Telegram DM"
+  topup:
+    description: "Προβολή υπολοίπου Nous και διαχείριση χρεώσεων στο portal"
+  undo:
+    description: "Αναίρεση N γύρων χρήστη και επαναποστολή του prompt (προεπιλογή 1)"
+  update:
+    description: "Ενημέρωση του Hermes Agent στην τελευταία έκδοση"
+  usage:
+    description: "Προβολή χρήσης tokens και ορίων ρυθμού· το `reset` εξαργυρώνει μια κατατεθειμένη επαναφορά ορίου Codex"
+  verbose:
+    description: "Κυκλική εναλλαγή προβολής προόδου εργαλείων: off -> new -> all -> verbose"
+  version:
+    description: "Προβολή έκδοσης Hermes Agent"
+  voice:
+    description: "Εναλλαγή φωνητικής λειτουργίας"
+  wake:
+    description: "Εναλλαγή ακρόασης wake word 'Hey Hermes'"
+  whoami:
+    description: "Προβολή πρόσβασης εντολών slash (admin / user)"
+  worktree:
+    description: "Προβολή, λίστα, δημιουργία ή εκκαθάριση απομονωμένων git worktrees"
+  yolo:
+    description: "Εναλλαγή YOLO mode (παράλειψη όλων των εγκρίσεων επικίνδυνων εντολών)"

@@ -19,6 +19,7 @@ import { composerFloatingStrip, composerInputBacking } from '@/components/chat/c
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { OnboardingSkip } from '@/components/onboarding/skip-setup'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
@@ -96,6 +97,7 @@ import {
   beginComposerComposition,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
+  endComposerComposition,
   insertComposerContentsAtCaret,
   RICH_INPUT_SLOT
 } from './rich-editor'
@@ -175,6 +177,10 @@ export function ChatBar({
   // Which live composer this instance IS (main | tile) — its attachment set,
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
+  // The `composer.nonProse` seam needs this surface's session address only once
+  // a provider exists — stamping it unconditionally would put an attribute on
+  // every composer for every user (the area's "no provider, no diff" rule).
+  const nonProseRegistered = useContributions(COMPOSER_AREAS.nonProse).length > 0
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const surfaceId = useComposerSurfaceId()
@@ -1182,17 +1188,21 @@ export function ChatBar({
           hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
+        data-composer-session={nonProseRegistered ? (sessionId ?? '') : undefined}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
-        onBlur={() => {
+        onBlur={event => {
           // A composition never survives focus loss (Chromium commits the
           // preedit and fires compositionend on blur) — but if that event is
           // missed, the wedged flag would block the Send button's form-submit
           // guard forever (#44135). Clear unconditionally: by the time blur
-          // runs there is nothing left composing in this editor.
+          // runs there is nothing left composing in this editor. The same
+          // holds for the composer core's own flag, which defers non-prose
+          // re-decoration — left set, it would freeze the wrapper set.
           composingRef.current = false
+          endComposerComposition(event.currentTarget)
 
           if (blurCloseTimer.current !== null) {
             window.clearTimeout(blurCloseTimer.current)

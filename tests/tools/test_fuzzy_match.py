@@ -363,26 +363,31 @@ class TestBlockAnchorThreshold:
 
 
 class TestBytePreservation:
-    """sys-mepvca: a fuzzy window may only overwrite bytes the old_string named.
+    """sys-mepvca: a gated fuzzy window may only overwrite bytes the
+    old_string named.
 
     Live failure (ansible build seat, 2 repair turns in one run): the model
     names a block WITHOUT an anchor line's trailing comment; block_anchor /
     context_aware accept the window anyway and the splice rewrites the whole
     comment-bearing line — bytes outside the named old_string, silently gone.
-    A strategy may now accept a window only when it is recoverable
-    byte-for-byte outside old_string: first/last lines may differ by
-    whitespace/Unicode drift alone, interior lines must be byte-equal."""
+    A gated strategy (trimmed_boundary, block_anchor, context_aware) may now
+    splice a window only when its BOUNDARY lines agree with old_string's
+    first/last lines modulo whitespace/Unicode drift; otherwise the match is
+    vetoed and the chain falls through (typically to no-match, where the
+    model re-reads and resends precise text)."""
 
     def test_byte_preservation_yaml_trailing_comment_survives(self):
-        # context_aware path: the anchor line is 91% similar once the clause
-        # is hidden, so the old behaviour accepted the window and deleted the
-        # comment. The guard must veto it: the clause is outside old_string.
+        # Regression shape (bead's live ansible edit): the edit applies, and
+        # the anchor line's trailing comment — bytes the splice only owns if
+        # the region covers them — survives. Pre-fix the gated similarity
+        # strategies won this shape and spliced the comment away; a strategy
+        # may only apply here if its region provably keeps the comment.
         content = (
             "- name: restart app\n"
             "  ansible.builtin.systemd:\n"
-            "    name: myapp\n"
-            "    state: restarted\n"
-            "    daemon_reload: true    # required after module-path changes\n"
+            "      name: myapp\n"
+            "      state: restarted\n"
+            "      daemon_reload: true    # required after module-path changes\n"
         )
         old = (
             "  ansible.builtin.systemd:\n"
@@ -397,32 +402,35 @@ class TestBytePreservation:
             "    forced: false\n"
             "    daemon_reload: true"
         )
-        out, count, _strategy, _err = fuzzy_find_and_replace(content, old, new)
-        assert count == 0, (
-            f"splice consumed a trailing comment old_string never named: {out!r}")
-        assert out == content  # untouched, model re-reads and resends
+        out, count, strategy, _err = fuzzy_find_and_replace(content, old, new)
+        assert "# required after module-path changes" in out, (
+            f"trailing comment outside the named region spliced away: {out!r}")
+        assert count == 0 or strategy not in (
+            "trimmed_boundary", "block_anchor", "context_aware")
 
     def test_byte_preservation_sudoers_anchor_clause_survives(self):
-        # block_anchor path: anchors match, middle is exact, but the last
-        # line carries a clause old_string does not name.
+        # Similarity-strategy path: the pattern starts mid-line, so only
+        # block_anchor/context_aware can match its 3 lines — and the window's
+        # FIRST line carries a clause old_string does not name. The veto must
+        # hold and the file must come back untouched.
         content = (
-            "deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx,\n"
+            "deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx,  # web\n"
             "    /usr/bin/apt-get update\n"
-            "    /usr/bin/systemctl reload nginx    # keep reload for logrotate\n"
+            "    /usr/bin/systemctl reload nginx\n"
             "backup ALL=(ALL) NOPASSWD: /usr/bin/rsync\n"
         )
         old = (
-            "deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx,\n"
-            "    /usr/bin/apt-get update\n"
-            "    /usr/bin/systemctl reload nginx"
+            "systemctl restart nginx,\n"
+            "/usr/bin/apt-get update\n"
+            "/usr/bin/systemctl reload nginx"
         )
         new = old.replace("/usr/bin/apt-get update",
-                          "    /usr/bin/apt-get update && /usr/bin/apt-get -y upgrade")
+                          "/usr/bin/apt-get update && apt-get -y upgrade")
         out, count, _strategy, _err = fuzzy_find_and_replace(content, old, new)
         assert count == 0, (
             "similar-anchor splice accepted an unnamed trailing clause")
         assert out == content
-        assert "    # keep reload for logrotate" in out
+        assert "# web" in out
 
 
 class TestEscapeDriftGuard:

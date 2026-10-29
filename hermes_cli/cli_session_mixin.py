@@ -111,8 +111,8 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
         logger.debug("/new model reset to config default failed", exc_info=True)
 
 
-def _apply_new_session_title(cli, title: str) -> Optional[str]:
-    """Sanitize + persist a /new title; returns the stored title or None (untitled)."""
+def _sanitize_new_session_title(title: str) -> Optional[str]:
+    """Sanitize a /new title; returns it, or None (untitled) after printing why it was dropped."""
     from cli import _cprint
     from hermes_state import SessionDB
     try:
@@ -122,6 +122,15 @@ def _apply_new_session_title(cli, title: str) -> Optional[str]:
         return None
     if not sanitized:
         _cprint(f"  {t('cli.session.title_empty_untitled')}")
+        return None
+    return sanitized
+
+
+def _apply_new_session_title(cli, title: str) -> Optional[str]:
+    """Sanitize + persist a /new title; returns the stored title or None (untitled)."""
+    from cli import _cprint
+    sanitized = _sanitize_new_session_title(title)
+    if not sanitized:
         return None
     try:
         cli._session_db.set_session_title(cli.session_id, sanitized)
@@ -659,6 +668,10 @@ class CLISessionMixin:
             from hermes_cli.cli_shutdown import _gateway_owns_session_end
             if not _gateway_owns_session_end(self.agent):  # the gateway resets when end_session closes it
                 self._notify_session_boundary("on_session_reset")
+        elif title and self._session_db:
+            # No agent yet (/new before the first message): the row is created lazily on the first
+            # turn, so queue the title for _init_agent to persist, as /title does before that turn.
+            title = self._pending_title = _sanitize_new_session_title(title)
 
         if not silent:
             if title:

@@ -333,6 +333,27 @@ def test_handle_cancel_and_timeout(forks, consented):
     assert _settled(handle).outcome == "cancelled"
 
 
+def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented):
+    """``_loop_aux_task`` marks the fork's requests as auxiliary while it runs, and is cleared on
+    a clean finish and on an error exit alike."""
+    parent = _agent()
+    during: list = []
+
+    def _ok(fork):
+        during.append(fork._loop_aux_task)
+        return {"final_response": "done", "messages": []}
+
+    def _boom(fork):
+        during.append(fork._loop_aux_task)
+        raise RuntimeError("provider down")
+
+    for script in (_ok, _boom):
+        forks.script = script
+        _settled(_ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q"))
+    assert during == [("plugin_fork", {"plugin_id": PLUGIN})] * 2
+    assert [built["fork"]._loop_aux_task for built in forks.built] == [None, None]
+
+
 def test_budget_exhaustion_and_errors_settle_the_handle(forks, consented):
     parent = _agent()
 

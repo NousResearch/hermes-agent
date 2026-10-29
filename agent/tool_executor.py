@@ -358,7 +358,7 @@ def _append_skipped_tool_results(
 
 
 def _tool_search_scoped_names(agent) -> frozenset:
-    """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
+    """Tool names the session may invoke via ``tool_call``; the unwrap bypasses
     the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
     validate against this set. Cached on the agent, keyed by registry scope/generation."""
     try:
@@ -380,7 +380,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
     if cached is not None and cached[0] == cache_key:
         return cached[1]
     try:
-        names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
+        names = _ts.session_tool_names(model_tools.get_tool_definitions(
             enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
         ) or [])
     except Exception:
@@ -415,20 +415,26 @@ def _unwrap_tool_search_call(
         from tools import tool_search as _ts
         if function_name != _ts.TOOL_CALL_NAME:
             return function_name, function_args, None
-        underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
+        session_names = _tool_search_scoped_names(agent)
+        underlying, underlying_args, err = _ts.resolve_underlying_call(
+            function_args, session_names)
         if err or not underlying:
             return function_name, function_args, None
         if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
             # Both executors retain the wrapper: scope/probe/hooks run per entry
             # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None
-        if underlying not in _tool_search_scoped_names(agent):
+        if underlying not in session_names:
             # Session-gated GUI tools name their missing surface (#120413);
             # anything else keeps the generic block.
             return function_name, function_args, _ts.scope_block_reason(underlying)
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.
-        scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
+        scope_block = None
+        if _ts.is_deferrable_tool_name(
+            underlying, _ts.load_config_readonly().effective_defer_tools
+        ):
+            scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
         if scope_block is None:
             return underlying, underlying_args, None
         if flatten_probe:

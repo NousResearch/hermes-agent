@@ -1,0 +1,41 @@
+name: hermes-windows-devices
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 125c0399da5506f92482e316ccbbd6bee5a4697e
+subdir: windows-devices
+description: >-
+  Answer "which device on this Windows machine is unhappy, and what does it need" on
+  Windows: win_device_table lists every present PnP device with its class (System, Net,
+  HIDClass, Display), its status, its manufacturer, its stable device id, and its problem
+  code in words - 28 is one with no driver installed, 10 one that cannot start, 43 one
+  Windows stopped after it reported a failure, 22 one the person switched off on purpose
+  and is not broken - filtering by name or id substring, by class, or to the devices
+  that need attention; devices no longer plugged in are history, left out unless asked
+  for. win_device_detail takes one device by id or name substring and adds the driver
+  behind it from the signed-driver table - name, version, date, provider, signer, INF
+  file, signed or not - or the absence of one, which for code 28 is the same fact said
+  twice; a disabled device gets a note saying it is on purpose, not an alarm. Use it for
+  the Device Manager yellow-mark question without opening Device Manager, for finding
+  what an uninstalled program left behind, and for what changed after an update.
+  Read-only: nothing is enabled, disabled, updated or reinstalled. Both answers come from
+  CIM (Win32_PnPEntity and Win32_PnPSignedDriver, joined by device id), whose property
+  names, enum values and ids do not change with the display language; the human-facing
+  device names localize and are carried through as data, never parsed. The plugin
+  declares no Python dependencies; there is no network call and no file write. Windows
+  only. Disclosure - the tools report device names, manufacturers, device ids and driver
+  versions to the model, and those reveal the machine's hardware inventory and what is
+  plugged into it; treat the output like a Device Manager window opened on their machine.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-devices
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_device_table
+  - win_device_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -202,6 +202,54 @@ describe('native Desktop on a remote backend: the desktop half cannot follow the
       [V2, true]
     ])
   })
+
+  // Each signal alone names the landed tree: the error data's `plugin_name`, and for an older backend the
+  // `enable refused: ` prefix.
+  it.each([
+    [
+      'named in the error data',
+      new JsonRpcGatewayError('dependency conflict', { code: 5026, data: { plugin_name: 'pkg' } })
+    ],
+    ['from an older backend', new JsonRpcGatewayError('enable refused: dependency conflict', { code: 5026 })]
+  ])(
+    'counts an agent half that landed but could not be enabled as in when the desktop half cannot follow (%s)',
+    async (_signal, refusal) => {
+      requestGateway.mockImplementation(async (method, params) => {
+        if (method === 'plugins.manage' && params?.action === 'install') {
+          throw refusal
+        }
+
+        return { plugins: [] }
+      })
+
+      const probePluginRepo = vi.fn(async () => ({
+        ok: true,
+        agent: true,
+        agentName: 'pkg',
+        desktop: true,
+        desktopName: 'pkg',
+        sha: V1,
+        warnings: []
+      }))
+
+      const installDesktopPlugin = vi.fn(async () => ({
+        ok: false,
+        sourceMoved: true,
+        error: 'The commit you reviewed could not be checked out.'
+      }))
+
+      vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo })
+
+      renderModal()
+      act(() => openPluginInstallRequest({ repo: REPO }))
+      await waitFor(() => expect(installButton()?.disabled).toBe(false))
+      fireEvent.click(installButton()!)
+
+      expect(await screen.findByText(new RegExp(`agent half is in at commit ${V1.slice(0, 12)}`))).toBeTruthy()
+      await waitFor(() => expect(probePluginRepo).toHaveBeenCalledTimes(2))
+      expect(installButton()?.disabled).toBe(true)
+    }
+  )
 })
 
 describe('native Desktop on a remote backend: a refused agent half stops its desktop half', () => {

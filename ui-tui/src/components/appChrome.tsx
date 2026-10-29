@@ -483,13 +483,16 @@ export function StatusRule({
     if (!provider.accounts || provider.accounts.length <= 1) {
       return `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
     }
-    return `${name} ${provider.accounts
-      .map(account => {
-        const marker = account.active ? '●' : ''
-        const values = account.available ? account.windows.map(window => `${window.usedPercent}%`).join('/') : '—'
-        return `${marker}${account.label} ${values}`
-      })
-      .join(' ')}`
+    // One-line status bar: show live accounts only; dead/unreadable pool
+    // entries collapse to a count so they don't push the real numbers off.
+    const live = provider.accounts.filter(account => account.available)
+    const dead = provider.accounts.length - live.length
+    const parts = live.map(account => {
+      const marker = account.active ? '●' : ''
+      return `${marker}${account.label} ${account.windows.map(window => `${window.usedPercent}%`).join('/')}`
+    })
+    if (dead > 0) parts.push(`⚠${dead}`)
+    return `${name} ${parts.length ? parts.join(' ') : '—'}`
   }
 
   const usageMeterText = usageMeter

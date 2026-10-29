@@ -18,7 +18,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Progress } from "@nous-research/ui/ui/components/progress";
 
 import { GatewayClient } from "@/lib/gatewayClient";
-import { getUsageAccountUnavailableMessage } from "@/lib/usage-quota";
+import { getUsageAccountUnavailableMessage, shortUnavailableReason } from "@/lib/usage-quota";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -101,13 +101,27 @@ function ProviderGauges({ label, usage }: { label: string; usage: ProviderUsage 
 
       {available ? (
         usage?.accounts && usage.accounts.length > 1 ? (
-          usage.accounts.map((account) => (
+          usage.accounts.map((account) => {
+            const unavailableMessage = getUsageAccountUnavailableMessage(account);
+            if (unavailableMessage !== null) {
+              // Dead/unreadable pool entries get one compact line instead of
+              // a full block, so they don't crowd out the live gauges.
+              return (
+                <div
+                  key={account.label}
+                  className="truncate text-[10px] text-text-tertiary"
+                  title={unavailableMessage}
+                >
+                  ⚠ {account.label} · {shortUnavailableReason(unavailableMessage)}
+                </div>
+              );
+            }
+            return (
             <div key={account.label} className="flex flex-col gap-1">
               <span className="text-[10px] text-text-tertiary">
                 {account.active ? "● " : ""}{account.label}
               </span>
-              {getUsageAccountUnavailableMessage(account) === null ? (
-                account.windows.map((w) => {
+              {account.windows.map((w) => {
                   const isLongHorizon = /week/i.test(w.label);
                   return (
                     <div key={w.label} className="flex flex-col gap-0.5">
@@ -124,14 +138,10 @@ function ProviderGauges({ label, usage }: { label: string; usage: ProviderUsage 
                       </Progress>
                     </div>
                   );
-                })
-              ) : (
-                <div className="wrap-break-word text-[10px] text-text-tertiary">
-                  {getUsageAccountUnavailableMessage(account)}
-                </div>
-              )}
+                })}
             </div>
-          ))
+            );
+          })
         ) : (
         usage!.windows.map((w) => {
           // Longer-horizon windows (weekly, etc.) change slowly and matter

@@ -196,6 +196,11 @@ def effective_stop_drain_timeout(runner: object) -> float:
     from bare doubles that are not ``GatewayRunner`` instances.
     """
     drain = getattr(runner, "_restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
+    # A planned restart first advertises ``restart_after_turn_timeout`` while waiting
+    # for active work. If that wait expires, stop() must retain the same budget rather
+    # than falling back to the shorter chat-turn interrupt timeout.
+    if getattr(runner, "_restart_requested", False):
+        drain = max(drain, getattr(runner, "_restart_after_turn_timeout", 0.0) or 0.0)
     if not getattr(runner, "_stop_requested_by_signal", False):
         return drain
     return resolve_launchd_capped_drain(drain, getattr(runner, "_launchd_exit_timeout_s", None))
@@ -368,4 +373,8 @@ def resolve_restart_exit_wait_budget(
     """
     if not all(math.isfinite(_seconds(value)) for value in (drain_timeout, cron_drain_timeout)):
         return math.inf
-    return _seconds(after_turn_timeout) + resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout) + _seconds(headroom)
+    # A planned restart can spend the after-turn budget before ``stop()`` begins, and
+    # ``effective_stop_drain_timeout()`` preserves that same budget during stop when it
+    # exceeds the configured chat drain. The observer must cover both phases.
+    effective_drain = max(_seconds(drain_timeout), _seconds(after_turn_timeout))
+    return _seconds(after_turn_timeout) + resolve_systemd_timeout_stop_sec(effective_drain, cron_drain_timeout) + _seconds(headroom)

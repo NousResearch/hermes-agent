@@ -29,6 +29,10 @@ from gateway.restart import (
 )
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
+from gateway.scheduled_restart import (
+    MAX_SCHEDULED_LEAD_SECONDS, MIN_SCHEDULED_LEAD_SECONDS,
+    REBROADCAST_LEAD_SECONDS, ScheduledRestart, format_countdown, format_wallclock,
+)
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -1125,6 +1129,201 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             # present_notification reads the ACTIVE profile's display settings: bind the served one's.
+            profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
+            async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
+                await present_notification(_send_home, platform=platform)
+
+    # ── Scheduled (pre-announced) restarts (#135051) ─────────────────────────
+    async def _wait_until_monotonic(self, deadline_mono: float) -> bool:
+        """Sleep until a monotonic deadline; False when it is already past."""
+        remaining = deadline_mono - time.monotonic()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(remaining)
+        return True
+
+    def _spawn_planned_announce(self, sched: ScheduledRestart, msg: str) -> None:
+        """Run one announcement task tracked on ``sched`` so cancellation can abort it."""
+
+        def _done(task) -> None:
+            with suppress(Exception):
+                sched.announce_tasks.remove(task)
+
+        task = asyncio.create_task(self._announce_planned_restart(msg))
+        sched.announce_tasks.append(task)
+        task.add_done_callback(_done)
+
+    def schedule_restart(self, wall_time: float, reason: str = "") -> dict:
+        """Arm a pre-announced restart at ``wall_time`` (epoch); returns status.
+
+        Refuses while the gateway is already draining/stopping. Rescheduling
+        cancels an earlier armed restart. Runs on the event loop (the control-
+        socket handler marshals onto it, same as ``pause-for-update``). The
+        schedule-time announcement goes out immediately; the task re-broadcasts
+        as the deadline approaches and then triggers the normal restart path.
+        """
+        lead = wall_time - time.time()
+        if self._draining or self._restart_requested or self._restart_task_started:
+            return {"accepted": False, "error": "already_stopping", "lead_seconds": lead}
+        if lead < MIN_SCHEDULED_LEAD_SECONDS:
+            return {"accepted": False, "error": "lead_too_short",
+                    "min_lead_seconds": MIN_SCHEDULED_LEAD_SECONDS, "lead_seconds": lead}
+        if lead > MAX_SCHEDULED_LEAD_SECONDS:
+            return {"accepted": False, "error": "lead_too_long",
+                    "max_lead_seconds": MAX_SCHEDULED_LEAD_SECONDS, "lead_seconds": lead}
+        self.cancel_scheduled_restart(announce=False)
+        sched = ScheduledRestart(wall_time=wall_time, reason=reason or "")
+        sched.task = asyncio.create_task(self._run_scheduled_restart_task(sched))
+        self._scheduled_restart = sched
+        # Announce at schedule time (the ``wall`` equivalent): reason, absolute
+        # time, remaining lead, and what happens to in-flight/queued work.
+        reason_clause = f" — reason: {sched.reason}" if sched.reason else ""
+        self._spawn_planned_announce(sched, t(
+            "gateway.shutdown.notice_planned_restart",
+            when=format_wallclock(wall_time), remaining=format_countdown(lead),
+            reason_clause=reason_clause,
+        ))
+        return {"accepted": True, "scheduled_for": wall_time, "lead_seconds": lead,
+                "reason": sched.reason}
+
+    def cancel_scheduled_restart(self, *, announce: bool = True) -> dict:
+        """Cancel an armed restart (``shutdown -c`` equivalent); returns status."""
+        sched = self._scheduled_restart
+        if sched is None:
+            return {"cancelled": False, "had_scheduled": False}
+        if sched.task is not None:
+            sched.task.cancel()
+        for task in list(sched.announce_tasks):
+            task.cancel()
+        sched.announce_tasks.clear()
+        self._scheduled_restart = None
+        if announce:
+            self._spawn_planned_announce(
+                ScheduledRestart(wall_time=0.0), t("gateway.shutdown.notice_planned_restart_cancelled"))
+        return {"cancelled": True, "had_scheduled": True}
+
+    def _cancel_pending_scheduled_restart(self) -> None:
+        """An external stop/signal supersedes an armed future restart (#135051).
+
+        Cancel the timer and interrupts any in-flight announcement; the notice is
+        suppressed because the process is shutting down anyway.
+        """
+        if getattr(self, "_scheduled_restart", None) is not None:
+            self.cancel_scheduled_restart(announce=False)
+
+    async def _run_scheduled_restart_task(self, sched: ScheduledRestart) -> None:
+        """Re-broadcast at T-60/T-10, then run the standard restart at T."""
+        try:
+            mono_deadline = time.monotonic() + sched.remaining_seconds()
+            for lead in REBROADCAST_LEAD_SECONDS:
+                if not await self._wait_until_monotonic(mono_deadline - lead):
+                    continue
+                if self._scheduled_restart is not sched:
+                    return
+                reason_clause = f" — reason: {sched.reason}" if sched.reason else ""
+                await self._announce_planned_restart(t(
+                    "gateway.shutdown.notice_planned_restart_rebroadcast",
+                    when=format_wallclock(sched.wall_time), remaining=format_countdown(lead),
+                    reason_clause=reason_clause,
+                ))
+            await self._wait_until_monotonic(mono_deadline)
+            if self._scheduled_restart is not sched:
+                return
+            # Re-check at fire time: an arm that landed mid-shutdown (sub-ms race
+            # with stop()) must not trigger a second restart dance.
+            if self._draining or self._restart_requested or self._restart_task_started:
+                return
+            self._scheduled_restart = None
+            # Same relaunch semantics as every other in-band restart: under a
+            # service manager / container exit 75 so the supervisor restarts us;
+            # otherwise the detached replacement helper brings the gateway back.
+            from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
+            via_service = is_gateway_supervisor_process() or is_container_restart_context()
+            self.request_restart(detached=not via_service, via_service=via_service)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Scheduled restart task failed: %s", exc)
+        finally:
+            if self._scheduled_restart is sched:
+                self._scheduled_restart = None
+
+    async def _announce_planned_restart(self, msg: str) -> None:
+        """Broadcast a planned-restart notice to active sessions and home channels.
+
+        Same recipient resolution as ``_notify_active_sessions_of_shutdown``, but
+        for pre-announcements: there is no chat requester (no in-chat restart
+        skip), and the quiet-drain suppress marker does NOT gate it — a scheduled
+        restart is an explicit operator request, not a routine fleet auto-update.
+        """
+        notified: set[tuple[str, str, Optional[str]]] = set()
+        for session_key in self._snapshot_running_agents():
+            target = await self._shutdown_notification_target(session_key)
+            if target is None:
+                continue
+            source, platform_str, chat_id, thread_id, profile = target
+            dedup_key = _delivery_target_key(platform_str, chat_id, thread_id, profile=profile)
+            if dedup_key in notified:
+                continue
+            try:
+                platform = Platform(platform_str)
+                adapter = self._delivery_adapter_for(source) if source is not None else None
+                if adapter is None:
+                    adapter = self._authorization_adapter(platform, profile)
+                if not adapter or not self._notice_allowed(platform, "active session"):
+                    continue
+                metadata = self._thread_metadata_for_target(
+                    platform, chat_id, thread_id, chat_type=getattr(source, "chat_type", None),
+                    adapter=adapter,
+                )
+            except Exception as e:
+                logger.debug("Failed to send planned-restart notice to %s:%s: %s", platform_str, chat_id, e)
+                continue
+
+            async def _send_active(adapter=adapter, chat_id=chat_id, platform_str=platform_str,
+                                   metadata=metadata, dedup_key=dedup_key):
+                if await self._send_shutdown_notice(
+                    adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
+                ):
+                    notified.add(dedup_key)
+
+            from gateway.warning_notifications import present_notification
+            from gateway.run import _async_profile_runtime_scope
+            scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+                     if source is not None else nullcontext())
+            async with scope:
+                presented = await present_notification(_send_active, platform=platform)
+            if not presented:
+                notified.add(dedup_key)
+
+        profile_adapters = getattr(self, "_profile_adapters", None) or {}
+        for profile, platform, platform_cfg in list(self._served_home_channel_configs()):
+            home = platform_cfg.home_channel
+            if not home or not home.chat_id:
+                continue
+            adapter = (self.adapters if profile is None else profile_adapters.get(profile) or {}).get(platform)
+            if adapter is None or not self._notice_allowed(platform, "home channel", platform_cfg):
+                continue
+            dedup_key = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
+            if dedup_key in notified:
+                continue
+            try:
+                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
+            except Exception as e:
+                logger.debug(
+                    "Failed to send planned-restart notice to home channel %s:%s: %s",
+                    platform.value, home.chat_id, e,
+                )
+                continue
+
+            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
+                if await self._send_shutdown_notice(
+                    adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
+                ):
+                    notified.add(dedup_key)
+
+            from gateway.warning_notifications import present_notification
+            from gateway.run import _async_profile_runtime_scope
             profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
             async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
                 await present_notification(_send_home, platform=platform)
@@ -2231,6 +2430,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)
         if callable(_stop_guards):
             _stop_guards()
+        # An external stop/signal supersedes an armed future restart: cancel the
+        # timer and interrupt any in-flight announcement without broadcasting a
+        # "cancelled" notice (the process is shutting down anyway).
+        self._cancel_pending_scheduled_restart()
         if restart:
             self._restart_requested = True
             self._restart_detached = detached_restart

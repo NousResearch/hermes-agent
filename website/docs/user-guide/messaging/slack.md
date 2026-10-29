@@ -663,6 +663,11 @@ slack:
     - "hey hermes"
     - "hermes,"
 
+  # Optional: let a pattern wake the agent without requiring a model reply.
+  # Useful when a deterministic gateway hook owns the response.
+  # Direct @mentions of the bot still require a reply.
+  mention_patterns_allow_silence: false
+
   # Text prepended to every outgoing message
   reply_prefix: ""
 ```

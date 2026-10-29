@@ -228,6 +228,28 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+
+        # Hook-only custom wakes bypass ALL turn preparation: no history reads, image analysis,
+        # transcription, tools, model startup, or user-facing preparation errors. The raw
+        # adapter-normalized text is sufficient for deterministic agent:start hooks.
+        if event._suppress_unaddressed_reply:
+            hook_ctx = {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "chat_id": source.chat_id or "",
+                "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
+                "chat_type": getattr(source, "chat_type", "") or "",
+                "session_id": session_entry.session_id,
+                "message": (event.text or "")[:500],
+            }
+            await self.hooks.emit("agent:start", hook_ctx)
+            await self._hmwa_stop_typing_for_turn(event, source)
+            logger.debug(
+                "hook-only wake completed before turn preparation: platform=%s chat=%s",
+                source.platform.value if source.platform else "", source.chat_id or "unknown",
+            )
+            return None
+
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -246,6 +268,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
+
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).

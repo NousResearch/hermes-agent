@@ -28,6 +28,15 @@ class _Runner(GatewayAuthorizationMixin):
         self.adapters = {}
         self._draining = False
 
+    def _cached_agent_for(self, route):
+        """A chat's route holds the agent of the conversation it names (a stand-in: no turn ran), so
+        ``agent(ref) is None`` proves a conversation the chat moved past never reaches it."""
+        from gateway.run import _parse_session_key
+        platform = (_parse_session_key(route) or {}).get('platform')
+        if platform in (None, 'local'):
+            return None
+        return self.__dict__.setdefault('_lane_agents', {}).setdefault(route, SimpleNamespace(route=route))
+
 
 def _source(platform='telegram', chat_id='4242', profile=None, chat_name=None):
     from gateway.config import Platform
@@ -140,8 +149,9 @@ async def test_a_row_its_route_moved_past_mounts_from_its_own_origin(tmp_path):
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
 
     live = cold.authority.sessions['old']
+    # Teknium's ruling: off the chat's route, on a key of its own (gateway/session_detached.py).
     assert (live.route, live.source.platform, live.source.chat_id, live.source.chat_name) == (
-        cold.store._generate_session_key(_source()), Platform.TELEGRAM, '4242', 'from-row')
+        'agent:main:detached:old', Platform.TELEGRAM, '4242', 'from-row')
 
 
 @pytest.mark.asyncio
@@ -269,31 +279,27 @@ async def _superseded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_row_its_route_moved_past_is_read_only(tmp_path):
-    """#140183 review F2: the old row's only route is the lane's CURRENT key, so a Stop, an agent
-    lookup or a turn on it reached the successor conversation. One gateway owns every session and
-    never crosses them: the historic row reads (its own transcript) and refuses every write by name."""
-    from hermes_state_runtime import RuntimeStoreError
-    from gateway.session_contract import Principal, Submission
+async def test_a_row_its_route_moved_past_stays_writable_on_its_own_key(tmp_path):
+    """#140183 review F2: the old row's only route was the lane's CURRENT key, so a Stop, an agent
+    lookup or a turn on it reached the successor conversation. Teknium's ruling reverses the
+    read-only answer: the row detaches onto a key of its own, so every write is accepted and acts on
+    it alone; the successor's agent is never resolved through it."""
+    from gateway.session_contract import Principal
     cold, _successor = await _superseded(tmp_path)
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
     caps = frozenset({'session:read', 'session:submit', 'session:control', 'session:approve',
                       'session:respond'})
     writer = Principal('viewer', 'fixture', caps, 'socket')
     for capability in sorted(caps - {'session:read'}):
-        with pytest.raises(RuntimeStoreError, match='session_superseded'):
-            cold.authority.authorize(writer, _ref('old'), capability)
-    # The successor's running agent sits under the shared route; the old row never resolves it.
-    route = cold.authority.sessions['old'].route
-    cold.authority.runner._running_agents = {route: object()}
+        cold.authority.authorize(writer, _ref('old'), capability)
+    # The successor's running agent sits under the lane's route; the old row never resolves it.
+    lane = cold.store._generate_session_key(_source())
+    assert cold.authority.sessions['old'].route == 'agent:main:detached:old'
+    cold.authority.runner._running_agents = {lane: object()}
     cold.authority.runner._cached_agent_for = lambda key: cold.authority.runner._running_agents.get(key)
     assert cold.authority.agent(_ref('old')) is None
     assert cold.authority._runs_own_agent(_ref('old')) is False
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        await cold.authority.interrupt(writer, _ref('old'), 0)
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        await cold.authority.submit(writer, Submission('r1', _ref('old'), {'text': 'hi'}, 'queue'))
-    assert cold.authority.db.get_session('old')['message_count'] == 0
+    await cold.authority.interrupt(writer, _ref('old'), 0)
 
 
 @pytest.mark.asyncio
@@ -311,7 +317,9 @@ async def test_closing_or_deleting_a_superseded_row_leaves_the_successor_route_a
     cold.authority.runner._evict_cached_agent = lambda key, **kw: touched.append(('evict', key))
     await close_viewer_session(cold.authority, 'old', 'tui_close')
     retire_live_sessions(cold.authority, ['old'])
-    assert touched == []
+    # Teknium's ruling: the row acts on its own detached key, never the successor's route.
+    keys = {kw.get('session_key') if kind != 'evict' else kw for kind, kw in touched}
+    assert keys == {'agent:main:detached:old'}, touched
     assert 'old' not in cold.authority.sessions
 
 
@@ -322,8 +330,9 @@ async def test_the_lane_reopening_the_row_makes_it_live_again(tmp_path):
     cold, _successor = await _superseded(tmp_path)
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
     live = cold.authority.sessions['old']
-    cold.authority._publish_route(live.source, 'old', live.route)
-    assert cold.authority.sessions['old'] is live and live.superseded is False
+    lane = cold.store._generate_session_key(_source())
+    cold.authority._publish_route(_source(), 'old', lane)
+    assert cold.authority.sessions['old'] is live and (live.route, live.detached) == (lane, False)
 
 
 @pytest.mark.asyncio
@@ -334,7 +343,7 @@ async def test_a_row_whose_lane_has_no_entry_mounts_live(tmp_path):
     cold = await _cold(tmp_path)
     writer = Principal('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
     cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
-    assert cold.authority.sessions['unrouted'].superseded is False
+    assert cold.authority.sessions['unrouted'].detached is False
 
 
 def _compressed_lane(tmp_path):
@@ -376,7 +385,7 @@ async def test_resume_of_a_compression_child_attaches_to_its_logical_owner(tmp_p
                                          'params': {'session_id': 'lane-tip'}})
     assert resumed.get('result', {}).get('session_id') == 'lane-root', resumed
     assert 'lane-tip' not in cold.authority.sessions
-    assert cold.authority.sessions['lane-root'].superseded is False
+    assert cold.authority.sessions['lane-root'].detached is False
 
 
 @pytest.mark.asyncio
@@ -413,14 +422,13 @@ async def test_resume_by_a_messaging_segment_shares_the_lanes_next_inbound_mount
     mounted = sorted(sid for sid, live in cold.authority.sessions.items() if live.route == route)
     assert resumed.get('result', {}).get('session_id') == inbound == root, (resumed, inbound, mounted)
     assert mounted == [root]
-    assert cold.authority.sessions[root].superseded is False
+    assert cold.authority.sessions[root].detached is False
 
 
 @pytest.mark.asyncio
-async def test_a_live_mount_goes_read_only_when_its_lane_publishes_another_conversation(tmp_path):
+async def test_a_live_mount_detaches_when_its_lane_publishes_another_conversation(tmp_path):
     """Mounted while nothing named another conversation, then the lane's next inbound starts a fresh
-    session on the same route: from then on the old mount's route is the newer session's."""
-    from hermes_state_runtime import RuntimeStoreError
+    session on the same route: from then on the old mount runs on a key of its own."""
     from gateway.session_contract import Principal
     _seed(tmp_path, 'unrouted', _source(), routed=False)
     cold = await _cold(tmp_path)
@@ -428,6 +436,7 @@ async def test_a_live_mount_goes_read_only_when_its_lane_publishes_another_conve
     cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
     fresh = cold.store.get_or_create_session(_source(), force_new=True)
     cold.authority._publish_route(_source(), fresh.session_id, fresh.session_key)
-    with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
+    # Teknium's ruling: it stays writable, detached onto its own key.
+    cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
+    assert cold.authority.sessions['unrouted'].route == 'agent:main:detached:unrouted'
     cold.authority.authorize(writer, _ref(fresh.session_id), 'session:submit')

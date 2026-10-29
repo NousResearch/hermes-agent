@@ -1,0 +1,33 @@
+name: signal-notify
+repo: https://github.com/dbrosnan/hermes-signal-notify
+sha: 16bff1f8bd5f19bb639a44e96091eef615a4fc6c
+description: >-
+  Signal texts when a Hermes turn pauses, fails or is interrupted, and when Hermes
+  waits on a clarify question, approval or sudo prompt. Sends through the user's own
+  signal-cli HTTP daemon (the same SIGNAL_* settings as the core Signal gateway);
+  skips Signal-origin, cron and subagent turns, and dedupes identical texts within 60s.
+  Outbound-only, no input channel. Disclosure — enabled turns POST to SIGNAL_HTTP_URL
+  (plain HTTP unless that URL is https), which signal-cli delivers as a Signal message;
+  by default each text includes up to 300 characters of the final reply (not
+  secret-redacted) or of the redacted question/command (reply_chars: 0 sends none);
+  sudo passwords and clarify answers are never seen; nothing is stored on disk, at most
+  64 clipped reply previews are kept in memory, and each send runs on a short-lived
+  daemon thread with a 20s timeout.
+maintainer: dbrosnan
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/dbrosnan/hermes-signal-notify#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_llm_call
+    - on_session_end
+    - on_human_input_request
+  provides_middleware: []
+  requires_env:
+    - SIGNAL_HTTP_URL
+    - SIGNAL_ACCOUNT
+    - SIGNAL_HOME_CHANNEL

@@ -675,6 +675,14 @@ export const zhOverrides = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha => (sha ? `自你审阅后仓库已变更。请先审阅新版本（提交 ${sha}）再安装。` : '自你审阅后仓库已变更。正在读取新版本…'),
+        legacyBackendConfirm:
+          '此后端比本应用旧，无法保证安装的就是你审阅过的版本：如果仓库此后有变更，安装的会是更新的版本。更新后端即可获得这一保证。',
+        installAnyway: '仍然安装',
+        partialInstall: sha =>
+          sha
+            ? `插件只安装了一部分：代理部分已安装在提交 ${sha}，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。`
+            : '插件只安装了一部分：代理部分已安装，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。',
         nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
@@ -4204,7 +4212,8 @@ export const zhOverrides = {
     saveApply: '保存并应用',
     notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
     zoneCount: count => `${count} 个区域`,
-    tabCount: count => `${count} 个标签页`
+    tabCount: count => `${count} 个标签页`,
+    tabActions: title => `${title} 的操作`
   },
 
   contextMenu: {

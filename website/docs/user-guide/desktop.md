@@ -720,7 +720,27 @@ the tab is on. A new or removed plugin folder shows up within seconds; an edited
 **⌘K → Reload desktop plugins**, since a browser cannot watch the host's files. The desktop half of
 an agent+desktop package is copied into the folder by the host itself, so it also appears on a
 headless host that native Desktop never runs on.
-Install and remove desktop plugins from native Desktop or in the folder itself; a plugin's folder
+
+**Install** works from the Webapp too: **Capabilities → Plugins → Install** inspects the repository
+first, then has the host that serves the tab clone a desktop-only repository into that folder, under
+the same folder name native Desktop uses. The host installs exactly the commit the dialog showed (or
+the one you pinned) and refuses if that commit cannot be fetched. A package that also ships an agent
+plugin is installed once, as an agent plugin on that host, and the host copies its desktop half out of
+that checkout, as native Desktop does with a local backend. That install is held to the commit the
+dialog showed too: if the branch moved after you reviewed it, nothing is installed and the dialog
+reads the source again and shows the new commit for you to review before you click Install again
+(native Desktop works the same way). A catalog pick is held to the catalog pin the dialog showed: if the
+catalog re-pins the entry before you click Install, the dialog shows the new pin for review first. A
+backend older than the app cannot hold an install to the reviewed commit; the dialog says so and installs
+only if you choose **Install anyway**. If a package's agent half installs but its desktop half cannot
+follow because the source moved, the dialog says only the agent half is in, and installs again only with
+**Force reinstall**, which replaces both halves with the version shown. Because a browser tab asks for it, the
+desktop-only clone takes `https://`
+repositories only (no `http://`, `ssh`/`git@` or `file://` sources), refuses a plugin folder that
+contains symbolic links or is larger than 64 MB, and never replaces an installed plugin unless
+**Force reinstall** is checked. A plugin installed this way loads on the next scan; a plugin that
+starts disabled is turned on from its card. Removing one from **Capabilities → Plugins** deletes the
+folder on that host; the desktop half of a package is removed with the package. A plugin's folder
 access (`ctx.files`) is not available in a browser.
 
 **Capabilities → Plugins** is the one place for everything that extends
@@ -771,8 +791,11 @@ picker installs reviewed entries at their pinned commit into the selected
 profile, and **Install from Git** takes any other repository through the same
 review-then-install dialog; its optional **Pin to commit** field installs one
 exact 40-character commit SHA (private repos included), and pinned plugins
-carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
-redirect here.
+carry a `pinned @ <sha8>` badge in the list. **Install from Git** takes any
+git source `hermes plugins install` accepts, including private repos over
+`git@`/`ssh://` and local folders (`file://`). A desktop plugin folder that
+contains a symbolic link is refused. Old `Settings → Plugins` links redirect
+here.
 
 ## Troubleshooting
 

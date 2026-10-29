@@ -569,8 +569,10 @@ class GroupsDiscardResult(Result):
     task: RoomTaskReceipt
 
 
-canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
-                 doc="Discard one indeterminate room task after explicit user confirmation.")
+_DISCARD_DOC = "Discard one indeterminate room task after explicit user confirmation."
+canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
+# The standalone route forwards it to the room's owning gateway (#145960), like the byte verbs.
+method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
 
 
 # Shared-name overrides load after the authority-only value shapes above.

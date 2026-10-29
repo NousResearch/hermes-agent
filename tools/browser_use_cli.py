@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
+from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir,
+                                        namespace_harness_dirs)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ _BOT_DESKTOP_BROWSER_SENTINEL = "_HERMES_BU_BOT_DESKTOP_BROWSER"
 _REAL_PROFILE_FALLBACK_SENTINEL = "_HERMES_BU_REAL_PROFILE_FALLBACK"
 # local=True whose real profile could not load: run on the local sidecar browser. Popped before launch.
 _LOCAL_FALLBACK_SENTINEL = "_HERMES_BU_LOCAL_FALLBACK"
+# Where new/hidden tabs may be brought to the front: a browser_use_shot.ACTIVATE_* mode. Popped before launch.
+_CLOUD_BROWSER_SENTINEL = "_HERMES_BU_CLOUD_BROWSER"
 
 # Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
@@ -431,6 +434,10 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if provider_key == _BROWSER_USE_PROVIDER and not _use_gateway(_read_browser_cfg()) and _browser_use_api_key_set():
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
+        # Only intent: the harness attaches to a local Chrome already listening instead of autospawning, so
+        # the live daemon's own report decides.
+        from tools.browser_use_shot import ACTIVATE_IF_CLOUD
+        env[_CLOUD_BROWSER_SENTINEL] = ACTIVATE_IF_CLOUD
         return None
 
     provider_name = type(provider).__name__
@@ -456,6 +463,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         if err is None:
             _mark_local_browser(env, session, key)
         return err
+    if err is None:
+        from tools.browser_use_shot import ACTIVATE_ALWAYS
+        env[_CLOUD_BROWSER_SENTINEL] = ACTIVATE_ALWAYS  # the provider's own session: the harness connects only there
     # A provider browser keyed bu-named-<name> is exclusive to this session — the
     # own-tab preamble would just leak a blank tab into it.
     if err is None and session_name:
@@ -709,6 +719,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         return tool_error(route_err)
     if local_sidecar:
         env["BU_NAME"] = _sidecar_daemon_name(session)
+    fit_default_socket_dir(env)  # BU_NAME is final: a deep HOME's socket would overflow sun_path
     _exec_route_is_sidecar[route_key] = local_sidecar
     local_engine = env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None)
     bot_desktop_browser = bool(local_engine)
@@ -719,6 +730,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+    # Every backend: capture_screenshot() falls back to jpeg instead of hanging on a png a hidden tab never
+    # renders; only on a cloud browser does it (and new_tab) bring the tab to the front (tools/browser_use_shot.py).
+    from tools.browser_use_shot import ACTIVATE_NEVER, harness_command
+    cmd = harness_command(cmd, activate=env.pop(_CLOUD_BROWSER_SENTINEL, None) or ACTIVATE_NEVER)
 
     workspace = _workspace_dir(task_id)
     if workspace:

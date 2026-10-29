@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { type ReactElement, useState } from 'react'
+import { type ReactElement, useEffect, useState } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
 import { Button } from '@/components/ui/button'
@@ -28,6 +28,10 @@ import { ListRow, Pill, SectionHeading, SettingsContent, SettingsSection, Settin
 
 const RESTART_POLL_MS = 1500
 const RESTART_TIMEOUT_MS = 90_000
+// `hermes config set webapp.*` and a gateway restarted elsewhere change the status behind the pane's
+// back: re-read it when the window regains focus or comes back into view, and on a slow poll while
+// it is visible (react-query pauses the interval in the background).
+const STATUS_POLL_MS = 10_000
 
 /**
  * The config says what the gateway serves from its next start; the gateway says what it serves now.
@@ -118,12 +122,29 @@ export function WebAccessSettings(): ReactElement | null {
   // backend nor shows anything.
   const available = useWebAccessAvailable()
 
-  const { data: status, error } = useQuery({
+  const { data: status, error, refetch } = useQuery({
     enabled: available,
     queryFn: getWebAccessStatus,
     queryKey: key,
-    retry: false
+    refetchInterval: STATUS_POLL_MS,
+    refetchOnWindowFocus: true,
+    retry: false,
+    // Reopening the pane reads at once instead of showing the shared client's cached answer.
+    staleTime: 0
   })
+
+  // react-query's own focus refetch follows `visibilitychange` only, which a native window losing
+  // focus to the terminal (where the config was edited) never fires.
+  useEffect(() => {
+    if (!available) {
+      return
+    }
+
+    const onFocus = () => void refetch()
+    window.addEventListener('focus', onFocus)
+
+    return () => window.removeEventListener('focus', onFocus)
+  }, [available, refetch])
 
   if (!available) {
     return null
@@ -137,6 +158,11 @@ export function WebAccessSettings(): ReactElement | null {
 }
 
 type FormProps = { queryKey: readonly unknown[]; status: WebAccessStatus; w: WebAccessTranslations }
+
+/** Where a start would serve the web app, as the saved config says: LAN unless it names a public URL. */
+function draftModeOf(status: WebAccessStatus): WebAccessMode {
+  return status.mode === 'public' ? 'public' : 'lan'
+}
 
 /** The address the pane shows for the configured web app. */
 function addressOf(status: WebAccessStatus, lanUrl: null | string): string {
@@ -179,8 +205,19 @@ function notifyRestartHeld(result: WebAccessChange, w: WebAccessTranslations): v
 function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState<Busy>(null)
-  const [mode, setMode] = useState<WebAccessMode>(status.mode === 'public' ? 'public' : 'lan')
+  const [mode, setMode] = useState<WebAccessMode>(draftModeOf(status))
   const [publicUrl, setPublicUrl] = useState(status.public_url)
+  // The choice follows the saved config when it changes underneath the pane (a CLI edit picked up
+  // by a refetch); an unsaved choice survives refetches that leave the config as it was.
+  const saved = `${status.mode}\n${status.public_url}`
+  const [seenSaved, setSeenSaved] = useState(saved)
+
+  if (seenSaved !== saved) {
+    setSeenSaved(saved)
+    setMode(draftModeOf(status))
+    setPublicUrl(status.public_url)
+  }
+
   const phase = phaseOf(status)
   const lanUrl = status.lan_address ? `http://${status.lan_address}:${status.port}` : null
   const url = phase === 'off' ? chosenAddress(status, lanUrl, mode, publicUrl) : addressOf(status, lanUrl)

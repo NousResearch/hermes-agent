@@ -6,6 +6,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -25,7 +26,7 @@ from tools.environments.local_env_policy import (
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env,
-    strip_profile_gate_env)
+    strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -300,6 +301,7 @@ def _finalize_child_env(env: dict) -> dict:
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
+    strip_supervised_process_identity(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
@@ -381,9 +383,10 @@ def build_subprocess_env(
     strip_launch_profile: bool = False) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
-    ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base
-    byte-for-byte (git credential flows, ``bws``/``op``); ``inherit_profile_home``
-    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
+    ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base's secrets
+    (git credential flows, ``bws``/``op``); ``inherit_profile_home``
+    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win. Both modes
+    drop the supervised process's own identity (:func:`strip_supervised_process_identity`).
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
     acts for a routed profile sees only that profile's declared names, never the launch profile's.
@@ -407,6 +410,7 @@ def build_subprocess_env(
         _apply_profile_home(env)
     if extra:
         env.update(extra)
+    strip_supervised_process_identity(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
@@ -858,6 +862,31 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     return "\n".join(prelude) + "\n" + cmd_string
 
 
+def _append_dropped_path_entries(cmd_string: str, parent_path: str) -> str:
+    """Prepend a line that re-appends *parent_path* dirs the login profile dropped.
+
+    A login profile can reset PATH outright (Debian's ``/etc/profile``, so every
+    Debian/Ubuntu image and host), and the snapshot's ``export -p`` then pins the reset
+    PATH over the spawn env for every later command: in the Docker image that loses
+    ``/opt/hermes/bin`` and bare ``hermes`` exits 127 (#56634). Dropped dirs go AFTER
+    the login PATH in parent order, so a command that resolved before still resolves
+    to the same binary (the user's nvm/pyenv keep precedence); only commands that had
+    no match gain one. Present entries are never duplicated; missing absolute dirs are skipped.
+    Background commands (``ProcessRegistry.spawn_local``, ``bash -lic``, no snapshot) use
+    this same prelude so the two paths cannot diverge."""
+    if _IS_WINDOWS:
+        return cmd_string  # native PATH stays ``;``-joined; bash sees a converted copy
+    # Relative entries resolve against the shell's cwd, not ours, so only absolute ones are checked.
+    entries = [d for d in dict.fromkeys(parent_path.split(":"))
+               if d and (not os.path.isabs(d) or os.path.isdir(d))]
+    if not entries:
+        return cmd_string
+    restore = (f"for __hermes_p in {' '.join(shlex.quote(d) for d in entries)}; do "
+               'case ":$PATH:" in *":$__hermes_p:"*) ;; *) PATH="${PATH:+$PATH:}$__hermes_p" ;; esac; '
+               "done; unset __hermes_p; export PATH")
+    return restore + "\n" + cmd_string
+
+
 # --- Process-group teardown (POSIX) ---
 def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:
     """Wait until the process group is gone, reaping the wrapper as we go (a dead
@@ -1103,14 +1132,17 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env)
         # Login invocations (init_session's env snapshot) source the user's rc /
-        # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
+        # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
+        # spawn env's dirs a resetting profile dropped are re-appended (#56634).
         if login:
+            cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
         proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,

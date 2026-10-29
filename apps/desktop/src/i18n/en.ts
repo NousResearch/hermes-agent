@@ -795,6 +795,17 @@ export const en: Translations = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Reviewed pin ${sha}` : 'Reviewed pin'),
         latestCommit: 'Latest commit',
+        sourceMoved: sha =>
+          sha
+            ? `The repository changed since you reviewed it. Review the new version (commit ${sha}) before installing it.`
+            : 'The repository changed since you reviewed it. Reading the new version…',
+        legacyBackendConfirm:
+          'This backend is older than this app, so it cannot guarantee that the version you reviewed is the one that gets installed: if the repository changed since, the newer version installs instead. Update the backend to get that guarantee.',
+        installAnyway: 'Install anyway',
+        partialInstall: sha =>
+          sha
+            ? `Only part of this plugin is installed: the agent half is in at commit ${sha}, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.`
+            : 'Only part of this plugin is installed: the agent half is in, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.',
         nothingToInstall: 'This package has nothing to install here.',
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
@@ -4369,7 +4380,8 @@ export const en: Translations = {
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
     zoneCount: count => `${count} zones`,
-    tabCount: count => `${count} tab${count === 1 ? '' : 's'}`
+    tabCount: count => `${count} tab${count === 1 ? '' : 's'}`,
+    tabActions: title => `Actions for ${title}`
   },
 
   contextMenu: {

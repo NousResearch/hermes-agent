@@ -24,8 +24,10 @@ def _bot_mode_delivery_text(response: Any, *, successful: bool) -> Any:
     Mode delivery boundary.  Failed turns intentionally fail open so their
     diagnostic text is never swallowed.
     """
-    from gateway.response_filters import is_intentional_silence_response
-    return "" if successful and is_intentional_silence_response(response) else response
+    from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+    if not successful:
+        return response
+    return "" if is_intentional_silence_response(response) else strip_trailing_silence_marker(response)
 
 
 def _is_bot_mode_session(session: dict) -> bool:
@@ -745,21 +747,23 @@ def _invoke_agent(
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
     st.compression_count = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
-    # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
-    # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
-    # shown and then retracted (the client keeps streamed text when message.complete is "").
-    hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
+    # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the reply could still
+    # be a bare silence marker ("NO"->"NO_REPLY") or its last line a closing one
+    # ("Paris.\n\nNO"), so a marker is never shown or spoken (the client keeps streamed text
+    # when message.complete is "").
+    from gateway.response_filters import SilenceMarkerStreamHold
+    hold = SilenceMarkerStreamHold() if _is_bot_mode_session(session) else None
 
     def _stream(delta):
         if getattr(agent, "_mute_notification_reply", False):
             return
         if hold is not None and isinstance(delta, str):
-            from gateway.response_filters import is_partial_silence_marker
-            hold["buf"] += delta
-            if is_partial_silence_marker(hold["buf"]):
-                hold["held"] += delta
+            delta = hold.feed(delta)
+            if not delta:
                 return
-            delta, hold["held"] = hold["held"] + delta, ""
+        _emit_delta(delta)
+
+    def _emit_delta(delta):
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
         payload = {"text": delta}
@@ -811,6 +815,9 @@ def _invoke_agent(
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
+            # A held last line that never became a marker is part of the reply: deliver it.
+            if hold is not None and (rest := hold.finish()) and not getattr(agent, "_mute_notification_reply", False):
+                _emit_delta(rest)
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
@@ -914,10 +921,13 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         except Exception:
             _error_surface = None
     raw, status, last_reasoning = _turn_outcome(result, _error_surface)
+    # The receipt verifies the stored row's body, which keeps the model's text as written;
+    # only the delivered copy drops a silence marker.
+    receipt = _persisted_turn_receipt(st, raw, status)
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
-    if receipt := _persisted_turn_receipt(st, raw, status):
+    if receipt:
         payload["persisted_turn"] = receipt
     if last_reasoning:
         payload["reasoning"] = last_reasoning

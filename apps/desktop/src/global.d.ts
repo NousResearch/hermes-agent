@@ -522,6 +522,11 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
+      /** The same refresh, also naming each package whose desktop half it refused and why. */
+      reconcileDesktopPluginsReport?: () => Promise<{
+        published: string[]
+        refused: { name: string; reason: string }[]
+      }>
       /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
        *  profile) — error card "Open Logs". */
       logsRoot?: (profile?: string) => Promise<string>
@@ -658,6 +663,8 @@ declare global {
         insecure?: boolean
         /** The commit that was inspected; an install of this source is held to it. */
         sha?: string
+        /** The backend read the catalog entry at its pin (`inspectAgentPlugin`); never set by Electron's probe. */
+        catalogPin?: boolean
         /** Inspection itself is missing here (not a failed read): Retry cannot help. */
         unavailable?: boolean
         error?: string
@@ -666,7 +673,16 @@ declare global {
         identifier?: string
         repo?: string
         force?: boolean
-      }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
+        /** The commit the dialog reviewed; Electron installs exactly that tree or refuses. */
+        sha?: string
+      }) => Promise<{
+        ok: boolean
+        pluginName?: string
+        path?: string
+        error?: string
+        /** The reviewed commit is gone from the source: the dialog reads it again. */
+        sourceMoved?: boolean
+      }>
       /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
        *  Electron re-checks containment and refuses unified-package halves. */
       removeDesktopPlugin?: (payload: { name: string }) => Promise<{ ok: boolean; path?: string; error?: string }>
@@ -767,8 +783,7 @@ export interface HermesPluginFolderGrant {
 }
 
 export type HermesPluginFilesResult<T extends object = Record<string, unknown>> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string; message: string }
+  ({ ok: true } & T) | { ok: false; error: string; message: string }
 
 export interface DesktopMarketplaceSearchItem {
   extensionId: string

@@ -1,0 +1,17 @@
+name: hermes-context-persistence
+repo: https://github.com/alfonsodg/hermes-context-persistence
+sha: e7fa2a940f4279f10fc40b20b649403958369fc8
+description: >-
+  Re-inject AGENTS.md context before each LLM call using the pre_llm_call hook.
+maintainer: alfonsodg
+tier: community
+category: tools
+docs_url: https://github.com/alfonsodg/hermes-context-persistence#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

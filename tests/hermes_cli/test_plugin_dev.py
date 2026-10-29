@@ -150,6 +150,41 @@ def test_doctor_default_target_does_not_copy_cwd(
     assert copied == []
 
 
+def test_doctor_does_not_copy_home_with_a_plugin_checkout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A home with one plugin checkout next to other directories is not a category.
+
+    ``_holds_plugin`` used to accept any immediate child manifest, so
+    ``hermes plugins doctor`` from ``$HOME`` resolved to the home and
+    ``copytree`` copied it. A category directory's children are plugins.
+    """
+    import os
+
+    from hermes_cli import plugin_dev
+
+    home = tmp_path / "fake-home"
+    (home / ".hermes" / "cache" / "scratch").mkdir(parents=True)
+    plugin = home / "plugin-checkout"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text("name: checkout\n", encoding="utf-8")
+    monkeypatch.chdir(home)
+
+    copied: list[str] = []
+
+    def _stub(src, dst, *args, **kwargs):
+        copied.append(os.fspath(src))
+        raise RuntimeError("copytree must not run")
+
+    monkeypatch.setattr(plugin_dev.shutil, "copytree", _stub)
+
+    assert plugin_dev.resolve_plugin_path(plugin) == plugin.resolve()
+    report = plugin_dev.doctor_plugin(".")
+    assert copied == []
+    assert report.ok is False
+    assert "holds no plugin manifest" in report.format_text()
+
+
 def test_resolve_accepts_category_layout(tmp_path: Path) -> None:
     """A category directory holds no manifest itself but discovery finds one."""
     from hermes_cli.plugin_dev import resolve_plugin_path

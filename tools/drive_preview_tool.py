@@ -54,7 +54,10 @@ def drive_preview_tool(
     except Exception as exc:
         return tool_error(f"Failed to act on the in-app browser: {exc}")
     if not raw:
-        return tool_error("The action timed out, or no GUI window answered. Open a page with open_preview first.")
+        return tool_error(
+            "No GUI window answered with a page: no preview tab is open. "
+            "Open a page with open_preview first. If the pane IS open, the desktop app "
+            "may be older than this backend — its bridge-unavailable error names that case.")
     return passthrough_json(raw)
 
 
@@ -65,8 +68,8 @@ ACT_PREVIEW_SCHEMA = {
     # re-reads pages or loops strobe.
     # See #95681.
     "description": (
-        "Use the web page open in the desktop preview pane (the one "
-        "`desktop_preview` opens): log in, fill forms, click through flows. ALWAYS "
+        "Use the desktop preview-pane page: log in, fill forms, click through flows. "
+        "It is the page `desktop_preview` opens. ALWAYS "
         "start with action='elements' — it inventories clickable/typable "
         "things as refs ('btn-sign-in') with role/label/value; act by ref, "
         "not guessed selectors. Refs survive re-renders and only die on "

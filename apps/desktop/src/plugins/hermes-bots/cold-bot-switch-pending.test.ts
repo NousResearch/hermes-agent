@@ -9,6 +9,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as CanonicalChat from './canonical-chat'
 import type { RosterRow } from './types'
 
 const { openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
@@ -16,9 +17,10 @@ const { openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
   prepareBotSource: vi.fn()
 }))
 
-vi.mock('./canonical-chat', () => ({
+vi.mock('./canonical-chat', async () => ({
   CANONICAL_CHAT_TITLE: 'Bot Chat',
   ensureBotMetadata: vi.fn(async () => ({})),
+  isStaleBotChatTile: (await vi.importActual<typeof CanonicalChat>('./canonical-chat')).isStaleBotChatTile,
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat,
   prepareBotSource,
@@ -125,7 +127,7 @@ describe('cold bot switch publishes its target after the fronted-tab miss', () =
 
     expect($pendingBotOpen.get()?.key).toBe('local::bravo')
     $groupChats.set({ Team: { log: [], sessions: {}, watermarks: {} } })
-    openGroupChat('Team')
+    openGroupChat('Team', 'name')
     expect($pendingBotOpen.get()).toBeNull()
 
     gate.resolve()

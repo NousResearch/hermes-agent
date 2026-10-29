@@ -180,6 +180,7 @@ inline affordance — "Change", "Open logs").
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
 (status-stack/table-footers), and the icon family `icon` / `icon-xs` /
 `icon-sm` / `icon-lg` / `icon-titlebar`.
+`touch` provides a 44px minimum target for compact mobile navigation.
 
 **Tooltips only when hover teaches something new.** `<Tip>` is for discovery,
 not a tax on every icon. Ask: does hover reveal something the user cannot
@@ -235,23 +236,12 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
-Badges are inert. A metadata chip that does something (filter by category or
-tag, search a platform or tool) is a `Button` `size="xs"`: `chip` for facet
-values (soft fill + a 0.5px inset shadow ring on hover, so no reflow), `ghost`
-for quieter search values. Don't style a Badge to look clickable or add a
-separate chip component.
-
-## Reel
+## Profile rail
 
 The profile rail keeps its create/import actions outside the scrolling squares.
 Clipped horizontal edges reuse `edgeMask(edges, 'x')` from `fade-scroll.tsx`;
 the default axis remains vertical for `FadeScroll`. Fitting content is unmasked,
 and profile drag gestures temporarily remove the mask so the dragged square stays legible.
-
-`src/components/ui/reel.tsx`: one horizontal, snap-scrolling row (catalog
-category shelves, screenshot strips). Children keep their width and snap to
-the start; set it once from the parent (`className="*:w-68"`). Use it instead of
-hand-rolling `flex overflow-x-auto snap-x`.
 
 ## Context-sensitive dialogs
 
@@ -261,25 +251,16 @@ password field. Long commands wrap and scroll; missing backend context is
 explicit, never inferred from another tool row. Other dialogs retain the shared
 blurred backdrop.
 
-A dialog opened from inside another (an image lightbox over a catalog detail)
-stacks above it automatically, so its backdrop dims the parent too. Media
-viewers use a heavier scrim through `overlayClassName`. Controls that belong to
-the dialog but mustn't scroll with its body (prev/next pagers) go in `chrome`,
-which may sit past the dialog's edges.
-
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
   `Input` / `Textarea` / `SelectTrigger`. New text-entry controls compose it.
 - **`SearchField`** — borderless, underline-on-focus, auto-width. The only
   search input. Don't build boxed search bars; don't wrap it in a bordered tile.
-  `variant="box"` is the one bordered form: a full-width rounded field for
-  pages where search is the primary affordance (the Skills/Plugins catalogs).
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
-  pill rows. A two-state view switch (list/cards, list/tree) is not a segmented
-  control: it's one ghost `icon-xs` `Button` showing the mode it switches to.
+  pill rows.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 - **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
   fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
@@ -289,19 +270,26 @@ which may sit past the dialog's edges.
 
 ## Layout
 
+In the browser-hosted Desktop, composer controls retain 44px targets on
+coarse-pointer surfaces. Its collapse stages budget the actual control-size
+token; below the two-target width budget, the context menu and Send occupy
+separate rows rather than clipping or shrinking. Native Desktop keeps the
+compact stages sized for 24px controls.
+The voice engine split-button uses `--composer-voice-menu-size`: compact on
+desktop, matching `--composer-control-size` on touch surfaces.
+Narrow browser touch layouts show the current session tab with an open-tab
+count. Its menu exposes every tab, while the new-tab action remains beside it.
+In the browser-hosted Desktop, outside taps dismiss narrow sidebar overlays;
+cancelled or scrolling gestures do not. Native Desktop keeps its overlay until
+Escape, the toggle or hover-out. Touch transcript gestures select a pane without
+focusing its composer.
+
 - **Gutters:** `PAGE_INSET_X` (`src/app/layout-constants.ts`) for page side
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode
   `px-6`/`px-8` on pages.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.
-- **Filter rails** reuse the same pieces: `SidebarPanelLabel` (its `meta` slot
-  carries the result count), `SidebarDateDivider` group headings, and `nested`
-  `OverlayNavItem` rows. Facets are multi-select: each row is `pressed`, with a
-  `CheckboxMark` in `leading` (the row is the control; a real `Checkbox` would
-  nest a button), and an "All" row clears the group. No radio glyphs. A text
-  "Clear" sits on the label row while anything is filtered. Cap long facets
-  (tags) to the top values plus the selection; search covers the tail.
 - **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
   labels navigate; the shared `DisclosureCaret` button opens a branch without
   changing the page. Active paths reveal automatically, inactive paths stay
@@ -370,6 +358,16 @@ so glass and message-bubble transparency do not reveal scrolling text.
   that wants the answer inline instead of a mounted dialog calls `confirm()`
   from `src/store/confirm.ts`, which renders this same primitive through the
   single `ConfirmHost` at the shell — the way `notify()` backs notifications.
+
+## Chat typography
+
+Appearance → Typography keeps **UI Scale** as whole-window zoom (100% by
+default). **Chat Text Size** is a separate desktop-local multiplier (110% by
+default) on conversation text and the composer editor, including floating and
+inline-edit composers.
+It does not resize the sidebar, settings, toolbars, media, or pane geometry.
+Conversation size and line-height tokens are derived inside the transcript/editor
+from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 
 ## Chat, tools & boot surfaces
 
@@ -483,6 +481,11 @@ so glass and message-bubble transparency do not reveal scrolling text.
   Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
+- Hover paints instantly; only the return eases. Put the transition on the
+  resting state and drop it while hovered (`transition-colors duration-100
+  hover:transition-none`, or the CSS equivalent on `:hover`). A group that
+  dims siblings goes instant too. Exceptions are named, e.g. the catalog
+  card's arc border fades in and out.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
   then settle the surface — the outer container's fade is *delayed* so it
   doesn't swallow the inner animation. Don't let a global fade race the detail.
@@ -493,14 +496,6 @@ so glass and message-bubble transparency do not reveal scrolling text.
   remove animation before masking a performance problem.
 
 ## Direct manipulation & performance
-
-`Masonry` (`components/ui/masonry.tsx`) packs natural-height cards into responsive
-lanes, using CSS `display: grid-lanes` where supported. Older Electron versions
-use one ResizeObserver and frame-batched placement; child DOM/source order stays
-intact through resizing, media loading, and disclosure. It owns the shared gap;
-`--masonry-min-width` optionally changes the minimum lane width. It knows nothing
-about what it holds: catalog results and discovery shelves opt into their hover
-treatment (sibling dimming, the pointer-following glow) from the catalog's own CSS.
 
 The app should feel instant under real load — long transcripts, several panes,
 live streams. Design toward that:
@@ -547,6 +542,9 @@ long transcript or a busy terminal.
   tone consistent across all of them. `fr`, `de`, and `es` are complete
   `Translations` objects, so a key missing there fails the type check; the
   `defineLocale()` overlays fall back to English instead.
+- **Sparse locales** (`ar`, `ru`) override the English base through
+  `defineLocale()`. Large catalogs are split by topic: the Arabic source lives
+  in `src/i18n/ar_<topic>.ts`, recomposed by `src/i18n/ar.ts`.
 
 ## State (TypeScript)
 

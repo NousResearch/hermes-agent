@@ -1,7 +1,7 @@
 """Agent-facing tool: respond to a native JS dialog captured by the CDP supervisor.
 
-Response-only: the agent reads ``pending_dialogs`` from ``browser_snapshot``,
-then calls ``browser_dialog(action=...)``. Gated on ``_browser_cdp_check`` so it
+Response-only: the agent calls ``browser_dialog(action=...)`` for a dialog the
+supervisor holds; with several queued, the error names the candidate ids. Gated on ``_browser_cdp_check`` so it
 appears together with ``browser_cdp``. Design: ``website/docs/developer-guide/browser-supervisor.md``.
 """
 
@@ -13,25 +13,21 @@ from typing import Any, Dict, Optional
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry
 
-BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
+BROWSER_DIALOG_SCHEMA: dict[str, Any] = {
     "name": "browser_dialog",
     "description": (
-        "Respond to a native JavaScript dialog (alert / confirm / prompt / "
-        "beforeunload) that is currently blocking the page.\n\n"
-        "**Workflow:** call ``browser_snapshot`` first — if a dialog is open, "
-        "it appears in the ``pending_dialogs`` field with ``id``, ``type``, "
-        "and ``message``. Then call this tool with ``action='accept'`` or "
+        "Accept or dismiss a native JS dialog (alert/confirm/prompt) blocking the page.\n\n"
+        "**Workflow:** when a page is blocked by a native dialog the CDP "
+        "supervisor captured, call this tool with ``action='accept'`` or "
         "``action='dismiss'``.\n\n"
         "**Prompt dialogs:** pass ``prompt_text`` to supply the response "
         "string. Ignored for alert/confirm/beforeunload.\n\n"
         "**Multiple dialogs:** if more than one dialog is queued (rare — "
         "happens when a second dialog fires while the first is still open), "
-        "pass ``dialog_id`` from the snapshot to disambiguate.\n\n"
-        "**Availability:** only present when a CDP-capable backend is "
-        "attached — Browserbase sessions, local Chromium-family browser via "
-        "``/browser connect``, or ``browser.cdp_url`` in config.yaml. "
-        "Not available on Camofox (REST-only) or the default Playwright "
-        "local browser (CDP port is hidden)."
+        "pass ``dialog_id`` (the error lists the candidates) to disambiguate.\n\n"
+        "**Availability:** only present when a CDP endpoint is attached — "
+        "a local Chromium-family browser via ``/browser connect``, or "
+        "``browser.cdp_url`` in config.yaml."
     ),
     "parameters": {
         "type": "object",
@@ -57,7 +53,7 @@ BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Specific dialog to respond to, from "
-                    "``browser_snapshot.pending_dialogs[].id``. Required "
+                    "the candidate ids a previous call listed. Required "
                     "only when multiple dialogs are queued."
                 ),
             },
@@ -79,10 +75,9 @@ def browser_dialog(
         return json.dumps({
             "success": False,
             "error": (
-                "No CDP supervisor is attached to this task. Either the "
-                "browser backend doesn't expose CDP (Camofox, default "
-                "Playwright) or no browser session has been started yet. "
-                "Call browser_navigate or /browser connect first."
+                "No CDP supervisor is attached to this task: no browser "
+                "session has been started yet. Call browser_exec or "
+                "/browser connect first."
             ),
         })
     result = supervisor.respond_to_dialog(action=action, prompt_text=prompt_text, dialog_id=dialog_id)

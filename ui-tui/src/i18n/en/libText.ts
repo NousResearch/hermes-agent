@@ -79,7 +79,15 @@ export const libTextEn = {
       /** {0} = provider label */
       providerDetail: (label: string) => `${label} reports your credits or billing are exhausted.`,
       /** {0} = provider label */
-      providerTitle: (label: string) => `Out of credits · ${label}`
+      providerTitle: (label: string) => `Out of credits · ${label}`,
+      // A usage-window plan's limit (usageLimitDialog).
+      limitTitle: 'Limit reached',
+      limitOpenTopup: 'Open /topup',
+      /** {0} = model label (with its note) */
+      limitSwitchTo: (label: string) => `Switch to ${label}`,
+      limitCreditsAdd: 'Or add credits with /topup.',
+      limitCreditsBoth: 'Or add credits and turn on Keep going in /topup.',
+      limitCreditsUse: 'Or turn on Keep going in /topup to use your credits.'
     },
 
     // lib/subagentTree.ts — the `d2 · 7 agents · 124 tools · 2m 14s` summary chip.
@@ -109,18 +117,14 @@ export const libTextEn = {
       errorLabel: 'Error',
       /** {0} = pre-formatted line count; sits inside a `[[ … ]]` composer token */
       pasteLinesChip: (count: string) => `[${count} lines]`,
-      /** {0} = the question text */
-      clarifyHead: (question: string) => `ask ${question}`,
-      /** {0} = why the prompt ended ("timed out", "cancelled") */
-      clarifyNoSelection: (reason: string) => `(${reason} — no selection)`,
       /** {0} = question count */
-      clarifyBatchHead: (count: string) => `ask (${count} questions)`,
+      clarifyHead: (count: string) => `ask (${count} questions)`,
       /** {0} = question, {1} = locked answer */
       clarifyAnswered: (question: string, answer: string) => `✓ ${question} → ${answer}`,
       /** {0} = question */
       clarifyUnanswered: (question: string) => `· ${question} (no answer)`,
       /** {0} = why the batch ended */
-      clarifyBatchReason: (reason: string) => `(${reason})`
+      clarifyReason: (reason: string) => `(${reason})`
     },
 
     // lib/agentRows.ts — docked agents panel row fallbacks.

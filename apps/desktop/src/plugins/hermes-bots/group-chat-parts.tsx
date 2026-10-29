@@ -159,6 +159,9 @@ interface GroupMentionInputProps {
   'aria-label'?: string
   autoFocus?: boolean
   className?: string
+  disabled?: boolean
+  /** The exact token a member's mention inserts, for rooms that resolve only frozen handles. */
+  handleFor?: (member: GroupMember) => string | undefined
   members: GroupMember[]
   onChange: (value: string) => void
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void
@@ -174,7 +177,7 @@ interface GroupMentionInputProps {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
+export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -196,7 +199,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
       const handle = String(botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
-      const tag = String(botMentionTag(member) || handle).trim()
+      const tag = String(handleFor?.(member) ?? (botMentionTag(member) || handle)).trim()
 
       if (!tag) {
         continue
@@ -350,7 +353,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
 }
 
 /** A pending prompt as the room renders it. */
-export interface GroupRoomPrompt extends GroupPrompt {
+export type GroupRoomPrompt = GroupPrompt & {
   /** TODO(bot-mode-types): nothing ever sets this — syncGroupClarify builds
    *  every entry without a thread — so the answer GroupClarifyCard echoes back
    *  into the room always lands in the 'legacy' thread instead of the thread
@@ -387,22 +390,21 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const [picked, setPicked] = useState<Record<string, string[]>>({})
   const [sending, setSending] = useState(false)
 
-  const questions: GroupClarifyQuestion[] =
-    entry.questions && entry.questions.length
-      ? entry.questions.map((q, i) => ({
-          qid: q?.qid ?? q?.id ?? `q${i}`,
-          question: typeof q?.question === 'string' ? q.question : '',
-          choices: Array.isArray(q?.choices) ? q.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(q?.multi_select ?? q?.multiSelect)
-        }))
-      : [
-          {
-            qid: '__single__',
-            question: entry.question,
-            choices: entry.choices,
-            multiSelect: entry.multiSelect
-          }
-        ]
+  const questions: GroupClarifyQuestion[] = isApproval
+    ? [
+        {
+          qid: 'approval',
+          question: entry.question,
+          choices: entry.choices,
+          multiSelect: false
+        }
+      ]
+    : entry.questions.map(q => ({
+        qid: q.qid,
+        question: typeof q.question === 'string' ? q.question : '',
+        choices: Array.isArray(q.choices) ? q.choices.filter(c => typeof c === 'string' && c) : [],
+        multiSelect: Boolean(q.multi_select)
+      }))
 
   const answerFor = (q: GroupClarifyQuestion) => {
     const chosen = picked[q.qid] || []
@@ -414,7 +416,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
     return isApproval ? '' : (drafts[q.qid] || '').trim()
   }
 
-  const allAnswered = questions.every(q => answerFor(q))
+  const anyAnswered = questions.some(q => answerFor(q))
 
   /** `chosen` short-circuits the staged answer: approval choices submit on
    *  click (#91706), so the value travels with the click instead of waiting
@@ -422,20 +424,20 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const submit = async (chosen?: string) => {
     const resolve = (q: GroupClarifyQuestion) => chosen ?? answerFor(q)
 
-    if (!member || sending || !questions.every(q => resolve(q))) {
+    if (!member || sending || !questions.some(q => resolve(q))) {
       return
     }
 
     setSending(true)
 
     try {
-      if (isApproval || !(entry.questions && entry.questions.length)) {
+      if (isApproval) {
         await answerGroupClarify(entry, member, resolve(questions[0]))
       } else {
-        const answers: Record<string, string> = {}
+        const answers: Record<string, null | string> = {}
 
         for (const q of questions) {
-          answers[q.qid] = resolve(q)
+          answers[q.qid] = resolve(q) || null
         }
 
         await answerGroupClarify(entry, member, answers)
@@ -444,7 +446,10 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
       // Echo the exchange into the room log so the thread reads complete.
       const summary = isApproval
         ? `${resolve(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
-        : questions.map(q => (questions.length > 1 ? `${q.question}: ${resolve(q)}` : resolve(q))).join('\n')
+        : questions
+            .filter(q => resolve(q))
+            .map(q => (questions.length > 1 ? `${q.question}: ${resolve(q)}` : resolve(q)))
+            .join('\n')
 
       appendGroupChatEntry(
         group,
@@ -575,7 +580,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
       {/* Approval choices submit on click; only clarify answers need a footer. */}
       {isApproval ? null : (
         <div className="flex justify-end">
-          <Button disabled={sending || !allAnswered || !member} onClick={() => void submit()} size="sm">
+          <Button disabled={sending || !anyAnswered || !member} onClick={() => void submit()} size="sm">
             {sending ? 'Sending…' : 'Answer'}
           </Button>
         </div>

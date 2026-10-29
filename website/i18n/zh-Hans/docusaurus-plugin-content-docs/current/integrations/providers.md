@@ -16,8 +16,6 @@ sidebar_position: 1
 |----------|-------|
 | **Nous Portal** | `hermes model`（OAuth，订阅制） |
 | **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth，使用 Codex 模型） |
-| **GitHub Copilot** | `hermes model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `gh auth token`） |
-| **GitHub Copilot ACP** | `hermes model`（在本地生成 `copilot --acp --stdio` 子进程） |
 | **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
 | **OpenRouter** | `~/.hermes/.env` 中的 `OPENROUTER_API_KEY` |
 | **NovitaAI** | `~/.hermes/.env` 中的 `NOVITA_API_KEY`（provider: `novita`，200+ 模型，Model API、Agent Sandbox、GPU Cloud） |
@@ -147,70 +145,19 @@ model:
 `--provider claude` 和 `--provider claude-code` 也可作为 `--provider anthropic` 的简写。
 :::
 
-### GitHub Copilot
+### GitHub Copilot（labs 插件）
 
-Hermes 以一等提供商身份支持 GitHub Copilot，提供两种模式：
-
-**`copilot` — 直连 Copilot API**（推荐）。使用你的 GitHub Copilot 订阅，通过 Copilot API 访问 GPT-5.x、Claude、Gemini 等模型。
+GitHub Copilot 提供商（`copilot` 对应 Copilot API，`copilot-acp` 对应通过 ACP 驱动的 Copilot CLI）已不再内置于 Hermes，而是以 `github-copilot` **labs 插件**的形式发布——由 Nous Research 构建，但不提供支持：
 
 ```bash
-hermes chat --provider copilot --model gpt-5.4
+hermes plugins install github-copilot
 ```
 
-**认证选项**（按以下顺序检查）：
+已在使用 `copilot` 或 `copilot-acp` 的 profile（主模型、回退、辅助任务、委托、MoA 或 cron）会在 `hermes update` 或下一次启动 agent 或网关时自动安装该插件。
 
-1. `COPILOT_GITHUB_TOKEN` 环境变量
-2. `GH_TOKEN` 环境变量
-3. `GITHUB_TOKEN` 环境变量
-4. `gh auth token` CLI 回退
+使用 `hermes auth add copilot`（设备码登录）登录，或设置 `COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN`。插件不再读取 `gh` CLI 或 Copilot CLI 的登录信息：如果你此前依赖它们，请运行 `hermes auth add copilot`。
 
-如果未找到 token，`hermes model` 会提供 **OAuth 设备码登录**——与 Copilot CLI 和 opencode 使用的流程相同。
-
-:::warning Token 类型
-Copilot API **不**支持经典个人访问 token（`ghp_*`）。支持的 token 类型：
-
-| 类型 | 前缀 | 获取方式 |
-|------|--------|------------|
-| OAuth token | `gho_` | `hermes model` → GitHub Copilot → 使用 GitHub 登录 |
-| 细粒度 PAT | `github_pat_` | GitHub 设置 → 开发者设置 → 细粒度 token（需要 **Copilot Requests** 权限） |
-| GitHub App token | `ghu_` | 通过 GitHub App 安装获取 |
-
-如果你的 `gh auth token` 返回 `ghp_*` token，请使用 `hermes model` 通过 OAuth 认证。
-:::
-
-:::info Hermes 中的 Copilot 认证行为
-Hermes 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接发送到 `api.githubcopilot.com`，并附带 Copilot 专用请求头（`Editor-Version`、`Copilot-Integration-Id`、`Openai-Intent`、`x-initiator`）。
-
-收到 HTTP 401 时，Hermes 在回退前会执行一次性凭据恢复：
-
-1. 通过正常优先级链重新解析 token（`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`）
-2. 使用刷新后的请求头重建共享 OpenAI 客户端
-3. 重试请求一次
-
-部分旧版社区代理使用 `api.github.com/copilot_internal/v2/token` 交换流程。该端点对某些账户类型可能不可用（返回 404）。因此 Hermes 以直接 token 认证为主路径，依靠运行时凭据刷新 + 重试保证健壮性。
-:::
-
-**API 路由**：GPT-5+ 模型（`gpt-5-mini` 除外）自动使用 Responses API。其他所有模型（GPT-4o、Claude、Gemini 等）使用 Chat Completions。模型从 Copilot 实时目录自动检测。
-
-**`copilot-acp` — Copilot ACP 智能体后端**。将本地 Copilot CLI 作为子进程启动：
-
-```bash
-hermes chat --provider copilot-acp --model copilot-acp
-# 需要 PATH 中存在 GitHub Copilot CLI 且已完成 `copilot login`
-```
-
-**永久配置：**
-```yaml
-model:
-  provider: "copilot"
-  default: "gpt-5.4"
-```
-
-| 环境变量 | 说明 |
-|---------------------|-------------|
-| `COPILOT_GITHUB_TOKEN` | Copilot API 的 GitHub token（最高优先级） |
-| `HERMES_COPILOT_ACP_COMMAND` | 覆盖 Copilot CLI 二进制路径（默认：`copilot`） |
-| `HERMES_COPILOT_ACP_ARGS` | 覆盖 ACP 参数（默认：`--acp --stdio`） |
+安装、模型和环境变量说明：[github-copilot 插件文档](https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot)。
 
 ### 一等 API Key 提供商
 
@@ -1090,7 +1037,7 @@ model:
 :::note 两个设置，容易混淆
 **`context_length`** 是**总上下文窗口**——输入和输出 token 的合计预算（例如 Claude Opus 4.6 为 200,000）。Hermes 用它来决定何时压缩历史记录以及验证 API 请求。
 
-**输出上限**限制单次响应，而非对话历史。Hermes 不再读取 `model.max_tokens`、`HERMES_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。原生 Anthropic Messages 仍要求 `max_tokens`，Hermes 会提供内部值。Bedrock Converse 的可选输出限制默认省略。
+**输出上限**限制单次响应，而非对话历史。Hermes 不再读取 `model.max_tokens`、`HERMES_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。回复在流式输出中陷入重复循环时仍会被停止：循环（可见内容或推理内容）开始后约 130,000 个字符以内，Hermes 会关闭该流并以“Repetition Detected”提示结束本轮，因此没有输出上限的端点也不会让循环中的模型一直运行下去。原生 Anthropic Messages 仍要求 `max_tokens`，Hermes 会提供内部值。Bedrock Converse 的可选输出限制默认省略。
 
 当自动检测获取的窗口大小不正确时，设置 `context_length`。
 请删除旧的用户输出上限配置；内部任务预算与 MCP 采样安全预算保持不变。
@@ -1108,7 +1055,7 @@ Hermes 使用多源解析链来检测模型和提供商的正确上下文窗口�
 8. **[models.dev](https://models.dev)** — 社区维护的注册表，包含 100+ 提供商 3800+ 模型的提供商特定上下文长度
 9. **回退默认值** — 广泛的模型系列模式（默认 128K）
 
-大多数配置开箱即用。该系统具有提供商感知能力——同一模型在不同服务商处可能有不同的上下文限制（例如 `claude-opus-4.6` 在 Anthropic 直连时为 1M，在 GitHub Copilot 上为 128K）。
+大多数配置开箱即用。该系统具有提供商感知能力——同一模型在不同服务商处可能有不同的上下文限制（例如 `claude-opus-4.6` 在 Anthropic 直连时为 1M，经部分转售商和聚合商访问时则更小）。
 
 要显式设置上下文长度，在模型配置中添加 `context_length`：
 
@@ -1419,7 +1366,7 @@ fallback_model:
 
 激活时，故障转移在不丢失对话的情况下中途切换模型和提供商。链按条目逐一尝试；每个会话激活一次。
 
-支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
+支持的提供商：`openrouter`、`nous`、`openai-codex`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
 
 :::tip
 故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](../user-guide/features/fallback-providers.md)。

@@ -40,6 +40,42 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _join_api_turn_workers():
+    """Join the API turn workers a test left running, as its loop's teardown used to.
+
+    API turns ran on the loop's default executor, which each test's loop teardown joined. They now
+    run on ``api_server_runs``' own executor, which only an adapter disconnect retires, and most
+    API-server tests never disconnect: a worker still finishing would raise the process-global
+    ``api_worker_live_count`` inside the next test (the shutdown close-gate tests read it).
+    """
+    yield
+    runs = sys.modules.get("gateway.platforms.api_server_runs")
+    executor = runs.retire_api_turn_executor() if runs is not None else None
+    for thread in list(getattr(executor, "_threads", ())):
+        thread.join(30)
+
+
+@pytest.fixture
+def private_db_probe_cleanup(tmp_path):
+    """Release only this test's probe fds after its explicit SQLite-handle finalizers.
+
+    Production intentionally keeps these probes open: closing one while SQLite still
+    owns the inode cancels its POSIX locks. Opt-in tests must first register normal
+    runner/store cleanup and use only databases underneath their private tmp_path.
+    """
+    import hermes_state_dbfile as dbfile
+
+    with dbfile._HEADER_PROBE_LOCK:
+        existing = set(dbfile._HEADER_PROBE_FDS)
+    yield
+    with dbfile._HEADER_PROBE_LOCK:
+        for key in set(dbfile._HEADER_PROBE_FDS) - existing:
+            if Path(key).is_relative_to(tmp_path):
+                fd, _dev, _ino = dbfile._HEADER_PROBE_FDS.pop(key)
+                os.close(fd)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _bind_lark_sdk_globals_when_installed():
     """Bind the feishu adapter's lark SDK globals once per test session.
@@ -54,7 +90,7 @@ def _bind_lark_sdk_globals_when_installed():
     their own ``skipUnless`` guards.
     """
     try:
-        import lark_oapi  # noqa: F401
+        import lark_oapi
     except ImportError:
         yield
         return
@@ -164,6 +200,14 @@ def _ensure_telegram_mock() -> None:
     # Update.ALL_TYPES used in start_polling()
     mod.Update.ALL_TYPES = []
 
+    # PerChatUpdateProcessor subclasses this at import time: a MagicMock base
+    # would turn the subclass itself into a mock that fails on its second call.
+    class SimpleUpdateProcessor:
+        def __init__(self, max_concurrent_updates):
+            self.max_concurrent_updates = max_concurrent_updates
+
+    mod.SimpleUpdateProcessor = SimpleUpdateProcessor
+
     for name in (
         "telegram",
         "telegram.ext",
@@ -227,6 +271,11 @@ def _ensure_discord_mock() -> None:
         def __init__(self, timeout=None):
             self.timeout = timeout
             self.children = []
+            self._finished = False
+        def stop(self):
+            self._finished = True
+        def is_finished(self):
+            return self._finished
         def add_item(self, item):
             self.children.append(item)
         def clear_items(self):
@@ -606,3 +655,88 @@ def _write_guard_cache_atomic(cache_file: Path, content: str) -> None:
         except OSError:
             pass
 
+
+# ---------------------------------------------------------------------------
+# Canonical session-authority fixtures shared by several test files.
+#
+# Imports stay inside the fixture bodies: this conftest must install the
+# telegram/discord mocks above before any gateway module is imported.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def owner(tmp_path):
+    """A canonical ``SessionAuthority`` over a fresh profile ``state.db``."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    db = SessionDB(tmp_path / 'state.db')
+    store = SessionStore(config=GatewayConfig(), sessions_dir=tmp_path / 'sessions')
+    store._db = db  # production: the routing store and the authority share the profile's state.db
+    runner = SimpleNamespace(_draining=False, session_store=store)
+    authority = SessionAuthority(runner, profile_id='default', instance_id='first', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='first'))
+    runner.session_authority = authority
+    yield authority
+    db.close()
+
+
+@pytest.fixture
+def api(owner, tmp_path, monkeypatch):
+    """The API server adapter bound to ``owner``'s runner and database."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.api_server import APIServerAdapter
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter.gateway_runner = owner.runner
+    adapter._session_db = owner.db
+    owner.runner._adapter_for_source = lambda source: adapter
+    yield adapter
+    adapter._response_store.close()
+    adapter._run_idempotency_store.close()
+
+
+@pytest.fixture
+def hosted_owner(tmp_path, monkeypatch):
+    """A hosted-room source authority on its own loop thread: ``(authority, loop, principal, agent)``."""
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway import run, session_policy
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
+    monkeypatch.setattr(run, '_resolve_gateway_model', lambda cfg: 'fixture')
+    # Parent-owned private restore hook, explicitly not an ordinary-daemon proof.
+    original = session_policy.restore_policy
+    def restore(data):
+        from dataclasses import replace
+        if data['source'] == 'bot_room':
+            return replace(original({**data, 'source': 'gui', 'platform': 'desktop'}), source='bot_room', platform='bot_room')
+        return original(data)
+    monkeypatch.setattr(session_policy, 'restore_policy', restore)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    agent = SimpleNamespace(interrupted=False)
+    agent.interrupt = lambda: setattr(agent, 'interrupted', True)
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: agent)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    authority = asyncio.run_coroutine_threadsafe(initialize_session_authority(runner, profile_id='owned', instance_id='first'), loop).result()
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    principal = Principal('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
+    yield authority, loop, principal, agent
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join()
+    loop.close()
+    store._db.close()

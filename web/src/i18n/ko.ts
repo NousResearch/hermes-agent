@@ -92,9 +92,18 @@ export const ko: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "활성 메모리 제공자",
+    noProvider: "없음 — 내장 메모리만",
+    builtinLayer: "내장 레이어",
+    builtinNote: "MEMORY.md와 USER.md는 외부 제공자와 별개인 Hermes 자체 메모리입니다. 기본적으로 둘 다 세션에 로드되며, 설정 토글 (memory.memory_enabled / memory.user_profile_enabled)로 각각 끌 수 있습니다. 외부 제공자는 여기에 더해질 뿐, 이를 대체하지 않습니다.",
+  },
+
   status: {
     actionFailed: "작업 실패",
     actionFinished: "완료됨",
+    actionFinishedOwed: "업데이트되었지만 아직 남은 작업이 있습니다 (완료하려면 `hermes update`를 다시 실행하세요)",
     actions: "작업",
     agent: "에이전트",
     activeSessions: "활성 세션",

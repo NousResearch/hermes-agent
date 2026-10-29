@@ -40,11 +40,6 @@ def _approval_outcome_label(result) -> str:
     return t(key) if key else str(result)
 
 
-_CLARIFY_TIMEOUT_REPLY = (
-    "The user did not provide a response within the time limit. "
-    "Use your best judgement to make the choice and proceed.")
-
-
 def _approval_gate_on(key: str) -> bool:
     """Read ``approvals.<key>`` (default on); any load failure keeps the prompt enabled."""
     from cli import load_cli_config
@@ -419,7 +414,7 @@ class CLIModalMixin:
         """Flat (command, category, desc) rows for the Ctrl+P palette: the COMMAND_REGISTRY behind
         /help filtered to this surface, plus installed skill commands. Selecting inserts the exact
         command string — never a fuzzy resolution."""
-        from cli import _ensure_skill_commands
+        from cli import _session_skill_commands
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
 
         entries: list[tuple[str, str, str]] = []
@@ -428,7 +423,7 @@ class CLIModalMixin:
                 if self._command_available(cmd):
                     entries.append((cmd, category, desc))
         try:
-            for cmd, info in sorted(_ensure_skill_commands().items()):
+            for cmd, info in sorted(_session_skill_commands(self).items()):
                 entries.append((cmd, t("cli.palette.category_skill"), info.get("description", "")))
         except Exception:
             pass
@@ -598,73 +593,12 @@ class CLIModalMixin:
         self._clarify_multi_base = None
         self._paint_now()
 
-    def _clarify_callback(self, question, choices, multi_select=False, questions=None):
-        """Clarify-tool platform callback (agent thread): show the selection UI (or freetext for
-        open-ended questions) and block until the key bindings answer or the timeout dismisses it
-        (the agent is then told to decide). ``multi_select`` shows checkboxes (Space toggles).
-        A non-empty ``questions`` list switches to the batch panel and returns
-        ``{"answers": {qid: raw}}`` (plus ``"timed_out": True`` on a partial deadline expiry).
-
-        The single-question path below is unchanged. See #18450.
-        """
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint
-        from tools.clarify_gateway import resolve_clarify_timeout
-
-        if questions:
-            return self._clarify_callback_batch(questions)
-
-        # Canonical clarify timeout, shared with the gateway/TUI path; `<= 0` = unlimited.
-        timeout = resolve_clarify_timeout(CLI_CONFIG)
-        response_queue = queue.Queue()
-        is_open_ended = not choices
-        effective_multi = multi_select and not is_open_ended
-        self._clarify_state = {
-            "question": question,
-            "choices": choices if not is_open_ended else [],
-            "selected": 0,
-            "multi_select": effective_multi,
-            "selected_indices": set() if effective_multi else None,
-            "response_queue": response_queue}
-        self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
-        self._clarify_freetext = is_open_ended  # open-ended → straight to freetext
-        self._clarify_multi_base = None
-        self._ring_bell(prompt=True, context=t("cli.clarify.bell_context"))
-        self._paint_now()
-
-        result = self._poll_modal_queue(response_queue, "_clarify_deadline")
-        if result is not _TIMED_OUT:
-            self._clarify_deadline = None
-            self._persist_prompt_summary("?", t("cli.clarify.label"), question, str(result))
-            return result
-        self._clarify_teardown()
-        _cprint(f"\n{_DIM}{t('cli.clarify.timed_out_agent_decides', timeout=timeout)}{_RST}")
-        return _CLARIFY_TIMEOUT_REPLY
-
     # --- Connection setup --------------------------------------------------
-    def _connection_operation(self, payload):
-        from tools.connectors import live
-
-        session_key = getattr(self, "session_id", "") or ""
-        op_id = str(payload.get("op_id") or "")
-        return live.get(session_key, op_id) or live.current(session_key)
-
-    def _connection_install_hook(self) -> bool:
-        from tools.connectors.operation import ConnectionOperation
-
-        if ConnectionOperation.on_change is not None:
-            return False
-        ConnectionOperation.on_change = self._connection_on_change
-        return True
-
-    def _connection_restore_hook(self) -> None:
-        from tools.connectors.operation import ConnectionOperation
-
-        if ConnectionOperation.on_change == self._connection_on_change:
-            ConnectionOperation.on_change = None
-
+    # The gateway runs the manage_connections operation; this card renders its connection.request /
+    # connection.update events (delivered on the agent thread) and answers through the agent's
+    # connection.respond / connectors.connect calls, never an in-process operation.
     def _connection_close(self) -> None:
         self._connection_state = None
-        self._connection_restore_hook()
         self._restore_modal_input_snapshot()
         self._paint_now()
 
@@ -759,79 +693,84 @@ class CLIModalMixin:
 
     def _connection_callback(self, payload):
         if not isinstance(payload, dict):
-            return None
-        self._capture_modal_input_snapshot()
-        installed = self._connection_install_hook()
-        self._connection_show_target(payload, 0)
+            return
         state = self._connection_state
+        if state is not None and state["payload"].get("op_id") == payload.get("op_id"):
+            # A replay-gap re-open of the card already shown: apply it as an update so the active
+            # target, field and unsent input survive; an identical snapshot changes nothing.
+            if int(payload.get("seq") or 0) > int(state["payload"].get("seq") or 0):
+                self._connection_on_change(payload)
+            return
         if state is None:
-            return None
-        state["owns_hook"] = installed
-        state["tool_thread_id"] = threading.current_thread().ident
-        if state["phase"] != "waiting":
+            self._capture_modal_input_snapshot()
+        targets = payload.get("targets") or []
+        # Open on the first app that still needs the user, not one already connected or skipped.
+        index = next((i for i, item in enumerate(targets) if item.get("state") not in {"connected", "skipped"}), 0)
+        self._connection_show_target(payload, index)
+        state = self._connection_state
+        if state is not None and state["phase"] != "waiting":
             self._ring_bell(prompt=True, context=t("cli.connect.bell_context"))
-        return None
+
+    def _connection_send(self, call, *args) -> None:
+        """One card answer to the gateway, off the UI thread; its outcome arrives as connection.update."""
+        state = self._connection_state
+        agent = getattr(self, "agent", None)
+        if not state or agent is None:
+            self._connection_close()
+            return
+        op_id = state["payload"].get("op_id")
+
+        def _run() -> None:
+            from hermes_cli.gateway_client import GatewayClientError
+            try:
+                getattr(agent, call)(*args)
+            except GatewayClientError as exc:  # the gateway refused or was unreachable: say so on the card
+                current = self._connection_state
+                if current and current["payload"].get("op_id") == op_id:
+                    current["target"] = {**current["target"], "detail": str(exc) or t("cli.connect.cannot_restart")}
+                    current["phase"] = "failed"
+                    self._paint_now()
+
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(_run, name="hermes-connection-answer").start()
 
     def _connection_answer(self, *, approve: bool) -> None:
         state = self._connection_state
         if not state:
             return
         target = state["target"]
-        operation = self._connection_operation(state["payload"])
-        if operation is None:
-            self._connection_close()
-            return
         name = str(target.get("name") or "")
         answer = {"name": name, "status": "approved" if approve else "skipped"}
         if approve:
             answer["env"] = dict(state.get("drafts", {}).get(name, {}))
-        from tools.connectors.mcp import apply_answer
-
-        # The backend applies the answer on this thread, and its change hook sets the next phase
-        # (the URL step, the form again for a missing field) before apply_answer returns. Set the
-        # waiting phase first so it cannot overwrite that.
         state["phase"] = "waiting"
-        apply_answer(operation, json.dumps({"targets": [answer]}))
         self._paint_now()
+        self._connection_send("connection_respond", state["payload"].get("op_id"), {"targets": [answer]})
 
     def _connection_retry(self) -> None:
         state = self._connection_state
         if not state:
             return
-        operation = self._connection_operation(state["payload"])
-        if operation is None:
-            self._connection_close()
-            return
         target = state["target"]
-        if target.get("kind") == "connector" and target.get("state") in {"failed", "expired"}:
-            from tools.connectors.run import reissue
-
-            state["phase"] = "waiting"
-            if reissue(operation, [str(target.get("name") or "")]) is not None:
-                target["detail"] = t("cli.connect.cannot_restart")
-                state["phase"] = "failed"
-            self._paint_now()
-            return
-        if target.get("state") in {"pending", "failed", "expired"}:
-            # Connect on a failed row is the same attempt with the values now in the draft.
+        if not (target.get("kind") == "connector" and target.get("state") in {"failed", "expired"}) \
+                and target.get("state") in {"pending", "failed", "expired"}:
+            # Connect on a pending or failed install row is the same attempt with the draft's values.
             self._connection_answer(approve=True)
             return
-        from tools.connectors.mcp import retry
-
+        # A dead sign-in link (or any other re-run): the gateway re-mints it on the open operation.
         state["phase"] = "waiting"
-        retry(operation, [str(target.get("name") or "")])
         self._paint_now()
+        self._connection_send("connection_retry", str(target.get("name") or ""))
 
     def _connection_continue(self) -> None:
+        # Stays open (waiting) until the gateway's settling update closes it, so a refused answer
+        # shows on the card instead of vanishing with it.
         state = self._connection_state
         if not state:
             return
-        operation = self._connection_operation(state["payload"])
-        if operation is not None:
-            from tools.connectors.mcp import apply_answer
-
-            apply_answer(operation, json.dumps({"settled_by": "continue"}))
-        self._connection_close()
+        state["phase"] = "waiting"
+        self._paint_now()
+        self._connection_send("connection_respond", state["payload"].get("op_id"), {"settled_by": "continue"})
 
     def _connection_open_url(self) -> None:
         state = self._connection_state
@@ -842,21 +781,21 @@ class CLIModalMixin:
         self._connection_answer(approve=False)
 
     def _connection_interrupt(self) -> None:
-        state = self._connection_state
-        if state:
-            from tools.interrupt import set_interrupt
-
-            operation = self._connection_operation(state["payload"])
-            set_interrupt(True, thread_id=state.get("tool_thread_id"))
-            if operation is not None:
-                operation.wake.set()
+        # The turn's interrupt reaches the gateway, which ends the operation; only the card is ours.
         self._connection_close()
 
-    def _connection_on_change(self, operation, _change, snapshot) -> None:
+    def _connection_on_change(self, snapshot) -> None:
         state = self._connection_state
-        if not state or operation.op_id != state["payload"].get("op_id"):
+        if not state or not isinstance(snapshot, dict):
             return
-        if snapshot.get("settled_at") is not None:
+        if "op_id" not in snapshot and snapshot.get("settled"):
+            self._connection_close()  # a replay-gap recovery found no open operation: the card is stale
+            return
+        if snapshot.get("op_id") != state["payload"].get("op_id"):
+            return
+        if int(snapshot.get("seq") or 0) < int(state["payload"].get("seq") or 0):
+            return  # an older frame than the one the card holds
+        if snapshot.get("settled") or snapshot.get("settled_at") is not None:
             self._connection_close()
             return
         active_name = state["target"].get("name")
@@ -871,6 +810,9 @@ class CLIModalMixin:
         elif target_state == "failed":
             state["phase"] = "failed"
         elif target_state == "pending" and self._connection_fields(target):
+            if state["phase"] == "form":
+                state["payload"] = snapshot  # still being filled in: keep the field and unsent input
+                return
             # The backend refused the answer because a required field is still empty: reopen the
             # form on the first one it named, over the draft the panel kept.
             missing = {field.get("name") for field in self._connection_fields(target)}
@@ -956,6 +898,10 @@ class CLIModalMixin:
             lines.extend([t("cli.connect.authorized_no_tools"), t("cli.connect.button_continue")])
         elif phase == "connected":
             lines.append(t("cli.connect.connected"))
+            if target.get("alias"):
+                from tools.tool_labels import app_title
+
+                lines.append(t("cli.connect.named_account", name=app_title(target.get("name", "")), alias=target["alias"]))
         else:
             lines.append(str(target.get("detail") or t("cli.connect.waiting")))
         return [line for line in lines if line]
@@ -963,7 +909,7 @@ class CLIModalMixin:
     # --- Batch clarify (multi-question, issue #18450) -----------------------
     def _clarify_batch_set_active(self, state, index) -> None:
         """Point the batch clarify panel at question ``index``: mirror it into the flat keys the
-        single-question keybindings/renderer read so ↑/↓/Space/number keys work unchanged;
+        keybindings/renderer read so ↑/↓/Space/number keys work unchanged;
         open-ended drops into freetext; re-visiting restores the earlier cursor/checkboxes."""
         questions_list = state["questions"]
         index = max(0, min(index, len(questions_list) - 1))
@@ -1000,7 +946,7 @@ class CLIModalMixin:
         entry = state["questions"][state["active"]]
         state["answers"][entry["qid"]] = answer
         state.setdefault("answer_meta", {})[entry["qid"]] = meta or {"kind": "choice"}
-        self._persist_prompt_summary("?", t("cli.clarify.label"), entry["question"], str(answer))
+        self._persist_prompt_summary("?", t("cli.clarify.label"), entry["question"], "" if answer is None else str(answer))
         total = len(state["questions"])
         for offset in range(1, total + 1):
             candidate = (state["active"] + offset) % total
@@ -1043,11 +989,11 @@ class CLIModalMixin:
         self._clarify_freetext = True
         self._clarify_prefill = meta.get("other_text") or "" if meta.get("kind") == "other" else ""
 
-    def _clarify_callback_batch(self, questions):
-        """Batch clarify panel (A-compact): all questions, one active. Returns
-        ``{"answers": {qid: raw}}`` when every question is locked, plus ``"timed_out": True`` when
-        the deadline expires with partial answers; a cancel string passes through unchanged so the
-        tool core resolves the batch empty."""
+    def _clarify_callback(self, questions):
+        """Clarify-tool platform callback (agent thread, #18450): the batch panel (A-compact) shows
+        all questions, one active, and blocks until the key bindings lock every answer. Returns
+        ``{"answers": {qid: raw | None}, "outcome"}`` (None = skipped): ``submitted`` when every
+        question is locked, ``timed_out`` when the deadline expires, ``cancelled`` on an interrupt."""
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
         from tools.clarify_gateway import resolve_clarify_timeout
 
@@ -1074,11 +1020,27 @@ class CLIModalMixin:
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
-            return {"answers": result} if isinstance(result, dict) else result
+            outcome = "cancelled" if result is None else "submitted"
+            return {"answers": dict(state["answers"]), "outcome": outcome}
         partial = dict(state["answers"])
         self._clarify_teardown()
         _cprint(f"\n{_DIM}{t('cli.clarify.timed_out_locked_answers', timeout=timeout)}{_RST}")
-        return {"answers": partial, "timed_out": True}
+        return {"answers": partial, "outcome": "timed_out"}
+
+    def _withdraw_gateway_modal(self, method) -> None:
+        """The gateway withdrew the server request this CLI's modal is answering (``request.cancel``:
+        another viewer completed it, or its wait ended): close that modal as if cancelled locally, so
+        the blocked agent thread returns. Called from the gateway connection's thread."""
+        # Each modal's response queue is an unbounded queue.Queue: put() never blocks or raises.
+        if method == "clarify" and self._clarify_state:
+            state = self._clarify_state
+            self._clarify_teardown()
+            state["response_queue"].put(None)
+        elif method in ("sudo", "vault.unlock_prompt", "vault.save_login", "vault.code") and self._sudo_state:
+            # The vault prompts reuse the sudo panel's state and queue; "" ends them as declined.
+            self._sudo_state["response_queue"].put("")
+        elif method == "secret" and getattr(self, "_secret_state", None):
+            self._cancel_secret_capture()
 
     def _sudo_password_callback(self) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
@@ -1152,7 +1114,7 @@ class CLIModalMixin:
                           allow_session: bool = True,
                           smart_denied: bool = False) -> list[str]:
         """Smart-DENY overrides and re-ask-every-time gates (allow_session=False) show only
-        once/deny; ``allow_permanent=False`` for another reason (e.g. tirith) hides only 'always'."""
+        once/deny; ``allow_permanent=False`` for another reason hides only 'always'."""
         if smart_denied or not allow_session:
             choices = ["once", "deny"]
         elif allow_permanent:
@@ -1307,7 +1269,7 @@ class CLIModalMixin:
         if self._connection_state:
             self._connection_interrupt()
         if self._clarify_state:
-            _put(self._clarify_state, "The user cancelled. Use your best judgement to proceed.")
+            _put(self._clarify_state, None)
             self._clarify_state = None
             self._clarify_freetext = False
             self._clarify_multi_base = None

@@ -137,6 +137,17 @@ def test_poller_never_watches_its_own_workflow():
     assert own_name not in watched
 
 
+def test_the_merge_gate_never_shows_as_a_job_in_the_comment():
+    """The gate's display name is versioned (bumped to void pre-change greens);
+    every rename must reach the infra list, or the comment lists the gate as a job."""
+    yaml = pytest.importorskip("hermes_yaml")
+    root = Path(__file__).resolve().parents[2]
+    ci = yaml.safe_load((root / ".github/workflows/ci.yaml").read_text(encoding="utf-8"))
+    gate = ci["jobs"]["all-checks-pass"]["name"]
+    completed, pending, _ = classify_jobs([{"name": gate, "status": "completed", "conclusion": "success"}])
+    assert (completed, pending) == ({}, [])
+
+
 # ─── runs_all_completed ───────────────────────────────────────────────
 
 

@@ -24,6 +24,8 @@ interface SearchFieldProps {
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>
   inputRef?: RefObject<HTMLInputElement | null>
   trailingAction?: ReactNode
+  /** Optional scope badge between the search glyph and input. */
+  leadingContent?: ReactNode
   /**
    * `underline` (default) recedes into chrome — sidebars, page headers.
    * `box` is a standalone pill — visible stroke + quinary fill, the recipe
@@ -52,6 +54,7 @@ export function SearchField({
   onKeyDown,
   inputRef,
   trailingAction,
+  leadingContent,
   variant = 'underline',
   'aria-label': ariaLabel
 }: SearchFieldProps) {
@@ -83,6 +86,7 @@ export function SearchField({
       )}
     >
       <Search className={cn('pointer-events-none shrink-0 text-muted-foreground/70', boxed ? 'size-4' : 'size-3.5')} />
+      {leadingContent}
       <input
         aria-label={ariaLabel ?? placeholder}
         className={cn(

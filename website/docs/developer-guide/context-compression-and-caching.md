@@ -4,7 +4,7 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
+`agent/prompt_caching.py`, `gateway/run_turn_hygiene.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
 ## Bedrock context window cache
@@ -82,7 +82,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run_turn.py` (search for `Session hygiene`). This is a **safety net** that
+Located in `gateway/run_turn_hygiene.py` (search for `Session hygiene`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
@@ -226,6 +226,55 @@ attempt anyway:
   the next failure would extend the ladder (#100661). If that attempt fails,
   the cooldown is recorded normally.
 
+#### Attempt telemetry
+
+Every `compress_context` call that returns logs one content-free INFO line,
+`context compression attempt telemetry: {...}` (logger
+`agent.conversation_compression`). It never carries message text, summary
+text, the focus topic or error messages.
+
+- `trigger_source` names why the attempt ran: `manual`, `idle`,
+  `turn_start_threshold`, `engine_preflight`, `pre_api`, `post_tool`,
+  `gateway_hygiene` or `overflow`. An automatic caller that passes no label
+  reads `auto`; a refusal before any attempt began (pool saturation) reads
+  `unknown`.
+- `route` is `hermes` for the local compressor and `codex_app_server` when the
+  Codex thread owns compaction.
+- `commit_status` is `committed`, `aborted`, `failed`, `skipped` or `blocked`.
+  A `blocked` attempt was refused by an automatic guard; its `failure_class`
+  names the guard (`blocked:cooldown`, `blocked:structural_backoff`,
+  `blocked:ineffective`). Under the session lease, `session_ownership_lost`
+  (`skipped`) means another path already rotated the session, and
+  `session_ownership_unreadable` / `cooldown_state_unreadable` (`aborted`)
+  mean that state could not be read. `empty_transcript` (`aborted`) means the
+  engine returned no messages, so nothing was committed.
+- `attempt_id` names this attempt and `session_id` the session it started
+  in, even when the attempt then adopts a rotated child session or unwinds
+  after a newer attempt (a stall fallback) has begun. An attempt
+  that stops before the compressor runs, or rolls its state back, logs
+  `method: none` and no token counts, never an earlier attempt's numbers.
+- `method` says how the summary was produced: `llm_summary`,
+  `aux_fallback_main` (the summary model failed and the main model wrote it),
+  `deterministic_fallback` (static anchors summary; `items_dropped` counts the
+  replaced messages), `provider` (Codex) or `none`.
+- `messages_before` / `messages_after` and `tokens_before` / `tokens_after` /
+  `tokens_reclaimed` describe the transcript that crossed the commit boundary,
+  including retained `/compress here N` tail rows and boundary anchors.
+  A refused or rolled-back candidate never reached the transcript, so its
+  record has no `messages_after`, `tokens_after`, `tokens_reclaimed` or
+  `items_dropped`.
+  `token_count_method: estimate_rough` marks them as rough message-only
+  estimates (system prompt and tool schemas excluded), so they compare like
+  for like. `tool_results_pruned` and `reasoning_items_pruned` count the
+  deterministic passes that ran before and after the summary.
+
+The opt-in `hermes.compression.count` shared metric keeps coarse triggers
+(`auto`, `manual`, `overflow`) and counts only attempts the local compressor
+ran; blocked and Codex-routed attempts appear in the log line only. When the
+NeMo Relay runtime is live, the same record, plus micro-compaction passes and
+committed proactive prunes, is also emitted as a `hermes.compaction` mark (see
+[NeMo Relay Shared Metrics](./relay-shared-metrics.md#compaction-marks)).
+
 
 ## Configuration
 
@@ -248,6 +297,7 @@ compression:
   codex_responses_native: false  # Opt-in server compaction: gpt-5.6 on OpenAI/Codex; Astra on Codex OAuth
   codex_responses_compact_threshold: null  # Server compaction trigger; only used when codex_responses_native: true
   in_place: true             # Compact on the same session id, no rotation (default: true)
+  prepare_ahead: false       # Opt-in: prepare the next summary in the background (default: false)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -276,6 +326,7 @@ auxiliary:
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and `gpt-6-astra` (including its `-900k` picker alias) on official Codex OAuth (see below) |
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
+| `prepare_ahead` | `false` | bool | Opt-in: near the trigger, write the next summary in the background and splice it at the next automatic compaction when it still covers the same messages (see below) |
 
 ### In-place compaction (single stable session id)
 
@@ -288,13 +339,22 @@ Consumers observe the mode rather than diffing session ids:
 
 Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
 
+Canonical `/compress` uses the session's frozen `compression.in_place` and
+`min_tail_user_messages` settings too. In-place mode soft-archives the current physical
+transcript; rotating mode publishes a successor. Both keep the logical admission owner
+and previously issued input IDs unchanged, and commit the transcript, generation,
+revision and retry receipt together. Safe-mode sessions use code defaults rather than
+profile compression settings.
+
 ### Auxiliary feasibility and tail retention
 
 A smaller auxiliary compression model can lower the live compression trigger without
 changing the selected tail policy. In `lean` mode the selection budget remains based
 on the **main model's context window**: 2.5%, clamped to 10K–25K tokens, and never more
 than 20% of that window (the 10K floor alone is 61% of a 16K local window, so without the cap a
-small model's "protected" tail was the whole request and compaction reclaimed nothing). For example,
+small model's "protected" tail was the whole request and compaction reclaimed nothing), nor more than
+half of a compression trigger above the 2K minimum summary budget (a `threshold_tokens` of 12K on a 1M window would otherwise keep a 25K tail, so
+every pass stayed over the trigger and refused as "would grow"). For example,
 a 1M main model with a 512K auxiliary model retains a 25K
 selection budget even when feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
@@ -352,8 +412,8 @@ map.
 ### Codex gpt-5.x / Astra threshold autoraise
 
 The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
-(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
-GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
+(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and smaller
+windows through some resellers). At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
 OAuth (`provider: openai-codex`) and the model is one of those families (Astra
 matches any slug containing `astra`; the opt-in `-900k` picker variants are
@@ -386,7 +446,7 @@ more tokens per request and much faster subscription-usage burn, so the large
 window is strictly opt-in.
 
 To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
-`gpt-6-sol-900k`, `gpt-6-terra-900k`, `gpt-6-luna-900k`, `gpt-5.6-sol-900k`,
+`gpt-6.1-sol-900k`, `gpt-6-sol-900k`, `gpt-6-luna-900k`, `gpt-5.6-sol-900k`,
 `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`, `gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
 the model id is sent to the backend, and pricing/usage accounting treats them
 as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
@@ -441,7 +501,7 @@ narrow, re-checked on every request:
   Astra variants and other GPT-6 models are excluded. gpt-5.1/5.2 return HTTP 500 or stall the stream when the
   field is present (no structured rejection to downgrade on, verified live Aug 2026).
 - **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
-  (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
+  (Codex subscription OAuth) only. xAI, plugin providers, OpenRouter, relays, and
   local servers never see the field.
 
 For Astra, both the resolved `openai-codex` provider and an official HTTPS
@@ -508,6 +568,20 @@ without `/steer` messages delivered after it) keeps its text results verbatim an
 results intact in the tail, so the model can use the output it requested. A round that alone
 exceeds 20% of the input budget (the context window minus the output reservation) can be
 summarized, and its older images are retired so compaction can still make room.
+
+#### Loaded skills across a compaction
+
+A skill's instructions are not kept verbatim forever, but the model is always told when they are
+gone. Every `skill_view` result that a pass stubs or summarizes away (whatever its size) carries
+`[SKILL_PRUNED: content lost in compression; reload with skill_view(name='…')]`, and the summary
+lists each such skill under `## Pruned Skills`. Whenever a marker survives anywhere in the compacted
+transcript, the handoff summary ends with a `## Skill Safety Rule` telling the model to reload the
+skill before relying on it; fresh sessions never carry that rule in their system prompt, since no
+marker can exist before the first compaction. Skills loaded inline by `/skill-name`, bundles,
+stacked invocations and gateway channel auto-load get the same marker when their turn is
+summarized, and the summary quotes that turn as typed (`/skill-name do X`) rather than the skill
+body. A reload after the boundary returns the full skill again. Skills preloaded with `-s` or
+`skills.auto_load` live in the system prompt and are never compacted.
 
 ### Phase 2: Determine Boundaries
 
@@ -596,6 +670,57 @@ new progress is added, and obsolete information is removed.
 The `_previous_summary` field on the compressor instance stores the last summary
 text for this purpose. A deterministic fallback summary is stored there too, since
 it is the handoff the transcript now carries.
+
+### Prepared compaction (opt-in)
+
+With `compression.prepare_ahead: true` (read at agent construction, so it takes effect on the next
+session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
+the trigger fires. When the last provider-reported prompt count is within 12% of the trigger
+(`threshold_tokens`) below it, the turn loop starts one background pass, before a tool batch runs or
+at turn end. Turn-end passes are skipped for cron runs, delegated children and one-shot sessions
+(`hermes chat -q`, `-z`), whose agents end with the turn. The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls
+the same `_generate_summary` on a copy of the compressor and of the window's messages, so the live
+transcript, the system prompt and the prompt cache are untouched until compaction. There is one pass
+per compaction: while a summary is held, no further pass starts, however much the prompt grows.
+
+At the next automatic threshold compaction `compress()` splices the completed summary when it still
+covers the same messages: same session, unchanged head boundary, and the same message structure up to that boundary (role, tool call ids and
+names, tool result ids), each message vouched for by its durable `message_uid`. The text of a
+persisted message, tool arguments and tool bodies are not compared: the no-LLM prune and plugins
+rewrite them in place, and the summary still describes the same messages. A message without a uid on
+one side (caller-supplied `conversation_history` that is never persisted) is compared by text, since
+nothing else can tell it from a different message. A dropped or inserted message, or a rewind or
+branch into the window (new `message_uid`s), is a miss. The summary then covers
+`[head, candidate boundary)` and every later message, however many arrived after the pass started, is
+kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Where the fresh plan
+would cut does not matter: a cut that moved earlier (the prune made tail rows cheaper, tool-group
+alignment) or later never discards the summary, because one prepared summary per compaction is never
+redone. The pass planned its own window with a full tail, so the tail is never empty. Summary placement and
+alternation handling are the normal Phase 4 assembly. The splice leaves the live compressor as the
+inline call would have: a pass that recovered on the main model after the summary model failed hands
+over that fallback (later compactions use the main model, and the user sees the broken-model
+warning), and the attempt telemetry carries the pass's aux call with `prepared_summary: true`.
+
+When no completed candidate fits but the pass still running would, compaction waits for that pass
+instead of writing the same summary again. Each streamed chunk of the pass touches the waiting
+compaction's progress hook, so the host's idle watchdog treats the wait like an inline summary
+stream, and time a llama.cpp server spends reading the pass's prompt pushes the host's deadline back
+as it would inline. The wait ends at the host's deadline (the compression aux timeout when there is none), on
+cancellation, or when a session boundary discards the pass, and compaction then summarizes inline.
+
+Everything else runs inline exactly as without the flag: no candidate, a candidate or running pass
+that no longer fits, manual `/compress`, focus compaction, provider-overflow recovery, and
+compactions where a memory provider contributes summary context (the first such compaction also stops
+further passes for that agent, since each would be thrown away). A running pass overtaken by compaction or a session
+boundary (including a rebind to another session id on `/resume` or `/branch`) is cancelled: it
+cannot publish, and its summary stream is closed rather than billed to completion. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
+eviction or process restart simply means the next compaction runs inline; releasing the agent (cache
+eviction, a rewind, `close()`) also cancels a running pass. A held summary therefore helps only an
+agent that lives across turns (interactive CLI, TUI/Desktop and messaging sessions); a `-q --resume`
+chain builds a new agent per run and gets no head start. Pass log lines carry `session=<id>`, and
+opt-in shared metrics count adoption and every pass and splice outcome
+(`hermes.prepared_compaction.count`, see the shared-metrics guide). Plugin context engines,
+Codex app-server sessions, native Responses compaction and micro-compaction are not prepared.
 
 
 ## Before/After Example

@@ -45,6 +45,43 @@ def _make_stream_chunk(content=None, finish_reason=None, model=None, usage=None)
     return SimpleNamespace(choices=[choice], model=model, usage=usage)
 
 
+# Seconds the fake stream spends decoding between its first delta and its terminal frame.
+_DECODE_GAP_S = 0.05
+# A sleep can wake a few ms early on Windows, so the window lower bound stays loose.
+_MIN_MEASURED_S = 0.04
+
+
+def _make_stream_iterator(chunks, decode_gap_s=_DECODE_GAP_S):
+    """Yield fake chunks with a real decode window between the deltas.
+
+    Windows resolves adjacent clock reads to the same tick, so a back-to-back
+    in-memory stream measures a 0.0 s window and the contract records it as
+    unmeasured. The gap is the seconds this stream actually spends decoding.
+    """
+    for index, chunk in enumerate(chunks):
+        if index:
+            time.sleep(decode_gap_s)
+        yield chunk
+
+
+def _anthropic_event(event_type, **fields):
+    return SimpleNamespace(type=event_type, **fields)
+
+
+def _anthropic_text_delta(text):
+    return _anthropic_event(
+        "content_block_delta", delta=SimpleNamespace(type="text_delta", text=text)
+    )
+
+
+def _make_anthropic_event_iterator(events, decode_gap_s=_DECODE_GAP_S):
+    """Anthropic Messages stream events with the same real decode gap as above."""
+    for index, event in enumerate(events):
+        if index:
+            time.sleep(decode_gap_s)
+        yield event
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -109,7 +146,7 @@ class TestStreamHelperStashesFirstChunkAt:
             _make_stream_chunk(content="!", finish_reason="stop", model="test-model"),
         ]
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_client.chat.completions.create.return_value = _make_stream_iterator(chunks)
         mock_create.return_value = mock_client
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
@@ -123,6 +160,11 @@ class TestStreamHelperStashesFirstChunkAt:
         stamped = agent._last_api_first_chunk_at
         assert isinstance(stamped, float)
         assert before <= stamped <= after
+        # Decode window: opened by the first real delta (the "Hello" chunk) and
+        # closed when the terminal frame was processed — never by wire-only data.
+        decode_seconds = agent._last_api_decode_seconds
+        assert isinstance(decode_seconds, float)
+        assert _MIN_MEASURED_S <= decode_seconds < 1.0
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -146,6 +188,7 @@ class TestStreamHelperStashesFirstChunkAt:
             agent._interruptible_streaming_api_call({})
 
         assert agent._last_api_first_chunk_at is None
+        assert agent._last_api_decode_seconds is None  # a dead stream never measured a window
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -175,6 +218,171 @@ class TestStreamHelperStashesFirstChunkAt:
 
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert agent._last_api_first_chunk_at is None
+        assert agent._last_api_decode_seconds is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_wire_only_chunks_do_not_start_the_decode_window(
+        self, _mock_close, mock_create, agent
+    ):
+        """A role-only wire chunk carries no token: the decode window must not
+        open on it — only real delta data counts as the first output token."""
+
+        def _role_only_then_dies():
+            yield _make_stream_chunk(model="test-model")  # delta carries no content
+            raise ConnectionError("dropped before any token arrived")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _role_only_then_dies()
+        mock_create.return_value = mock_client
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._last_api_first_chunk_at = None
+        agent.stream_delta_callback = lambda _text: None
+
+        with pytest.raises(Exception):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._last_api_decode_seconds is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_reasoning_delta_opens_the_decode_window(
+        self, _mock_close, mock_create, agent
+    ):
+        """Reasoning output is real model output: the window starts at the
+        first reasoning delta even when no visible text token ever arrives."""
+        think = _make_stream_chunk(model="test-model")
+        think.choices[0].delta.reasoning_content = "thinking first"
+        end = _make_stream_chunk(finish_reason="stop", model="test-model")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_stream_iterator(
+            [think, end]
+        )
+        mock_create.return_value = mock_client
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._last_api_first_chunk_at = None
+
+        agent._interruptible_streaming_api_call({})
+
+        decode_seconds = agent._last_api_decode_seconds
+        assert isinstance(decode_seconds, float)
+        assert _MIN_MEASURED_S <= decode_seconds < 1.0
+
+    def test_attempt_start_clears_a_dropped_attempt_decode_stamp(self, agent):
+        """A decode stamp inherited from a dropped attempt would measure the retry
+        backoff as decode time — every attempt opens its window from its own stamp,
+        so starting an attempt always clears the previous attempt's stamp."""
+        from agent.chat_completion_helpers import _StreamingCall
+
+        call = _StreamingCall(agent, {}, None)
+        call._decode_first_delta_at = 1756000000.512  # stamp left by a dropped attempt
+        call._start_stream_attempt()
+
+        assert call._decode_first_delta_at is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stream_end_without_finish_reason_leaves_the_window_unmeasured(
+        self, _mock_close, mock_create, agent
+    ):
+        """A stream that ends cleanly with no finish reason delivered no clean
+        terminal — the window stays unmeasured, never a speed for a response
+        the provider never confirmed as finished."""
+        chunks = [
+            _make_stream_chunk(content="partial"),
+            _make_stream_chunk(content=" text"),  # no chunk ever carries a finish reason
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_stream_iterator(chunks)
+        mock_create.return_value = mock_client
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._last_api_first_chunk_at = None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "partial text"
+        assert agent._last_api_decode_seconds is None
+
+
+# ── anthropic_messages wire (native Messages stream) ─────────────────────
+
+
+def _anthropic_stream_cm(final_message, events):
+    stream = MagicMock()
+    stream.__iter__ = MagicMock(return_value=_make_anthropic_event_iterator(events))
+    stream.get_final_message = MagicMock(return_value=final_message)
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=stream)
+    cm.__exit__ = MagicMock(return_value=False)
+    return cm
+
+
+class TestAnthropicStreamDecodeWindow:
+    """The decode window on the native Anthropic Messages stream is closed only
+    by a confirmed message_stop (the terminal frame of that wire)."""
+
+    @staticmethod
+    def _wire_agent(agent):
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._anthropic_client = MagicMock()
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+        return agent
+
+    def test_message_stop_terminaton_closes_the_decode_window(self, agent):
+        """A normal termination (message_stop after the last delta, final message
+        processed) measures this call's own decode window."""
+        agent = self._wire_agent(agent)
+        completed = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Hello world")],
+            stop_reason="end_turn",
+        )
+        agent._anthropic_client.messages.stream.return_value = _anthropic_stream_cm(
+            completed,
+            [
+                _anthropic_event("message_start"),
+                _anthropic_text_delta("Hello"),
+                _anthropic_text_delta(" world"),
+                _anthropic_event("message_stop"),
+            ],
+        )
+
+        response = agent._interruptible_streaming_api_call({"model": "claude-test"})
+
+        assert response is completed
+        decode_seconds = agent._last_api_decode_seconds
+        assert isinstance(decode_seconds, float)
+        assert _MIN_MEASURED_S <= decode_seconds < 1.0
+
+    def test_eof_before_message_stop_leaves_the_window_unmeasured(self, agent):
+        """A stream that ends before message_stop delivered deltas but never a
+        confirmed terminal: the opened window stays unmeasured — the delivered
+        partial is the stub fallback, never a measured speed."""
+        agent = self._wire_agent(agent)
+        delivered = []
+        agent.stream_delta_callback = delivered.append
+        partial = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="HALF-ANSWER")],
+            stop_reason="end_turn",
+        )
+        agent._anthropic_client.messages.stream.return_value = _anthropic_stream_cm(
+            partial,
+            [_anthropic_event("message_start"), _anthropic_text_delta("HALF-ANSWER")],
+        )
+
+        response = agent._interruptible_streaming_api_call({"model": "claude-test"})
+
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        # The first text delta opened the window (it was delivered) and the
+        # stream still never closed it: no speed for an unconfirmed response.
+        assert delivered == ["HALF-ANSWER"]
+        assert agent._last_api_decode_seconds is None
 
 
 # ── Conversation loop / hook payload level ───────────────────────────────
@@ -195,7 +403,7 @@ class TestPostApiRequestFirstChunkAtPayload:
             ),
         ]
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_client.chat.completions.create.return_value = _make_stream_iterator(chunks)
         mock_create.return_value = mock_client
         # A registered stream consumer forces the streaming path even though
         # agent.client is a Mock.
@@ -208,6 +416,9 @@ class TestPostApiRequestFirstChunkAtPayload:
         assert "first_chunk_at" in post[0]
         stamped = post[0]["first_chunk_at"]
         assert isinstance(stamped, float)
+        # The payload window covers this call's own gap: measured seconds, never 0.0.
+        assert isinstance(post[0]["decode_seconds"], float)
+        assert _MIN_MEASURED_S <= post[0]["decode_seconds"] < 1.0
         # TTFB must be derivable and sane: started_at <= first_chunk_at <= ended_at.
         assert post[0]["started_at"] <= stamped <= post[0]["ended_at"]
 
@@ -256,12 +467,14 @@ class TestPostApiRequestFirstChunkAtPayload:
         assert len(post) == 1
         assert "first_chunk_at" in post[0]
         assert post[0]["first_chunk_at"] is None
+        assert post[0]["decode_seconds"] is None
 
     def test_prior_attempt_timestamp_cannot_leak_into_next_call(self, agent):
         """A stale timestamp left on the agent by an earlier API call must be
         reset before the next attempt — a non-streamed follow-up call reports
         None, never the previous call's value."""
         agent._last_api_first_chunk_at = 1756000000.512  # stale prior attempt
+        agent._last_api_decode_seconds = 9.9  # stale prior decode window
         agent.client.chat.completions.create.return_value = _mock_response(
             content="Fresh answer", finish_reason="stop"
         )
@@ -271,4 +484,12 @@ class TestPostApiRequestFirstChunkAtPayload:
         assert result["final_response"] == "Fresh answer"
         assert len(post) == 1
         assert post[0]["first_chunk_at"] is None
+        assert post[0]["decode_seconds"] is None
         assert agent._last_api_first_chunk_at is None
+        assert agent._last_api_decode_seconds is None
+
+    @pytest.mark.parametrize("invalid", [0.0, -1.0, float("nan"), float("inf")])
+    def test_invalid_decode_seconds_emit_none(self, agent, invalid):
+        from agent.turn_response_intake import _sanitize_decode_seconds
+
+        assert _sanitize_decode_seconds(invalid) is None

@@ -193,6 +193,7 @@ def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, cloc
         assert {"tool_search", "tool_describe", "tool_call"} <= bridge
 
         first = agent.run_conversation("turn one")
+        tools_after_turn_one = json.dumps(agent.tools, sort_keys=True)
         turn_one = list(_tool_results(server).values())
         assert any("ANCHOR_OK" in c for c in turn_one), turn_one
         assert any(MAIL in c and "not_found" in c for c in turn_one), turn_one
@@ -206,3 +207,63 @@ def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, cloc
     assert MAIL in search, search
     assert "not_found" not in describe and "List messages in the probe mailbox" in describe, describe
     assert "MAIL_OK" in call, call
+    # The recovery reached the live catalog only; the conversation's tools[] prefix did not move.
+    assert json.dumps(agent.tools, sort_keys=True) == tools_after_turn_one
+
+
+@pytest.fixture
+def direct_tools():
+    """Tool Search off, so the MCP tools sit in tools[] itself. Written once: a config write
+    moves the memo key on its own and would hide a stale entry."""
+    from hermes_cli.config import atomic_config_write, get_config_path
+
+    atomic_config_write(get_config_path(), {"tools": {"tool_search": {"enabled": "off"}}})
+
+
+def _direct_agent():
+    from run_agent import AIAgent
+
+    return AIAgent(model="test-model", provider="openai", api_key="unused-test-key",
+                   base_url="http://127.0.0.1:9/v1", enabled_toolsets=BOTH, quiet_mode=True,
+                   skip_context_files=True, skip_memory=True, save_trajectories=False)
+
+
+def test_direct_tool_list_stays_frozen_mid_session_and_a_new_session_sees_the_recovery(
+        mail_state, clock, direct_tools):
+    """Without Tool Search the tools sit in tools[], which is frozen for the session (#101367):
+    a check_fn flip alone never changes it between turns. ``/new`` and ``/reload-mcp`` are the
+    consented refresh points, and both must see the recovered server."""
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+
+    agent = _direct_agent()
+    assert ANCHOR in _names(agent.tools) and MAIL not in _names(agent.tools)
+    sent = json.dumps(agent.tools, sort_keys=True)
+    grace = registry_mod._CHECK_FN_FAILURE_GRACE_SECONDS
+
+    for up in (True, False, True):  # recover, flap, recover: no registry change, no consent
+        mail_state["up"] = up
+        clock.now += grace + 1
+        assert refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True) == set()
+        assert json.dumps(agent.tools, sort_keys=True) == sent
+
+    assert MAIL in _names(_direct_agent().tools)  # /new: a fresh session takes the live availability
+
+    reprobe_tool_availability()  # /reload-mcp
+    assert refresh_agent_mcp_tools(agent, quiet_mode=True) == {MAIL}
+
+
+def test_direct_tool_list_still_appends_a_late_registration_at_the_tail(mail_state, clock, direct_tools):
+    """The freeze holds back check_fn flips only: a server that registers mid-session (the
+    registry generation moves) still lands at the tail between turns, as on main."""
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+
+    late = "mcp__probe_anchor__aaa_late"
+    agent = _direct_agent()
+    sent = list(agent.tools)
+    registry.register(name=late, toolset="mcp-probe-anchor", schema=_schema(late, "Late tool"),
+                      handler=lambda args, **kw: "LATE_OK", check_fn=lambda: True)
+    try:
+        assert refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True) == {late}
+        assert agent.tools[:-1] == sent and agent.tools[-1]["function"]["name"] == late
+    finally:
+        registry.deregister(late)

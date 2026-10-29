@@ -67,6 +67,20 @@ export function registerNativeNotifications({
         window.webContents.send('hermes:focus-session', focusSessionId)
       }
 
+      // #89111: clicking an approval toast's body resolves it, matching the
+      // in-app Run/Reject bar. Requiring a button press stranded the prompt,
+      // because the click only focused the window and the approval timed out.
+      const approvalActionId = bodyClickApprovalAction(payload, actions, window, sourceWindow)
+
+      if (approvalActionId) {
+        window.webContents.send('hermes:notification-action', {
+          sessionId: payload?.sessionId,
+          actionId: approvalActionId
+        })
+
+        return
+      }
+
       if (payload?.activate || payload?.notifyId) {
         window.webContents.send('hermes:notification-activate', {
           activate: payload?.activate,
@@ -122,4 +136,32 @@ export function registerNativeNotifications({
   })
 
   return { dispose: () => linux?.dispose() }
+}
+
+/** The approval action a toast body click should resolve to, or null when the
+ *  click is not a runtime approval. Runtime approvals belong to the source
+ *  renderer, exactly like a button press: identified by `sessionId` with no
+ *  plugin `notifyId`/`activate`, and carrying an `approve:*` action whose id
+ *  threads the request id that `approval.respond` keys on. */
+function bodyClickApprovalAction(
+  payload: HermesNotification | null | undefined,
+  actions: NonNullable<HermesNotification['actions']>,
+  window: BrowserWindow,
+  sourceWindow: BrowserWindow | null
+): null | string {
+  if (payload?.kind !== 'approval' || !payload?.sessionId) {
+    return null
+  }
+
+  if (payload.notifyId || payload.activate) {
+    return null
+  }
+
+  if (window !== sourceWindow) {
+    return null
+  }
+
+  const approve = actions.find(action => action.id === 'approve' || action.id.startsWith('approve:'))
+
+  return approve?.id ?? null
 }

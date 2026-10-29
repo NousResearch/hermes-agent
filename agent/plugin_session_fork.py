@@ -437,6 +437,7 @@ def _run_job(job: _ForkJob) -> None:
         clear_thread_tool_whitelist()
         if fork is not None:
             end_loop_aux_attempt(fork, error=InterruptedError(f"plugin fork {outcome}"))
+            fork._loop_aux_task = None
             usage = release_cache_parity_fork(parent, fork, task=f"{PLUGIN_FORK_TASK}:{job.plugin_id}",
                                               session_id=capture.session_id)
             _track_child(parent, fork, register=False)

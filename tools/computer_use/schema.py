@@ -32,10 +32,16 @@ _PROPERTIES: dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "launch_app",
+            "clipboard_read",
+            "clipboard_write",
+            "run_steps",
+            "verify_state",
         ],
         "description": (
-            "Which action to perform. `capture` is free (no side effects). All other actions "
-            "require approval unless auto-approved. Use `set_value` for select/popup elements and "
+            "Which action to perform. capture, wait, list_apps, list_windows, clipboard_read and "
+            "verify_state are observations. State-changing actions require approval unless auto-approved. "
+            "Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
             "focus steal)."
         ),
@@ -62,14 +68,14 @@ _PROPERTIES: dict[str, Any] = {
     "pid": {
         "type": "integer",
         "description": (
-            "Optional exact process target for action='capture'. Pair with window_id when "
+            "Optional exact process target for capture, verify_state, or run_steps defaults. Pair with window_id when "
             "discovery cannot resolve an X11 app."
         ),
     },
     "window_id": {
         "type": "integer",
         "description": (
-            "Optional exact native window target for action='capture'. Pair with pid when an "
+            "Optional exact native window target for capture, verify_state, or run_steps defaults. Pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
         ),
     },
@@ -140,7 +146,38 @@ _PROPERTIES: dict[str, Any] = {
             "AXValue-settable elements, pass the numeric or string value."
         ),
     },
-    "text": {"type": "string", "description": "Text to type (respects the current layout)."},
+    "bundle_id": {"type": "string", "description": "launch_app: application bundle ID; provide bundle_id or name."},
+    "name": {"type": "string", "description": "launch_app: application name."},
+    "urls": {"type": "array", "items": {"type": "string"}, "description": "launch_app: URLs to open."},
+    "additional_arguments": {"type": "array", "items": {"type": "string"}, "description": "launch_app: process arguments."},
+    "creates_new_application_instance": {"type": "boolean", "description": "launch_app: force a fresh instance. Default false."},
+    "include_text": {"type": "boolean", "description": "clipboard_read: include plain text, not just available types. Default false."},
+    "image_path": {"type": "string", "description": "clipboard_write: absolute image path. Supply exactly one of text, image_path, file_path."},
+    "file_path": {"type": "string", "description": "clipboard_write: absolute file path to copy as a file URL."},
+    "steps": {
+        "type": "array", "items": {"type": "object"},
+        "description": (
+            "run_steps: driver steps as {tool, args} or {<tool>: args}, e.g. "
+            "{tool:'hotkey', args:{keys:['ctrl','s']}}. Uses driver tools such as click, type_text, "
+            "press_key, hotkey, set_value. Validated before execution; stops at the first unconfirmed step."
+        )
+    },
+    "session": {"type": "string", "description": "run_steps: optional driver session label; defaults to this Hermes run."},
+    "delay_ms": {"type": "integer", "description": "run_steps: delay between steps in milliseconds."},
+    "window": {"type": "string", "description": "run_steps: default window title substring."},
+    "expect": {
+        "type": "array", "items": {"type": "object"},
+        "description": (
+            "verify_state: driver predicates for the target pid/window_id, combined with AND. "
+            "Examples: {window:{exists:true}}, {element:{selector:{role:'button', label_contains:'Save'}, "
+            "enabled:true}}. Window supports bounds {x,y,width,height,tolerance_px?}; element supports "
+            "exists:true, value_equals, enabled, selected. Returns satisfied, unsatisfied, or unknown."
+        ),
+    },
+    "timeout_ms": {"type": "integer", "description": "verify_state: polling timeout in milliseconds."},
+    "stable_samples": {"type": "integer", "description": "verify_state: consecutive matching samples required."},
+    "include_screenshot": {"type": "boolean", "description": "verify_state: include a screenshot. Default false."},
+    "text": {"type": "string", "description": "Text to type (respects the current layout), or clipboard_write text."},
     "keys": {
         "type": "string",
         "description": (
@@ -179,8 +216,8 @@ _PROPERTIES: dict[str, Any] = {
     "capture_after": {
         "type": "boolean",
         "description": (
-            "If true, take a follow-up capture after the action and include it in the response. "
-            "Saves a round-trip when you need to verify an action's effect."
+            "Take a follow-up capture and include it in the response. Defaults true for state-changing "
+            "actions and false for observations. Explicit false skips the capture."
         ),
     },
 }
@@ -196,7 +233,7 @@ COMPUTER_USE_SCHEMA: dict[str, Any] = {
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
         "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
-        "index; re-capture after state-changing actions (or pass capture_after=true). Image "
+        "index; state-changing actions include a follow-up capture by default (capture_after=false skips it). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
         "syntax when the user asks to see it — not for captures used only for control."
     ),

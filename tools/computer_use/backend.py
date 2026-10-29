@@ -141,6 +141,21 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 
+    def launch_app(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "unsupported_action", "action": "launch_app"}
+
+    def clipboard_read(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "unsupported_action", "action": "clipboard_read"}
+
+    def clipboard_write(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "unsupported_action", "action": "clipboard_write"}
+
+    def run_steps(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "unsupported_action", "action": "run_steps"}
+
+    def verify_state(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "unsupported_action", "action": "verify_state"}
+
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")

@@ -245,6 +245,17 @@ def _empty_discovery_reason() -> str:
                 "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `hermes computer-use doctor`")
     return "window discovery returned no windows; run `hermes computer-use doctor` (display reachability, AX capability)"
 
+def _driver_payload(out: dict[str, Any]) -> dict[str, Any]:
+    """Keep driver reports intact, including failed batches and unmet predicates."""
+    payload = out.get("structuredContent")
+    if payload is None:
+        payload = out.get("data")
+    result = dict(payload) if isinstance(payload, dict) else {"data": payload}
+    if out.get("isError"):
+        result["ok"] = False
+    return result
+
+
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
@@ -377,7 +388,26 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             ("additional_arguments", additional_arguments and list(additional_arguments)),
             ("creates_new_application_instance", creates_new_application_instance or None)) if v}}
         out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
+        return _driver_payload(out)
+
+    def clipboard_read(self, *, include_text: bool = False) -> dict[str, Any]:
+        return _driver_payload(self.call_tool("clipboard_read", {"include_text": include_text}))
+
+    def clipboard_write(self, *, text: Optional[str] = None, image_path: Optional[str] = None,
+                        file_path: Optional[str] = None) -> dict[str, Any]:
+        args = {k: v for k, v in (("text", text), ("image_path", image_path), ("file_path", file_path)) if v is not None}
+        if len(args) != 1:
+            raise ValueError("clipboard_write requires exactly one of text, image_path, file_path")
+        return _driver_payload(self.call_tool("clipboard_write", args))
+
+    def run_steps(self, *, steps: list[dict[str, Any]], **defaults: Any) -> dict[str, Any]:
+        """Forward the batch unchanged; the driver owns validation and stop-on-failure execution."""
+        return _driver_payload(self.call_tool("run_steps", {"steps": steps, **defaults}))
+
+    def verify_state(self, *, pid: int, window_id: int, expect: list[dict[str, Any]],
+                     **options: Any) -> dict[str, Any]:
+        return _driver_payload(self.call_tool("verify_state", {"pid": pid, "window_id": window_id,
+                                                               "expect": expect, **options}))
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""

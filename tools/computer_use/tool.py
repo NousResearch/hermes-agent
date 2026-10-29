@@ -65,10 +65,36 @@ def _reject_unsafe(action: str, args: dict[str, Any]) -> Optional[str]:
     if action == "key" and (blocked := next((b for b in _BLOCKED_KEY_COMBOS
                                              if b.issubset(_canon_key_combo(args.get("keys", "")))), None)) is not None:
         return json.dumps({"error": f"blocked key combo: {sorted(blocked)}", "hint": "Destructive system shortcuts are hard-blocked."})
+    if action == "run_steps" and isinstance(args.get("steps"), list):
+        if (err := _reject_unsafe_steps(args["steps"])) is not None:
+            return err
     if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
         return json.dumps({"error": "bring_to_front requires delivery_mode='foreground'",
                            "code": "bring_to_front_requires_foreground"})
     return None
+
+def _reject_unsafe_steps(steps: list[Any]) -> Optional[str]:
+    """Preflight wrapper hard blocks only; leave batch validation to the driver."""
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        tool, params = step.get("tool"), step.get("args", {})
+        if tool is None:
+            tool = next((k for k in step if k not in {"wait_for", "expect", "timeout_ms"}), "")
+            params = step.get(tool, {})
+        if not isinstance(params, dict):
+            continue
+        if tool in {"hotkey", "press_key", "press", "key", "keypress"}:
+            keys = params.get("keys", params.get("key", ""))
+            parts = keys if isinstance(keys, list) else [keys]
+            combo = "+".join(p for p in [*parts, *(params.get("modifiers") or [])] if isinstance(p, str))
+            err = _reject_unsafe("key", {"keys": combo})
+        else:
+            err = _reject_unsafe("type" if tool in {"type", "type_text"} else "", params)
+        if err is not None:
+            return err
+    return None
+
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
     """Current sticky-target app when it provably differs from *requested_app*: both known and neither a substring
@@ -447,6 +473,10 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
 
+def _do_driver_action(backend, action, args, params, **_):
+    return getattr(backend, action)(**{k: args[k] for k in params if k in args})
+
+
 def _summarize_click(action: str, args: dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
@@ -478,6 +508,14 @@ _ACTIONS: dict[str, _ActionSpec] = {
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+    "launch_app": _ActionSpec(partial(_do_driver_action, params=(
+        "bundle_id", "name", "urls", "additional_arguments", "creates_new_application_instance")), destructive=True),
+    "clipboard_read": _ActionSpec(partial(_do_driver_action, params=("include_text",))),
+    "clipboard_write": _ActionSpec(partial(_do_driver_action, params=("text", "image_path", "file_path")), destructive=True),
+    "run_steps": _ActionSpec(partial(_do_driver_action, params=(
+        "steps", "session", "delay_ms", "pid", "window_id", "app", "window", "delivery_mode")), destructive=True),
+    "verify_state": _ActionSpec(partial(_do_driver_action, params=(
+        "pid", "window_id", "expect", "timeout_ms", "stable_samples", "include_screenshot"))),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
@@ -514,8 +552,8 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
     # only on read handlers (delivery kwargs would leak into backend input calls, and vice versa).
     res = spec.handler(backend, action, args, **(dict(delivery_mode=args.get("delivery_mode"), bring_to_front=bool(args.get("bring_to_front")))
                                                  if spec.input else dict(fence=fence, session_id=session_id)))
-    return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")), fence,
-                                                                         session_id=session_id)
+    return res if isinstance(res, str) or (isinstance(res, dict) and res.get("_multimodal")) else _maybe_follow_capture(
+        backend, res, bool(args.get("capture_after", spec.destructive)), fence, session_id=session_id)
 
 # ── Response shaping ────────────────────────────────────────────────────────
 def _classify_action_result(res: ActionResult) -> dict[str, Any]:
@@ -739,11 +777,12 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                      "elements_file — read_file/search_files it, or pass app= to narrow scope)")
     return _text_capture_payload(v, "\n".join(lines), extra)
 
-def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult | dict[str, Any], do_capture: bool,
                           fence: Callable[[], None] = lambda: None, session_id: Optional[str] = None) -> Any:
     # No follow-up capture after a failed action: a normal-looking screenshot would suggest success.
-    if not do_capture or not res.ok:
-        return _text_response(res)
+    payload = res if isinstance(res, dict) else _action_payload(res)
+    if not do_capture or not payload.get("ok", True):
+        return json.dumps(payload)
     try:
         # Recapture the exact window when known: on Linux several unrelated windows may share an app name, so
         # app-only recapture can switch targets.
@@ -752,9 +791,9 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
                                                             else {"app": getattr(backend, "_last_app", None)}))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
-        return _text_response(res)
+        return json.dumps(payload)
     fence()  # a frame taken after a takeover never reaches the dedup cache nor the model
-    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
+    resp = _capture_response(cap, session_id=session_id)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]

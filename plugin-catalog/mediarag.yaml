@@ -1,6 +1,6 @@
 name: mediarag
 repo: https://github.com/dyiapanis/mediarag
-sha: 60aaf983014b6f4c8b98ef51a18ad190cd9a4c77
+sha: ae9eb12d0fcd0edd16b61b4270c79d883afbba53
 description: |
   Multimodal local search over documents and media: pdf, office files, notes, images,
   audio and subtitles in one corpus, queried by meaning from any MCP-capable agent.
@@ -10,7 +10,7 @@ description: |
   snippets, timestamps and image thumbnails.
 
   Everything runs locally: the corpus is a SQLite file you own, the embedding weights
-  download once (~480MB) and every search after that runs offline. Nothing is uploaded
+  download once (~285MB) and every search after that runs offline. Nothing is uploaded
   and there is no telemetry — the only network calls are ones you ask for: an http(s)
   source you add, or the optional Raindrop adapter.
 
@@ -21,7 +21,7 @@ maintainer: dyiapanis
 tier: community
 category: tools
 docs_url: https://github.com/dyiapanis/mediarag#readme
-version: "0.1.5"
+version: "0.1.6"
 readme: true
 platforms: [linux, windows]
 capabilities:

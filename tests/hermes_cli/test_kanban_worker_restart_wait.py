@@ -107,3 +107,97 @@ async def test_a_worker_cut_by_a_restart_wait_waits_outside_it(monkeypatch, tmp_
         await kanban_worker_client.run({"task_id": "t1"}, str(tmp_path / "kanban.db"))
     assert owner.receipts_in_wait == 0
     assert owner.dials > 2
+
+
+class _Attached(Exception):
+    """The owner admitted the socket into its handler."""
+
+
+def _owner_rig(tmp_path, monkeypatch, *, old_owner=False):
+    """A ready owner whose restart wait opens while the client mints its ticket: after discovery
+    said ``ready`` and before the WebSocket dials. Tickets come from the real control-socket verb
+    and the dial is admitted (or refused) by the real ``GatewayRuntimeAPI``."""
+    import json
+
+    from gateway.control_socket import GatewayControlServer
+    from gateway.run_api import GatewayRuntimeAPI
+    from gateway.runtime_bootstrap import TicketStore
+    from hermes_cli import web_server as web
+    from hermes_cli import web_server_chat
+
+    profile = str(tmp_path)
+    tickets = TicketStore("owner", [profile])
+    control = GatewayControlServer(tmp_path)
+    control.ticket_store = tickets
+    runner = SimpleNamespace(_draining=False, _running=True, session_runtime_descriptor={"state": "ready"},
+                             session_authority=SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / "state.db"),
+                                                               profile_id=profile, runner=None),
+                             session_ticket_store=tickets)
+    endpoint = gateway_runtime.GatewayEndpoint(profile, "owner", 1, 1, "http://127.0.0.1:1", "none", frozenset())
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime",
+                        lambda *a, **k: gateway_runtime.GatewayDiscovery("ready", endpoint))
+
+    def control_query(home, request, timeout=5):
+        params = json.loads(request)["params"]
+        if old_owner and "restart_wait" in params:  # an owner from before the policy existed
+            return json.dumps({"ok": False, "error": gateway_client._UNKNOWN_TICKET_PARAMS, "protocol": 1,
+                               "id": 1}).encode() + b"\n"
+        answer = control.handle_request_line(request, "uid:test")
+        runner._draining = True  # the restart begins: its after-turn wait is open by the dial
+        runner.session_runtime_descriptor.update(state="draining", drain_reason=RESTART_WAIT_REASON)
+        return answer
+    monkeypatch.setattr(gateway_client, "private_control_query", control_query)
+
+    async def handle(ws, **kwargs):
+        raise _Attached
+
+    async def fallback(*args):
+        pytest.fail("a ticketed native socket must not enter the legacy fallback")
+    monkeypatch.setattr("tui_gateway.ws.handle_ws", handle)
+    monkeypatch.setattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    monkeypatch.setattr(web_server_chat, "_ws_request_is_allowed", lambda ws: True)
+    api = GatewayRuntimeAPI(fallback, runner, web.app)
+
+    @asynccontextmanager
+    async def dial(url, *, subprotocols, **_):
+        closed = []
+
+        async def receive():
+            return {"type": "websocket.connect"}
+
+        async def send(message):
+            closed.append(message)
+        scope = {"type": "websocket", "path": "/api/ws", "scheme": "ws", "query_string": b"",
+                 "client": ("127.0.0.1", 1234), "server": ("127.0.0.1", 1),
+                 "headers": [(b"sec-websocket-protocol", ", ".join(subprotocols).encode())],
+                 "subprotocols": subprotocols}
+        await api(scope, receive, send)
+        assert [(m["type"], m.get("code")) for m in closed] == [("websocket.close", 1013)], closed
+        raise OSError("owner refused the upgrade (1013)")
+        yield
+    monkeypatch.setattr("websockets.asyncio.client.connect", dial)
+
+
+@pytest.mark.asyncio
+async def test_a_restart_that_begins_after_discovery_still_refuses_the_worker_at_admission(tmp_path, monkeypatch):
+    _owner_rig(tmp_path, monkeypatch)
+    with pytest.raises(gateway_client.GatewayClientError, match="connection failed"), \
+            gateway_client.outside_restart_wait():
+        async with gateway_client.connect_gateway():
+            pytest.fail("attached inside the restart wait")
+
+    # An interactive client dialing the same race still attaches to answer a parked prompt (#139041).
+    _owner_rig(tmp_path, monkeypatch)
+    with pytest.raises(_Attached):
+        async with gateway_client.connect_gateway():
+            pass
+
+
+@pytest.mark.asyncio
+async def test_an_owner_older_than_the_policy_still_mints_the_worker_a_ticket(tmp_path, monkeypatch):
+    # The code on disk was updated under a running owner: the worker still attaches to it (the
+    # pre-dial check is all that owner can honour) instead of being stranded until it restarts.
+    _owner_rig(tmp_path, monkeypatch, old_owner=True)
+    with pytest.raises(_Attached), gateway_client.outside_restart_wait():
+        async with gateway_client.connect_gateway():
+            pass

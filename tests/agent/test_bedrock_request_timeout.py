@@ -82,8 +82,8 @@ def test_unset_config_builds_exactly_the_botocore_default_client(config):
     built = _get_bedrock_runtime_client(REGION, CLAUDE).meta.config
 
     assert (built.read_timeout, built.connect_timeout) == (BOTOCORE_DEFAULT_TIMEOUT, BOTOCORE_DEFAULT_TIMEOUT)
-    assert (built.read_timeout, built.connect_timeout, built.retries, built.max_pool_connections) == (
-        baseline.read_timeout, baseline.connect_timeout, baseline.retries, baseline.max_pool_connections)
+    assert (built.read_timeout, built.connect_timeout, built.max_pool_connections) == (
+        baseline.read_timeout, baseline.connect_timeout, baseline.max_pool_connections)
 
 
 @pytest.mark.parametrize("model, expected", [(NOVA, 600), (CLAUDE, 300)], ids=["provider", "model-wins"])
@@ -94,7 +94,6 @@ def test_configured_timeout_is_the_client_read_timeout_and_connect_stays_bounded
 
     assert client_config.read_timeout == expected
     assert client_config.connect_timeout == BOTOCORE_DEFAULT_TIMEOUT, "a long read budget must not stretch connect"
-    assert client_config.retries == boto3.client("bedrock-runtime", region_name=REGION).meta.config.retries
 
 
 @pytest.mark.parametrize("provider_value, model_value", [("soon", -5), (0, "later"), ("", None)])

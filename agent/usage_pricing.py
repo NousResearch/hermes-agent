@@ -56,9 +56,12 @@ def format_cost_label(amount: Decimal) -> str:
     return f"~${amount:.2f}"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
+# ``provider_response``: the provider's own billed figure for the call (OpenRouter's
+# ``usage.cost``), read at the turn seam — not a derived estimate, and not the
+# generations API (which returns zeroed records for these routes).
 CostSource = Literal[
     "provider_cost_api", "provider_generation_api", "provider_models_api", "official_docs_snapshot",
-    "user_override", "custom_contract", "none",
+    "user_override", "custom_contract", "provider_response", "none",
 ]
 
 
@@ -526,22 +529,46 @@ def _pricing_entry_from_metadata(
         return None
     pricing = metadata[model_id].get("pricing") or {}
 
+    refused: list[str] = []
+
     def per_million(key: str, *aliases: str) -> Optional[Decimal]:
         raw = pricing.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
-        return None if value is None else value * _ONE_MILLION
+        if value is None:
+            return None
+        # Check before scaling: multiplying a signaling NaN raises.
+        if not value.is_finite() or value < 0:
+            refused.append(key)
+            return None
+        return value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")
     request = _to_decimal(pricing.get("request"))
+    if request is not None and (not request.is_finite() or request < 0):
+        refused.append("request")
+        request = None
+    cache_read = per_million("cache_read", "cached_prompt", "input_cache_read")
+    cache_write = per_million("cache_write", "cache_creation", "input_cache_write")
+    # A NEGATIVE rate is not a price: OpenRouter's router sentinels quote "-1" (per token,
+    # i.e. -1,000,000 per million) for routes it cannot price, and multiplying that as money
+    # produced negative dollars and a bogus 'estimated' status. Refuse the whole entry so the
+    # route reads 'unknown' instead. A non-finite rate (NaN, ±Infinity) is refused for the same
+    # reason — it is not a price, and left in place it raised out of ``format_cost_label`` into
+    # the turn. Each value is checked at its own scale (per_million ones before x1e6, the
+    # ``request`` fee as raw dollars); a missing key is not a bad rate, so a genuine $0 fee or an
+    # absent cache rate still prices normally. A ``-0.0`` rate is the zero it equals (it renders
+    # as $0.00), so it is accepted like any other zero rate.
+    if refused:
+        return None
     if prompt is None and completion is None and request is None:
         return None
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
-        cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
+        cache_read_cost_per_million=cache_read,
+        cache_write_cost_per_million=cache_write,
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
     )

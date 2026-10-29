@@ -491,8 +491,8 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         raise SystemExit(1)
     print(f"Resumed canary publication for {tag}.")
     print(f"Workflow: https://github.com/{repository}/actions/workflows/stable-release.yml")
-    print("Wait for that run to finish. It runs the full release pipeline on this canary and publishes it "
-          "once its candidate is built and smoked; the other suites report in the same run.")
+    print("Wait for that run to finish. Publication waits for the selected suites to finish and "
+          "requires a built, smoke-tested candidate. --require-green also requires every suite to pass.")
     print(f"The draft is at {draft_url}.")
 
 
@@ -671,8 +671,8 @@ def main():
                         help="--canary: do not build or test these lanes")
     parser.add_argument("--require-green", action=argparse.BooleanOptionalAction, default=True,
                         help="Hold publication until every suite passes (default). "
-                             "--no-require-green publishes once the candidate is built and smoked "
-                             "and lets the suites report; stable releases always require green")
+                             "--no-require-green still waits for suites to finish, but permits their failures "
+                             "when the candidate is built and smoked; stable releases always require green")
     parser.add_argument("--build-commit", type=str, metavar="REV",
                         help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
                              "Add --publish to dispatch without a tag or release. The same "

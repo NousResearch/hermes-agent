@@ -353,10 +353,11 @@ the lanes it runs (`release.py --canary` takes `--only`, `--with` and
 `--without`, starting from every lane except the signed-package upgrade arms,
 which a canary can never run) and whether a red suite holds its publication
 (`--require-green`, the default, or `--no-require-green`). `Canary Release`
-runs once a day at 06:41 UTC from the default branch with `--no-require-green`:
-it publishes once its candidate is built and smoked, and the other suites report
-in the same run. A manual dispatch starts one at any time and waits for every
-suite unless its `require_green` input is off. Runs queue with
+runs once a day at 06:41 UTC from the default branch with `--no-require-green`.
+Publication still waits for the selected suites to finish. The candidate must
+build and pass its smoke tests, but unrelated suite failures do not block it.
+A manual dispatch starts one at any time and requires every selected suite to
+pass unless its `require_green` input is off. Runs queue with
 `cancel-in-progress: false`. If `main` has no new commits, the run resumes an
 unpublished canary or does nothing. The retired `v<stable>+canary.<stamp>` and
 `-canary.` identities are no longer produced; old ones age out through

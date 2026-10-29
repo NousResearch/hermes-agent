@@ -818,80 +818,6 @@ def _reserve_pending_api_work(adapter):
             _release_pending_api_work(adapter, reservation)
 
 
-class _IdempotencyCache:
-    """In-memory idempotency cache with TTL and basic LRU semantics."""
-    def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
-        from collections import OrderedDict
-        self._store = OrderedDict()
-        self._inflight: dict[tuple[str, str], asyncio.Task[Any]] = {}
-        self._ttl = ttl_seconds
-        self._max = max_items
-
-    def _purge(self):
-        now = time.time()
-        expired = [k for k, v in self._store.items() if now - v["ts"] > self._ttl]
-        for k in expired:
-            self._store.pop(k, None)
-        while len(self._store) > self._max:
-            self._store.popitem(last=False)
-
-    async def get_or_set(self, key: str, fingerprint: str, compute_coro):
-        self._purge()
-        item = self._store.get(key)
-        if item and item["fp"] == fingerprint:
-            return item["resp"]
-        inflight_key = (key, fingerprint)
-        task = self._inflight.get(inflight_key)
-        if task is None:
-            async def _compute_and_store():
-                resp = await compute_coro()
-                self._store[key] = {"resp": resp, "fp": fingerprint, "ts": time.time()}
-                self._purge()
-                return resp
-            task = asyncio.create_task(_compute_and_store())
-            self._inflight[inflight_key] = task
-
-            def _clear_inflight(done_task: asyncio.Task[Any]) -> None:
-                if self._inflight.get(inflight_key) is done_task:
-                    self._inflight.pop(inflight_key, None)
-            task.add_done_callback(_clear_inflight)
-        return await asyncio.shield(task)
-
-
-_idem_cache = _IdempotencyCache()
-
-
-def _make_request_fingerprint(body: dict[str, Any], keys: list[str]) -> str:
-    subset = {k: body.get(k) for k in keys}
-    return hashlib.sha256(repr(subset).encode("utf-8")).hexdigest()
-
-
-def _names_launch_profile(profile: str) -> bool:
-    """True when a /p/<profile>/ prefix names the profile this process was LAUNCHED as: its
-    un-prefixed and prefixed requests are one profile and must key one session."""
-    try:
-        from hermes_cli.profiles import profile_matches_home
-        from hermes_constants import get_routing_process_hermes_home
-        return profile_matches_home(profile, home=get_routing_process_hermes_home())
-    except Exception:
-        return False
-
-
-def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str,
-                            profile: Optional[str] = None) -> str:
-    """Stable session id from the system prompt + first user message (constant across all
-    turns of an Open WebUI-style conversation), so one Hermes session/sandbox is reused.
-    A routed ``/p/<profile>/`` prefix namespaces the seed: the id keys process-wide state
-    (session store, per-session sandbox), so two profiles opening with identical text must not
-    collide (#123989). Default/standalone ids are unchanged so live conversations survive, and
-    the launch profile addressed through its own ``/p/<launch>/`` prefix keeps the un-prefixed id."""
-    seed = f"{system_prompt or ''}\n{first_user_message}"
-    if profile and profile != "default" and not _names_launch_profile(profile):
-        seed = f"{profile}\0{seed}"
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
-    return f"api-{digest}"
-
-
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
@@ -1085,6 +1011,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._response_store_home = str(get_hermes_home())
         self._response_stores: dict[str, ResponseStore] = {}
         self._response_store_lock = threading.Lock()
+        from gateway.platforms.api_server_idempotency import IdempotencyCache
+        self._idempotency_cache = IdempotencyCache()
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -3575,7 +3503,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
-        declaration or fingerprint-derived identity keeps delegation synchronous.
+        declaration or fresh headerless identity keeps delegation synchronous.
 
         ``profile`` is the ``/p/<profile>/`` prefix serving the request (``""`` = default). It must
         reach ``HERMES_SESSION_PROFILE``: the persistent-Docker container key is derived from it, so an
@@ -3793,7 +3721,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                    session_id or "", exc)
                     return (
                         {"final_response": exc.user_text(), "messages": [],
-                         "api_calls": 0, "tools": [],
+                         "session_id": session_id, "api_calls": 0, "tools": [],
                          **({"_notification_presentation_suppressed": True} if muted else {})},
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 except Exception as exc:

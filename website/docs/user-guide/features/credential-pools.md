@@ -134,6 +134,21 @@ credential_pool_strategies:
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
 
+### Time-window schedules
+
+`fill_first` pools can optionally change their healthy-entry order by local time. The schedule is applied only while selecting; it never rewrites `auth.json` priorities. Entries not named in `prefer` keep their existing priority order, and exhausted entries are skipped normally.
+
+```yaml
+credential_pool_schedule:
+  anthropic:
+    tz: Asia/Seoul
+    windows:
+      - {start: "09:00", end: "22:00", prefer: [cg.chae-claude, claude_code]}
+      - {start: "22:00", end: "09:00", prefer: [claude_code, cg.chae-claude]}
+```
+
+Schedules do not affect `round_robin`, `least_used`, or `random`; those strategies retain their existing semantics. `hermes auth list` marks the active window as `(scheduled #N)` when applicable.
+
 ## Error Recovery
 
 The pool handles different errors differently:

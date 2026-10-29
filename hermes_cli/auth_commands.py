@@ -22,6 +22,7 @@ from agent.credential_pool import (
     PooledCredential,
     _exhausted_until,
     _normalize_custom_pool_name,
+    _scheduled_entries,
     get_pool_strategy,
     label_from_token,
     list_custom_pool_providers,
@@ -446,11 +447,13 @@ def auth_list_command(args) -> None:
         })
     for provider in providers:
         pool = load_pool(provider)
-        entries = pool.entries()
+        entries = pool.effective_entries()
         if not entries:
             continue
         current = pool.peek()
-        print(f"{provider} ({len(entries)} credentials):")
+        _, schedule_index = _scheduled_entries(provider, entries)
+        suffix = f" (scheduled #{schedule_index})" if schedule_index is not None else ""
+        print(f"{provider} ({len(entries)} credentials){suffix}:")
         for idx, entry in enumerate(entries, start=1):
             marker = "  "
             if current is not None and entry.id == current.id:

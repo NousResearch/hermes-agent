@@ -13,6 +13,7 @@ from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -483,6 +484,55 @@ def get_pool_strategy(provider: str) -> str:
     return STRATEGY_FILL_FIRST
 
 
+def _scheduled_entries(
+    provider: str,
+    entries: List["PooledCredential"],
+    *,
+    now: Optional[datetime] = None,
+) -> tuple[List["PooledCredential"], Optional[int]]:
+    """Return the active schedule's preferred order without mutating pool state."""
+    config = _load_config_safe() or {}
+    schedule = config.get("credential_pool_schedule")
+    schedule = schedule.get(provider) if isinstance(schedule, dict) else None
+    if not isinstance(schedule, dict):
+        return entries, None
+    try:
+        zone = ZoneInfo(str(schedule.get("tz") or ""))
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning("credential pool schedule ignored: invalid timezone for provider %s", provider)
+        return entries, None
+    from agent.night_business_fallback import _is_in_window, _parse_time
+    local_now = (now or datetime.now(timezone.utc)).astimezone(zone)
+    windows = schedule.get("windows")
+    if not isinstance(windows, list):
+        return entries, None
+    for index, window in enumerate(windows, start=1):
+        if not isinstance(window, dict) or not isinstance(window.get("prefer"), list):
+            continue
+        start = _parse_time(window.get("start"), (-1, -1))
+        end = _parse_time(window.get("end"), (-1, -1))
+        if start == (-1, -1) or end == (-1, -1):
+            logger.warning("credential pool schedule ignored: invalid time window for provider %s", provider)
+            continue
+        if not _is_in_window(local_now, start, end):
+            continue
+        by_label = {entry.label: entry for entry in entries}
+        unknown_labels = [label for label in window["prefer"] if label not in by_label]
+        if unknown_labels:
+            logger.warning(
+                "credential pool schedule ignored %d unknown label(s) for provider %s",
+                len(unknown_labels),
+                provider,
+            )
+        preferred = [by_label[label] for label in window["prefer"] if label in by_label]
+        if not preferred:
+            logger.warning("credential pool schedule ignored: no matching entries for provider %s", provider)
+            return entries, None
+        preferred_ids = {entry.id for entry in preferred}
+        return preferred + [entry for entry in entries if entry.id not in preferred_ids], index
+    return entries, None
+
+
 def credential_pool_matches_provider(
     pool_or_provider: Any,
     provider: Optional[str],
@@ -594,6 +644,7 @@ class CredentialPool:
         # Re-armed to None on every successful selection so a recover→re-exhaust
         # transition logs promptly instead of being swallowed by a stale window.
         self._last_no_entries_log_at: Optional[float] = None
+        self._schedule_notice_logged = False
         # #70401: consecutive mark_exhausted_and_rotate() calls whose supplied
         # credential identity matched no pool entry (OAuth wrappers whose
         # runtime key rotates, entries pruned by another process, ...).  These
@@ -620,6 +671,14 @@ class CredentialPool:
     def entries(self) -> List[PooledCredential]:
         with self._lock:
             return list(self._entries)
+
+    def effective_entries(self) -> List[PooledCredential]:
+        """Return the display/selection order without changing persisted priority."""
+        with self._lock:
+            if self._strategy != STRATEGY_FILL_FIRST:
+                return list(self._entries)
+            scheduled, _ = _scheduled_entries(self.provider, list(self._entries))
+            return scheduled
 
     def _current_unlocked(self) -> Optional[PooledCredential]:
         if not self._current_id:
@@ -1756,6 +1815,17 @@ class CredentialPool:
         # so a later re-exhaustion logs immediately rather than being silenced
         # by a window opened during the previous empty stretch.
         self._last_no_entries_log_at = None
+
+        scheduled_available, schedule_index = _scheduled_entries(self.provider, available)
+        if self._strategy == STRATEGY_FILL_FIRST:
+            available = scheduled_available
+        elif schedule_index is not None and not self._schedule_notice_logged:
+            logger.info(
+                "credential pool schedule not applied for provider %s: strategy=%s",
+                self.provider,
+                self._strategy,
+            )
+            self._schedule_notice_logged = True
 
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)

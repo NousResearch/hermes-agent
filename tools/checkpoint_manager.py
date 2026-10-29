@@ -439,7 +439,66 @@ def _git_out(args: list[str], store: Path, working_dir: str, rc: Optional[set[in
 
 def _ref_tip(store: Path, working_dir: str, ref: str) -> Optional[str]:
     """Commit sha at ``ref``, or None when the ref does not exist yet."""
-    return _git_out(["rev-parse", "--verify", ref + "^{commit}"], store, working_dir, {128}) or None
+    from tools.checkpoint_pruning import PruneError
+
+    tip = _git_out(["rev-parse", "--verify", ref + "^{commit}"], store, working_dir, {128})
+    if tip:
+        return tip
+    exists, _, error = _run_git(
+        ["show-ref", "--verify", "--quiet", ref], store, working_dir, allowed_returncodes={1, 128},
+    )
+    if exists or error or (store / ref).exists():
+        raise PruneError(f"Cannot resolve checkpoint history for {ref}: {error}")
+    return None
+
+
+def _repair_invalid_loose_refs(store: Path) -> None:
+    """Preserve damaged loose refs and expose an intact packed predecessor under the store lock."""
+    from tools.checkpoint_pruning import PruneError
+
+    if not _store_has_head(store):
+        return
+    ok, _, error = _run_git(["show-ref"], store, str(store.parent), allowed_returncodes={1, 128})
+    if (ok and "broken ref" not in error.lower()) or not error:
+        return
+    if not any(message in error.lower() for message in ("bad ref", "broken ref")):
+        raise PruneError(f"Cannot inspect checkpoint refs: {error}")
+
+    for path in (store / _REFS_PREFIX).rglob("*"):
+        if not path.is_file() or path.is_symlink() or path.name.endswith(".lock"):
+            continue
+        ref = path.relative_to(store).as_posix()
+        lock_path = path.with_name(path.name + ".lock")
+        # Git writers use this exact lock. Failure must leave their lock intact.
+        handle = lock_path.open("xb")
+        try:
+            with handle:
+                symbolic, _, _ = _run_git(
+                    ["symbolic-ref", "--quiet", ref], store, str(store.parent),
+                    allowed_returncodes={1, 128},
+                )
+                if symbolic:
+                    continue
+                valid, _, _ = _run_git(
+                    ["rev-parse", "--verify", ref + "^{commit}"], store, str(store.parent),
+                    allowed_returncodes={128},
+                )
+                if valid:
+                    continue
+                preserved_root = store.parent / "corrupt-refs"
+                preserved_root.mkdir(mode=0o700, exist_ok=True)
+                preserved = preserved_root / f"{time.time_ns()}-{os.getpid()}" / ref
+                preserved.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, preserved)
+                try:
+                    if _ref_tip(store, str(store.parent), ref) is None:
+                        raise PruneError(f"No intact packed checkpoint history for {ref}")
+                except Exception:
+                    os.replace(preserved, path)
+                    raise
+                logger.warning("Preserved damaged checkpoint ref %s in %s; reusing packed history", ref, preserved)
+        finally:
+            lock_path.unlink(missing_ok=True)
 
 
 def _list_project_refs(store: Path, working_dir: str) -> list[str]:
@@ -941,7 +1000,7 @@ class CheckpointManager:
         try:
             from tools.checkpoint_pruning import store_lock
 
-            with store_lock(_resolve_checkpoint_base()):
+            with store_lock(_resolve_checkpoint_base(), repair_refs=True):
                 return self._take(abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
@@ -1029,7 +1088,7 @@ class CheckpointManager:
         from tools.checkpoint_pruning import PruneError, store_lock
 
         try:
-            with store_lock(_resolve_checkpoint_base()):
+            with store_lock(_resolve_checkpoint_base(), repair_refs=True):
                 return self._diff(working_dir, commit_hash)
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
@@ -1135,7 +1194,7 @@ class CheckpointManager:
         from tools.checkpoint_pruning import PruneError, store_lock
 
         try:
-            with store_lock(_resolve_checkpoint_base()):
+            with store_lock(_resolve_checkpoint_base(), repair_refs=True):
                 return self._restore(working_dir, commit_hash, file_path, safe)
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
@@ -1440,12 +1499,8 @@ class CheckpointManager:
         # clear the index so ``git add -A`` produces a clean tree.
         if index_file.exists():
             # Reset index to current ref tip to avoid accumulating stale paths.
-            ok_ref, ref_commit, _ = _run_git(
-                ["rev-parse", "--verify", ref + "^{commit}"],
-                store, working_dir,
-                allowed_returncodes={128},
-            )
-            if ok_ref and ref_commit:
+            ref_commit = _ref_tip(store, working_dir, ref)
+            if ref_commit:
                 _run_git(
                     ["read-tree", ref_commit],
                     store, working_dir,
@@ -1479,12 +1534,8 @@ class CheckpointManager:
         # Compare against the current ref tip (not HEAD — HEAD points to a
         # branch that doesn't exist on a bare store, so ``diff --cached``
         # against HEAD would always show "new file" for every staged path).
-        ok_ref, ref_commit, _ = _run_git(
-            ["rev-parse", "--verify", ref + "^{commit}"],
-            store, working_dir,
-            allowed_returncodes={128},
-        )
-        has_ref = ok_ref and bool(ref_commit)
+        ref_commit = _ref_tip(store, working_dir, ref)
+        has_ref = bool(ref_commit)
 
         if has_ref:
             ok_diff, _, _ = _run_git(
@@ -1543,9 +1594,7 @@ class CheckpointManager:
             return False
 
         # Update the per-project ref.
-        update_args = ["update-ref", ref, new_sha]
-        if has_ref:
-            update_args = ["update-ref", ref, new_sha, ref_commit]
+        update_args = ["update-ref", ref, new_sha, ref_commit if has_ref else "0" * len(new_sha)]
         ok_update, _, err = _run_git(
             update_args, store, working_dir,
         )

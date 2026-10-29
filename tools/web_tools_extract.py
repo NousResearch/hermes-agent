@@ -155,37 +155,30 @@ def _backend_failed_whole_batch(results: list[dict]) -> bool:
 
 
 async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[str]) -> tuple[list[dict], bool]:
-    """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
+    """Call ``provider.extract`` (async or sync-in-thread), then the opt-in fallback chain for the URLs
+    it failed (tools/web_tools_chain.py), then the one-shot keyless rescue.
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
     failed (backend outage, not per-page problems): an origin HTTP 4xx/5xx is the page's own answer,
     so a batch with one never triggers it. Returns ``(results, rescued)``.
     """
-    import inspect
+    from tools.web_tools_chain import call_extract, extract_via_chain, fallback_chain
     timeout = _extract_timeout_seconds()
+    raised = False
     try:
-        if inspect.iscoroutinefunction(provider.extract):
-            coro = provider.extract(fetch_urls, format=format)
-        else:  # sync extract() runs in a thread so network I/O never blocks the loop
-            coro = asyncio.to_thread(provider.extract, fetch_urls, format=format)
-        if timeout > 0:
-            results = await asyncio.wait_for(coro, timeout=timeout)
-        else:
-            results = await coro
+        results = await call_extract(provider, fetch_urls, format, timeout)
     except TimeoutError:  # hanging backend — bounded, never a stalled tool call
         logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
                        provider.name, timeout, len(fetch_urls))
-        failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
-                  for u in fetch_urls]
-        if not _rescue_eligible(provider):
-            return failed, False
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
+        results = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
+                   for u in fetch_urls]
+        raised = True
     except Exception as exc:
-        if not _rescue_eligible(provider):
+        if not _rescue_eligible(provider) and not fallback_chain("extract", provider.name):
             raise
-        failed = [_result_entry(u, str(exc)) for u in fetch_urls]
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
-    if _backend_failed_whole_batch(results) and _rescue_eligible(provider):
+        results, raised = [_result_entry(u, str(exc)) for u in fetch_urls], True
+    results, chain_served = await extract_via_chain(provider.name, fetch_urls, results, format, timeout)
+    if ((raised and not chain_served) or _backend_failed_whole_batch(results)) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
     return results, False
 
@@ -242,7 +235,11 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
     # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
     # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
+    # A fallback-chain entry is served but not cached under the primary's key (never sticky).
+    from tools.web_tools_chain import is_chain_served
     for fetched in results:
+        if is_chain_served(fetched):
+            continue
         meta = fetched.get("metadata")
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)

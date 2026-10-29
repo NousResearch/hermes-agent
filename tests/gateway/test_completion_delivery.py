@@ -900,6 +900,154 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert row["delivery_state"] == "pending"
 
 
+def test_async_delegation_ledger_io_stays_off_the_event_loop(
+    monkeypatch, isolated_registry,
+):
+    """A same-session batch claims and acks every row from a worker thread.
+
+    Each ledger op opens state.db under the process lock and waits out the busy
+    timeout. On the gateway loop that freezes adapter heartbeats.
+    """
+    from tools import async_delegation
+
+    on_loop = []
+
+    def _watch(name, fn):
+        def wrapped(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                on_loop.append(name)
+            return fn(*args, **kwargs)
+        return wrapped
+
+    for name in (
+        "claim_completion_delivery",
+        "claim_event_delivery",
+        "complete_completion_delivery",
+        "defer_completion_delivery",
+        "release_completion_delivery",
+        "drop_completion_delivery",
+    ):
+        monkeypatch.setattr(async_delegation, name, _watch(name, getattr(async_delegation, name)))
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [_distinct_async_event(f"deleg_offloop_{i}") for i in range(3)]
+    for event in events:
+        _persist_pending_completion(event)
+        isolated.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    assert on_loop == []
+    adapter.handle_message.assert_awaited_once()
+    delivered = adapter.handle_message.await_args.args[0]
+    assert "3 background subagent delegations" in delivered.text
+    for event in events:
+        assert f"Result for {event['delegation_id']}" in delivered.text
+        row = async_delegation.get_durable_delegation(event["delegation_id"])
+        assert row is not None
+        assert row["delivery_state"] == "delivered"
+    assert isolated.empty()
+
+
+def test_sibling_claim_lock_defers_claimed_rows_for_retry(
+    monkeypatch, isolated_registry,
+):
+    """A locked state.db on a later sibling must not leave earlier siblings claimed.
+
+    The next watcher tick delivers the whole batch, every row ends delivered, and
+    the rolled-back claim spends no delivery attempt.
+    """
+    import sqlite3
+
+    from tools import async_delegation
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [_distinct_async_event(f"deleg_lock_{i}") for i in range(3)]
+    for event in events:
+        _persist_pending_completion(event)
+        isolated.put(dict(event))
+
+    real_claim = async_delegation.claim_event_delivery
+    calls = {"n": 0}
+
+    def claim_then_lock_once(evt, consumer):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise sqlite3.OperationalError("database is locked")
+        return real_claim(evt, consumer)
+
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", claim_then_lock_once)
+
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=3, minutes_apart=True)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_awaited_once()
+    delivered = adapter.handle_message.await_args.args[0]
+    assert "3 background subagent delegations" in delivered.text
+    for event in events:
+        assert f"Result for {event['delegation_id']}" in delivered.text
+        row = async_delegation.get_durable_delegation(event["delegation_id"])
+        assert row is not None
+        assert row["delivery_state"] == "delivered"
+        assert row["delivery_attempts"] == 1
+    assert isolated.empty()
+
+
+def test_cancel_during_off_loop_settle_leaves_no_row_claimed(isolated_registry):
+    """Shutdown cancelling a failed batch mid-settle still settles every claim before it unwinds.
+
+    Off the loop, the settle is an await a cancel can land in; an abandoned settle would leave the
+    remaining rows claimed until their lease ends.
+    """
+    import threading
+
+    from tools import async_delegation
+
+    events = [_distinct_async_event(f"deleg_cancel_{i}") for i in range(3)]
+    for event in events:
+        _persist_pending_completion(event)
+    settling, proceed = threading.Event(), threading.Event()
+    real_release = async_delegation.release_completion_delivery
+
+    def slow_release(delegation_id, claim_id):
+        settling.set()
+        proceed.wait(timeout=5)
+        return real_release(delegation_id, claim_id)
+
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=RuntimeError("temporary")))
+    runner = _runner(adapter)
+
+    async def _exercise():
+        task = asyncio.create_task(runner._deliver_async_delegation_group([dict(e) for e in events]))
+        await asyncio.to_thread(settling.wait, 5)
+        task.cancel()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with patch.object(async_delegation, "release_completion_delivery", slow_release):
+        asyncio.run(_exercise())
+
+    adapter.handle_message.assert_awaited_once()
+    for event in events:
+        assert async_delegation.claim_completion_delivery(event["delegation_id"], "next-consumer:claim")
+
+
 @pytest.mark.parametrize("unavailable", ["raw_adapter", "transport", "owner_db", "api_db"])
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):

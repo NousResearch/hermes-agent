@@ -66,7 +66,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes codex-runtime` | Noninteractive counterpart of `/codex-runtime`: `migrate [--dry-run] [--json]` regenerates the Hermes-managed block in `~/.codex/config.toml` for the selected profile. See [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md#running-the-migration-from-a-script). |
 | `hermes status` | Show agent, auth, and platform status. |
-| `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session; `--json` for scripts. |
+| `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session, a credential pool account by account; `--json` for scripts. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed. Interactive CLI, TUI and Desktop turns are gateway turns, so they are held too, and each surface shows "Hermes is paused" with the reason and "run `hermes resume`". Turns already running finish; in-flight work is never killed. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
@@ -702,23 +702,51 @@ Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, 
 
 ## `hermes usage`
 
-The account-limits block of the `/usage` slash command — Codex 5-hour / weekly windows, plan and banked
-resets; Anthropic OAuth windows; OpenRouter credits — without starting a session, so shell scripts and cron
-jobs can read it.
+Every signed-in account's limits — Codex 5-hour / weekly windows, plan and banked resets; Anthropic OAuth
+windows; OpenRouter credits — without starting a session, so shell scripts and cron jobs can read them.
 
 ```bash
-hermes usage                          # configured model provider, human-readable block
-hermes usage --provider openai-codex  # a specific provider
-hermes usage --json                   # one JSON document on stdout
+hermes usage                          # one row per account of every signed-in provider
+hermes usage --provider openai-codex  # one provider
+hermes usage --details                # the /usage block: every window, a pool account by account
+hermes usage --json                   # one JSON document on stdout (the configured provider)
+hermes usage --all --json             # {"providers": [one document per provider]}
 ```
+
+The default view is a table with one row per account: provider, account label, pool entry id, sign-in
+email, plan, the 5-hour and weekly windows, when the week resets, whether the account is usable now, and a
+note (when a capped account is back, or why a row is blank). Usable accounts come first. A provider with
+no usage endpoint (Copilot) still gets a row per login, marked `?`.
+
+```text
+Provider      Account            ID      Email              Plan     5h  Week  Week resets    Usable  Note
+anthropic     anthropic-oauth-5  5bd616  a@example.com      Max 5x   5%  18%   Oct 30, 21:00  yes
+anthropic     anthropic-oauth-3  ca3fbe  b@example.com      Max 20x  0%  100%  Oct 26, 18:00  no      back Oct 26, 18:00
+openai-codex  device_code        6fa804  a@example.com      Pro          24%   Oct 30, 12:58  yes
+
+anthropic: 1 of 2 accounts usable
+openai-codex: 1 of 1 account usable
+```
+
+With `--details`, a provider with two or more pooled credentials is shown account by account: a summary
+line (`3 of 5 accounts ready · 2 unknown`), then each account's state, every window (5-hour session, week,
+per-model weeks) and how long its access token lives. An account no session has used for a while has an
+expired access token, which the provider refuses for a usage read. So the command first renews every
+access token that has expired or is about to, capped accounts included, the same refresh a session runs
+before a request. A fresh token is never renewed. The renewal leaves each account's status alone: a
+capped account stays benched, and a failed renewal does not bench a healthy one (only a revoked login
+is marked for sign-in).
 
 | Option | Description |
 |--------|-------------|
 | `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
-| `--json` | Print one JSON document instead of the human-readable block. |
+| `--json` | Print one JSON document (the configured provider's) instead of the table. |
+| `--details` | Print the `/usage` block per provider instead of the table. |
+| `--all` | With `--json` or `--details`, also show every other pooled provider (the table always does). With `--json`, prints `{"providers": [...]}`, one document per provider. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
-the credential pool); the command never adds or refreshes a credential it would not use for chat. Exit code
+the credential pool); the command never adds a credential it would not use for chat. Pooled accounts are read
+with their own tokens, after the renewal above. Exit code
 `0` on success; `1` with a single stderr line when no credential is configured for the provider, the provider
 has no usage endpoint, or the fetch fails (stdout stays empty).
 
@@ -730,6 +758,7 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
   "source": "usage_api",
   "title": "Account limits",
   "plan": "Plus",
+  "email": "you@example.com",
   "fetched_at": "2026-09-19T07:58:55+00:00",
   "windows": [
     {"label": "Session", "used_percent": 37.0, "resets_at": "2026-09-19T21:00:00+00:00", "detail": null},
@@ -741,7 +770,12 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 ```
 
 `used_percent` is `null` when the provider did not report the window; `resets_at` is ISO-8601 UTC or `null`
-(some windows carry a free-text `detail` instead); `plan` is `null` when unknown.
+(some windows carry a free-text `detail` instead); `plan` and `email` are `null` when unknown.
+
+For a credential pool, `source` is `credential_pool`, the provider-wide `windows` stay empty (one login's
+quota says nothing about its siblings), and two keys are added: `accounts` (one row per account, the same
+rows the model picker gets: `id`, `label`, `state` (`ready` / `limited` / `unknown` / `unavailable`),
+`windows`, `resets_at`, `token_expires_at`) and `pool` (counts per state plus `total`).
 
 ## `hermes status`
 

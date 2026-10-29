@@ -501,7 +501,7 @@ class ProviderUsageWindow(Result):
 
 
 class ProviderUsageAccount(Result):
-    """One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).
+    """One account of a provider's credential pool (``hermes_cli/inventory.py::pool_usage_accounts``).
     ``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI
     falls back to a localized "Account N"). ``windows`` is empty while the account's usage is not
     yet known — state carries the meaning, never a fabricated gauge.
@@ -513,13 +513,18 @@ class ProviderUsageAccount(Result):
 
     ``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a
     live cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.
-    the earliest limited sibling)."""
+    the earliest limited sibling).
+
+    ``token_expires_at``: when the account's access token expires (ISO), if known. A past value
+    explains ``unknown``: the provider refuses a usage read with an expired token, and the token is
+    refreshed only when a session next draws from the pool (or by ``hermes usage``)."""
 
     id: str
     label: str = ""
     windows: list[ProviderUsageWindow] = Field(default_factory=list)
     state: Literal["ready", "limited", "unknown", "unavailable"]
     resets_at: str | None = None
+    token_expires_at: str | None = None
 
 
 class ProviderUsage(Result):

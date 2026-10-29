@@ -579,6 +579,7 @@ export const esOverrides = {
       'session.new': 'Nueva sesión',
       'session.newTab': 'Nueva pestaña de sesión',
       'session.newWindow': 'Nueva ventana',
+      'session.history': 'Historial de sesiones',
       'session.next': 'Siguiente sesión',
       'session.prev': 'Sesión anterior',
       'session.slot.1': 'Cambiar a la sesión reciente 1',

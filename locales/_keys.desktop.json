@@ -1849,6 +1849,7 @@
     "keybinds.actions.profile.toggleAll",
     "keybinds.actions.session.archive",
     "keybinds.actions.session.focusSearch",
+    "keybinds.actions.session.history",
     "keybinds.actions.session.new",
     "keybinds.actions.session.newTab",
     "keybinds.actions.session.newWindow",

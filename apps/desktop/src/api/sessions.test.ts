@@ -26,6 +26,7 @@ const {
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
+  listAllProfileSessions,
   listSidebarSessions
 } = await import('./sessions')
 
@@ -40,6 +41,28 @@ beforeEach(() => {
   vi.mocked(client.capabilityScoped).mockImplementation(scope =>
     typeof scope === 'string' && scope.trim() ? { profile: scope.trim() } : {}
   )
+})
+
+describe('history listing window', () => {
+  it('preserves 200 recents plus older pins and their exact gateway/profile owners', async () => {
+    const recent = Array.from({ length: 200 }, (_, index) => ({ id: `recent-${index}`, profile: 'default' }))
+    hermesApi.mockResolvedValue({
+      sessions: [
+        ...recent,
+        { id: 'older-unpinned', profile: 'default' },
+        { id: 'older-pin', pinned: true, profile: 'work' },
+        { id: 'other-owner-pin', pinned: true, profile: 'work', connection_id: 'other-gateway' }
+      ]
+    } as never)
+    const result = await listAllProfileSessions(200, 1, 'exclude')
+    expect(result.sessions).toHaveLength(202)
+    expect(result.sessions.map(row => row.id)).toEqual([...recent.map(row => row.id), 'older-pin', 'other-owner-pin'])
+    expect(result.sessions.at(-2)).toMatchObject({ connection_id: 'prometheus', profile: 'work' })
+    expect(result.sessions.at(-1)).toMatchObject({ connection_id: 'other-gateway', profile: 'work' })
+    expect(hermesApi).toHaveBeenCalledWith(
+      expect.objectContaining({ path: expect.stringContaining('limit=200&offset=0&min_messages=1&archived=exclude') })
+    )
+  })
 })
 
 describe('deleteSession profile scoping', () => {
@@ -86,7 +109,9 @@ describe('deleteSession profile scoping', () => {
       method: 'DELETE',
       path: expect.stringContaining('/api/sessions/sess-3')
     })
-    expect((hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { path: string }).path).not.toContain('profile=')
+    expect((hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { path: string }).path).not.toContain(
+      'profile='
+    )
   })
 
   it('keeps an explicit local pin routed to the local pool', async () => {
@@ -222,7 +247,13 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
 
 describe('renameSession profile scoping', () => {
   it('carries the owning profile in the PATCH body and request', async () => {
-    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler', exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
+    hermesApi.mockResolvedValue({
+      ok: true,
+      title: 'Prep Butler',
+      exists: true,
+      runtime_revision: 5,
+      runtime_generation: 2
+    } as never)
 
     await renameSession('sess-r', 'Prep Butler', 'personal')
 
@@ -235,7 +266,13 @@ describe('renameSession profile scoping', () => {
   })
 
   it('falls back to the active request profile when the argument is omitted', async () => {
-    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler', exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
+    hermesApi.mockResolvedValue({
+      ok: true,
+      title: 'Prep Butler',
+      exists: true,
+      runtime_revision: 5,
+      runtime_generation: 2
+    } as never)
     vi.mocked(client.getApiRequestProfile).mockReturnValue('personal')
 
     await renameSession('sess-r2', 'Prep Butler')

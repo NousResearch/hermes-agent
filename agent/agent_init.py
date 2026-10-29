@@ -26,6 +26,7 @@ from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
+from agent.auxiliary_main_account import bind_live_main_credential
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
@@ -1905,13 +1906,12 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             provider=agent.provider, api_mode=agent.api_mode,
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
-            threshold_tokens_cap=cs.threshold_tokens,
-            proactive_prune_tokens=cs.proactive_prune_tokens,
+            threshold_tokens_cap=cs.threshold_tokens, proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
-            min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
-            custom_providers=_custom_providers,
+            min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode, custom_providers=_custom_providers,
         )
+    bind_live_main_credential(agent)
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         with suppress(Exception):

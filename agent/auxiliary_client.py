@@ -33,6 +33,7 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_main_account import keep_live_reader, main_account_rung, retry_call_kwargs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
@@ -3129,7 +3130,7 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
         identity = normalized.get(identity_field)
         if isinstance(identity, str):
             normalized[identity_field] = identity.lower()
-    return normalized
+    return keep_live_reader(main_runtime, normalized)
 
 
 def _get_provider_chain() -> list[tuple]:
@@ -7783,7 +7784,7 @@ def _ladder_credential_rungs(
                     first_err = retry2_err
                 else:
                     raise
-    return None, first_err
+    return (yield from main_account_rung(first_err, route, auth_refresh_provider))
 
 
 def _next_fallback_after_quarantine(
@@ -8112,8 +8113,7 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        return "retry", (), retry_call_kwargs(step.args, retry_kwargs)
     return "fallback", step.args, candidate_kwargs
 
 

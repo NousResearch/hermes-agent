@@ -235,6 +235,8 @@ export const af: Translations = {
     component: "Komponent",
     lines: "Reëls",
     noLogLines: "Geen logreëls gevind nie",
+    copy: "Kopieer",
+    copied: "Gekopieer",
   },
 
   cron: {

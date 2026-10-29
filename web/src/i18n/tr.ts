@@ -235,6 +235,8 @@ export const tr: Translations = {
     component: "Bileşen",
     lines: "Satırlar",
     noLogLines: "Günlük satırı bulunamadı",
+    copy: "Kopyala",
+    copied: "Kopyalandı",
   },
 
   cron: {

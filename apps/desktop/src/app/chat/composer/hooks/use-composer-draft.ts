@@ -3,6 +3,7 @@ import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
+import { translateNow } from '@/i18n'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { isTouchInteraction } from '@/lib/touch-interaction'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -15,19 +16,24 @@ import {
   isFreshDraftScope,
   onComposerDraftSyncRequest,
   reloadPersistedDrafts,
+  savedDraftAt,
   stashSessionDraft,
   takeSessionDraft
 } from '@/store/composer'
 import {
   type ComposerDraftRetry,
   draftRetryTextMatches,
+  loadedDraftRetry,
   matchingDraftRetry,
   readDraftRetry,
+  retryAttachmentIds,
   writeDraftRetry
 } from '@/store/composer-draft-retry'
 import { isBrowsingHistory } from '@/store/composer-input-history'
+import { adoptInterruptedSend, type InterruptedSendHandlers, restoreInterruptedSend } from '@/store/composer-outbox'
 import { $composerPopout } from '@/store/composer-popout'
 import { migrateQueuedPrompts } from '@/store/composer-queue'
+import { notify } from '@/store/notifications'
 
 import { type ComposerStoreWriter, createComposerStoreWriter } from '../composer-store-writer'
 import {
@@ -86,6 +92,20 @@ interface UseComposerDraftArgs {
   inputDisabled: boolean
   queueEditRef: RefObject<QueueEditState | null>
   sessionId: string | null | undefined
+}
+
+// A send restored after its page died comes back as its words: attachment bytes do not outlive the
+// page. Say so, or the user takes the restored draft for the whole message and sends it without them.
+function noteAttachmentsNotRestored(retry: ComposerDraftRetry | undefined) {
+  if (retry?.attachmentIds.length) {
+    notify({
+      id: 'restored-draft-attachments',
+      kind: 'warning',
+      message: translateNow('promptNotices.restoredDraftAttachmentsDropped'),
+      // Raised while the chat opens: opening a chat clears the last chat's notices right after.
+      persistent: true
+    })
+  }
 }
 
 /**
@@ -513,6 +533,29 @@ export function useComposerDraft({
     }, DRAFT_PERSIST_DEBOUNCE_MS)
   }
 
+  // A file removed from (or added to) a restored draft makes it a new message too. Dropping the
+  // identity here, not at the next load, matters: a reload legitimately loses a draft's files, so a
+  // later load cannot tell a removal from that and would resend the removed file under the old id.
+  useEffect(
+    () =>
+      attachmentScope.$attachments.listen(attachments => {
+        const retry = draftRetryRef.current
+
+        if (
+          !retry ||
+          queueEditRef.current ||
+          isBrowsingHistory(sessionIdRef.current) ||
+          retry.attachmentIds.join('\n') === retryAttachmentIds(attachments).join('\n')
+        ) {
+          return
+        }
+
+        draftRetryRef.current = undefined
+        writeDraftRetry(draftScopeRef.current, undefined)
+      }),
+    [attachmentScope, queueEditRef]
+  )
+
   const scheduleDraftPersistRef = useRef(scheduleDraftPersist)
   scheduleDraftPersistRef.current = scheduleDraftPersist
 
@@ -687,11 +730,97 @@ export function useComposerDraft({
     }
 
     draftScopeRef.current = activeQueueSessionKey
-    draftRetryRef.current = readDraftRetry(activeQueueSessionKey)
+    const storedRetry = readDraftRetry(activeQueueSessionKey)
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
     savedDraftRef.current = savedDraft(text, attachments)
+    draftRetryRef.current = loadedDraftRetry(storedRetry, text, attachments)
     loadIntoComposer(text, attachments, true)
+
+    if (draftRetryRef.current && draftRetryRef.current !== storedRetry) {
+      // Recorded text-only, so the notice is said once, not again on every return to this chat.
+      writeDraftRetry(activeQueueSessionKey, draftRetryRef.current)
+      noteAttachmentsNotRestored(storedRetry)
+    }
+
+    // Takes back a draft that is still exactly `retry`'s send under its identity: words AND
+    // attachments, since a file attached after the offer makes it the user's new message.
+    const clearRestoredDraft = (retry: ComposerDraftRetry) => {
+      const stored = readDraftRetry(activeQueueSessionKey)
+
+      if (
+        draftScopeRef.current !== activeQueueSessionKey ||
+        stored?.id !== retry.id ||
+        !matchingDraftRetry(stored, syncDraftFromEditor(), attachmentScope.$attachments.get())
+      ) {
+        return
+      }
+
+      stashAt(activeQueueSessionKey, '', [])
+      writeDraftRetry(activeQueueSessionKey, undefined)
+      draftRetryRef.current = undefined
+      loadIntoComposer('', [])
+    }
+
+    const interruptedSend: InterruptedSendHandlers = {
+      offer: retry => {
+        // Re-read after the owner check: anything typed or attached meanwhile keeps the composer,
+        // and the send stays journaled for a later load.
+        if (
+          draftScopeRef.current !== activeQueueSessionKey ||
+          syncDraftFromEditor().trim() ||
+          attachmentScope.$attachments.get().length > 0
+        ) {
+          return false
+        }
+
+        // Re-offered as text: attachment bytes do not outlive the page, so the identity names exactly
+        // what is offered and Enter on it is the explicit retry of that send.
+        stashAt(activeQueueSessionKey, retry.text, [])
+        rememberDraftRetry(activeQueueSessionKey, { ...retry, attachmentIds: [] })
+        loadIntoComposer(retry.text, [])
+        noteAttachmentsNotRestored(retry)
+
+        return true
+      },
+      // The adopted saved draft is a copy of a send the owner already holds.
+      landed: clearRestoredDraft,
+      // The owner listed the offered send after all.
+      withdraw: clearRestoredDraft
+    }
+
+    // The saved draft can already be an interrupted send's words (persisted before the send cleared
+    // the composer): it takes that send's identity, once its owner lock proves no live window still
+    // sends it, provided the composer still holds exactly that saved draft.
+    void adoptInterruptedSend(activeQueueSessionKey, text, savedDraftAt(activeQueueSessionKey), {
+      ...interruptedSend,
+      adopt: adopted => {
+        if (
+          draftScopeRef.current !== activeQueueSessionKey ||
+          !draftRetryTextMatches(adopted, syncDraftFromEditor()) ||
+          retryAttachmentIds(attachmentScope.$attachments.get()).join() !== retryAttachmentIds(attachments).join()
+        ) {
+          return false
+        }
+
+        if (!draftRetryTextMatches(draftRetryRef.current, text)) {
+          rememberDraftRetry(activeQueueSessionKey, { ...adopted, attachmentIds: retryAttachmentIds(attachments) })
+        }
+
+        // The saved draft can already carry a text-only identity for these words; the journaled send
+        // still names the attachments the reload dropped.
+        if (!attachments.length) {
+          noteAttachmentsNotRestored(adopted)
+        }
+
+        return true
+      }
+    })
+
+    if (!text.trim() && attachments.length === 0) {
+      // A send its page never finished (the window closed or reloaded mid-send) is this draft.
+      void restoreInterruptedSend(activeQueueSessionKey, interruptedSend)
+    }
 
     return () => {
       const latestText = syncDraftFromEditor()
@@ -720,9 +849,9 @@ export function useComposerDraft({
     }
 
     reloadPersistedDrafts()
-    draftRetryRef.current = readDraftRetry(draftScopeRef.current)
     const stashed = takeSessionDraft(draftScopeRef.current)
     savedDraftRef.current = savedDraft(stashed.text, stashed.attachments)
+    draftRetryRef.current = loadedDraftRetry(readDraftRetry(draftScopeRef.current), stashed.text, stashed.attachments)
     loadIntoComposer(stashed.text, stashed.attachments)
   }
 

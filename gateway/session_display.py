@@ -15,6 +15,7 @@ HIDDEN = 'hidden'
 _TITLE_PREVIEW_LIMIT = 1000
 _SUBMIT_FIELDS = ('display_kind', 'title_preview')
 _display_turn: ContextVar[tuple | None] = ContextVar('display_turn', default=None)
+_submission_turn: ContextVar[tuple | None] = ContextVar('submission_turn', default=None)
 
 
 def submit_display_fields(params):
@@ -58,6 +59,27 @@ def display_turn_scope(admission_id, committed):
         yield
     finally:
         _display_turn.reset(token)
+
+
+@contextmanager
+def submission_turn_scope(admission_id, submission_id):
+    """Bind the client's ``submission_id`` (the admission's ``request_id``) to the admission's own event.
+
+    The user row this turn persists carries it, so a client whose window closed before the submit ack
+    came back can read the stored transcript and tell a send that landed from one that never did."""
+    token = _submission_turn.set((admission_id, submission_id) if submission_id else None)
+    try:
+        yield
+    finally:
+        _submission_turn.reset(token)
+
+
+def admission_submission(event):
+    """``{'submission_id': ...}`` for the admission ``event`` executes, ``{}`` for any other event."""
+    bound = _submission_turn.get()
+    if bound is None or event is None or getattr(event, 'message_id', None) != bound[0]:
+        return {}
+    return {'submission_id': bound[1]}
 
 
 def admission_display(event):

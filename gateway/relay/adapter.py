@@ -1035,28 +1035,28 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             urls = list(getattr(event, "media_urls", None) or [])
             if not urls:
                 return
-            # media_types is INDEXED IN PARALLEL with media_urls by every downstream
-            # classifier: carry (url, mime) PAIRS through the loop or surviving
-            # attachments inherit a neighbour's type.
-            types = list(getattr(event, "media_types", None) or [])
-            pairs = [(u, types[i] if i < len(types) else "") for i, u in enumerate(urls)]
+            # media_types / media_filenames are INDEXED IN PARALLEL with media_urls downstream:
+            # carry (url, mime, name) TRIPLES or survivors inherit a neighbour's type or name.
+            types = list(getattr(event, "media_types", None) or []) + [""] * len(urls)
+            names = list(getattr(event, "media_filenames", None) or []) + [""] * len(urls)
             client = self._get_media_client()
-            localized: list[tuple[str, str]] = []
-            for url, mime in pairs:
+            localized: list[tuple[str, str, str]] = []
+            for url, mime, name in zip(urls, types, names):
                 if not isinstance(url, str) or not url:
                     continue
                 if client is None:
                     if "/relay/media/" not in url:
-                        localized.append((url, mime))
+                        localized.append((url, mime, name))
                     continue
-                path = await client.download(url)
-                if path:
-                    localized.append((path, mime))
+                # The path is a random temp name; the original name rides beside it.
+                got = await client.download_with_name(url, suggested_name=name or None)
+                if got:
+                    localized.append((got[0], mime, got[1]))
                 elif "/relay/media/" not in url:
                     # A public URL still has value as a URL; a dead re-host does not.
-                    localized.append((url, mime))
-            event.media_urls = [u for u, _ in localized]
-            event.media_types = [m for _, m in localized]
+                    localized.append((url, mime, name))
+            event.media_urls, event.media_types, event.media_filenames = (
+                [entry[i] for entry in localized] for i in range(3))
         except Exception:
             logger.debug("relay inbound media localization failed", exc_info=True)
 

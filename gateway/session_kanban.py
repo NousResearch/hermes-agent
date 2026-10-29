@@ -312,6 +312,33 @@ def _record_worker_result(context, code, last_output):
                  'last_output': last_output}, run_id=context['run_id'])
 
 
+def record_worker_loss(policy, reason, *, pid=None, bound=False):
+    """Append a run-scoped ``worker_lost`` event for this attempt to the card's board.
+
+    Dropped when the card has moved past the run (it says nothing about the current attempt).
+    Never raises: the caller's own loss handling must not depend on the board write.
+    """
+    try:
+        context = json.loads(policy.kanban_json or 'null')
+        if not context:
+            return
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+        run_id = int(context['run_id'])
+        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+            row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
+                               (context['task_id'],)).fetchone()
+            if row is None or row[0] != 'running' or row[1] != run_id:
+                return
+            kb._append_event(conn, context['task_id'], 'worker_lost',
+                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
+                             run_id=run_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('kanban worker_lost record failed')
+
+
 def _bound_worker_matches(conn, context):
     import os
     row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",

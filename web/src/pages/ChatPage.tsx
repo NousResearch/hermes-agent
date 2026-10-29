@@ -365,7 +365,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [titleScope],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isActive) {
       setTitle(null);
       return;

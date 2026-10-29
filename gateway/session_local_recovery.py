@@ -191,10 +191,19 @@ def restore_local_session(authority, sid):
     else:
         with store._lock:
             current = store._entry_locked(route)
-            if current is None or (current.session_id not in receipt.get('lineage', [sid])
-                                   and not _stray_route_target(authority, receipt, current.session_id)):
+            if current is None:
+                # Self-heal: the session is live-mounted (e.g. a history view from a
+                # pre-scope-era listing) without a bound store entry. The receipt has
+                # passed validation and the live source/policy already matched; bind
+                # its entry instead of refusing (#146344).
+                entry.origin = source
+                entry.session_id = target
+                store._entries[route] = entry
+            elif (current.session_id not in receipt.get('lineage', [sid])
+                  and not _stray_route_target(authority, receipt, current.session_id)):
                 raise RuntimeStoreError('admission_conflict')
-            current.session_id = target
+            else:
+                current.session_id = target
     return SessionRef(authority.profile_id, sid)
 
 

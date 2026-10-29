@@ -275,6 +275,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `SLACK_ALLOWED_USERS` | 逗号分隔的 Slack 用户 ID |
 | `SLACK_HOME_CHANNEL` | cron 投递的默认 Slack 频道 |
 | `SLACK_HOME_CHANNEL_NAME` | Slack 主频道的显示名称 |
+| `SLACK_SOCKET_HELLO_TIMEOUT_SECONDS` | Socket Mode 会话在这么多秒内未被 Slack 注册（没有收到 `hello`）时重启；这种会话能响应 ping，但收不到任何事件（默认 `60`，`0` 关闭）。 |
+| `SLACK_SOCKET_SILENCE_RENEW_SECONDS` | 超过这么多秒没有任何 Slack 帧时，先打开新的 Socket Mode 会话，等 Slack 注册后切换过去，再关闭旧会话（默认 `1800`，`0` 关闭）。 |
 | `GOOGLE_CHAT_PROJECT_ID` | 托管 Pub/Sub 话题的 GCP 项目（回退到 `GOOGLE_CLOUD_PROJECT`） |
 | `GOOGLE_CHAT_SUBSCRIPTION_NAME` | 完整 Pub/Sub 订阅路径，`projects/{proj}/subscriptions/{sub}`（旧版别名：`GOOGLE_CHAT_SUBSCRIPTION`） |
 | `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` | Service Account JSON 文件路径，或内联 JSON（回退到 `GOOGLE_APPLICATION_CREDENTIALS`） |

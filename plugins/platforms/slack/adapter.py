@@ -58,10 +58,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_socket import SlackSocketModeMixin, _SocketLiveness
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_socket import SlackSocketModeMixin, _SocketLiveness  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -824,37 +826,6 @@ def _slack_per_request_proxy_middleware(proxy_url: Optional[str]) -> Callable[..
     return pin_per_request_proxy
 
 
-# SocketModeClient's background tasks (getattr-looked-up so an SDK rename degrades to a no-op).
-_SOCKET_CLIENT_TASK_ATTRS = ("current_session_monitor", "message_processor", "message_receiver")
-# Teardown wait cap: a task wedged in a network call must not hold up shutdown.
-_SOCKET_TASK_CANCEL_TIMEOUT_S = 3.0
-
-
-async def _cancel_socket_tasks(tasks: Any) -> None:
-    """Cancel Socket Mode tasks and await them (bounded); unawaited cancel still races the work."""
-    live = [
-        task
-        for task in tasks
-        if task is not None
-        and callable(getattr(task, "cancel", None))
-        and not (callable(getattr(task, "done", None)) and task.done())]
-    for task in live:
-        task.cancel()
-    pending = set(live)
-    if not pending:
-        return
-    done, still_running = await asyncio.wait(pending, timeout=_SOCKET_TASK_CANCEL_TIMEOUT_S)
-    for task in done:
-        if task.cancelled():
-            continue
-        if task.exception() is not None:  # pragma: no cover - defensive logging
-            logger.debug("[Slack] Socket Mode task failed while stopping", exc_info=True)
-    if still_running:  # pragma: no cover - defensive logging
-        logger.warning(
-            "[Slack] %d Socket Mode task(s) did not stop within %.1fs", len(still_running),
-            _SOCKET_TASK_CANCEL_TIMEOUT_S)
-
-
 _SLACK_PROXY_HOSTS = ("slack.com", "files.slack.com", "wss-primary.slack.com")
 
 
@@ -1007,7 +978,7 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(SlackSocketModeMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1037,12 +1008,6 @@ class SlackAdapter(BasePlatformAdapter):
     _STATUS_MESSAGE_IDS_MAX = 2000
     _THREAD_CACHE_MAX = 2500
     _THREAD_CACHE_TTL = 60.0
-    # Watchdog: poll interval; reconnect after N ping_intervals of silence (Slack pings idle
-    # sockets, so silence = wedged transport); grace after (re)connect for the first ping/pong.
-    _socket_watchdog_interval_s = 15.0
-    _socket_ping_stale_factor = 4
-    _socket_first_ping_grace_s = 60.0
-
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
         self._app: Optional[Any] = None
@@ -1132,13 +1097,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Set once startStream reports the app lacks streaming (Agents & AI Apps
         # off / missing scope); later responses skip straight to edit-based streaming.
         self._native_stream_unsupported = False
-        # Socket Mode self-healing state for silently dropped websockets; the monotonic
-        # start time is the grace window for the first ping/pong.
         self._app_token: Optional[str] = None
         self._proxy_url: Optional[str] = None
-        self._socket_watchdog_task: Optional[asyncio.Task] = None
-        self._socket_reconnect_lock = asyncio.Lock()
-        self._socket_handler_started_monotonic: Optional[float] = None
+        self._init_socket_mode_state()
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1243,175 +1204,20 @@ class SlackAdapter(BasePlatformAdapter):
         self._trim_oldest_dict_entries(self._channel_team, self._CHANNEL_TEAM_MAX)
         self._trim_oldest_dict_entries(self._channel_teams, self._CHANNEL_TEAM_MAX)
 
-    def _start_socket_mode_handler(self) -> None:
-        """Start the Slack Socket Mode background task."""
+    def _new_socket_mode_handler(self) -> tuple[Any, asyncio.Task, _SocketLiveness]:
+        """Create and start one Socket Mode handler with app-level liveness tracking attached."""
         if not self._app or not self._app_token:
             raise RuntimeError("Socket Mode requires an initialized app and app token")
-        self._handler = AsyncSocketModeHandler(self._app, self._app_token, proxy=self._proxy_url)
-        _apply_slack_proxy(self._handler.client, self._proxy_url)
-        task = asyncio.create_task(self._handler.start_async())
-        self._socket_mode_task = task
-        self._socket_handler_started_monotonic = time.monotonic()
+        handler = AsyncSocketModeHandler(self._app, self._app_token, proxy=self._proxy_url)
+        _apply_slack_proxy(handler.client, self._proxy_url)
+        liveness = self._attach_socket_liveness(handler.client)
+        task = asyncio.create_task(handler.start_async())
         task.add_done_callback(self._on_socket_mode_task_done)
+        return handler, task, liveness
 
-    async def _stop_socket_mode_handler(self) -> None:
-        """Stop Socket Mode handler and task. Order matters: ``SocketModeClient.connect()`` is a
-        ``while True`` retry loop that never checks ``closed``, so anything inside it when
-        ``close_async()`` drops the session retries forever. Cancel every task that can reach
-        ``connect()`` BEFORE closing (it rebinds task attrs on success, so a mid-close snapshot
-        races a moving target).
-
-        Everything that can reach ``connect()`` therefore has to be stopped first.
-        ``monitor_current_session()`` and ``receive_messages()`` each get there on their own, and
-        ``connect()`` rebinds the client's task attributes on success, so the set of live tasks changes
-        across the awaits inside ``close()``. Cancelling from a snapshot taken partway through that would
-        race a moving target. See slackapi/python-slack-sdk#1913.
-        """
-        handler, task = self._handler, self._socket_mode_task
-        self._handler = self._socket_mode_task = None
-        client = getattr(handler, "client", None)
-        await _cancel_socket_tasks(
-            [task] + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS])
-        if handler is not None:
-            try:
-                await handler.close_async()
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.warning(
-                    "[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
-
-    async def _socket_transport_connected(self) -> Optional[bool]:
-        """Best-effort check of current Socket Mode transport state."""
-        state = getattr(getattr(self._handler, "client", None), "is_connected", None)
-        if state is None:
-            return None
-        try:
-            value = state() if callable(state) else state
-            if asyncio.iscoroutine(value):
-                value = await value
-            return bool(value)
-        except Exception:  # pragma: no cover - optional client API
-            logger.debug("[Slack] Could not inspect Socket Mode transport state", exc_info=True)
-            return None
-
-    def _socket_ping_pong_stale(self) -> bool:
-        """No recent ping/pong on the transport. Slack pings every ``ping_interval`` even when idle,
-        and a client stuck on a closed session can still report ``is_connected()``, so staleness is
-        the reliable "wedged" signal. Non-numeric attrs (mocked clients) never reconnect."""
-        client = getattr(self._handler, "client", None)
-        if client is None:
-            return False
-        ping_interval = getattr(client, "ping_interval", None)
-        if not isinstance(ping_interval, (int, float)) or ping_interval <= 0:
-            return False
-        last = getattr(client, "last_ping_pong_time", None)
-        if last is None:
-            # No ping yet: healthy right after (re)connect until the grace window elapses.
-            started = self._socket_handler_started_monotonic
-            grace = max(self._socket_first_ping_grace_s, ping_interval * 2)
-            return started is not None and (time.monotonic() - started) > grace
-        if not isinstance(last, (int, float)):
-            return False
-        return (time.time() - last) > (ping_interval * self._socket_ping_stale_factor)
-
-    async def _restart_socket_mode(self, reason: str) -> None:
-        """Reconnect Socket Mode without rebuilding adapter state."""
-        if not self._running:
-            return
-        async with self._socket_reconnect_lock:
-            if not self._running or not self._app or not self._app_token:
-                return
-            logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
-            await self._stop_socket_mode_handler()
-            try:
-                self._start_socket_mode_handler()
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.error("[Slack] Socket Mode reconnect failed: %s", exc, exc_info=True)
-
-    async def _socket_watchdog_loop(self) -> None:
-        """Monitor Socket Mode and reconnect if the task/transport dies.
-        Broad except so a transient probe/restart bug can't kill self-healing."""
-        while self._running:
-            try:
-                await asyncio.sleep(self._socket_watchdog_interval_s)
-                if not self._running:
-                    break
-                task = self._socket_mode_task
-                if task is None:
-                    await self._restart_socket_mode("socket task missing")
-                    continue
-                if task.done():
-                    await self._restart_socket_mode("socket task stopped")
-                    continue
-                connected = await self._socket_transport_connected()
-                if connected is False:
-                    await self._restart_socket_mode("transport disconnected")
-                elif self._socket_ping_pong_stale():
-                    # is_connected() can lie on a closed session; staleness catches the zombie.
-                    await self._restart_socket_mode("ping/pong stale")
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # pragma: no cover - defensive logging
-                logger.warning(
-                    "[Slack] Socket Mode watchdog iteration failed; continuing", exc_info=True)
-
-    def _on_socket_watchdog_done(self, task: asyncio.Task) -> None:
-        if task is not self._socket_watchdog_task:
-            return
-        if task.cancelled() or not self._running:
-            return
-        try:
-            exc = task.exception()
-        except (asyncio.CancelledError, Exception):  # pragma: no cover
-            exc = None
-        if exc is not None:
-            logger.warning(
-                "[Slack] Socket Mode watchdog exited with error; restarting: %s", exc, exc_info=True
-            )
-        else:
-            logger.warning("[Slack] Socket Mode watchdog exited; restarting")
-        self._socket_watchdog_task = None
-        self._ensure_socket_watchdog()
-
-    async def _cancel_socket_watchdog(self, failure_msg: str) -> None:
-        """Cancel and await the watchdog task (if any); exceptions are debug-logged."""
-        watchdog_task = self._socket_watchdog_task
-        self._socket_watchdog_task = None
-        if watchdog_task is None or watchdog_task.done():
-            return
-        watchdog_task.cancel()
-        try:
-            await watchdog_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:  # pragma: no cover - defensive logging
-            logger.debug(failure_msg, exc_info=True)
-
-    def _ensure_socket_watchdog(self) -> None:
-        if self._socket_watchdog_task is None or self._socket_watchdog_task.done():
-            task = asyncio.create_task(self._socket_watchdog_loop())
-            self._socket_watchdog_task = task
-            task.add_done_callback(self._on_socket_watchdog_done)
-
-    def _on_socket_mode_task_done(self, task: asyncio.Task) -> None:
-        # Ignore stale tasks from intentional reconnect/shutdown.
-        if task is not self._socket_mode_task or task.cancelled() or not self._running:
-            return
-        exc = None
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            return
-        except Exception:  # pragma: no cover - defensive logging
-            logger.debug("[Slack] Could not inspect Socket Mode task exception", exc_info=True)
-        if exc is not None:
-            logger.warning("[Slack] Socket Mode task exited with error: %s", exc, exc_info=True)
-        else:
-            logger.warning("[Slack] Socket Mode task exited unexpectedly")
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self._restart_socket_mode("socket task exited"))
+    def _start_socket_mode_handler(self) -> None:
+        """Start the Slack Socket Mode background task."""
+        self._adopt_socket_handler(*self._new_socket_mode_handler())
 
     def _describe_slack_api_error(
         self, response: Any, *, file_obj: Optional[dict[str, Any]] = None) -> Optional[str]:

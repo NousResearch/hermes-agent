@@ -22,8 +22,12 @@ from starlette.testclient import TestClient
 
 
 @pytest.fixture
-def client():
-    return TestClient(web_server.app)
+def client(monkeypatch):
+    # CORS grants only the backend's own loopback origin: the port it bound.
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(web_server.app.state, "bound_port", 8092, raising=False)
+    return TestClient(web_server.app, base_url="http://127.0.0.1:8092")
 
 
 # ---- CORS preflight (OPTIONS) must not be blocked by auth ------------
@@ -46,7 +50,20 @@ def test_options_preflight_returns_cors_headers(client):
 
 
 def test_options_preflight_allows_localhost_origin(client):
-    """Preflight from a different localhost port is allowed."""
+    """Preflight from the bound port under another loopback name is allowed."""
+    resp = client.options(
+        "/api/status",
+        headers={
+            "Origin": "http://localhost:8092",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:8092"
+
+
+def test_options_preflight_rejects_another_local_port(client):
+    """Preflight from a page on a different localhost port gets no CORS grant."""
     resp = client.options(
         "/api/status",
         headers={
@@ -54,8 +71,8 @@ def test_options_preflight_allows_localhost_origin(client):
             "Access-Control-Request-Method": "GET",
         },
     )
-    assert resp.status_code == 200
-    assert resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    assert resp.status_code == 400
+    assert "access-control-allow-origin" not in resp.headers
 
 
 def test_options_preflight_rejects_disallowed_origin(client):

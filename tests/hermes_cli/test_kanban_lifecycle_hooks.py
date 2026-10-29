@@ -1,9 +1,10 @@
 """Tests for kanban lifecycle plugin hooks.
 
-Verifies that claim/complete/block transitions fire the
-kanban_task_claimed / kanban_task_completed / kanban_task_blocked plugin
-hooks AFTER the board DB change is committed, with the documented kwargs,
-and that a misbehaving hook callback never breaks the transition.
+Verifies that claim/complete/block/review-request transitions fire the
+kanban_task_claimed / kanban_task_completed / kanban_task_blocked /
+kanban_task_review_requested plugin hooks AFTER the board DB change is
+committed, with the documented kwargs, and that a misbehaving hook callback
+never breaks the transition.
 """
 
 from __future__ import annotations
@@ -37,7 +38,10 @@ def captured_hooks(monkeypatch):
     mgr = get_plugin_manager()
     events: list[tuple[str, dict]] = []
     saved = {k: list(v) for k, v in mgr._hooks.items()}
-    for hook in ("kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked"):
+    for hook in (
+        "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
+        "kanban_task_review_requested",
+    ):
         mgr._hooks.setdefault(hook, []).append(
             lambda _h=hook, **kw: events.append((_h, kw))
         )
@@ -66,6 +70,45 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
     assert kw["run_id"] is not None
 
 
+
+
+def test_request_review_fires_hook(kanban_home, captured_hooks):
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.request_review(
+            conn, tid, summary="done, please review", reviewer="reviewer",
+            expected_run_id=run_id,
+        ) is True
+    finally:
+        conn.close()
+    fired = [e for e in captured_hooks if e[0] == "kanban_task_review_requested"]
+    assert len(fired) == 1
+    kw = fired[0][1]
+    assert kw["task_id"] == tid
+    # assignee reflects the post-commit state: request_review reassigned to the reviewer.
+    assert kw["assignee"] == "reviewer"
+    assert kw["run_id"] == run_id
+    assert kw["summary"] == "done, please review"
+    assert "profile_name" in kw
+    assert "board" in kw
+
+
+def test_request_review_refused_transition_does_not_fire_hook(kanban_home, captured_hooks):
+    """A refused transition (task not in running/ready) must never fire the observer."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker")
+        # Task is still "ready"/unclaimed with no active run — expected_run_id mismatch
+        # (or, here, simply never having been claimed means status stays untouched by a
+        # bogus expected_run_id guard) refuses the transition outright.
+        assert kb.request_review(conn, tid, expected_run_id=999999) is False
+    finally:
+        conn.close()
+    fired = [e for e in captured_hooks if e[0] == "kanban_task_review_requested"]
+    assert fired == []
 
 
 def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):

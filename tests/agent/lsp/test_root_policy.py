@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.lsp import eventlog
-from agent.lsp.manager import LSPService, _client_key
+from agent.lsp.manager import LSPService, _client_key, _ClientEntry, _ClientLease
 from agent.lsp.servers import find_server_for_file
 from agent.lsp.workspace import clear_cache
 
@@ -106,15 +106,19 @@ def test_warmup_timeout_applies_to_cold_root_only(tmp_path, monkeypatch):
 
     fake = FakeClient()
 
-    async def spawn(_path):
-        return fake
+    key = _client_key(find_server_for_file(str(src)), str(repo), svc._trusted(str(repo)))
+    entry = _ClientEntry(fake, generation=1)
+    async def acquire(_path):
+        entry.leases += 1
+        entry.leases_drained.clear()
+        return _ClientLease(svc, key, entry)
 
     try:
-        with patch.object(svc, "_get_or_spawn", spawn):
+        with patch.object(svc, "_acquire_client", acquire):
             svc.snapshot_baseline(str(src))  # cold: no client registered for the root yet
             key = _client_key(find_server_for_file(str(src)), str(repo), svc._trusted(str(repo)))
             with svc._state_lock:
-                svc._clients[key] = fake
+                svc._clients[key] = entry
             assert svc.get_diagnostics_sync(str(src)) == []  # warm
     finally:
         svc.shutdown()

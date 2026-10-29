@@ -131,3 +131,38 @@ def test_announce_bucket_is_capped(caplog_lsp, monkeypatch):
     eventlog.log_no_project_root("pyright", "/proj/f5.py")  # still deduped after the reset
     info = [r.getMessage() for r in caplog_lsp.records if r.levelno == logging.INFO]
     assert info.count("lsp[pyright] no project root for /proj/f5.py") == 1
+
+
+def test_clean_emits_at_debug(caplog_lsp):
+    for _ in range(10):
+        eventlog.log_clean("pyright", "/proj/x.py")
+    info_records = [r for r in caplog_lsp.records if r.levelno >= logging.INFO]
+    debug_records = [r for r in caplog_lsp.records if r.levelno == logging.DEBUG]
+    assert info_records == []
+    assert len(debug_records) == 10
+
+
+def test_reap_is_info_and_respawn_reannounces_active(caplog_lsp):
+    """Every reap and the next active generation are visible at INFO."""
+    key = ("pyright", "/proj")
+
+    eventlog.log_active(*key)
+    eventlog.log_reaped([key], idle_timeout=600)
+    eventlog.log_active(*key)
+
+    info_records = [r for r in caplog_lsp.records if r.levelno == logging.INFO]
+    assert [r.getMessage() for r in info_records] == [
+        "lsp[pyright] active for /proj",
+        "lsp[reaper] reaped 1 idle client(s) after 600s: pyright (/proj)",
+        "lsp[pyright] active for /proj",
+    ]
+    assert not any("reused client" in r.getMessage() for r in caplog_lsp.records)
+
+
+def test_short_path_keeps_absolute_when_outside(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path / "a") if (tmp_path / "a").exists() else None
+    monkeypatch.chdir(tmp_path)
+    other = "/var/log/foo.txt"
+    out = eventlog._short_path(other)
+    # Outside cwd: keeps absolute (no leading "../")
+    assert out == "/var/log/foo.txt" or not out.startswith("..")

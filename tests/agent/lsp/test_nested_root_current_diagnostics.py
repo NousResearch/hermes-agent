@@ -1,6 +1,6 @@
 """``_current_diags_async`` must find a single-root client under the root it was spawned with.
 
-``_get_or_spawn`` keys single-root servers by ``srv.resolve_root(...)`` (a nested ``package.json``
+``_acquire_client`` keys single-root servers by ``srv.resolve_root(...)`` (a nested ``package.json``
 project), but the current-diagnostics lookup keyed by the enclosing workspace root, so the delta
 baseline was refreshed from ``[]`` while the live client held diagnostics.
 """

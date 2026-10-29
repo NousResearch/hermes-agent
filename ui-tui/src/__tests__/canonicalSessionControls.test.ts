@@ -164,7 +164,12 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
 
       return params.payload.confirm === 'tok-1'
         ? { model: 'pricey', execution_generation: 5 }
-        : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
+        : {
+            status: 'confirmation_required',
+            confirm: 'tok-1',
+            confirm_message: 'pricey IS EXPENSIVE',
+            target_model: 'pricey'
+          }
     })
     slash('/model pricey')
     await flush()
@@ -178,7 +183,10 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
       await flush()
     }
 
-    const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
+    const sends = request.mock.calls
+      .filter(([method]) => method === 'session.mutate')
+      .map(([, params]) => params.payload)
+
     expect(sends).toEqual(accept ? [{ model: 'pricey' }, { model: 'pricey', confirm: 'tok-1' }] : [{ model: 'pricey' }])
     expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
   }
@@ -211,6 +219,18 @@ it('/branch prints main\'s "branched →" confirmation after the child resume ha
 })
 
 it('a /compress that removes nothing prints main\'s "No changes" report without re-hydrating', async () => {
+  patchUiState({
+    usage: {
+      calls: 2,
+      input: 30400,
+      output: 100,
+      total: 30500,
+      context_used: 30400,
+      context_max: 262100,
+      context_percent: 12,
+      compressions: 0
+    }
+  })
   const { ctx, request, slash } = harness()
   request.mockImplementation(async (method: string) => {
     if (method === 'session.resume') {
@@ -218,9 +238,14 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
     }
 
     return {
-      session_id: 'owner', operation: 'compress', status: 'noop',
-      summary: { headline: 'No changes from compression: 2 messages', noop: true,
-                 token_line: 'Approx request size: ~6,547 tokens (unchanged)' }
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'noop',
+      summary: {
+        headline: 'No changes from compression: 2 messages',
+        noop: true,
+        token_line: 'Approx request size: ~6,547 tokens (unchanged)'
+      }
     } as any
   })
 
@@ -231,6 +256,62 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
   expect(ctx.transcript.sys).toHaveBeenCalledWith('  Approx request size: ~6,547 tokens (unchanged)')
   expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
   expect(request.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
+  expect(getUiState().usage.context_used).toBe(30400)
+  expect(getUiState().usage.compressions).toBe(0)
+})
+
+it("a committed /compress drops the previous reply's context meter and counts the compaction", async () => {
+  patchUiState({
+    usage: {
+      calls: 2,
+      input: 30400,
+      output: 100,
+      total: 30500,
+      context_used: 30400,
+      context_max: 262100,
+      context_percent: 12,
+      compressions: 0
+    }
+  })
+  const { request, slash } = harness()
+  let resumes = 0
+
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      resumes += 1
+      const generation = resumes === 1 ? 4 : 5
+
+      return {
+        session_id: 'owner',
+        revision: 8,
+        execution_generation: generation,
+        info: { ...info, execution_generation: generation },
+        messages: [{ role: 'assistant', text: 'summary' }]
+      } as any
+    }
+
+    return {
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'compressed',
+      execution_generation: 5,
+      summary: {
+        headline: 'Compressed: 12 → 10 messages',
+        token_line: 'Approx request size: ~14,682 → ~15,777 tokens'
+      }
+    } as any
+  })
+
+  slash('/compress')
+  await flush()
+  await flush()
+  const usage = getUiState().usage
+
+  expect(usage.context_used).toBe(0)
+  expect(usage.context_percent).toBe(0)
+  expect(usage.compressions).toBe(1)
+  expect(usage.context_max).toBe(262100)
+  expect(usage.calls).toBe(2)
 })
 
 it('a pick deferred by a running turn says it applies from the next turn', async () => {
@@ -239,7 +320,8 @@ it('a pick deferred by a running turn says it applies from the next turn', async
   request.mockImplementation(async (method: string) =>
     method === 'session.mutate'
       ? { model: 'picked', operation: 'model', status: 'deferred', execution_generation: 4 }
-      : { session_id: 'owner', revision: 8, execution_generation: 4, info })
+      : { session_id: 'owner', revision: 8, execution_generation: 4, info }
+  )
 
   slash('/model picked --tui-session')
   await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
@@ -284,7 +366,12 @@ it('a guarded switch re-asks with the effort riding the confirmed re-send', asyn
 
     return params.payload.confirm === 'tok-1'
       ? { model: 'pricey', execution_generation: 5 }
-      : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
+      : {
+          status: 'confirmation_required',
+          confirm: 'tok-1',
+          confirm_message: 'pricey IS EXPENSIVE',
+          target_model: 'pricey'
+        }
   })
   slash('/model pricey --reasoning max --tui-session')
   await flush()

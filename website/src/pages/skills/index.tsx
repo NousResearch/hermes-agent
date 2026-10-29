@@ -210,6 +210,27 @@ const SOURCE_CONFIG: Record<
     border: "rgba(248, 113, 113, 0.2)",
     icon: "\u{2756}",
   },
+  "Weights & Biases": {
+    label: "Weights & Biases",
+    color: "#facc15",
+    bg: "rgba(250, 204, 21, 0.08)",
+    border: "rgba(250, 204, 21, 0.2)",
+    icon: "\u{2756}",
+  },
+  Qdrant: {
+    label: "Qdrant",
+    color: "#f43f5e",
+    bg: "rgba(244, 63, 94, 0.08)",
+    border: "rgba(244, 63, 94, 0.2)",
+    icon: "\u{2756}",
+  },
+  Pinecone: {
+    label: "Pinecone",
+    color: "#a3e635",
+    bg: "rgba(163, 230, 53, 0.08)",
+    border: "rgba(163, 230, 53, 0.2)",
+    icon: "\u{2756}",
+  },
 };
 
 const SOURCE_ORDER = [
@@ -229,6 +250,9 @@ const SOURCE_ORDER = [
   "GitHub",
   "gstack",
   "MiniMax",
+  "Weights & Biases",
+  "Qdrant",
+  "Pinecone",
 ];
 
 function highlightMatch(text: string, query: string): React.ReactNode {

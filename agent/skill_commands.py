@@ -344,6 +344,10 @@ _SETUP_SKIPPED_NOTE = (
 
 def _setup_note(loaded_skill: dict[str, Any]) -> Optional[str]:
     if loaded_skill.get("setup_skipped"):
+        # Skipped prompts still keep a remote setup_note (reduced-functionality guidance).
+        extra = loaded_skill.get("setup_note")
+        if isinstance(extra, str) and extra.strip():
+            return f"{_SETUP_SKIPPED_NOTE} {extra.strip()}"
         return _SETUP_SKIPPED_NOTE
     return loaded_skill.get("gateway_setup_hint") or (
         loaded_skill.get("setup_note") if loaded_skill.get("setup_needed") else None

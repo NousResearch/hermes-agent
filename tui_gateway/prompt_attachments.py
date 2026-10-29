@@ -21,6 +21,12 @@ _ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024
 _ATTACH_BYTES_MAX_BYTES = 25 * 1024 * 1024
 _PDF_ATTACH_MAX_BYTES = 50 * 1024 * 1024
 _PDF_ATTACH_MAX_PAGES = 25
+# ``pdf.attach`` render budget for the pdftoppm page render: a 120 s floor for the
+# first page plus ``_PDF_ATTACH_PAGE_TIMEOUT_S`` per additional page in the requested
+# range (at most ``_PDF_ATTACH_MAX_PAGES`` pages per call).  A flat cap starved
+# multi-page phone-camera scans on slow or busy gateway hosts (issue #146639).
+_PDF_ATTACH_TIMEOUT_S = 120
+_PDF_ATTACH_PAGE_TIMEOUT_S = 15
 
 # Leading magic bytes -> file extension, for filename-less uploads.
 _IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (

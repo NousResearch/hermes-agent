@@ -1080,6 +1080,7 @@ def _(rid, params: dict) -> dict:
         first_page, last_page, err = _pdf_page_range(rid, params)
         if err is not None:
             return err
+        render_timeout_s = _PDF_ATTACH_TIMEOUT_S + _PDF_ATTACH_PAGE_TIMEOUT_S * (last_page - first_page)
         argv = [
             "pdftoppm", "-png", "-r", "150", "-f", str(first_page), "-l", str(last_page),
             str(pdf_path), str(td_path / "page")]
@@ -1088,10 +1089,11 @@ def _(rid, params: dict) -> dict:
             # UTF-8 + lossy decode: non-UTF-8 child output must not crash the gateway
             # thread on locale-mismatched Windows.
             res = subprocess.run(
-                argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                argv, capture_output=True, text=True, timeout=render_timeout_s,
+                stdin=subprocess.DEVNULL,
                 encoding="utf-8", errors="replace", creationflags=windows_hide_flags(), check=False)
         except subprocess.TimeoutExpired:
-            return _err(rid, 5028, "pdftoppm timed out (>120s)")
+            return _err(rid, 5028, f"pdftoppm timed out (>{render_timeout_s}s)")
         if res.returncode != 0:
             tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
             return _err(rid, 5028, "pdftoppm failed: " + " | ".join(tail))

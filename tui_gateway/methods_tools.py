@@ -1767,8 +1767,6 @@ def _plugins_install(rid, params):
     catalog_name = str(params.get("catalog_name") or "").strip()
     if not ident and not catalog_name:
         return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
-    if refusal := _tools_mod("hermes_cli.plugins_cmd_install").gui_install_source_refusal(ident, catalog_name):
-        return _err(rid, 5026, refusal)
     _ensure_plugin_activation_listener()
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,

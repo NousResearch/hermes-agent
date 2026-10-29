@@ -849,25 +849,6 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
     return entry, identifier, warnings, None
 
 
-def gui_install_source_refusal(identifier: str, catalog_name: Optional[str] = None) -> Optional[str]:
-    """Why a Desktop/Webapp install of *identifier* is refused, else None.
-
-    A GUI install clones over ``https://`` only: a click there names a source the user may not have
-    read, and ``file://`` copies any local folder, ``ssh``/``git@`` signs in with the host's ssh-agent,
-    ``http://`` is unauthenticated. ``hermes plugins install`` keeps accepting every documented scheme.
-    A *catalog_name* install clones the catalog's own source, so *identifier* is not used."""
-    if catalog_name:
-        return None
-    try:
-        git_url = _pc()._resolve_git_url(identifier.strip())[0]
-    except ValueError:
-        return None  # not a source at all: the installer's own error names it
-    if git_url.startswith("https://"):
-        return None
-    return ("Plugins are installed from Hermes Desktop and the Webapp over https:// only. "
-            "Use `hermes plugins install` in a terminal for other sources.")
-
-
 def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assume_deps_consent: bool,
                 step: Callable[[InstallPhase], None], inspected_sha: Optional[str] = None) -> tuple | dict:
     """``(target, manifest, installed_name)`` of the tree to enable, or the error result. A catalog

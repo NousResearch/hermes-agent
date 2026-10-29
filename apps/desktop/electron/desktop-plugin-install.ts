@@ -435,25 +435,6 @@ async function resolvePluginRoot(cloneRoot: string, subdir: string | null): Prom
   return resolved
 }
 
-/** Why a click in the app may not install *identifier*, else null. The app clones over https:// only:
- *  `file://` copies any local folder, `ssh://`/`git@` signs in with the user's ssh-agent and `http://` is
- *  unauthenticated. `hermes plugins install` in a terminal keeps every scheme it documents. */
-export function guiInstallSourceRefusal(identifier: string): null | string {
-  let gitUrl: string
-
-  try {
-    gitUrl = resolvePluginGitUrl(identifier).gitUrl
-  } catch {
-    return null // not a source at all: the installer's own error names it
-  }
-
-  if (gitUrl.startsWith('https://')) {
-    return null
-  }
-
-  return 'Plugins are installed from Hermes Desktop over https:// only. Use `hermes plugins install` in a terminal for other sources.'
-}
-
 function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure: boolean } {
   if (gitUrl.startsWith('http://') || gitUrl.startsWith('file://')) {
     return {

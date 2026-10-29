@@ -202,14 +202,11 @@ async def _plugin_mutation(fn: Callable[[], dict]) -> dict:
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
-    from hermes_cli.plugins_cmd_install import gui_install_source_refusal
 
     catalog_name = (body.catalog_name or "").strip()
     identifier = body.identifier.strip()
     if not identifier and not catalog_name:
         raise HTTPException(status_code=400, detail="Provide an identifier or a catalog_name.")
-    if refusal := gui_install_source_refusal(identifier, catalog_name):
-        raise HTTPException(status_code=400, detail=refusal)
     result = await _plugin_mutation(lambda: _plugin_action(
         dashboard_install_plugin(
             identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None,

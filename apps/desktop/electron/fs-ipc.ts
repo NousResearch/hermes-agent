@@ -9,7 +9,7 @@ import path from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
 import { platformDefaultHermesHome } from './data-paths'
-import { guiInstallSourceRefusal, installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
+import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { removeDesktopPlugin } from './desktop-plugin-remove'
 import {
   DESKTOP_PLUGINS_DIR,
@@ -187,12 +187,6 @@ export function registerFsIpc({
 
     if (!identifier) {
       return { ok: false, error: 'identifier is required' }
-    }
-
-    const refusal = guiInstallSourceRefusal(identifier)
-
-    if (refusal) {
-      return { ok: false, error: refusal }
     }
 
     return installDesktopPluginFromGit(

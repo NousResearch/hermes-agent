@@ -150,6 +150,100 @@ def test_agent_builds_keep_the_installed_routing_proxy(monkeypatch):
     assert (sys.stdout, sys.stderr) == routers
 
 
+class _RecordingLock:
+    """Lock proxy recording acquire/release, injected in place of the shared lock."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.events = []
+
+    def __enter__(self):
+        self.events.append("acquire")
+        self._inner.acquire()
+        return self
+
+    def __exit__(self, *exc_info):
+        self.events.append("release")
+        self._inner.release()
+        return False
+
+
+def test_safe_stdio_transaction_shares_the_router_install_lock(monkeypatch):
+    """The safe-stdio read/check/publish transaction must hold the shared install lock.
+
+    A snapshot taken outside the lock can be assigned after a worker published
+    its router, replacing it with a SafeWriter around the pre-silence stream:
+    the worker's silence stays registered but nothing consults it anymore.
+    """
+    from agent.process_bootstrap import _install_safe_stdio
+
+    proxy = _RecordingLock(threading.Lock())
+    monkeypatch.setattr(thread_output, "_install_lock", proxy)
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    _install_safe_stdio()
+
+    assert proxy.events, "safe-stdio install must participate in the shared install lock"
+    assert proxy.events[-1] == "release", "the transaction must release the shared lock"
+
+
+def test_redaction_install_shares_the_router_install_lock(monkeypatch):
+    """The detached-redaction installer must hold the same shared install lock."""
+    import hermes_logging
+
+    proxy = _RecordingLock(threading.Lock())
+    monkeypatch.setattr(thread_output, "_install_lock", proxy)
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    hermes_logging.redact_detached_stdio()
+
+    assert proxy.events, "redaction install must participate in the shared install lock"
+    assert proxy.events[-1] == "release", "the transaction must release the shared lock"
+
+
+def test_build_overlapping_a_silence_keeps_the_worker_hidden(monkeypatch):
+    """A build running while a worker is silenced must not leak that worker's output.
+
+    With a global redirect active, the silenced worker's writes must stay absent
+    from the redirect destination while a loud writer still reaches it — the
+    stale-snapshot interleaving replaced the router with a SafeWriter around the
+    pre-silence stream and sent worker output into a /curator capture.
+    """
+    from agent.process_bootstrap import _install_safe_stdio
+
+    monkeypatch.setattr(thread_output, "_installed", {})
+    capture_out, capture_err = io.StringIO(), io.StringIO()
+    original = (sys.stdout, sys.stderr)
+    sys.stdout, sys.stderr = capture_out, capture_err
+    entered = threading.Event()
+    try:
+        def worker():
+            with thread_scoped_silence():
+                entered.set()
+                sys.stdout.write("hidden\n")
+                sys.stderr.write("hidden-err\n")
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert entered.wait(timeout=10)
+
+        _install_safe_stdio()  # an agent build overlapping the silence
+        sys.stdout.write("loud\n")
+        sys.stderr.write("loud-err\n")
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+        assert "hidden" not in capture_out.getvalue(), "silenced worker leaked into the capture"
+        assert "hidden-err" not in capture_err.getvalue(), "silenced worker leaked into the capture"
+        assert "loud\n" in capture_out.getvalue()
+        assert "loud-err\n" in capture_err.getvalue()
+    finally:
+        sys.stdout, sys.stderr = original
+
+
 def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):
     """Silencing is stream-wide, even when a redirect swaps proxy generations."""
     monkeypatch.setattr(thread_output, "_installed", {})

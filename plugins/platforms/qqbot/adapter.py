@@ -100,8 +100,10 @@ _AUDIO_URL_EXTENSIONS = {".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac"
 class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
-    # QQ Bot API does not support editing sent messages.
+    # QQ can replace an in-flight C2C stream bubble. It cannot edit an arbitrary
+    # message id, so generic editing stays off and tool-progress uses a fresh send.
     SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_NATIVE_STREAMING = True
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     ALLOW_ALL_ENV_PREFIX = "QQ"
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
@@ -167,6 +169,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
+        self._c2c_streams: dict[str, Any] = {}  # "{chat}\\n{turn}" → C2CStream
+        self._c2c_stream_done: dict[str, float] = {}  # finished keys, so a repeat finalize is a no-op
+        self._c2c_stream_blocked: set[str] = set()  # open failed; do not post again this turn
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
         self._token_lock = asyncio.Lock()
@@ -1610,6 +1615,108 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return await uploader.upload(
             chat_type=chat_type, target_id=chat_id, file_path=str(local_path), file_type=file_type,
             file_name=file_name or local_path.name)
+
+    # ── C2C native streaming ──
+
+    def supports_native_streaming(self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> bool:
+        """C2C only. Gateway labels that chat ``dm``; group and guild stay on ``send()``."""
+        del metadata
+        return (chat_type or "dm").strip().lower() in {"dm", "c2c"}
+
+    @staticmethod
+    def _c2c_stream_key(chat_id: str, turn_id: Optional[str]) -> str:
+        return f"{chat_id}\n{turn_id or ''}"
+
+    def _sweep_c2c_streams(self) -> None:
+        from .streaming import STREAM_SESSION_TTL_SECONDS
+
+        now = time.monotonic()
+        stale = [key for key, stream in self._c2c_streams.items() if stream.expired(now)]
+        for key in stale:
+            self._c2c_streams.pop(key, None)
+        expired = [key for key, stamp in self._c2c_stream_done.items()
+                   if now - stamp > STREAM_SESSION_TTL_SECONDS]
+        for key in expired:
+            self._c2c_stream_done.pop(key, None)
+
+    def _open_c2c_stream(self, chat_id: str, reply_to: Optional[str], key: str):
+        from .streaming import C2CStream
+
+        passive = reply_to or self._last_msg_id.get(chat_id)
+        if not passive:
+            logger.warning("[%s] C2C stream skipped for %s: no passive msg_id", self._log_tag, chat_id)
+            return None
+        self._sweep_c2c_streams()
+        stream = C2CStream(chat_id, passive, self._next_msg_seq(passive))
+        self._c2c_streams[key] = stream
+        return stream
+
+    def _finish_c2c_stream(self, key: str) -> None:
+        self._c2c_streams.pop(key, None)
+        self._c2c_stream_done[key] = time.monotonic()
+
+    async def _post_c2c_stream(self, stream, content: str, *, done: bool) -> bool:
+        outgoing, replayed = stream.outgoing(content)
+        if replayed:
+            logger.warning(
+                "[%s] C2C stream prefix held at %d chars (incoming %d)",
+                self._log_tag, len(outgoing), len(content or ""))
+        if not done and stream.opened and outgoing == stream.last_sent_content:
+            return True
+        try:
+            response = await self._api_request(
+                "POST", f"/v2/users/{stream.openid}/stream_messages",
+                stream.request_body(outgoing, done=done))
+            stream.accept(response, outgoing, done=done)
+            return True
+        except Exception:
+            logger.warning(
+                "[%s] C2C stream frame failed (index=%s done=%s)",
+                self._log_tag, stream.next_index, done, exc_info=True)
+            return False
+
+    async def send_stream_frame(
+        self, text: str, *, finalize: bool = False, chat_id: Optional[str] = None,
+        reply_to: Optional[str] = None, **kwargs,
+    ) -> bool:
+        """Push one cumulative C2C frame. False lets the consumer fall back to ``send()``.
+
+        An empty seed does not call QQ. A frame that fails before QQ has shown
+        anything returns False. After the bubble exists, a later failure stays
+        on this stream so the consumer does not send the whole answer again.
+        """
+        chat = str(chat_id or "").strip()
+        if not chat or self._guess_chat_type(chat) != "c2c":
+            return False
+        key = self._c2c_stream_key(chat, kwargs.get("turn_id"))
+        if key in self._c2c_stream_blocked:
+            return False
+        if key in self._c2c_stream_done:
+            return True
+        if not text and not finalize:
+            return True
+        stream = self._c2c_streams.get(key)
+        if stream is None:
+            if not text:
+                return False
+            stream = self._open_c2c_stream(chat, reply_to, key)
+            if stream is None:
+                return False
+        ok = await self._post_c2c_stream(stream, text, done=finalize)
+        if ok and finalize:
+            self._finish_c2c_stream(key)
+            return True
+        if ok:
+            return True
+        if not stream.opened:
+            self._c2c_streams.pop(key, None)
+            if len(self._c2c_stream_blocked) > 1000:
+                self._c2c_stream_blocked.clear()
+            self._c2c_stream_blocked.add(key)
+            return False
+        if finalize:
+            self._finish_c2c_stream(key)
+        return True
 
     # ── Typing indicator ──
 

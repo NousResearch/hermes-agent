@@ -1,0 +1,17 @@
+name: ctx_checkpoint
+repo: https://github.com/GottZ/ctx
+sha: 98749f3cf929a37d4c4a68512e1cd4db6f4bad6d
+subdir: integrations/hermes/plugin/ctx_checkpoint
+version: "0.4.4"
+title: ctx checkpoint
+description: "Memory provider that archives the direct user/assistant transcript into a ctx knowledge store before every compaction, deterministically and with no LLM in the path, and hands the resulting block IDs to the compaction summary so the exact wording stays recoverable. Best-effort on any supported Hermes; with compression.checkpoint_required on Hermes 0.21.1+ it uses the fail-closed pre-compress checkpoint contract (#94639) and blocks compaction until the checkpoint is durable. Disclosure — the turns about to be compacted (tool results and system prompts excluded, secrets redacted twice) are written through Hermes' MCP dispatch to the ctx server you configure in mcp_servers; the plugin holds no credentials, makes no other network calls and has no telemetry; it imports the core modules agent.redact, tools.registry and hermes_cli.config."
+maintainer: GottZ
+tier: community
+category: memory
+requires_hermes: ">=0.20.4"
+docs_url: https://github.com/GottZ/ctx/blob/root/integrations/hermes/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

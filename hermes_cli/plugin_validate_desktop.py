@@ -14,13 +14,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 # (rule, regex) applied to comment-stripped source; every hit fails the "desktop surface" check.
+# Prototype writes are not linted: bundled libraries (three.js) set fields on their own classes, and
+# no regex could tell those from patching a renderer global without misfiring on minified names.
+# Catalog review reads them by hand.
 _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("prototype patching",
-     re.compile(r"\b[A-Za-z_$][\w$]*\.prototype\.[\w$]+\s*=[^=]")),
-    ("prototype patching",
-     re.compile(r"\bObject\.definePropert(?:y|ies)\(\s*[\w$.]+\.prototype\b")),
-    ("prototype patching",
-     re.compile(r"\b(?:Reflect|Object)\.setPrototypeOf\(|\.__proto__\s*=")),
     ("dynamic code evaluation",
      re.compile(r"(?<![\w$.])eval\(|\bnew\s+Function\(")),
     ("dynamic import outside the SDK",
@@ -41,6 +38,11 @@ _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
                 r"\[data-(?:slot|tour|sidebar|testid)\b")),
     ("app DOM reach",
      re.compile(r"\.observe\(\s*document\.body\s*,\s*\{[^}]*\b(?:childList|subtree)\b")),
+    # The preview Browser can hold pages the user is signed in to. Script reaches it only through
+    # ``ctx.preview.executeJavaScript``: a declared capability plus the user's per-origin consent.
+    # Grabbing the app's ``<webview>`` (or minting one on the preview partition) skips both.
+    ("preview guest reach",
+     re.compile(r"\b(?:querySelector(?:All)?|closest|getElementsByTagName|createElement)\(\s*[`'\"]webview\b")),
 )
 
 # String literals are matched first and kept, so a ``/*`` or ``//`` INSIDE a string (a glob such as

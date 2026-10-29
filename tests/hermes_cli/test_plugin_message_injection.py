@@ -55,12 +55,37 @@ def test_cli_running_injection_keeps_existing_interrupt_behaviour():
     assert cli._pending_input.empty()
 
 
-def test_gateway_injection_requires_session_key(tmp_path, monkeypatch):
+def test_key_less_gateway_injection_lets_the_gateway_pick_the_chat(tmp_path, monkeypatch):
+    """No key and no origin: the live gateway picks the chat (gateway/plugin_keyless_inject.py) from
+    the session bound in the caller's own context, read here; none bound is passed as ``""``."""
+    from gateway.session_context import scoped_session_key
     _write_plugin_config(
         tmp_path,
         monkeypatch,
         {"allow_gateway_injection": True},
     )
+    context, manager = _context()
+    injector = MagicMock(return_value=False)
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert context.inject_message("wake up") is False
+    with scoped_session_key("agent:main:local:dm:local-1"):
+        context.inject_message("for me")
+    calls = [c.kwargs for c in injector.call_args_list]
+    assert [(c["keyless"], c["calling_session_key"], c["content"]) for c in calls] == [
+        (True, "", "wake up"), (True, "agent:main:local:dm:local-1", "for me")]
+    assert all("session_key" not in c and c["plugin_home"] == manager.home_path for c in calls)
+
+
+def test_key_less_injection_without_a_gateway_is_refused(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, _manager = _context()
+
+    assert context.inject_message("wake up") is False
+
+
+def test_key_less_gateway_injection_requires_explicit_permission(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {})
     context, manager = _context()
     injector = MagicMock(return_value=True)
     manager.set_gateway_message_injector(object(), injector)
@@ -162,6 +187,7 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
     assert result is True
     injector.assert_called_once_with(
         session_key="agent:main:telegram:dm:42",
+        plugin_home=manager.home_path,
         content="[system] wake up",
         plugin_id="notify-plugin",
     )
@@ -238,8 +264,10 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
         finally:
             reset_hermes_home_override(token)
 
+        # The calling manager's immutable home, not the launch home, rides with the key.
         injector.assert_called_once_with(
             session_key="agent:secondary:telegram:dm:42",
+            plugin_home=secondary_manager.home_path,
             content="continue",
             plugin_id="notify-plugin",
         )

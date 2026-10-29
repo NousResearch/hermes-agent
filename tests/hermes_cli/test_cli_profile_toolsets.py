@@ -54,14 +54,29 @@ def _created(client):
 
 
 def test_stale_profile_toolset_warns_and_the_session_is_created(store, monkeypatch):
-    from gateway.session_local_inventory import _policy_tools
+    from gateway.session_local_inventory import _policy_tools, _unknown_toolsets
     from gateway.session_policy import build_policy
+    from tests.hermes_cli import test_gateway_session_store as fake
     db, client = store
+    # The gateway judges the profile list against its own plugins and reports the stale name with the
+    # session (``unknown_toolsets``); the CLI prints main's "Unknown toolsets" line from it (PLG-7).
+    params_seen = {}
+    real_rpc = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        reply = await real_rpc(method, **params)
+        if method == "session.create":
+            policy = params_seen["policy"] = build_policy(params, CONFIG)
+            reply["info"]["unknown_toolsets"] = _unknown_toolsets(list(policy.current_toolsets(CONFIG)), CONFIG)
+        return reply
+    monkeypatch.setattr(client, "rpc", rpc)
+    monkeypatch.setitem(fake.INFO, "enabled_toolsets", ["terminal"])
     host, printed = _launch(monkeypatch, db)
-    assert len(printed) == 1 and "gone_plugin" in printed[0]  # main's "Unknown toolsets" startup warning
+    assert len(printed) == 1 and "gone_plugin" in printed[0] and "terminal" not in printed[0], printed
+    assert host.enabled_toolsets == ["terminal"]  # the gateway's resolved list, for display
     params = _created(client)
     assert "toolsets" not in params
-    policy = build_policy(params, CONFIG)
+    policy = params_seen["policy"]
     assert "terminal" in policy.toolsets
     _enabled, tools = _policy_tools(policy, CONFIG)
     assert "terminal" in {tool["function"]["name"] for tool in tools}

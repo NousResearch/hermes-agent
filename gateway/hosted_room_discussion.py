@@ -48,7 +48,7 @@ _MEMBER_CONTROL_FRAME_RE = re.compile(
 )
 _MEMBER_CONTROL_FRAME_RELABEL = "[member-quoted "
 _TURN_ID_RE = re.compile(
-    r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
+    r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>0|[1-9][0-9]*)\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
     r"m(?P<member>[0-9a-f]{24})$")
 
@@ -84,6 +84,18 @@ class DiscussionValidationError(DiscussionPolicyError):
 
 class DiscussionReconstructionError(DiscussionPolicyError):
     """Raised when a persisted task cannot be reproduced from durable state."""
+
+
+@dataclass(frozen=True)
+class DiscussionLimits:
+    """Finite per-user-send scheduling ceilings, separate from replay validation."""
+
+    max_rounds: int = MAX_DISCUSSION_ROUNDS
+    max_messages: int = MAX_DISCUSSION_MESSAGES
+
+    def __post_init__(self) -> None:
+        _positive_int(self.max_rounds, label="hosted_rooms.discussion.max_rounds")
+        _positive_int(self.max_messages, label="hosted_rooms.discussion.max_messages")
 
 
 @dataclass(frozen=True)
@@ -233,8 +245,10 @@ def _validate_member_target(value: Any, *, profile: str, known_profiles: set[str
     target = _exact_fields(value, label=f"member {index} {kind} target", required=_TARGET_FIELDS[kind])
     target_profile = _identifier(target["profile"], label=f"member {index} target profile")
     if kind == "local":
-        if target_profile != profile or profile not in known_profiles:
-            raise DiscussionValidationError(f"member {index} local target does not match a local profile")
+        if target_profile != profile:
+            raise DiscussionValidationError(f"member {index} local target profile does not match member profile")
+        if profile not in known_profiles:
+            raise DiscussionValidationError(f"member {index} profile '{profile}' is not local to this gateway")
         return {"kind": "local", "profile": profile}
     if target_profile != profile:
         raise DiscussionValidationError(f"member {index} peer target profile does not match member profile")
@@ -368,7 +382,8 @@ def _member_by_id(room: DiscussionRoom, member_id: Any) -> DiscussionMember:
 def _validate_turn_coordinates(payload: Mapping[str, Any], room: DiscussionRoom) -> None:
     _member_by_id(room, payload.get("member_id"))
     _zero_based_int(payload.get("member_index"), label="member_index", maximum=MAX_DISCUSSION_MEMBERS - 1)
-    _zero_based_int(payload.get("round_index"), label="round_index", maximum=MAX_DISCUSSION_ROUNDS - 1)
+    # Lowering the scheduling budget must not invalidate already-published higher rounds.
+    _bounded_int(payload.get("round_index"), message="round_index must be a non-negative integer")
     for field in ("thread_id", "task_id", "turn_id", "discussion_event_id"):
         _identifier(payload.get(field), label=field)
 
@@ -691,7 +706,9 @@ def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
-    freeze_input_context: bool = False) -> DiscussionDecision:
+    freeze_input_context: bool = False,
+    limits: DiscussionLimits = DiscussionLimits(),
+) -> DiscussionDecision:
     """Replay the complete room log and return at most one next member task."""
     room = validate_room(room_value, local_profiles=local_profiles)
     validated = _validated_events(events, room=room)
@@ -702,13 +719,13 @@ def plan_next_task(
         DiscussionDecision, discussion_event_id=discussion.event_id, source_event_seq=discussion.seq,
         thread_id=thread_id)
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
-    if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
+    if len(member_messages) >= limits.max_messages:
         return decide("bounded", "max_messages")
     terminals = {
         (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)
-    for round_index in range(MAX_DISCUSSION_ROUNDS):
+    for round_index in range(limits.max_rounds):
         # The user's message selects the first round, with no mention meaning
         # everyone. Later rounds are opt-in: only a peer explicitly cited by a
         # Bot and not heard from afterward gets another turn. Every member's
@@ -733,7 +750,7 @@ def plan_next_task(
                     if freeze_input_context or attachments else None)))
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
-        if round_index == MAX_DISCUSSION_ROUNDS - 1:
+        if round_index == limits.max_rounds - 1:
             return decide("bounded", "max_rounds")
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")
 

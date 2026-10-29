@@ -11,7 +11,10 @@ scoped or not, exactly as before.
 """
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
 from hermes_state_runtime import RuntimeStoreError
@@ -24,6 +27,9 @@ class SessionAuthorities:
         self.launch_key = hermes_home_key(launch_home)
         self._by_key: dict[str, object] = {}
         self._names: dict[str, str | None] = {}
+        # One event per slot reserved by ``add(home, None)`` while its authority is being built: set
+        # when ``replace`` fills the slot or ``remove`` drops it (the build failed).
+        self._starting: dict[str, asyncio.Event] = {}
         # A multiplexing runtime (configured, or one that ever served a second home) keeps the
         # scoped-lookup contract after its secondaries are removed: an unserved home is None.
         self.multiplexed = bool(multiplexed)
@@ -34,6 +40,8 @@ class SessionAuthorities:
             raise RuntimeError(f'duplicate session authority for {home}')
         self._by_key[key] = authority
         self._names[key] = name
+        if authority is None:
+            self._starting[key] = asyncio.Event()
         if key != self.launch_key:
             self.multiplexed = True
 
@@ -43,6 +51,7 @@ class SessionAuthorities:
         if key not in self._by_key or self._by_key[key] is not None:
             raise RuntimeError(f'no reserved session authority slot for {home}')
         self._by_key[key] = authority
+        self._end_start(key)
 
     def remove(self, home):
         """Drop *home*'s slot (a parked boot, a hot-unserved profile); returns the authority or None.
@@ -51,7 +60,24 @@ class SessionAuthorities:
         if key == self.launch_key:
             raise RuntimeError('the launch session authority cannot be removed')
         self._names.pop(key, None)
+        self._end_start(key)
         return self._by_key.pop(key, None)
+
+    def _end_start(self, key) -> None:
+        started = self._starting.pop(key, None)
+        if started is not None:
+            started.set()
+
+    def starting(self, profile):
+        """``(key, started)`` for the reserved slot *profile* names while its authority is still being
+        built, else None. ``started`` is set once the build ends: filled, or dropped because it failed."""
+        from hermes_cli.profiles import profile_matches_home
+        return next(((key, started) for key, started in list(self._starting.items())
+                     if profile_matches_home(profile, Path(key))), None)
+
+    def starting_homes(self) -> list[str]:
+        """Keys of every slot whose authority is still being built (a snapshot, as in ``serving``)."""
+        return list(self._starting)
 
     def profile_name(self, authority):
         """Served profile name for *authority*; None for the launch profile (its adapters are
@@ -60,10 +86,14 @@ class SessionAuthorities:
         return None if key == self.launch_key else self._names.get(key)
 
     def __len__(self) -> int:
-        return len(self._by_key)
+        return sum(authority is not None for authority in self._by_key.values())
 
     def __iter__(self):
-        return iter(self._by_key.values())
+        """The built authorities, retiring ones included. A slot still being built is no authority
+        yet, so iteration and ``len`` skip it (``starting`` names it); membership (``in``) still sees
+        it, so ``add`` refuses a second build of that profile."""
+        # A snapshot, as in ``serving``: other threads walk the set while the loop hot-serves.
+        return (authority for authority in list(self._by_key.values()) if authority is not None)
 
     def __contains__(self, home) -> bool:
         return hermes_home_key(home) in self._by_key
@@ -98,13 +128,55 @@ class SessionAuthorities:
     def serving(self) -> list:
         """Authorities that accept work: not a reserved-but-unbuilt slot, not one retiring (a
         failed serve or an unserve whose turn outlived Stop keeps its slot but refuses admissions)."""
-        return [a for a in self._by_key.values() if a is not None and not getattr(a, 'retiring', False)]
+        # A snapshot: hosted-room coordinator threads read the served set while the loop hot-serves.
+        return [a for a in list(self._by_key.values()) if a is not None and not getattr(a, 'retiring', False)]
 
     def served_profiles(self) -> list[dict]:
         return [{'profile_id': a.profile_id, 'home': a.profile_id} for a in self.serving()]
 
     def profile_ids(self) -> frozenset[str]:
         return frozenset(a.profile_id for a in self.serving())
+
+
+@dataclass(frozen=True)
+class LocalBot:
+    """One local bot this process serves: its profile ``name``, ``home`` and owning ``authority``.
+    ``problem`` says why a client cannot address it by that name (None when it can); ``retiring``
+    marks one being unserved, which still owns its rooms but takes no new work."""
+    name: str
+    home: Path
+    authority: Any
+    problem: str | None = None
+    retiring: bool = False
+
+
+def local_bots(runner) -> list[LocalBot]:
+    """The local bots this gateway serves, one per built authority, by the name the registry
+    reserved each under (the launch profile keeps ``served_profile_name``). The one answer to
+    "which bots are local here" for both the Bots roster (``profiles.list``) and group seating
+    (``session_hosted_members``). A name two homes answer to, or one that is not its home's own
+    name (a linked ``profiles/<name>`` resolves outside ``profiles/`` and reads as ``default``), is
+    flagged rather than bound: a client routes, and the member transport names, a bot by name."""
+    from collections import Counter
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is None:
+        authority = getattr(runner, 'session_authority', None)
+        pairs = [(served_profile_name(authority.profile_id), authority)] if authority is not None else []
+    else:
+        # A snapshot: hosted-room coordinator threads read the served set while the loop hot-serves.
+        pairs = [(registry.profile_name(a) or served_profile_name(a.profile_id), a)
+                 for a in list(registry._by_key.values()) if a is not None]
+    counts = Counter(name for name, _ in pairs)
+    bots = []
+    for name, authority in pairs:
+        problem = None
+        if counts[name] > 1:
+            problem = 'two served homes answer to that name'
+        elif name != served_profile_name(authority.profile_id):
+            problem = 'a linked profile home is not supported yet'
+        bots.append(LocalBot(name, Path(authority.profile_id), authority, problem,
+                             bool(getattr(authority, 'retiring', False))))
+    return bots
 
 
 def served_profile_name(home) -> str:
@@ -140,12 +212,38 @@ def active_authority(runner):
     return registry.active()
 
 
+def require_active_authority(runner, store=None):
+    """The active scope's authority, or a refusal: retryable (``runtime_draining``) while its
+    profile is parked, else ``profile_mismatch``. With *store* (a callable returning the caller's
+    SessionDB, called only once an authority exists), that store must be the authority's: an API
+    adapter bound to another profile's SessionDB never admits here."""
+    authority = active_authority(runner)
+    if authority is None:
+        from gateway.run_runtime import refuse_parked_scope
+        refuse_parked_scope(runner)  # retryable while its profile is parked
+    if authority is None or (store is not None and store() is not authority.db):
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError('profile_mismatch')
+    return authority
+
+
 def all_authorities(runner):
     registry = getattr(runner, 'session_authorities', None)
     if registry is not None:
         return list(registry)
     authority = getattr(runner, 'session_authority', None)
     return [authority] if authority is not None else []
+
+
+def serving_authorities(runner):
+    """The authorities that accept work (``SessionAuthorities.serving``: no reserved-but-unbuilt slot,
+    none retiring): what startup recovery, service creation and cross-ledger reads cover. Shutdown
+    keeps ``all_authorities``, so a retained authority's live writer is still settled."""
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None:
+        return registry.serving()
+    authority = getattr(runner, 'session_authority', None)
+    return [authority] if authority is not None and not getattr(authority, 'retiring', False) else []
 
 
 def require_serving(authority):
@@ -167,6 +265,23 @@ def admission_owner(authority, session_id):
         return local_lineage_owner(conn, sid)
 
 
+def holds_admission(authority, session_id) -> bool:
+    """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
+    retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
+    closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
+    try:
+        return bool(authority.db._read_one(
+            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
+            (session_id, admission_owner(authority, session_id))))
+    except Exception as exc:
+        if not getattr(authority, 'retiring', False):
+            raise
+        import logging
+        logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
+                                                 session_id, getattr(authority, 'profile_id', '?'), exc)
+        return True
+
+
 def owner_scope(authority, *, hydrate_secrets=False):
     """Runtime scope of the profile that owns *authority* — under multiplex only.
 
@@ -176,11 +291,16 @@ def owner_scope(authority, *, hydrate_secrets=False):
     would read the profile's config/.env for every handler, including bypass (--safe-mode)
     launches that must never touch the profile YAML. Test peers with symbolic ids ('fixture')
     likewise keep the ambient scope.
+
+    A standalone gateway that already hosts a second home (a profile created over the wire froze
+    the launch env and made unscoped secret reads fail closed) binds the launch profile's own scope
+    instead: unbound, every launch-profile session.create raised UnscopedSecretError (#141623).
     """
     from contextlib import nullcontext
     runner = getattr(authority, 'runner', None)
     if not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False):
-        return nullcontext()
+        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+        return launch_profile_scope_if_multiplexed()
     home = Path(str(authority.profile_id))
     if not home.is_absolute() or not home.is_dir():
         return nullcontext()

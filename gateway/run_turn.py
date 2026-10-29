@@ -26,8 +26,8 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
-    display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
-    silence_allowed,
+    display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
+    reply_expected_metadata, silence_allowed,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
@@ -257,10 +257,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
-            # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
-            _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
-                session_key, event.channel_prompt, source, internal=event.internal,
-            )
+            _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(  # internal/synthetic reuse pins
+                session_key, event.channel_prompt, source,
+                internal=event.internal or getattr(event, "inherit_channel_pin", False))
             if not event.internal:
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
@@ -277,7 +276,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner, **display_metadata_for_event(event),
+                    "gateway_input_owner": prepared.persistence_owner, **persisted_user_metadata_for_event(event),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
@@ -309,7 +308,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
             )
-            response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
@@ -331,7 +330,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
-            return await self._hmwa_deliver_turn_response(
+            return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
             )
@@ -350,10 +349,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide
         credential guard — see ``_standalone_launch_scope``."""
         from gateway.run import _profile_runtime_scope
+        from gateway.session_policy import local_desktop_turn
         home = self._profile_scope_key_for_source(source)
-        if home is not None:
-            return _profile_runtime_scope(home)
-        return self._standalone_launch_scope()
+        return local_desktop_turn(self, source, _profile_runtime_scope(home) if home is not None
+                                  else self._standalone_launch_scope())
 
     def _profile_scope_key_for_source(self, source: SessionSource) -> Optional[Path]:
         """Profile home ``_profile_scope_for_source`` binds for ``source``, or ``None`` when it falls
@@ -666,10 +665,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
             def _scoped_server_names() -> set:
                 with _lock:
-                    return {
-                        _key_name(key) for key in _servers
-                        if _server_visible_in_scope(key, reload_scope)
-                    }
+                    return {_key_name(key) for key in _servers if _server_visible_in_scope(key, reload_scope)}
 
             old_servers = _scoped_server_names()
             await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
@@ -695,10 +691,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             lines = [t("gateway.reload_mcp.header")] + [
                 t(key, names=", ".join(sorted(names))) for _label, key, names in changes if names
             ]
-            if not connected_servers:
-                lines.append(t("gateway.reload_mcp.none_connected"))
-            else:
-                lines.append(t("gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
+            from tools.mcp_tool_discovery import mcp_servers_not_connected
+            failed = await self._run_in_executor_with_context(mcp_servers_not_connected)
+            lines.append(t("gateway.reload_mcp.none_connected") if not connected_servers else t(
+                "gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
+            if failed:  # a configured server that did not connect is named, never passed over as success
+                lines.append(t("gateway.reload_mcp.failed", error=f"did not connect: {', '.join(failed)}"))
 
             self._mcp_reload_refresh_cached_agents(multiplex, event.source.profile)
 
@@ -1011,14 +1009,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         from agent.secret_scope import get_secret
         from gateway.display_config import resolve_display_setting, resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
-        from gateway.session_policy import policy_for_source
+        from gateway.session_policy import policy_for_source, policy_turn_toolsets
         policy = policy_for_source(self, source)
         from gateway.session_authorities import active_authority
         user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:
-            enabled_toolsets = list(policy.current_toolsets(user_config))
+            enabled_toolsets = policy_turn_toolsets(active_authority(self), policy, user_config, source.chat_id)
         adapter = self._delivery_adapter_for(source)
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
@@ -1141,15 +1139,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         from gateway.run_turn_runner import TurnRunner
         # Discord voice "verbal ack" on the FIRST tool call (discord.voice_fx.enabled): resolve the
         # guild whose voice connection is bound to this text channel (mirrors DiscordAdapter.play_tts).
-        _voice_ack_guild: list[Optional[int]] = [None]
-        if source.platform == Platform.DISCORD:
-            _va = self.adapters.get(Platform.DISCORD)
-            _vtc = getattr(_va, "_voice_text_channels", None)
-            if isinstance(_vtc, dict) and hasattr(_va, "voice_mixer_active"):
-                _voice_ack_guild[0] = next(
-                    (_gid for _gid, _tc in _vtc.items() if str(_tc) == str(source.chat_id) and _va.voice_mixer_active(_gid)),
-                    None,
-                )
+        _voice_ack_guild: list[Optional[int]] = [self._voice_ack_guild_for(source)]
 
         # Auto-cleanup of temporary progress bubbles needs a real ``delete_message`` (getattr on the
         # type: a fake adapter without it means "can't delete", not a crash).
@@ -1665,23 +1655,21 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
         the active model and the next message retries the primary). Skip failed runs: evicting
         would loop bad model → fallback → evict → recreate."""
-        session_key = turn_ctx.session_key
-        _agent = turn_ctx.agent_holder[0]
-        _result_for_fb = turn_ctx.result_holder[0]
+        session_key, _agent, _result_for_fb = turn_ctx.session_key, turn_ctx.agent_holder[0], turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
         # A provider fallback is drift even when it serves the configured model name on another endpoint.
-        if getattr(_agent, "_provider_fallback_active", False) is True:
-            self._evict_cached_agent(session_key)
-            return
-        # A LOCAL session runs its frozen launch policy's model, not the gateway's configured one.
-        from gateway.session_authorities import active_authority
-        from gateway.session_policy import policy_for_source
-        policy = policy_for_source(self, turn_ctx.source)
-        _cfg_model = self._fallback_baseline_model(
-            session_key, turn_ctx.source, _agent, policy_model=policy.current_model(active_authority(self)) if policy and policy.model else None)
-        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
-            self._evict_cached_agent(session_key)
+        if getattr(_agent, "_provider_fallback_active", False) is not True:
+            # A LOCAL session runs its frozen launch policy's model, not the gateway's configured one.
+            from gateway.session_authorities import active_authority
+            from gateway.session_policy import policy_for_source
+            policy = policy_for_source(self, turn_ctx.source)
+            _cfg_model = self._fallback_baseline_model(
+                session_key, turn_ctx.source, _agent, policy_model=policy.current_model(active_authority(self)) if policy and policy.model else None)
+            if _agent.model == _cfg_model or self._is_intentional_model_switch(session_key, _agent, _cfg_model):
+                return
+        _agent._evicted_on_fallback = session_key or True
+        self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
         """Finalize the streaming-TTS consumer on the outer event-loop thread (covers early returns
@@ -1709,9 +1697,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
 
         Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
-        from gateway.run import (
-            _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
-        )
+        from gateway.run import _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
+        from gateway.session_ingress import executing_admission
         pending_event = None
         pending = None
         if result and adapter and session_key:
@@ -1730,7 +1717,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                         session_key or "?", interrupt_message,
                     )
                 else:
-                    pending = interrupt_message
+                    # FIFO already has this send.
+                    pending = None if executing_admission.get() else interrupt_message
             elif pending_event:
                 # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
                 _pending_text = pending_event.text or ""
@@ -1762,13 +1750,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                         pending_event = None
                         pending = None
 
-        if self._draining and (pending_event or pending):
-            logger.info(
-                "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
-            )
-            pending_event = None
-            pending = None
+        if self._draining and getattr(pending_event, "_admitted_before_drain", False) is not True:
+            if pending_event or pending:
+                logger.info("Discarding pending follow-up for session %s during gateway %s", session_key or "?", self._status_action_label())
+            # Without a result the caller runs nothing next: leave the queue to the adapter.
+            pending_event = self._take_wake_admitted_before_drain(session_key, adapter) if result and adapter and session_key else None
+            pending = (pending_event.text or _build_media_placeholder(pending_event)) if pending_event is not None else None
         return pending_event, pending
 
     async def _run_agent_deliver_first_response(
@@ -1924,7 +1911,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
-                next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+                next_session_key, pending_event.channel_prompt, next_source,
+                internal=pending_event.internal or getattr(pending_event, "inherit_channel_pin", False),
             )
             if not pending_event.internal:
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.
@@ -2083,12 +2071,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
 
-        Never when the agent failed (the error is unseen content) or on "(empty)". Both suppression
-        flags reflect call success, not content, so reconcile against the recorded turn-final
-        payload: a mismatch (False, incl. payload-less split delivery) never suppresses; None (no
-        record) keeps legacy trust."""
+        Never when the agent failed (unseen error), on "(empty)", or on a finite (`-z`, `chat -q`) turn:
+        its viewer prints only the completion text, never the deltas (#139666). Both flags reflect call
+        success, not content: a mismatch with the recorded turn-final payload never suppresses."""
+        from gateway.session_finite import finite_turn_required
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
-        if not isinstance(response, dict) or response.get("failed"):
+        if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
             return
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
@@ -2333,17 +2321,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         from run_agent import AIAgent
 
-        disp = self._run_agent_display_settings(source)
+        disp = await asyncio.to_thread(self._run_agent_display_settings, source)  # auth lock + config I/O; scope rides the copied context
         if scheduled_heartbeat:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.
-            # Keep status callbacks intact for approvals and actionable failures.
+            # Keep status callbacks intact for approvals and actionable failures. Interim messages keep the chat's
+            # setting (TurnRunner drops them for a heartbeat): an agent this turn builds takes its mode from it.
             disp = dataclasses.replace(
-                disp,
-                tool_progress_enabled=False,
-                interim_assistant_messages_enabled=False,
-                _thinking_enabled=False,
-                _native_slack_task_cards=False,
+                disp, tool_progress_enabled=False, _thinking_enabled=False, _native_slack_task_cards=False,
                 needs_progress_queue=False,
             )
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(

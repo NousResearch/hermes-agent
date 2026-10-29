@@ -13,8 +13,10 @@ def _authority(adapter):
 
 
 # Malformed input is 400 and a retryable refusal 503; every other reason (ownership, generation,
-# identity) keeps the documented 409, as /v1/runs clients already branch on it.
-_STORE_ERROR_STATUS = {'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
+# identity) keeps the documented 409, as /v1/runs clients already branch on it. ``chain_moved``: a
+# chain's lookup went stale before its bind (``bind_api_steps``); a retry looks it up again.
+_STORE_ERROR_STATUS = {'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503,
+                       'chain_moved': 503}
 
 
 def store_error_response(_openai_error, exc):
@@ -30,6 +32,21 @@ def store_error_response(_openai_error, exc):
     status = _STORE_ERROR_STATUS.get(reason, 409)
     return web.json_response(_openai_error(reason, code=reason), status=status,
                              headers={'Retry-After': '1'} if status == 503 else None)
+
+
+async def continued_session(adapter, session_id, request_id=None):
+    """``continued_api_session`` for an HTTP door, before its response starts -> ``(session_id,
+    None)`` or ``(session_id, error response)``: a busy or unreadable store is the retryable 503
+    ``storage_unavailable`` (``store_error_response``), as for the header-less chat lookup."""
+    import asyncio
+    import sqlite3
+    from gateway.platforms.api_server import _openai_error
+    from gateway.session_api import continued_api_session
+    try:
+        return await asyncio.to_thread(
+            continued_api_session, adapter.gateway_runner, session_id, request_id), None
+    except (RuntimeStoreError, sqlite3.Error, OSError) as exc:
+        return session_id, store_error_response(_openai_error, exc)
 
 
 def run_admission(adapter, run_id):
@@ -109,7 +126,7 @@ async def respond_run(adapter, run_id, body, *, kind):
     ref = SessionRef(authority.profile_id, row['target_session_id'])
     actor = Principal('api', authority.profile_id,
         frozenset({'session:read', 'session:approve', 'session:respond'}), 'api-control:' + uuid.uuid4().hex)
-    snapshot = await authority.attach(actor, ref)
+    snapshot = await authority.attach(actor, ref, history=False)  # prompts only
     try:
         if not any(p['prompt_id'] == prompt_id and p['kind'] == kind for p in snapshot.prompts):
             raise RuntimeStoreError('approval_not_pending')

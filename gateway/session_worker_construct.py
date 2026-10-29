@@ -6,6 +6,7 @@ worker must never reload the profile), so the owner resolves them per turn, mode
 and they ride the hydrated request beside ``turn_v1``. The child validates the closed shape.
 """
 import json
+from pathlib import Path
 
 KEYS = frozenset({'fallback_model', 'ephemeral_system_prompt', 'prefill_messages'})
 
@@ -16,7 +17,7 @@ def construct_inputs(authority, policy, chat_id):
     with owner_scope(authority):
         return {'fallback_model': _fallback_chain(authority, policy),
                 'ephemeral_system_prompt': _ephemeral_prompt(authority, policy, chat_id),
-                'prefill_messages': _prefill(authority, policy)}
+                'prefill_messages': session_prefill(authority, policy, chat_id)}
 
 
 def _fallback_chain(authority, policy):
@@ -41,16 +42,92 @@ def _ephemeral_prompt(authority, policy, chat_id):
     resolve = getattr(authority.runner, '_get_system_prompt_for_channel', None)
     if not policy.ignore_user_config and resolve is not None:
         from gateway.config import Platform
-        configured = resolve(Platform.LOCAL, chat_id or '')
+        with policy.client_env_scope():
+            configured = resolve(Platform.LOCAL, chat_id or '')
     return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None
 
 
-def _prefill(authority, policy):
-    """The runner's prefill examples, exactly as the in-process constructor passes them. A bypass
-    session never loads the profile's prefill file (and the safe policy drops prefill anyway)."""
+def session_routing(authority, policy):
+    """The session's ``provider_routing``: its own profile's, as of its creation (main's CLI read it
+    once at startup). Never the runner's daemon-start copy."""
+    routing = policy.config(authority, secrets=False).get('provider_routing')
+    return routing if isinstance(routing, dict) else {}
+
+
+def session_prefill(authority, policy, session_id):
+    """The session's prefill examples, for the in-process turn and a managed worker alike: the
+    snapshot ``stage_session_prefill`` took when the session was created (main's CLI read the file
+    once at startup). A session this owner did not create (restored after a restart, a branch)
+    reads it on first use and keeps that. A bypass session never loads it."""
     if policy.ignore_user_config:
         return None
-    return getattr(authority.runner, '_prefill_messages', None) or None
+    held = _held_prefill(authority)
+    if session_id not in held:
+        held.setdefault(session_id, (_read_prefill(authority, policy),))
+    return held[session_id][0]
+
+
+class StagedReceipt(dict):
+    """A creation receipt plus owner memory ``commit_local_session`` publishes only from the
+    transaction that creates the session (never persisted: the receipt itself is the dict)."""
+    on_create: '_PrefillPublication | None' = None
+    # The request's own ``client_env`` (stage_local_session), for an overlapping create's retry check.
+    client_request: 'dict | None' = None
+
+
+class _PrefillPublication:
+    def __init__(self, authority, policy, session_id):
+        # A box per attempt: ownership is identity, even when two attempts read the same contents.
+        self.authority, self.policy, self.session_id, self.box = authority, policy, session_id, None
+
+    def read(self):
+        """This attempt's snapshot, read by its commit before the transaction (off the owner loop)."""
+        self.box = (_read_prefill(self.authority, self.policy),)
+
+    def publish(self):
+        _held_prefill(self.authority)[self.session_id] = self.box
+
+    def withdraw(self):
+        held = _held_prefill(self.authority)
+        if held.get(self.session_id) is self.box:
+            held.pop(self.session_id, None)
+
+
+def stage_session_prefill(authority, policy, receipt):
+    """Stage a new session's prefill snapshot: the ``prefill_messages_file`` of its config, relative
+    to its own profile home, read by this attempt's commit (``commit_local_session``, which the async
+    creates run in ``tracked_write``'s worker thread), never on the owner loop. The snapshot is held
+    in the authority's memory only if this attempt's commit creates the session: an overlapping
+    retry or conflicting create never replaces the winner's, and a refused or failed create leaves
+    nothing. Never evicted by other sessions; ``release_session_prefill`` drops it with the session."""
+    staged = StagedReceipt(receipt)
+    if not policy.ignore_user_config:
+        staged.on_create = _PrefillPublication(authority, policy, receipt['session_id'])
+    return staged
+
+
+def release_session_prefill(authority, session_ids):
+    held = getattr(authority, '_local_prefill', None) or {}
+    for sid in session_ids:
+        held.pop(str(sid), None)
+
+
+def _held_prefill(authority):
+    held = getattr(authority, '_local_prefill', None)
+    if held is None:
+        held = authority._local_prefill = {}
+    return held
+
+
+def _read_prefill(authority, policy):
+    from hermes_cli.cli_config_load import _load_prefill_messages, _resolve_prefill_messages_file
+    home = Path(str(authority.profile_id))
+    if not home.is_absolute():
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+    with policy.client_env_scope():  # HERMES_PREFILL_MESSAGES_FILE: a local session's client's
+        path = _resolve_prefill_messages_file(policy.config(authority, secrets=False))
+    return _load_prefill_messages(path, home) or None
 
 
 def construct_kwargs(frame):
@@ -74,7 +151,7 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
     """``(runtime, fallback_entry)`` for a launch-policy route: the session's FROZEN config and launch
     credential, walking its own fallback chain on an AuthError unless ``fallback=False`` (a session
     control asking which route the session itself runs). The one resolver an in-process turn
-    (``_resolve_policy_agent_runtime``) and a key-less managed worker (``worker_api_key``) share."""
+    (``_resolve_policy_agent_runtime``) and a managed worker (``worker_route``) share."""
     from hermes_cli.runtime_provider import (
         frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback,
     )
@@ -112,11 +189,14 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 
 
-def worker_api_key(policy, construct):
-    """Child side, for a worker launched without a key (every Kanban run): the route's own credential,
-    resolved as the in-process turn resolves it, from this process's profile home (its HERMES_HOME and
-    ``.env``). A fallback entry's key belongs to another provider and model, so the primary never
-    carries it; the agent's own fallback chain switches all three together (#139155).
+def worker_route(policy, construct):
+    """Child side: the ``api_key`` / ``base_url`` / ``api_mode`` overrides for the worker's agent, resolved
+    as the in-process turn resolves its route (``route_runtime`` with the launch key, if one was bound),
+    from this process's profile home (its HERMES_HOME and ``.env``). The frozen ``model.base_url`` alone
+    is not the route: a per-model api_mode (opencode-go Responses models) and a resolved endpoint
+    (Bedrock's regional URL) come only from resolution. A fallback entry's route belongs to another
+    provider and model, so the primary never carries it; the agent's own fallback chain switches them
+    together (#139155).
 
     A primary AuthError walks the chain the agent will actually get: the owner's per-turn
     ``construct_v1`` chain (an ordinary session's refreshed profile fallbacks) when it was sent,
@@ -124,8 +204,19 @@ def worker_api_key(policy, construct):
     frozen, model = policy.effective()
     if 'fallback_model' in construct:
         frozen = {**frozen, 'fallback_providers': construct['fallback_model'] or [], 'fallback_model': None}
-    runtime, fallback_entry = route_runtime(policy, frozen, model, None)
-    return runtime.get('api_key') if fallback_entry is None else None
+    runtime, fallback_entry = route_runtime(policy, frozen, model, construct['api_key'])
+    if fallback_entry is not None:
+        return {}
+    api_mode = runtime.get('api_mode')
+    # A built-in provider's chat_completions is the resolver's default unless model.api_mode set it: None
+    # leaves the agent's model-aware upgrade (GPT-5 on OpenRouter to Responses). A custom route's mode
+    # is its endpoint's own (providers.<name>/custom_providers[] or URL-detected), which the in-process
+    # turn's ``custom`` provider never upgrades; the worker's ``custom:<name>`` would.
+    if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
+            and not (frozen.get('model') or {}).get('api_mode')):
+        api_mode = None
+    return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
+            'api_mode': api_mode}
 
 
 def checkpoint_agent_kwargs(config):

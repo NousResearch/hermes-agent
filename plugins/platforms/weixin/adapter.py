@@ -39,6 +39,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 from gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
+from gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
 
 
 def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
@@ -90,7 +91,8 @@ def _session_not_ready_error(ret: Any, errcode: Any, errmsg: Any) -> RuntimeErro
 
 def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     """TCPConnector with certifi's CA bundle (``ilinkai.weixin.qq.com`` fails some system stores, e.g. Homebrew
-    OpenSSL); None without certifi so aiohttp's default (honors ``SSL_CERT_FILE`` under trust_env) applies.
+    OpenSSL); None when no certifi bundle resolves (absent, or deleted by an install-environment rotation and
+    not re-derivable), so aiohttp's default (honors ``SSL_CERT_FILE`` under trust_env) applies.
     ``keepalive_timeout=2`` + ``enable_cleanup_closed`` drain idle CLOSE_WAIT sockets behind proxies like Warp.
 
     Uses a tight ``keepalive_timeout=2`` (default aiohttp: 30s) so idle connections drain promptly behind
@@ -100,12 +102,18 @@ def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     """
     try:
         import ssl
-        import certifi
+
+        from agent.ssl_verify import certifi_bundle_path
     except ImportError:
         return None
     if not AIOHTTP_AVAILABLE:
         return None
-    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True)
+    # Re-derived when an install-environment rotation deleted the directory certifi was imported
+    # from, so a long-lived gateway does not pin a cacert.pem that no longer exists (#137255).
+    cafile = certifi_bundle_path()
+    if cafile is None:
+        return None
+    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=cafile), keepalive_timeout=2, enable_cleanup_closed=True)
 
 
 def _new_session(**kwargs: Any) -> aiohttp.ClientSession:
@@ -1254,6 +1262,12 @@ _INSTALL_HINT = "Weixin: aiohttp/cryptography not installed"
 _env_configured = env_is_connected("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN")
 
 
+def _config_connected(config: Any) -> bool:
+    """``config_connected_fn``: account_id AND token in the merged PlatformConfig; a token alone is
+    not enough, so this platform opts out of the generic ``token or api_key`` shortcut."""
+    return bool(config.extra.get("account_id") and (config.token or config.extra.get("token")))
+
+
 def _is_connected(config: Any) -> bool:
     """Account ID AND token, from ``config`` or the scoped ``WEIXIN_*`` env (``gateway/config.py``'s
     Weixin connected check reads the same pair), else ``.env``, which a plain CLI process never loads
@@ -1301,9 +1315,9 @@ def interactive_setup() -> None:
     wizard and the facade seams tests patch keep intercepting."""
     from hermes_cli import gateway as gw
     from hermes_cli.gateway_setup_wizard import (
-        _confirm_reconfigure, _offer_home_channel, _print_setup_header, _prompt_csv, _save_env_values)
+        confirm_reconfigure, offer_home_channel, print_setup_header, prompt_csv, save_env_values)
 
-    _print_setup_header("💬 Weixin / WeChat")
+    print_setup_header("💬 Weixin / WeChat")
     print()
     gw._print_info_lines(
         "  1. Hermes will open Tencent iLink QR login in this terminal.",
@@ -1311,7 +1325,7 @@ def interactive_setup() -> None:
         "  3. Hermes will store the returned account_id/token in ~/.hermes/.env.",
         "  4. This adapter supports native text, image, video, and document delivery.",
     )
-    if not _confirm_reconfigure("Weixin", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
+    if not confirm_reconfigure("Weixin", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
         return
     if not check_weixin_requirements():
         gw.print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
@@ -1349,12 +1363,12 @@ def interactive_setup() -> None:
     ]
     access_idx = gw.prompt_choice("  How should direct messages be authorized?", access_choices, 0)
     if access_idx == 2:
-        allowlist = _prompt_csv("  Allowed Weixin user IDs (comma-separated)", user_id or "")
-        _save_env_values(WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=allowlist)
+        allowlist = prompt_csv("  Allowed Weixin user IDs (comma-separated)", user_id or "")
+        save_env_values(WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=allowlist)
         gw.print_success("  Weixin allowlist saved.")
     else:
         policy, allow_all, level, message = _WEIXIN_DM_POLICIES.get(access_idx, _WEIXIN_DM_POLICIES[3])
-        _save_env_values(WEIXIN_DM_POLICY=policy, WEIXIN_ALLOW_ALL_USERS=allow_all, WEIXIN_ALLOWED_USERS="")
+        save_env_values(WEIXIN_DM_POLICY=policy, WEIXIN_ALLOW_ALL_USERS=allow_all, WEIXIN_ALLOWED_USERS="")
         (gw.print_success if level == "success" else gw.print_warning)(message)
         if access_idx == 0:
             gw.print_info("  Unknown DM users can request access and you approve them with `hermes pairing approve`.")
@@ -1364,19 +1378,19 @@ def interactive_setup() -> None:
     group_choices = ["Disable group chats (recommended)", "Allow all group chats", "Only allow listed group chat IDs"]
     group_idx = gw.prompt_choice("  How should group chats be handled?", group_choices, 0)
     if group_idx == 0:
-        _save_env_values(WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="")
+        save_env_values(WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="")
         gw.print_info("  Group chats disabled.")
     elif group_idx == 1:
-        _save_env_values(WEIXIN_GROUP_POLICY="open", WEIXIN_GROUP_ALLOWED_USERS="")
+        save_env_values(WEIXIN_GROUP_POLICY="open", WEIXIN_GROUP_ALLOWED_USERS="")
         gw.print_warning("  All group chats enabled (only takes effect if iLink delivers group events).")
     else:
-        allow_groups = _prompt_csv("  Allowed group chat IDs (comma-separated, not member user IDs)", "")
-        _save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
+        allow_groups = prompt_csv("  Allowed group chat IDs (comma-separated, not member user IDs)", "")
+        save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
         gw.print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
 
     if user_id:
         print()
-        _offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
+        offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
     print()
     gw.print_success("Weixin configured!")
     gw.print_info(f"  Account ID: {account_id}")
@@ -1384,13 +1398,37 @@ def interactive_setup() -> None:
         gw.print_info(f"  User ID: {user_id}")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "
+    "but keep the message compact and chat-friendly. You can send media files natively: include "
+    "MEDIA:/absolute/path/to/file in your response. Images are sent as native photos, videos play inline when "
+    "supported, and other files arrive as downloadable documents. You can also include image URLs in markdown "
+    "format ![alt](url) and they will be downloaded and sent as native media when possible."
+)
+_SEND_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        target_ref_syntax_fn=regex_groups_parser(_SEND_TARGET_RE, thread_group=False),
+        standalone_send=StandaloneSendPolicy(label="Weixin", media=True),
         name="weixin", label="Weixin / WeChat", adapter_factory=WeixinAdapter, check_fn=check_weixin_requirements,
+        dashboard_label="Weixin / WeChat (Personal)",
+        dashboard_description="Connect a personal WeChat account through Tencent's iLink Bot API.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/",
+        dashboard_env_vars=("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
         is_connected=_is_connected, required_env=["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"], install_hint=_INSTALL_HINT,
-        setup_fn=interactive_setup, allowed_users_env="WEIXIN_ALLOWED_USERS", allow_all_env="WEIXIN_ALLOW_ALL_USERS",
+        config_connected_fn=_config_connected,
+        setup_fn=interactive_setup,
         cron_deliver_env_var="WEIXIN_HOME_CHANNEL",
         # Out-of-process send_message/cron; the adapter's own send() chunks (MAX_MESSAGE_LENGTH), so
         # max_message_length stays 0: send_message hands the full text + all media to one native send.
-        standalone_sender_fn=_standalone_send, max_message_length=0, emoji="💬", allow_update_command=True)
+        standalone_sender_fn=_standalone_send, max_message_length=0, emoji="💬", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="low",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

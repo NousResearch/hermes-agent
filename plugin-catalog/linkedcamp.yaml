@@ -1,0 +1,18 @@
+name: linkedcamp
+title: LinkedCamp
+repo: https://github.com/LinkedCamp/hermes-plugin
+sha: 76b6045ac43d1f6c394d84341a8e8c278fd72e84
+version: "1.0.0"
+description: "Plan, build and run LinkedIn and email outreach in LinkedCamp through LinkedCamp's hosted MCP server (Streamable HTTP at https://mcp.linkedcamp.com/mcp, OAuth sign-in with the account's API key, no keys in config): campaigns, audience search URLs, multi-step sequences, leads, unified inbox and AI-drafted replies, sending-account health, analytics, reply agents, and agency sub-accounts. Bundles the linkedcamp-outreach workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to LinkedCamp's hosted server (mcp.linkedcamp.com) and acts on the user's LinkedCamp account; the tool set is served by that server at runtime and is not covered by the pinned sha. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. Some tools reach real people (campaign_launch starts outreach, message_send delivers at once); the package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and blocks them in unattended runs."
+maintainer: LinkedCamp
+tier: community
+category: tools
+docs_url: https://github.com/LinkedCamp/hermes-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

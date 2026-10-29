@@ -18,8 +18,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { _electron, type ElectronApplication, expect, type Page } from '@playwright/test'
 
 import { resolveElectronBinary } from '../electron-binary'
+import { stopSandboxGatewayDaemons } from '../run-tmp-reaper'
 
-import { isSandboxProcess, procfsCensus, type ProcInfo, readProc, sandboxProcessesOf } from './process-census'
+import { type ProcInfo, sandboxProcessesOf } from './process-census'
 
 export type { ProcInfo } from './process-census'
 
@@ -84,73 +85,6 @@ export function createCoreSandbox(label: string): CoreSandbox {
       }
     }
   }
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-}
-
-function processHomeUnder(pid: number, root: string, hermesHome: string): boolean {
-  if (!procfsCensus) {
-    return isSandboxProcess(pid, hermesHome)
-  }
-
-  const info = readProc(pid)
-
-  return Boolean(info?.cmdline) && info!.environ.split('\0').some(entry => entry.startsWith(`HERMES_HOME=${root}`))
-}
-
-/**
- * SIGTERM (then SIGKILL after 15 s) every daemon recorded in a sandbox
- * `gateway.lock` (launch home and each profile home). The pid is only
- * signalled while its environment still names this sandbox, so a recycled pid
- * is never touched.
- */
-function stopSandboxGatewayDaemons(root: string, hermesHome: string): void {
-  const profilesDir = path.join(hermesHome, 'profiles')
-
-  const homes = [
-    hermesHome,
-    ...(fs.existsSync(profilesDir) ? fs.readdirSync(profilesDir).map(name => path.join(profilesDir, name)) : [])
-  ]
-
-  const pids = new Set<number>()
-
-  for (const home of homes) {
-    try {
-      const pid = Number(JSON.parse(fs.readFileSync(path.join(home, 'gateway.lock'), 'utf8'))?.pid)
-
-      if (Number.isInteger(pid) && pid > 0 && processHomeUnder(pid, root, hermesHome)) {
-        pids.add(pid)
-      }
-    } catch {
-      // No lock (remote-only spec, never booted) or an empty one: nothing to stop.
-    }
-  }
-
-  const signal = (sig: NodeJS.Signals) => {
-    for (const pid of pids) {
-      try {
-        process.kill(pid, sig)
-      } catch {
-        pids.delete(pid)
-      }
-    }
-  }
-
-  signal('SIGTERM')
-
-  for (const deadline = Date.now() + 15_000; pids.size && Date.now() < deadline; ) {
-    sleepSync(100)
-
-    for (const pid of [...pids]) {
-      if (!processHomeUnder(pid, root, hermesHome)) {
-        pids.delete(pid)
-      }
-    }
-  }
-
-  signal('SIGKILL')
 }
 
 /**
@@ -305,13 +239,20 @@ export function backendProcesses(sandbox: CoreSandbox): ProcInfo[] {
  * `hermes gateway stop` for the sandbox profile, run with the backend's own
  * interpreter (argv[0] of the live `gateway run`). Attach-mode Desktop never
  * owns the gateway, so this is how a test proves teardown works when asked.
+ * `interrupt` passes `--yes`: stop refuses while a turn is live unless told to
+ * interrupt it.
  */
-export function stopSandboxGateway(sandbox: CoreSandbox): { code: number | null; output: string } {
+export function stopSandboxGateway(
+  sandbox: CoreSandbox,
+  { interrupt = false }: { interrupt?: boolean } = {}
+): { code: number | null; output: string } {
   const [backend] = backendProcesses(sandbox)
   // argv[0], unquoted (a Windows command line quotes a path with spaces).
   const python = /^"([^"]+)"|^(\S+)/.exec(backend?.cmdline ?? '')?.slice(1).find(Boolean) || 'python3'
 
-  const result = spawnSync(python, ['-m', 'hermes_cli.main', 'gateway', 'stop'], {
+  const args = ['-m', 'hermes_cli.main', 'gateway', 'stop', ...(interrupt ? ['--yes'] : [])]
+
+  const result = spawnSync(python, args, {
     cwd: REPO_ROOT,
     env: coreAppEnv(sandbox),
     encoding: 'utf8',
@@ -339,6 +280,35 @@ export interface WsRecorder {
 
 export function recordWebSockets(page: Page): WsRecorder {
   const rec: WsRecorder = { sockets: [], events: [], sent: [] }
+
+  // A new main-frame document (reload, goto) tears down every socket the old
+  // one held, but Playwright forgets its sockets at that commit without
+  // emitting their 'close', so a pre-reload socket would read as live forever.
+  // Retire them at the commit. A same-document (hash) navigation has no
+  // navigation request, so it never retires a live socket.
+  let documentPending = false
+
+  page.on('request', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = true
+    }
+  })
+  page.on('requestfailed', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = false
+    }
+  })
+  page.on('framenavigated', frame => {
+    if (frame !== page.mainFrame() || !documentPending) {
+      return
+    }
+
+    documentPending = false
+
+    for (const entry of rec.sockets) {
+      entry.closed = true
+    }
+  })
 
   page.on('websocket', ws => {
     if (!ws.url().includes('/api/ws')) {

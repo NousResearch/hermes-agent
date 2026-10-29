@@ -99,7 +99,9 @@ class BillingUpgradeCapExceeded(BillingTransient):
 
 def resolve_portal_base_url(state: Optional[dict[str, Any]] = None) -> str:
     """Resolve the portal base URL with login-time precedence: env, stored state, default."""
-    env = os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
+    from hermes_cli.auth_nous import _nous_portal_env_override
+
+    env = _nous_portal_env_override()
     for candidate in (env, state.get("portal_base_url") if state else None):
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip().rstrip("/")
@@ -317,6 +319,12 @@ def patch_auto_top_up(
     """``PATCH /api/billing/auto-top-up`` — configure auto-reload (scope required; strict body, JSON numbers)."""
     body = {"enabled": bool(enabled), "threshold": float(threshold), "topUpAmount": float(top_up_amount)}
     return _request("PATCH", "/api/billing/auto-top-up", body=body, timeout=timeout)
+
+
+def patch_keep_going_on_credits(*, enabled: bool, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
+    """``PATCH /api/billing/keep-going-on-credits``: the window plan's "Keep going on credits" setting (scope
+    required; strict ``{enabled}`` body). Turning it off skips the spending gates."""
+    return _request("PATCH", "/api/billing/keep-going-on-credits", body={"enabled": bool(enabled)}, timeout=timeout)
 
 
 def post_charge(*, amount_usd: float | str, idempotency_key: str, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:

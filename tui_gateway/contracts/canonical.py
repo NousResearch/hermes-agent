@@ -12,10 +12,11 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, ProjectRef
+from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
-from .registry import canonical_method
+from .prompt_voice import ClarifyLockParams, ClarifyLockResult
+from .registry import canonical_method, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -61,7 +62,7 @@ class PromptCancelParams(Params):
 
 
 canonical_method("prompt.cancel", params=PromptCancelParams, result=AdmissionStatus,
-                 doc="Retire a still-queued admission; a started one is unaffected.")
+                 doc="Retire a queued admission; a started one is interrupted in the same call.")
 
 
 class PromptResolveUnknownParams(Params):
@@ -82,7 +83,8 @@ class SessionMutateParams(Params):
     """``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;
     ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.
     ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite
-    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project."""
+    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``
+    (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes)."""
 
     session_id: str
     request_id: str
@@ -104,7 +106,7 @@ class SessionMutateResult(OpenModel):
 
 canonical_method("session.mutate", params=SessionMutateParams, result=SessionMutateResult,
                  doc="Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, "
-                     "delete, rewind, reset, model, reasoning, workspace, compress, import).")
+                     "delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).")
 
 
 class SessionPruneParams(Params):
@@ -124,6 +126,22 @@ class SessionPruneResult(Result):
 canonical_method("session.prune", params=SessionPruneParams, result=SessionPruneResult,
                  doc="Local operator only: the owner deletes the ended sessions `hermes sessions prune` "
                      "selected, skipping busy sessions and retained reset owners.")
+
+
+class CommandObserveParams(Params):
+    session_id: str
+    name: str
+    arg: str | None = None
+    profile: str | None = None
+
+
+class CommandObserveResult(Result):
+    queued: bool
+
+
+canonical_method("command.observe", params=CommandObserveParams, result=CommandObserveResult,
+                 doc="Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires "
+                     "`pre_command` for it in the session's profile after replying (`queued` false: not fired).")
 
 
 class CanonicalSessionInfoParams(Params):
@@ -151,7 +169,7 @@ class SessionInventoryFields(Result):
     tool_availability: dict[str, JsonValue] | None = None
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
-    browser_backend_notice: str | None = None
+    unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
 
 
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
@@ -164,6 +182,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     desktop_protocol: str
     profile_name: str
     cwd: str | None = None
+    # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.
+    edit_approval_policy: Literal["ask", "workspace_session", "session"] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
@@ -177,6 +197,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None
+    # A session-start notice (the project plugins this gateway does not load).
+    config_warning: str | None = None
 
 
 canonical_method("session.info", params=CanonicalSessionInfoParams, result=CanonicalSessionInfo,
@@ -214,6 +236,7 @@ class SessionStats(Result):
     model: str
     provider: str
     fallback_model: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
@@ -242,6 +265,28 @@ class RollbackSessionDiffResult(Result):
 canonical_method("rollback.session_diff", params=RollbackSessionDiffParams, result=RollbackSessionDiffResult,
                  doc="The classic CLI's /diff session: everything changed since the session's earliest "
                      "retained checkpoint, as data for its terminal renderer.")
+
+
+class SessionExportParams(Params):
+    """``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``)."""
+
+    session_id: str
+    profile: str | None = None
+    format: str = "json"
+    redact: bool = False
+
+
+class SessionExportResult(Result):
+    """``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default
+    file name. The client writes it (the gateway may be remote); nothing is written on the host."""
+
+    format: str
+    filename: str
+    content: str
+
+
+canonical_method("session.export", params=SessionExportParams, result=SessionExportResult,
+                 doc="The /save transcript rendered for the client to write (the gateway writes nothing).")
 
 
 class SessionAutomationParams(Params):
@@ -321,6 +366,12 @@ class PromptResponseResult(Result):
 
 canonical_method("clarify.respond", params=ClarifyRespondParams, result=PromptResponseResult,
                  doc="Generation-fenced answer to a pending clarify prompt (empty answer = skipped).")
+
+# The owner serves the sidecar's ``clarify.lock`` wire unchanged (``gateway/session_clarify_lock.py``):
+# declaring it here lets the dispatcher refuse a mistyped or unknown key before the handler runs.
+canonical_method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockResult,
+                 doc="Lock one answer of the owner's batch clarify request (editable until every question is "
+                     "locked); only a viewer attached to that session with session:respond may lock.")
 
 
 # ── cron / kanban / a2a producers ─────────────────────────────────────────────────────────────
@@ -459,7 +510,7 @@ canonical_method("worker.persist", params=WorkerPersistParams, result=WorkerPers
                  doc="Sequence-fenced typed persistence write from an adopted worker.")
 
 
-# ── hosted rooms (canonical-only verbs) ───────────────────────────────────────────────────────
+# ── hosted rooms ─────────────────────────────────────────────────────────────────────────────────
 
 
 class GroupsAttachmentUploadParams(RoomParams):
@@ -483,8 +534,12 @@ class RoomAttachment(OpenModel):
     event_id: str | None = None
 
 
+_UPLOAD_DOC = "Store one attachment for a later groups.send manifest (idempotent per upload_id)."
+# Both routes serve the room byte verbs with one wire, so a group composer attaches files the same
+# way whichever backend owns the room; the canonical table keeps its closed-set key check.
 canonical_method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment,
-                 doc="Store one attachment for a later groups.send manifest (idempotent per upload_id).")
+                 doc=_UPLOAD_DOC)
+method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment, doc=_UPLOAD_DOC)
 
 
 class GroupsAttachmentDownloadParams(RoomParams):
@@ -496,8 +551,11 @@ class RoomAttachmentBytes(RoomAttachment):
     data_base64: str
 
 
+_DOWNLOAD_DOC = "Read one committed attachment for a live room viewer."
 canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams,
-                 result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer.")
+                 result=RoomAttachmentBytes, doc=_DOWNLOAD_DOC)
+method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=RoomAttachmentBytes,
+       doc=_DOWNLOAD_DOC)
 
 
 class GroupsDiscardParams(RoomParams):
@@ -511,8 +569,10 @@ class GroupsDiscardResult(Result):
     task: RoomTaskReceipt
 
 
-canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
-                 doc="Discard one indeterminate room task after explicit user confirmation.")
+_DISCARD_DOC = "Discard one indeterminate room task after explicit user confirmation."
+canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
+# The standalone route forwards it to the room's owning gateway (#145960), like the byte verbs.
+method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
 
 
 # Shared-name overrides load after the authority-only value shapes above.

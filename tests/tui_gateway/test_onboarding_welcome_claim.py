@@ -187,7 +187,7 @@ def _connector_guest_from_another_profile(_managed: Path) -> None:
 
     _write_shared_nous_state({"auth_method": anon_auth.ANON_AUTH_METHOD, "account_tier": anon_auth.ANON_ACCOUNT_TIER,
                               "anon_token": "anon_other", "client_id": anon_auth.ANON_CLIENT_ID,
-                              "portal_base_url": PORTAL, anon_auth.WELCOME_CLAIM_FLAG: False})
+                              "portal_base_url": PORTAL, anon_auth.WELCOME_CLAIM_FLAG: False}, renewal=False)
 
 
 ELSEWHERE = {

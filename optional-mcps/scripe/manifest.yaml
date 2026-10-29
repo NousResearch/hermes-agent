@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: scripe
+description: Plan, write, schedule and measure LinkedIn posts for a team in Scripe.
+source: https://scripe.io/developers/api/v1/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata at
+# https://mcp.scripe.io/.well-known/oauth-protected-resource -> AS metadata at
+# https://scripe.io/.well-known/oauth-authorization-server with
+# registration_endpoint, PKCE S256, loopback redirect URIs accepted);
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.scripe.io/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - scripe
+    - linkedin post
+    - linkedin posts
+    - content calendar
+  hosts:
+    - scripe.io
+  examples:
+    - Plan next week's LinkedIn posts for every profile on the team
+    - Write a LinkedIn post in my voice from this meeting transcript
+    - Show how my LinkedIn posts performed last month
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Scripe (or run `hermes mcp login scripe`). Choose read-only or
+  full access and the workspace to start in, then restart the
+  session so tools load.

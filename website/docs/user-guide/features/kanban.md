@@ -1354,11 +1354,16 @@ ledger also pauses reclaim. Once that bound interpreter is itself dead, nothing 
 still be running the attempt, so the crash sweep reclaims it like any dead worker:
 the run closes as crashed and the card returns to `ready` (or `review`) under the
 normal crash budget, which can re-execute effects the lost attempt already had.
-Resolve an unknown admission explicitly using `prompt.resolve_unknown` with its
-admission ID and execution generation. This acknowledges uncertainty; it does
-**not** authorize another Kanban attempt. Inspect the effects, then explicitly
-complete or block the card; unblock a blocked card only when a new attempt is
-intended. Confirmed timeouts and provider rate-limit results retain their ordinary
+A run that never bound an interpreter is released the same way once its owner has
+settled the admission (a lost card attempt's admission settles `interrupted`):
+when every worker pid recorded for the run is dead, or, with none recorded, once
+its claim has expired, the run closes as crashed (reclaimed if its claim had already
+lapsed) and the card returns to `ready`
+under the same crash budget. Resolving an unknown admission explicitly
+(`prompt.resolve_unknown` with its admission ID and execution generation) settles
+it the same way, so it can lead to another attempt. To avoid that, inspect the
+effects and complete or block the card first; unblock a blocked card only when a
+new attempt is intended. Confirmed timeouts and provider rate-limit results retain their ordinary
 retry/failure-accounting behavior.
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.

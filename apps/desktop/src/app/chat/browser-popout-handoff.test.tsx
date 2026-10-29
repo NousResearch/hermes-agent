@@ -17,8 +17,11 @@ vi.mock('./right-rail/real-profile-consent-dialog', () => ({
 // spawns, no URL bar, content never paints — #119850).
 const TABS_KEY = 'hermes.desktop.previewTabs.v2'
 
-// Cold module graph, not test logic: the shell pulls in the whole app.
-vi.setConfig({ testTimeout: 90000 })
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this the first
+// test pays the cold transform of the whole app the shell pulls in and times out on a loaded runner.
+import '@/store/preview'
+import './browser-popout-shell'
 
 function tabRow(id: string, url: string) {
   return { id, target: { kind: 'url', label: 'kanban', source: url, url } }

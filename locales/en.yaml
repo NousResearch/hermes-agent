@@ -1051,6 +1051,8 @@ platform:
       confirm_title: "Confirm"
       already_resolved: "This approval has already been resolved~"
       expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
+      no_longer_pending: "⌛ This approval is no longer pending (it timed out or was answered elsewhere)"
+      click_failed: "⚠️ Couldn't record your choice. Click again, or answer with /approve or /deny."
       by_user: "{label} by {user}"
       resolved_once: "Approved once"
       resolved_session: "Approved for session"

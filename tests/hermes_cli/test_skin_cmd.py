@@ -10,6 +10,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import skin_cmd
+from hermes_cli.skin_engine import load_skin
 from hermes_constants import get_hermes_home
 
 
@@ -53,6 +54,28 @@ def test_set_forks_a_builtin_without_inventing_a_background():
     # full palette carried over, and it became active.
     assert data["colors"].get("banner_title")
     assert (get_hermes_home() / "config.yaml").read_text().find("default-custom") != -1
+
+
+def test_forking_a_builtin_again_never_overwrites_an_earlier_fork():
+    """The user tweaked ``default`` once (-> ``default-custom``), switched back to ``default``, and
+    tweaks it again: the new fork is ``default`` plus that one key, and the earlier fork survives."""
+    earlier = _skins() / "default-custom.yaml"
+    earlier.write_text(
+        'name: default-custom\ncolors:\n  ui_accent: "#ff0000"\n  ui_tool: "#00ffff"\n', encoding="utf-8"
+    )
+    before = earlier.read_bytes()
+    _activate("default")
+
+    assert skin_cmd._skin_set("ui_ok", "#123456", None) == 0
+
+    assert earlier.read_bytes() == before
+    active = skin_cmd._active_skin()
+    assert active not in ("default", "default-custom")
+    colors = yaml.safe_load((_skins() / f"{active}.yaml").read_text())["colors"]
+    assert colors.pop("ui_ok") == "#123456"
+    builtin = dict(load_skin("default").colors)
+    builtin.pop("ui_ok", None)
+    assert colors == builtin  # nothing else moved, nothing leaked in from the earlier fork
 
 
 def test_set_rejects_non_hex():

@@ -225,13 +225,23 @@ class SharedRouteAdapters:
         # A cron target carries no inbound guild anchor, so a route's guild_id is matched against
         # itself — the target-exact discriminators (chat_id/thread_id) authorize the send. Without
         # this the documented ``guild_id + chat_id`` Discord route never authorized cron output.
+        # A Telegram DM's chat id IS the user id for every bot (#104933), so a ``user_id`` DM route
+        # is equally target-exact: feed the target chat id as the user discriminator. Without this
+        # the documented ``user_id``-only Telegram DM route never authorized cron output and the
+        # credentialless satellite fell to standalone "platform 'telegram' not configured/enabled"
+        # (#146336). Other platforms' chat ids live in a separate id space than user ids, so their
+        # ``user_id`` routes stay a miss — fail closed.
         for route in self._routes:
             if str(route.platform).lower() != platform_key:
                 continue
-            if not (route.chat_id or route.thread_id):
+            if not (route.chat_id or route.thread_id or route.user_id):
                 continue  # guild-only routes are not target-exact
+            route_user_id = (
+                str(chat_id) if route.user_id and platform_key == "telegram" else None
+            )
             if route.matches(
                 str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+                user_id=route_user_id,
             ):
                 return adapter
         return default

@@ -231,6 +231,33 @@ def shift_dimensions(dims, idx, n, delete, is_row):
     return len(saved)
 
 
+def _rewrite_formulas(wb, rewriter, report):
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    new = rewriter.rewrite(cell.value, sheet.title)
+                    if new != cell.value:
+                        report["formulas"].append(
+                            {"sheet": sheet.title, "cell": cell.coordinate,
+                             "from": cell.value, "to": new})
+                        cell.value = new
+
+
+def _shift_freeze_panes(ws, axis, idx, n, delete, report):
+    m = COORD_RE.match(ws.freeze_panes)
+    ci = column_index_from_string(m.group(2).upper())
+    ri = int(m.group(4))
+    if axis == "rows":
+        ri = shift_point(ri, idx, n, delete) or max(idx, 2)
+    else:
+        ci = shift_point(ci, idx, n, delete) or max(idx, 2)
+    new = f"{get_column_letter(ci)}{ri}"
+    if new != ws.freeze_panes:
+        report["freeze_panes"] = {"from": ws.freeze_panes, "to": new}
+        ws.freeze_panes = new
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Insert/delete rows or columns AND rewrite formula "
@@ -279,16 +306,7 @@ def main(argv=None):
     getattr(ws, f"{report['op']}_{axis}")(idx, n)
 
     # 3. formulas everywhere
-    for sheet in wb.worksheets:
-        for row in sheet.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    new = rewriter.rewrite(cell.value, sheet.title)
-                    if new != cell.value:
-                        report["formulas"].append(
-                            {"sheet": sheet.title, "cell": cell.coordinate,
-                             "from": cell.value, "to": new})
-                        cell.value = new
+    _rewrite_formulas(wb, rewriter, report)
 
     # 4. merges back, shifted
     for rng in old_merges:
@@ -307,17 +325,7 @@ def main(argv=None):
             report["autofilter"] = {"from": ws.auto_filter.ref, "to": new}
             ws.auto_filter.ref = new
     if ws.freeze_panes:
-        m = COORD_RE.match(ws.freeze_panes)
-        ci = column_index_from_string(m.group(2).upper())
-        ri = int(m.group(4))
-        if axis == "rows":
-            ri = shift_point(ri, idx, n, delete) or max(idx, 2)
-        else:
-            ci = shift_point(ci, idx, n, delete) or max(idx, 2)
-        new = f"{get_column_letter(ci)}{ri}"
-        if new != ws.freeze_panes:
-            report["freeze_panes"] = {"from": ws.freeze_panes, "to": new}
-            ws.freeze_panes = new
+        _shift_freeze_panes(ws, axis, idx, n, delete, report)
 
     # 6. data validations + conditional formatting applied ranges
     for dv in list(ws.data_validations.dataValidation):

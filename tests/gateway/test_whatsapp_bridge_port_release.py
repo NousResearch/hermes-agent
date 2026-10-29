@@ -13,6 +13,7 @@ spawned bridge (``Popen``/node) and the health probe are mocked.
 
 import asyncio
 import contextlib
+import itertools
 import os
 import signal
 import socket
@@ -221,11 +222,22 @@ class TestPortReleasedBeforeSpawn:
                 proc.pid = 4190000  # a PID that is not alive
                 return proc
 
+            # The gateway loop serves every platform: the SIGTERM grace must not freeze it.
+            loop = asyncio.get_running_loop()
+            ticks, handle = [], {}
+
+            def _tick():
+                ticks.append(time.monotonic())
+                handle["next"] = loop.call_later(0.05, _tick)
+
+            _tick()
             with patch.object(whatsapp_adapter, "_kill_stale_bridge_by_pidfile", wraps=whatsapp_adapter._kill_stale_bridge_by_pidfile):
                 patches = _connect_patches(adapter, _record_spawn)
                 with patches[0], patches[1], patches[2], patches[3], patches[4]:
                     await adapter.connect()
+            handle["next"].cancel()
 
+            assert max(b - a for a, b in itertools.pairwise(ticks)) < 0.5, "connect() blocked the event loop"
             assert adapter._fatal_error_code != "whatsapp_bridge_port_busy"
             assert spawn_state.get("spawns") == 1, "the new bridge was not spawned exactly once"
             assert spawn_state["port_free_at_spawn"] is True, "spawned while the port was still held"
@@ -294,6 +306,9 @@ class TestListenerDiscovery:
         assert adapter._fatal_error_code is None
 
     @linux
+    # psutil's system-wide scan readlinks /proc/<pid>/exe of every process, which names files under
+    # the real Hermes home whenever a Hermes process runs on the box; it reads, never writes.
+    @pytest.mark.allow_real_home_io
     def test_psutil_fallback_when_lsof_and_ss_missing(self, monkeypatch):
         """Neither lsof nor ss on PATH (the repo image ships neither): the psutil TCP scan still
         finds the listener, so the port holder can be identified and reaped."""

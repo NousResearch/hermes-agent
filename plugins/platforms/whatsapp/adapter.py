@@ -723,8 +723,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     retryable=False,
                 )
                 return False
+            # The reaps below block for up to their SIGTERM grace each; off the loop so every other
+            # platform on this gateway keeps running while a slow bridge exits.
             if not secondary or prior_bridge_is_ours:
-                _kill_stale_bridge_by_pidfile(self._session_path)
+                await asyncio.to_thread(_kill_stale_bridge_by_pidfile, self._session_path)
             if not secondary:
                 if self._bridge_probe_timed_out:
                     # No /health answer is no ownership evidence (another profile's busy bridge looks the same), and
@@ -744,7 +746,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             retryable=True,
                         )
                         return False
-                _kill_port_process(self._bridge_port)
+                await asyncio.to_thread(_kill_port_process, self._bridge_port)
             # The kills above return after SIGTERM (or SIGKILL past the grace); a slow-exiting bridge could still
             # hold the port, and the blind sleep that used to sit here spawned onto it — EADDRINUSE, retried forever.
             # A secondary that skipped the kills found the port free, so this returns at once on that path.

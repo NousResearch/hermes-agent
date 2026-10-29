@@ -3720,7 +3720,7 @@ tips:
   t176: "SOUL.md ajanın birincil kimlik dosyasıdır — davranışı şekillendirmek için özelleştirin."
   t177: "Hermes proje bağlamını .hermes.md, AGENTS.md, CLAUDE.md veya .cursorrules dosyasından yükler (ilk eşleşen)."
   t178: "Alt dizinlerdeki AGENTS.md dosyaları, ajan klasörlere girdikçe aşamalı olarak keşfedilir."
-  t179: "Bağlam dosyaları 20.000 karakterle sınırlıdır; akıllı baş/son kırpma uygulanır."
+  t179: "Bağlam dosyaları modelin bağlam penceresinin %6'sıyla sınırlıdır (20.000–500.000 karakter); akıllı baş/son kırpma uygulanır."
   t180: "Tarayıcı arka uçları: yerel Chromium, Lightpanda, Browserbase, Browser Use ve Firecrawl — ayrıca eklenti olarak Camofox."
   t181: "Camofox (tespit önleyici Firefox) artık bir eklenti: hermes plugins install camofox."
   t182: "browser_exec birden çok tarayıcı adımını tek bir Python çağrısında çalıştırır — gezinme, çıkarma ve tıklama birlikte."

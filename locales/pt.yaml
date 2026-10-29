@@ -3720,7 +3720,7 @@ tips:
   t176: "SOUL.md é o arquivo de identidade principal do agente — personalize-o para moldar o comportamento."
   t177: "O Hermes carrega o contexto do projeto de .hermes.md, AGENTS.md, CLAUDE.md ou .cursorrules (primeiro encontrado)."
   t178: "Arquivos AGENTS.md em subdiretórios são descobertos progressivamente conforme o agente navega pelas pastas."
-  t179: "Arquivos de contexto são limitados a 20.000 caracteres com truncamento inteligente de início/fim."
+  t179: "Arquivos de contexto são limitados a 6% da janela de contexto do modelo (20.000–500.000 caracteres) com truncamento inteligente de início/fim."
   t180: "Backends de navegador: Chromium local, Lightpanda, Browserbase, Browser Use e Firecrawl — além do Camofox como plugin."
   t181: "O Camofox (Firefox antidetecção) agora é um plugin: hermes plugins install camofox."
   t182: "browser_exec executa várias etapas do navegador em uma única chamada Python — navegar, extrair e clicar juntos."

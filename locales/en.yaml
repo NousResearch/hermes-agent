@@ -3834,7 +3834,7 @@ tips:
   t176: "SOUL.md is the agent's primary identity file — customize it to shape behavior."
   t177: "Hermes loads project context from .hermes.md, AGENTS.md, CLAUDE.md, or .cursorrules (first match)."
   t178: "Subdirectory AGENTS.md files are discovered progressively as the agent navigates into folders."
-  t179: "Context files are capped at 20,000 characters with smart head/tail truncation."
+  t179: "Context files are capped at 6% of the model's context window (20,000–500,000 characters) with smart head/tail truncation."
   t180: "Browser backends: local Chromium, Lightpanda, Browserbase, Browser Use and Firecrawl — plus Camofox as a plugin."
   t181: "Camofox (anti-detection Firefox) is a plugin now: hermes plugins install camofox."
   t182: "browser_exec runs several browser steps in one Python call — navigate, extract and click together."

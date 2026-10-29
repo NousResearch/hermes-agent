@@ -3720,7 +3720,7 @@ tips:
   t176: "Is é SOUL.md príomhchomhad aitheantais an ghníomhaire — saincheap é chun an t-iompar a mhúnlú."
   t177: "Lódálann Hermes comhthéacs tionscadail ó .hermes.md, AGENTS.md, CLAUDE.md, nó .cursorrules (an chéad cheann a aimsítear)."
   t178: "Aimsítear comhaid AGENTS.md fo-eolairí de réir a chéile de réir mar a thugann an gníomhaire aghaidh ar fhillteáin."
-  t179: "Tá uasteorainn 20,000 carachtar ar chomhaid chomhthéacs le teascadh cliste ceann/deireadh."
+  t179: "Uasteorainn na gcomhad comhthéacs: 6% de fhuinneog chomhthéacs an tsamhail (20,000–500,000 carachtar), le teascadh cliste ceann/deireadh."
   t180: "Cúlchórais brabhsálaí: Chromium áitiúil, Lightpanda, Browserbase, Browser Use agus Firecrawl — chomh maith le Camofox mar bhreiseán."
   t181: "Is breiseán é Camofox (Firefox frith-bhrath) anois: hermes plugins install camofox."
   t182: "Ritheann browser_exec roinnt céimeanna brabhsálaí in aon ghlao Python amháin — nascleanúint, eastóscadh agus cliceáil le chéile."

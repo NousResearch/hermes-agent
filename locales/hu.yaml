@@ -3737,7 +3737,7 @@ tips:
   t176: "A SOUL.md az ügynök elsődleges identitásfájlja – szabd testre, hogy alakítsd a viselkedését."
   t177: "A Hermes a .hermes.md, AGENTS.md, CLAUDE.md vagy .cursorrules fájlból tölti be a projekt kontextusát (az első találatból)."
   t178: "Az almappák AGENTS.md fájljait az ügynök fokozatosan fedezi fel, ahogy a mappákba lép."
-  t179: "A kontextusfájlok mérete legfeljebb 20 000 karakter, intelligens eleje/vége csonkolással."
+  t179: "A kontextusfájlok mérete a modell kontextusablakának 6%-a (20 000–500 000 karakter), intelligens eleje/vége csonkolással."
   t180: "Böngésző-háttérrendszerek: helyi Chromium, Lightpanda, Browserbase, Browser Use és Firecrawl — plusz a Camofox bővítményként."
   t181: "A Camofox (észlelésgátló Firefox) mostantól bővítmény: hermes plugins install camofox."
   t182: "A browser_exec több böngészőlépést futtat egyetlen Python-hívásban — navigálás, kinyerés és kattintás együtt."

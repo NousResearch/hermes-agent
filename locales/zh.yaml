@@ -3720,7 +3720,7 @@ tips:
   t176: "SOUL.md 是代理的核心身份文件——可自定义它来塑造代理行为。"
   t177: "Hermes 从 .hermes.md、AGENTS.md、CLAUDE.md 或 .cursorrules 加载项目上下文（取首个匹配）。"
   t178: "子目录中的 AGENTS.md 文件会随着代理进入相应文件夹而逐步被发现。"
-  t179: "上下文文件上限为 20,000 字符，超出部分会智能保留首尾截断。"
+  t179: "上下文文件上限为模型窗口的 6%（20,000～500,000 字符），超出部分会智能保留首尾截断。"
   t180: "浏览器后端：本地 Chromium、Lightpanda、Browserbase、Browser Use 和 Firecrawl，另有 Camofox 插件。"
   t181: "Camofox（反检测 Firefox）现已改为插件：hermes plugins install camofox。"
   t182: "browser_exec 在一次 Python 调用中执行多个浏览器步骤——导航、提取和点击一次完成。"

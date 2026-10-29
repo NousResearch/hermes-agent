@@ -3720,7 +3720,7 @@ tips:
   t176: "SOUL.md는 에이전트의 핵심 정체성 파일이에요 — 직접 수정해서 행동을 바꿀 수 있어요."
   t177: "Hermes는 .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules 중 먼저 발견되는 파일에서 프로젝트 컨텍스트를 불러와요."
   t178: "하위 디렉터리의 AGENTS.md 파일은 에이전트가 폴더로 이동할 때마다 점진적으로 발견돼요."
-  t179: "컨텍스트 파일은 20,000자로 제한되며, 앞뒤를 남기는 스마트 잘라내기가 적용돼요."
+  t179: "컨텍스트 파일은 모델 컨텍스트 윈도의 6%(20,000~500,000자)로 제한되며, 앞뒤를 남기는 스마트 잘라내기가 적용돼요."
   t180: "브라우저 백엔드: 로컬 Chromium, Lightpanda, Browserbase, Browser Use, Firecrawl, 그리고 플러그인으로 Camofox."
   t181: "Camofox(탐지 회피 Firefox)는 이제 플러그인입니다: hermes plugins install camofox."
   t182: "browser_exec는 여러 브라우저 단계를 한 번의 Python 호출로 실행합니다 — 이동, 추출, 클릭을 한꺼번에."

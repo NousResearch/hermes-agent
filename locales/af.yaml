@@ -3720,7 +3720,7 @@ tips:
   t176: "SOUL.md is die agent se primêre identiteitslêer — pas dit aan om gedrag te vorm."
   t177: "Hermes laai projekkonteks vanaf .hermes.md, AGENTS.md, CLAUDE.md of .cursorrules (eerste passing)."
   t178: "AGENTS.md-lêers in subgidse word geleidelik ontdek soos die agent in vouers navigeer."
-  t179: "Kontekslêers is beperk tot 20 000 karakters met slim kop/stert-afkapping."
+  t179: "Kontekslêers is beperk tot 6% van die model se konteksvenster (20 000–500 000 karakters) met slim kop/stert-afkapping."
   t180: "Blaaier-agterkante: plaaslike Chromium, Lightpanda, Browserbase, Browser Use en Firecrawl — plus Camofox as 'n inprop."
   t181: "Camofox (Firefox teen opsporing) is nou 'n inprop: hermes plugins install camofox."
   t182: "browser_exec voer verskeie blaaierstappe in een Python-oproep uit — navigeer, onttrek en klik saam."

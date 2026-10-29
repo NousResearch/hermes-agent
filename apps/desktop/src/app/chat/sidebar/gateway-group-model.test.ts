@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { makeSessionInfo } from '@/test/session-info'
 
-import { buildGatewaySessionGroups, scopeGatewaySessionGroups } from './gateway-group-model'
+import {
+  buildGatewaySessionGroups,
+  groupingOwner,
+  scopeGatewaySessionGroups,
+  showsProfileTotals,
+  withEmptyProfileGroups
+} from './gateway-group-model'
 
 const registry = {
   version: 2,
@@ -26,25 +32,68 @@ const members = (groups: ReturnType<typeof buildGatewaySessionGroups>) =>
   Object.fromEntries(groups.map(group => [group.id, group.sessions.map(session => session.id)]))
 
 describe('buildGatewaySessionGroups', () => {
-  it('keys groups by exact owner, so one profile name on two gateways stays two groups', () => {
+  it('keys groups by owner, so one profile name on two gateways stays two groups', () => {
     const groups = buildGatewaySessionGroups(rows, registry, {})
 
     expect(members(groups)).toEqual({
-      [JSON.stringify(['local', 'default'])]: ['a', 'd'],
-      [JSON.stringify(['remote-1', 'default'])]: ['b'],
-      [JSON.stringify([null, 'default'])]: ['c']
+      [JSON.stringify(['local', 'default'])]: ['a', 'c', 'd'],
+      [JSON.stringify(['remote-1', 'default'])]: ['b']
     })
-
-    for (const group of groups) {
-      expect(group.sessions.every(session => (session.connection_id || null) === group.connectionId)).toBe(true)
-    }
   })
 
-  it('leaves legacy rows without a connection unassigned instead of guessing a gateway', () => {
-    const legacy = buildGatewaySessionGroups(rows, registry, {}).find(group => group.connectionId === null)!
+  it('groups a bare row under the registry primary without re-tagging the row', () => {
+    const primary = buildGatewaySessionGroups(rows, registry, {}).find(group => group.connectionId === 'local')!
 
+    expect(primary.sessions.find(session => session.id === 'c')?.connection_id).toBeUndefined()
+    expect(groupingOwner(undefined, registry)).toBe('local')
+    expect(groupingOwner('  ', registry)).toBe('local')
+    expect(groupingOwner('remote-1', registry)).toBe('remote-1')
+    expect(groupingOwner(undefined, { ...registry, primary: 'remote-1' })).toBe('remote-1')
+  })
+
+  it('leaves bare rows unassigned (flat profile groups) when no registry exists', () => {
+    const groups = buildGatewaySessionGroups(rows, null, {})
+    const legacy = groups.find(group => group.connectionId === null)!
+
+    expect(groupingOwner(undefined, null)).toBeNull()
+    expect(members(groups)[JSON.stringify([null, 'default'])]).toEqual(['c'])
     expect(legacy.label).toBe(legacy.profile)
-    expect(registry.connections.some(connection => legacy.label.includes(connection.label))).toBe(false)
+  })
+})
+
+describe('withEmptyProfileGroups', () => {
+  it('adds an untagged profile list under the registry primary, never as a duplicate', () => {
+    const groups = withEmptyProfileGroups(
+      buildGatewaySessionGroups(rows, registry, {}),
+      ['default', 'quiet'],
+      null,
+      registry,
+      {}
+    )
+
+    expect(groups.map(group => group.id).sort()).toEqual(
+      [
+        JSON.stringify(['local', 'default']),
+        JSON.stringify(['local', 'quiet']),
+        JSON.stringify(['remote-1', 'default'])
+      ].sort()
+    )
+  })
+
+  it('keeps an untagged profile list unassigned without a registry', () => {
+    const groups = withEmptyProfileGroups([], ['quiet'], null, null, {})
+
+    expect(groups.map(group => group.id)).toEqual([JSON.stringify([null, 'quiet'])])
+  })
+})
+
+describe('showsProfileTotals', () => {
+  it('shows primary-pool totals on bare and primary groups only', () => {
+    expect(showsProfileTotals(null, false, 'local')).toBe(true)
+    expect(showsProfileTotals('local', false, 'local')).toBe(true)
+    expect(showsProfileTotals('remote-1', false, 'local')).toBe(false)
+    expect(showsProfileTotals('local', false, null)).toBe(false)
+    expect(showsProfileTotals('local', true, 'local')).toBe(false)
   })
 })
 

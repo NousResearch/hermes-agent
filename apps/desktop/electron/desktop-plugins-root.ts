@@ -268,7 +268,7 @@ async function desktopHalfEntry(
  *  the agent half's `__pycache__` (the gateway's `ROOT_LAYOUT_SKIP`). */
 const ROOT_LAYOUT_SKIP = new Set(['.git', '__pycache__'])
 
-const rootLayoutFilter = (src: string) => !ROOT_LAYOUT_SKIP.has(path.basename(src))
+export const rootLayoutFilter = (src: string) => !ROOT_LAYOUT_SKIP.has(path.basename(src))
 
 /** Copy one unified package's desktop half into the app root as
  *  `<appRoot>/<packageName>/`, stamping the marker: its `desktop/` folder, or

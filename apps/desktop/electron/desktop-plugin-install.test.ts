@@ -289,7 +289,10 @@ describe('installDesktopPluginFromGit', () => {
   })
 
   it.each([
-    ['a symlinked file inside it', (repo: string) => fs.symlinkSync('/etc/hostname', path.join(repo, 'desktop', 'leak.txt'))],
+    [
+      'a symlinked file inside it',
+      (repo: string) => fs.symlinkSync('/etc/hostname', path.join(repo, 'desktop', 'leak.txt'))
+    ],
     [
       'a symlinked desktop folder',
       (repo: string, outside: string) => {
@@ -341,7 +344,9 @@ describe('installDesktopPluginFromGit', () => {
     fs.writeFileSync(path.join(repo, 'desktop', 'panel.js'), 'replaced\n')
     git('add', '-A')
     git('-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'plain')
-    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)).toMatchObject({ ok: true })
+    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)).toMatchObject({
+      ok: true
+    })
     expect(fs.readdirSync(appRoot)).toEqual([installed.pluginName])
     expect(fs.readFileSync(path.join(appRoot, installed.pluginName!, 'panel.js'), 'utf8')).toBe('replaced\n')
   })

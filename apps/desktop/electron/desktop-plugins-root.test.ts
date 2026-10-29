@@ -322,19 +322,22 @@ describe('reconcileUnifiedDesktopHalves', () => {
     }
   )
 
-  it.skipIf(process.platform === 'win32')('never stamps a marker into a plugin the user linked into the app root', async () => {
-    const home = makeHome()
-    const appRoot = path.join(home, 'desktop-plugins')
-    const own = path.join(home, 'src', 'pkg')
-    write(path.join(own, 'plugin.js'), 'same')
-    write(path.join(home, 'plugins', 'pkg', 'desktop', 'plugin.js'), 'same')
-    fs.mkdirSync(appRoot, { recursive: true })
-    fs.symlinkSync(own, path.join(appRoot, 'pkg'))
+  it.skipIf(process.platform === 'win32')(
+    'never stamps a marker into a plugin the user linked into the app root',
+    async () => {
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const own = path.join(home, 'src', 'pkg')
+      write(path.join(own, 'plugin.js'), 'same')
+      write(path.join(home, 'plugins', 'pkg', 'desktop', 'plugin.js'), 'same')
+      fs.mkdirSync(appRoot, { recursive: true })
+      fs.symlinkSync(own, path.join(appRoot, 'pkg'))
 
-    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
-    expect(fs.existsSync(path.join(own, PACKAGE_MARKER))).toBe(false)
-    expect(fs.lstatSync(path.join(appRoot, 'pkg')).isSymbolicLink()).toBe(true)
-  })
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+      expect(fs.existsSync(path.join(own, PACKAGE_MARKER))).toBe(false)
+      expect(fs.lstatSync(path.join(appRoot, 'pkg')).isSymbolicLink()).toBe(true)
+    }
+  )
 
   it('never overwrites a standalone plugin the user installed under the same name', async () => {
     const home = makeHome()

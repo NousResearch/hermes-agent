@@ -17,6 +17,8 @@ import logging
 import os
 import platform
 import queue
+import shutil
+import subprocess
 import tempfile
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -67,6 +69,76 @@ def _play_via_tempfile(audio_iter: Iterable[bytes], stop_evt: threading.Event, s
             with contextlib.suppress(Exception):
                 tmp.close()  # idempotent; ensures close on early error
         _unlink_quietly(tmp_path)
+
+
+def _streaming_player_command(sample_rate: int, channels: int = 1) -> Optional[List[str]]:
+    """Command for a player that consumes raw PCM on stdin, or None when unavailable.
+
+    macOS has no ``ffplay`` and ``afplay`` refuses stdin, so SoX's ``play`` is the only local
+    binary that both reads ``-`` and starts emitting sound from the first samples. Gain is
+    applied by SoX (cloned voices often master hot), defaulting to 0.1 — audible but well below
+    a startling blast; override with HERMES_TTS_GAIN.
+    """
+    if os.environ.get("HERMES_TTS_STREAM_PLAYER", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    exe = shutil.which("play")
+    if not exe:
+        return None
+    gain = os.environ.get("HERMES_TTS_GAIN", "0.1")
+    command = [exe, "-q", "-t", "raw", "-r", str(sample_rate), "-e", "signed", "-b", "16",
+               "-c", str(int(channels)), "-", "vol", gain]
+    # Playback rate: SoX ``tempo`` changes speed without shifting pitch, so a slow drawl can be
+    # tightened by a fixed factor instead of asking the model for a different style. 1.0 = as
+    # generated; set HERMES_TTS_TEMPO for e.g. 1.1.
+    tempo = os.environ.get("HERMES_TTS_TEMPO", "1.0")
+    try:
+        if float(tempo) != 1.0:
+            command += ["tempo", tempo]
+    except ValueError:
+        pass
+    return command
+
+
+def _play_via_streaming_player(chunk_queue, stop_evt: threading.Event, sample_rate: int,
+                              channels: int = 1) -> bool:
+    """Play one sentence straight from the provider's chunk queue; False = caller must fall back.
+
+    Unlike :func:`_play_via_tempfile` this never waits for the whole sentence: PCM goes into the
+    player's stdin as it arrives, so sound starts on the first chunk instead of after full
+    synthesis. Back-pressure is the player itself (a write blocks while audio drains), which is
+    what keeps generation from outrunning playback. Returns False only when no player exists, so
+    a partially played sentence is never replayed by the fallback.
+    """
+    command = _streaming_player_command(sample_rate, channels)
+    if command is None:
+        return False
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sink = proc.stdin
+    if sink is None:  # PIPE was requested, so only a pathological platform lands here
+        proc.wait()
+        return False
+    dead = False
+    try:
+        # Keep draining even after the player dies: the prefetch thread is blocked on a bounded
+        # queue and would otherwise sit there holding a semaphore slot until the next sentence.
+        for aligned in _align_int16_chunks(iter(chunk_queue.get, None), stop_evt, pad_tail=False):
+            if dead:
+                continue
+            try:
+                sink.write(aligned)
+            except (BrokenPipeError, OSError):
+                dead = True  # player exited early (device change, stop): remaining audio is dropped
+    finally:
+        with contextlib.suppress(Exception):
+            sink.close()
+        if stop_evt.is_set():
+            proc.terminate()
+        try:
+            proc.wait(timeout=30.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    return True
 
 
 def _drain_chunks(chunk_queue: queue.Queue[Optional[bytes]]) -> list[bytes]:
@@ -253,6 +325,16 @@ class _StreamerPlayback:
         chunks = _drain_chunks(chunk_queue)  # drained first: the rate is final once chunks exist
         _play_via_tempfile(chunks, self.stop_event, self.streamer.sample_rate)
 
+    def _play_sentence_via_player(self, chunk_queue) -> None:
+        """No audio device (macOS): feed PCM to a stdin player as it arrives, else buffer to WAV.
+
+        The temp-WAV path can only start sound once the sentence is fully synthesized; this one
+        starts on the first chunk, which is the whole point of a streaming provider.
+        """
+        if not _play_via_streaming_player(chunk_queue, self.stop_event, self.streamer.sample_rate,
+                                          getattr(self.streamer, "channels", 1)):
+            self._play_sentence_via_tempfile(chunk_queue)
+
     def _for_each_sentence(self, play: Callable[[queue.Queue], None]) -> None:
         """Feed queued sentences to *play* in order until the end sentinel; stopped sentences are skipped."""
         for chunk_queue in iter(self._audio_queue.get, None):
@@ -305,7 +387,7 @@ class _StreamerPlayback:
     def _playback_worker(self) -> None:
         """Single consumer: play audio segments from the queue in order."""
         if not self._use_device:
-            self._for_each_sentence(self._play_sentence_via_tempfile)
+            self._for_each_sentence(self._play_sentence_via_player)
             return
         import numpy as _np
         try:

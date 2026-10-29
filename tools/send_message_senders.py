@@ -3,6 +3,7 @@
 from pm import install_hint
 import asyncio
 import contextlib
+import copy
 import logging
 import os
 import re
@@ -409,6 +410,80 @@ async def _resolve_slack_user_target(token, chat_id):
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
+# A Matrix access token belongs to ONE device, and logging in again with the same device id
+# invalidates the earlier session (Synapse and Continuwuity both drop the device's old token).
+# Every out-of-process send — `hermes cron run`, a CLI send_message, a delivery retry — used to
+# log in with the gateway's pinned device id, so it silently killed the LIVE gateway token: the
+# adapter stopped sync ("permanent auth error, stopping sync: Invalid token") and every later
+# cron delivery failed until a restart. One-shot sends therefore authenticate as their OWN
+# device (MATRIX_ONESHOT_DEVICE_ID) with their own olm store, and can never touch the gateway's
+# session or crypto state again.
+_MATRIX_ONESHOT_DEVICE_SUFFIX = "-oneshot"
+# Fallback when the gateway has no pinned device id at all: there is nothing to invalidate, but
+# the sender must still never share an identity (or an olm store) with another process.
+_MATRIX_ONESHOT_DEVICE_FALLBACK = "hermes-oneshot"
+# Failures worth retrying on the one-shot device: the live session is gone, nothing was sent.
+# Content failures are NOT retried — part of a message may already be on screen.
+_MATRIX_AUTH_ERROR_MARKERS = (
+    "invalid token", "unknown token", "m_unknown_token", "matrix connect failed",
+    "whoami failed", "not connected", "disconnected",
+)
+_MATRIX_ONESHOT_ADAPTERS: dict = {}  # imported MatrixAdapter class -> one-shot subclass
+
+
+def _matrix_auth_failure(error) -> bool:
+    """True when ``error`` says the Matrix session itself is dead (auth/transport, not content)."""
+    text = str(error or "").lower()
+    return bool(text) and any(marker in text for marker in _MATRIX_AUTH_ERROR_MARKERS)
+
+
+def _matrix_oneshot_device_id(pconfig) -> str:
+    """The device id an out-of-process Matrix send authenticates as.
+
+    ``MATRIX_ONESHOT_DEVICE_ID`` wins when set. Otherwise the gateway's pinned device id plus
+    ``-oneshot`` keeps two gateways (or two bots) on one host from sharing an identity, while
+    still being deterministic across runs so its olm store is reused instead of re-created.
+    """
+    # health: allow PS-P06 -- a device id, not a credential; the secret scope does not hold it.
+    explicit = os.environ.get("MATRIX_ONESHOT_DEVICE_ID", "").strip()
+    if explicit:
+        return explicit
+    gateway_device = str((getattr(pconfig, "extra", None) or {}).get("device_id") or "").strip()
+    if gateway_device:
+        return f"{gateway_device}{_MATRIX_ONESHOT_DEVICE_SUFFIX}"
+    return _MATRIX_ONESHOT_DEVICE_FALLBACK
+
+
+def _matrix_oneshot_config(pconfig):
+    """``(pconfig, device_id)`` with the device id replaced by the one-shot sender's own."""
+    device_id = _matrix_oneshot_device_id(pconfig)
+    extra = dict(getattr(pconfig, "extra", None) or {})
+    if extra.get("device_id") == device_id:
+        return pconfig, device_id
+    extra["device_id"] = device_id
+    oneshot = copy.copy(pconfig)
+    oneshot.extra = extra
+    return oneshot, device_id
+
+
+def _matrix_oneshot_adapter(pconfig):
+    """Matrix adapter whose olm store is keyed to the one-shot device, never the gateway's."""
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    cls = _MATRIX_ONESHOT_ADAPTERS.get(MatrixAdapter)
+    if cls is None:
+        class _OneShotMatrixAdapter(MatrixAdapter):
+            """One-shot sender: own device, own crypto store, no gateway state."""
+
+            def _resolve_store_dir(self):
+                base = super()._resolve_store_dir()
+                self._store_dir = base.parent / f"{base.name}-{self._device_id or 'oneshot'}"
+                return self._store_dir
+
+        cls = _MATRIX_ONESHOT_ADAPTERS[MatrixAdapter] = _OneShotMatrixAdapter
+    return cls(pconfig)
+
+
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Matrix adapter send (native media preserved). Prefer the live gateway adapter's persistent
     olm/megolm session: ephemeral per-send connects re-init E2EE and claim one-time keys, which
@@ -417,6 +492,10 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     When a live gateway adapter is available (i.e. the tool runs inside a running gateway), the persistent
     connection is reused — one olm/megolm session for all sends. This avoids per-message E2EE re-init storms
     that exhaust recipient OTKs and silently drop messages (issue #46310).
+
+    When the live adapter's session is DEAD (invalid token, stopped sync) the send retries through
+    the one-shot identity instead of failing on the same broken session — see
+    ``_matrix_oneshot_device_id``.
     """
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
@@ -426,13 +505,25 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         "ephemeral connect (may re-init E2EE per send)"))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
-        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        try:
+            result = await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        except Exception as exc:  # a raised send error: only an auth failure is worth a retry
+            if not _matrix_auth_failure(exc):
+                raise
+            result = _error(f"Matrix send failed: {exc}")
+        else:
+            result_error = result.get("error") if isinstance(result, dict) else None
+            if not _matrix_auth_failure(result_error):
+                return result
+        logger.warning(
+            "Matrix: live gateway session is dead (%s) — retrying via the one-shot "
+            "device %s", result.get("error"), _matrix_oneshot_device_id(pconfig))
+    oneshot_pconfig, _device_id = _matrix_oneshot_config(pconfig)
     try:
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        adapter = _matrix_oneshot_adapter(oneshot_pconfig)
     except ImportError:
         return {"error": "Matrix dependencies not installed. Run: "
                 f"{install_hint('matrix')}"}
-    adapter = MatrixAdapter(pconfig)
     try:
         if not await adapter.connect():
             return _error("Matrix connect failed")

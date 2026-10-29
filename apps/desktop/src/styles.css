@@ -3991,3 +3991,13 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
 [data-pane-hidden] * {
   visibility: inherit !important;
 }
+
+/* Ghost suggestion hover marquee — 技能描述跑马灯 (left-scroll loop) */
+@keyframes composer-ghost-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}

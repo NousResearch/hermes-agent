@@ -844,6 +844,8 @@ catalog: CatalogTranslations
       modelPricingTitle: string
       modelPricingDesc: string
       reactionsTitle: string
+      skillSuggestionsTitle: string
+      skillSuggestionsDesc: string
       reactionsDesc: string
       tipsTitle: string
       tipsDesc: string
@@ -2935,6 +2937,7 @@ catalog: CatalogTranslations
     commonCommands: string
     hotkeys: string
     helpFooter: string
+    ghostShiftTabHint: string
     commandDescs: Record<string, string>
     hotkeyDescs: Record<string, string>
     attachUrlTitle: string
@@ -3000,6 +3003,12 @@ catalog: CatalogTranslations
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
+    skillStripPrefix: string
+    skillStripDismiss: string
+    onboardingTitle: string
+    onboardingLine1: string
+    onboardingLine2: string
+    onboardingAck: string
   }
 
   statusStack: {

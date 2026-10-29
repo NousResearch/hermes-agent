@@ -130,6 +130,10 @@ _REPETITION_STREAM_CUT = repetition_copy(
     "so the stream was stopped instead of running on. The partial response was discarded.",
     " and the stream was cut mid-loop; discarding the",
 )
+_REASONING_RUNAWAY_NUDGE = (
+    "[System: Your reasoning started repeating itself and was cut off. Stop deliberating; act now "
+    "with a tool call or give your answer.]"
+)
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
@@ -472,6 +476,21 @@ def recover_from_truncation(
         compression_attempts=compression_attempts,
     )
     if getattr(response, "_runaway_repetition", False):
+        # A runaway in the REASONING channel is a model deliberating in circles: discard the
+        # partial and retry once with a wrap-up nudge before giving up on the turn.
+        if (
+            getattr(response, "_runaway_repetition", None) == "reasoning"
+            and getattr(agent, "_reasoning_runaway_retries", 0) < 1
+        ):
+            agent._reasoning_runaway_retries = getattr(agent, "_reasoning_runaway_retries", 0) + 1
+            agent._vprint(
+                f"{agent.log_prefix}↻ Reasoning looped and was cut — retrying once with a wrap-up nudge...",
+                force=True, diagnostic=True,
+            )
+            append_message(messages, {"role": "user", "content": _REASONING_RUNAWAY_NUDGE})
+            agent._session_messages = messages
+            _retry.restart_with_length_continuation = True
+            return st.done("break")
         # The streaming call cut a live repetition loop: a continuation would only re-enter it,
         # whatever the partial or its tool calls look like.
         line, user_response, error = _REPETITION_STREAM_CUT

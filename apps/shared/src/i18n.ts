@@ -181,6 +181,7 @@ export const LOCALE_ENDONYMS = {
   ko: '한국어',
   pt: 'Português',
   ru: 'Русский',
+  sv: 'Svenska',
   tr: 'Türkçe',
   uk: 'Українська',
   zh: '简体中文',

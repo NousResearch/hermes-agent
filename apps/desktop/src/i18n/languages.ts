@@ -52,6 +52,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'ru'
   },
   {
+    id: 'sv',
+    name: LOCALE_ENDONYMS.sv,
+    englishName: 'Swedish',
+    configValue: 'sv'
+  },
+  {
     id: 'fr',
     name: LOCALE_ENDONYMS.fr,
     englishName: 'French',
@@ -174,6 +180,11 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   'russian-russian': 'ru',
   русский: 'ru',
   руский: 'ru',
+  sv: 'sv',
+  'sv-se': 'sv',
+  sv_se: 'sv',
+  swedish: 'sv',
+  svenska: 'sv',
   fr: 'fr',
   'fr-fr': 'fr',
   fr_fr: 'fr',

@@ -22,13 +22,16 @@ from agent.error_classifier import FailoverReason, classify_api_error
 REGION = "us-east-1"
 MODEL = "us.amazon.nova-pro-v1:0"
 MESSAGES = [{"role": "user", "content": [{"text": "hi"}]}]
+CONVERSE_OK = {"output": {"message": {"role": "assistant", "content": [{"text": "pong"}]}}, "stopReason": "end_turn",
+               "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}
 
 
 @pytest.fixture
 def fake_bedrock(monkeypatch):
     """Local bedrock-runtime endpoint; ``mode`` is ``hang`` (never answers until teardown) or
-    ``throttle`` (400 ThrottlingException). Yields the list of request paths it received."""
-    state = {"mode": "hang", "hits": []}
+    ``throttle`` (400 ThrottlingException) / ``unavailable`` (503) for the first ``fail_first``
+    requests, then a Converse answer. Yields the list of request paths it received."""
+    state = {"mode": "hang", "hits": [], "fail_first": 10**6}
     release = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
@@ -38,10 +41,17 @@ def fake_bedrock(monkeypatch):
             if state["mode"] == "hang":
                 release.wait(30)
                 return
-            body = json.dumps({"message": "Too many requests, please wait before trying again."}).encode()
-            self.send_response(400)
+            status, error_type, payload = {
+                "throttle": (400, "ThrottlingException", {"message": "Too many requests, please wait before trying again."}),
+                "unavailable": (503, "ServiceUnavailableException", {"message": "Service unavailable, try later."}),
+            }[state["mode"]]
+            if len(state["hits"]) > state["fail_first"]:
+                status, error_type, payload = 200, None, CONVERSE_OK
+            body = json.dumps(payload).encode()
+            self.send_response(status)
             self.send_header("content-type", "application/json")
-            self.send_header("x-amzn-ErrorType", "ThrottlingException")
+            if error_type:
+                self.send_header("x-amzn-ErrorType", error_type)
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -96,3 +106,24 @@ def test_throttle_reaches_hermes_retry_loop_on_first_refusal_with_default_timeou
     assert client.meta.config.read_timeout == 60, "unset config keeps botocore's own timeouts"
     classified = classify_api_error(excinfo.value, provider="bedrock", model=MODEL)
     assert (classified.reason, classified.retryable) == (FailoverReason.rate_limit, True)
+
+
+@pytest.mark.parametrize("mode", ["unavailable", "throttle"])
+def test_auxiliary_call_recovers_from_one_transient_bedrock_refusal(fake_bedrock, monkeypatch, mode):
+    """With botocore no longer retrying, the aux recovery ladder must read the botocore error
+    (status in ResponseMetadata, ThrottlingException code) or a single 503/throttle fails the task."""
+    from agent import auxiliary_client
+    from agent.auxiliary_client import BedrockAuxiliaryClient, call_llm
+
+    _use_config(monkeypatch, {})
+    monkeypatch.setattr(auxiliary_client, "_TRANSIENT_RETRY_BACKOFF_BASE", 0.0)
+    fake_bedrock.update(mode=mode, fail_first=1)
+    client = BedrockAuxiliaryClient(REGION, MODEL)
+    monkeypatch.setattr(auxiliary_client, "_get_auxiliary_task_config",
+                        lambda task: {"provider": "bedrock", "model": MODEL, "max_output_tokens": 0})
+    monkeypatch.setattr(auxiliary_client, "_get_cached_client", lambda *a, **k: (client, MODEL))
+
+    response = call_llm(task="session_search", messages=[{"role": "user", "content": "ping"}])
+
+    assert response.choices[0].message.content == "pong"
+    assert len(fake_bedrock["hits"]) == 2

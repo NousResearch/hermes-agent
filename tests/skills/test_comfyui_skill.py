@@ -97,6 +97,27 @@ def test_load_schema_reads_non_ascii_under_non_utf8_locale(tmp_path):
     assert "SUCCESS" in result.stdout
 
 
+def test_ws_monitor_timeout_help_describes_the_socket_idle_timeout():
+    """``--timeout`` is passed to create_connection/settimeout, not a deadline.
+
+    The monitor loops on ``recv`` with no total-duration check, so a steady
+    event stream keeps it running past the value. Calling it a "hard cap"
+    promises a stop the implementation never performs (#145989).
+    """
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ws_monitor.py"), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    # argparse wraps help to the terminal width; compare on normalised spacing.
+    help_text = " ".join(result.stdout.lower().split())
+    assert "idle socket timeout" in help_text
+    assert "hard cap" not in help_text
+
+
 def test_load_schema_tolerates_utf8_bom(tmp_path):
     """A schema saved by a Windows GUI editor (UTF-8 BOM) still parses.
 

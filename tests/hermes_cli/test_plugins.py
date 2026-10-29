@@ -1644,6 +1644,41 @@ class TestForceReloadSymmetry:
         assert _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE in result
         hold.set()
 
+    def test_final_policy_blocks_modified_args_before_tool_handler(self, monkeypatch):
+        """A final policy veto sees the rewritten args and runs before dispatch."""
+        import json
+
+        mgr = PluginManager()
+        seen = []
+
+        def rewrite(**_kwargs):
+            return {"action": "modify", "args": {"query": "rewritten"}}
+
+        def final_policy(args, **_kwargs):
+            seen.append(dict(args))
+            return {"action": "block", "message": "final policy denied"}
+
+        mgr._hooks["pre_tool_call"] = [rewrite]
+        mgr._hooks["pre_tool_call_final"] = [final_policy]
+
+        import hermes_cli.plugins as plugins_mod
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+        dispatch_calls = []
+        mock_registry = MagicMock()
+        mock_registry.dispatch.side_effect = lambda name, args, **kwargs: (
+            dispatch_calls.append((name, args)) or json.dumps({"ok": True})
+        )
+
+        with patch("model_tools.registry", mock_registry):
+            from model_tools import handle_function_call
+
+            result = handle_function_call("web_search", {"query": "original"}, task_id="t1")
+
+        assert seen == [{"query": "rewritten"}]
+        assert dispatch_calls == []
+        assert "final policy denied" in result
+
     def test_force_reload_of_one_profile_does_not_orphan_another(self, monkeypatch, tmp_path):
         """Real two-manager regression: force-reloading profile A's plugin
         manager must leave profile B's shell hook registered exactly once —
@@ -1878,6 +1913,41 @@ class TestPreToolCallModify:
         )
         assert block_msg is None
         assert modified == {"path": "/safe/dir", "content": "x"}
+
+    def test_final_policy_hook_sees_modified_args_and_can_block(self, monkeypatch):
+        seen = []
+
+        def invoke(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                return [{"action": "modify", "args": {"path": "/outside/secret"}}]
+            if hook_name == "pre_tool_call_final":
+                seen.append(kwargs["args"].copy())
+                return [{"action": "block", "message": "final policy denied"}]
+            return []
+
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke)
+        block_message, modified = _dispatch_pre_tool_call_hooks(
+            "read_file", {"path": "/workspace/file"}
+        )
+        assert block_message == "final policy denied"
+        assert modified == {"path": "/outside/secret"}
+        assert seen == [{"path": "/outside/secret"}]
+
+    def test_final_policy_hook_payload_isolated_between_callbacks(self):
+        manager = PluginManager()
+        observed = []
+
+        def mutate(args, **_kwargs):
+            args["path"] = "/attacker/mutated"
+
+        def observe(args, **_kwargs):
+            observed.append(args["path"])
+
+        manager._hooks["pre_tool_call_final"] = [mutate, observe]
+        arguments = {"path": "/checked/value"}
+        manager.invoke_hook("pre_tool_call_final", args=arguments)
+        assert arguments == {"path": "/checked/value"}
+        assert observed == ["/checked/value"]
 
     def test_modify_accumulates_multiple_hooks(self, monkeypatch):
         """Multiple modify hooks should accumulate — hook A + hook B both survive."""

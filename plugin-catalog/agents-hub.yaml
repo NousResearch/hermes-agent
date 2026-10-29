@@ -1,6 +1,6 @@
 name: agents-hub
 repo: https://github.com/mynamezxc/hermes-agent-hub
-sha: c731aa8f88dab77fb19ea52e47f594ab5e1b7624
+sha: 504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d
 subdir: ""
 title: Agents Hub
 description: "One Hermes Desktop page to chat with, steer and coordinate every profile: agent faces with moods, live turns as steps, goals the agents keep current, changed files with diff, approve and rollback, inline permission requests, running commands of every agent, scheduled jobs, a team roster agents read to hand work off through Kanban, and Claude / Codex usage under the chat box. Ships three skills (agents-hub:hub-operating, team-coordination, hub-setup) so agents learn the Hub on their own. Disclosure — Reads every profile's state.db, config, cron jobs and processes.json plus the shared kanban.db (read-only); runs git status / diff in the repositories it shows; writes only its own state under HERMES_HOME/agents-hub/, cron jobs and profiles you create from the Hub, and files you explicitly restore to an earlier message (backed up first). Usage numbers come from Hermes's read-only usage readers (Anthropic and OpenAI usage endpoints with the login Hermes already holds, at most every 10 minutes); the Claude login button runs Hermes's own `hermes auth add anthropic` and forwards the pasted code to it without storing it. Every permission answer is the owner's click. Imports a few undocumented Hermes modules (cron creation, profile creation, dashboard OAuth status, profile scope). No telemetry."
@@ -9,15 +9,15 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/mynamezxc/hermes-agent-hub#readme
-version: "1.6.0"
-image: https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c731aa8f88dab77fb19ea52e47f594ab5e1b7624/docs/banner.png
+version: "1.6.10"
+image: https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c731aa8f88dab77fb19ea52e47f594ab5e1b7624/docs/screenshots/chat.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c731aa8f88dab77fb19ea52e47f594ab5e1b7624/docs/screenshots/overview.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c731aa8f88dab77fb19ea52e47f594ab5e1b7624/docs/screenshots/steer.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c731aa8f88dab77fb19ea52e47f594ab5e1b7624/docs/screenshots/usage.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c731aa8f88dab77fb19ea52e47f594ab5e1b7624/docs/screenshots/settings.png
-  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/c731aa8f88dab77fb19ea52e47f594ab5e1b7624/docs/screenshots/chat-dark.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d/docs/screenshots/chat.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d/docs/screenshots/steer.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d/docs/screenshots/usage.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d/docs/screenshots/settings.png
+  - https://raw.githubusercontent.com/mynamezxc/hermes-agent-hub/504c4dfe12d4685697a8e2d1cdb5a4a47ad9852d/docs/screenshots/chat-dark.png
 readme: true
 platforms: []
 capabilities:

@@ -1054,6 +1054,7 @@ class GatewaySessionCommandsMixin:
             try:
                 projects, current_id = await asyncio.to_thread(_list_and_status)
             except Exception as e:
+                logger.debug("gateway /project: listing projects failed", exc_info=True)
                 return t("gateway.project.list_failed", error=e)
             if not projects:
                 return t("gateway.project.none")
@@ -1072,6 +1073,7 @@ class GatewaySessionCommandsMixin:
         try:
             proj = await asyncio.to_thread(_resolve)
         except Exception as e:
+            logger.debug("gateway /project: resolving project failed", exc_info=True)
             return t("gateway.project.list_failed", error=e)
         if proj is None:
             return t("gateway.project.not_found", name=token)
@@ -1081,13 +1083,16 @@ class GatewaySessionCommandsMixin:
         if not target:
             return t("gateway.project.no_folder", name=proj.name)
 
-        from hermes_constants import translate_cwd_for_wsl_backend
-        resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(str(target))))
+        def _resolve_path():
+            from hermes_constants import translate_cwd_for_wsl_backend
+            return os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(str(target))))
+
+        resolved = await asyncio.to_thread(_resolve_path)
         named_ssh = False
         with contextlib.suppress(Exception):
             from tools.terminal_scope import build_profile_terminal_scope
             named_ssh = str(build_profile_terminal_scope(profile_home).get("TERMINAL_ENV") or "").strip().lower() == "ssh"
-        if not named_ssh and not os.path.isdir(resolved):
+        if not named_ssh and not await asyncio.to_thread(os.path.isdir, resolved):
             return t("gateway.project.bad_path", name=proj.name, path=resolved)
 
         branch = root = ""
@@ -1109,6 +1114,7 @@ class GatewaySessionCommandsMixin:
             generation = await self._session_db.update_session_cwd(
                 session_id, resolved, branch or None, root or None, replace_git_meta=True)
         except Exception as e:
+            logger.debug("gateway /project: updating session cwd failed", exc_info=True)
             return t("gateway.project.move_failed", error=e)
         if generation is None:
             return t("gateway.project.move_failed", error=t("gateway.resume.not_found", name=session_id))

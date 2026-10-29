@@ -139,7 +139,9 @@ def tail_cut_progress_floor(compressor: Any, messages: list[dict[str, Any]], hea
     handoff) is a handoff, the planned window is empty and compress() no-ops with ``empty_post_handoff_window``. That
     happens when the cut lands inside the tool group right after the handoff and is aligned back onto the group's
     assistant. The floor then moves past that group, unless doing so would take the newest row or the active user
-    request out of the tail; those cases keep the old ``head_end + 1`` floor."""
+    request out of the tail; those cases keep the old ``head_end + 1`` floor. ``_compress_window``'s
+    assistant/tool bridge before the active request obeys the same floor, so the two never disagree: when the floor
+    sits on the active request, the summary merges into that row instead of the bridge emptying the window."""
     floor = head_end + 1
     newest = next(
         (i for i in range(len(messages) - 1, head_end - 1, -1) if compressor._is_context_summary_message(messages[i])), -1,

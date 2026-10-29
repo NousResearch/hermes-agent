@@ -58,3 +58,24 @@ def test_cut_inside_the_first_tool_group_still_compacts_past_the_handoff():
     # The active ask and everything after it stay verbatim in the tail.
     assert [m.get("content") for m in result[-5:]] == [m.get("content") for m in messages[-5:]]
 
+
+def test_first_tool_group_right_before_the_active_request_still_compacts():
+    """The floor lands on the active request; the bridge rule must not pull the cut back onto the handoff."""
+    cc = _compressor()
+    ask = "please read the next file and report"
+    messages = [
+        _transcript()[0],
+        _calls("a", "b"), _result("a", 1_200), _result("b", 1_300),
+        {"role": "user", "content": ask},
+        _calls("f"), _result("f", 1_770), _calls("g"), _result("g", 1_670), _calls("h"), _result("h", 1_500),
+    ]
+    with patch.object(cc, "_generate_summary", return_value="NEW SUMMARY BODY"):
+        result = cc.compress(messages, current_tokens=12_800)
+
+    assert (cc._last_compression_telemetry or {}).get("failure_class") is None
+    assert cc._last_compression_made_progress is True
+    assert len(result) < len(messages)
+    assert sum(1 for m in result if cc._is_context_summary_message(m)) == 1
+    # The active ask survives verbatim (after the summary's end marker) and the rounds after it stay in the tail.
+    assert result[0]["content"].endswith(ask)
+    assert [m.get("content") for m in result[1:]] == [m.get("content") for m in messages[5:]]

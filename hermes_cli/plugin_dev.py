@@ -28,6 +28,71 @@ def _deny_network(*_args: Any, **_kwargs: Any) -> None:
     raise RuntimeError("network access is disabled while Plugin Doctor runs")
 
 
+
+# Staging copy limits. A plugin is source code plus small assets; anything far beyond these numbers
+# means Doctor resolved the wrong directory (e.g. a home folder that merely *contains* plugin dirs).
+# Real incident: Doctor resolved a Windows user profile via the category-layout rule, then
+# ``copytree`` followed the ``AppData\Local\Application Data`` junction (which points back at
+# ``AppData\Local``) and kept copying into its own %TEMP% destination for ~10 hours (~400 GB).
+_STAGING_MAX_BYTES = 512 * 1024 * 1024
+_STAGING_MAX_FILES = 20_000
+_STAGING_IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc")
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+class _StagingLimitError(_DoctorLoadError):
+    """Raised when the staging copy would exceed the size/file budget or loop into itself."""
+
+
+def _is_link_or_junction(path: str) -> bool:
+    """True for symlinks and Windows reparse points (junctions), without following them."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if os.path.islink(path):
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None and isjunction(path):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _guard_staging_target(plugin_path: Path, temp_home: Path) -> None:
+    """Refuse to stage a directory that contains Doctor's own temp home (copy into itself)."""
+    src = plugin_path.resolve()
+    dest = temp_home.resolve()
+    if dest == src or src in dest.parents:
+        raise _StagingLimitError(
+            f"Refusing to stage {src}: Doctor's temp directory {dest} is inside it, so the copy "
+            "would recurse into itself. Point Doctor at the plugin directory itself.")
+
+
+def _bounded_copytree(src: Path, dest: Path) -> None:
+    """``copytree`` that never follows links/junctions and stops at a size/file budget."""
+    budget = {"bytes": 0, "files": 0}
+
+    def _ignore(directory: str, names: list[str]) -> set[str]:
+        skipped = set(_STAGING_IGNORE(directory, names))
+        # Links are skipped, not copied: a plugin must not depend on paths outside itself, and
+        # following them is how a junction loop turns into an unbounded copy.
+        skipped.update(name for name in names if _is_link_or_junction(os.path.join(directory, name)))
+        return skipped
+
+    def _copy(source: str, target: str) -> str:
+        size = os.lstat(source).st_size
+        budget["bytes"] += size
+        budget["files"] += 1
+        if budget["bytes"] > _STAGING_MAX_BYTES or budget["files"] > _STAGING_MAX_FILES:
+            raise _StagingLimitError(
+                f"Refusing to stage {src}: more than {_STAGING_MAX_FILES} files or "
+                f"{_STAGING_MAX_BYTES // (1024 * 1024)} MiB. This does not look like a single plugin "
+                "directory; point Doctor at the plugin folder itself.")
+        return shutil.copy2(source, target)
+
+    shutil.copytree(src, dest, ignore=_ignore, copy_function=_copy, symlinks=False)
+
+
 @contextmanager
 def _doctor_runtime(plugin_path: Path):
     """Load one plugin through the real runtime and restore global state afterwards.
@@ -45,9 +110,8 @@ def _doctor_runtime(plugin_path: Path):
         bundled.mkdir(parents=True)
         plugins_root.mkdir(parents=True)
         copied = plugins_root / plugin_path.name
-        shutil.copytree(
-            plugin_path, copied,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc"))
+        _guard_staging_target(plugin_path, home)
+        _bounded_copytree(plugin_path, copied)
         stack.enter_context(patch.dict(os.environ, {
             "HERMES_HOME": str(home),
             "HERMES_BUNDLED_PLUGINS": str(bundled),

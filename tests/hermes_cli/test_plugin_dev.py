@@ -251,3 +251,93 @@ def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path
     report = doctor_plugin(plugin)
     assert not report.ok
     assert any("registered no ProviderProfile" in f.message for f in report.findings)
+
+
+def _write_minimal_plugin(plugin: Path) -> None:
+    plugin.mkdir(parents=True, exist_ok=True)
+    (plugin / "plugin.yaml").write_text("name: sample\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+
+
+def test_doctor_staging_does_not_follow_directory_links(tmp_path: Path) -> None:
+    """A link that points back up the tree (like Windows' ``AppData\\Local\\Application Data``
+    junction) must be skipped, not followed — following it is an unbounded copy."""
+    import os
+
+    import pytest
+
+    from hermes_cli import plugin_dev
+
+    plugin = tmp_path / "sample"
+    _write_minimal_plugin(plugin)
+    try:
+        os.symlink(tmp_path, plugin / "loop", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create directory symlinks on this platform/user")
+
+    with plugin_dev._doctor_runtime(plugin) as host:
+        staged = Path(os.environ["HERMES_HOME"]) / "plugins" / "sample"
+        assert (staged / "plugin.yaml").is_file()
+        assert not (staged / "loop").exists()
+        assert host.manifest.name == "sample"
+
+
+def test_doctor_refuses_to_stage_a_directory_containing_its_temp_home(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Copying a parent of %TEMP% (e.g. a user profile) would copy into itself."""
+    import tempfile
+
+    import pytest
+
+    from hermes_cli import plugin_dev
+
+    plugin = tmp_path / "profile"
+    _write_minimal_plugin(plugin / "child-plugin")
+    scratch = plugin / "AppData" / "Local" / "Temp"
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    with pytest.raises(plugin_dev._StagingLimitError):
+        with plugin_dev._doctor_runtime(plugin):
+            pass  # pragma: no cover - refused before yield
+
+    assert list(scratch.glob("hermes-plugin-doctor-*")) == []
+
+
+def test_doctor_staging_stops_at_file_budget_and_cleans_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import tempfile
+
+    import pytest
+
+    from hermes_cli import plugin_dev
+
+    plugin = tmp_path / "sample"
+    _write_minimal_plugin(plugin)
+    for i in range(10):
+        (plugin / f"asset_{i}.txt").write_text("x", encoding="utf-8")
+    scratch = tmp_path / "scratch-tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    monkeypatch.setattr(plugin_dev, "_STAGING_MAX_FILES", 3)
+
+    with pytest.raises(plugin_dev._StagingLimitError):
+        with plugin_dev._doctor_runtime(plugin):
+            pass  # pragma: no cover - refused before yield
+
+    assert list(scratch.glob("hermes-plugin-doctor-*")) == []
+
+
+def test_doctor_plugin_reports_staging_limit_as_error(tmp_path: Path, monkeypatch) -> None:
+    from hermes_cli import plugin_dev
+
+    plugin = tmp_path / "sample"
+    _write_minimal_plugin(plugin)
+    (plugin / "big.bin").write_bytes(b"0" * 2048)
+    monkeypatch.setattr(plugin_dev, "_STAGING_MAX_BYTES", 1024)
+
+    report = plugin_dev.doctor_plugin(str(plugin))
+    assert not report.ok
+    assert any("Refusing to stage" in finding.message for finding in report.findings), report.findings

@@ -32,6 +32,7 @@ from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
 from hermes_cli.profiles import ProfileIdentitySettlementPending
+from hermes_cli.profile_records import profile_info_to_dict as _profile_to_dict
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
 )
@@ -79,25 +80,6 @@ _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gatew
 # ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
-
-
-def _profile_to_dict(info) -> dict[str, Any]:
-    attr = functools.partial(getattr, info)
-    return {
-        "name": attr("name", ""), "path": str(attr("path", "")),
-        "is_default": bool(attr("is_default", False)),
-        "model": attr("model", None), "provider": attr("provider", None),
-        "has_env": bool(attr("has_env", False)),
-        "skill_count": int(attr("skill_count", 0) or 0),
-        "gateway_running": bool(attr("gateway_running", False)),
-        "description": attr("description", "") or "",
-        "description_auto": bool(attr("description_auto", False)),
-        "display_name": attr("display_name", "") or "",
-        "bot_title": attr("bot_title", "") or "",
-        "distribution_name": attr("distribution_name", None),
-        "distribution_version": attr("distribution_version", None),
-        "distribution_source": attr("distribution_source", None),
-        "has_alias": attr("alias_path", None) is not None}
 
 
 def _profile_setup_command(name: str) -> str:

@@ -30,6 +30,17 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     add_adopt_parser(sessions_subparsers)
 
 
+def _add_list_workspace_and_output_args(sessions_list) -> None:
+    sessions_list.add_argument("--workspace", metavar="NEEDLE",
+        help="Only sessions in one workspace: a git repo root or project dir "
+        "(matched by path substring or basename).")
+    list_output = sessions_list.add_mutually_exclusive_group()
+    list_output.add_argument(
+        "--format", choices=("table", "json", "tsv"), default="table",
+        help="Output format for sessions list (default: table)")
+    add_json_flag(list_output, "Print one JSON document (schema_version 1); same as --format json")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -40,9 +51,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
-    sessions_list.add_argument("--workspace", metavar="NEEDLE",
-        help="Only sessions in one workspace: a git repo root or project dir "
-        "(matched by path substring or basename).")
+    _add_list_workspace_and_output_args(sessions_list)
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

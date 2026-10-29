@@ -12,8 +12,8 @@ from pathlib import Path
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import is_nix_install_method, recommended_update_command_for_method
 from hermes_cli.doctor_report import (
-    Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
-    warn_on_error,
+    Finding, _fail_and_issue, _section, annotate_last, check_bool, check_fail, check_info, check_ok, check_warn,
+    doctor_check, warn_on_error,
 )
 from hermes_constants import is_termux as _is_termux
 
@@ -397,7 +397,9 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
         _fail_and_issue(f"{hit.advisory.title}", f"({hit.package}=={hit.installed_version})",
                         f"Resolve security advisory {hit.advisory.id}: uninstall {hit.package}=={hit.installed_version} "
                         f"and rotate credentials, then run `hermes doctor --ack {hit.advisory.id}`.", f.manual_issues)
-        for line in full_remediation_text(hit):
+        remediation = full_remediation_text(hit)
+        annotate_last(remediation="\n".join(line for line in remediation if line))
+        for line in remediation:
             print(f"    {color(line, Colors.YELLOW)}" if line else "")
     acked_ids = get_acked_ids()  # acked-but-still-installed stays visible
     for h in all_hits:

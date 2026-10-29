@@ -17,7 +17,11 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         help="Opt-in: run one bounded, read-only real-call health probe per "
             "configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) "
             "after the static checks. Makes real network calls.")
-    doctor_parser.add_argument(
+    mode = doctor_parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--json", action="store_true",
+        help="Print the report as one JSON document (schema_version 1); exit 1 while issues remain")
+    mode.add_argument(
         "--ack", metavar="ADVISORY_ID", default=None,
         help="Acknowledge a security advisory by ID and exit. After ack, the "
             "advisory will no longer trigger startup banners. Run `hermes "

@@ -348,6 +348,7 @@ from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.providers import build_providers_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser, build_whatsapp_cloud_parser
@@ -2438,7 +2439,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve", "webapp",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
+        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage", "providers",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2765,9 +2766,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
-        "project", "proxy",
-        "prompt-size",
-        "resume",
+        "project", "providers", "proxy", "prompt-size", "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
@@ -3294,6 +3293,7 @@ def _build_cli_parser():
     chat_parser.set_defaults(func=cmd_chat)
 
     build_model_parser(subparsers, cmd_model=cmd_model)
+    build_providers_parser(subparsers)
     build_moa_parser(subparsers)
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)

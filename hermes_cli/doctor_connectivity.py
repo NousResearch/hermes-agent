@@ -27,6 +27,7 @@ class ProbeResult(NamedTuple):
     label: str
     lines: list  # [(glyph, label, detail)]
     issues: list
+    status: str = ""  # "ok" | "warn" | "fail" of the row in ``lines``; the report renders from this
 
 
 _GLYPH = {"ok": ("✓", Colors.GREEN), "warn": ("⚠", Colors.YELLOW), "fail": ("✗", Colors.RED)}
@@ -34,8 +35,7 @@ _GLYPH = {"ok": ("✓", Colors.GREEN), "warn": ("⚠", Colors.YELLOW), "fail": (
 
 def _row(name: str, status: str, detail: str = "", issues: list | None = None, label: str | None = None) -> ProbeResult:
     glyph, col = _GLYPH[status]
-    return ProbeResult(name, [(color(glyph, col), name if label is None else label, color(detail, Colors.DIM) if detail else "")],
-                       list(issues or []))
+    return ProbeResult(name, [(color(glyph, col), name if label is None else label, detail)], list(issues or []), status)
 
 
 def _skip(name: str) -> ProbeResult:

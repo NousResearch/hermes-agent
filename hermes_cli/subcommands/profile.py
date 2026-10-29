@@ -11,7 +11,8 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "profile", help="Manage profiles — multiple isolated Hermes instances")
     profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
 
-    profile_subparsers.add_parser("list", help="List all profiles")
+    profile_list = profile_subparsers.add_parser("list", help="List all profiles")
+    profile_list.add_argument("--json", action="store_true", help="Print one JSON document (schema_version 1)")
     profile_use = profile_subparsers.add_parser("use", help="Set sticky default profile")
     profile_use.add_argument("profile_name", help="Profile name (or 'default')")
 

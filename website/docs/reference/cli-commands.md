@@ -305,6 +305,23 @@ If you've only configured OpenRouter, `/model` will only show OpenRouter models.
 
 On a `--global` switch, provider and base URL changes are persisted to `config.yaml` alongside the model. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
+## `hermes providers`
+
+```bash
+hermes providers list [--provider ID] [--all] [--offline] [--json]
+```
+
+Non-interactive counterpart of the `hermes model` picker's provider list, for scripts: the
+same inventory the picker, dashboard and TUI read, without a TTY or a running gateway. `ls` is
+an alias of `list`.
+
+| Option | Description |
+|--------|-------------|
+| `--provider ID` | Only this provider. An unknown or unavailable id is an error on stderr (exit `2`). |
+| `--all` | Include supported providers that have no credentials configured. |
+| `--offline` | Read local config and the bundled catalogs only; never contacts a provider or models.dev. Readiness comes from environment variable names, never the credential pool. `--no-live` is an alias. |
+| `--json` | Print one JSON document ([shape](#json-output-for-scripts)). |
+
 ## `hermes gateway`
 
 ```bash
@@ -979,12 +996,13 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--live] [--json | --ack ADVISORY_ID]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--json` | Print the report as one JSON document instead of the human report (shape under [JSON output](#json-output-for-scripts)). The exit status is unchanged. |
 
 Exit status: `0` when the report lists no unresolved problems, `1` when at least one remains (including problems `--fix` could not repair), so a health gate or CI step can trust `hermes doctor` as a check.
 
@@ -996,6 +1014,127 @@ Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):
 - A legacy `custom_providers` list entry with no matching `providers:` entry (same endpoint URL) is reported with the move to make: such an entry is still served from the retired list store (the model picker and the Custom Endpoints page dual-read it) rather than the `providers:` map every other surface edits, and the one-shot v12 migration that moved the list into `providers:` does not run again.
 
 **Config Structure** also flags any list/mapping setting stored as one quoted string (`plugins.enabled: '["a","b"]'`, `model_catalog.excluded_providers: '["openai-api"]'` — the shape older `config set` versions wrote): every reader ignores such a string, so the plugins silently stay unmounted and the exclusion never applies. The finding names the key and the `hermes config set <key> '<literal>'` command that stores a real list; the same warning appears in the startup banner. `--fix` does not rewrite the file.
+
+## JSON output for scripts
+
+`hermes doctor --json`, `hermes sessions list --json`, `hermes profile list --json`,
+`hermes curator ledger --json` and `hermes providers list --json` share one convention:
+
+- stdout carries exactly one JSON object and nothing else; `schema_version` is its first key.
+- Errors (an unknown `--provider`, `--json` combined with an action it cannot describe such as
+  `curator ledger --compact`) go to stderr with a non-zero exit and an empty stdout.
+- Keys are only ever added. Removing a key or changing its meaning bumps that command's
+  `schema_version`. Timestamps keep their stored form: Unix seconds (floats) in session rows,
+  ISO-8601 with offset in curator ledger entries.
+- No secret values appear: providers are reported by name and environment variable NAMES only.
+
+```bash
+hermes sessions list --json --limit 50 | jq -r '.sessions[].id'
+hermes doctor --json | jq '.checks[] | select(.status == "fail")'
+```
+
+### `hermes doctor --json` (schema_version 1)
+
+```json
+{
+  "schema_version": 1,
+  "hermes_home": "/home/user/.hermes",
+  "python_version": "3.12.4",
+  "healthy": false,
+  "summary": {"ok": 69, "warn": 18, "fail": 0, "info": 9},
+  "checks": [
+    {"section": "Python Environment", "status": "ok", "message": "Python 3.12.4", "detail": ""},
+    {"section": "Security Advisories", "status": "fail", "message": "<advisory title>", "detail": "pkg==1.0",
+     "fix": "Resolve security advisory ...", "remediation": "..."}
+  ],
+  "issues": ["Run 'hermes doctor --fix' to create missing directories"],
+  "manual_issues": [],
+  "fixed": 0
+}
+```
+
+`checks` lists every row of the human report in order. `status` is `ok`, `warn`, `fail` or
+`info`; `fix` (the instruction for that failure) and `remediation` (advisory remediation text)
+appear only on rows that have them. `issues` are problems `--fix` can repair, `manual_issues`
+need you. The exit status matches the human report: `1` while any issue remains. `--json`
+cannot be combined with `--ack`.
+
+### `hermes sessions list --json` (schema_version 1)
+
+```json
+{
+  "schema_version": 1,
+  "sessions": [
+    {"id": "20261026_101500_ab12cd", "title": "Alpha project", "preview": "hello alpha",
+     "source": "cli", "created_source": "cli", "model": "anthropic/claude-sonnet-4.6",
+     "parent_session_id": null, "started_at": 1793000341.35, "ended_at": null, "end_reason": null,
+     "last_active": 1793000341.41, "message_count": 1, "input_tokens": 0, "output_tokens": 0,
+     "workspace": "/srv/alpha"}
+  ],
+  "truncated": false
+}
+```
+
+Rows follow the same `--source`, `--limit` and `--workspace` selection as the table, newest
+first. `truncated` is `true` when more sessions exist than `--limit` allowed. `workspace` is the
+session's git repo root (or working directory), `null` when it has none. System prompts and
+chat identifiers are never included.
+
+### `hermes profile list --json` (schema_version 1)
+
+```json
+{
+  "schema_version": 1,
+  "active": "default",
+  "profiles": [
+    {"name": "default", "path": "/home/user/.hermes", "is_default": true, "is_active": true,
+     "model": "anthropic/claude-sonnet-4.6", "provider": "openrouter", "has_env": true,
+     "skill_count": 12, "gateway_running": false, "description": "", "description_auto": false,
+     "display_name": "", "bot_title": "", "distribution_name": null, "distribution_version": null,
+     "distribution_source": null, "has_alias": false}
+  ],
+  "warnings": []
+}
+```
+
+Each profile record is the one the dashboard's profile list serves. `warnings` carries the
+shared-bot-credential warnings the table prints under it.
+
+### `hermes curator ledger --json` (schema_version 1)
+
+```json
+{
+  "schema_version": 1,
+  "entries": [
+    {"id": "a6fa921172cb", "ts": "2026-10-26T07:39:02.743086+00:00", "actor": "agent",
+     "action": "patch", "skill": "my-skill", "evidence": {}, "before": [], "after": []}
+  ]
+}
+```
+
+Entries are the ledger records as stored, newest first, after `--skill` / `--limit`. An empty
+ledger is `"entries": []`. Disabling the ledger stops new writes, but existing entries remain
+readable. `id` is what `hermes curator rollback <id>` takes.
+
+### `hermes providers list --json` (schema_version 1)
+
+```json
+{
+  "schema_version": 1,
+  "offline": true,
+  "current": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+  "providers": [
+    {"id": "openrouter", "name": "OpenRouter", "auth_state": "configured", "auth_type": "api_key",
+     "env_vars": ["OPENROUTER_API_KEY"], "is_current": true, "is_user_defined": false,
+     "models": ["anthropic/claude-sonnet-4.6", "..."], "model_count": 74, "source": "static"}
+  ]
+}
+```
+
+`auth_state` is `configured` or `unconfigured` (only listed with `--all`). `env_vars` are the
+variable names Hermes reads for that provider, never their values. `source` says where the model
+list came from (`static` bundled catalog, `user-config`, `model-config`, or the live catalog
+source when not `--offline`).
 
 ## `hermes dump`
 
@@ -1517,6 +1656,8 @@ The curator is an auxiliary-model background task that periodically reviews agen
 | `archive <skill>` | Archive a skill manually |
 | `prune` | Manually prune skills the curator would normally clean up |
 | `list-archived` | List archived skills (recoverable via `restore`) |
+| `ledger [--skill S] [--limit N] [--json]` | List the per-mutation audit ledger, newest first; `--json` prints one JSON document ([shape](#json-output-for-scripts)) |
+| `ledger --compact` | Rewrite the ledger dropping unchanged paths (ids and rollback preserved) |
 
 On a fresh install the first scheduled pass is deferred by one full `interval_hours` (7 days by default) — the gateway will not curate immediately on the first tick after `hermes update`. Use `hermes curator run --dry-run` to preview before that happens.
 
@@ -1779,7 +1920,7 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List recent sessions. |
+| `list [--source S] [--limit N] [--workspace W] [--json \| --format table\|json\|tsv]` | List recent sessions. `--json` (same as `--format json`) prints one JSON document ([shape](#json-output-for-scripts)); `--format tsv` prints `id`, `title`, `preview`, `last_active`, `source` as tab-separated rows under a header. |
 | `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |
@@ -1985,7 +2126,7 @@ Manage profiles — multiple isolated Hermes instances, each with its own config
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List all profiles. |
+| `list [--json]` | List all profiles. `--json` prints one JSON document ([shape](#json-output-for-scripts)). |
 | `use <name>` | Set a sticky default profile. |
 | `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, `SOUL.md`, skills, and the curated `MEMORY.md`/`USER.md` memory files from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile and implies config clone unless paired with `--clone-all`. |
 | `delete <name> [-y]` | Delete a profile. |

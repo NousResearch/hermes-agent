@@ -29,7 +29,9 @@ before = path.read_bytes() if path.exists() else None
 for action in ('list', 'stats', 'pinned', 'export'):
     output = io.StringIO()
     with redirect_stdout(output):
-        result = cmd_sessions(SimpleNamespace(sessions_action=action, source=None, limit=20, json=True,
+        # The namespace each subparser really builds: only ``pinned`` is asked for JSON here
+        # (``list --json`` prints a JSON document instead of the table asserted below).
+        result = cmd_sessions(SimpleNamespace(sessions_action=action, source=None, limit=20, json=action == 'pinned',
             session_id=None, redact=False, format='jsonl', output='-', dry_run=False))
     text = output.getvalue()
     assert result in (None, 0), text

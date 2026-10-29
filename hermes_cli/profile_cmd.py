@@ -109,6 +109,8 @@ def _profile_list(args):
     from hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
     profiles = list_profiles()
     active = get_active_profile_name()
+    if getattr(args, "json", False):
+        return _profile_list_json(profiles, active)
     if not profiles:
         print("No profiles found.")
         return
@@ -125,6 +127,16 @@ def _profile_list(args):
     print()
     for line in _shared_credential_warnings(profiles):
         print(line)
+
+
+def _profile_list_json(profiles, active: str) -> None:
+    from hermes_cli.cli_json import print_json_document
+    from hermes_cli.profile_records import profile_info_to_dict
+    print_json_document({
+        "active": active,
+        "profiles": [{**profile_info_to_dict(p), "is_active": _is_active(p, active)} for p in profiles],
+        "warnings": [line for line in _shared_credential_warnings(profiles) if line],
+    })
 
 
 def _shared_credential_warnings(profiles) -> list:

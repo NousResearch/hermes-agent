@@ -309,6 +309,46 @@ def _surface_reader(db):
     return SurfaceLabelReader(db)
 
 
+_SESSION_LIST_COLUMNS = ("id", "title", "preview", "last_active", "source")
+# ``--json`` row: an allow-list, so the system prompt, origin and chat identifiers on the row never leak.
+_SESSION_JSON_FIELDS = (
+    "id", "title", "preview", "source", "created_source", "model", "parent_session_id", "started_at",
+    "ended_at", "end_reason", "last_active", "message_count", "input_tokens", "output_tokens",
+)
+
+
+def _clean_tsv_cell(value) -> str:
+    """Normalize row and column separators without changing other content."""
+    if value is None:
+        return ""
+    return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _list_format(args) -> str:
+    return "json" if getattr(args, "json", False) else getattr(args, "format", "table")
+
+
+def _prose_stream(args):
+    """stderr while stdout is a machine document (``--json``, ``--format json|tsv``), so an error never
+    lands where a parser reads; stdout otherwise, as before."""
+    return sys.stderr if getattr(args, "json", False) or getattr(args, "format", None) in ("json", "tsv") else sys.stdout
+
+
+def _print_sessions_machine(sessions, output_format, *, truncated=False):
+    if output_format == "json":
+        from hermes_cli.cli_json import print_json_document
+        from hermes_state_sessions import workspace_key
+        print_json_document({
+            "sessions": [{**{f: s.get(f) for f in _SESSION_JSON_FIELDS}, "workspace": workspace_key(s) or None}
+                         for s in sessions],
+            "truncated": truncated,
+        })
+    elif output_format == "tsv":
+        print("\t".join(_SESSION_LIST_COLUMNS))
+        for s in sessions:
+            print("\t".join(_clean_tsv_cell(s.get(column)) for column in _SESSION_LIST_COLUMNS))
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
@@ -328,6 +368,10 @@ def _cmd_list(db, args):
         sessions = [
             s for s, key in keyed if key and (_needle in key or _needle == os.path.basename(key.rstrip("/\\")))
         ]
+    output_format = _list_format(args)
+    if output_format in ("json", "tsv"):
+        _print_sessions_machine(sessions, output_format, truncated=truncated)
+        return
     if not sessions:
         print("No sessions found.")
         return
@@ -1360,6 +1404,8 @@ def _print_empty_store(action: str, args) -> None:
     """A profile that never created state.db: report empty instead of opening a writer that creates it."""
     if action == "stats":
         print("Total sessions: 0\nTotal messages: 0")
+    elif action == "list" and _list_format(args) in ("json", "tsv"):
+        _print_sessions_machine([], _list_format(args))
     elif action == "pinned":
         print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
     else:
@@ -1399,9 +1445,10 @@ def cmd_sessions(args, sessions_parser=None):
         # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
         if observational and not path.exists():
             return _print_empty_store(action, args)
+        out = _prose_stream(args)
         print("Could not open your session history database. "
-              "Run: hermes sessions repair to fix it (a backup is made first).")
-        print(f"Details: {e}")
+              "Run: hermes sessions repair to fix it (a backup is made first).", file=out)
+        print(f"Details: {e}", file=out)
         return 1
     try:
         handler = _DB_HANDLERS.get(action)
@@ -1424,7 +1471,8 @@ def cmd_sessions(args, sessions_parser=None):
             if not observational or not _schema_not_built(e):
                 raise
             # A read-only opener skips schema migration, so a store from an older release can lack a column.
-            print(f"Error: session database needs migration — run any writing hermes command first ({e})")
+            print(f"Error: session database needs migration — run any writing hermes command first ({e})",
+                  file=_prose_stream(args))
             return 1
     finally:
         db.close()

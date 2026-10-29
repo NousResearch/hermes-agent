@@ -366,9 +366,27 @@ hermes sessions list --source telegram
 
 # Show more sessions
 hermes sessions list --limit 50
+
+# Filter to one workspace
+hermes sessions list --workspace hermes-agent
+
+# Emit one JSON document for scripts (same as --format json)
+hermes sessions list --json | jq '.sessions[].id'
+
+# Emit tab-separated rows
+hermes sessions list --format tsv
 ```
 
-When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
+The default `table` format remains human-readable. `--json` and `--format tsv` apply the
+same source, limit, and workspace selection as the table and never include system prompts;
+titles and previews still contain session content. The JSON document's shape is in the
+[CLI reference](../reference/cli-commands.md#hermes-sessions-list---json-schema_version-1); it
+reports a capped page with `"truncated": true` instead of a footer. TSV prints `id`, `title`,
+`preview`, `last_active` (Unix timestamp) and `source` under a header row (an empty result is
+the header alone), replaces tabs and line breaks in cells with spaces, and leaves missing
+values empty.
+
+When more sessions exist than `--limit` allows, the table listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
 
 When sessions have titles, the output shows titles, previews, and relative timestamps:
 

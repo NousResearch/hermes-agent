@@ -3,21 +3,65 @@
 from __future__ import annotations
 
 import functools
+import re
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Iterator
 
 from hermes_cli.colors import Colors, color
 
 
-def _mark(glyph: str, col: str):
-    return lambda text, detail="": print(f"  {color(glyph, col)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# ``hermes doctor --json``: the rows of the running report land here (None outside --json).
+_records: ContextVar[list[dict] | None] = ContextVar("doctor_json_records", default=None)
+_section_title: ContextVar[str] = ContextVar("doctor_section_title", default="")
 
 
-check_ok, check_warn, check_fail = _mark("✓", Colors.GREEN), _mark("⚠", Colors.YELLOW), _mark("✗", Colors.RED)
+def _record(status: str, text: str, detail: str = "") -> None:
+    records = _records.get()
+    if records is None:
+        return
+    detail = _ANSI.sub("", str(detail or "")).strip()
+    if detail.startswith("(") and detail.endswith(")"):
+        detail = detail[1:-1]
+    records.append({"section": _section_title.get(), "status": status,
+                    "message": _ANSI.sub("", str(text)), "detail": detail})
+
+
+def annotate_last(**fields: str) -> None:
+    """Attach fields (``fix``, ``remediation``) to the row just reported; a no-op outside --json."""
+    records = _records.get()
+    if records:
+        records[-1].update(fields)
+
+
+@contextmanager
+def collect_json_rows() -> Iterator[list[dict]]:
+    """Record every row reported inside the block (``hermes doctor --json``)."""
+    rows: list[dict] = []
+    token, section_token = _records.set(rows), _section_title.set("")
+    try:
+        yield rows
+    finally:
+        _records.reset(token)
+        _section_title.reset(section_token)
+
+
+def _mark(glyph: str, col: str, status: str):
+    def report(text, detail=""):
+        print(f"  {color(glyph, col)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+        _record(status, text, detail)
+    return report
+
+
+check_ok, check_warn, check_fail = (
+    _mark("✓", Colors.GREEN, "ok"), _mark("⚠", Colors.YELLOW, "warn"), _mark("✗", Colors.RED, "fail"))
 
 
 def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
+    _record("info", text)
 
 
 def check_bool(cond, ok, bad, *, fail: bool = False):
@@ -32,11 +76,13 @@ def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
     print()
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+    _section_title.set(title)
 
 
 def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None:
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
+    annotate_last(fix=fix)
     issues.append(fix)
 
 

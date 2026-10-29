@@ -20,7 +20,9 @@ _env_path = get_env_path()
 load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
+from hermes_cli.doctor_report import (
+    Finding, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check, warn_on_error,
+)
 from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apikey_provider, build_probes, run_probes
 from hermes_cli.doctor_tools import _safe_which
 
@@ -104,10 +106,13 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     results = run_probes(probes)
     print("\r" + " " * 70 + "\r", end="")
     for r in results:
-        for glyph, label, detail in r.lines:
-            print(f"  {glyph} {label}" + (f" {detail}" if detail else ""))
+        for _glyph, label, detail in r.lines:
+            _STATUS_REPORTERS[r.status](label, detail)
         if r.issues and not _has_healthy_oauth_fallback_for_apikey_provider(r.label):
             f.issues.extend(r.issues)
+
+
+_STATUS_REPORTERS = {"ok": check_ok, "warn": check_warn, "fail": check_fail}
 
 
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
@@ -173,18 +178,7 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
     print()
 
 
-def run_doctor(args):
-    """Run diagnostic checks."""
-    should_fix = getattr(args, 'fix', False)
-    # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
-    os.environ.setdefault("HERMES_INTERACTIVE", "1")
-    if getattr(args, 'ack', None):
-        return _ack_advisory(args.ack)
-    print()
-    for line in ("┌─────────────────────────────────────────────────────────┐",
-                 "│                 🩺 Hermes Doctor                        │",
-                 "└─────────────────────────────────────────────────────────┘"):
-        print(color(line, Colors.CYAN))
+def _run_checks(args, should_fix: bool) -> Finding:
     total = Finding()
     from hermes_cli.left_core_migration import installs_held
     with installs_held():  # a diagnostic: provider checks resolve through the runtime, which would install
@@ -196,5 +190,24 @@ def run_doctor(args):
         with warn_on_error(""):
             from hermes_cli.doctor_live import maybe_run_live_checks
             maybe_run_live_checks(args, total.manual_issues)
+    return total
+
+
+def run_doctor(args):
+    """Run diagnostic checks."""
+    should_fix = getattr(args, 'fix', False)
+    # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
+    os.environ.setdefault("HERMES_INTERACTIVE", "1")
+    if getattr(args, 'ack', None):
+        return _ack_advisory(args.ack)
+    if getattr(args, 'json', False):
+        from hermes_cli.doctor_json import run_doctor_json
+        return run_doctor_json(lambda: _run_checks(args, should_fix))
+    print()
+    for line in ("┌─────────────────────────────────────────────────────────┐",
+                 "│                 🩺 Hermes Doctor                        │",
+                 "└─────────────────────────────────────────────────────────┘"):
+        print(color(line, Colors.CYAN))
+    total = _run_checks(args, should_fix)
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))

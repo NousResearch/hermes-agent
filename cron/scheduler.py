@@ -1217,20 +1217,27 @@ def _cron_inactivity_seconds() -> float:
         return 600.0
 
 
-def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
+# Registry-key suffix of the no-agent script lane (``cron.max_parallel_scripts``).
+SCRIPT_POOL_LANE = "::no_agent"
+
+
+def _get_parallel_pool(max_workers: Optional[int], lane: str = "") -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent parallel pool for the ACTIVE profile.
 
     Pools are per profile home because ``cron.max_parallel_jobs`` is a per-profile config key:
     a single process-global pool is created by whichever profile the multiplexing gateway ticks
-    first and then silently imposes that profile's limit on every other profile.
+    first and then silently imposes that profile's limit on every other profile. ``lane``
+    (``SCRIPT_POOL_LANE``) selects the profile's separate no-agent pool when
+    ``cron.max_parallel_scripts`` is configured.
     """
-    home = hermes_home_key(_remember_inflight_home(_get_hermes_home()))
+    home = hermes_home_key(_remember_inflight_home(_get_hermes_home())) + lane
     pool = _parallel_pools.get(home)
     if pool is None or _parallel_pool_max_workers.get(home) != max_workers:
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=False)
         pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="cron-parallel")
+            max_workers=max_workers,
+            thread_name_prefix="cron-parallel-script" if lane else "cron-parallel")
         _parallel_pools[home] = pool
         _parallel_pool_max_workers[home] = max_workers
     return pool
@@ -1244,11 +1251,12 @@ def discard_parallel_pools(home_keys) -> None:
     home ever ticked, and a deleted profile's pool was never reclaimed. ``wait=False`` so the
     ticker is never blocked; queued work still drains before the executor dies.
     """
-    for key in list(home_keys):
-        pool = _parallel_pools.pop(key, None)
-        _parallel_pool_max_workers.pop(key, None)
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=False)
+    for home_key in list(home_keys):
+        for key in (home_key, home_key + SCRIPT_POOL_LANE):
+            pool = _parallel_pools.pop(key, None)
+            _parallel_pool_max_workers.pop(key, None)
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=False)
 
 
 def _shutdown_parallel_pool() -> None:
@@ -4215,6 +4223,29 @@ def _resolve_max_parallel_workers() -> Optional[int]:
     return None
 
 
+def _resolve_max_parallel_script_workers() -> tuple[bool, Optional[int]]:
+    """``(configured, max_workers)`` for the separate no-agent script lane: env
+    HERMES_CRON_MAX_PARALLEL_SCRIPTS > config ``cron.max_parallel_scripts``; 0 = unbounded.
+    Unset (the default) keeps no-agent jobs in the shared ``max_parallel_jobs`` pool. Set, a
+    long agent run cannot hold the only slot that short scripts queue behind."""
+    try:
+        _env_par = cron_env_setting("HERMES_CRON_MAX_PARALLEL_SCRIPTS").strip()
+        if _env_par:
+            if int(_env_par) < 0:
+                raise ValueError(_env_par)
+            return True, int(_env_par) or None
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_MAX_PARALLEL_SCRIPTS value; ignoring")
+    with contextlib.suppress(Exception):
+        _ucfg = load_config() or {}
+        _cfg_par = (_ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}).get("max_parallel_scripts")
+        if _cfg_par is not None:
+            if int(_cfg_par) >= 0:
+                return True, int(_cfg_par) or None
+            logger.warning("Invalid cron.max_parallel_scripts value %r; ignoring", _cfg_par)
+    return False, None
+
+
 def _sweep_mcp_orphans() -> None:
     """Reap MCP stdio orphans (only PIDs flagged by tools.mcp_tool._run_stdio's finally block);
     run AFTER jobs finish so live sessions are never touched."""
@@ -4346,6 +4377,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _submit_key = _inflight_key(job_id, _claim_home)
         if _running_registration_owners.get(_submit_key) is registration_owner:
             _running_futures[_submit_key] = fut
+    # A sync tick refreshes the leases of runs still queued behind others (scheduler_tick).
+    fut.cron_job_id, fut.cron_execution_id = job_id, execution["id"]
     return fut
 
 

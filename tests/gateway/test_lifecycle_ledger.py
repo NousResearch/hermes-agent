@@ -62,6 +62,22 @@ def _exit_diag_records(home: Path) -> list[dict]:
     ]
 
 
+def _unclean_exit_record(home: Path) -> dict:
+    """The record for the unclean previous exit.
+
+    The log carries more than one record per unclean exit: the death-forensics
+    record (``gateway.unclean_death_forensics``) is appended by
+    ``gateway.unclean_death_forensics.append_forensics`` BEFORE the
+    ``gateway.previous_unclean_exit`` record.  Select by tag, not by position —
+    a positional lookup picks the forensics record and asserts on a key that
+    record does not carry.
+    """
+    records = _exit_diag_records(home)
+    matches = [r for r in records if r.get("tag") == "gateway.previous_unclean_exit"]
+    assert matches, f"no previous_unclean_exit record in {[r.get('tag') for r in records]}"
+    return matches[0]
+
+
 # ---------------------------------------------------------------------------
 # sample_memory
 # ---------------------------------------------------------------------------
@@ -132,10 +148,13 @@ def test_record_startup_persists_unclean_report_and_reclaims(tmp_path: Path) -> 
     assert evidence is not None
 
     records = _exit_diag_records(tmp_path)
-    assert len(records) == 1
-    assert records[0]["tag"] == "gateway.previous_unclean_exit"
-    assert records[0]["prior_pid"] == _DEAD_PID
-    assert records[0]["pid"] == os.getpid()
+    # The unclean exit appends BOTH a death-forensics record and the
+    # previous_unclean_exit record; the test asserts on the latter by tag.
+    unclean = _unclean_exit_record(tmp_path)
+    assert any(r.get("tag") == "gateway.unclean_death_forensics" for r in records)
+    assert unclean["tag"] == "gateway.previous_unclean_exit"
+    assert unclean["prior_pid"] == _DEAD_PID
+    assert unclean["pid"] == os.getpid()
 
     # Sentinel reclaimed for the new life.
     sentinel = _read_sentinel(tmp_path)

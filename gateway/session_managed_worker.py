@@ -395,17 +395,37 @@ def _prompt_frame(authority, ref, row, worker, frame):
     return True
 
 
+def _profile_home(profile_id):
+    """The profile home a worker's authority names, or None when it names none.
+
+    Every authority this gateway builds carries its home, and the worker rejects any other
+    spelling of it; but the same identifier is published as a bare profile name elsewhere
+    (tickets, roster entries, HTTP parameters). Reading a name as "no scope" here is what the
+    caller must never do: ``None`` hands the child this process's whole environment.
+    """
+    from pathlib import Path
+    home = Path(str(profile_id))
+    if home.is_absolute():
+        return home
+    name = str(profile_id).strip()
+    if not name or name.startswith('.') or name != Path(name).name:
+        return None
+    from hermes_constants import get_default_hermes_root
+    root = get_default_hermes_root()
+    candidate = root if name == 'default' else root / 'profiles' / name
+    return candidate if candidate.is_dir() else None
+
+
 def _worker_env(authority):
     """Child env for the OWNING profile under multiplex: its HERMES_HOME plus its ``.env``
     secrets over a scrubbed base, never the launch profile's process environment (the same
     rule MCP stdio children and shell hooks follow) — except for the launch profile's own
     worker, whose scope legitimately includes its frozen launch env. Single-profile gateways
     inherit the process env byte-for-byte, exactly as before."""
-    from pathlib import Path
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import _is_routed_home
-    home = Path(str(authority.profile_id))
-    if not home.is_absolute():
+    home = _profile_home(authority.profile_id)
+    if home is None:
         return None
     # Keyed on the worker's OWNING profile, not only the process-wide multiplex flag: a worker for
     # another profile must never inherit the launch environ even when that flag reads False.

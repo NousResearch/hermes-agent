@@ -30,6 +30,32 @@ def test_secondary_worker_env_drops_launch_terminal_policy_and_env_settings(tmp_
     assert 'HERMES_MODEL' not in env
 
 
+def test_a_profile_named_by_id_gets_its_own_scoped_env(tmp_path, monkeypatch):
+    """The ownership guard must not read a bare profile id as "no scope".
+
+    ``authority.profile_id`` is a home path for the authorities this gateway builds, but the
+    same identifier is published as a bare profile name elsewhere (tickets, roster entries,
+    HTTP parameters). Returning None for a non-absolute id hands the child this process's
+    entire environment — the launch profile's residue included — with no trace."""
+    from gateway.session_managed_worker import _worker_env
+    root = tmp_path / '.hermes'
+    beta = root / 'profiles' / 'beta'
+    beta.mkdir(parents=True)
+    (root / '.env').write_text('LAUNCH_ONLY_SETTING=launch-value\n')
+    (beta / '.env').write_text('BETA_ONLY_SETTING=beta-value\n')
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    monkeypatch.setenv('LAUNCH_ONLY_SETTING', 'launch-value')
+    set_multiplex_active(True)
+    try:
+        env = _worker_env(SimpleNamespace(profile_id='beta'))
+    finally:
+        set_multiplex_active(False)
+    assert env is not None, 'a named profile must not fall back to inheriting the process env'
+    assert env['HERMES_HOME'] == str(beta)
+    assert env['BETA_ONLY_SETTING'] == 'beta-value'
+    assert 'LAUNCH_ONLY_SETTING' not in env
+
+
 def test_launch_scrub_runs_before_the_turn_context_is_injected(tmp_path, monkeypatch):
     """The launch residue strip runs on the RAW environ, before ``build_subprocess_env`` bridges this
     turn's own session context: a launch ``.env`` that names ``HERMES_SESSION_ID`` must not erase the

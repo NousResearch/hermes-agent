@@ -247,11 +247,12 @@ def _secure_checkout_origin(origin: str) -> bool:
 
 
 def _any_site_page_origin(task_id: str) -> str | dict[str, Any]:
-    """The page a card saved for any site may go to: the supervisor's CURRENT tab, read from the one page
-    session that will also write. It never searches or switches tabs (a background tab another page opened
-    must not become the checkout). Refused before the user is asked when there is no supervisor, the page is
-    not https, or the current tab has no card form. The caller's payment confirmation names this origin."""
-    if _ensure_supervisor(task_id) is None:
+    """The page a card saved for any site may go to: the CURRENT tab of the one page session that will also
+    write (a plugin page backend's page, else the CDP supervisor's tab). It never searches or switches tabs
+    (a background tab another page opened must not become the checkout). Refused before the user is asked
+    when there is no page session, the page is not https, or the current tab has no card form. The caller's
+    payment confirmation names this origin."""
+    if _page_backend(task_id) is None and _ensure_supervisor(task_id) is None:
         return {"success": False, "error_type": "supervisor_required",
                 "error": "No browser page session for this task. Open the checkout page with the browser first."}
     origin = _current_page_origin(task_id)

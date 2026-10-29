@@ -1,7 +1,9 @@
-"""Profile directory removal: wait out the live owner, then rmtree with a short retry."""
+"""Profile directory removal: wait out the live owner, stop what still writes into it, then
+rmtree with a short retry."""
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +13,8 @@ import time
 # A multiplexer answers a delete's rescan ``pending`` after 5 s and keeps tearing the profile down;
 # its gateway.lock reservation is released last, once the profile's writers are gone.
 OWNER_RELEASE_WAIT_SECONDS = 60.0
+
+logger = logging.getLogger(__name__)
 
 
 def wait_profile_unowned(profile_dir: Path, *, timeout: float | None = None) -> bool:
@@ -87,3 +91,27 @@ def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
                 time.sleep(0.3 * (attempt + 1))
     if last_exc is not None:
         raise last_exc
+
+
+def _stop_bot_desktop(profile_dir: Path) -> None:
+    """Stop the profile's Bot Desktop (Xvnc + Xfce launcher) before its directory is removed or renamed;
+    gateway shutdown does not reach it (its own session, its own pid file). Scoped through the hermes-home
+    override so the runtime reads THIS profile's bot-desktop/ state, whichever profile invoked the op.
+    A failure here is logged, never fatal: the profile op is what the user asked for."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime
+    if not runtime.is_supported_host():
+        return
+    token = set_hermes_home_override(profile_dir)
+    try:
+        if runtime.stop():
+            print("✓ Bot Desktop stopped")
+            # The screen a human's exclusion protected is gone; on rename the directory (lease.json
+            # included) moves with the profile, and a human lease for a dead viewer would fence the
+            # agent out of the renamed profile's next screen until someone force-released it.
+            from tools.bot_desktop import lease
+            lease.release()
+    except Exception as e:
+        logger.warning("Could not stop the Bot Desktop of %s: %s", profile_dir, e)
+    finally:
+        reset_hermes_home_override(token)

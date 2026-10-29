@@ -247,7 +247,7 @@ class TestNoticeStripLifecycle:
         content = (
             "real user words\n\n"
             + TODO_INJECTION_HEADER
-            + "\n- [ ] t1. old task (pending)\n\n"
+            + "\n- [ ] #2:t1. #8:old task (pending)\n\n"
             + _PRUNED_SKILL_RELOAD_NOTICE_HEADER
             + "\nreload skill_view(name='old-skill') first."
         )
@@ -262,7 +262,7 @@ class TestNoticeStripLifecycle:
                 "text": (
                     "real user words\n\n"
                     + TODO_INJECTION_HEADER
-                    + "\n- [ ] t1. old task (pending)\n\n"
+                    + "\n- [ ] #2:t1. #8:old task (pending)\n\n"
                     + _PRUNED_SKILL_RELOAD_NOTICE_HEADER
                     + "\nreload skill_view(name='old-skill') first."
                 ),
@@ -284,7 +284,7 @@ class TestNoticeStripLifecycle:
         stale_tail = (
             "keep this human text\n\n"
             + TODO_INJECTION_HEADER
-            + "\n- [ ] t0. stale task (pending)\n\n"
+            + "\n- [ ] #2:t0. #10:stale task (pending)\n\n"
             + _PRUNED_SKILL_RELOAD_NOTICE_HEADER
             + "\nstale notice body skill_view(name='stale-skill')."
         )

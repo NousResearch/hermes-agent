@@ -957,6 +957,120 @@ async def test_run_agent_reports_actual_agent_runtime_not_requested_metadata(ada
     assert usage["runtime"]["model"] == "actual-model"
 
 
+def test_finish_turn_result_captures_unlocked_global_runtime(adapter):
+    class FakeAgent:
+        provider = "synthetic-provider"
+        model = "synthetic-model"
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+        session_id = "synthetic-session"
+
+    result, usage = adapter._finish_turn_result(
+        FakeAgent(), {"final_response": "ok"}, "synthetic-session", route=None,
+        requested_runtime=None, route_source="global", confirmed_runtime_lock=False,
+    )
+
+    expected = {"provider": "synthetic-provider", "model": "synthetic-model", "route_source": "global"}
+    assert result["runtime"] == expected
+    assert usage["runtime"] == expected
+
+
+def test_canonical_api_turn_without_lock_captures_global_runtime(adapter):
+    from gateway.run_turn_runner import _settle_api_runtime
+    from gateway.session_api_turn import api_execution
+
+    class FakeAgent:
+        provider = "synthetic-global-provider"
+        model = "synthetic-global-model"
+        _hermes_api_runtime = {"provider": "stale-configured-provider", "model": "stale-configured-model"}
+
+    token = api_execution.set({"adapter": adapter, "settings": {"route_source": "global"}})
+    try:
+        result = {"final_response": "ok"}
+        captured = {"usage": {"input_tokens": 1}}
+        _settle_api_runtime(FakeAgent(), result, captured)
+    finally:
+        api_execution.reset(token)
+
+    expected = {
+        "provider": "synthetic-global-provider", "model": "synthetic-global-model", "route_source": "global",
+    }
+    assert result["runtime"] == expected
+    assert captured["usage"]["runtime"] == expected
+
+
+@pytest.mark.parametrize(
+    ("confirmed_lock", "actual_provider", "actual_model", "expected_failed"),
+    [
+        (False, "synthetic-fallback", "synthetic-fallback-model", False),
+        (False, "synthetic-primary", "synthetic-diverged-model", False),
+        (True, "synthetic-primary", "synthetic-primary-model", False),
+        (True, "synthetic-fallback", "synthetic-fallback-model", True),
+    ],
+    ids=["unlocked-fallback", "unlocked-model-divergence", "locked-match", "locked-mismatch"],
+)
+def test_canonical_api_turn_settles_sanitized_actual_runtime(
+    adapter, confirmed_lock, actual_provider, actual_model, expected_failed
+):
+    from gateway.run_turn_runner import _settle_api_runtime
+    from gateway.session_api_turn import api_execution
+
+    class FakeAgent:
+        provider = actual_provider
+        model = actual_model
+        _hermes_api_runtime = {
+            "provider": "synthetic-primary", "model": "synthetic-primary-model",
+            "route_source": "raw_request", "api_key": "synthetic-secret",
+        }
+
+    settings = {
+        "route": {"provider": "synthetic-primary", "model": "synthetic-primary-model"},
+        "requested_runtime": {"provider": "synthetic-primary", "model": "synthetic-primary-model"},
+        "route_source": "raw_request", "confirmed_runtime_lock": confirmed_lock,
+    }
+    token = api_execution.set({"adapter": adapter, "settings": settings})
+    try:
+        result = {"final_response": "ok"}
+        captured = {"usage": {"input_tokens": 1}}
+        _settle_api_runtime(FakeAgent(), result, captured)
+    finally:
+        api_execution.reset(token)
+
+    if expected_failed:
+        assert result["failed"] is True
+        assert "confirmed model lock runtime mismatch" in result["error"]
+        assert "synthetic-secret" not in result["error"]
+        assert "runtime" not in captured["usage"]
+        return
+
+    expected = {
+        "provider": actual_provider, "model": actual_model, "route_source": "raw_request",
+        "requested": {"provider": "synthetic-primary", "model": "synthetic-primary-model"},
+    }
+    if confirmed_lock:
+        expected["model_lock"] = "confirmed"
+    assert result["runtime"] == expected
+    assert captured["usage"]["runtime"] == expected
+    assert "synthetic-secret" not in repr(result)
+
+
+def test_canonical_api_turn_keeps_runtime_absent_when_actual_pair_is_unknown(adapter):
+    from gateway.run_turn_runner import _settle_api_runtime
+    from gateway.session_api_turn import api_execution
+
+    token = api_execution.set({"adapter": adapter, "settings": {"route_source": "global"}})
+    try:
+        result = {"final_response": "ok"}
+        captured = {"usage": {"input_tokens": 1}}
+        _settle_api_runtime(object(), result, captured)
+    finally:
+        api_execution.reset(token)
+
+    assert "runtime" not in result
+    assert "runtime" not in captured["usage"]
+
+
 @pytest.mark.asyncio
 async def test_confirmed_runtime_lock_rejects_actual_runtime_mismatch(adapter, monkeypatch):
     class FakeAgent:

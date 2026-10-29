@@ -77,6 +77,7 @@ export const tr: Translations = {
       models: "Modeller",
       profiles: "profiller : çoklu agent",
       plugins: "Eklentiler",
+      projects: "Projects",
       sessions: "Oturumlar",
       skills: "Yetenekler",
     },

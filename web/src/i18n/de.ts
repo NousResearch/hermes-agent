@@ -77,6 +77,7 @@ export const de: Translations = {
       models: "Modelle",
       profiles: "Profile : Multi-Agenten",
       plugins: "Plugins",
+      projects: "Projects",
       sessions: "Sitzungen",
       skills: "Skills",
     },

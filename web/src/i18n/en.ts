@@ -80,6 +80,7 @@ export const en: Translations = {
       models: "Models",
       profiles: "Profiles",
       plugins: "Plugins",
+      projects: "Projects",
       sessions: "Sessions",
       skills: "Skills",
     },

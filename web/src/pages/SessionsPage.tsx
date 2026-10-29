@@ -5,7 +5,7 @@ import {
   useCallback,
   useRef,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -43,6 +43,7 @@ import type {
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
+import { mapProjectSessionToSessionInfo } from "@/lib/projects";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
@@ -727,6 +728,9 @@ function SessionsPagination({
 }
 
 export default function SessionsPage() {
+  const [searchParams] = useSearchParams();
+  // ?project=<id> — filter sessions by project (used by "View all" links on the Projects page)
+  const projectFilter = searchParams.get("project") ?? null;
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -777,6 +781,7 @@ export default function SessionsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
+  const navigate = useNavigate();
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -827,17 +832,26 @@ export default function SessionsPage() {
     // another process) don't flicker the whole page or drop the user's
     // scroll position.
     if (!silent) setLoading(true);
-    api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
-      .then((resp) => {
-        setSessions(resp.sessions);
-        setTotal(resp.total);
+
+    const fetch = projectFilter
+      ? api.getProjectSessions(projectFilter).then((resp) => ({
+          sessions: resp.sessions.map(mapProjectSessionToSessionInfo),
+          total: resp.sessions.length,
+        }))
+      : api
+          .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+          .then((resp) => ({ sessions: resp.sessions, total: resp.total }));
+
+    fetch
+      .then(({ sessions, total }) => {
+        setSessions(sessions);
+        setTotal(total);
       })
       .catch(() => {})
       .finally(() => {
         if (!silent) setLoading(false);
       });
-  }, []);
+  }, [projectFilter]);
 
   const loadStats = useCallback(() => {
     api
@@ -1266,7 +1280,7 @@ export default function SessionsPage() {
   const isSearching = Boolean(search.trim());
   const showOverviewTab =
     platformEntries.length > 0 || recentSessions.length > 0;
-  const showList = view === "list" || isSearching || !showOverviewTab;
+  const showList = view === "list" || isSearching || !showOverviewTab || !!projectFilter;
   const showPagination = showList && !searchResults && total > PAGE_SIZE;
 
   const alerts: { message: string; detail?: string }[] = [];
@@ -1302,6 +1316,18 @@ export default function SessionsPage() {
 
   return (
     <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
+      {projectFilter && (
+        <div className="flex items-center gap-2 px-1 py-2 bg-midground/5 border border-midground/15 rounded text-xs font-mono">
+          <span className="text-midground/50 uppercase tracking-wider">Filtered by project:</span>
+          <span className="text-midground font-medium">{projectFilter}</span>
+          <a
+            className="ml-auto text-midground/50 hover:text-midground cursor-pointer"
+            onClick={() => navigate(`/projects?id=${projectFilter}`)}
+          >
+            ← View project
+          </a>
+        </div>
+      )}
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
       <input

@@ -905,7 +905,13 @@ def _converse_replay_policy(model: Optional[str]) -> str:
 
 
 def _minted_outside_claude(issuer: Optional[str]) -> bool:
-    return issuer is not None and _converse_replay_policy(issuer) != "signed"
+    if issuer is None:
+        return False
+    if _APPLICATION_PROFILE_ARN_RE.search(issuer) and _resolve_inference_profile_model_id(issuer) == issuer:
+        # An application profile names no model, and without bedrock:GetInferenceProfile it stays
+        # unresolved: the issuer is unknown, not foreign, so its reasoning keeps the answering policy.
+        return False
+    return _converse_replay_policy(issuer) != "signed"
 
 
 def reasoning_minted_outside_claude(msg: dict) -> bool:

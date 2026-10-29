@@ -1029,6 +1029,7 @@ compression:
   in_place: true                                    # Compact on the same session id (no rotation) — see below
   idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
   prepare_ahead: false                              # Opt-in: prepare the next summary in the background — see below
+  hygiene_threshold: 0.85                           # Gateway safety net by tokens (ratio of the window) — see below
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
   hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
   hygiene_total_ceiling_seconds: 600                # Absolute cap on the hygiene wait even while tokens are still streaming
@@ -1053,6 +1054,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `progress_notices` (default `false`) controls whether **routine** compression progress statuses reach chat platforms (Telegram, Discord, Slack, etc.). By design, automatic compression is silent on chat surfaces — it runs in the background with server-side logging only. Set `progress_notices: true` to opt into seeing the routine lifecycle on chat platforms: the "Compacting context…" start notice, preflight/pre-API compression triggers, idle compaction, retry progress ("Compressed 30 → 12 messages, retrying…"), and the "Context compaction complete" notice. The gate is scoped to compression statuses only — unrelated operational noise (auxiliary model failures, provider rate-limit/retry chatter) stays suppressed either way. Compression **failure** notices and manual `/compress` feedback are always visible regardless of this setting. Editing this value on a running gateway takes effect on the next message.
+
+`hygiene_threshold` (default `0.85`) is the token side of the same gateway-only safety net: before the agent runs, the gateway compresses a transcript that has reached this fraction of the model's context window. It is meant to sit above `compression.threshold`, so the agent's own compressor normally runs first and the net only catches sessions that grew between turns. If it is set at or below `compression.threshold`, the gateway logs a warning and keeps both values as configured. Values outside `(0, 1]` are ignored with a warning.
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 

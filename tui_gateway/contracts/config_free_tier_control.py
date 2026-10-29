@@ -69,20 +69,25 @@ method("config.get", params=ConfigGetParams, result=ConfigGetResult,
 class ConfigSetParams(ProfileParams):
     """``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles);
     ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in
-    the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``."""
+    the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``.
+    ``username`` / ``password`` apply only to the ``dashboard.auth`` setter, which hashes the
+    password server-side; they are never echoed back in the result."""
 
     key: str
     value: JsonValue = ""
     session_id: str | None = None
     scope: str | None = None
     confirm_expensive_model: bool = False
+    username: str | None = None
+    password: str | None = None
 
 
 class ConfigSetResult(Result):
     """``{key, value}`` plus the setter's extras: model switches add ``warning`` /
     ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds
     ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /
-    ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles."""
+    ``info``; ``yolo`` reports its ``scope``; ``dashboard.auth`` adds ``auth_configured`` /
+    ``restart_required``. ``value`` is a bool only for the display toggles."""
 
     key: str
     value: str | bool | None = None
@@ -96,6 +101,8 @@ class ConfigSetResult(Result):
     branch: str | None = None
     history_reset: bool | None = None
     info: SessionLiveInfo | None = None
+    auth_configured: bool | None = None
+    restart_required: bool | None = None
 
 
 method("config.set", params=ConfigSetParams, result=ConfigSetResult,

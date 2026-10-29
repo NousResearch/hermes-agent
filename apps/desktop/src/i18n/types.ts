@@ -1234,6 +1234,25 @@ catalog: CatalogTranslations
       testFailed: string
       applyFailed: string
       saveFailed: string
+      localDashboardAuthTitle: string
+      localDashboardAuthDesc: string
+      localDashboardAuthUsername: string
+      localDashboardAuthPassword: string
+      localDashboardAuthConfirm: string
+      localDashboardAuthShowPassword: string
+      localDashboardAuthHidePassword: string
+      localDashboardAuthSave: string
+      localDashboardAuthResetForm: string
+      localDashboardAuthConfigured: (username: string) => string
+      localDashboardAuthNotConfigured: string
+      localDashboardAuthSaved: string
+      localDashboardAuthRestartNote: string
+      localDashboardAuthTrustedNote: string
+      localDashboardAuthLoadFailed: string
+      localDashboardAuthSaveFailed: string
+      localDashboardAuthUsernameRequired: string
+      localDashboardAuthPasswordTooShort: string
+      localDashboardAuthPasswordMismatch: string
       sshTitle: string
       sshDesc: string
       sshTrustHint: string

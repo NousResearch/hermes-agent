@@ -12765,7 +12765,7 @@
       },
       "ConfigSetParams": {
         "additionalProperties": false,
-        "description": "``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles);\n``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in\nthe error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``.",
+        "description": "``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles);\n``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in\nthe error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``.\n``username`` / ``password`` apply only to the ``dashboard.auth`` setter, which hashes the\npassword server-side; they are never echoed back in the result.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -12815,6 +12815,30 @@
             "default": false,
             "title": "Confirm Expensive Model",
             "type": "boolean"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Username"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Password"
           }
         },
         "required": [
@@ -12825,7 +12849,7 @@
       },
       "ConfigSetResult": {
         "additionalProperties": false,
-        "description": "``{key, value}`` plus the setter's extras: model switches add ``warning`` /\n``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds\n``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /\n``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles.",
+        "description": "``{key, value}`` plus the setter's extras: model switches add ``warning`` /\n``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds\n``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /\n``info``; ``yolo`` reports its ``scope``; ``dashboard.auth`` adds ``auth_configured`` /\n``restart_required``. ``value`` is a bool only for the display toggles.",
         "properties": {
           "key": {
             "title": "Key",
@@ -12964,6 +12988,30 @@
               }
             ],
             "default": null
+          },
+          "auth_configured": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Auth Configured"
+          },
+          "restart_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Restart Required"
           }
         },
         "required": [

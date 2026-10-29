@@ -5,6 +5,7 @@ Keys match exactly except ``details_mode.<section>`` (prefix) and ``_DISPLAY_TOG
 """
 
 import os
+import secrets
 
 from hermes_constants import INDICATOR_STYLES
 
@@ -505,6 +506,95 @@ def _set_display_toggle(rid, params, key, value, session):
     return _kv(rid, key, on)
 
 
+# ── dashboard.auth (local backend sign-in credentials, #146266)
+
+_DASHBOARD_AUTH_MIN_PASSWORD = 8
+_DASHBOARD_AUTH_ENV_KEYS = (
+    "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
+    "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
+    "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH")
+
+
+def dashboard_auth_plan(*, section, username, password, env):
+    """Pure plan for setting ``dashboard.basic_auth``: validate, hash server-side, and decide
+    the config edits. Returns dotted ``sets`` (never a plaintext password) plus the
+    ``dashboard.basic_auth.password`` key to unset. The token-signing secret is generated
+    only when neither the config section nor the environment already provides one, and an
+    existing secret is never rotated: rotating it would silently sign out every session.
+    ``env`` is a mapping (normally ``os.environ``); callers pass a plain dict in tests."""
+    username = (username or "").strip()
+    if not username:
+        raise ValueError("dashboard username is required")
+    if not password or len(password) < _DASHBOARD_AUTH_MIN_PASSWORD:
+        raise ValueError("dashboard password must be at least 8 characters")
+    if any((env.get(key) or "").strip() for key in _DASHBOARD_AUTH_ENV_KEYS):
+        # Env wins over config in the basic-auth provider, so a config write here would
+        # look saved while the env credentials kept working. Refuse instead of lying.
+        raise ValueError(
+            "dashboard auth is set via HERMES_DASHBOARD_BASIC_AUTH_* environment variables; "
+            "clear those from the gateway environment first")
+    from plugins.dashboard_auth.basic import hash_password
+    section = section if isinstance(section, dict) else {}
+    sets = {
+        "dashboard.basic_auth.username": username,
+        "dashboard.basic_auth.password_hash": hash_password(password),
+    }
+    secret_generated = False
+    if not (section.get("secret") or "").strip() and not (env.get("HERMES_DASHBOARD_BASIC_AUTH_SECRET") or "").strip():
+        sets["dashboard.basic_auth.secret"] = secrets.token_hex(32)
+        secret_generated = True
+    return {"sets": sets, "unsets": ("dashboard.basic_auth.password",),
+            "username": username, "secret_generated": secret_generated}
+
+
+def _apply_dotted(cfg, dotted_key, value):
+    current = cfg
+    *parents, leaf = dotted_key.split(".")
+    for key in parents:
+        if not isinstance(current.get(key), dict):
+            current[key] = {}
+        current = current[key]
+    current[leaf] = value
+
+
+def _dashboard_basic_auth_section(cfg):
+    dashboard = cfg.get("dashboard") if isinstance(cfg, dict) else None
+    section = dashboard.get("basic_auth") if isinstance(dashboard, dict) else None
+    return section if isinstance(section, dict) else {}
+
+
+@_cfgset_guarded
+def _set_dashboard_auth(rid, params, key, value, session):
+    # The plaintext password travels only on the already-authenticated local control
+    # channel, is hashed server-side by dashboard_auth_plan, and is never written,
+    # returned, or logged. The UI never computes a hash client-side. One config
+    # read feeds both the plan and the write, so the saved file cannot silently
+    # overwrite a change made between them.
+    from hermes_cli.config_backend import supports_file_tooling
+    file_backed = supports_file_tooling()
+    cfg = _load_cfg_raw() if file_backed else _load_cfg()
+    try:
+        plan = dashboard_auth_plan(
+            section=_dashboard_basic_auth_section(cfg),
+            username=params.get("username"), password=params.get("password"), env=os.environ)
+    except ValueError as exc:
+        return _err(rid, 4002, str(exc))
+    if file_backed:
+        for dotted_key, val in plan["sets"].items():
+            _apply_dotted(cfg, dotted_key, val)
+        dashboard = cfg.get("dashboard") if isinstance(cfg.get("dashboard"), dict) else {}
+        basic = dashboard.get("basic_auth") if isinstance(dashboard.get("basic_auth"), dict) else {}
+        basic.pop("password", None)
+        dashboard["basic_auth"] = basic
+        cfg["dashboard"] = dashboard
+        _save_cfg(cfg)
+    else:
+        _write_config_changes(plan["sets"], plan["unsets"])
+    # Auth takes effect only after the gateway restarts: the basic-auth provider
+    # reads its settings at registration, not per request.
+    return _kv(rid, key, plan["username"], auth_configured=True, restart_required=True)
+
+
 # ── dispatch
 
 _CONFIG_SETTERS = {
@@ -514,7 +604,8 @@ _CONFIG_SETTERS = {
     "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
-    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
+    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin,
+    "dashboard.auth": _set_dashboard_auth}
 
 # Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this

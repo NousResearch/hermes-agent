@@ -295,6 +295,22 @@ class TestGuardActive:
         )
         assert result["approved"] is False
 
+    def test_env_dash_C_root_stash_blocked(self):
+        result = self._guard(f"env -C {self._root} git stash", "/tmp")
+        assert result is not None
+        assert result["approved"] is False
+
+    def test_eval_cd_root_stash_blocked(self):
+        result = self._guard(f'eval "cd {self._root} && git stash"', "/tmp")
+        assert result is not None
+        assert result["approved"] is False
+
+    def test_env_prefixed_nested_shell_root_stash_blocked(self):
+        command = f"env FOO=1 bash -c 'sh -c \"cd {self._root} && git stash\"'"
+        result = self._guard(command, "/tmp")
+        assert result is not None
+        assert result["approved"] is False
+
 
 # ---------------------------------------------------------------------------
 # Nested shell-wrapper bypass (probe finding — double-quoted inner payload)

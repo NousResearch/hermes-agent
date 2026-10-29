@@ -2024,9 +2024,17 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
         return False
 
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    # Keep the lexical temp root for the exact-path check.  On macOS `/tmp`
+    # commonly resolves to `/private/tmp`; that system alias is harmless, but
+    # arbitrary symlinked temp directories must still require their canonical
+    # spelling.
+    temp_dir_raw = os.path.abspath(tempfile.gettempdir())
+    temp_dir = os.path.realpath(temp_dir_raw)
     basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
+    allowed_operands = {os.path.join(temp_dir, basename)}
+    if temp_dir_raw == "/tmp":
+        allowed_operands.add(os.path.join(temp_dir_raw, basename))
+    if operand not in allowed_operands:
         return False
 
     target = os.path.realpath(operand)
@@ -3443,6 +3451,40 @@ def _pg_is_inside_protected_root(path: str, roots: list) -> tuple:
     return False, None
 
 
+def _pg_command_mentions_protected_root(command: str, roots: list) -> tuple:
+    """Return ``(True, root, path)`` for a protected path literal in command.
+
+    This is the second, literal gate for wrappers whose cwd cannot be resolved
+    safely (``env -C``, ``eval``, and arbitrary env-prefixed commands).  A
+    destructive command is allowed through this gate only when its path
+    literal resolves to an exempt linked worktree.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = []
+
+    candidates = list(tokens)
+    candidates.extend(re.findall(r"(?:~|/)[^\s;|&'\"]+", command))
+    for token in candidates:
+        token = token.strip("()[]{}<>,")
+        values = [token]
+        if "=" in token:
+            values.append(token.split("=", 1)[1])
+        for value in values:
+            if not value or not value.startswith(("/", "~", ".")):
+                continue
+            expanded = os.path.expanduser(value).rstrip("/") or os.sep
+            try:
+                normalized = os.path.realpath(expanded)
+            except Exception:
+                normalized = os.path.abspath(expanded)
+            hit, root = _pg_is_inside_protected_root(normalized, roots)
+            if hit:
+                return True, root, normalized
+    return False, None, None
+
+
 # Shell interpreter names for which we recognise ``-c <payload>`` inside
 # ``_pg_effective_cwd``.  Must be lowercase basenames only.
 _PG_SHELL_NAMES = frozenset(
@@ -3529,6 +3571,14 @@ def _pg_scan_deny(text: str, _depth: int = 0) -> "str | None":
     for pat, desc in _PROTECTED_GIT_DENY:
         if pat.search(text):
             return desc
+    # Quoted payloads from `eval`/nested wrappers can leave a quote directly
+    # after the git verb, defeating the separator in a deny regex.  Quotes are
+    # syntax here, not part of the git command, so scan a dequoted copy too.
+    dequoted = text.translate(str.maketrans({"'": " ", '"': " "}))
+    if dequoted != text:
+        for pat, desc in _PROTECTED_GIT_DENY:
+            if pat.search(dequoted):
+                return desc
     # Recurse into shell-wrapper payloads.
     if _depth >= 6:
         return None
@@ -3615,6 +3665,17 @@ def check_protected_git_roots_guard(command: str, session_cwd: str) -> Optional[
                 matched_root = root
                 bypass_path = candidate
                 break
+
+    # Wrappers such as `env -C`, `eval`, and env-prefixed nested shells can
+    # hide the effective cwd from the parser.  A destructive command that
+    # mentions a protected path is therefore blocked by a literal gate too.
+    literal_hit, literal_root, literal_path = _pg_command_mentions_protected_root(
+        command, roots
+    )
+    if literal_hit and not in_protected:
+        in_protected = True
+        matched_root = literal_root
+        bypass_path = literal_path
 
     if not in_protected:
         return None  # cwd and explicit git paths are outside protected roots

@@ -1530,6 +1530,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
         self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._chat_info_cache: dict[str, dict[str, Any]] = {}
+        # Auto-mention: track the last inbound sender per group chat.
+        # Only bot senders trigger auto-@ + text mode; human replies keep card formatting.
+        self._last_inbound_sender: dict[str, dict[str, Any]] = {}  # chat_id → {open_id, name, is_bot}
+        self._mention_name_map: dict[str, dict[str, str]] = {}  # chat_id → {lowercase_name → open_id}
         self._message_text_cache: OrderedDict[str, Optional[str]] = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -1859,13 +1863,32 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+
+        # --- Auto-mention bots in group chat replies ---
+        # Only when: (1) replying to a bot's message, (2) this send is part of a user-triggered
+        # conversation (has reply_to_message_id), NOT a framework push (cronjob, status, etc.).
+        # Force text mode because card content is unreadable to bots and card <at> doesn't
+        # produce real mention events. pop() = one inbound triggers at most one @, preventing loops.
+        force_text_for_bot = False
+        _has_reply_to = bool((metadata or {}).get("reply_to_message_id"))
+        _last_sender = self._last_inbound_sender.pop(chat_id, None) if _has_reply_to else None
+        if _last_sender and _last_sender.get("is_bot"):
+            sender_oid = _last_sender.get("open_id", "")
+            sender_name = _last_sender.get("name") or "Bot"
+            if sender_oid:
+                at_tag = f'<at user_id="{sender_oid}">{sender_name}</at> '
+                formatted = at_tag + formatted
+                force_text_for_bot = True
+                logger.info("[Feishu] Auto-mention bot %s (%s) in group %s, forcing text mode",
+                            sender_name, sender_oid, chat_id)
+
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
         # markdown reply may be plain prose that fails the per-chunk regex and would
         # otherwise render as literal ``**bold`` / fences while other chunks render.
         # Lock the decision at the whole-message level so every chunk consistently
         # uses the same format (interactive card for markdown content).
-        prefer_card = bool(_MARKDOWN_HINT_RE.search(formatted))
+        prefer_card = bool(_MARKDOWN_HINT_RE.search(formatted)) and not force_text_for_bot
         last_response = None
 
         async def _send_plain(chunk: str) -> Any:
@@ -2985,6 +3008,22 @@ class FeishuAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
+
+        # --- Track sender for auto-mention in group replies ---
+        if chat_type != "p2p" and chat_id:
+            sender_name = sender_profile.get("user_name") or ""
+            self._last_inbound_sender[chat_id] = {
+                "open_id": sender_primary, "name": sender_name, "is_bot": is_bot,
+            }
+            name_map = self._mention_name_map.setdefault(chat_id, {})
+            if sender_name:
+                name_map[sender_name.lower()] = sender_primary
+            for mention_ref in mentions:
+                m_name = getattr(mention_ref, "name", "") or ""
+                m_oid = getattr(mention_ref, "open_id", "") or ""
+                if m_name and m_oid:
+                    name_map[m_name.lower()] = m_oid
+
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:

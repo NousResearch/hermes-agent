@@ -1092,7 +1092,8 @@ one. The thread's existing return-to-latest control resumes the live view.
 Search accepts keywords, quoted phrases, and Boolean queries, including CJK text
 and tool output beyond the index's bounded prefix. Failed reads offer retry rather
 than reporting no matches. Older backends with no stored-search endpoint require a
-runtime update. Ctrl/Cmd+F keeps its existing find-in-page behavior.
+runtime update. Ctrl/Cmd+F still finds text in the rendered messages; its
+search button hands the typed query to this search to reach older turns.
 
 ## See also
 

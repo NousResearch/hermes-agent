@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { CONVERSATION_SEARCH_EVENT } from '@/lib/find-in-page'
 import { ChevronDown, ChevronUp, Search, X } from '@/lib/icons'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, getSessionOwnerHint } from '@/store/session'
@@ -62,6 +63,18 @@ export function ConversationSearch() {
     }
   }, [search])
   useEffect(() => {
+    const root = surface()
+
+    const onOpen = (event: Event) => {
+      search.reset(true)
+      search.setQuery((event as CustomEvent<{ query: string }>).detail.query)
+    }
+
+    root?.addEventListener(CONVERSATION_SEARCH_EVENT, onOpen)
+
+    return () => root?.removeEventListener(CONVERSATION_SEARCH_EVENT, onOpen)
+  }, [search])
+  useEffect(() => {
     jumping.current?.abort()
     clearConversationHighlight(surface())
 
@@ -109,6 +122,7 @@ export function ConversationSearch() {
           <Button
             aria-label={copy.open}
             className="no-drag pointer-events-auto shrink-0"
+            data-conversation-search=""
             disabled={!storedId || !searchAvailable}
             ref={trigger}
             size="icon-titlebar"

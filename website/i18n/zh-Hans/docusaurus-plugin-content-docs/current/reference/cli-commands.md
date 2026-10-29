@@ -861,9 +861,8 @@ Skill bundle 将多个 skill 归组到一个 `/<bundle-name>` 斜杠命令下。
 
 ```bash
 hermes bundles create backend-dev \
-  --skill github-code-review \
+  --skill github \
   --skill test-driven-development \
-  --skill github-pr-workflow \
   -d "Backend feature work"
 
 hermes bundles list

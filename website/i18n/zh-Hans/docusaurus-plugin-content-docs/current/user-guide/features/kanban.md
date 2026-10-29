@@ -297,7 +297,7 @@ kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dep
 
 ### 为特定任务固定额外 skill
 
-有时单个任务需要受让人配置文件默认不携带的专业上下文 —— 需要 `translation` skill 的翻译任务、需要 `github-code-review` 的审查任务、需要 `security-pr-audit` 的安全审计。与其每次都编辑受让人的配置文件，不如直接将 skill 附加到任务上。
+有时单个任务需要受让人配置文件默认不携带的专业上下文 —— 需要 `translation` skill 的翻译任务、需要 `github` 的审查任务、需要 `security-pr-audit` 的安全审计。与其每次都编辑受让人的配置文件，不如直接将 skill 附加到任务上。
 
 **从编排器 agent**（常见情况 —— 一个 agent 将工作路由到另一个），使用 `kanban_create` 工具的 `skills` 数组：
 
@@ -311,7 +311,7 @@ kanban_create(
 kanban_create(
     title="audit auth flow",
     assignee="reviewer",
-    skills=["security-pr-audit", "github-code-review"],
+    skills=["security-pr-audit", "github"],
 )
 ```
 
@@ -325,7 +325,7 @@ hermes kanban create "translate README to Japanese" \
 hermes kanban create "audit auth flow" \
     --assignee reviewer \
     --skill security-pr-audit \
-    --skill github-code-review
+    --skill github
 ```
 
 **从仪表盘**，在内联创建表单的 **skills** 字段中以逗号分隔输入 skill 名称。

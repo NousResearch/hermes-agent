@@ -217,6 +217,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once. Deferred until the first prompt (or any
     command needing the agent) so the composer isn't blocked on tool discovery / model metadata;
     the ready/error event contract is unchanged."""
+    # Callers reach this with the durable STORED id (attach RPCs pass params verbatim). Every _sessions
+    # lookup inside _build() is keyed by the runtime id, so an un-rekeyed sid saw current=None, set
+    # `ready` and returned: the session looked built but had no agent, forever and silently.
+    sid = _resolve_client_session_id(sid, session)
     ready = session.get("agent_ready")
     if ready is None:
         return
@@ -306,6 +310,15 @@ def _sess_nowait(params, rid):
     s = _sessions.get(sid)
     if s:
         return (s, None)
+    # A client holding the STORED id of a session whose runtime is registered under a fresh sid (the
+    # normal shape of a resumed chat) is not stale — bridge it instead of rejecting. Logged at info:
+    # an RPC that was answered through the bridge must still be distinguishable from one that never
+    # arrived, and a silent bridge hides the very bug it papers over.
+    hit = _find_live_session_by_client_id(sid)
+    if hit is not None:
+        logger.info("session-scoped RPC resolved by stored id: method=%s session_id=%s -> live sid=%s",
+                    _current_rpc_method.get() or "?", sid, hit[0])
+        return (hit[1], None)
     # Stale runtime id (reaped/evicted/TTL): the client should session.resume the STORED id. Logged so
     # "message vanished" reads as "arrived and was rejected".
     logger.warning("session-scoped RPC rejected: method=%s session_id=%r not in memory "
@@ -700,6 +713,56 @@ def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tu
                 and _live_profile_matches(session, profile_home)):
             return sid, session
     return None
+
+
+def _find_live_session_by_client_id(client_id: str, profile_home=_ANY_PROFILE) -> tuple[str, dict] | None:
+    """Find a live runtime by ANY id a client may legitimately hold for it.
+
+    ``_find_live_session_by_key`` matches one key per record — ``agent.session_id or session_key or sid``
+    (``_session_lookup_key``) — which is exactly right when a client is naming a session it watched, and
+    exactly wrong right after a cold resume: the runtime is registered under a fresh sid, and once the
+    agent is built its ``session_id`` is that fresh id, so the durable id the client is still holding
+    (``session_key``/``resume_session_id``) is shadowed by the highest-ranked field and the search misses.
+    A record here owns several identities at once; a client that knows any one of them means this session.
+
+    Same profile discipline as ``_find_live_session_by_key`` (#100029): timestamp-shaped stored ids can
+    exist in more than one profile's store, so a profile-aware caller must not get another profile's
+    runtime. Finalized runtimes stay out of scope — reviving one hands the client an unbuildable slot.
+    """
+    for sid, session in list(_sessions.items()):
+        if session.get("_finalized") or not _live_profile_matches(session, profile_home):
+            continue
+        known = {sid, str(session.get("session_key") or ""), str(session.get("resume_session_id") or ""),
+                 str(getattr(session.get("agent"), "session_id", None) or "")}
+        known.discard("")
+        if client_id in known:
+            return sid, session
+    return None
+
+
+def _resolve_client_session_id(client_id: str, session: dict | None = None) -> str:
+    """Re-key a client-supplied id to the sid that live runtime is registered under.
+
+    ``session.resume`` registers the runtime under a short transient sid and keeps the durable stored id in
+    ``session_key``/``resume_session_id`` (see ``_claim_or_reuse_live``). Clients that are not the CLI —
+    Desktop, the web dashboard, third-party JSON-RPC clients — keep sending the stored id they resumed
+    with, because a client has no way to learn the runtime id from a resume it just performed. Every
+    ``_sessions[`` lookup downstream of a resolved RPC is keyed by the runtime id, so left un-rekeyed each
+    one misses its own session: ``_sess_nowait`` answers 4001 "session not found" to the first
+    ``prompt.submit`` after a *successful* resume, ``_start_agent_build`` sees ``current=None``, settles
+    ``agent_ready`` and returns without ever building an agent (attach RPCs then go nowhere, silently), and
+    the reattach guard 4007s "session no longer live; retry resume" on every prompt.
+
+    Unmatched ids are returned unchanged so each caller's own not-found path stays honest: this is identity
+    resolution, not fuzzy matching.
+    """
+    if session is not None:
+        # Callers that already resolved the record want that exact runtime, not whichever id matches first.
+        for sid, candidate in list(_sessions.items()):
+            if candidate is session:
+                return sid
+    hit = _find_live_session_by_client_id(client_id)
+    return hit[0] if hit is not None else client_id
 
 
 def _fallback_session_info(session: dict) -> dict:

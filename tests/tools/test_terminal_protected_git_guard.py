@@ -236,6 +236,65 @@ class TestGuardActive:
         assert result is not None
         assert result["approved"] is False
 
+    # ── Shell-wrapper internal-cd bypass (probe finding #1) ───────────────
+
+    def test_sh_wrapper_cd_to_protected_then_reset_blocked(self, tmp_path):
+        """sh -c 'cd <root> && git reset --hard' from safe cwd must be blocked.
+
+        Previously _pg_effective_cwd() only inspected the outer leading cd
+        and missed the cd embedded inside the shell wrapper string.
+        """
+        safe = tmp_path / "safe"
+        safe.mkdir()
+        cmd = f'sh -c "cd {self._root} && git reset --hard"'
+        from tools.approval import check_protected_git_roots_guard
+        result = check_protected_git_roots_guard(cmd, str(safe))
+        assert result is not None, (
+            f"Guard did not fire for shell-wrapper cd bypass: {cmd!r}"
+        )
+        assert result["approved"] is False
+
+    def test_bash_wrapper_cd_to_protected_then_stash_blocked(self, tmp_path):
+        """bash -c 'cd <root> && git stash' from safe cwd must be blocked."""
+        safe = tmp_path / "safe"
+        safe.mkdir()
+        cmd = f"bash -c 'cd {self._root} && git stash'"
+        from tools.approval import check_protected_git_roots_guard
+        result = check_protected_git_roots_guard(cmd, str(safe))
+        assert result is not None, (
+            f"Guard did not fire for bash-wrapper cd bypass: {cmd!r}"
+        )
+        assert result["approved"] is False
+
+    # ── GIT_DIR env-prefix bypass (probe finding #2) ──────────────────────
+
+    def test_git_dir_env_prefix_reset_blocked(self, tmp_path):
+        """GIT_DIR=<root>/.git git reset --hard from safe cwd must be blocked.
+
+        Previously only --git-dir= was checked; the env-prefix form was missed.
+        """
+        safe = tmp_path / "safe"
+        safe.mkdir()
+        cmd = f"GIT_DIR={self._root}/.git git reset --hard"
+        from tools.approval import check_protected_git_roots_guard
+        result = check_protected_git_roots_guard(cmd, str(safe))
+        assert result is not None, (
+            f"Guard did not fire for GIT_DIR env-prefix bypass: {cmd!r}"
+        )
+        assert result["approved"] is False
+
+    def test_git_work_tree_env_prefix_stash_blocked(self, tmp_path):
+        """GIT_WORK_TREE=<root> git stash from safe cwd must be blocked."""
+        safe = tmp_path / "safe"
+        safe.mkdir()
+        cmd = f"GIT_WORK_TREE={self._root} git stash"
+        from tools.approval import check_protected_git_roots_guard
+        result = check_protected_git_roots_guard(cmd, str(safe))
+        assert result is not None, (
+            f"Guard did not fire for GIT_WORK_TREE env-prefix bypass: {cmd!r}"
+        )
+        assert result["approved"] is False
+
 
 # ---------------------------------------------------------------------------
 # Integration: terminal_tool JSON response format

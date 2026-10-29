@@ -3408,6 +3408,12 @@ _PROTECTED_GIT_DENY: list = [
 _GIT_DASH_C_RE = re.compile(r"\bgit\s+-C\s+(['\"]?)(\S+)\1")
 # Regex to extract `git --work-tree=<path>` / `git --git-dir=<path>` (bypass).
 _GIT_WORK_TREE_RE = re.compile(r"\bgit\b.*?--(?:work-tree|git-dir)=(['\"]?)(\S+)\1")
+# Regex to detect leading env-var assignments that target git's repo paths.
+# Matches ``GIT_DIR=/path``, ``GIT_WORK_TREE=/path``, ``GIT_COMMON_DIR=/path``
+# anywhere in the command string (env-prefix bypass vector).
+_GIT_DIR_ENV_PREFIX_RE = re.compile(
+    r"""(?:^|(?<=\s))GIT_(?:DIR|WORK_TREE|COMMON_DIR)=([\"']?)([^\"'\s]+)\1"""
+)
 
 
 def _pg_is_inside_protected_root(path: str, roots: list) -> tuple:
@@ -3437,18 +3443,62 @@ def _pg_is_inside_protected_root(path: str, roots: list) -> tuple:
     return False, None
 
 
-def _pg_effective_cwd(command: str, session_cwd: str) -> str:
+# Shell interpreter names for which we recognise ``-c <payload>`` inside
+# ``_pg_effective_cwd``.  Must be lowercase basenames only.
+_PG_SHELL_NAMES = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "ksh93", "csh", "tcsh"}
+)
+
+
+def _pg_extract_shell_c_payload(segment: str) -> "str | None":
+    """If *segment* is ``<shell> [opts] -c <payload>``, return the payload.
+
+    Handles leading ``NAME=VALUE`` env-prefix tokens (e.g.
+    ``ENV=1 bash -c '…'``) and most common shell flags before ``-c``.
+    Returns ``None`` when the pattern is not recognised or quoting is
+    malformed.
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    # Skip leading NAME=VALUE env prefixes to reach the executable token.
+    idx = 0
+    while idx < len(tokens) and _ENV_ASSIGNMENT_RE.fullmatch(tokens[idx]):
+        idx += 1
+    if idx >= len(tokens):
+        return None
+    shell = os.path.basename(tokens[idx]).lower()
+    if shell not in _PG_SHELL_NAMES:
+        return None
+    _, payload = _bash_exec_payload(tokens[idx + 1:])
+    return payload
+
+
+def _pg_effective_cwd(command: str, session_cwd: str, _depth: int = 0) -> str:
     """Return the effective cwd after applying leading ``cd <path>`` segments.
 
     Only the *leading* ``cd <path>`` segment is considered (not one embedded
     in the middle of a pipeline) because that is the only form that changes
     the shell's cwd before the git subcommand runs.
+
+    When the first non-cd segment is a shell wrapper (sh/bash/zsh … -c '…'),
+    the inner string is parsed recursively so that ``sh -c "cd /protected &&
+    git reset --hard"`` correctly resolves to the inner directory instead of
+    the outer session cwd.  Recursion is capped at depth 4.
     """
     cwd = session_cwd or ""
     for seg in _iter_top_level_shell_segments(command):
         stripped = seg.strip()
         m = re.match(r"^cd\s+(.+)$", stripped)
         if not m:
+            # Recurse into shell wrappers — catches the internal-cd bypass.
+            if _depth < 4:
+                inner = _pg_extract_shell_c_payload(stripped)
+                if inner is not None:
+                    cwd = _pg_effective_cwd(inner, cwd, _depth + 1)
             break  # first non-cd segment — stop
         raw = m.group(1).strip().strip("\"'")
         if os.path.isabs(raw):
@@ -3516,17 +3566,51 @@ def check_protected_git_roots_guard(command: str, session_cwd: str) -> Optional[
                 bypass_path = candidate
                 break
 
+    # Bypass check 3: env-prefix ``GIT_DIR=`` / ``GIT_WORK_TREE=`` /
+    # ``GIT_COMMON_DIR=`` — treated the same as the equivalent flag form.
+    if not in_protected:
+        for m in _GIT_DIR_ENV_PREFIX_RE.finditer(command):
+            candidate = m.group(2).rstrip("/")
+            if not candidate:
+                continue
+            if not os.path.isabs(candidate):
+                candidate = os.path.normpath(
+                    os.path.join(effective_cwd, candidate)
+                ) if effective_cwd else candidate
+            hit, root = _pg_is_inside_protected_root(candidate, roots)
+            if hit:
+                in_protected = True
+                matched_root = root
+                bypass_path = candidate
+                break
+
     if not in_protected:
         return None  # cwd and explicit git paths are outside protected roots
 
     # Check whether the command matches any protected git deny pattern.
-    # We check the entire command text so semicolon chains, `sh -c "..."`,
-    # `command git ...`, and `\git ...` wrappers are all caught.
+    # Primary: scan the entire command text so semicolon chains,
+    # `sh -c "..."`, `command git ...`, and `\git ...` wrappers are caught.
+    # Secondary: also scan each top-level segment's shell-wrapper inner
+    # payload — single-quoted wrappers (``bash -c '...'``) have a closing
+    # quote at the end of the raw command, which can prevent the stash/push
+    # pattern's terminal anchor from matching the outer text.
     hit_desc: Optional[str] = None
     for pat, desc in _PROTECTED_GIT_DENY:
         if pat.search(command):
             hit_desc = desc
             break
+
+    if hit_desc is None:
+        for seg in _iter_top_level_shell_segments(command):
+            inner = _pg_extract_shell_c_payload(seg.strip())
+            if inner is None:
+                continue
+            for pat, desc in _PROTECTED_GIT_DENY:
+                if pat.search(inner):
+                    hit_desc = desc
+                    break
+            if hit_desc is not None:
+                break
 
     if hit_desc is None:
         return None  # command is safe (e.g. git log, git status, git stash list)

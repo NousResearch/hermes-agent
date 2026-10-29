@@ -363,6 +363,22 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
     assert "hermes auth" in result.message
 
 
+def test_redeem_reset_only_clears_the_redeeming_codex_pool_credential(monkeypatch):
+    """Regression for #138121: an account reset must not unfreeze other pool accounts."""
+    cleared_tokens = []
+
+    def clear_cooldown(access_token):
+        cleared_tokens.append(access_token)
+        return 1
+
+    monkeypatch.setattr("hermes_cli.auth.clear_codex_pool_quota_cooldowns", clear_cooldown)
+
+    result = account_usage._codex_reset_outcome({"code": "reset"}, available=1, access_token="redeemed-token")
+
+    assert result.status == "reset"
+    assert cleared_tokens == ["redeemed-token"]
+
+
 def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_account(monkeypatch, codex_usage_payload):
     """A live agent on pool entry B hands its own api_key in; after a 401 the retry must refresh B,
     not re-resolve and render the singleton/pool account A's usage."""

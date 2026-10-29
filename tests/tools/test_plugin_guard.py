@@ -1004,6 +1004,8 @@ class TestProcKeyAndBytecodeShapes:
         ("probe.py", 'print(Path("/proc/self").read_text())\n', "proc_access", "high"),
         ("probe.py", '(Path("/proc/self/cgroup"), Path("/proc/1/cmdline"))\n', "proc_access", "high"),
         ("writer.py", 'Path("/proc/self/cgroup").write_text("x")\n', "proc_access", "high"),
+        ("writer.py", 'open("/proc/self/comm", "r+").write("w")\n', "proc_access", "high"),
+        ("rename.sh", 'printf worker > "/proc/self/comm"\n', "proc_access", "high"),
         ("keys.py", f'API_KEY = "phx_{_FAKE_KEY_BODY}"\n', "hardcoded_secret", "critical"),
         ("keys.py", f'api_key = "phc_{_FAKE_KEY_BODY}"; token = "a8f3k2m9q7w1z5x0c4v6b8n2"\n',
          "hardcoded_secret", "critical"),

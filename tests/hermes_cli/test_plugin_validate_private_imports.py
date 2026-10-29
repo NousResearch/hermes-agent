@@ -140,6 +140,7 @@ def test_documented_session_helper_and_own_install_path_fallback_are_not_flagged
             "        from . import _db\n"
             "    except ImportError:\n"
             "        import plugins.memory.openltm._db as _db\n"
+            "        from plugins.memory.openltm import _db\n"
             "    from hermes_cli.gateway_client import _session_ticket\n"
             "    return get_session_env, _db, _session_ticket\n"
         ),
@@ -149,7 +150,7 @@ def test_documented_session_helper_and_own_install_path_fallback_are_not_flagged
     [warning] = _private_warnings(validate_plugin_dir(plugin))
 
     sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
-    assert sites == ["__init__.py:7 hermes_cli.gateway_client._session_ticket"], sites
+    assert sites == ["__init__.py:8 hermes_cli.gateway_client._session_ticket"], sites
 
 
 def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_path):

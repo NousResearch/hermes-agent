@@ -790,7 +790,7 @@ _BENIGN_PROC_LEAVES = frozenset({
     "sched", "schedstat", "oom_score"})
 _PROC_PATH = re.compile(r"/proc/(?:self|\d+)(?:/([\w.-]*))?")
 _PROC_WRITE = re.compile(
-    r"write_text|write_bytes|\.write\s*\(|open\s*\([^)\n]{0,300}?['\"][rbt]*[wax+][rbt+]*['\"]|O_WRONLY|O_RDWR|>\s*/proc/|\btee\b")
+    r"write_text|write_bytes|\.write\s*\(|open\s*\([^)\n]{0,300}?['\"][rbt]*[wax+][rbt+]*['\"]|O_WRONLY|O_RDWR|>\s*['\"]?/proc/|\btee\b")
 
 
 def is_own_proc_read(finding: Finding, line: str) -> bool:

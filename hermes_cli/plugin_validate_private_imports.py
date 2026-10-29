@@ -130,7 +130,8 @@ def _is_own_module_path(module: str, local: set[str]) -> bool:
 def _private_target(module: str, name: str, core: frozenset, local: set[str]) -> str:
     """The dotted target to report, or "" when the import is public, local or not Hermes's."""
     target = f"{module}.{name}" if name else module
-    hermes = module.split(".")[0] in core and module not in local and not _is_own_module_path(module, local)
+    own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
+    hermes = module.split(".")[0] in core and module not in local and not own
     public = target in _PUBLIC or f"{module}:{name}" in _PUBLIC \
         or (module in _PUBLIC and not name.startswith("_"))  # ``from gateway.platforms import base`` too
     return target if hermes and not public else ""

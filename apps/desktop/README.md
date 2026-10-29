@@ -100,6 +100,12 @@ HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
+### Markdown rendering
+
+Currency escaping must leave inline-code contents unchanged: a backslash added
+before `$0` is visible and changes a copied shell command. Rendering regressions
+belong alongside `src/components/assistant-ui/markdown-text.prose-safety.test.tsx`.
+
 ### Building installers
 
 ```bash

@@ -527,13 +527,17 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
         if event.kind == "turn.settled" and not event.payload["passed"]:
             message = messages_by_id.get(str(event.payload["message_event_id"]))
             if message is None or any(
-                message.payload.get(f) != event.payload.get(f) for f in ("task_id", "member_id", "thread_id")):
+                message.payload.get(f) != event.payload.get(f)
+                for f in ("task_id", "member_id", "thread_id", "discussion_event_id")):
                 raise DiscussionValidationError("turn.settled references no matching member message")
+            # The committed message carries the discussion it answered, so a terminal naming a
+            # discussion that never existed fails the coordinates above. Only the *anchor event*
+            # can be legitimately absent: the bounded transcript window trims a prefix, and the
+            # checkpoint's durable watermarks already carry this member's seen-through state, so
+            # a missing anchor is the compacted prefix and re-derives no credit.
             discussion_seq = next((candidate.seq for candidate in events
                                    if candidate.event_id == event.payload["discussion_event_id"]), None)
-            if discussion_seq is None:
-                raise DiscussionValidationError("turn.settled references no matching user discussion")
-            if watermark >= discussion_seq:
+            if discussion_seq is not None and watermark >= discussion_seq:
                 watermark = max(watermark, message.seq)
         watermarks[key] = max(watermarks.get(key, 0), watermark)
     return watermarks

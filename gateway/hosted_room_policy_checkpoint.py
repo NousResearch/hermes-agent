@@ -23,7 +23,10 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 4
+# 5: the count trim keeps each retained settlement's ``message.user`` anchor (see
+# ``_TRIM_TRANSCRIPT_SQL``). A window written by 4 can leave a surviving ``turn.settled``
+# pointing at a trimmed discussion, so 4 is rebuilt instead of read.
+_TRANSCRIPT_SCHEMA_VERSION = 5
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
@@ -65,6 +68,24 @@ _SCHEMA_DDL = (
 
 _ROOM_EVENT_COLUMNS = hosted_rooms._EVENT_COLUMNS
 _DELETE_ACTIVE_EVENTS_SQL = ("DELETE FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=?")
+# The trim is the one authority for what the policy projection can see, so it must stay
+# referentially closed: a retained member row's ``turn.settled`` partner names the
+# ``message.user`` event it answered, and ``plan_next_task`` requires that anchor. Pinning the
+# still-referenced discussions costs at most one row per retained member row, well inside
+# ``max_transcript_policy_events``; a window that cannot satisfy the bound raises a modelled
+# RuntimeError at the room boundary (a visible prepare stall), never a policy crash.
+_TRIM_TRANSCRIPT_SQL = """
+    DELETE FROM hosted_room_policy_transcript
+     WHERE room_id=? AND thread_id=? AND seq<?
+       AND seq NOT IN (
+           SELECT anchor.seq
+             FROM hosted_room_policy_transcript AS kept
+             JOIN hosted_room_events AS member
+               ON member.room_id=kept.room_id AND member.seq=kept.seq AND member.kind='message.member'
+             JOIN hosted_room_events AS anchor
+               ON anchor.room_id=member.room_id
+              AND anchor.event_id=json_extract(member.payload_json, '$.discussion_event_id')
+            WHERE kept.room_id=? AND kept.thread_id=? AND kept.seq>=?)"""
 _TRANSCRIPT_EVENTS_SQL = f"""WITH transcript_events(seq) AS (
         SELECT seq FROM hosted_room_policy_transcript WHERE room_id=? AND thread_id=?
         UNION ALL
@@ -165,9 +186,10 @@ class HostedRoomPolicyCheckpoint:
                    ORDER BY seq DESC LIMIT 1 OFFSET ?""",
                 (event["room_id"], thread_id, MAX_THREAD_TRANSCRIPT_EVENTS - 1)).fetchone()
             if cutoff is not None:
-                conn.execute(
-                    "DELETE FROM hosted_room_policy_transcript WHERE room_id=? AND thread_id=? AND seq<?",
-                    (event["room_id"], thread_id, int(cutoff["seq"])))
+                keep_from = int(cutoff["seq"])
+                conn.execute(_TRIM_TRANSCRIPT_SQL,
+                             (event["room_id"], thread_id, keep_from,
+                              event["room_id"], thread_id, keep_from))
 
     def _discussion_events(
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str

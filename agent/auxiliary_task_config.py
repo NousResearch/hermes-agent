@@ -64,6 +64,9 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
         except ImportError:
             return {}
         aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+        scoped = False
+    else:
+        scoped = True
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
@@ -78,13 +81,34 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
                         logger.warning("Auxiliary task %r has a circular inherit_from chain — "
                                        "ignoring inheritance", task)
                     if not _inherit or task in _seen:
-                        return {**_defaults, **task_config}
-                    base = _get_auxiliary_task_config(_inherit, _seen | {task})
-                    return _layer_over_inherited({**base, **_defaults}, task_config)
+                        task_config = {**_defaults, **task_config}
+                    else:
+                        base = _get_auxiliary_task_config(_inherit, _seen | {task})
+                        task_config = _layer_over_inherited({**base, **_defaults}, task_config)
                 break
     except Exception:  # health: allow BLE001 -- plugin discovery must never break aux config reads
         logger.debug("plugin auxiliary task lookup failed for %r", task, exc_info=True)
+    if scoped and not _has_route_pin(task_config):
+        # The session predates the pin (auxiliary is not a followed section): no frozen route
+        # to protect, so this task follows live config (#145493). A frozen pin keeps today's
+        # behavior. Lifting the scope re-resolves from live config.yaml.
+        token = _SESSION_AUXILIARY.set(None)
+        try:
+            return _task_config(task, _seen)
+        finally:
+            _SESSION_AUXILIARY.reset(token)
     return task_config
+
+
+def _has_route_pin(task_config: dict[str, Any]) -> bool:
+    """True when the task block names its own route (same pinned rule as
+    ``_layer_over_inherited``): a non-auto provider, a model, or a base_url."""
+    if not isinstance(task_config, dict):
+        return False
+    provider = str(task_config.get("provider") or "").strip().lower()
+    return (provider not in ("", "auto")
+            or bool(str(task_config.get("model") or "").strip())
+            or bool(str(task_config.get("base_url") or "").strip()))
 
 
 # The fields that together pick WHERE a call goes. They travel as one unit: a provider pinned on an

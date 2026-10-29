@@ -1,20 +1,19 @@
 name: kokoro-tts
-title: Kokoro TTS (local, Apple Silicon)
+title: Kokoro TTS (local)
 repo: https://github.com/brunosouzas/hermes-kokoro-tts
-sha: 9b682a84ff5b59c1b4d0b340b07b2c188b409e0b
-description: "Local Kokoro-82M text-to-speech on Apple Silicon: adds the kokoro-mlx speech provider (tts.provider: kokoro-mlx) with sentence-by-sentence PCM streaming for voice mode, read-aloud and text_to_speech, 54 voices in nine languages, an optional voice per language that switches per sentence between Portuguese and English, and an optional dictionary of English words a non-English voice pronounces in English without changing voice; plus hermes kokoro install, status, restart, voices, say, words and uninstall. Disclosure — hermes kokoro install creates a separate Python 3.11 environment with uv (about 1.1 GB from PyPI, plus spaCy's en_core_web_sm wheel from its GitHub release, pinned by SHA-256), downloads mlx-community/Kokoro-82M-bf16 at a pinned revision from Hugging Face (about 340 MB), and installs a launchd agent (dev.hermes.kokoro-tts) that keeps a local server running in the background. The server listens only on 127.0.0.1 (it refuses other addresses), runs offline, and does not log the text; the text to speak goes only to that local server, bypassing any proxy settings. Writes the environment, model cache and log under ~/Library/Application Support/hermes-kokoro-tts, the requested audio files, and the profile's config.yaml only when you run hermes kokoro words add or remove. No API keys, no telemetry."
+sha: 132352fc843735db30dafe2ebb9dd935a34e5729
+description: "Local Kokoro-82M text-to-speech on Apple Silicon (MLX) and Linux (PyTorch on CPU): adds the kokoro-mlx speech provider (tts.provider: kokoro-mlx) with sentence-by-sentence PCM streaming for voice mode, read-aloud and text_to_speech, an optional voice per language that switches per sentence between Brazilian Portuguese and English (tested by the author) and Italian (not yet tested by the author), and an optional dictionary of English words a non-English voice pronounces in English without changing voice; plus hermes kokoro install, status, restart, voices, say, words and uninstall. Disclosure — hermes kokoro install creates a separate Python 3.11 environment with uv (about 1.1 GB on macOS or 1.3 GB on Linux from PyPI, plus spaCy's en_core_web_sm wheel from its GitHub release and, on Linux, the CPU-only torch wheel from download.pytorch.org, both pinned by SHA-256), downloads the model at a pinned revision from Hugging Face (mlx-community/Kokoro-82M-bf16 on macOS, hexgrad/Kokoro-82M on Linux, about 340 MB), and installs a background service that keeps a local server running (a launchd agent on macOS, a systemd user unit on Linux, both named dev.hermes.kokoro-tts). The server listens only on 127.0.0.1 (it refuses other addresses), runs offline, and does not log the text; the text to speak goes only to that local server, bypassing any proxy settings. Writes the environment, model cache and log under ~/Library/Application Support/hermes-kokoro-tts (macOS) or ~/.local/share/hermes-kokoro-tts (Linux), the requested audio files, and the profile's config.yaml only when you run hermes kokoro words add or remove. No API keys, no telemetry."
 maintainer: brunosouzas
 tier: community
 category: voice
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/brunosouzas/hermes-kokoro-tts#readme
-version: "0.3.0"
+version: "0.4.0"
 readme: true
-platforms: [macos]
+platforms: [macos, linux]
 known_issues:
-  - "macOS on Apple Silicon only (MLX)."
+  - "Runs on macOS with Apple Silicon (MLX) and on Linux x86_64 with a systemd user session."
   - "Under plugins.isolation: host the hermes kokoro terminal command is not available (Hermes skips plugin CLI commands in the host); the speech provider still registers."
-  - "Only Brazilian Portuguese and English are tested; Japanese and Mandarin may need extra G2P packages this release does not install. Per-sentence language detection covers Portuguese and English."
 capabilities:
   provides_tools: []
   provides_hooks: []

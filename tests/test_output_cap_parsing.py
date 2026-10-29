@@ -132,18 +132,18 @@ class TestParseVllmTokenBasedOutputCap:
     succeeded.
     """
 
-    # Verbatim vLLM 0.22 / OpenAI-compatible server response (max_tokens set).
-    _VLLM_MSG = (
-        "This model's maximum context length is 131072 tokens. However, you "
+    # vLLM's ``at least`` input count is a truncated lower bound, not an
+    # exact request measurement. It cannot safely derive a retry output cap.
+    _VLLM_LOWER_BOUND_MSG = (
+        "This model's maximum context length is 262144 tokens. However, you "
         "requested 65536 output tokens and your prompt contains at least "
-        "65537 input tokens, for a total of at least 131073 tokens. Please "
+        "196609 input tokens, for a total of at least 262145 tokens. Please "
         "reduce the length of the input prompt or the number of requested "
         "output tokens."
     )
 
-    def test_vllm_token_based_format(self):
-        # available output = 131072 - 65537 = 65535
-        assert parse_available_output_tokens_from_error(self._VLLM_MSG) == 65535
+    def test_vllm_lower_bound_input_falls_through_to_compression(self):
+        assert parse_available_output_tokens_from_error(self._VLLM_LOWER_BOUND_MSG) is None
 
     def test_vllm_without_at_least_qualifier(self):
         # Some versions omit the "at least" hedge.
@@ -153,10 +153,13 @@ class TestParseVllmTokenBasedOutputCap:
         assert parse_available_output_tokens_from_error(msg) == 31072
 
     def test_vllm_retry_fits_inside_window(self):
-        # The retried cap plus the reported input must fit in the window.
-        available = parse_available_output_tokens_from_error(self._VLLM_MSG)
+        # Exact input counts can still derive a retry cap that fits the window.
+        msg = ("This model's maximum context length is 131072 tokens. However, "
+               "you requested 4096 output tokens and your prompt contains "
+               "100000 input tokens, for a total of 104096 tokens.")
+        available = parse_available_output_tokens_from_error(msg)
         assert available is not None
-        assert available + 65537 <= 131072
+        assert available + 100000 <= 131072
 
     def test_vllm_input_alone_exceeds_window_returns_none(self):
         # Input >= window -> lowering the output cap cannot help; the caller

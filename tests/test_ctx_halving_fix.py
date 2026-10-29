@@ -145,6 +145,17 @@ class TestContextOverflowLimitSelection:
 
         assert get_context_length_from_provider_error(error_msg, 272_000) is None
 
+    def test_vllm_lower_bound_does_not_shrink_declared_window(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        error_msg = (
+            "This model's maximum context length is 262144 tokens. However, you "
+            "requested 65536 output tokens and your prompt contains at least "
+            "196609 input tokens, for a total of at least 262145 tokens."
+        )
+
+        assert get_context_length_from_provider_error(error_msg, 262_144) is None
+
 
 # ---------------------------------------------------------------------------
 # build_anthropic_kwargs — output cap clamping

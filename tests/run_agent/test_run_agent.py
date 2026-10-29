@@ -5899,7 +5899,7 @@ class TestRunConversation:
         error_msg = (
             "This model's maximum context length is 131072 tokens. "
             "However, you requested 1024 output tokens and your prompt "
-            "contains at least 65537 input tokens, for a total of at least "
+            "contains 65537 input tokens, for a total of "
             "66561 tokens."
         )
         exc = Exception(error_msg)

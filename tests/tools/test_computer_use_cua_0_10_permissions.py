@@ -293,3 +293,23 @@ def test_no_escalation_warning_without_a_bypass(caplog):
     assert not [
         r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
     ]
+
+
+@pytest.mark.skipif(__import__("sys").platform == "win32", reason="named pipe on Windows")
+def test_embedded_daemon_socket_fits_af_unix_limit_under_deep_tmpdir(monkeypatch, tmp_path):
+    """A caller's deep TMPDIR (e.g. an orchestrator's per-run scratch dir) must not push the private
+    daemon's socket past the AF_UNIX path limit (104 bytes on macOS), or the daemon never binds and
+    startup times out as "daemon did not become ready"."""
+    import tempfile
+
+    from tools.computer_use import cua_backend
+
+    deep = tmp_path / ("paperclip-run-" + "x" * 90)
+    deep.mkdir()
+    monkeypatch.setenv("TMPDIR", str(deep))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+
+    daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+
+    assert len(daemon.socket_path.encode()) <= 104
+    assert not daemon.socket_path.startswith(str(deep))

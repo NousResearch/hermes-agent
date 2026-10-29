@@ -209,12 +209,12 @@ _CDP_NON_FETCHING_METHODS = frozenset({
 
 
 def _param_url_literals(value: Any, key: str = "") -> list[str]:
-    """Every URL a CDP call's params name: each ``url`` value whole, plus the ``http(s)://`` literals in
-    every string at any depth (``Network.loadNetworkResource``, ``Runtime.callFunctionOn`` bodies,
-    ``Page.addScriptToEvaluateOnNewDocument`` sources, injected HTML)."""
+    """Every URL a CDP call's params name: each ``url`` value whole, plus the ``http(s)://`` and
+    protocol-relative ``//host`` literals in every string at any depth (``Network.loadNetworkResource``,
+    ``Runtime.callFunctionOn`` bodies, ``Page.addScriptToEvaluateOnNewDocument`` sources, injected HTML)."""
     from tools.browser_url_policy import url_literals
     if isinstance(value, str):
-        return ([value.strip()] if key == "url" and value.strip() else []) + url_literals(value)
+        return ([value.strip()] if key == "url" and value.strip() else []) + url_literals(value, protocol_relative=True)
     if isinstance(value, dict):
         return [u for k, v in value.items() for u in _param_url_literals(v, str(k))]
     if isinstance(value, (list, tuple)):
@@ -237,8 +237,7 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     Raw CDP shares the cloud/private-network boundary of ``browser_exec``'s URL policy and must not become
     its bypass, so a page whose URL cannot be verified as public refuses page-reading methods.
     """
-    from tools.browser_url_policy import eval_ssrf_guard_active, url_blocked
-    from tools.url_safety import is_always_blocked_url
+    from tools.browser_url_policy import eval_ssrf_guard_active, literal_targets_metadata, url_blocked
     guard_active = eval_ssrf_guard_active()
     guard = _METHOD_PARAM_GUARDS.get(method)
     if guard_active and guard is not None:
@@ -249,7 +248,7 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     # The cloud-metadata floor applies with the private guard on or off, sidecar and local Chromium included,
     # as in browser_exec's _url_policy_error (#16234), to every URL the call could fetch.
     literals = _fetched_param_urls(method, params or {})
-    metadata = next((u for u in literals if is_always_blocked_url(u)), None)
+    metadata = next((u for u in literals if literal_targets_metadata(u)), None)
     if metadata:
         return _blocked(f"Blocked: CDP {method} targets a cloud metadata endpoint ({metadata}).", method)
     if not guard_active:

@@ -147,3 +147,45 @@ def test_raw_cdp_params_the_call_never_fetches_are_not_screened(cdp_guard):
     # An attribute the page then loads is still a fetch.
     src = {"nodeId": 1, "name": "src", "value": "http://169.254.169.254/latest/meta-data/"}
     assert "cloud metadata" in cdp_guard(method="DOM.setAttributeValue", params=src)
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
+def test_raw_cdp_reads_bracketed_ipv6_hosts_whole(cdp_guard):
+    """``[...]`` hosts are one literal: a public IPv6 URL passes, an IPv4-mapped metadata address does not."""
+    public = {"frameId": "F", "url": "https://[2606:4700:4700::1111]/dns", "options": {}}
+    assert cdp_guard(method="Network.loadNetworkResource", params=public) is None
+    mapped = {"functionDeclaration": "() => fetch('http://[::ffff:a9fe:a9fe]/latest/meta-data/')"}
+    assert "cloud metadata" in cdp_guard(method="Runtime.callFunctionOn", params=mapped)
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
+def test_raw_cdp_metadata_floor_reads_scheme_relative_urls(cdp_guard):
+    """``//host``, ``///host`` and ``\\\\host`` load with the page's scheme; a ``//`` comment, a path, or a
+    ``//`` inside another URL's query is not a second target."""
+    for target in ("//169.254.169.254/latest/meta-data/", "///169.254.169.254/latest/", "\\\\169.254.169.254\\latest",
+                   "//metadata.google.internal/computeMetadata/v1/", "//2852039166/", "//0xA9FEA9FE/latest/",
+                   "//0251.0376.0251.0376/", "//169.254.43518/", "//169.254.169.254\x01"):
+        verdict = cdp_guard(method="Runtime.evaluate", params={"expression": f"location.href='{target}'"})
+        assert "cloud metadata" in verdict, target
+    html = {"expression": "document.body.innerHTML = '<img src=//169.254.169.254/latest/>'"}
+    assert "cloud metadata" in cdp_guard(method="Runtime.evaluate", params=html)
+    src = {"nodeId": 1, "name": "src", "value": "//0xa9fea9fe/latest/"}
+    assert "cloud metadata" in cdp_guard(method="DOM.setAttributeValue", params=src)
+    harmless = {"expression": "// note: see docs\nconst p = 'a//b'; fetch('https://93.184.216.34//x')"}
+    assert cdp_guard(method="Runtime.evaluate", params=harmless) is None
+    # A //TODO comment or a scheme-relative public script is not an http(s) literal for the private check.
+    script = {"functionDeclaration": "function(){ //TODO\n import('//cdn.jsdelivr.net/npm/a.js') }"}
+    assert cdp_guard(method="Runtime.callFunctionOn", params=script) is None
+    for url in ("https://1.1.1.1/?next=//169.254.169.254/", "https://[2606:4700:4700::1111]//169.254.169.254/x"):
+        assert cdp_guard(method="Network.loadNetworkResource", params={"frameId": "F", "url": url}) is None, url
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
+def test_raw_cdp_scheme_relative_literals_cost_no_dns_lookup(cdp_guard, monkeypatch):
+    """``//word`` comments are judged by their literal host: no resolver call per comment."""
+    from tools import url_safety
+    lookups = []
+    monkeypatch.setattr(url_safety, "_getaddrinfo", lambda host, port=None: lookups.append(host) or [])
+    script = "\n".join(f"//step{i} fill the form" for i in range(20)) + "\n//eslint-disable-next-line\nrun()"
+    assert cdp_guard(method="Runtime.evaluate", params={"expression": script}) is None
+    assert lookups == []

@@ -614,3 +614,117 @@ class TestSwitchEventPayload:
         assert payload.get("outcome") == "deferred", (
             f"no_headroom event must have outcome='deferred', got {payload.get('outcome')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# (d) Credential validation fail-closed: load_pool / _available_entries raise
+# ---------------------------------------------------------------------------
+
+class TestCredentialValidationFailClosed:
+    """Fix: pool validation exceptions in 2c-validate / 2b-fallback must be fail-closed.
+
+    Before fix: except Exception: pass — stale token survives, codex spawned with 401.
+    After fix:  except Exception: result.pop(...) — validation impossible → excluded.
+    """
+
+    def test_load_pool_raises_during_codex_validation_excludes_codex(self, tmp_path):
+        """2c-validate: load_pool() raises → codex must NOT remain in creds.
+
+        resolve_codex_runtime_credentials resolves a token (codex enters result),
+        then load_pool("openai-codex") raises during the validation step.
+        Fail-closed: the stale token must be excluded.
+        """
+        judo_home = tmp_path / "judo"
+        judo_home.mkdir()
+
+        def _pool_side_effect(provider):
+            if provider == "openai-codex":
+                raise RuntimeError("auth.json unreadable — simulated I/O error")
+            return _pool_from_entries(provider, [])
+
+        with (
+            patch("agent.credential_pool.load_pool", side_effect=_pool_side_effect),
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  return_value={"api_key": "stale-codex-token", "base_url": None}),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+        ):
+            creds = _read_assignee_credentials(judo_home)
+
+        assert "openai-codex" not in creds, (
+            "codex must be excluded when load_pool raises during 2c-validate; "
+            "validation impossible → fail-closed, not fail-open with stale 401 token"
+        )
+
+    def test_available_entries_raises_during_codex_validation_excludes_codex(self, tmp_path):
+        """2c-validate: _available_entries() raises → codex must NOT remain in creds.
+
+        resolve_codex_runtime_credentials resolves a token; load_pool returns a mock
+        where has_credentials() is True and _available_entries() raises.
+        Fail-closed: the unverified token must be excluded.
+        """
+        judo_home = tmp_path / "judo"
+        judo_home.mkdir()
+
+        broken_pool = MagicMock()
+        broken_pool.has_credentials.return_value = True
+        broken_pool._available_entries.side_effect = RuntimeError("pool corrupted")
+
+        def _pool_side_effect(provider):
+            if provider == "openai-codex":
+                return broken_pool
+            return _pool_from_entries(provider, [])
+
+        with (
+            patch("agent.credential_pool.load_pool", side_effect=_pool_side_effect),
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  return_value={"api_key": "stale-codex-token", "base_url": None}),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+        ):
+            creds = _read_assignee_credentials(judo_home)
+
+        assert "openai-codex" not in creds, (
+            "codex must be excluded when _available_entries raises during 2c-validate; "
+            "partial validation (pool broken) is not sufficient proof of usability"
+        )
+
+    def test_load_pool_raises_during_anthropic_2b_fallback_excludes_anthropic(self, tmp_path):
+        """2b-fallback: load_pool("anthropic") raises → anthropic must NOT be in creds.
+
+        _resolve_anthropic_pool_token fails (no singleton token), then load_pool
+        for the fallback path raises. Fail-closed: no anthropic candidate.
+        """
+        judo_home = tmp_path / "judo"
+        judo_home.mkdir()
+
+        def _pool_side_effect(provider):
+            if provider == "anthropic":
+                raise RuntimeError("auth.json locked — simulated I/O error")
+            return _pool_from_entries(provider, [])
+
+        with (
+            patch("agent.credential_pool.load_pool", side_effect=_pool_side_effect),
+            # Force 2b to fail so 2b-fallback runs
+            patch("agent.anthropic_adapter._resolve_anthropic_pool_token",
+                  side_effect=Exception("no singleton token")),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  side_effect=Exception("no codex")),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+        ):
+            creds = _read_assignee_credentials(judo_home)
+
+        assert "anthropic" not in creds, (
+            "anthropic must not be in creds when load_pool raises during 2b-fallback; "
+            "validation impossible → fail-closed"
+        )

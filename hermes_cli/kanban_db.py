@@ -9415,7 +9415,8 @@ def _read_assignee_credentials(
                     result["anthropic"] = (_tok, None)
                     break
             except Exception:
-                pass
+                # Pool validation impossible → fail-closed: exclude any partially-set entry.
+                result.pop("anthropic", None)
 
         # 2c. openai-codex — runtime resolver handles singleton + pool fallback
         #     under the hermes_home-scoped HERMES_HOME override.
@@ -9444,7 +9445,8 @@ def _read_assignee_credentials(
                 ):
                     del result["openai-codex"]
             except Exception:
-                pass
+                # Pool validation impossible → fail-closed: exclude stale credential.
+                result.pop("openai-codex", None)
 
         # 2d. Codex API-key env var fallback.
         if "openai-codex" not in result:

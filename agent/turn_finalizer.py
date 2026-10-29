@@ -437,6 +437,7 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             not _is_empty_terminal
             and not preserved_verification_fallback
             and not str(_turn_exit_reason).startswith("text_response")
+            and _turn_exit_reason != "fallback_prior_turn_content"
             and len(_stripped) <= 24
             and _stripped[-1:] not in _SENTENCE_END
         )

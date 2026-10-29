@@ -1,4 +1,4 @@
-import { externalUrlTarget } from '@hermes/shared'
+import { externalUrlTarget, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
@@ -20,6 +20,7 @@ import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
+import { tagRegistrySessionResponse } from '../../electron/profile-session-routing'
 
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
@@ -42,6 +43,18 @@ export function installBrowserDesktopBridge(): boolean {
   if (!bootstrap.privateSession) {announceWebappWindow()}
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
+
+  // The renderer's REST door, owning session rows the way Electron's main process does: every row
+  // this tab lists comes from the one gateway serving it, the `local` source the tab's sockets and
+  // new chats already name. An untagged listed row beside a `local` new chat read as two owners,
+  // which split one gateway's sessions into an unowned group and a `local` gateway group.
+  const rendererApi = async <T>(request: HermesApiRequest): Promise<T> => {
+    const response = await api<T>(request)
+
+    return (request.method || 'GET').toUpperCase() === 'GET'
+      ? (tagRegistrySessionResponse(request.path, response, LOCAL_CONNECTION_ID) as T)
+      : response
+  }
 
   const currentProfile = () => $connection.get()?.profile?.trim() || windowProfileOverride()
 
@@ -83,7 +96,7 @@ export function installBrowserDesktopBridge(): boolean {
     ...files,
     ...createBrowserDesktopPluginsBridge({ api, files }),
     ...uploads,
-    api,
+    api: rendererApi,
     // This renderer is built from the serving checkout, so its version is the
     // server's, read the way native Desktop reads its runtime's.
     getVersion: async () => ({

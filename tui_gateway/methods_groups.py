@@ -24,7 +24,8 @@ _METHODS = (
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
     "groups.attachment.download")
-LONG_HANDLERS = frozenset(_METHODS)
+#: ``groups.discard`` is forwarded to an owning gateway only, so local capabilities never list it.
+LONG_HANDLERS = frozenset(_METHODS) | {"groups.discard"}
 
 _service_lock = threading.Lock()
 _run_store_lock = threading.Lock()
@@ -492,6 +493,13 @@ def _(rid, params: dict, service) -> dict:
         "execution_generation": int(task.get("execution_generation") or 0),
         "cancel_generation": int(task.get("cancel_generation") or 0)}
     return _ok(rid, {"retried": True, "task": receipt})
+
+
+@_room_method("groups.discard", code=5125)
+def _(rid, params: dict) -> dict:
+    """Discard one indeterminate room task: forwarded to the gateway that owns the room, the only
+    runtime that offers Discard; a room this backend drives itself never shows the action."""
+    return _err(rid, 4127, "Only the Hermes gateway that owns this Group Chat can discard its work.")
 
 
 def _passthrough(

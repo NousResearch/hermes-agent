@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from tools.tts_command_provider import _get_provider_section as _get_stt_section
 
@@ -69,6 +69,16 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"})
 # Built-in providers that upload audio to a remote API.
 CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
+
+
+def stt_response_format(model: Optional[str]) -> str:
+    """The ``response_format`` an OpenAI-compatible transcription endpoint should get.
+
+    ``whisper-1`` (the only model that answers ``text`` with a bare transcript) keeps
+    ``text``; every other model gets ``json`` — OpenRouter-style gateways reject
+    ``text`` outright (HTTP 400) and every OpenAI-compatible server answers ``json``.
+    """
+    return "text" if str(model or "").strip() == "whisper-1" else "json"
 
 
 def _error_result(error: str, **extra: Any) -> dict[str, Any]:

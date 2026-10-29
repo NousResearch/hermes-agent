@@ -32,6 +32,10 @@ export interface DirectSttConfig {
   /** Silence-hallucination contract the relay path applies (`is_whisper_hallucination`);
    *  absent on older backends — a matching transcript is still returned as-is then. */
   hallucination_filter?: null | { phrases: string[]; repeat_regex: string }
+  /** The response format the gateway resolved for this profile
+   *  (`stt.<provider>.response_format` / model-derived); absent on older
+   *  backends, where the client keeps its historical `text`. */
+  response_format?: 'json' | 'text' | 'verbose_json' | null
 }
 
 export interface DirectTtsConfig {
@@ -267,6 +271,42 @@ async function sttFetch(stt: DirectSttConfig, url: string, init: RequestInit): P
   }
 }
 
+/**
+ * Format to ask an OpenAI-compatible endpoint for: the gateway's resolution
+ * when this backend sent one, else the historical `text` — an older backend
+ * must keep the exact request (and wire behaviour) it had before.
+ */
+export function sttResponseFormat(stt: Pick<DirectSttConfig, 'response_format'>): 'json' | 'text' | 'verbose_json' {
+  return stt.response_format ?? 'text'
+}
+
+/** Multipart body for OpenAI-compatible `POST /audio/transcriptions`. */
+function openAiSttForm(audio: Blob, stt: DirectSttConfig, responseFormat: string): FormData {
+  const form = new FormData()
+  form.set('file', audio, sttFileName(audio))
+
+  if (stt.model) {
+    form.set('model', stt.model)
+  }
+
+  form.set('response_format', responseFormat)
+
+  if (stt.language) {
+    form.set('language', stt.language)
+  }
+
+  return form
+}
+
+/** The other format to try after a 400 naming `response_format` (`text` ↔ `json`). */
+function alternateSttResponseFormat(preferred: 'json' | 'text' | 'verbose_json'): 'json' | 'text' {
+  if (preferred === 'text') {
+    return 'json'
+  }
+
+  return preferred === 'json' ? 'text' : 'json'
+}
+
 /** Multipart body for xAI `POST /v1/stt`. */
 function xaiSttForm(audio: Blob, stt: DirectSttConfig): FormData {
   const form = new FormData()
@@ -302,28 +342,38 @@ export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedO
   }
 
   if (stt.wire === 'openai-multipart') {
-    const form = new FormData()
-    form.set('file', audio, sttFileName(audio))
+    const url = `${stt.base_url.replace(/\/+$/, '')}/audio/transcriptions`
+    const preferred = sttResponseFormat(stt)
 
-    if (stt.model) {
-      form.set('model', stt.model)
-    }
+    const post = (responseFormat: string) =>
+      sttFetch(stt, url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${stt.api_key}` },
+        body: openAiSttForm(audio, stt, responseFormat),
+        signal: AbortSignal.timeout(STT_REQUEST_TIMEOUT_MS)
+      })
 
-    form.set('response_format', 'text')
-
-    if (stt.language) {
-      form.set('language', stt.language)
-    }
-
-    const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/audio/transcriptions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${stt.api_key}` },
-      body: form,
-      signal: AbortSignal.timeout(STT_REQUEST_TIMEOUT_MS)
-    })
+    let response = await post(preferred)
 
     if (!response.ok) {
-      throw new Error(`${stt.provider} STT error (HTTP ${response.status}): ${await providerErrorText(response)}`)
+      // Read the error body exactly once: a retry needs the detail, and a
+      // second read would throw on the consumed stream and hide the provider's
+      // message behind "body already used".
+      const detail = await providerErrorText(response)
+
+      // Some endpoints refuse `text` outright (OpenRouter: only json and
+      // verbose_json). A 400 that names response_format is a format
+      // disagreement, not a bad key or a bad recording — retry once with the
+      // other format instead of failing the whole dictation.
+      if (response.status !== 400 || !/response[_-]?\s?format/i.test(detail)) {
+        throw new Error(`${stt.provider} STT error (HTTP ${response.status}): ${detail}`)
+      }
+
+      response = await post(alternateSttResponseFormat(preferred))
+
+      if (!response.ok) {
+        throw new Error(`${stt.provider} STT error (HTTP ${response.status}): ${await providerErrorText(response)}`)
+      }
     }
 
     const transcript = transcriptFromOpenAiMultipartBody(await response.text())

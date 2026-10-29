@@ -216,3 +216,70 @@ def test_resolution_never_raises(voice_home, monkeypatch):
     result = _resolve()
     assert result["stt"]["mode"] in {"direct", "relay"}
     assert result["tts"]["mode"] in {"direct", "relay"}
+
+
+# ── response_format: the client-direct STT wire must never send "text" for a
+# non-whisper-1 model (OpenRouter-style gateways 400 it; every other model answers json).
+def test_openai_direct_derives_json_for_non_whisper_model(voice_home, monkeypatch):
+    voice_home({"stt": {"provider": "openai", "openai": {"model": "gpt-4o-mini-transcribe"}}})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    stt = _resolve()["stt"]
+    assert stt["mode"] == "direct"
+    assert stt["wire"] == "openai-multipart"
+    assert stt["response_format"] == "json"
+
+
+def test_openai_direct_keeps_text_for_whisper_1(voice_home, monkeypatch):
+    voice_home({"stt": {"provider": "openai", "openai": {"model": "whisper-1"}}})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    stt = _resolve()["stt"]
+    assert stt["mode"] == "direct"
+    assert stt["response_format"] == "text"
+
+
+def test_response_format_override_wins_over_model(voice_home, monkeypatch):
+    voice_home({"stt": {"provider": "openai",
+                        "openai": {"model": "whisper-1", "response_format": "json"}}})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    assert _resolve()["stt"]["response_format"] == "json"
+
+
+def test_invalid_response_format_override_falls_back_to_derived(voice_home, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    # whisper-1 derives "text": an invalid override must not leak "srt" onto the wire…
+    voice_home({"stt": {"provider": "openai",
+                        "openai": {"model": "whisper-1", "response_format": "srt"}}})
+    assert _resolve()["stt"]["response_format"] == "text"
+    # …and a non-whisper model still derives "json".
+    voice_home({"stt": {"provider": "openai",
+                        "openai": {"model": "gpt-4o-transcribe", "response_format": "srt"}}})
+    assert _resolve()["stt"]["response_format"] == "json"
+
+
+def test_xai_direct_carries_no_response_format(voice_home, monkeypatch):
+    """xAI's /stt shape has no response_format parameter — the key must stay off the wire."""
+    voice_home({"stt": {"provider": "xai"}})
+    monkeypatch.setenv("XAI_API_KEY", "xai_key1")
+    stt = _resolve()["stt"]
+    assert stt["mode"] == "direct"
+    assert stt["wire"] == "xai-stt"
+    assert "response_format" not in stt
+
+
+def test_groq_direct_ships_json(voice_home, monkeypatch):
+    voice_home({"stt": {"provider": "groq", "groq": {"model": "whisper-large-v3-turbo"}}})
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_env456")
+    stt = _resolve()["stt"]
+    assert stt["mode"] == "direct"
+    assert stt["wire"] == "openai-multipart"
+    assert stt["response_format"] == "json"
+
+
+def test_stt_response_format_is_the_single_source_of_truth():
+    from tools.transcription_common import stt_response_format
+
+    assert stt_response_format("whisper-1") == "text"
+    assert stt_response_format(" whisper-1 ") == "text"
+    for model in ("whisper-large-v3-turbo", "gpt-4o-mini-transcribe",
+                  "grok-voice-transcribe-2.0", "", None):
+        assert stt_response_format(model) == "json"

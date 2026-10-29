@@ -124,26 +124,34 @@ def _result(normalized: list[dict], reply: dict) -> str:
 
 def _filler_session_key() -> str:
     # Same identity seam as tools/human_input_hooks.py; lazy, since approval_context pulls in hermes_cli config.
-    from gateway.session_context import get_session_env
-    from tools import approval_context
-    return (approval_context._approval_session_id.get() or get_session_env("HERMES_SESSION_ID")
-            or _FILLER_GLOBAL_KEY)
+    # Exception-safe: a guard must never break a legitimate clarify, so any import/lookup failure
+    # (config load, missing module in a headless context) falls back to the shared global key.
+    try:
+        from gateway.session_context import get_session_env
+        from tools import approval_context
+        return (approval_context._approval_session_id.get() or get_session_env("HERMES_SESSION_ID")
+                or _FILLER_GLOBAL_KEY)
+    except Exception:
+        return _FILLER_GLOBAL_KEY
 
 
 def _is_filler_echo(normalized: list[dict]) -> bool:
-    """Record this call for its session, then say whether it is a lone terse free-text question
+    """Record this call for its session, then say whether EVERY question is terse free-text (the
+    echo shape, single or batched — a mixed batch keeps its substantive question and passes) fired
     within FILLER_GUARD_WINDOW_SECONDS of the session's previous call. Rejected calls record too,
     so a continuing burst stays blocked."""
-    terse = (len(normalized) == 1 and not normalized[0]["choices"]
-             and len(normalized[0]["question"].split()) <= FILLER_MAX_WORDS)
+    terse = all(not q["choices"] and len(q["question"].split()) <= FILLER_MAX_WORDS
+                for q in normalized)
     key = _filler_session_key()
-    now = time.monotonic()
     with _last_clarify_lock:
+        # Clock sampled INSIDE the lock and the record never moves backward: a caller that read
+        # time earlier and is only now acquiring the lock must not rewind a later call's timestamp.
+        now = time.monotonic()
         previous = _last_clarify_at.get(key)
         for stale in [k for k, at in _last_clarify_at.items() if now - at > _FILLER_STATE_TTL_SECONDS]:
             del _last_clarify_at[stale]
-        _last_clarify_at[key] = now
-    return terse and previous is not None and now - previous <= FILLER_GUARD_WINDOW_SECONDS
+        _last_clarify_at[key] = now if previous is None else max(now, previous)
+    return terse and previous is not None and (now - previous) < FILLER_GUARD_WINDOW_SECONDS
 
 
 def clarify_tool(questions, callback: Optional[Callable] = None) -> str:

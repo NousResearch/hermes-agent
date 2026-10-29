@@ -1,5 +1,6 @@
-"""Filler guard in tools/clarify_tool.py: a lone terse free-text question fired within the burst
-window of the same session's previous clarify call is rejected before any card is shown."""
+"""Filler guard in tools/clarify_tool.py: a call whose questions are ALL terse free-text (the
+post-compaction echo shape), fired within the burst window of the same session's previous clarify
+call, is rejected before any card is shown; a mixed batch keeps its substantive question."""
 
 import contextlib
 import json
@@ -91,12 +92,19 @@ class TestRejects:
             result = _ask(_one(text), cb)
         assert _rejected(result, cb)
 
-    def test_rejection_holds_at_the_window_edge(self, clock):
+    def test_rejected_just_below_the_window(self, clock):
+        _prime(clock)
+        clock.advance(FILLER_GUARD_WINDOW_SECONDS - 0.001)
+        cb = RecordingCallback()
+        with session("A"):
+            assert _rejected(_ask(_one("state"), cb), cb)
+
+    def test_accepted_at_exactly_the_window(self, clock):
         _prime(clock)
         clock.advance(FILLER_GUARD_WINDOW_SECONDS)
         cb = RecordingCallback()
         with session("A"):
-            assert _rejected(_ask(_one("state"), cb), cb)
+            assert _shown(_ask(_one("state"), cb), cb)
 
     def test_blank_choices_list_counts_as_no_choices(self, clock):
         _prime(clock)
@@ -113,6 +121,13 @@ class TestRejects:
             assert _rejected(_ask(_one("state"), first), first)
             clock.advance(20)  # 40s after the prime, 20s after the rejected filler
             assert _rejected(_ask(_one("list"), second), second)
+
+    def test_all_filler_batch_is_rejected(self, clock):
+        _prime(clock)
+        clock.advance(1)
+        cb = RecordingCallback()
+        with session("A"):
+            assert _rejected(_ask([{"question": "state"}, {"question": "list"}], cb), cb)
 
     def test_real_dispatch_path_rejects(self, clock):
         _prime(clock)
@@ -158,12 +173,13 @@ class TestAllows:
         with session("A"):
             assert _shown(_ask(_one("Pick one", choices=["a", "b"]), cb), cb)
 
-    def test_multi_question_call_is_shown(self, clock):
+    def test_mixed_batch_with_a_substantive_question_is_shown(self, clock):
         _prime(clock)
         clock.advance(1)
         cb = RecordingCallback()
         with session("A"):
-            result = _ask([{"question": "state"}, {"question": "list"}], cb)
+            result = _ask([{"question": "Which database should the migration target?"},
+                           {"question": "state"}], cb)
         assert _shown(result, cb) and len(result["responses"]) == 2
 
     def test_other_session_is_not_gated(self, clock):
@@ -215,3 +231,30 @@ class TestStateBounded:
         with session("late"):
             _ask(_one("Which database should the migration target?"), RecordingCallback())
         assert list(clarify_mod._last_clarify_at) == ["late"]
+
+
+class TestClockDiscipline:
+    def test_record_never_moves_backward_under_a_stale_sample(self, clock):
+        # A caller that sampled the clock early must not rewind a later call's record when it
+        # finally acquires the lock: the stored timestamp is monotone per session.
+        _prime(clock)                      # records at 1000.0
+        clock.advance(20)                  # a second substantive call records at 1020.0
+        with session("A"):
+            assert "responses" in _ask(_one("Which index should we rebuild first?"), RecordingCallback())
+        clock.now = 1001.0                 # stale sample from a caller that paused before the lock
+        with session("A"):
+            _ask(_one("Please confirm whether we should deploy the migration now."), RecordingCallback())
+        assert clarify_mod._last_clarify_at["A"] == 1020.0
+
+
+class TestIdentityFailure:
+    def test_session_lookup_import_failure_falls_back_to_global_key(self, clock, monkeypatch):
+        # A guard must never break a legitimate clarify: if the identity seam cannot even be
+        # imported, the call proceeds on the shared global key instead of raising.
+        import sys
+        monkeypatch.setitem(sys.modules, "gateway.session_context", None)
+        first = RecordingCallback()
+        assert _shown(_ask(_one("Which database should the migration target?"), first), first)
+        clock.advance(1)
+        filler = RecordingCallback()
+        assert _rejected(_ask(_one("state"), filler), filler)  # still guarded, just coarsely

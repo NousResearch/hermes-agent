@@ -118,10 +118,10 @@ class RelayMediaClient:
 
         def _post() -> tuple[Optional[str], str, bool]:
             """One attempt: ``(reference, failure reason, worth retrying)``."""
+            bearer = self._bearer()  # minted per attempt: never retry with a token that aged during backoff
             headers = {
                 "User-Agent": _MEDIA_USER_AGENT,
-                # Minted per attempt: never retry with a token that aged during backoff.
-                "Authorization": f"Bearer {self._bearer()}",
+                "Authorization": f"Bearer {bearer}",
                 "Content-Type": content_type,
                 "X-Media-Filename": name,
             }
@@ -135,7 +135,9 @@ class RelayMediaClient:
             except urllib.error.HTTPError as exc:
                 from gateway.relay.http_diagnostics import describe_http_error, read_error_body
 
-                return None, describe_http_error(exc, read_error_body(exc)), exc.code in _UPLOAD_RETRY_STATUSES
+                # The exact bearer and secret are scrubbed even if a hop echoes them bare.
+                described = describe_http_error(exc, read_error_body(exc), secrets=(bearer, self._secret or ""))
+                return None, described, exc.code in _UPLOAD_RETRY_STATUSES
             except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
                 return None, f"transport error: {getattr(exc, 'reason', None) or exc}", True
             except ValueError as exc:

@@ -27,7 +27,7 @@ import io
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import websockets
 
@@ -63,6 +63,19 @@ def store_unavailable() -> dict:
 
 
 OK = {"status": "ok"}
+
+
+def json_proxy_403(**headers: str) -> dict:
+    """A JSON-emitting hop (Cloudflare/Envoy style) refusing on its own: an ``{"error"}``
+    body like the connector's, but a response header names the hop."""
+    return {"status": 403, "headers": {"Content-Type": "application/json", **headers},
+            "body": json.dumps({"error": "upstream dns timeout"}).encode()}
+
+
+def echoing(status: int, template: str) -> Callable[[str], dict]:
+    """A hop that echoes the request's bearer into its body (``{token}`` in ``template``)."""
+    return lambda token: {"status": status, "headers": {"Content-Type": "application/json"},
+                          "body": template.replace("{token}", token).encode()}
 
 
 def _http_error(url: str, spec: dict) -> urllib.error.HTTPError:
@@ -170,16 +183,22 @@ class FakeConnector:
             auth = req.get_header("Authorization") or ""
             self.bearers_seen.append(auth)
             if path == "/relay/provision":
-                return self._provision(url, req)
+                return self._provision(url, req, auth)
             if path == "/relay/media":
                 return self._media(url, auth)
             raise AssertionError(f"unexpected connector route {path}")
 
         monkeypatch.setattr(urllib.request, "urlopen", urlopen)
 
-    def _provision(self, url: str, req) -> _Resp:
+    @staticmethod
+    def _next(script: list, auth: str):
+        spec = script.pop(0) if script else OK
+        # A callable spec builds its answer from the bearer the request carried (``echoing``).
+        return spec(auth.removeprefix("Bearer ")) if callable(spec) else spec
+
+    def _provision(self, url: str, req, auth: str) -> _Resp:
         self.provision_calls += 1
-        spec = self.provision_script.pop(0) if self.provision_script else OK
+        spec = self._next(self.provision_script, auth)
         if spec is not OK:
             raise _http_error(url, spec)
         body = json.loads(req.data.decode())
@@ -190,7 +209,7 @@ class FakeConnector:
 
     def _media(self, url: str, auth: str) -> _Resp:
         self.media_calls += 1
-        spec = self.media_script.pop(0) if self.media_script else OK
+        spec = self._next(self.media_script, auth)
         if spec is not OK:
             raise _http_error(url, spec)
         if not self.bearer_valid(auth):

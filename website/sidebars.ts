@@ -439,6 +439,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/email/email-agentmail',
+                    'user-guide/skills/optional/email/email-cooper-email',
                   ],
                 },
                 {

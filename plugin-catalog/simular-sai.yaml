@@ -1,0 +1,19 @@
+name: simular-sai
+title: Sai by Simular
+repo: https://github.com/simular-ai/sai-claude-plugin
+sha: 53a399794983dd0a03de533d85f4f9f73acf1e7c
+subdir: hermes
+version: "0.1.2"
+description: "Give Hermes a computer: hand tasks that need a screen (web apps behind a login, admin consoles, desktop software, forms with no import) to Sai, Simular's computer-use agent, which does them on a cloud computer Simular hosts and reports back in text. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only; the MCP server runs as npx @simular-ai/sai-mcp@0.4.0 over stdio, so Node.js 22.12+ and npm are required. Needs SAI_API_KEY (from platform.simular.ai) in the profile .env. Disclosure: every task, uploaded file and the API key go to api.simular.ai, and tasks use the account's Sai credit or free daily computer time; the server serves a local task view on 127.0.0.1; sai_live_link returns a link that lets whoever holds it use the cloud computer until it expires."
+maintainer: Simular
+tier: community
+category: tools
+docs_url: https://github.com/simular-ai/sai-claude-plugin/tree/main/hermes#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

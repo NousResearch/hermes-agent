@@ -188,16 +188,21 @@ def test_launcher_skips_user_cache_redirect_when_marker_present(tmp_path):
         sys.pycache_prefix = original
 
 
-def test_launcher_keeps_user_cache_redirect_without_marker(tmp_path):
+@pytest.mark.parametrize(("platform", "variable", "parts"), [
+    ("win32", "LOCALAPPDATA", ("hermes", "pycache")),
+    ("linux", "HOME", (".cache", "hermes-pycache")),
+])
+def test_launcher_keeps_user_cache_redirect_without_marker(tmp_path, monkeypatch, platform, variable, parts):
     ns = _load_wrapper()
     payload = _make_payload(tmp_path)
     here = payload / "bin"
     here.mkdir()
-    environ = {"HOME": str(tmp_path / "userhome")}
+    # The user cache root is per-platform: %LOCALAPPDATA% on win32, $HOME elsewhere.
+    monkeypatch.setattr(sys, "platform", platform)
+    environ = {variable: str(tmp_path / "userhome")}
     original = sys.pycache_prefix
     try:
         ns["configure"](str(here), environ=environ)
-        assert environ["PYTHONPYCACHEPREFIX"] == str(
-            tmp_path / "userhome" / ".cache" / "hermes-pycache")
+        assert environ["PYTHONPYCACHEPREFIX"] == str(tmp_path / "userhome" / Path(*parts))
     finally:
         sys.pycache_prefix = original

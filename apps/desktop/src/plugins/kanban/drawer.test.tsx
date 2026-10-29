@@ -34,6 +34,28 @@ let disposeApi: () => void
 let disposeLocales: () => void
 
 const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<unknown> => {
+  if (path === '/board') {
+    return {
+      columns: [
+        {
+          name: 'todo',
+          tasks: [
+            legacyDetail.task,
+            { id: 't_parent', title: 'Parent task', status: 'todo' },
+            { id: 't_child', title: 'Child task', status: 'todo' }
+          ]
+        }
+      ],
+      latest_event_id: 0,
+      now: 0,
+      tenants: []
+    }
+  }
+
+  if (path === '/links' && options?.method === 'POST') {
+    return { ok: true }
+  }
+
   if (path === '/tasks/t_example/attachments' && options?.method === 'POST') {
     detail = { ...legacyDetail, attachments: [{ id: 1, filename: options.upload?.filename }] }
 
@@ -341,6 +363,61 @@ describe('dependency chips resolve titles', () => {
 
     fireEvent.click(screen.getByText('Parent title'))
     expect(onOpen).toHaveBeenCalledWith('t_parent')
+  })
+
+  it('adds a selected card as a blocking parent through the link API', async () => {
+    detail = { ...legacyDetail, attachments: [] }
+    openDrawer()
+
+    expect(await screen.findByRole('heading', { name: legacyDetail.task.title })).toBeTruthy()
+    await waitFor(() => expect(rest.mock.calls.some(([path]) => path === '/board')).toBe(true))
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Add blocking task' }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse'
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Parent task' }))
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith(
+        '/links',
+        expect.objectContaining({
+          body: { child_id: 't_example', parent_id: 't_parent' },
+          method: 'POST'
+        })
+      )
+    )
+  })
+
+  it.each([
+    ['Add blocking task', '  PARENT  ', 'Parent task', 'Child task', 't_parent', 't_example'],
+    ['Add blocked task', 'T_CHILD', 'Child task', 'Parent task', 't_example', 't_child']
+  ])('searches dependency candidates from %s by title or id', async (trigger, query, title, other, parent, child) => {
+    detail = { ...legacyDetail, attachments: [] }
+    openDrawer()
+
+    expect(await screen.findByRole('heading', { name: legacyDetail.task.title })).toBeTruthy()
+    await waitFor(() => expect(rest.mock.calls.some(([path]) => path === '/board')).toBe(true))
+    fireEvent.pointerDown(screen.getByRole('button', { name: trigger }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse'
+    })
+    const search = await screen.findByRole('textbox', { name: 'Filter cards…' })
+    fireEvent.change(search, { target: { value: 'no-such-task' } })
+    expect(screen.queryByRole('menuitem', { name: title })).toBeNull()
+    expect(screen.getByText(en.noMatch)).toBeTruthy()
+    fireEvent.change(search, { target: { value: query } })
+    expect(screen.queryByRole('menuitem', { name: other })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: legacyDetail.task.title })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: title }))
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith(
+        '/links',
+        expect.objectContaining({ body: { child_id: child, parent_id: parent }, method: 'POST' })
+      )
+    )
   })
 
   it('falls back to short ids when the backend omits link_tasks', async () => {

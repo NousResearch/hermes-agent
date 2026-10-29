@@ -439,6 +439,13 @@ function nudged<T>(write: Promise<T>): Promise<T> {
 export const patchTask = (id: string, patch: Record<string, unknown>) =>
   nudged(call(withBoard(`/tasks/${id}`), { method: 'PATCH', body: patch }))
 
+/** Add or remove one dependency edge. A parent blocks its child. */
+export const linkTasks = (parentId: string, childId: string) =>
+  nudged(call(withBoard('/links'), { method: 'POST', body: { parent_id: parentId, child_id: childId } }))
+
+export const unlinkTasks = (parentId: string, childId: string) =>
+  nudged(call(withBoard('/links', { child_id: childId, parent_id: parentId }), { method: 'DELETE' }))
+
 export const createTask = (body: Record<string, unknown>) =>
   nudged(call<{ task: KanbanTask | null; warning?: string }>(withBoard('/tasks'), { method: 'POST', body }))
 

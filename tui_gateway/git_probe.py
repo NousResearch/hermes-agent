@@ -34,7 +34,76 @@ def run_git(cwd: str, *args: str) -> str:
     return bounded_git_probe(["git", "-C", cwd, *args], timeout=_GIT_TIMEOUT)
 
 
+_BRANCH_TTL = 5.0  # only when HEAD can't be stat-ed (a cwd below the checkout root)
+_MISSING_TTL = 60.0  # a cwd that no longer exists can never gain a branch: don't re-spawn git often
+
+
+def _head_stamp(cwd: str) -> tuple[str, int, int] | None:
+    """``(gitdir, HEAD mtime_ns, HEAD size)`` or ``None``. ``git switch`` rewrites HEAD, so a
+    stamp change invalidates a cached branch exactly — no TTL guessing. Handles linked worktrees
+    (``.git`` is a file pointing at the real gitdir); a subdirectory cwd has no stamp at all."""
+    dot = os.path.join(cwd, ".git")
+    gitdir = dot
+    if not os.path.isdir(dot):
+        if not os.path.isfile(dot):
+            return None
+        try:
+            with open(dot, "r", encoding="utf-8", errors="replace") as fh:
+                line = fh.readline().strip()
+        except OSError:
+            return None
+        if not line.startswith("gitdir:"):
+            return None
+        gitdir = line.split(":", 1)[1].strip()
+        if not os.path.isabs(gitdir):
+            gitdir = os.path.join(cwd, gitdir)
+    try:
+        st = os.stat(os.path.join(gitdir, "HEAD"))
+    except OSError:
+        return None
+    return gitdir, st.st_mtime_ns, st.st_size
+
+
+class _BranchCache:
+    """Current-branch cache: the tree builder asks once per SESSION row, but rows sharing a checkout
+    would each spawn ``git`` on every sidebar build. Keyed by HEAD's stamp, so a ``git switch``
+    shows on the next render; a cwd with no readable HEAD falls back to ``_BRANCH_TTL``."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, tuple[tuple[str, int, int] | None, float, str]] = {}
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+    def get(self, cwd: str, probe) -> str:
+        stamp = _head_stamp(cwd)
+        now = time.monotonic()
+        with self._lock:
+            hit = self._items.get(cwd)
+        if hit:
+            # A HEAD stamp decides on evidence; only a cwd with no readable HEAD uses the TTL.
+            fresh = hit[0] == stamp if stamp is not None else now < hit[1]
+            if fresh:
+                return hit[2]
+        value = probe()
+        missing = stamp is None and not os.path.isdir(cwd)
+        with self._lock:
+            self._items[cwd] = (
+                stamp, time.monotonic() + (_MISSING_TTL if missing else _BRANCH_TTL), value)
+        return value
+
+
+_branches = _BranchCache()
+
+
 def branch(cwd: str) -> str:
+    """Current branch (detached HEAD: the short SHA), cached per checkout — see ``_BranchCache``."""
+    return _branches.get(cwd, lambda: branch_uncached(cwd))
+
+
+def branch_uncached(cwd: str) -> str:
     return run_git(cwd, "branch", "--show-current") or run_git(cwd, "rev-parse", "--short", "HEAD")
 
 
@@ -91,6 +160,7 @@ _cache = _RootCache()
 def invalidate() -> None:
     """Drop cached roots after a known mutation (e.g. a worktree was added)."""
     _cache.invalidate()
+    _branches.invalidate()
 
 
 def repo_root(cwd: str) -> str:

@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import dataclasses
+import functools
 import inspect
 import json
 import os
@@ -111,9 +112,14 @@ class GatewayTurnHygieneMixin:
             configured_model, configured_provider, configured_base_url = hs.model, hs.provider, hs.base_url
 
             with suppress(Exception):
-                hs.model, _hyg_runtime = self._resolve_session_agent_runtime(
-                    source=source, session_key=session_key,
-                    user_config=hs.data if isinstance(hs.data, dict) else None,
+                # Off-loop for the reason run_turn.py:_reset_notice_session_info documents: resolution
+                # can block on a credential refresh, which is a sync httpx round-trip.
+                hs.model, _hyg_runtime = await asyncio.to_thread(
+                    functools.partial(
+                        self._resolve_session_agent_runtime,
+                        source=source, session_key=session_key,
+                        user_config=hs.data if isinstance(hs.data, dict) else None,
+                    )
                 )
                 hs.provider = _hyg_runtime.get("provider") or hs.provider
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
@@ -784,9 +790,12 @@ class GatewayTurnHygieneMixin:
 
         attempt = self._HygieneAttempt(agent=None, meta=self._event_thread_metadata(event, source), history=history)
         try:
-            _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
-                source=source, session_key=session_key,
-                user_config=hs.data if isinstance(hs.data, dict) else None,
+            _hyg_model, _hyg_runtime = await asyncio.to_thread(
+                functools.partial(
+                    self._resolve_session_agent_runtime,
+                    source=source, session_key=session_key,
+                    user_config=hs.data if isinstance(hs.data, dict) else None,
+                )
             )
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
                 await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)

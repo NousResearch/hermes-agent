@@ -143,18 +143,22 @@ def _ic_signal_tool_workers(agent, active: bool, **kw) -> None:
 
     ``is_interrupted()`` inside a tool only sees its own tid, so without this a hung
     concurrent tool runs to its own timeout (and a stale bit could survive a turn
-    boundary onto a recycled tid). getattr covers __init__-less stubs."""
+    boundary onto a recycled tid). getattr covers __init__-less stubs.
+
+    The signal is raised while the tracker lock is still held: worker tids are pooled and
+    reused, and the worker's exit clears its bit under that same lock. Signal outside it and an
+    exit landing between the snapshot and the signal is followed by a bit armed onto a tid whose
+    next tool now starts "interrupted"."""
     tracker = getattr(agent, "_tool_worker_threads", None)
     tracker_lock = getattr(agent, "_tool_worker_threads_lock", None)
     if tracker is None or tracker_lock is None:
         return
     with tracker_lock:
-        worker_tids = list(tracker)
-    for tid in worker_tids:
-        try:
-            _set_interrupt(active, tid, **kw)
-        except Exception:
-            pass
+        for tid in list(tracker):
+            try:
+                _set_interrupt(active, tid, **kw)
+            except Exception:
+                pass
 
 
 class InterruptControlMixin:
@@ -353,10 +357,14 @@ class InterruptControlMixin:
                 tracker = getattr(self, "_tool_worker_threads", None)
                 tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
                 if tracker is not None and tracker_lock is not None:
+                    # Arm under the tracker lock: a worker that exits between the snapshot and
+                    # the arm has already discarded its tid and cleared its bits, so arming
+                    # afterwards leaves a yield that survives its own command and makes the
+                    # NEXT command on the reused tid yield at its first poll, with a note
+                    # claiming a user message that does not exist.
                     with tracker_lock:
-                        worker_tids = list(tracker)
-                    for tid in worker_tids:
-                        _request_yield(tid)
+                        for tid in list(tracker):
+                            _request_yield(tid)
             return accepted
 
         _model_active = getattr(self, "_model_request_active", None)

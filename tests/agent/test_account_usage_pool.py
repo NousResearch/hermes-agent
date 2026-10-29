@@ -71,9 +71,9 @@ def test_empty_pool_preserves_single_account_shape(monkeypatch):
 
 
 def test_pool_usage_reuses_snapshot_cache_per_credential(monkeypatch):
-    entries = [{"id": "a", "label": "work", "access_token": "token-a", "source": "manual"}]
+    entries = [{"id": "a", "label": "work", "access_token": "token-success", "source": "manual"}]
     monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
-    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-a")
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-success")
     calls = []
     snapshot = _snapshot()
     monkeypatch.setattr(
@@ -85,4 +85,44 @@ def test_pool_usage_reuses_snapshot_cache_per_credential(monkeypatch):
     account_usage.fetch_pool_account_usage("anthropic")
     account_usage.fetch_pool_account_usage("anthropic")
 
-    assert calls == ["token-a"]
+    assert calls == ["token-success"]
+
+
+def test_pool_usage_reuses_unavailable_snapshot_cache_per_credential(monkeypatch):
+    entries = [{"id": "a", "label": "work", "access_token": "token-unavailable", "source": "manual"}]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-unavailable")
+    calls = []
+    snapshot = _snapshot(unavailable_reason="Usage endpoint returned HTTP 429.")
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        lambda provider, *, api_key=None, base_url=None: calls.append(api_key) or snapshot,
+    )
+
+    first = account_usage.fetch_pool_account_usage("anthropic")
+    second = account_usage.fetch_pool_account_usage("anthropic")
+
+    assert calls == ["token-unavailable"]
+    assert first[0].snapshot.available is False
+    assert second[0].snapshot is snapshot
+
+
+def test_pool_usage_caches_none_as_unavailable_snapshot(monkeypatch):
+    entries = [{"id": "a", "label": "work", "access_token": "token-none", "source": "manual"}]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-none")
+    calls = []
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        lambda provider, *, api_key=None, base_url=None: calls.append(api_key) or None,
+    )
+
+    first = account_usage.fetch_pool_account_usage("anthropic")
+    second = account_usage.fetch_pool_account_usage("anthropic")
+
+    assert calls == ["token-none"]
+    assert first[0].snapshot.available is False
+    assert first[0].snapshot.unavailable_reason == "Usage lookup unavailable."
+    assert second[0].snapshot is first[0].snapshot

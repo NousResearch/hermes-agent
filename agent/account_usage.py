@@ -99,7 +99,15 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
             if cached and now - cached[1] < _POOL_USAGE_CACHE_TTL:
                 return cached[0]
     snapshot = fetch_account_usage(provider, api_key=token) if token else fetch_account_usage(provider)
-    if token and snapshot is not None and snapshot.available:
+    if token and snapshot is None:
+        snapshot = AccountUsageSnapshot(
+            provider=provider,
+            source="credential_pool",
+            fetched_at=_utc_now(),
+            unavailable_reason="Usage lookup unavailable.",
+        )
+    if token:
+        assert snapshot is not None
         with _POOL_USAGE_CACHE_LOCK:
             _POOL_USAGE_CACHE[(provider, fingerprint)] = (snapshot, now)
     return snapshot

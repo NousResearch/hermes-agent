@@ -83,7 +83,8 @@ def _drop_remote_media(event):
     def keep(values):
         return [values[index] for index in kept] if values else values
     return replace(event, text='\n'.join(filter(None, [event.text, *notes])), media_urls=keep(urls),
-                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined))
+                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined),
+                   media_filenames=keep(event.media_filenames))
 
 
 def _refuse(event, reason, clause):

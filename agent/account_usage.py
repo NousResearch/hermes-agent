@@ -66,12 +66,18 @@ _POOL_USAGE_CACHE_LOCK = threading.Lock()
 
 
 def _usage_credential_fingerprint(token: Optional[str], entry: Optional[dict] = None) -> str:
+    # The live token is the source of truth for the cache key: two pool
+    # entries can carry the same *stored* secret_fingerprint (e.g. stale
+    # metadata after an env var was rotated) while resolving to different
+    # tokens, and keying on the stored value would serve one account the
+    # other's snapshot.  Fall back to the stored fingerprint only when no
+    # token is available (display-only; such entries are never cached).
+    if token:
+        return f"sha256:{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}"
     existing = (entry or {}).get("secret_fingerprint")
     if isinstance(existing, str) and existing:
         return existing
-    if not token:
-        return ""
-    return f"sha256:{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}"
+    return ""
 
 
 def _active_pool_token(provider: str) -> Optional[str]:

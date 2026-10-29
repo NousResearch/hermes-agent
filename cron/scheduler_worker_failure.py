@@ -12,6 +12,7 @@ def record_unknown_worker_outcome(
     """
     from cron import scheduler
     from cron.unreachable_retry import is_retry_run
+    from cron.executions import _OWNER_WEDGED_REASON
 
     execution = scheduler.get_execution(str(job["execution_id"]))
     if not execution or execution.get("status") != "unknown":
@@ -23,14 +24,20 @@ def record_unknown_worker_outcome(
     with scheduler.fire_claim_fence(job["id"], expected_owner=owner) as owns_claim:
         if not owns_claim:
             return True
+        wedged_without_exit = not error and execution["error"] == _OWNER_WEDGED_REASON
         error = error or execution["error"]
         scheduler.logger.error("Job '%s': %s", job["id"], error)
         scope_tokens = scheduler._install_fire_secret_scope()
         delivery_error = None
         try:
-            delivery_error, _ = scheduler._deliver_crash_failure(
-                job, error, adapters=adapters, loop=loop
-            )
+            if wedged_without_exit:
+                # A terminal ledger row can wake a waiter whose worker is still
+                # alive. Preserve recovery policy while retiring its fire claim.
+                scheduler._alert_reclaimed_execution(execution, adapters=adapters, loop=loop)
+            else:
+                delivery_error, _ = scheduler._deliver_crash_failure(
+                    job, error, adapters=adapters, loop=loop
+                )
         finally:
             scheduler._reset_fire_secret_scope(scope_tokens)
             scheduler.mark_job_run(

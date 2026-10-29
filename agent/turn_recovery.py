@@ -1036,6 +1036,7 @@ def nonretryable_client_error_result(
     )
 
     if api_kwargs is not None:
+        # Gated on HERMES_DUMP_REQUESTS inside the writer; never write an ungated dump here.
         agent._dump_api_request_debug(api_kwargs, reason="non_retryable_client_error", error=api_error)
     # Terminal — flush buffered context so the user sees what was tried before the abort.
     agent._flush_status_buffer()
@@ -1239,6 +1240,7 @@ def max_retries_exhausted_result(
         provider, model, len(api_messages), f"{approx_tokens:,}",
     )
     if api_kwargs is not None:
+        # Gated on HERMES_DUMP_REQUESTS inside the writer; never write an ungated dump here.
         agent._dump_api_request_debug(api_kwargs, reason="max_retries_exhausted", error=api_error)
     agent._persist_session(messages, conversation_history)
     _billing_block = None

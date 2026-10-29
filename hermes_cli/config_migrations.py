@@ -1,18 +1,22 @@
 """Table-driven config migration registry.
 
-Each step is ``_migrate_to_N(results, quiet)``; the version gate and strict ascending order live
-in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
+Each step is ``_migrate_to_N(results, quiet)`` (a large topical step lives in a
+``config_migrations_<topic>.py`` sibling, registered here); the version gate and strict ascending
+order live in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
 step may only persist values that differ from the schema default (plus removals/renames).
 """
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import functools
 import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+from hermes_cli.config_migrations_browser import migrate_to_52
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +26,18 @@ logger = logging.getLogger(__name__)
 #: untouched — the process continues with defaults deep-merged at read time, matching the
 #: non-fatal posture for unparseable configs — and a message tells the user how to proceed.
 SUPPORT_FLOOR_VERSION = 12
+
+#: True while :func:`run_migrations` runs with ``config_only=True``: the remote config backend's
+#: in-memory migrations (D12) and its write-validation simulation. Such a run transforms the config
+#: document and nothing else: steps that also touch local files (``.env``, profile ``SOUL.md``,
+#: ``logs/``) skip that part, so reading a profile's remote config, or a refused write's check, never
+#: changes a file on disk — a sibling profile's least of all.
+_CONFIG_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar("config_migrations_config_only", default=False)
+
+
+def _local_files_allowed() -> bool:
+    """Whether the running step may change files other than the config document itself."""
+    return not _CONFIG_ONLY.get()
 
 
 def support_floor_message() -> str:
@@ -171,6 +187,8 @@ def _migrate_to_12(results: dict[str, Any], quiet: bool) -> None:
 def _migrate_to_13(results: dict[str, Any], quiet: bool) -> None:
     # 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env (written by the old setup wizard;
     # nothing reads them — config.yaml is the sole source of truth).
+    if not _local_files_allowed():
+        return  # .env only
     _c = _cfg()
     for dead_var in ("LLM_MODEL", "OPENAI_MODEL"):
         try:
@@ -336,11 +354,12 @@ def _migrate_to_23(results: dict[str, Any], quiet: bool) -> None:
     _c = _cfg()
     DEFAULT_CONFIG = _c.DEFAULT_CONFIG
 
-    try:
-        curator_dir = _c.get_hermes_home() / "logs" / "curator"
-        curator_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        results["warnings"].append(f"Could not create {curator_dir}: {e}")
+    if _local_files_allowed():
+        try:
+            curator_dir = _c.get_hermes_home() / "logs" / "curator"
+            curator_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            results["warnings"].append(f"Could not create {curator_dir}: {e}")
 
     config = read_raw_config()
 
@@ -538,6 +557,8 @@ def _migrate_to_41(results: dict[str, Any], quiet: bool) -> None:
     # 40 → 41: drop the plugin-era "## Messaging other agents" append from every SOUL.md. The
     # server injects the live Bot Mode section in Bot Chat sessions; the frozen SOUL copy taxed
     # every other session (~600 tok) and shadowed the live roster in Bot Chat itself.
+    if not _local_files_allowed():
+        return  # SOUL.md files only, across the whole roster
     from hermes_constants import get_hermes_home
     from tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
 
@@ -677,6 +698,8 @@ def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
                 f"({DEFAULT_VERCEL_IMAGE})",
     )(results, quiet)
     _c = _cfg()
+    if not _local_files_allowed():
+        return  # the .env mirror is a local file
     if (_c.get_env_value_prefer_dotenv("TERMINAL_VERCEL_RUNTIME") or "").strip() == LEGACY_VERCEL_RUNTIME:
         _c.remove_env_value("TERMINAL_VERCEL_RUNTIME")
         if not quiet:
@@ -835,6 +858,21 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: cron.bot_chat_delivery_timeout_seconds is gone with the local `hermes chat`
+    # fallback lane it bounded. Bot Chat deliveries are admitted to the running gateway and
+    # settle on its durable receipt; there is no cron-side turn left to time out.
+    (51, functools.partial(
+        _rewrite_key, section="cron", key="bot_chat_delivery_timeout_seconds", new=None,
+        match=lambda _cur: True,
+        added="removed cron.bot_chat_delivery_timeout_seconds",
+        message=(
+            "  ✓ Removed cron.bot_chat_delivery_timeout_seconds — bot-chat deliveries are now "
+            "admitted to the target profile's running gateway and tracked by receipt, so cron no "
+            "longer runs (or times out) a Bot Chat turn of its own."),
+        extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
+    # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
+    # browser.* (see config_migrations_browser.migrate_to_52).
+    (52, migrate_to_52),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -846,29 +884,48 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52})
+
+#: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
+#: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch
+#: put their retired-cron-key step at 44, 45, 46, 47 and 50 before it landed at 51, so a home one
+#: of them stamped skipped main's step of that number. Only a step triggered by a key NO runtime
+#: reads qualifies (re-running it is a no-op once the key is gone, and it never overrides a value
+#: something consumes). The value-based steps such a home also skipped (44 curator defaults, 45
+#: connections, 47 threshold_tokens) are NOT re-run: past the stamp, their trigger value may be
+#: the user's own choice.
+STAMP_INDEPENDENT_STEPS = frozenset({46, 50})
 
 
 def run_migrations(
-    current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
-    """Apply every registered migration whose target version exceeds *current_ver*; a config
-    with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
+    current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False,
+    config_only: bool = False) -> None:
+    """Apply every registered migration whose target version exceeds *current_ver* (plus
+    :data:`STAMP_INDEPENDENT_STEPS`); a config with no ``_config_version`` (*unversioned*) gets
+    only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
+
+    *config_only* transforms the config document alone (see :data:`_CONFIG_ONLY`).
     """
-    for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
-            try:
-                migration_fn(results, quiet)
-            except Exception as exc:
-                # A malformed nested value in one step must not abort the rest of the
-                # ladder (config loading itself fails otherwise). Loud, not silent.
-                warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
-                results.setdefault("warnings", []).append(warning)
-                # Quiet callers (profile creation, unattended update) discard ``results`` and
-                # migrate_config still stamps the latest version, so without a log line the
-                # skipped step vanishes for good.
-                logger.warning("%s", warning)
-                if not quiet:
-                    print(f"  ⚠ {warning}")
+    token = _CONFIG_ONLY.set(config_only)
+    try:
+        for target_ver, migration_fn in MIGRATIONS:
+            due = current_ver < target_ver or target_ver in STAMP_INDEPENDENT_STEPS
+            if due and (target_ver in LEGACY_KEY_STEPS or not unversioned):
+                try:
+                    migration_fn(results, quiet)
+                except Exception as exc:
+                    # A malformed nested value in one step must not abort the rest of the
+                    # ladder (config loading itself fails otherwise). Loud, not silent.
+                    warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
+                    results.setdefault("warnings", []).append(warning)
+                    # Quiet callers (profile creation, unattended update) discard ``results`` and
+                    # migrate_config still stamps the latest version, so without a log line the
+                    # skipped step vanishes for good.
+                    logger.warning("%s", warning)
+                    if not quiet:
+                        print(f"  ⚠ {warning}")
+    finally:
+        _CONFIG_ONLY.reset(token)

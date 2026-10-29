@@ -58,7 +58,7 @@ def test_stdlib_description_has_stable_allowlisted_paths_before_bootstrap(tmp_pa
 
     expected = {str(cache / domain) for domain in (
         "tools", "python/runtime", "python/build", "npm/_cacache", "native", "packager",
-    )} | {str(source / package / "node_modules") for package in ("", "apps/editor", "ui/packages/helper")}
+    )}
     assert set(description["paths"]) == expected
     assert json.loads(outputs["cache-paths"]) == description["paths"]
     assert outputs["cache-key"] == description["key"]
@@ -110,19 +110,6 @@ def test_keys_follow_dependency_inputs_not_checkout_or_release_identity(tmp_path
     assert describe_cache(source, cache, "payload-only")["restore_keys"][1] != rerun["restore_keys"][1]
 
 
-@pytest.mark.parametrize("workspace", ["../private", "/tmp/private", "C:/private", "apps\\private", "apps/*", "apps/../private", "apps/secret\npath"])
-def test_foreign_workspace_paths_cannot_expand_the_snapshot(tmp_path, workspace):
-    from scripts.ci.desktop_build_cache import describe_cache
-
-    source = source_tree(tmp_path / "source")
-    lock_path = source / "package-lock.json"
-    lock = json.loads(lock_path.read_text(encoding="utf-8-sig"))
-    lock["packages"]["node_modules/editor"]["resolved"] = workspace
-    lock_path.write_text(json.dumps(lock), encoding="utf-8")
-    with pytest.raises(ValueError, match="workspace"):
-        describe_cache(source, tmp_path / "cache", "test")
-
-
 def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tmp_path, monkeypatch):
     from scripts.ci.desktop_build_cache import describe_cache
 
@@ -135,11 +122,6 @@ def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tm
         describe_cache(source, tmp_path / "*", "test")
     with pytest.raises(ValueError, match="producer"):
         describe_cache(source, tmp_path / "cache", "test\nOTHER=value")
-    # A normal Node workspace link lives INSIDE node_modules and is preserved;
-    # a symlink replacing a selected tree itself must not export outside data.
-    (source / "apps/editor/node_modules").symlink_to(home, target_is_directory=True)
-    with pytest.raises(ValueError, match="path"):
-        describe_cache(source, tmp_path / "cache", "test")
 
 
 def test_composite_transports_only_and_uses_the_restore_key_for_save(tmp_path):
@@ -219,8 +201,6 @@ def test_job_state_cannot_be_nested_in_a_transport_domain(tmp_path):
     cache = tmp_path / "cache"
     with pytest.raises(ValueError, match="work"):
         describe_cache(source, cache, "test", work=cache / "native/job")
-    with pytest.raises(ValueError, match="work"):
-        describe_cache(source, cache, "test", work=source / "node_modules/job")
 
 
 def test_private_home_and_source_cannot_be_children_of_cached_roots(tmp_path, monkeypatch):
@@ -238,68 +218,52 @@ def test_private_home_and_source_cannot_be_children_of_cached_roots(tmp_path, mo
         describe_cache(nested, cache, "test")
 
 
-def test_direct_snapshot_preserves_node_receipt_and_excludes_job_secrets(tmp_path):
+def test_restored_npm_cache_installs_offline_and_excludes_job_secrets(tmp_path):
+    """node_modules is not transported; npm's content cache alone must let a fresh
+    checkout install offline, and job-local secrets never ride along."""
     import shutil
     from scripts.ci.desktop_build_cache import describe_cache
 
     node = shutil.which("node")
     assert node, "the transport integration test requires the build's Node prerequisite"
-    source = tmp_path / "old/source"
-    source.mkdir(parents=True)
-    manifest = {"name": "cache-fixture", "private": True, "workspaces": ["editor"], "scripts": {
-        "postinstall": 'node -e "require(\'fs\').writeFileSync(\'node_modules/installed-id\', require(\'crypto\').randomUUID())"',
-    }}
-    (source / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (source / "editor").mkdir()
-    (source / "editor/package.json").write_text(json.dumps({"name": "editor", "version": "1.0.0"}), encoding="utf-8")
-    cache = tmp_path / "old/cache"
-    env = {**os.environ, "npm_config_cache": str(cache / "npm"), "npm_config_offline": "true"}
+    registry_package = tmp_path / "left-pad"
+    registry_package.mkdir()
+    (registry_package / "package.json").write_text(json.dumps({"name": "left-pad", "version": "1.0.0"}), encoding="utf-8")
     owner = ROOT / "scripts/build/node-deps.mjs"
 
-    def npm(*args):
+    def run(source, cache, *args, offline):
+        env = {**os.environ, "npm_config_cache": str(cache / "npm"), "npm_config_offline": str(offline).lower()}
         return subprocess.run([node, str(owner), *args], cwd=source, env=env,
-                              capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+                              capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
 
-    locked = npm("--npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund")
+    source, cache = tmp_path / "old/source", tmp_path / "old/cache"
+    (source / "editor").mkdir(parents=True)
+    tarball = run(registry_package, cache, "--npm", "pack", "--pack-destination", str(tmp_path), offline=False)
+    assert tarball.returncode == 0, tarball.stdout + tarball.stderr
+    manifest = {"name": "cache-fixture", "private": True, "workspaces": ["editor"],
+                "dependencies": {"left-pad": f"file:{tmp_path / 'left-pad-1.0.0.tgz'}"}}
+    (source / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (source / "editor/package.json").write_text(json.dumps({"name": "editor", "version": "1.0.0"}), encoding="utf-8")
+    locked = run(source, cache, "--npm", "install", "--package-lock-only", "--no-audit", "--no-fund", offline=False)
     assert locked.returncode == 0, locked.stdout + locked.stderr
-    prepared = npm("--source", str(source), "--workspace", "editor", "--reuse")
+    prepared = run(source, cache, "--source", str(source), "--workspace", "editor", "--reuse", offline=False)
     assert prepared.returncode == 0, prepared.stdout + prepared.stderr
-    identity = (source / "node_modules/installed-id").read_bytes()
-
-    for path in (source / ".env", source / "editor/private.key",
-                 cache / "npm/_logs/secret.log", cache / "npm/.npmrc", cache / "prepared.json"):
+    for path in (source / ".env", cache / "npm/_logs/secret.log", cache / "npm/.npmrc", cache / "prepared.json"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("planted-secret", encoding="utf-8")
 
-    wheel = cache / "python/runtime/wheels/completed.whl"
-    wheel.parent.mkdir(parents=True)
-    wheel.write_bytes(b"completed wheel fixture")
-
     description = describe_cache(source, cache, "test")
-    restored_source = tmp_path / "new/source"
-    restored_cache = tmp_path / "new/cache"
+    assert not any(Path(path).is_relative_to(source) for path in description["paths"])
+    restored_source, restored_cache = tmp_path / "new/source", tmp_path / "new/cache"
     for name in ("package.json", "package-lock.json", "editor/package.json"):
-        path = restored_source / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / name, path)
-    # Replay the selected direct directories, preserving relative workspace
-    # symlinks as Actions' tar transport does; no nested archive format.
+        (restored_source / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / name, restored_source / name)
     for name in description["paths"]:
         path = Path(name)
-        if not path.exists():
-            continue
-        destination = ((restored_cache / path.relative_to(cache)) if path.is_relative_to(cache)
-                       else (restored_source / path.relative_to(source)))
-        shutil.copytree(path, destination, symlinks=True)
+        if path.exists():
+            shutil.copytree(path, restored_cache / path.relative_to(cache), symlinks=True)
     assert not any(b"planted-secret" in path.read_bytes() for path in (tmp_path / "new").rglob("*") if path.is_file())
-    assert (restored_cache / wheel.relative_to(cache)).read_bytes() == wheel.read_bytes()
-    assert (restored_source / "node_modules/editor").resolve() == restored_source / "editor"
-    warm = npm("--source", str(restored_source), "--workspace", "editor", "--reuse", "--no-install")
+    (tmp_path / "left-pad-1.0.0.tgz").unlink()  # only the transported content cache can satisfy it now
+    warm = run(restored_source, restored_cache, "--source", str(restored_source), "--workspace", "editor", "--reuse", offline=True)
     assert warm.returncode == 0, warm.stdout + warm.stderr
-    assert (restored_source / "node_modules/installed-id").read_bytes() == identity
-    (restored_source / "node_modules/editor").unlink()
-    stale = npm("--source", str(restored_source), "--workspace", "editor", "--reuse", "--no-install")
-    assert stale.returncode != 0
-    repaired = npm("--source", str(restored_source), "--workspace", "editor", "--reuse")
-    assert repaired.returncode == 0, repaired.stdout + repaired.stderr
-    assert (restored_source / "node_modules/installed-id").read_bytes() != identity
+    assert (restored_source / "node_modules/left-pad/package.json").is_file()

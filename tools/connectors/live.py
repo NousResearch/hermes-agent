@@ -7,11 +7,15 @@ session's profile scope) resolves it through ``hermes_home_key``."""
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Dict, Optional, Tuple
 
 from hermes_constants import get_process_hermes_home, hermes_home_key
 from tools.connectors.operation import ConnectionOperation
+
+
+logger = logging.getLogger(__name__)
 
 
 class OperationAlreadyOpen(RuntimeError):
@@ -42,6 +46,8 @@ def open(operation: ConnectionOperation) -> None:
         if existing is not None and not existing.settled:
             raise OperationAlreadyOpen(existing)
         _open[key] = operation
+    logger.info("connection op %s opened: %s", operation.op_id,
+                ", ".join(f"{t.kind}:{t.name}:{t.action}" for t in operation.targets))
 
 
 def current(session_key: str, *, profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:

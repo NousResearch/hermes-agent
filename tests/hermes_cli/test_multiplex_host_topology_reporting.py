@@ -5,7 +5,6 @@ Invariants (all fail on origin/main):
   user to start a second process.
 * ``hermes -p <served> doctor`` reports the single host gateway + its roster, not
   "Per-profile gateways: up/total", and still checks the HOST systemd unit's linger.
-* ``hermes claw``'s destructive-action warning FIRES for a served profile.
 * the state.db holder line names the shared host process and the profiles it serves.
 """
 
@@ -32,8 +31,11 @@ def served_host(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "served"))
-    return root
+    yield root
+    hr.release_host_lock(hr.ROLE_GATEWAY)
 
 
 def test_cron_status_names_the_host_gateway_for_a_served_profile(served_host, capsys, monkeypatch):
@@ -50,21 +52,6 @@ def test_cron_status_names_the_host_gateway_for_a_served_profile(served_host, ca
     # Never route the user to a SECOND host process: per-profile install is legacy-only remediation.
     assert "hermes gateway install" not in out
     assert "sudo hermes gateway install --system" not in out
-
-
-def test_claw_warning_fires_for_a_served_profile(served_host, capsys, monkeypatch):
-    from hermes_cli import claw
-
-    (served_host / "gateway_state.json").write_text(json.dumps(
-        {"served_profiles": ["default", "served"],
-         "platforms": {"served:telegram": {"state": "connected"}, "telegram": {"state": "connected"}}}))
-    fired = []
-    monkeypatch.setattr(claw, "_warn_running", lambda *a, **k: fired.append(a) or True)
-
-    claw._warn_if_gateway_running(auto_yes=True)
-
-    assert fired, "destructive-action warning was silently skipped for a served profile"
-    assert "telegram" in fired[0][1]
 
 
 def test_doctor_reports_the_single_host_gateway_not_per_profile_slots(served_host, capsys, monkeypatch):

@@ -1,18 +1,32 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
-import { zhAuxTasks } from './zh_aux_tasks'
+import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
+import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhErrorCodes } from './zh_error_codes'
+import { zhErrorLayers } from './zh_error_layers'
+import { zhFirstRun } from './zh_first_run'
+import { zhGatewayHost } from './zh_gateway_host'
 import { zhLocalModels } from './zh_local_models'
+import { zhMemoryLayers } from './zh_memory_layers'
 import { zhModelMenu } from './zh_model_menu'
+import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
+import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
+import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
+import { zhPluginUpdate } from './zh_plugin_update'
+import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -20,6 +34,7 @@ export const zhOverrides = {
     close: '关闭'
   },
   sharedMetrics: zhSharedMetrics,
+  firstRun: zhFirstRun,
   intro: introZh,
   connectors: zhConnectorCard,
   sessionImport: {
@@ -230,6 +245,7 @@ export const zhOverrides = {
       microphoneConstraintsUnsupported: '此设备不支持当前麦克风约束。',
       microphoneFailed: '麦克风出错',
       microphoneInUse: '麦克风正被其他应用占用。',
+      microphoneNeedsHttps: '麦克风需要安全连接。请通过 HTTPS 或到 127.0.0.1 的 SSH 隧道打开 Webapp 后使用。',
       microphonePermissionDenied: '麦克风权限被拒绝。',
       microphoneStartFailed: '无法开始麦克风录音。',
       microphoneUnsupported: '当前运行环境不支持麦克风录音。',
@@ -267,15 +283,6 @@ export const zhOverrides = {
   },
 
   ...zhNotices,
-
-  billingBlock: {
-    titleNous: 'Nous 额度已用尽',
-    titleProvider: provider => `额度已用尽 — ${provider}`,
-    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
-    openBilling: '打开账单',
-    addCredits: '添加额度',
-    dismiss: '忽略'
-  },
 
   sendDiagnostics: {
     title: '向 Nous 发送诊断信息',
@@ -447,6 +454,7 @@ export const zhOverrides = {
   },
 
   settings: {
+    memoryLayers: zhMemoryLayers,
     subpages: {
       appearanceTheme: '主题',
       appearanceTypography: '字体与缩放',
@@ -625,10 +633,6 @@ export const zhOverrides = {
         profileLabel: '安装到配置文件',
         agentTargetLocal: (profile, dir) => `安装到 ${profile} 后端（${dir}）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
-        catalogPinned: (name, sha) =>
-          `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
-        reviewedHeading: '经过审核的目录条目',
-        reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
         toolsConnected: n => `已连接 ${n} 个工具`,
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就绪` : `${names.length} 个技能已就绪`),
         nextChat: '更多工具将在下一次聊天中可用',
@@ -639,12 +643,10 @@ export const zhOverrides = {
         desktopTargetFromPackage: '从上方的包加载到本应用 — 所有配置相同',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
-        securityHeading: '安装前须知',
         securityIntro: '请仅安装你信任的来源 — 如需了解将添加的内容，可先查看下方仓库。',
         sourceHeading: '源代码',
         viewRepository: '查看仓库',
         viewPluginFiles: '查看插件文件',
-        gitCloneLabel: 'Git 克隆地址',
         enableAgent: '安装后启用智能体插件',
         forceReinstall: '强制重装（替换已存在的安装）',
         pinToCommit: '固定到提交（可选）',
@@ -663,54 +665,28 @@ export const zhOverrides = {
         agentFailed: '智能体插件安装失败',
         installUncertain: 'Hermes 已停止等待安装结果，但插件可能仍在安装。关闭此窗口并刷新插件列表，然后再尝试安装。',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
+        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`,
+        verified: '已验证',
+        unverified: '未验证',
+        reviewedByNous: '已由 Nous 审核。',
+        installsAndEnables: profile => `安装到 ${profile}，并立即启用。`,
+        installsOnly: profile => `安装到 ${profile}。`,
+        advanced: '高级',
+        versionLabel: '版本',
+        reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
+        latestCommit: '最新提交',
+        sourceMoved: sha => (sha ? `自你审阅后仓库已变更。请先审阅新版本（提交 ${sha}）再安装。` : '自你审阅后仓库已变更。正在读取新版本…'),
+        legacyBackendConfirm:
+          '此后端比本应用旧，无法保证安装的就是你审阅过的版本：如果仓库此后有变更，安装的会是更新的版本。更新后端即可获得这一保证。',
+        installAnyway: '仍然安装',
+        partialInstall: sha =>
+          sha
+            ? `插件只安装了一部分：代理部分已安装在提交 ${sha}，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。`
+            : '插件只安装了一部分：代理部分已安装，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。',
+        nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
-    notifications: {
-      title: '通知',
-      intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
-      enableAll: '启用通知',
-      enableAllDesc: '关闭后静音下方所有通知。',
-      focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
-      kinds: {
-        approval: {
-          label: '需要批准',
-          description: '有命令正在等待你批准或拒绝。'
-        },
-        input: {
-          label: '需要输入',
-          description: 'Hermes 提出了问题，或需要密码或密钥。'
-        },
-        turnDone: {
-          label: '回复就绪',
-          description: 'Hermes 在后台时完成了一轮对话。'
-        },
-        turnError: {
-          label: '本轮失败',
-          description: '后台回合错误。'
-        },
-        backgroundDone: {
-          label: '后台任务完成',
-          description: '后台终端命令已完成。'
-        },
-        credits: {
-          label: '额度提醒',
-          description: '额度访问被暂停或恢复。'
-        },
-        plugin: {
-          label: '插件通知',
-          description: 'Hermes 在后台时，桌面插件发送了通知。'
-        }
-      },
-      test: '发送测试通知',
-      testTitle: 'Hermes',
-      testBody: '通知工作正常。',
-      testSent: '测试已发送。如果没有出现，请检查系统通知权限和专注模式／勿扰模式。',
-      testUnsupported: '此系统不支持原生通知。',
-      completionSoundTitle: '完成提示音',
-      completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
-      completionSoundPreview: '预览'
-    },
+    notifications: zhNotifications,
     sections: {
       model: '模型',
       chat: '对话',
@@ -1189,12 +1165,6 @@ export const zhOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '预热机器人后端',
-      warmBotBackendsTitle: '预热机器人后端',
-      backendIdleTimeoutAria: '后端空闲超时（毫秒）',
-      backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
-    },
     customEndpoints: {
       active: '已启用',
       apiKeySet: '已设置 API 密钥',
@@ -1275,11 +1245,6 @@ export const zhOverrides = {
       alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',
       alwaysExternalLinksDesc:
         '点击的每个链接都在系统浏览器中打开，而不是应用内浏览器。右键菜单中的“在应用内浏览器中打开”仍然可用。',
-      developerTitle: '开发者',
-      resetOnboardingTitle: '重置新手引导',
-      resetOnboardingDesc: '删除设置对话，重建设置配置文件，并重新运行首次设置。你自己的配置文件、对话和插件会保留。',
-      resetOnboardingAction: '重置',
-      resetOnboardingFailed: '无法重置新手引导',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
@@ -1432,8 +1397,7 @@ export const zhOverrides = {
     },
     gateway: {
       loading: '正在加载网关设置...',
-      unavailableTitle: '网关设置不可用',
-      unavailableDesc: '桌面 IPC 桥未暴露网关设置。',
+      ...zhGatewayHost,
       title: '网关连接',
       envOverride: '环境变量覆盖',
       intro:
@@ -1630,62 +1594,7 @@ export const zhOverrides = {
       deepLinkErrorUrl: '仅允许 http:// 和 https:// 服务器地址。',
       deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
     },
-    model: {
-      setupProviderFallback: '提供方',
-      setUpProvider: name => `设置 ${name}`,
-      staleAuxBefore: (count, names) => `${count} 个辅助任务（${names}）仍由 `,
-      staleAuxAfter: ' 运行，而不是主模型。',
-      staleAuxOtherProviders: '其他提供方',
-      moaEnabled: '启用',
-      moaSetDefault: '设为默认',
-      moaNewPresetPlaceholder: '新预设',
-      moaAddPreset: '添加预设',
-      customModel: '自定义模型…',
-      customModelPlaceholder: '模型 ID',
-      chooseFromList: '从列表中选择',
-      moaDefault: '默认：',
-      moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
-      moaReferenceTitle: index => `参考 ${index}`,
-      moaAddReference: '添加参考模型',
-      loading: '正在加载模型配置...',
-      appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
-      provider: '提供方',
-      model: '模型',
-      applying: '应用中...',
-      defaultsLabel: '默认值',
-      reasoning: '推理',
-      reasoningOff: '关闭',
-      speed: '速度',
-      speedStandard: '标准',
-      defaultsFailed: '保存模型默认值失败',
-      loadFailed: '无法加载模型',
-      restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
-      restartBackend: '重启后端',
-      restartingBackend: '正在重启后端...',
-      restartFailed: '无法重启后端',
-      auxiliaryTitle: '辅助模型',
-      resetAllToMain: '全部重置为主模型',
-      staleAuxDismiss: '不再显示',
-      auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
-      setToMain: '设为主模型',
-      change: '更改',
-      autoUseMain: '自动 · 使用主模型',
-      inheritMainEffort: '继承 · 主模型推理强度',
-      inheritsFrom: task => `继承 ${task}`,
-      followTask: task => `跟随 ${task}`,
-      providerDefault: '(提供方默认)',
-      fallbackAdd: '添加备用模型',
-      fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
-      notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
-      moaTitle: '混合智能体（Mixture of Agents）',
-      moaPreset: '预设',
-      moaDescription:
-        '配置以「混合智能体」提供商下模型形式出现的命名预设。聚合模型是执行模型——它运行工具循环的每一步，整个运行几乎全部费用都计入其提供商。参考模型默认每轮用户消息仅提供一次建议。',
-      moaAggregator: '聚合模型',
-      moaAggregatorBilled: '执行模型 · 整个运行在此计费',
-      moaReferenceHint: '默认每轮仅建议一次',
-      tasks: zhAuxTasks
-    },
+    model: zhModelSettings,
     localModels: zhLocalModels,
     billing: {
       perMonth: amount => `${amount}/月`,
@@ -1778,6 +1687,15 @@ export const zhOverrides = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `更改为 ${targetName}，于 ${effectiveAt} 生效。现在不扣费；在此之前保留当前套餐。${creditsDelta ? `每月额度变化：${creditsDelta}。` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '用额度继续',
+        description: '包含的用量用完后，使用你的额度。关闭时，Hermes 等待重置。',
+        approveInBrowser: '请在浏览器中批准 Remote Spending 以更改此设置。批准后立即生效。',
+        openAgain: '再次打开',
+        cancel: '取消',
+        approvedRetry: 'Remote Spending 已批准，但更改未保存。',
+        tryAgain: '重试'
+      },
       autoReload: {
         threshold: '阈值',
         thresholdAria: '自动充值阈值',
@@ -1848,6 +1766,20 @@ export const zhOverrides = {
             captionDefault: '默认上限',
             captionSpending: '每月远程支出',
             valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          },
+          window: {
+            today: '今天',
+            week: '本周',
+            month: '本月',
+            topTier: '大型模型（每月）',
+            barLabel: title => `${title}已用包含用量`,
+            captionPaused: '已暂停：订阅付款失败',
+            captionPausedOther: '已暂停：请在 Portal 的账单页查看',
+            captionTopTierUsedUp: '每月额度已用完，剩余部分由你的额度支付',
+            captionTopTierUsedUpKeepGoingOff: '每月额度已用完，其他包含的模型仍可使用',
+            captionResetsIn: duration => `${duration}后重置`,
+            captionIncluded: '包含用量',
+            valueUsed: percent => `已用 ${percent}`
           }
         },
         planCard: {
@@ -1957,7 +1889,7 @@ export const zhOverrides = {
       autoArchiveFailed: '无法更新自动归档设置',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
-      defaultDirUpdated: '默认项目目录已更新',
+      defaultDirUpdated: () => '默认项目目录已更新',
       defaultsTo: label => `默认使用 ${label}。`,
       change: '更改',
       choose: '选择',
@@ -2073,17 +2005,7 @@ export const zhOverrides = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `安装“${name}”？`,
-    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
-    installTo: '安装到',
-    thisComputer: '此电脑',
-    installing: '正在安装…',
-    installComplete: (name: string) => `已安装“${name}”`,
-    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
-    installed: '已安装',
-    source: '来源'
-  },
+  skillDeepLink: zhSkillDeepLink,
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
@@ -2140,6 +2062,7 @@ export const zhOverrides = {
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
+      ...zhPluginPreviewAccess,
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
       pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
@@ -2168,20 +2091,11 @@ export const zhOverrides = {
       toggleFailed: (name: string) => `无法切换 ${name}`,
       legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
       portableBadge: '便携',
-      catalogTitle: '插件目录',
-      catalogBrowse: '浏览',
-      catalogHide: '隐藏目录浏览器',
-      catalogHint:
-        '点击任意插件上的「+ Add to this Agent」— 经过审核的条目会以其固定提交安装到所选配置。捆绑的 agent+桌面插件会同时提供两部分。',
       alreadyInstalled: (name: string) => `${name} 已安装在此配置中。`,
       catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
-      tierOfficial: '官方',
-      tierCommunity: '社区',
-      updateToPin: (sha: string) => `更新到 ${sha}`,
-      updateFailed: (name: string) => `无法更新 ${name}`,
-      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
+      ...zhPluginUpdate,
       uninstall: '卸载',
       uninstallTip: (name: string, profile: string) => `从 ${profile} 卸载 ${name}`,
       uninstallConfirmTitle: (name: string) => `卸载 ${name}？`,
@@ -2492,9 +2406,6 @@ export const zhOverrides = {
       resume: '恢复',
       runNow: '立即运行',
       memoryData: '记忆数据',
-      memoryDataDesc: '注入每个会话的内置记忆文件',
-      memoryProvider: name => `当前提供方：${name}`,
-      builtinMemory: '内置',
       memoryFile: '智能体记忆（MEMORY.md）',
       userFile: '用户画像（USER.md）',
       bytes: size => size,
@@ -2785,8 +2696,10 @@ export const zhOverrides = {
     exported: '配置档案已导出',
     failedImport: '导入配置档案失败',
     failedExport: '导出配置档案失败',
+    exportNeedsHost: name => `浏览器无法保存配置档案归档。请在 Hermes 主机上运行：hermes profile export ${name}`,
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
+    notServedHere: '此处未提供',
     switchToProfile: name => `切换到 ${name}`,
     switchToConnection: name => `切换到 ${name}`,
     switchConnectionFailed: name => `无法连接到 ${name}`,
@@ -3260,25 +3173,6 @@ export const zhOverrides = {
     markAllRead: '全部标记为已读'
   },
 
-  handoffTour: {
-    profileTitle: '你的第一个任务在默认配置文件中运行',
-
-    profileText:
-      '这条栏用于切换配置文件。现在亮着的是 default，任务会话就在这里。另一个是设置配置文件，欢迎聊天在那里。',
-
-    sessionsTitle: '每个配置文件都有自己的会话',
-
-    sessionsText:
-      '这个列表属于 default 配置文件。“新会话”会在当前选中的配置文件中开始。在栏上切换配置文件，列表也会随之变化。',
-
-    stayTitle: 'Hermes 一键可达',
-
-    stayText: '需要帮忙时，切换到设置配置文件并打开“欢迎使用 Hermes”。它会一直在那里。',
-    localTitle: '这台电脑可以在本地运行模型',
-    localText: (model: string) =>
-      `${model} 适合你的硬件。免费运行，对话不会离开你的电脑。随时在这里的模型菜单中选择它。`
-  },
-
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -3307,6 +3201,7 @@ export const zhOverrides = {
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
+    redirect: '重新定向当前运行',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',
@@ -3407,7 +3302,7 @@ export const zhOverrides = {
       '/init': '扫描仓库并生成或更新 AGENTS.md 项目指引',
       '/suggestions': '查看建议的自动化项目（接受或跳过）',
       '/blueprint': '使用 blueprint 模板设置自动化',
-      '/browser': '管理智能体浏览器 [connect|disconnect|status|use]',
+      '/browser': '管理智能体浏览器 [connect|disconnect|status]',
       '/palette': '打开模糊搜索命令面板（也可使用 Ctrl+P）',
       '/usage': '显示 Token 用量与速率限制；`reset` 可兑换保留的 Codex 限额重置',
       '/subscription': '查看你的 Nous 方案，并在浏览器中更改',
@@ -3448,6 +3343,11 @@ export const zhOverrides = {
     queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
     queueDelete: '删除',
+    queueLostNote: '重启期间该轮次已丢失',
+    restoreImageDraft: '恢复图片草稿',
+    queueCancelFailed: '无法移除排队的轮次',
+    queueLostDiscard: '丢弃',
+    queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
@@ -3482,43 +3382,6 @@ export const zhOverrides = {
     snippetsDesc: '选择一个起始提示词放入输入框。',
     dropFiles: '拖放文件以附加',
     dropSession: '拖放以链接此对话',
-    mcpSuggestions: {
-      label: server => `添加 ${server}`,
-      tip: keyword => `因为你提到了“${keyword}”而推荐 — 点击连接`,
-      connecting: server => `正在连接 ${server}…`,
-      cancelTip: '点击取消',
-      added: server => `已添加 ${server}`,
-      addedTip: '已连接 — 其工具已在此对话中可用',
-      connectFailed: server => `无法连接 ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `使用技能: ${skill}`,
-      tip: skill => `你提到了“${skill}” — 点击以该技能开头`,
-      done: skill => `已添加 /${skill}`,
-      doneTip: '发送时将加载该技能'
-    },
-    githubSuggestions: {
-      label: '设置 GitHub',
-      tip: '这里通过 gh CLI 技能使用 GitHub — 点击连接你的账号',
-      done: '已添加 /github-auth',
-      doneTip: '发送消息后，agent 将引导你完成 GitHub 登录'
-    },
-    repairSuggestions: {
-      label: server => `重新连接 ${server}`,
-      tip: server => `${server} 调用刚因连接错误失败`,
-      working: server => `正在重新连接 ${server}…`,
-      workingTip: '点击取消',
-      done: server => `已重新连接 ${server}`,
-      doneTip: '新凭据已在此对话中生效',
-      failed: server => `无法重新连接 ${server}`
-    },
-    cronSuggestions: {
-      label: '定时执行',
-      tip: phrase => `“${phrase}”听起来是周期性任务 — 可以按计划运行`,
-      prefix: '将此设置为定时任务:',
-      done: '已标记为定时任务',
-      doneTip: '发送后由智能体创建任务'
-    },
     snippets: {
       codeReview: {
         label: '代码审查',
@@ -3625,7 +3488,7 @@ export const zhOverrides = {
       heartbeatEveryHours: hours => `每 ${hours} 小时`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
-      heartbeatDueWaitingForIdle: '已到期，等待会话空闲',
+      dueWaitingForIdle: '已到期，等待会话空闲',
       heartbeatActions: '心跳操作',
       pauseHeartbeat: '暂停心跳',
       resumeHeartbeat: '恢复心跳',
@@ -3818,6 +3681,8 @@ export const zhOverrides = {
     versionDetailsTitle: '版本详情',
     versionDetailsBody: '此安装在应用外部管理。请使用与安装时相同的方式更新。',
     versionDetailsVersion: '版本',
+    versionDetailsClient: '本设备',
+    versionDetailsBackend: '已连接的后端',
     versionDetailsCommit: '提交',
     versionDetailsBuildOrigin: '构建来源',
     versionDetailsDistribution: '发行版',
@@ -3933,27 +3798,25 @@ export const zhOverrides = {
     signIn: '登录',
     signInHeading: '登录 Nous 账户以解锁更多模型和工具。',
     settingUp: '正在设置免费推理…',
-    codeBody: '在浏览器中输入此代码以完成登录。',
-    copyLink: '复制链接',
+    finishInBrowser: '在浏览器中完成',
     doNotShare: '请勿分享此代码。',
+    openPageAgain: '重新打开页面',
     waiting: '等待登录…',
     finishingHeading: '正在完成登录…',
     finishingBody: '已在浏览器中批准。正在获取账户令牌。',
-    signedInAs: email => `已登录为 ${email}`,
+    signedInAsLabel: '已登录为',
     signedIn: '已登录。',
     completedBody: '现在由你的账户提供推理和工具。',
+    reconnect: '重新连接',
+    openConnectors: '打开连接器',
     defaultModel: '默认模型',
     change: '更改',
     done: '完成',
     notNow: '暂不',
     tryAgain: '重试',
-    startAgain: '重新开始',
     didNotComplete: '登录未完成',
-    rejectedBody: '登录在浏览器中被拒绝。你仍在免费层。',
-    supersededBody: '一个更新的登录代码替换了此代码。',
     timedOutHeading: '登录超时',
     timedOutBody: '代码未在有效期内使用。你仍在免费层。',
-    retiredBody: '此免费层身份已被使用或已过期；下次启动时会重新设置。',
     errorBody: '登录未完成；请重试。',
     alreadySignedInHeading: '已登录。',
     alreadySignedInBody: '此 Hermes 已登录 Nous 账户。',
@@ -3985,7 +3848,27 @@ export const zhOverrides = {
     wasPrice: '原价',
     customModel: '自定义模型',
     addCustomModelAction: '添加自定义模型…',
-    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
+    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5',
+    today: '今日',
+    week: '本周',
+    month: '本月',
+    topTier: '大型模型（每月）',
+    included: '下列模型均已包含',
+    pausedRenewal: '已暂停：续费未到账',
+    pausedOther: '已暂停',
+    includedUsedUp: '包含用量已用完',
+    limitReached: name => `已达${name}上限`,
+    limitNames: { day: '每日', month: '每月', top_tier: '每月大型模型', week: '每周' },
+    limitThenCredits: '付费模型现在使用你的额度（按量付费）',
+    limitThenCreditsLarge: '大型模型现在使用你的额度（按量付费）',
+    limitThenWait: '在此之前仅可使用免费模型',
+    limitThenWaitLarge: '在此之前大型模型已暂停',
+    percentUsed: percent => `已用 ${percent}`,
+    resetsIn: duration => `${duration}后重置`,
+    usageLevels: { free: '免费', top_tier: '大' },
+    sectionRecommended: '推荐',
+    sectionOther: '其他模型',
+    largeFootnote: '大型模型也会消耗你的每月大型模型额度。'
   },
 
   modelVisibility: {
@@ -4159,6 +4042,7 @@ export const zhOverrides = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `无法在 ${shell} 中安全地输入这些名称：${paths}`,
     terminalReadOnly: '只读输出',
     terminalReadOnlyHelp:
       '如需回应提示，请停止后台命令，再在新终端中运行。新终端会打开独立的 shell，不会连接到此进程。',
@@ -4265,59 +4149,7 @@ export const zhOverrides = {
       sentTitle: '已发送到对话',
       sentMessage: count => `已将 ${count} 条日志添加到输入框`
     },
-    web: {
-      appFailedToBoot: '预览应用启动失败',
-      serverNotFound: '未找到服务器',
-      remoteLoopback:
-        '该地址指向运行代理的那台机器，而不是本机。浏览器面板在本地加载页面，因此远程开发服务器需要端口转发或可访问的主机名。',
-      failedToLoad: '预览加载失败',
-      tryAgain: '重试',
-      restarting: 'Hermes 正在重启...',
-      askRestart: '让 Hermes 重启服务器',
-      lookingRestart: taskId => `Hermes 正在查找要重启的预览服务器 (${taskId})`,
-      restartingTitle: '正在重启预览服务器',
-      restartingMessage: 'Hermes 正在后台工作。可在预览控制台查看进度。',
-      startRestartFailed: message => `无法启动服务器重启：${message}`,
-      restartFailed: '服务器重启失败',
-      hideConsole: '隐藏预览控制台',
-      showConsole: '显示预览控制台',
-      hideDevTools: '隐藏预览 DevTools',
-      openDevTools: '打开预览 DevTools',
-      goBack: '后退',
-      goForward: '前进',
-      reload: '重新加载页面',
-      address: '地址',
-      addressPlaceholder: '输入地址',
-      blankPageBody: '在上方输入地址开始浏览，或让 Hermes 打开一个页面。',
-      finishedRestarting: message => `Hermes 已完成预览服务器重启${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `服务器重启失败：${message}`,
-      unknownError: '未知错误',
-      restartedTitle: '预览服务器已重启',
-      reloadingNow: '正在重新加载预览。',
-      restartFailedTitle: '预览重启失败',
-      restartFailedMessage: 'Hermes 无法重启服务器。',
-      stillWorking: 'Hermes 仍在工作，但还没有收到重启结果。服务器命令可能正在前台运行。',
-      workspaceReloading: '工作区已变更，正在重新加载预览',
-      fileChanged: url => `文件已变更，正在重新加载预览：${url}`,
-      filesChanged: (count, url) => `${count} 个文件变更，正在重新加载预览：${url}`,
-      watchFailed: message => `无法监听预览文件：${message}`,
-      moduleMimeDescription:
-        '模块脚本使用了错误的 MIME 类型。这通常表示静态文件服务器正在服务 Vite/React 应用，而不是项目开发服务器。',
-      loadFailedConsole: (code, message) => `加载失败${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: '无法访问预览页面。',
-      openTarget: url => `打开 ${url}`,
-      fallbackTitle: '预览',
-      annotate: '标注',
-      annotateOn: '停止标注',
-      annotateNeedPage: '请先在内置浏览器中打开页面。',
-      annotateFailed: '无法开始标注',
-      commenting: '标注中',
-      addComments: count => (count === 1 ? '添加 1 条批注' : `添加 ${count} 条批注`),
-      commentPlaceholder: '添加批注…',
-      commentTitle: n => `批注 ${n}`,
-      saveComment: '保存',
-      cancelComment: '取消批注'
-    }
+    web: zhPreviewWeb
   },
 
   interfaceMode: {
@@ -4380,7 +4212,8 @@ export const zhOverrides = {
     saveApply: '保存并应用',
     notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
     zoneCount: count => `${count} 个区域`,
-    tabCount: count => `${count} 个标签页`
+    tabCount: count => `${count} 个标签页`,
+    tabActions: title => `${title} 的操作`
   },
 
   contextMenu: {
@@ -4430,13 +4263,9 @@ export const zhOverrides = {
       react: '回应',
       dismissError: '关闭错误',
       errorGenericProvider: 'AI 服务',
-      errorLayerBodies: {
-        generic: 'Hermes 回复时出现问题。请重试；若问题持续，请复制错误详情。',
-        provider: 'AI 服务无法完成此请求。请稍后重试或切换服务商。',
-        endpoint: 'Hermes 无法连接到你的自定义模型服务器。请确认它正在运行，然后重新发送消息。',
-        streaming: '回复完成前连接已断开。请重试以重新发送。'
-      },
+      ...zhErrorLayers,
       errorCodes: {
+        ...zhErrorCodes,
         provider_policy_blocked: {
           title: '账户设置阻止了此模型',
           body: provider => `${provider} 无法按你账户的数据或隐私设置路由此请求。请选择其他模型或切换服务商。`
@@ -4480,20 +4309,19 @@ export const zhOverrides = {
         ssl_cert_verification: {
           title: '安全连接失败',
           body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
+        },
+        usage_window: {
+          title: '包含用量已用完',
+          body: '你的方案包含的用量已用完，将在重置后恢复。在 /topup 中添加额度即可继续。'
         }
       },
-      errorLayers: {
-        auth: '认证错误',
-        billing: '额度不足',
-        disk: '磁盘已满',
-        endpoint: '自定义端点错误',
-        gateway: '网关错误',
-        generic: '本轮失败',
-        provider: '模型服务商错误',
-        runtime: '本地运行时错误',
-        streaming: '流式连接错误'
-      },
       errorRetry: '重试',
+      errorSwitchToModel: (model, note) => (note ? `切换到 ${model}（${note}）` : `切换到 ${model}`),
+      errorSwitchModelFailed: '无法切换模型',
+      errorUseCredits: '开启用额度继续',
+      errorUseCreditsFailed: '无法开启用额度继续',
+      errorAddCredits: '添加额度',
+      errorOpenBillingSettings: '打开账单设置',
       errorLimitResets: time => `限额将于 ${time} 重置`,
       errorRetryAtReset: time => `限额重置后重试（${time}）`,
       errorRetryScheduled: (time, wait) => `将于 ${time} 重试 — 还剩 ${wait}`,
@@ -4545,48 +4373,8 @@ export const zhOverrides = {
         `这会将“${pattern}”模式加入永久允许列表 (~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
       alwaysAllow: '始终允许'
     },
-    clarify: {
-      notReady: '澄清请求尚未就绪',
-      gatewayDisconnected: 'Hermes 网关未连接',
-      sendFailed: '无法发送澄清响应',
-      loadingQuestion: '正在加载问题…',
-      other: '其他 (输入你的答案)',
-      placeholder: '输入你的答案…',
-      skip: '跳过',
-      skipped: '已跳过',
-      noAnswer: '未回答',
-      confirmAndContinueLabel: '确认并继续',
-      singleSelectHint: '选一个',
-      multiSelectHint: '可多选',
-      oneQuestion: '1 个问题',
-      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
-    },
-    setupChoose: {
-      kinds: {
-        accent: '强调色',
-        connectors: '应用',
-        layout: '布局',
-        plugins: '插件',
-        theme: '外观'
-      },
-      loading: '正在加载选项…',
-      unavailable: '此列表暂不可用，请直接在对话中回复。',
-      findApp: '查找应用',
-      customColor: '自定义颜色',
-      plugin: '插件',
-      startsLater: '开始时我们会帮你设置好这些。'
-    },
-    startChat: {
-      starting: title => `正在启动“${title}”…`,
-      startingUntitled: '正在启动对话…',
-      untitled: '新对话',
-      notStarted: '对话未能启动',
-      retry: '重试',
-      inProfile: profile => `位于 ${profile}`,
-      open: '打开',
-      openFailed: '无法打开对话'
-    },
+    clarify: zhClarify,
+    themePicker: zhThemePicker,
     catalogInstall: {
       preparing: '正在准备安装…',
       install: '安装',
@@ -4600,7 +4388,7 @@ export const zhOverrides = {
       hideNames: '隐藏名称',
       skill: name => `技能 ${name}`,
       kind: { plugin: '插件', skill: '技能' },
-      tier: { official: '官方', community: '社区' },
+      tier: { official: '官方', verified: '已验证', community: '社区' },
       targetProfile: profile => `安装到你的 ${profile} 配置文件`,
       sendFailed: '无法发送你的回复，请重试。',
       commitLabel: '提交',
@@ -4708,8 +4496,6 @@ export const zhOverrides = {
         read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
         search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },
         session_search_recall: { done: '已搜索会话历史', pending: '正在搜索会话历史', pendingAction: '正在搜索' },
-        setup_choose: { done: '已提出设置问题', pending: '正在提出设置问题', pendingAction: '正在提问' },
-        start_chat: { done: '已启动对话', pending: '正在启动对话', pendingAction: '正在启动' },
         terminal: { done: '已运行命令', pending: '正在运行命令', pendingAction: '正在运行' },
         todo: { done: '已更新待办', pending: '正在更新待办', pendingAction: '正在更新' },
         vision_analyze: { done: '已分析图片', pending: '正在分析图片', pendingAction: '正在分析' },
@@ -4838,6 +4624,7 @@ export const zhOverrides = {
     imageAttach: '附加图片',
     imageWriteFailed: '无法将图片写入磁盘。',
     imageAttachFailed: '附加图片失败',
+    attachFailed: '附加失败',
     pastedContent: '粘贴内容',
     pasteAttachFailed: '无法附加粘贴的文本',
     attachImages: '附加图片',
@@ -4845,6 +4632,7 @@ export const zhOverrides = {
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
     dropFiles: '拖放文件',
+    dropFilesMore: (count: number) => `以及另外 ${count} 项`,
     handoff: {
       pickPlatform: '选择目标平台',
       success: platform => `已移交到 ${platform}。随时可在此处恢复。`,

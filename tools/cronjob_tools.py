@@ -503,9 +503,40 @@ def _background_session_key(session_id: Optional[str]) -> str:
     return session_key or (str(session_id) if session_id else "")
 
 
+def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, Any]:
+    """``{"model", "api_calls"}`` the fire's run session recorded in state.db (summed over its
+    compression chain), or ``{}`` when no run session exists (no_agent job, refused fire)."""
+    if not execution_id:
+        return {}
+    import sqlite3
+
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    # A missing or locked state.db costs the notice its usage line, never the completion.
+    try:
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+    except (sqlite3.Error, OSError):
+        return {}
+    try:
+        run = next((r for r in db.list_cron_job_runs(job_id, limit=50)
+                    if r.get("cron_execution_id") == execution_id), None)
+        if run is None:
+            return {}
+        rows = [db.get_session(sid) or {} for sid in db.get_compression_chain(run["id"])]
+    except sqlite3.Error as exc:
+        logger.debug("cronjob run: run-session usage lookup failed for %s: %s", job_id, exc)
+        return {}
+    finally:
+        db.close()
+    model = next((r["model"] for r in reversed(rows) if r.get("model")), None)
+    return {"api_calls": sum(int(r.get("api_call_count") or 0) for r in rows), **({"model": model} if model else {})}
+
+
 def _manual_run_completion(
-    res: dict[str, Any], job_id: str, job_name: str, deliver: str, started_at: float) -> dict[str, Any]:
-    """Async-delegation completion block for a finished background manual run."""
+    res: dict[str, Any], job_id: str, job_name: str, deliver: str, started_at: float,
+    execution_id: Optional[str] = None) -> dict[str, Any]:
+    """Async-delegation completion block for a finished background manual run. Model and API
+    calls come from the run's own session; without one they are omitted, never guessed."""
     duration = round(time.time() - started_at, 2)
     refreshed = get_job(job_id) or {}
     lines = [
@@ -521,7 +552,7 @@ def _manual_run_completion(
         lines += ["--- JOB OUTPUT ---", excerpt]
     return {
         "status": "completed" if res.get("success") else "error", "summary": "\n".join(lines),
-        "error": res.get("error"), "api_calls": 0, "duration_seconds": duration,
+        "error": res.get("error"), "duration_seconds": duration, **_run_session_usage(job_id, execution_id),
     }
 
 
@@ -604,13 +635,16 @@ def _try_dispatch_background_run(
 
     def _runner() -> dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
-        return _manual_run_completion(res, job_id, job_name, deliver, started_at)
+        # run_one_job stamps the fire's ledger id onto this claimed snapshot.
+        return _manual_run_completion(res, job_id, job_name, deliver, started_at,
+                                      (claimed_job or {}).get("execution_id"))
 
     dispatch = dispatch_async_delegation(
         goal=f"Manual run of cron job '{job_name}' ({job_id})",
         context=("Triggered via cronjob(action='run'). The job executed in its own "
                  "fresh cron session; this block reports its outcome."),
-        toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
+        # model=None: the run session (via _runner) is the only source; a pin a refused fire never ran is not.
+        toolsets=None, role="cron_run", model=None, session_key=session_key,
         parent_session_id=str(session_id) if session_id else None, runner=_runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         max_async_children=max_async)
@@ -696,6 +730,8 @@ def _action_create(a: dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
+            timezone=_normalize_optional_job_value(a["timezone"]),
+            grace_minutes=a["grace_minutes"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
@@ -925,6 +961,18 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         repeat_state = dict(job.get("repeat") or {})
         repeat_state["times"] = normalize_repeat_value(a["repeat"])
         updates["repeat"] = repeat_state
+    if a["timezone"] is not None:
+        # '' clears the pin (the job inherits the profile timezone); update_job validates the key.
+        updates["timezone"] = _normalize_optional_job_value(a["timezone"]) or ""
+    if a["grace_minutes"] is not None:
+        # '' / null clears the override; 0 is a real value ("never catch up") and passes through.
+        updates["grace_minutes"] = (
+            None if isinstance(a["grace_minutes"], str) and not a["grace_minutes"].strip()
+            else a["grace_minutes"])
+        if _pick(updates, job, "grace_minutes") is not None:
+            kind = (_pick(updates, job, "schedule") or {}).get("kind")
+            if kind != "cron":
+                return "grace_minutes only applies to cron schedules."
     if a["schedule"] is not None:
         parsed_schedule = parse_schedule(a["schedule"])
         updates["schedule"] = parsed_schedule
@@ -1014,7 +1062,9 @@ def cronjob(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
-    interpreter: Optional[str] = None) -> str:
+    interpreter: Optional[str] = None,
+    timezone: Optional[str] = None,
+    grace_minutes: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1055,9 +1105,7 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
-
-Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless pinned.
+    "description": """Schedule recurring or one-off agent tasks (cron jobs): create, list, edit, run. action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless the user pins one. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -1096,7 +1144,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a local chat (CLI, TUI or Desktop) the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message."
             },
             "failure_deliver": {
                 "type": "string",
@@ -1138,6 +1186,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
             },
+            "timezone": {
+                "type": "string",
+                "description": "Optional IANA zone (e.g. 'America/New_York') the cron expression is read in, instead of the profile's. On update, '' clears."
+            },
             "attach_to_session": {
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
@@ -1170,7 +1222,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned")
+    "paused_reason", "pinned", "timezone", "grace_minutes")
 
 
 def _cronjob_handler(args, **kw):

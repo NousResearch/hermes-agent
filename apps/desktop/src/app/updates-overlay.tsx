@@ -7,7 +7,7 @@ import { settingsSearchTargetQuery } from '@/app/settings/settings-search'
 import { BrandMark } from '@/components/brand-mark'
 import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
-import { CopyButton, writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -28,9 +28,11 @@ import type {
   UpdaterMechanismClient
 } from '@/global'
 import { useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
-import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
-import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { AlertCircle, Check, Copy, ExternalLink, Terminal } from '@/lib/icons'
+import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
+import { fetchUpdateNoteItems, updateNotesSource, updateNotesUrl, updateReleaseTag } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
@@ -57,6 +59,112 @@ import { DiscontinuedNotice } from './retirement-view'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
+}
+
+/** Release notes (stable) or the latest merged PRs (main); undefined while loading. */
+function useUpdateNotes(status: DesktopUpdateStatus | null, updateAvailable: boolean) {
+  const enabled = Boolean(status?.supported && !status.error && updateAvailable)
+  const source = status && enabled ? updateNotesSource(status) : null
+  const [items, setItems] = useState<{ for: DesktopUpdateStatus; items: string[] } | null>(null)
+
+  useEffect(() => {
+    const notesSource = status && enabled ? updateNotesSource(status) : null
+
+    if (!status || !notesSource) {
+      return
+    }
+
+    let live = true
+
+    void fetchUpdateNoteItems(notesSource, status).then(next => live && setItems({ for: status, items: next }))
+
+    return () => {
+      live = false
+    }
+  }, [enabled, status])
+
+  return {
+    items: items?.for === status ? items.items : undefined,
+    kind: source?.kind,
+    url: source && status ? updateNotesUrl(source, status) : null
+  }
+}
+
+type UpdateNotesView = ReturnType<typeof useUpdateNotes>
+
+/** The dialog's change list: fetched notes when they exist, else the commit changelog; plus the onward link. */
+function UpdateChangeList({
+  commitGroups,
+  copyText,
+  notes: fetched,
+  rollback
+}: {
+  commitGroups: readonly CommitGroup[]
+  copyText?: () => string
+  notes: UpdateNotesView
+  rollback: boolean
+}) {
+  const { t } = useI18n()
+  const u = t.updates
+  // A rollback brings no new changes; the "improvements" fallback would claim some.
+  const notes = rollback ? null : fetched
+  const pending = Boolean(notes?.url) && notes?.items === undefined
+
+  const shown: readonly CommitGroup[] =
+    rollback || pending
+      ? []
+      : notes?.items?.length
+        ? [{ id: 'new', items: notes.items, label: u.changeLogNew }]
+        : commitGroups
+
+  return (
+    <div className="grid gap-3">
+      {pending && <Loader className="mx-auto size-5" label={u.checking} type="lemniscate-bloom" />}
+      {shown.map((group, index) => (
+        <div key={group.id}>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+            {index === 0 && copyText && (
+              <CopyButton
+                appearance="icon"
+                buttonSize="icon-xs"
+                className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                iconClassName="size-3"
+                label={u.copyFullLog}
+                side="left"
+                text={copyText}
+              />
+            )}
+          </div>
+          <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
+            {group.items.map(item => (
+              <li className="flex items-start gap-2" key={item}>
+                <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
+                <span className="line-clamp-2 leading-snug" title={item}>
+                  {item}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {notes?.url && (
+        <a
+          className="inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
+          href={notes.url}
+          onClick={event => {
+            event.preventDefault()
+            void window.hermesDesktop?.openExternal?.(event.currentTarget.href)
+          }}
+          rel="noreferrer"
+          target="_blank"
+        >
+          <ExternalLink className="size-3" />
+          {notes.kind === 'release' ? u.releaseNotes : t.settings.about.channel.allChanges}
+        </a>
+      )}
+    </div>
+  )
 }
 
 export function UpdatesOverlay() {
@@ -199,6 +307,7 @@ function IdleView({
 }) {
   const { t } = useI18n()
   const u = t.updates
+  const notes = useUpdateNotes(status, updateAvailable)
 
   if (!status && checking) {
     return (
@@ -281,7 +390,7 @@ function IdleView({
           )}
           version={version}
         />
-        <UpdateStatusCard target={target} />
+        <UpdateStatusCard target={target} version={version} />
         <SyncStatusCard />
         {details}
       </div>
@@ -299,22 +408,29 @@ function IdleView({
     fallback: { label: u.changeLogFallbackLabel, item: u.changeLogFallbackItem }
   })
 
+  // Notes are their own summary and link onward, so the commit count tail would mismatch them.
   const shownItems = totalItems(groups)
-  const remaining = Math.max(0, behind - shownItems)
+  const remaining = notes.items?.length ? 0 : Math.max(0, behind - shownItems)
 
   // Name what's being updated. In remote mode the overlay acts on the connected
   // backend, not the local client — say so. When there are no commit rows to
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
   // instead of generic filler. On a release-feed channel (stable), name the
   // release tag instead of commit vocabulary.
-  const { title, body } = resolveUpdateCopy({
-    target,
-    shownItems,
-    channel: status?.channel === 'stable' ? 'stable' : 'main',
-    latestTag: status?.latestTag ?? null,
-    mechanism: status?.mechanism,
-    copy: u
-  })
+  // A stable release this checkout already contains is a move back, never "a new update".
+  const rollbackTag = rollbackRelease(status)
+  const channelCopy = t.settings.about.channel
+
+  const { title, body } = rollbackTag
+    ? { title: channelCopy.rollbackTitle(rollbackTag), body: channelCopy.rollbackBody(rollbackTag) }
+    : resolveUpdateCopy({
+        target,
+        shownItems,
+        channel: status?.channel === 'stable' ? 'stable' : 'main',
+        latestTag: updateReleaseTag(status),
+        mechanism: status?.mechanism,
+        copy: u
+      })
 
   const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
 
@@ -327,38 +443,16 @@ function IdleView({
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
-      <div className="grid gap-3">
-        {groups.map((group, index) => (
-          <div key={group.id}>
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
-              {index === 0 && commits.length > 0 && (
-                <CopyButton
-                  appearance="icon"
-                  buttonSize="icon-xs"
-                  className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
-                  iconClassName="size-3"
-                  label={u.copyFullLog}
-                  side="left"
-                  text={handleCopyFullLog}
-                />
-              )}
-            </div>
-            <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
-              {group.items.map(item => (
-                <li className="flex items-start gap-2" key={item}>
-                  <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
-                  <span className="leading-snug">{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
+      <UpdateChangeList
+        commitGroups={groups}
+        copyText={commits.length > 0 ? handleCopyFullLog : undefined}
+        notes={notes}
+        rollback={Boolean(rollbackTag)}
+      />
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">
-          {u.updateNow}
+          {rollbackTag ? channelCopy.rollbackAction(rollbackTag) : u.updateNow}
         </Button>
         <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}

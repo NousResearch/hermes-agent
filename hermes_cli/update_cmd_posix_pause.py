@@ -323,12 +323,25 @@ def _manage_cmd(scope: str) -> list | None:
     return cmd
 
 
+def _scope_cmd(unit: dict) -> list:
+    return ["systemctl", "--user"] if unit["scope"] == "user" else ["systemctl"]
+
+
 def _stop_unit(unit: dict) -> None:
-    from hermes_cli.update_cmd_fleet import _systemctl
+    """Stop *unit* through systemd. A stop job systemd is still running holds the pause unless
+    the gateway is provably still up: its job outlives our client timeout (a cgroup child that
+    ignores SIGTERM keeps it in ``deactivating`` for up to twice TimeoutStopSec), it keeps the
+    supervisor from respawning the gateway, and a rollback ``start`` would only queue behind it
+    and boot the gateway seconds before the checkout moves."""
+    from hermes_cli.update_cmd_fleet import _unit_main_pid
+    from hermes_cli.update_cmd_fleet_unit_budget import UNIT_JOB_STILL_RUNNING, run_unit_job
     cmd = _manage_cmd(unit["scope"])
     if cmd is None:
         raise PauseRefused(f"no privilege to stop system unit {unit['unit']}")
-    result = _systemctl(cmd + ["stop", unit["unit"]], timeout=_STOP_TIMEOUT_S)
+    result = run_unit_job(cmd, _scope_cmd(unit), "stop", unit["unit"], timeout=_STOP_TIMEOUT_S)
+    if result.returncode == UNIT_JOB_STILL_RUNNING and not _alive(unit["pid"], unit.get("ct")) \
+            and _unit_main_pid(_scope_cmd(unit), unit["unit"]) <= 0:
+        return
     if result.returncode != 0:
         raise PauseRefused(f"systemctl stop {unit['unit']} failed: {(result.stderr or '').strip()}")
 
@@ -339,13 +352,14 @@ def _start_unit(unit: dict) -> int:
     from hermes_cli.update_cmd_fleet import (
         _repair_unit_without_fatal_exit_park, _systemctl, _unit_main_pid, _wait_for_service_active,
     )
+    from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job
     cmd = _manage_cmd(unit["scope"])
     if cmd is None:
         raise RuntimeError(f"no privilege to start system unit {unit['unit']}")
     _repair_unit_without_fatal_exit_park(unit["unit"], unit["scope"])
     _systemctl(cmd + ["reset-failed", unit["unit"]], timeout=10)
-    result = _systemctl(cmd + ["start", unit["unit"]], timeout=_STOP_TIMEOUT_S)
-    scope_cmd = ["systemctl", "--user"] if unit["scope"] == "user" else ["systemctl"]
+    scope_cmd = _scope_cmd(unit)
+    result = run_unit_job(cmd, scope_cmd, "start", unit["unit"], timeout=_STOP_TIMEOUT_S)
     if result.returncode != 0 or not _wait_for_service_active(scope_cmd, unit["unit"], timeout=15.0):
         raise RuntimeError(f"{unit['unit']} did not start: {(result.stderr or '').strip() or 'not active'}")
     return _unit_main_pid(scope_cmd, unit["unit"])
@@ -529,6 +543,7 @@ def _relaunch_bare(entry: dict) -> int:
         env.pop(leaked, None)
     with open(logs / "gateway-update-resume.log", "ab") as log:
         proc = subprocess.Popen(list(entry["argv"]), env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                # detached-spawn: ok — resumes the paused gateway after an update; it must outlive the updater
                                 stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
     deadline = time.monotonic() + _READY_TIMEOUT_S
     while time.monotonic() < deadline:

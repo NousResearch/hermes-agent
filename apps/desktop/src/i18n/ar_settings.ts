@@ -1,3 +1,5 @@
+import { arDelegationRouting } from './ar_delegation_routing'
+import { arMemoryLayers } from './ar_memory_layers'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -12,6 +14,37 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    memoryLayers: arMemoryLayers,
+    // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    billing: {
+      keepGoingOnCredits: {
+        title: 'الاستمرار بالرصيد',
+        description: 'استخدم رصيدك عند نفاد الاستخدام المضمّن. عند الإيقاف: ينتظر Hermes إعادة التعيين.',
+        approveInBrowser: 'وافق على الإنفاق عن بُعد في متصفحك لتغيير هذا. يُطبَّق فور الموافقة.',
+        openAgain: 'الفتح مرة أخرى',
+        cancel: 'إلغاء',
+        approvedRetry: 'تمت الموافقة على الإنفاق عن بُعد، لكن لم يُحفظ التغيير.',
+        tryAgain: 'إعادة المحاولة'
+      },
+      state: {
+        usage: {
+          window: {
+            today: 'اليوم',
+            week: 'هذا الأسبوع',
+            month: 'هذا الشهر',
+            topTier: 'النماذج الكبيرة (شهريًا)',
+            barLabel: title => `المستخدم من الاستخدام المضمّن: ${title}`,
+            captionPaused: 'متوقف مؤقتًا: فشل دفع الاشتراك',
+            captionPausedOther: 'متوقف مؤقتًا: راجع الفوترة في البوابة',
+            captionTopTierUsedUp: 'نفدت الحصة الشهرية، ويغطي الرصيد الباقي',
+            captionTopTierUsedUpKeepGoingOff: 'نفدت الحصة الشهرية، ولا تزال النماذج المضمّنة الأخرى تعمل',
+            captionResetsIn: duration => `يُعاد التعيين خلال ${duration}`,
+            captionIncluded: 'الاستخدام المضمّن',
+            valueUsed: percent => `${percent} مستخدم`
+          }
+        }
+      }
+    },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',
@@ -182,7 +215,28 @@ export const arSettings = {
         toolsConnected: n => `تم توصيل ${n} من الأدوات`,
         skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
         nextChat: 'أدوات أخرى متاحة في دردشتك التالية',
-        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`
+        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`,
+        verified: 'موثّق',
+        unverified: 'غير موثّق',
+        reviewedByNous: 'راجعته Nous.',
+        installsAndEnables: profile => `يُثبَّت لملف ${profile} ويعمل فورًا.`,
+        installsOnly: profile => `يُثبَّت لملف ${profile}.`,
+        advanced: 'متقدم',
+        versionLabel: 'الإصدار',
+        reviewedPin: sha => (sha ? `الإصدار المثبّت المراجَع ${sha}` : 'الإصدار المثبّت المراجَع'),
+        latestCommit: 'أحدث إيداع',
+        sourceMoved: sha =>
+          sha
+            ? `تغيّر المستودع منذ مراجعتك له. راجع الإصدار الجديد (الإيداع ${sha}) قبل تثبيته.`
+            : 'تغيّر المستودع منذ مراجعتك له. جارٍ قراءة الإصدار الجديد…',
+        legacyBackendConfirm:
+          'هذه الواجهة الخلفية أقدم من هذا التطبيق، لذا لا يمكنها ضمان أن يكون الإصدار الذي راجعته هو ما سيُثبَّت: إذا تغيّر المستودع منذ ذلك الحين، فسيُثبَّت الإصدار الأحدث بدلًا منه. حدّث الواجهة الخلفية للحصول على هذا الضمان.',
+        installAnyway: 'ثبّت على أي حال',
+        partialInstall: sha =>
+          sha
+            ? `لم يُثبَّت سوى جزء من هذه الإضافة: جزء الوكيل مثبَّت عند الإيداع ${sha}، لكن جزء سطح المكتب لم يتمكن من اللحاق به لأن المستودع تغيّر منذ مراجعتك له. فعّل فرض إعادة التثبيت ضمن «متقدم» لاستبدال الجزأين بالإصدار المعروض، أو ألغِ للإبقاء على جزء الوكيل وحده.`
+            : 'لم يُثبَّت سوى جزء من هذه الإضافة: جزء الوكيل مثبَّت، لكن جزء سطح المكتب لم يتمكن من اللحاق به لأن المستودع تغيّر منذ مراجعتك له. فعّل فرض إعادة التثبيت ضمن «متقدم» لاستبدال الجزأين بالإصدار المعروض، أو ألغِ للإبقاء على جزء الوكيل وحده.',
+        nothingToInstall: 'لا تحتوي هذه الحزمة على ما يُثبَّت هنا.'
       }
     },
     notifications: {
@@ -219,6 +273,9 @@ export const arSettings = {
       testBody: 'الإشعارات تعمل.',
       testSent: 'تم إرسال التجربة. إذا لم يظهر شيء، تحقق من أذونات الإشعارات في نظام التشغيل ووضع التركيز/عدم الإزعاج.',
       testUnsupported: 'هذا النظام لا يدعم الإشعارات الأصلية.',
+      muteSoundsTitle: 'كتم أصوات الواجهة',
+      muteSoundsDesc:
+        'يكتم تنبيهات الاكتمال وكلمة التنبيه والتفكير التلقائية والاستجابة اللمسية وأصوات إشعارات النظام. تظل معاينات الصوت والردود المنطوقة مسموعة.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
       completionSoundPreview: 'معاينة'
@@ -512,12 +569,6 @@ export const arSettings = {
     },
 
     config: {
-      developerTitle: 'المطوّر',
-      resetOnboardingTitle: 'إعادة تعيين الإعداد الأولي',
-      resetOnboardingDesc:
-        'حذف محادثات الإعداد، وإعادة بناء ملف الإعداد الشخصي، وتشغيل الإعداد الأولي مرة أخرى. تبقى ملفاتك الشخصية ومحادثاتك وإضافاتك كما هي.',
-      resetOnboardingAction: 'إعادة تعيين',
-      resetOnboardingFailed: 'تعذّر إعادة تعيين الإعداد الأولي',
       minimizeToTrayTitle: 'التصغير إلى علبة النظام',
       minimizeToTrayDesc:
         'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
@@ -608,6 +659,9 @@ export const arSettings = {
       loading: 'جار تحميل إعدادات البوابة...',
       unavailableTitle: 'إعدادات البوابة غير متاحة',
       unavailableDesc: 'جسر IPC في سطح المكتب لا يوفّر إعدادات البوابة.',
+      webappHostTitle: 'مضيف Hermes',
+      webappHostDesc:
+        'يستخدم Webapp دائمًا مضيف Hermes الذي يقدّمه. لتبديل البوابة أو تسجيل الدخول إلى Hermes Cloud أو إدارة الاتصالات المحفوظة، استخدم تطبيق Hermes Desktop.',
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:
@@ -666,7 +720,40 @@ export const arSettings = {
       signOutFailed: 'فشل تسجيل الخروج',
       testFailed: 'فشل اختبار البوابة البعيدة',
       applyFailed: 'تعذر تطبيق إعدادات البوابة',
-      saveFailed: 'تعذر حفظ إعدادات البوابة'
+      saveFailed: 'تعذر حفظ إعدادات البوابة',
+      webAccess: {
+        title: 'الوصول عبر الويب',
+        intro: 'افتح Hermes الموجود على هذا الحاسوب من هاتفك أو من حاسوب آخر، مع تسجيل الدخول بحساب Nous. من يسجّل الدخول يمكنه تشغيل الأوامر على هذا الحاسوب.',
+        failed: 'تعذّر تغيير الوصول عبر الويب',
+        running: 'قيد التشغيل',
+        stopped: 'متوقف',
+        starting: 'جارٍ البدء',
+        stopping: 'جارٍ الإيقاف',
+        restartNeeded: 'يلزم إعادة التشغيل',
+        unavailable: 'غير متاح',
+        notRunningDetail: 'شغّله لفتح Hermes من جهاز آخر.',
+        needsNous: 'سجّل الدخول إلى حساب Nous من قسم المزوّدين أولًا.',
+        runningLan: 'افتح هذا العنوان على جهاز في الشبكة نفسها.',
+        runningPublic: 'يُقدَّم عبر عنوانك.',
+        runningLocal: 'يمكن فتحه من هذا الحاسوب فقط. أوقفه ثم شغّله من جديد لفتحه من أجهزة أخرى.',
+        pendingOn: 'تم الحفظ. ستقدّم البوابة تطبيق الويب بعد إعادة تشغيلها.',
+        pendingOff: 'تم الإيقاف، لكن البوابة تواصل تقديم تطبيق الويب حتى إعادة تشغيلها.',
+        unavailableDetail: reason => `تعذّر على البوابة تقديم تطبيق الويب: ${reason}`,
+        restartBusy: 'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
+        restartFailed: 'تم الحفظ، لكن تعذّرت إعادة تشغيل البوابة. اختر «إعادة تشغيل البوابة» للمحاولة مجددًا.',
+        restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
+        startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
+        stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
+        start: 'تشغيل',
+        stop: 'إيقاف',
+        restartGateway: 'إعادة تشغيل البوابة',
+        modeLan: 'هذه الشبكة',
+        modeLanDetail: url => `تفتح الأجهزة على شبكة Wi-Fi العنوان ${url}. استخدمه على شبكة تثق بها فقط.`,
+        lanUnencrypted: 'الاتصال غير مشفّر: يمكن لآخرين على هذه الشبكة قراءة ما ترسله وتستقبله.',
+        noLan: 'لا يملك هذا الحاسوب عنوان شبكة يمكن للأجهزة الأخرى الوصول إليه.',
+        modePublic: 'عنواني الخاص',
+        modePublicDetail: port => `عنوان HTTPS تديره بالفعل، مثل Tailscale Serve أو نفق، يحوّل إلى http://127.0.0.1:${port}.`
+      }
     },
     keys: {
       loading: 'جار تحميل مفاتيح API وبيانات الاعتماد...',
@@ -801,6 +888,24 @@ export const arSettings = {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'
         }
+      },
+      subagents: {
+        inherit: 'الوراثة من الوكيل الرئيسي',
+        modelOnly: 'نموذج مخصص (بيانات اعتماد الوكيل الرئيسي)',
+        providerLabel: 'موفّر الوكلاء الفرعيين',
+        modelLabel: 'نموذج الوكلاء الفرعيين',
+        direct: 'نقطة نهاية مباشرة',
+        customProvider: 'موفّر مخصص...',
+        customProviderLabel: 'موفّر مخصص للوكلاء الفرعيين',
+        parentModel: 'استخدام نموذج الوكيل الرئيسي',
+        parentModelWarning:
+          'يجب أن يدعم الموفّر المختار نموذج الوكيل الرئيسي. قد يفشل المسار الذي يحدد الموفّر وحده إذا كان النموذج غير متوافق. إذا حدّد هذا الموفّر نموذجًا افتراضيًا خاصًا به، يستخدمه الوكلاء الفرعيون بدلًا من ذلك.',
+        directActive:
+          'نقطة نهاية مباشرة مفعّلة ولها الأولوية على الموفّر المحفوظ. يُحتفظ بعنوانها وبيانات اعتمادها ما دام هذا الوضع محددًا.',
+        directClear: 'تطبيق هذا المسار يمسح نقطة النهاية المباشرة ومفتاحها المحفوظ. تبقى إعدادات الطلب الأخرى كما هي.',
+        catalogFailed: 'كتالوج النماذج غير متاح. أدخل الموفّر والنموذج يدويًا أو أعد المحاولة.',
+        draftHint: 'تبقى التغييرات محلية حتى تطبيقها.',
+        routing: arDelegationRouting
       }
     },
     providers: {
@@ -845,7 +950,8 @@ export const arSettings = {
       deleteConfirm: title => `حذف "${title}" نهائياً؟ لا يمكن التراجع عن هذا.`,
       defaultDirTitle: 'مجلد المشروع الافتراضي',
       defaultDirDesc: 'تبدأ الجلسات الجديدة في هذا المجلد ما لم تختر غيره. اتركه غير مضبوط لاستخدام مجلدك الرئيسي.',
-      defaultDirUpdated: 'تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة (Ctrl/⌘+N) ليطبق التغيير',
+      defaultDirUpdated: shortcut =>
+        `تم تحديث مجلد المشروع الافتراضي، ابدأ محادثة جديدة${shortcut ? ` (${shortcut})` : ''} ليطبق التغيير`,
       defaultsTo: label => `الافتراضي هو ${label}.`,
       change: 'تغيير',
       choose: 'اختيار',
@@ -913,7 +1019,27 @@ export const arSettings = {
     priceTitle: 'السعر',
     customModel: 'نموذج مخصص',
     addCustomModelAction: 'إضافة نموذج مخصص…',
-    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5'
+    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5',
+    today: 'اليوم',
+    week: 'الأسبوع',
+    month: 'الشهر',
+    topTier: 'النماذج الكبيرة (شهري)',
+    included: 'كل النماذج أدناه مشمولة',
+    pausedRenewal: 'متوقف: التجديد غير مدفوع',
+    pausedOther: 'متوقف',
+    includedUsedUp: 'نفد الاستخدام المضمن',
+    limitReached: name => `تم بلوغ الحد ${name}`,
+    limitNames: { day: 'اليومي', month: 'الشهري', top_tier: 'الشهري للنماذج الكبيرة', week: 'الأسبوعي' },
+    limitThenCredits: 'النماذج المدفوعة تستخدم رصيدك الآن (الدفع حسب الاستخدام)',
+    limitThenCreditsLarge: 'النماذج الكبيرة تستخدم رصيدك الآن (الدفع حسب الاستخدام)',
+    limitThenWait: 'النماذج المجانية فقط حتى ذلك الحين',
+    limitThenWaitLarge: 'النماذج الكبيرة متوقفة مؤقتًا حتى ذلك الحين',
+    percentUsed: percent => `${percent} مستخدم`,
+    resetsIn: duration => `يُعاد التعيين خلال ${duration}`,
+    usageLevels: { free: 'مجاني', top_tier: 'كبير' },
+    sectionRecommended: 'موصى بها',
+    sectionOther: 'نماذج أخرى',
+    largeFootnote: 'تستهلك النماذج الكبيرة أيضًا حدّك الشهري للنماذج الكبيرة.'
   },
   modelVisibility: {
     title: 'النماذج',

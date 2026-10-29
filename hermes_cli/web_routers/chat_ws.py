@@ -19,11 +19,11 @@ from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_registry_snapshot
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
 from hermes_cli.web_server_chat import (
-    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
-    _ws_request_is_allowed,
+    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _pty_fail, _ws_auth_ok,
+    _ws_close_reason, _ws_gate, _ws_request_is_allowed,
 )
+from hermes_cli.web_session_sockets import GATEWAY_SOCKET
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -33,9 +33,6 @@ _active_session_file_for_channel = late("_active_session_file_for_channel", "her
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _resolve_chat_argv_async = late("_resolve_chat_argv_async", "hermes_cli.web_server_chat")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_ws_auth_reason = late("_ws_auth_reason", "hermes_cli.web_server_chat")
-_ws_client_reason = late("_ws_client_reason", "hermes_cli.web_server_chat")
-_ws_host_origin_reason = late("_ws_host_origin_reason", "hermes_cli.web_server_chat")
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = LateState("_DASHBOARD_EMBEDDED_CHAT_ENABLED")
 
 
@@ -75,18 +72,6 @@ def _discard_active_session_file(app: FastAPI, channel: Optional[str], path: Opt
         pass
 
 
-def _ws_auth_mode() -> str:
-    """Short label for the active WS auth mode — logged on every connection."""
-    from hermes_cli.web_server_chat import _LOOPBACK_HOSTS
-    from hermes_cli.web_server import app
-    if getattr(app.state, "auth_required", False):
-        return "gated"
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
-        return "insecure"
-    return "loopback"
-
-
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     """Fan out one publisher frame to every subscriber on `channel`."""
     event_channels, event_lock = _get_event_state(app)
@@ -114,57 +99,14 @@ def _read_active_session_file(path: Path) -> Optional[str]:
     return str(data.get("session_id") or "").strip() or None
 
 
-def _ws_close_reason(text: str) -> str:
-    """Clamp to RFC 6455's 123-byte close-reason limit (uvicorn raises past it);
-    reasons embed an attacker-controlled origin, so truncate rather than crash."""
-    encoded = text.encode("utf-8", "replace")
-    if len(encoded) <= 123:
-        return text
-    return encoded[:120].decode("utf-8", "ignore") + "..."
-
-
-async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
-    """Run the pre-accept gates for /api/console and /api/pty.
-
-    Each gate maps to a distinct close code so the log and the browser banner
-    agree on the cause: 4404 chat disabled, 4401 bad credential, 4403
-    host/origin mismatch, 4408 peer not allowed. Returns ``(peer, mode, cred)``
-    once every gate passes, or None after closing the socket.
-    """
-    peer = ws.client.host if ws.client else "?"
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
-        return None
-
-    auth_reason, cred = _ws_auth_reason(ws)
-    mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s", kind, auth_reason, mode, cred, peer)
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return None
-
-    host_origin_reason = _ws_host_origin_reason(ws)
-    if host_origin_reason is not None:
-        _log.warning("%s refused: %s peer=%s", kind, host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
-        return None
-
-    client_reason = _ws_client_reason(ws)
-    if client_reason is not None:
-        _log.warning("%s refused: %s", kind, client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
-        return None
-    return peer, mode, cred
-
-
-async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
+async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool = False,
+                                        socket: Optional[str] = None) -> bool:
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
     4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return False
-    if not _ws_auth_ok(ws):
+    if not _ws_auth_ok(ws, allow_internal=allow_internal, socket=socket):
         await ws.close(code=4401)
         return False
     if not _ws_request_is_allowed(ws):
@@ -449,14 +391,6 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
-async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
-    """Tell the user why chat could not start, then close 1011 so the SPA renders
-    "Start new session". The raw exception goes to the server log only."""
-    _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
-    await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc)}\x1b[0m\r\n")
-    await ws.close(code=1011)
-
-
 def _lease_holder_pid(session_id: Optional[str], *, registry_home: Optional[str] = None) -> Optional[int]:
     """The live process holding ``session_id``'s single-writer lease, if any.
 
@@ -500,10 +434,13 @@ async def _pump_keepalive_input(ws: WebSocket, session: Any) -> None:
         # Resize escape is consumed locally, never written to the PTY.
         match = _RESIZE_RE.match(raw)
         if match and match.end() == len(raw):
-            session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+            session.resize(ws, cols=int(match.group(1)), rows=int(match.group(2)))
             continue
         if not await session.write(ws, raw):
-            await _close_stalled_pty_input(ws, path="keepalive")
+            # Only a stalled or exited child marks the session dead; a takeover just cancelled
+            # this write, and the new viewer closes this socket as superseded.
+            if not session.alive:
+                await _close_stalled_pty_input(ws, path="keepalive")
             break
 
 
@@ -633,8 +570,9 @@ async def pty_ws(ws: WebSocket) -> None:
             # breadcrumb, so drop the marker instead of leaking the entry (#63553).
             # A preexisting marker belongs to a live keep-alive PTY on this channel
             # — only the marker this handler allocated is ours to drop. In a
-            # finally: a handler cancelled mid-teardown (client gone, server
-            # shutdown) must still drop it.
+            # ``finally``: the server may cancel the handler while the pump is still
+            # awaiting the blocking ``bridge.close`` after the disconnect, and that
+            # cancellation must not skip the cleanup.
             if not marker_preexisting:
                 _discard_active_session_file(ws.app, channel, active_session_file)
         return
@@ -698,9 +636,20 @@ async def pty_ws(ws: WebSocket) -> None:
 # session id, so agent emits fan out to both sinks.
 
 
+def _authority_for_ticket_home(authority, home: str):
+    """The authority serving *home*: *authority* itself for its own home, else the served sibling,
+    or None when this process does not serve it."""
+    from pathlib import Path
+
+    from gateway.session_authorities import authority_for_home
+    if Path(authority.profile_id).resolve() == Path(home).resolve():
+        return authority
+    return authority_for_home(getattr(authority, 'runner', None), home)
+
+
 @router.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
-    if not await _close_unless_sidecar_allowed(ws):
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=True, socket=GATEWAY_SOCKET):
         return
     from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
     from tui_gateway.ws import handle_ws
@@ -710,13 +659,52 @@ async def gateway_ws(ws: WebSocket) -> None:
     await asyncio.to_thread(start_deferred_mcp_discovery_now)
 
     # The authenticated identity (ticket / internal credential) stamped by
-    # _ws_auth_reason becomes the identity authority for privileged RPCs
-    # (browser.controller.register). None on the legacy token path.
-    await handle_ws(
-        ws,
-        auth_identity=getattr(ws, "_hermes_auth_identity", None),
-        subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
-    )
+    # _ws_auth_reason becomes the identity authority for session ownership and
+    # relay authorship. None on the legacy token path.
+    identity = getattr(ws, "_hermes_auth_identity", None)
+    authority = getattr(ws.app.state, "session_authority", None)
+    if authority is not None and identity is None:
+        # The upgrade gate above has already verified the legacy token. Do not
+        # infer owner permissions from an identityless connection downstream.
+        identity = {'user_id': 'legacy-token-owner', 'provider': 'session-token',
+                    'profile_id': authority.profile_id, 'instance_id': authority.instance_id,
+                    'capabilities': ['session:create', 'session:read', 'session:submit',
+                                     'session:control', 'session:approve', 'session:respond']}
+    if identity is not None:
+        # The dashboard gate authorizes the whole host (its REST routes take ``?profile=`` for
+        # every profile), so its socket may select any served sibling too.
+        identity = {**identity, 'profile_scope': 'host'}
+    ticket_home = getattr(ws, "_hermes_ticket_profile_home", None)
+    served = authority
+    if ticket_home and authority is None:
+        # Only the gateway mints a profile-bound ticket, and it unbinds its authority while the
+        # listener stops: serving the launch profile now would answer the tab for the wrong one.
+        await ws.close(code=1013)
+        return
+    if ticket_home and identity is not None:
+        # A Webapp tab's ticket names its profile (``webapp.issue_gateway_ticket``): bind the socket
+        # to that home's authority, as a native ticket does (``gateway/run_api.py``), so a request
+        # that names no profile is answered for the tab's profile, not the launch profile.
+        served = _authority_for_ticket_home(authority, ticket_home)
+        if served is None:
+            await ws.close(code=4403)
+            return
+        ws.scope['hermes.session_authority'] = served
+        identity = {**identity, 'profile_id': served.profile_id, 'instance_id': served.instance_id}
+    # The socket runs in the served profile's scope, as a native ticket's does (``gateway/run_api.py``):
+    # legacy handlers (billing, usage, subscription) read that profile's secrets with no scope of
+    # their own, and a multiplexed gateway refuses an unscoped read.
+    profile_scope = contextlib.nullcontext()
+    if served is not None:
+        from gateway.session_authorities import owner_scope
+        profile_scope = owner_scope(served)
+    with profile_scope:
+        await handle_ws(
+            ws,
+            auth_identity=identity,
+            operator=True,  # The dashboard upgrade gate above has verified this operator.
+            subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+        )
 
 
 # --- /api/pub + /api/events: the PTY-side tui_gateway.entry opens /api/pub
@@ -726,8 +714,8 @@ async def gateway_ws(ws: WebSocket) -> None:
 # child's stdio handshake with Ink.
 
 
-async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
-    if not await _close_unless_sidecar_allowed(ws):
+async def _accept_channel_ws(ws: WebSocket, *, allow_internal: bool = False) -> Optional[str]:
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=allow_internal):
         return None
     channel = _channel_or_close_code(ws)
     if not channel:
@@ -739,7 +727,7 @@ async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
 
 @router.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
-    channel = await _accept_channel_ws(ws)
+    channel = await _accept_channel_ws(ws, allow_internal=True)
     if channel is None:
         return
     try:

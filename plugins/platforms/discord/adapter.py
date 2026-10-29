@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 from __future__ import annotations
 
 """
@@ -319,7 +320,6 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
     yaml_env_setter as _yaml_env_setter
 )
-
 
 
 def _unauthorized() -> str:
@@ -1200,30 +1200,9 @@ class VoiceReceiver:
         )
 
 
-def _read_dm_role_auth_guild() -> Optional[int]:
-    """Return the guild ID opted-in for DM role-based auth, or None (secure default). Read from
-    config.yaml ``discord.dm_role_auth_guild`` only (behavioral, not a secret); int or numeric string."""
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config() or {}
-        discord_cfg = cfg.get("discord", {}) or {}
-        raw = discord_cfg.get("dm_role_auth_guild")
-    except Exception:
-        return None
-    if raw is None or raw == "":
-        return None
-    try:
-        guild_id = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return guild_id if guild_id > 0 else None
-
-
-# Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset;
-# Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
-_DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
-_DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 900
+from plugins.platforms.discord.adapter_config_readers import (
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
+from plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1233,43 +1212,21 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
-def _read_discord_prompt_timeout() -> int:
-    """Timeout (seconds) for Discord button views from ``approvals.discord_prompt_timeout``
-    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or outlive tokens."""
-    raw: Any = None
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config() or {}
-        approvals_cfg = cfg.get("approvals", {}) or {}
-        raw = approvals_cfg.get("discord_prompt_timeout")
-    except Exception:
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if raw is None or raw == "":
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    try:
-        seconds = int(raw)
-    except (TypeError, ValueError):
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if seconds < _DISCORD_PROMPT_TIMEOUT_MIN:
-        return _DISCORD_PROMPT_TIMEOUT_MIN
-    if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
-        return _DISCORD_PROMPT_TIMEOUT_MAX
-    return seconds
-
-
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
-                     BasePlatformAdapter):
+class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
+                     DiscordSlashAuthMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Safety ceiling on split deliveries: chunks beyond the cap become a notice (degenerate turns).
     # Safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of thousands of
@@ -4373,13 +4330,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             except Exception as e:
                 logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
 
-
-
-
-
-
-
-
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
         TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
@@ -5043,12 +4993,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             return snap[name] or default
         return _scoped_gate_env(name, default)
 
-    def _gate_raw(self, extra_key: str, env_key: str):
-        """Resolve one gate value: env/snapshot first (legacy precedence), then extra."""
-        val = self._gate_env(env_key)
+    def _gate_raw(self, extra_key: str, env_key: str, config=None):
+        """Resolve one gate value: env/snapshot first (legacy precedence), then extra; *config* = re-read extra."""
+        val = self._gate_env(env_key) if config is None else _scoped_gate_env(env_key)
         if val:
             return val
-        extra = getattr(getattr(self, "config", None), "extra", None)
+        extra = getattr(getattr(self, "config", None) if config is None else config, "extra", None)
         if isinstance(extra, dict):
             return extra.get(extra_key)
         return None
@@ -5098,11 +5048,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     def _component_live_auth(self, interaction) -> Optional[bool]:
         """The gateway's live allowlist verdict for a component click (None when no check is wired):
         an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
+        from plugins.platforms.discord.adapter_component_auth import component_chat_context
         user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
-        channel_id = getattr(interaction, "channel_id", None)
-        chat_type = "dm" if getattr(interaction, "guild", None) is None else "group"
-        return self._is_sender_authorized(
-            user_id, chat_type, str(channel_id) if channel_id is not None else None)
+        chat_type, chat_id, thread_id = component_chat_context(interaction, discord.Thread)
+        return self._is_sender_authorized(user_id, chat_type, chat_id, thread_id=thread_id)
 
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
@@ -5748,6 +5697,20 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
+        require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+        choices = set(prompt.choices)
+        view = ExecApprovalView(
+            session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
+            admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
+            allow_session="session" in choices, smart_denied=prompt.smart_denied,
+            request_id=prompt.request_id,
+        )
+        # Observe BEFORE sending, so a request that settles while the card is in flight still
+        # reports its real reason; ``pending_retire`` holds it until the card exists.
+        if view.request_id and not self._observe_exec_approval_settle(prompt.session_key, view):
+            view.pending_retire = "gone"  # already gone: how it ended is unknown
+
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5757,14 +5720,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
                 color=discord.Color.orange(),
             )
-            require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
-            choices = set(prompt.choices)
-            view = ExecApprovalView(
-                session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
-                allow_session="session" in choices, smart_denied=prompt.smart_denied,
-            )
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
@@ -5773,7 +5728,28 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                         users=True, roles=False, everyone=False, replied_user=False,
                     )
             return send_kwargs, view
-        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        if result.success and view.pending_retire:
+            await view.retire(view.pending_retire)
+        return result
+
+    def _observe_exec_approval_settle(self, session_key: str, view) -> bool:
+        """Retire ``view`` when its request settles (before it is sent: via ``view.pending_retire``)."""
+        from tools.approval import observe_gateway_settle
+        loop = asyncio.get_running_loop()
+
+        def retire(reason):
+            def schedule():
+                if view._message is None:  # still in flight (or its send failed)
+                    view.pending_retire = reason
+                    return
+                task = loop.create_task(view.retire(reason))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                task.add_done_callback(_consume_background_task_result)
+            loop.call_soon_threadsafe(schedule)
+
+        return observe_gateway_settle(session_key, view.request_id, retire)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -6437,8 +6413,9 @@ def _define_discord_view_classes() -> None:
         def _first_embed(message):
             return message.embeds[0] if message.embeds else None
 
-        async def _expire_embed(self, footer: str) -> None:
-            """Grey out the original message's embed after a timeout (best effort)."""
+        async def _expire_embed(self, footer: str, *, keep_controls: bool = True) -> None:
+            """Grey out the original message's embed and stamp ``footer`` (best effort). The disabled
+            buttons stay unless ``keep_controls`` is False, which removes them."""
             msg = self._message
             if msg:
                 try:
@@ -6446,19 +6423,24 @@ def _define_discord_view_classes() -> None:
                     if embed:
                         embed.color = discord.Color.greyple()
                         embed.set_footer(text=footer)
-                    await msg.edit(embed=embed, view=self)
+                    await msg.edit(embed=embed, view=self if keep_controls else None)
                 except Exception:
-                    pass  # message deleted or too old to edit
+                    logger.debug("[Discord] Could not stamp prompt card", exc_info=True)  # deleted / too old
 
         async def _finalize_embed(self, interaction: discord.Interaction, color, footer: str) -> None:
-            """Mark resolved, stamp the embed (color + footer), disable buttons, edit in place."""
+            """Mark resolved, stamp the embed (color + footer), disable buttons, edit in place, then
+            ``stop()`` the view (also when the edit fails)."""
             self.resolved = True
             embed = self._first_embed(interaction.message)
             if embed:
                 embed.color = color
                 embed.set_footer(text=footer)
             self._disable_all()
-            await interaction.response.edit_message(embed=embed, view=self)
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            finally:
+                # Answered: release the view, or its timeout later stamps "expired" over the answer.
+                self.stop()
 
         def _localize_buttons(self, **keys_by_attr: str) -> None:
             """Relabel decorator-declared buttons from the catalog (decorators run at import, before
@@ -6481,96 +6463,7 @@ def _define_discord_view_classes() -> None:
             self._disable_all()
             await self._expire_embed(t("platform.discord.prompt.expired_footer"))
 
-    class ExecApprovalView(_HermesView):
-        """Allow Once / Allow Session / Always Allow / Deny buttons for a dangerous command.
-        Clicks call ``resolve_gateway_approval()`` — the same mechanism as the text ``/approve`` flow."""
-
-        def __init__(
-            self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
-            require_admin: bool = False, admin_user_ids: Optional[set] = None,
-            allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
-        ):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
-            self.session_key = session_key
-            self.require_admin = require_admin
-            self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
-            self._localize_buttons(
-                allow_once="gateway.exec_approval.action_once", allow_session="gateway.exec_approval.action_session",
-                allow_always="gateway.exec_approval.action_always", deny="gateway.exec_approval.action_deny")
-            if smart_denied or not allow_session:
-                self.remove_item(self.allow_session)
-                self.remove_item(self.allow_always)
-            elif not allow_permanent:
-                self.remove_item(self.allow_always)
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Base admission always required; with ``require_admin`` the clicker must
-            also be an admin. Fails closed (logged once) when no admins are configured."""
-            if not super()._check_auth(interaction):
-                return False
-            if not self.require_admin:
-                return True
-            user = getattr(interaction, "user", None)
-            try:
-                uid = str(getattr(user, "id", "") or "")
-            except Exception:
-                uid = ""
-            if uid and uid in self.admin_user_ids:
-                return True
-            if not self.admin_user_ids:
-                logger.warning(
-                    "[Discord] require_admin_for_exec_approval is enabled but "
-                    "no admins are configured (allow_admin_from is empty) — "
-                    "exec approval buttons are disabled for everyone. Add "
-                    "admin user IDs under the discord platform's "
-                    "allow_admin_from, or disable the toggle."
-                )
-            return False
-
-        async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
-            """Resolve the approval via the gateway approval queue and update the embed."""
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.approval.already_resolved"),
-                unauth_msg=_unauthorized(),
-            ):
-                return
-            label = t(label_key)
-            self.resolved = True
-            # Unblock the waiting agent thread FIRST. A click after the approval
-            # wait timed out (count == 0) must not claim "Approved".
-            try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
-                logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
-                )
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval from button: %s", exc)
-                count = 0
-            if not count:
-                color = discord.Color.dark_grey()
-                label = t("platform.discord.approval.expired")
-            await self._finalize_embed(
-                interaction, color,
-                t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
-
-        # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
-        async def allow_once(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "once", discord.Color.green(), "platform.discord.approval.resolved_once")
-
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
-        async def allow_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "session", discord.Color.blue(), "platform.discord.approval.resolved_session")
-
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
-        async def allow_always(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "always", discord.Color.purple(), "platform.discord.approval.resolved_always")
-
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
-        async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self._resolve(interaction, "deny", discord.Color.red(), "platform.discord.approval.resolved_deny")
+    ExecApprovalView = build_exec_approval_view(discord, _HermesView, unauthorized=_unauthorized)
 
     class SlashConfirmView(_HermesView):
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,
@@ -6722,11 +6615,15 @@ def _define_discord_view_classes() -> None:
                 for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
             ][: _DISCORD_SELECT_MAX_ROWS - 2]
             placeholder_base = t("platform.discord.picker.model_placeholder", provider=provider.get("name", provider_slug))
+            from hermes_cli.model_picker_usage import picker_row_suffix
             for idx, chunk in enumerate(chunks):
                 options = [
                     discord.SelectOption(
                         label=_truncate_discord_component_text(model_id.split("/")[-1], _DISCORD_SELECT_FIELD_LIMIT),
                         value=_truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT),
+                        # Usage-window plans: "Large" / "Free" (empty for every other account).
+                        description=(_truncate_discord_component_text(suffix, _DISCORD_SELECT_FIELD_LIMIT)
+                                     if (suffix := picker_row_suffix(provider, model_id)) else None),
                     )
                     for model_id in chunk
                 ]
@@ -6770,7 +6667,9 @@ def _define_discord_view_classes() -> None:
             total = provider.get("total_models", 0) if provider else 0
             shown = min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY) if provider else 0
             extra = f"\n*{t('platform.discord.picker.more_available', count=str(total - shown))}*" if total > shown else ""
-            await self._edit(interaction, t("platform.discord.picker.select_model", provider=pname, extra=extra))
+            # Window plans: the limit line leads the message (absent for every other account).
+            plan_line = f"⚠️ {provider['plan_line']}\n" if provider and provider.get("plan_line") else ""
+            await self._edit(interaction, plan_line + t("platform.discord.picker.select_model", provider=pname, extra=extra))
 
         async def _switch_selected_model(self, interaction: discord.Interaction, model_id: str):
             if not await self._gate(interaction, resolved_msg=t("platform.discord.picker.already_resolved"), unauth_msg=_unauthorized()):
@@ -6961,6 +6860,8 @@ def _define_discord_view_classes() -> None:
                     await interaction.response.defer()
                 except Exception:
                     pass
+            finally:
+                self.stop()  # answered (or handed to typed text): release the view and its timeout
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
@@ -6976,8 +6877,8 @@ def _define_discord_view_classes() -> None:
             # Round-trip the canonical choice text from the entry, not the button label.
             resolved_text: Optional[str] = None
             try:
-                from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
-                entry = _clarify_entries.get(self.clarify_id)
+                from tools.clarify_gateway import get_pending
+                entry = get_pending(self.clarify_id)
                 if entry and entry.choices and 0 <= index < len(entry.choices):
                     resolved_text = entry.choices[index]
             except Exception:
@@ -7418,13 +7319,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
 
-
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .send_targets import SEND_ENTRY_KWARGS
     from plugins.platforms.discord.onboarding import interactive_setup
 
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="discord",
+        **DASHBOARD_CARD,
         label="Discord",
         adapter_factory=DiscordAdapter,
         check_fn=discord_deps_present,
@@ -7433,7 +7339,6 @@ def register(ctx) -> None:
         required_env=["DISCORD_BOT_TOKEN"],
         install_hint="Run `hermes setup` to install Discord support.",
         setup_fn=interactive_setup,
-        # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
         # (require_mention, free_response_channels, auto_thread, free_response_auto_thread,
         # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
@@ -7441,12 +7346,16 @@ def register(ctx) -> None:
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
-        allowed_users_env="DISCORD_ALLOWED_USERS",
-        allow_all_env="DISCORD_ALLOW_ALL_USERS",
         cron_deliver_env_var="DISCORD_HOME_CHANNEL",
         # Out-of-process cron delivery via REST, else ``deliver=discord`` jobs fail with "No live adapter".
         standalone_sender_fn=_standalone_send,
         max_message_length=2000,
         emoji="🎮",
         allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="high",
+        # "-# " subtext reads as metadata.
+        display_overrides={"reasoning_style": "subtext"},
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

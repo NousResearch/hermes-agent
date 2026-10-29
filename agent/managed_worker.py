@@ -449,7 +449,29 @@ def hello():
     return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
+def _preimport_native_extensions():
+    """Windows: load numpy (and its bundled scipy-openblas DLL) while this worker is still
+    single-threaded.
+
+    Memory and tool plugins import numpy lazily, during AIAgent construction (the holographic
+    memory provider does it at module import). By then the worker already runs its stdin frame
+    reader, MCP stdio pumps, websocket readers and an IOCP loop, several of them blocked in the
+    CRT ``_read`` on pipes. Loading libscipy_openblas at that point was observed to hang forever:
+    its DllMain, running under the loader lock, waits on a CRT critical section inside ucrtbase
+    and never returns, so the Kanban turn never reaches its first model call. Importing numpy
+    here, before any thread exists, avoids the late DLL load entirely. A profile without numpy
+    is unaffected. POSIX has no loader lock, so this is a no-op there.
+    """
+    if sys.platform != 'win32':
+        return
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        return
+
+
 def main():
+    _preimport_native_extensions()
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     # This process's own stderr only, never the channel. The owner drains it into the profile's

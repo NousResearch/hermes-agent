@@ -200,8 +200,41 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, 
     kwargs = {"voice": edge_config.get("voice", DEFAULT_EDGE_VOICE)}
     if speed != 1.0:
         kwargs["rate"] = f"{round((speed - 1.0) * 100):+d}%"
+    proxy = _edge_tts_proxy(edge_config)
+    if proxy is not None:
+        kwargs["proxy"] = proxy
     await edge_tts.Communicate(text, **kwargs).save(output_path)
     return output_path
+
+
+def _edge_tts_proxy(edge_config: dict[str, Any]) -> Optional[str]:
+    """Pass the proxy explicitly: edge-tts does not inherit proxy environment settings."""
+    from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+
+    if "proxy" in edge_config:
+        proxy = edge_config["proxy"]
+    elif should_bypass_proxy("https://speech.platform.bing.com:443"):
+        return None
+    else:
+        proxy = first_proxy_env_value()
+    error = "Edge TTS proxy must be an HTTP(S) URL; set tts.edge.proxy to '' to disable it"
+    if not isinstance(proxy, str):
+        raise ValueError(error)
+    proxy = proxy.strip()
+    if not proxy:
+        return None
+    try:
+        parsed = urlparse(proxy)
+        valid = (
+            parsed.scheme in ("http", "https") and parsed.hostname
+            and parsed.port != 0 and not any(c.isspace() for c in proxy)
+            and parsed.path in ("", "/") and not parsed.query and not parsed.fragment
+        )
+    except ValueError:
+        raise ValueError(error) from None  # Parser errors can contain proxy credentials.
+    if not valid:
+        raise ValueError(error)
+    return proxy
 
 
 # --- ElevenLabs ---

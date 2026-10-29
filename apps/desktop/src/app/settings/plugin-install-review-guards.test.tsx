@@ -274,4 +274,37 @@ describe('a catalog pick is held to the pin the dialog showed', () => {
     await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
     expect(callsFor('install').map(([, params]) => params?.inspected_sha)).toEqual([V1, V2])
   })
+
+  it('native Desktop: after a re-pin, Install stays off until the new pin is on screen', async () => {
+    const pin = { current: V1 }
+    catalogBackend(() => pin.current)
+    let release: () => void = () => undefined
+    lookupPluginCatalogEntry.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          release = () => resolve({ ok: true, entry: { name: 'pkg', sha: pin.current } })
+        })
+    )
+    const probePluginRepo = vi.fn(async () => ({ ok: true, agent: true, desktop: false, sha: V2, warnings: [] }))
+    vi.stubGlobal('hermesDesktop', { probePluginRepo })
+
+    renderModal()
+    openCatalog()
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalledTimes(1))
+    pin.current = V2
+    fireEvent.click(installButton()!)
+
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(callsFor('install')).toHaveLength(1))
+    // The re-read inspection is back but the catalog pin lookup is not: a click here must not install.
+    expect(installButton()?.disabled).toBe(true)
+    fireEvent.click(installButton()!)
+    expect(callsFor('install')).toHaveLength(1)
+
+    act(() => release())
+    await waitFor(() => expect(installButton()?.disabled).toBe(false))
+    fireEvent.click(installButton()!)
+    await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
+    expect(callsFor('install').map(([, params]) => params?.inspected_sha)).toEqual([V1, V2])
+  })
 })

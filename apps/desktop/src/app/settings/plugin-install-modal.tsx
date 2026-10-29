@@ -346,25 +346,32 @@ function SourceMovedNotice({ copy, failure, probe, request, shown }: SourceMoved
  *  the one the catalog left; `repin` is that lookup, which Install waits on. */
 function useReviewAgain(request: PluginInstallRequest, start: (repo: string) => void) {
   const [repin, setRepin] = useState<Promise<void>>(() => Promise.resolve())
+  // Set once the source is read again: Install then waits until the new inspection AND pin are on screen.
+  const [rereview, setRereview] = useState<'idle' | 'pending' | 'shown'>('idle')
 
   const reviewAgain = (current: ProbeResult) => {
     start(request.repo)
     const name = request.catalogName
 
     if (name && !current.catalogPin) {
+      setRereview('pending')
       setRepin(
-        lookupPluginCatalogEntry(name).then(found => {
-          const open = $pluginInstallRequest.get()
+        lookupPluginCatalogEntry(name)
+          .then(found => {
+            const open = $pluginInstallRequest.get()
 
-          if (found.ok && open?.catalogName === name) {
-            openPluginInstallRequest({ ...open, sha: found.entry.sha })
-          }
-        })
+            if (found.ok && open?.catalogName === name) {
+              openPluginInstallRequest({ ...open, sha: found.entry.sha })
+            }
+          })
+          .finally(() => setRereview('shown'))
       )
+    } else {
+      setRereview('shown')
     }
   }
 
-  return { repin, reviewAgain }
+  return { repin, rereview, reviewAgain }
 }
 
 interface InstallNoticesProps {
@@ -405,14 +412,19 @@ interface InstallGate {
   partial: null | string
   pinInvalid: boolean
   probe: null | ProbeResult
+  rereview: 'idle' | 'pending' | 'shown'
   uncertain: boolean
   verified: boolean
 }
 
-/** An unverified repository installs only once its contents are on screen; a reviewed pick may start at once.
+/** An unverified repository installs only once its contents are on screen; a reviewed pick may start at once,
+ *  except after the source moved: then nothing installs until the new inspection and pin are shown.
  *  After a partial install only Force (a replacement of both halves) may proceed. */
-function installEnabled({ force, installing, partial, pinInvalid, probe, uncertain, verified }: InstallGate): boolean {
-  return !installing && !uncertain && !pinInvalid && (!partial || force) && (verified || Boolean(probe?.ok))
+function installEnabled(gate: InstallGate): boolean {
+  const { force, installing, partial, pinInvalid, probe, rereview, uncertain, verified } = gate
+  const reviewed = rereview === 'idle' ? verified || Boolean(probe?.ok) : rereview === 'shown' && Boolean(probe?.ok)
+
+  return !installing && !uncertain && !pinInvalid && (!partial || force) && reviewed
 }
 
 interface InstallViewProps {
@@ -453,7 +465,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [confirmUnreviewed, setConfirmUnreviewed] = useState(false)
   // The agent half installed and the desktop half could not follow it: only a replacement of both proceeds.
   const [partial, setPartial] = useState<null | string>(null)
-  const { repin, reviewAgain } = useReviewAgain(request, start)
+  const { repin, rereview, reviewAgain } = useReviewAgain(request, start)
 
   useEffect(() => {
     start(request.repo)
@@ -481,6 +493,8 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
     setInstallError(null)
     setSourceMoved(false)
     setConfirmUnreviewed(false)
+    // The commit the user clicked on: a lookup finishing after the click never changes it.
+    const chosen = $pluginInstallRequest.get() ?? request
 
     try {
       // A catalog pick may click Install while the inspection is still running: wait for it under the loader.
@@ -492,7 +506,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
 
       const outcome = await runPluginInstall(
         {
-          request: $pluginInstallRequest.get() ?? request,
+          request: chosen,
           probe: detected,
           profile: targetProfile,
           enable,
@@ -544,6 +558,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
     partial,
     pinInvalid,
     probe,
+    rereview,
     uncertain: installUncertain,
     verified
   })

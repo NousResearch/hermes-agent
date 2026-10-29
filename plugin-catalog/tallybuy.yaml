@@ -1,0 +1,18 @@
+name: tallybuy
+title: Tallybuy
+repo: https://github.com/tallybuy/hermes-plugin
+sha: ef3ce2e57a511fa944eb7093d88d032d8c392202
+version: "0.1.0"
+description: "Price comparison for Germany and Austria through Tallybuy's public MCP server (Streamable HTTP at https://tallybuy.com/mcp, no sign-in, no keys in config): product search, shop offers with delivery cost and delivered total, price history and side-by-side comparison. Bundles the tallybuy-shopping skill: unknown prices stay unknown, every price carries its shop and time, no basket totals, and the person is sent only to the offer's own link. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to tallybuy.com, which sees the caller's IP address and uses it only for per-visitor rate limits. Shop links are affiliate links and Tallybuy may earn a commission; the skill tells the agent to say so. All six tools are annotated read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Tallybuy
+tier: community
+category: tools
+docs_url: https://tallybuy.com/developers
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

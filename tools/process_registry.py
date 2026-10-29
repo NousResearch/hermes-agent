@@ -1179,14 +1179,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         persist_on_release: bool = False, restore_login_path: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends: spawn_via_env()).
         ``use_pty`` asks ptyprocess/pywinpty for a pseudo-terminal; on failure: pipe + ``pty_fallback``.
-        ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225).
-        ``restore_login_path`` re-appends spawn-env PATH dirs the login profile reset (#56634)."""
+        ``persist_on_release``: no agent kill sweeps (#41225); ``restore_login_path``: re-add reset PATH dirs (#56634)."""
         # Bash runs ``A && B &`` as a subshell holding our stdout pipe open while a server B lives;
         # the rewriter makes it ``A && { B & }`` (#68915). Lazy: terminal_tool imports this module.
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
-        login_path = self._spawn_env(env_vars).get("PATH", "") if restore_login_path else ""
-        safe_command = _append_dropped_path_entries(_rewrite_bg(command), login_path)
+        safe_command = _append_dropped_path_entries(_rewrite_bg(command), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
         pty_scope_attempted = False

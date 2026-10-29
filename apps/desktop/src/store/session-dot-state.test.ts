@@ -165,6 +165,44 @@ describe('persisted unread (backend watermark)', () => {
   })
 })
 
+describe('background work counted on the list row', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+  })
+
+  it('reads as background for a session this window never opened', () => {
+    setSessions([storedRow('s1', { background_work: 1 })])
+
+    expect($sessionDotStateById.get()['s1']).toBe('background')
+  })
+
+  it('outranks persisted unread, like a live background process', () => {
+    setSessions([storedRow('s1', { background_work: 2, unread: true })])
+
+    expect($sessionDotStateById.get()['s1']).toBe('background')
+  })
+
+  it('yields to a live turn', () => {
+    setSessions([storedRow('s1', { background_work: 1 })])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    expect($sessionDotStateById.get()['s1']).toBe('working')
+  })
+
+  it('leaves rows without the count (none, or an older backend) alone', () => {
+    setSessions([storedRow('s1', { background_work: 0 }), storedRow('s2')])
+
+    expect($sessionDotStateById.get()['s1'] ?? 'idle').toBe('idle')
+    expect($sessionDotStateById.get()['s2'] ?? 'idle').toBe('idle')
+  })
+})
+
 describe('unreadSessionCount', () => {
   it('counts listed unread rows and skips archived', () => {
     expect(

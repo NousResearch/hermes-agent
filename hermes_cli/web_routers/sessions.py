@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from hermes_cli.session_background_work import stamp_background_work
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
@@ -233,6 +234,7 @@ def get_sessions(
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
+            stamp_background_work(sessions)
             if not full:
                 _strip_session_list_rows(sessions)
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same

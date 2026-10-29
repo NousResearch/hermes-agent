@@ -1254,9 +1254,13 @@ on `5174+N`). No fixed dev-server port is trusted: pages served from any other l
 Vite apps on `5173` or `5174`, get no CORS headers and their WebSocket upgrades are refused, so they
 cannot read the session token or open the terminal.
 
-A desktop dev build attaches to the host's running backend only when that backend accepts its
-renderer's origin; otherwise it starts its own. It also passes the variable to the backends it
-starts over SSH. A remote backend you start yourself serves a dev build only when it is started with
+Reached through a port forward (`ssh -L 8000:localhost:9119`, `docker -p 8080:9119`), the
+dashboard's own page still opens its WebSocket upgrades: an Origin that names exactly the host and
+port the upgrade was sent to is that page.
+
+A desktop dev build passes the variable to the backends it starts over SSH. A gateway on the same
+machine that was already running without it has to be restarted before a dev build can use it, and
+a remote backend you start yourself serves a dev build only when it is started with
 `HERMES_DESKTOP_DEV_SERVER` set to that build's renderer URL.
 
 ## Development

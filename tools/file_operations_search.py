@@ -335,7 +335,7 @@ def _find_exit_verdict(exit_code: int, raw_files: list[str], diagnostics: list[s
     if not raw_files:
         if order == "modified":
             return SearchResult(error=_FIND_MODIFIED_ORDER_ERROR), None
-        detail = f": {diagnostics[0]}" if diagnostics else "."
+        detail = f": {_error_detail(diagnostic_text)}" if diagnostics else "."
         return SearchResult(error=f"File search failed while running bounded find traversal{detail}"), None
     # A non-permission diagnostic (a dir removed mid-walk) must not be reported as a permission
     # problem: name it, plus any permission skips, so the user chases the real cause.
@@ -446,7 +446,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
             elif _PERMISSION_SEARCH_HINT not in warning:
                 warning = f"{warning} {_PERMISSION_SEARCH_HINT}"
             return SearchResult(total_count=0, warning=warning, **skip)
-        return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+        return SearchResult(error=f"Search failed: {_error_detail(error_msg)}", total_count=0)
     skip = _skipped_fields(diagnostics)
     skipped_warning = _prepend_skipped_paths_warning(skip, None)
     # A non-permission error beside the skips (a path removed mid-search) is named too, not
@@ -522,6 +522,27 @@ def _diagnostic_safe_root(root: str) -> str:
     result line starts with the root, and the lanes tell stderr from results by these
     prefixes, so such a root would turn all of its own results into diagnostics."""
     return f"./{root}" if root.lstrip().startswith(_DIAGNOSTIC_PREFIXES) else root
+
+
+_ERROR_DETAIL_CHARS = 2000
+_ERROR_DETAIL_TAIL_CHARS = 500
+
+
+def _error_detail(diagnostics: str) -> str:
+    """Engine diagnostics for an error message: the lines naming the real failure,
+    bounded. Permission skips beside it are noise (thousands of them made the error
+    hundreds of KB), so they only stand in when nothing else was reported. Over the
+    cap the middle is cut: an engine puts the cause after the path, so a very long
+    path would otherwise push the cause out of a head-only cut."""
+    lines = [line.rstrip() for line in diagnostics.splitlines()
+             if line.strip() and not _PERMISSION_DENIED_RE.match(line.strip())
+             and not _OMITTED_DIAGNOSTICS_RE.match(line.strip())]
+    detail = "\n".join(lines).strip() or diagnostics.strip()
+    if len(detail) > _ERROR_DETAIL_CHARS:
+        head = _ERROR_DETAIL_CHARS - _ERROR_DETAIL_TAIL_CHARS
+        omitted = len(detail) - _ERROR_DETAIL_CHARS
+        detail = f"{detail[:head]} ... ({omitted} characters omitted) ... {detail[-_ERROR_DETAIL_TAIL_CHARS:]}"
+    return detail
 
 
 class SearchMixin:
@@ -1260,7 +1281,7 @@ class SearchMixin:
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
         if (result.exit_code not in {0, 1, 124} and not bounded_sigpipe
                 and not permission_only):
-            detail = diagnostics.strip() or "no diagnostics"
+            detail = _error_detail(diagnostics) or "no diagnostics"
             if order == "modified":
                 # ripgrep 14+ was already verified by the capability gate, so this
                 # failure is an invocation/traversal error, not a version problem.

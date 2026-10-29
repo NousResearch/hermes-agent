@@ -1825,16 +1825,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Auto-analyze user-attached images with the vision tool and prepend the descriptions.
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
-        from tools.vision_tools import vision_analyze_tool
+        from tools.vision_tools import get_vision_analysis_prompt, vision_analyze_tool
         from agent.memory_context import sanitize_context
 
-        analysis_prompt = (
-            "Concisely describe this image in 2-4 sentences "
-            "(~200 Chinese characters or ~150 English words). "
-            "Cover the main subject, key visible text/data/code, and overall context. "
-            "If it is a chart, diagram, or scientific figure, include the important "
-            "labels, legend, and key values. Skip decorative details."
-        )
+        analysis_prompt = get_vision_analysis_prompt("concise")
         enriched_parts = []
         for path in image_paths:
             try:

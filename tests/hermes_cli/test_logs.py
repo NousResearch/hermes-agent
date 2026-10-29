@@ -234,20 +234,34 @@ def test_update_logs_are_read_from_the_root_home_under_a_profile(tmp_path, monke
     # ``hermes update`` mirrors to <root>/logs/update.log and the hand-off scripts write the root
     # too; `hermes logs update` under a sticky profile read the profile's (absent) copy.
     from hermes_cli.logs import list_logs, log_file_path, tail_log
+    from hermes_constants import display_hermes_home
 
     root = tmp_path / "root"
     profile = root / "profiles" / "coder"
     (root / "logs").mkdir(parents=True)
     (profile / "logs").mkdir(parents=True)
     (root / "logs" / "update.log").write_text("=== hermes update started 2026-10-03T10:00:00 ===\n✓ Update complete!\n")
+    (root / "logs" / "desktop-update-handoff.log").write_text("2026-10-03T10:01:00+00:00 handoff staged\n")
     (profile / "logs" / "agent.log").write_text("2026-10-03 10:00:00,000 INFO run_agent: hi\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(profile))
 
     assert log_file_path("update") == root / "logs" / "update.log"
     assert log_file_path("handoff") == root / "logs" / "desktop-update-handoff.log"
     assert log_file_path("agent") == profile / "logs" / "agent.log"
-    tail_log("update", num_lines=5)
-    assert "✓ Update complete!" in capsys.readouterr().out
+
+    # The header names the file actually read, not the active profile's logs dir.
+    for name, home, filename, content in (
+        ("update", root, "update.log", "✓ Update complete!"),
+        ("handoff", root, "desktop-update-handoff.log", "handoff staged"),
+        ("agent", profile, "agent.log", "INFO run_agent: hi"),
+    ):
+        tail_log(name, num_lines=5)
+        out = capsys.readouterr().out
+        assert out.splitlines()[0].startswith(f"--- {display_hermes_home(home)}/logs/{filename} ")
+        assert content in out
+        if home == root:
+            assert str(profile) not in out and display_hermes_home(profile) not in out
     list_logs()
     listing = capsys.readouterr().out
     assert "agent.log" in listing and "update.log (root)" in listing

@@ -59,6 +59,29 @@ agent:
 MCP servers that the editor sends with `session/new` are separate. The
 client asks for them per session, and they are always added.
 
+## Launch environment
+
+On gateways that accept `client_env`, a new ACP session sends the same
+allowlisted environment as `hermes` and `hermes --tui`, read from the
+environment the editor launched `hermes acp` with:
+
+- **Toolchain:** `PATH`, an activated venv, common toolchain variables
+  (`CONDA_*`, `NODE_*`, `NVM_*`, `PYENV_*`, `GOPATH`, `GOROOT`, `CARGO_HOME`,
+  `RUSTUP_HOME`, `JAVA_HOME`) and any names listed in
+  `terminal.client_env_passthrough`. They reach that session's terminal,
+  background processes and `execute_code`.
+- **Behavior:** `HERMES_EPHEMERAL_SYSTEM_PROMPT`, `HERMES_INFERENCE_PROVIDER`,
+  `HERMES_PREFILL_MESSAGES_FILE` and `HERMES_ENABLE_PROJECT_PLUGINS`. No other
+  `HERMES_*` name is sent.
+
+Toolchain values and the two behavior values that name the host (the prefill
+file and project plugins) apply only when the gateway confirms the editor runs
+on its host. Otherwise the session keeps the gateway's own values. Credential-like
+names are never sent, even when listed. `terminal.env_passthrough` forwards
+permitted values the gateway's own environment or profile already has; it does
+not carry a value that exists only in the editor's environment. The
+environment is fixed when the session is created; load and resume keep it.
+
 ## Editor-provided MCP servers
 
 On gateways advertising `acp-session-mcp-v1`, editor `mcpServers` belong to the

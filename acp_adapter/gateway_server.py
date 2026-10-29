@@ -274,10 +274,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if ("acp" not in descriptor.get("session_create", {}).get("sources", [])
                 or "acp-editor-policy-v1" not in descriptor.get("capabilities", [])):
             raise GatewayClientError("acp_policy_unavailable")
-        from hermes_cli.gateway_chat import env_launch_flags
+        from hermes_cli.gateway_chat import client_env_policy, env_launch_flags
         # `hermes acp --yolo` / `--safe-mode` / ... reach this process as their env equivalents; the
-        # owner does not inherit them, so they freeze into this session's policy or not at all.
+        # owner does not inherit them, so they freeze into this session's policy or not at all. The
+        # allowlisted environment the editor launched us with rides the same way, as the CLI's does.
         flags = env_launch_flags()
+        flags.update(client_env_policy(descriptor.get("session_create", {}).get("parameters", [])))
         if flags.get("safe_mode") or flags.get("ignore_user_config"):
             flags.update(_bypass_route())
         snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex,

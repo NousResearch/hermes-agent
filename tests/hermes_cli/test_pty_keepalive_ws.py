@@ -82,6 +82,61 @@ async def test_attach_token_reuses_same_session(pty_keepalive_harness):
 
 
 @pytest.mark.asyncio
+async def test_a_signed_in_login_reaches_the_chat_and_keys_its_terminal(pty_keepalive_harness, monkeypatch):
+    """#144140: the login a ``/api/pty`` ticket names reaches the chat's argv resolver, and the
+    keep-alive PTY it opened is keyed on it. The same login reattaches its terminal; another login
+    presenting the same tab token (a sign-out and sign-in in one tab) supersedes it instead, and
+    cannot spell the first login's whole key as ``?attach=`` on a leg that forwards no login."""
+    from functools import partial
+    from urllib.parse import urlencode
+
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from tests.waiting import async_wait_until
+
+    alice, bob = 'auth:v1:["basic","","alice"]', 'auth:v1:["basic","","bob"]'
+    logins = iter([("alice", "ticket"), ("alice", "ticket"), ("bob", "token"), ("bob", "ticket")])
+    subjects = []
+
+    def signed_in(ws, **_kwargs):
+        user, cred = next(logins)
+        ws._hermes_auth_identity = {"user_id": user, "provider": "basic"}
+        return None, cred
+
+    async def fake_argv(**kw):
+        subjects.append(kw.get("session_subject"))
+        return (["x", "fresh"], "/tmp", {})
+
+    def pumped(data):
+        return any(data in bridge.written for bridge in pty_keepalive_harness.bridges)
+
+    monkeypatch.setattr(_web_server_chat, "_ws_auth_reason", signed_in)
+    monkeypatch.setattr(_web_server_chat, "_resolve_chat_argv_async", fake_argv)
+    client = TestClient(web_server.app)
+
+    async def chat(data):
+        with client.websocket_connect("/api/pty?attach=TOK1&profile=alpha") as ws:
+            ws.send_bytes(data)
+            # Leaving the client context cancels the handler: wait until it pumps this tab's input.
+            await async_wait_until(partial(pumped, data), what=f"the PTY to receive {data!r}")
+
+    await chat(b"first")
+    await chat(b"again")
+    # bob's ?token= leg forwards no login: alice's whole key, spelled as the tab token, is refused.
+    with pytest.raises(WebSocketDisconnect) as refused:
+        with client.websocket_connect("/api/pty?" + urlencode({"attach": f"TOK1\0alpha\0\0{alice}"})):
+            pass
+    await chat(b"other")
+    assert refused.value.code == 4400
+    assert subjects == [alice, alice, bob]
+    assert len(pty_keepalive_harness) == 2  # alice reattached her terminal; bob got his own
+    assert bytes(pty_keepalive_harness.bridges[0].written) == b"first\x0cagain"  # never bob's
+    assert pty_keepalive_harness.bridges[0].alive is False  # superseded, never handed to bob
+    assert pty_keepalive_harness.bridges[1].alive is True
+
+
+@pytest.mark.asyncio
 async def test_stalled_input_closes_only_the_keepalive_socket(
     pty_keepalive_harness,
 ):

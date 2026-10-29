@@ -1309,6 +1309,7 @@
   "userMessages.credential.currentProvider",
   "userMessages.credential.missingKey",
   "userMessages.details",
+  "userMessages.promptTimeout.approval",
   "userMessages.promptTimeout.secret",
   "userMessages.promptTimeout.sudo",
   "userMessages.promptTimeout.vaultCode",

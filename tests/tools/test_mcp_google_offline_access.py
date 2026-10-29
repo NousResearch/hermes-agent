@@ -127,6 +127,57 @@ async def test_google_authorization_url_asks_for_offline_access(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_browser_flow_accepts_root_slash_equivalent_google_issuer(tmp_path, monkeypatch):
+    """Pydantic may render Google's advertised root with '/', while its document issuer omits it."""
+    response, _seen = await _run_browser_flow(
+        tmp_path,
+        monkeypatch,
+        issuer=GOOGLE,
+        authorization_servers=[f"{GOOGLE}/"],
+        scope="email",
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_metadata_shim_accepts_only_root_slash_equivalent_issuer():
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+    from tools.mcp_tool import sdk_httpx
+
+    httpx = sdk_httpx()
+    assert httpx is not None
+    assert _HERMES_PROVIDER_CLS is not None
+    provider = object.__new__(_HERMES_PROVIDER_CLS)
+    provider.context = SimpleNamespace(auth_server_url=f"{GOOGLE}/", oauth_metadata=None)
+    request = httpx.Request("GET", f"{GOOGLE}{ASM_PATH}")
+    response = httpx.Response(200, json=_asm_doc(GOOGLE), request=request)
+
+    accepted = await provider._hermes_accept_origin_issued_metadata(response)
+
+    assert accepted.status_code == 204
+    assert str(provider.context.oauth_metadata.issuer).rstrip("/") == GOOGLE
+
+
+@pytest.mark.parametrize(("advertised", "issuer", "response_url"), [
+    (f"{GOOGLE}//", GOOGLE, f"{GOOGLE}{ASM_PATH}"),
+    (f"{GOOGLE}/", f"{GOOGLE}//", f"{GOOGLE}{ASM_PATH}"),
+    (f"{GOOGLE}/oauth", GOOGLE, f"{GOOGLE}{ASM_PATH}"),
+    (f"{GOOGLE}/?debug=1", GOOGLE, f"{GOOGLE}{ASM_PATH}"),
+    ("https://user@accounts.google.com/", GOOGLE, f"{GOOGLE}{ASM_PATH}"),
+    (f"{GOOGLE}/", OTHER_AS, f"{GOOGLE}{ASM_PATH}"),
+    (f"{GOOGLE}/", GOOGLE, f"{OTHER_AS}{ASM_PATH}"),
+])
+def test_metadata_shim_rejects_everything_beyond_exact_opposite_root_slash_forms(
+        advertised, issuer, response_url):
+    from tools.mcp_oauth_provider import metadata_matches_root_slash_equivalent
+
+    metadata = SimpleNamespace(issuer=issuer)
+    response = SimpleNamespace(status_code=200, url=response_url)
+
+    assert not metadata_matches_root_slash_equivalent(metadata, advertised, response)
+
+
+@pytest.mark.asyncio
 async def test_device_flow_normalizes_issuer_and_asks_google_for_offline_access(capsys):
     from mcp.client.auth.exceptions import OAuthFlowError
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata

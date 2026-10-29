@@ -11,7 +11,7 @@ source: https://github.com/aidatatools-dev/astro-agents-mcp
 # and `hermes mcp test`: initialize, 16 tools, calls). Pure computation:
 # every tool is read-only and idempotent, and every result carries a
 # SHA-256 that verify_result_hash recomputes.
-# Pricing: each client (identified by IP) gets 3 free tool calls (any tool)
+# Pricing: each client (identified by IP) gets 1 free tool call (any tool)
 # within a shared daily budget; after that a tool returns an isError result
 # naming the paid REST endpoint and its price (x402 or MPP, $0.01-$0.50 per
 # call). Nothing is ever charged over MCP.
@@ -47,7 +47,7 @@ suggest:
 
 post_install: |
   No account or credentials needed — tools are available as soon as the
-  session restarts. Each client gets 3 free calls; after that the tools
+  session restarts. Each client gets 1 free call; after that the tools
   point to the paid REST endpoint (x402 or MPP). astro_catalog lists every
   tool with its price and an example request. To add the astrology skill
   (when to call which tool), install the plugin as well:

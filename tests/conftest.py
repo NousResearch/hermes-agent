@@ -167,6 +167,17 @@ def _looks_like_credential(name: str) -> bool:
     return any(name.endswith(suf) for suf in _CREDENTIAL_SUFFIXES)
 
 
+def _read_real_kanban_task_count(db_path: Path) -> int | None:
+    """Read the developer Kanban DB without ever opening it for writes."""
+    if not db_path.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            return int(conn.execute("SELECT count(*) FROM tasks").fetchone()[0])
+    except (OSError, sqlite3.Error):
+        return None
+
+
 # HERMES_* vars that change test behavior by being set. Unset all of these
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({
@@ -345,6 +356,9 @@ def _hermetic_environment(tmp_path, monkeypatch):
     reads ``~/.hermes/*`` can't touch the real one, and pins TZ/LANG so
     datetime/locale-sensitive tests are deterministic.
     """
+    real_kanban_db = Path.home() / ".hermes" / "kanban.db"
+    real_kanban_task_count = _read_real_kanban_task_count(real_kanban_db)
+
     # 1. Blank every credential-shaped env var that's currently set.
     for name in list(os.environ.keys()):
         if _looks_like_credential(name):
@@ -411,6 +425,15 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # the generic credential-shaped env-var filter above.
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
+
+    yield
+
+    if real_kanban_task_count is not None:
+        after_count = _read_real_kanban_task_count(real_kanban_db)
+        assert after_count == real_kanban_task_count, (
+            "tests modified the real ~/.hermes/kanban.db: "
+            f"tasks changed from {real_kanban_task_count} to {after_count}"
+        )
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it

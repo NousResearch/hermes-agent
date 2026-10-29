@@ -24,6 +24,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone, UTC
 from contextlib import nullcontext, suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Optional
 
@@ -76,8 +77,11 @@ _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 def _header_delivery_id(headers) -> str:
     """The provider's delivery id (GitHub, Svix, Standard Webhooks, generic), else a fresh one."""
-    return headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-        "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
+    if any(headers.get(name) for name in ("svix-id", "svix-timestamp", "svix-signature")):
+        return headers.get("svix-id", "")
+    if headers.get("webhook-signature"):
+        return headers.get("webhook-id", "")
+    return headers.get("X-GitHub-Delivery", headers.get("webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex)))
 
 
 @dataclass(frozen=True)
@@ -666,10 +670,15 @@ class WebhookAdapter(BasePlatformAdapter):
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """POST /webhooks/{route_name} — receive and process a webhook event."""
+        from gateway.platforms.webhook_delivery import check_route_snapshot
+
         route_name, route_config, profile, error_response = self._resolve_route(request)
         if error_response is None:
+            route_config = deepcopy(route_config)
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
+            return error_response
+        if (error_response := check_route_snapshot(self, request, route_config)) is not None:
             return error_response
         headers = request.headers
         delivery_id = _header_delivery_id(headers)
@@ -720,6 +729,8 @@ class WebhookAdapter(BasePlatformAdapter):
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
+        if (error_response := check_route_snapshot(self, request, route_config)) is not None:
+            return error_response
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")
@@ -811,6 +822,8 @@ class WebhookAdapter(BasePlatformAdapter):
         source = self._admission_source(route_name, profile, delivery_id)
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
+        from gateway.platforms.webhook_delivery import config_digest
+        event._webhook_route_digest = config_digest(route_config)
         from gateway.platforms.webhook_ingress import admit_producer
         try:
             receipt = await admit_producer(self, event)

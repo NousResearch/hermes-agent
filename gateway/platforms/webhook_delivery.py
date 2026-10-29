@@ -6,6 +6,22 @@ import json
 from hermes_state_runtime import RuntimeStoreError
 
 
+def config_digest(route):
+    """Bind an event to the route configuration that authenticated and rendered it."""
+    return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def check_route_snapshot(adapter, request, route):
+    from gateway.platforms.webhook import _json_error
+
+    _name, current, _profile, error = adapter._resolve_route(request)
+    if error is not None:
+        return error
+    if current != route:
+        return _json_error('Route changed; retry this delivery', 409)
+    return None
+
+
 def route_digest(adapter, chat_id):
     from gateway.platforms.webhook import _WebhookDeliveryIdentity
     adapter._reload_dynamic_routes()
@@ -16,7 +32,9 @@ def route_digest(adapter, chat_id):
     route = adapter._routes.get(route_name)
     if route is None:
         raise RuntimeStoreError('not_found')
-    return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    if route.get('enabled', True) is False:
+        raise RuntimeStoreError('permission_denied')
+    return config_digest(route)
 
 
 def validate_destination(delivery):

@@ -2714,13 +2714,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except SessionActiveWriteGuardError as exc:
             return _error_response(str(exc), 409, code="session_active_turn")
         if deleted:
-            # A hard delete must also drop the gateway's durable channel→session routing entries
-            # for the id, or the next inbound message resolves the SAME id and run_agent's
-            # INSERT OR IGNORE resurrects the deleted row (#42422).
+            # IDs are profile-local; preserve foreign entries in the shared routing index.
             runner = self.gateway_runner or request.app.get("gateway_runner")
             store = getattr(runner, "session_store", None)
             if store is not None:
-                await asyncio.to_thread(store.remove_by_session_id, session_id)
+                from gateway.platforms.api_server_store import remove_profile_routes
+                await asyncio.to_thread(remove_profile_routes, store, session_id, db)
             # Retirement erased the chat's image references; bytes nothing else holds go too. Off the
             # loop like every other media release: its holder check and unlink are one write txn.
             from gateway.session_ingress_media import collect_unheld_api_images

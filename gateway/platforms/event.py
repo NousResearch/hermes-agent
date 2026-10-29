@@ -111,6 +111,8 @@ class MessageEvent:
     # ``message_id`` with new text, so native admission keys it apart from the original send.
     # Appended for positional compat (see the field-order rule above).
     edit_revision: Optional[str] = None
+    # Process-local route revision; survives admission's dataclass copies, never ingress metadata.
+    _webhook_route_digest: Optional[str] = field(default=None, repr=False, compare=False)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

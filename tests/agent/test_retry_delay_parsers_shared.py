@@ -53,6 +53,11 @@ class TestResetDelayOneTable:
         ("Limit hit; resets in 45s", 45.0),
         ('"quotaResetDelay": "1500ms"', 1.5),
         ("please retry after 12 seconds", 12.0),
+        # Gemini free-tier 429 prose: "Please retry in 45.14s." The "retry in" form used to fall
+        # through every grammar, so no reset was recorded and the pool applied its 1h 429 default
+        # to a ~45s throttle. Structured twin: google.rpc.RetryInfo.retryDelay ("45.14s").
+        ("Please retry in 45.140474876s.", 45.140474876),
+        ("Please retry in 60 seconds", 60.0),
         # Both grammars in one body: the explicit retry-after wins (pool precedence), not the
         # multi-hour quota window.
         ("Rate limited. Retry after 30s; resets in 4hr", 30.0),

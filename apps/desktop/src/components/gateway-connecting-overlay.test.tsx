@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider, TRANSLATIONS } from '@/i18n'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -204,5 +205,36 @@ describe('first-run starting screen', () => {
     }
 
     expect(isConnectingShown()).toBe(false)
+  })
+})
+
+describe('locale', () => {
+  it('reads the boot label from the catalogue instead of a hardcoded English string', async () => {
+    setGatewayState('idle')
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: null,
+      phase: 'backend.start',
+      progress: 12,
+      running: true,
+      visible: true
+    })
+
+    // Only the first four characters are readable while the tail decodes, and
+    // they already tell the catalogues apart: the Spanish "CONECTANDO" keeps
+    // CONE where the hardcoded English "CONNECTING" kept CONN.
+    const spanishLabel = () =>
+      screen.queryAllByText((_, el) => /^CONE[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
+
+    await act(async () => {
+      render(
+        <I18nProvider configClient={null} initialLocale="es">
+          <GatewayConnectingOverlay />
+        </I18nProvider>
+      )
+    })
+
+    expect(spanishLabel()).toBe(true)
+    expect(TRANSLATIONS.es.common.connecting).toBe('Conectando')
   })
 })

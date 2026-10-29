@@ -63,7 +63,7 @@ from tools.cronjob_job_args import (
     _validate_bot_chat_deliver,
     _validate_context_from_refs,
     _validate_cron_base_url,
-    _validate_cron_script_path)
+    _normalize_cron_script_path)
 from tools.registry import registry, tool_error
 
 
@@ -692,13 +692,16 @@ def _action_create(a: dict[str, Any]) -> str:
                 success=False)
     elif not prompt and not canonical_skills:
         return tool_error("create requires either prompt or at least one skill", success=False)
-    error = (
-        (prompt and _scan_cron_prompt(prompt))
-        or (script and _validate_cron_script_path(script))
-        or (a["monitor_script"] and _validate_cron_script_path(a["monitor_script"]))
+    error = (prompt and _scan_cron_prompt(prompt))
+    script_value, monitor_script_value = None, None
+    if not error:
+        script_value, error = _normalize_cron_script_path(script)
+    if not error:
+        monitor_script_value, error = _normalize_cron_script_path(a["monitor_script"])
+    error = error or (
         # A model-supplied base_url must not route a named provider's stored credential
         # to an attacker endpoint.
-        or _validate_cron_base_url(a["provider"], a["base_url"])
+        _validate_cron_base_url(a["provider"], a["base_url"])
         # bot-chat targets are machine-local: fail the CREATE, not the run.
         or _validate_bot_chat_deliver(deliver)
         # failure_deliver shares deliver's grammar and validators.
@@ -721,12 +724,12 @@ def _action_create(a: dict[str, Any]) -> str:
             skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
-            script=_normalize_optional_job_value(script), context_from=context_from,
+            script=script_value, context_from=context_from,
             # [] is an explicit zero-tool allowlist, not a clear back to the unrestricted default (#82010).
             enabled_toolsets=a["enabled_toolsets"] if a["enabled_toolsets"] is not None else None,
             workdir=_normalize_optional_job_value(a["workdir"]),
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
-            monitor_script=_normalize_optional_job_value(a["monitor_script"]),
+            monitor_script=monitor_script_value,
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
@@ -903,11 +906,10 @@ def _update_script_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[
     monitor_script, monitor_url = a["monitor_script"], a["monitor_url"]
     for field, value in (("script", a["script"]), ("monitor_script", monitor_script)):
         if value is not None:
-            if value:
-                path_error = _validate_cron_script_path(value)
-                if path_error:
-                    return path_error
-            updates[field] = _normalize_optional_job_value(value) if value else None
+            normalized_value, path_error = _normalize_cron_script_path(value)
+            if path_error:
+                return path_error
+            updates[field] = normalized_value
     if monitor_url is not None:
         updates["monitor_url"] = _normalize_optional_job_value(monitor_url) if monitor_url else None
     if (monitor_script is not None or monitor_url is not None) and (

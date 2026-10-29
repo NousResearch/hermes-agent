@@ -860,7 +860,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
-        ``inherit_from`` names a built-in or already-registered auxiliary task whose effective
+        ``inherit_from`` names any core ``auxiliary.<task>`` or registered task whose effective
         configuration becomes the base for this one; it is resolved at read time, so the task tracks
         the base's current config instead of snapshotting it (precedence: inherited base, then
         ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential

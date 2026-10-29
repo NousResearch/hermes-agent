@@ -331,9 +331,10 @@ tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 
 #### Inheriting a built-in slot
 
-`inherit_from` names a built-in auxiliary task (`compression`, `mcp`,
-`vision`, ...) or a task your plugin (or one loaded before it) already
-registered. Your task then uses that slot's model until the operator pins
+`inherit_from` names a built-in auxiliary block (`compression`, `mcp`,
+`vision`, `background_review`, ... — any core `auxiliary.<task>`) or a task
+your plugin (or one loaded before it) already registered. Your task then
+uses that slot's model until the operator pins
 one on your task directly:
 
 ```python

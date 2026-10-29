@@ -212,19 +212,33 @@ def _has_manifest(path: Path) -> bool:
     return any((path / name).exists() or (path / name).is_symlink() for name in _MANIFEST_NAMES)
 
 
+def _ignored_category_child(name: str) -> bool:
+    """Cache and VCS dirs are not plugin siblings. ``.hermes`` is: a home that
+    contains it next to a checkout is not a category layout."""
+    return name in {".git", ".pytest_cache"} or (
+        name.startswith("__") and name.endswith("__")
+    )
+
+
 def _holds_plugin(path: Path) -> bool:
     """True when discovery would find a manifest in *path* or one immediate subdirectory (category
     layout), mirroring ``PluginManager._scan_directory``. Doctor copies the resolved directory
-    wholesale, so resolving an arbitrary directory (e.g. the default ``.``) would be a disk bug."""
+    wholesale, so resolving an arbitrary directory (e.g. the default ``.``) would be a disk bug.
+
+    A category's immediate subdirectories are plugins. One plugin checkout next to other
+    directories, such as ``$HOME`` beside ``.hermes``, is not a category."""
     if not path.is_dir():
         return False
     if _has_manifest(path):
         return True
     try:
-        children = sorted(path.iterdir())
+        children = [
+            child for child in path.iterdir()
+            if child.is_dir() and not _ignored_category_child(child.name)
+        ]
     except OSError:
         return False
-    return any(child.is_dir() and _has_manifest(child) for child in children)
+    return bool(children) and all(_has_manifest(child) for child in children)
 
 
 def _is_plugin_id(raw: str) -> bool:

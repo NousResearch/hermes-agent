@@ -83,36 +83,47 @@ Notes:
   profile-text indicator.
 - Off by default, since it mutates the bot's global profile.
 
-### Cold-boot pending queue (Optional)
+### Cold-boot pending queue
 
-By default the adapter drops server-side pending updates on a cold boot
-(`drop_pending_updates=True` on the first `start_polling`). That fits
-always-on servers: a restart means "clean up," and the queue is treated as
-stale. It does not fit hosts that turn off (a desktop shut down overnight):
-messages sent while the gateway is offline sit in Telegram's Bot API queue,
-and the next boot discards them before Hermes ever sees them — silently, no
-log, no retry.
+By default the adapter **preserves** server-side pending updates on a cold boot
+(`drop_pending_updates=False` on the first `start_polling`). A message a human
+sent while the gateway was restarting is a message they are waiting on, and
+discarding it is indistinguishable from the bot going silent.
 
-Set `drop_pending_on_cold_boot: false` to receive that backlog in order on
-startup instead:
+Telegram retains unacknowledged updates for roughly 24 hours, and that window
+bounds the replay: a backlog older than that is gone on Telegram's side, not
+ours. The adapter also keeps a persistent per-bot receipt file
+(`telegram_update_receipts_<bot_id>.json`), so an update that was already
+answered is not answered twice when the backlog comes back.
+
+Set `drop_pending_on_cold_boot: true` to discard the backlog instead — the
+pre-2026-10 behaviour, appropriate for an always-on server where a restart
+means "clean up":
 
 ```yaml
 platforms:
   telegram:
     extra:
-      drop_pending_on_cold_boot: false
+      drop_pending_on_cold_boot: true
 ```
 
 Notes:
 
-- Default is `true`: existing behavior is unchanged unless you opt in.
+- Default is `false` (preserve). This changed from `true` in #11023; the
+  migration is one line in `config.yaml` for anyone who relied on the discard.
 - Watcher reconnects (brief network outages with the process still alive)
   always preserve the queue regardless of this setting.
-- Conflict recovery still drops pending updates to terminate the competing
-  `getUpdates` session — that path is unrelated to this knob.
+- Conflict recovery (a 409 from a competing `getUpdates` session) follows the
+  same setting. When preserving, the retry relies on its growing delays
+  (20s, 30s, 40s, 50s, 60s) to outlast Telegram's ~30s session hold; a conflict
+  that never clears escalates to the fatal "another process is using this bot
+  token" guidance, which is the right outcome for two gateways on one token.
+- Whenever a connection preserves the queue, the adapter logs
+  `redelivered N queued update(s) after stall` naming how many updates came
+  back, so a late answer is never mistaken for a lost message.
 - After a crash, a preserved queue can redeliver an update the crashed
-  instance partially processed. Telegram's offset usually prevents this,
-  but time-sensitive commands sent during a long outage will run on boot.
+  instance partially processed. The receipt file usually prevents a duplicate
+  reply, but time-sensitive commands sent during a long outage will run on boot.
 
 ### Concurrent update handling
 

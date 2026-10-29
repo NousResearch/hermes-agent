@@ -655,6 +655,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Ingress accounting (#102260): received (getUpdates wire) vs dispatched (PTB admission).
         self._updates_received_total: int = 0
         self._updates_dispatched_total: int = 0
+        # Queued-update redelivery accounting (#11023): armed when a connection preserves
+        # Telegram's pending queue, so the updates the human sent while we were not polling
+        # are counted and logged instead of vanishing. See _count_queued_update_redelivery.
+        self._queued_updates_preserved: bool = False
+        self._redelivered_updates_count: int = 0
+        self._redelivered_updates_logged: bool = False
         self._ingress_dispatched_seen: int = 0
         self._ingress_stalled_heartbeats: int = 0
         # Live @username: PTB caches getMe() at initialize() and only rewrites it inside get_me(), so a
@@ -705,11 +711,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._status_indicator_enabled: bool = bool(extra.get("status_indicator", False))
         self._status_online_text: str = str(extra.get("status_online", "Online"))
         self._status_offline_text: str = str(extra.get("status_offline", "Offline"))
-        # Cold-boot queue: drop server-side pending updates on first boot (default True,
-        # preserves historical behaviour). Set extra.drop_pending_on_cold_boot: false to
-        # receive messages sent while the gateway was offline (e.g. nightly-off hosts).
-        # Watcher reconnects always preserve the queue regardless of this setting.
-        self._drop_pending_on_cold_boot: bool = self._coerce_bool_extra("drop_pending_on_cold_boot", True)
+        # Cold-boot queue: whether a COLD BOOT asks Telegram to discard its server-side pending
+        # updates. Default False (PRESERVE) as of #11023 — a message a human sent while the
+        # gateway was restarting is a message they are waiting on, and discarding it is
+        # indistinguishable from the bot going silent.
+        #
+        # Why preserving is safe: Telegram redelivers an unacknowledged update, and the adapter's
+        # persistent per-bot receipt file (``telegram_update_receipts_<bot_id>.json``,
+        # plugins/platforms/telegram/update_admission.py) drops anything already completed, so a
+        # preserved backlog does not double-reply. The receipt TTL (24h) matches the Bot API's own
+        # unconfirmed-update window.
+        #
+        # MIGRATION (from default True): an operator who relied on the drop to avoid replaying a
+        # stale backlog must now set ``platforms.telegram.drop_pending_on_cold_boot: true``
+        # explicitly. Watcher reconnects ALWAYS preserve the queue regardless of this setting
+        # (#46621) — only a cold boot consults it.
+        self._drop_pending_on_cold_boot: bool = self._coerce_bool_extra("drop_pending_on_cold_boot", False)
         self._dm_topics_config: List[Dict[str, Any]] = extra.get("dm_topics", [])
         # chat_ids with DM topics configured (O(1) root-DM ignore check)
         self._dm_topic_chat_ids: Set[str] = {str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e}
@@ -1752,6 +1769,44 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         accepted generation, so a late response from a fenced poll cannot inflate the backlog."""
         if isinstance(result, list) and result:
             self._updates_received_total += len(result)
+            self._count_queued_update_redelivery(len(result))
+
+    def _count_queued_update_redelivery(self, count: int) -> None:
+        """Count updates that arrived from a queue this connection PRESERVED (#11023).
+
+        A cold boot that preserves Telegram's pending queue, or a reconnect after a confirmed
+        polling stall, hands us back the updates the human sent while we were not polling. Those
+        updates must never be lost silently: the count is logged so an operator can tell "the bot
+        answered late" apart from "the bot never saw it".
+
+        The counter is armed by ``_arm_queued_update_redelivery`` (called from the preserved
+        branch of ``_cold_boot_drop_pending`` and from the network-error reconnect). One INFO
+        line is emitted for the FIRST batch — that is the "these came back from the queue"
+        signal the operator needs — and later batches keep counting silently so a burst of N
+        updates does not produce N log lines.
+
+        ``count`` is the number of updates in ONE getUpdates response.
+        """
+        if not self._queued_updates_preserved:
+            return
+        self._redelivered_updates_count += count
+        if self._redelivered_updates_logged:
+            return
+        self._redelivered_updates_logged = True
+        logger.info(
+            "[%s] redelivered %d queued update(s) after stall (preserved Telegram queue)",
+            self.name, self._redelivered_updates_count)
+
+    def _arm_queued_update_redelivery(self) -> None:
+        """Arm the redelivery counter for a connection that preserves Telegram's pending queue.
+
+        Called when the queue is preserved (cold boot with the knob off, or any reconnect) so the
+        next batch of updates Telegram hands us is counted and logged rather than silently
+        swallowed by an operator who never sees them.
+        """
+        self._queued_updates_preserved = True
+        self._redelivered_updates_count = 0
+        self._redelivered_updates_logged = False
 
     def _instrument_polling_request(self, request):
         """Instrument one dedicated PTB getUpdates request with progress tracking.
@@ -2094,6 +2149,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         try:
             if not app:
                 raise RuntimeError("Telegram application was torn down during reconnect")
+            # The reconnect preserves Telegram's pending queue (drop_pending_updates=False),
+            # so anything the human sent while we were not polling comes back on the wire.
+            # Arm the redelivery counter so the journal records how many came back (#11023).
+            self._arm_queued_update_redelivery()
             await self._start_polling_once(app, drop_pending_updates=False, error_callback=self._polling_error_callback_ref)
             logger.info(
                 "[%s] Telegram polling restarted after network error (attempt %d); health pending getUpdates progress", self.name, attempt)
@@ -2532,15 +2591,31 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             expected_generation = self._polling_generation + 1
             if not app:
                 raise RuntimeError("Telegram application was torn down during conflict reconnect")
-            # drop_pending_updates=True makes Telegram terminate any other getUpdates session for this
-            # token (zombie or our own prior retry); without it each retry is immediately 409'd.
+            # ``drop_pending_updates=True`` makes Telegram terminate any other getUpdates session for
+            # this token (zombie or our own prior retry); without it each retry is immediately 409'd.
             # The competing session is either a zombie from the previous gateway process (whose long-poll
             # hasn't expired server-side yet) or our own previous retry's still-expiring session. Without
             # this, each retry starts a new getUpdates session that immediately gets 409'd by the previous
             # one, creating the very conflict we are trying to recover from (#75017).
+            #
+            # The SAME parameter is also the queue-discard mechanism, so the takeover was silently
+            # destroying the offline backlog on every conflict — the third drop site, which the
+            # ``drop_pending_on_cold_boot`` knob does not reach (#143123). An operator who opted
+            # into discarding keeps the takeover; a queue-preserving setup (the default) passes
+            # False and relies on this ladder's growing delays (20s, 30s, 40s, 50s, 60s) to outlast
+            # Telegram's ~30s session hold. A conflict that never clears escalates to the fatal
+            # guidance below, which is the right outcome for two processes on one token.
+            drop_pending = self._drop_pending_on_cold_boot
+            if not drop_pending:
+                self._arm_queued_update_redelivery()
+                logger.info(
+                    "[%s] Telegram polling conflict recovery preserves the pending queue "
+                    "(platforms.telegram.extra.drop_pending_on_cold_boot: false); a conflict that does "
+                    "not clear means another process is polling this bot token.",
+                    self.name)
             self._polling_conflict_recovery_generation = expected_generation
             try:
-                await self._start_polling_once(app, drop_pending_updates=True, error_callback=self._polling_error_callback_ref)
+                await self._start_polling_once(app, drop_pending_updates=drop_pending, error_callback=self._polling_error_callback_ref)
                 logger.info(
                     "[%s] Telegram polling restarted after conflict retry %d/%d; health pending getUpdates progress",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES)
@@ -3197,8 +3272,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Whether THIS connection asks Telegram to discard its queued updates.
 
         A watcher reconnect always preserves them (#46621); a cold boot follows
-        ``platforms.telegram.extra.drop_pending_on_cold_boot`` (default true). The decision is logged
-        on every cold boot — a command that never ran is otherwise invisible (#71811)."""
+        ``platforms.telegram.extra.drop_pending_on_cold_boot`` (default false — preserve, #11023).
+        The decision is logged on every cold boot — a command that never ran is otherwise
+        invisible (#71811).
+
+        When the queue is PRESERVED the redelivery counter is armed, so the updates the human
+        sent while the gateway was down are counted and logged (``redelivered N queued update(s)
+        after stall``) rather than silently disappearing from the operator's point of view."""
         drop_pending = self._drop_pending_on_cold_boot if not is_reconnect else False
         if not is_reconnect:
             logger.info(
@@ -3206,6 +3286,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 "(platforms.telegram.extra.drop_pending_on_cold_boot: %s)",
                 self.name, "dropping" if drop_pending else "preserving",
                 "true" if self._drop_pending_on_cold_boot else "false")
+        if not drop_pending:
+            self._arm_queued_update_redelivery()
         return drop_pending
 
     async def _start_webhook_mode(self, webhook_url: str, *, is_reconnect: bool) -> None:
@@ -3269,9 +3351,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
 
-        ``is_reconnect``: False = cold boot (drop the Bot API queue unless
-        ``extra.drop_pending_on_cold_boot`` is false); True = watcher reconnect (preserve
-        queued updates, else every message sent during the outage is lost). Webhook env:
+        ``is_reconnect``: False = cold boot (PRESERVE the Bot API queue by default; set
+        ``extra.drop_pending_on_cold_boot: true`` to discard it instead — #11023); True = watcher
+        reconnect (preserve queued updates, else every message sent during the outage is lost).
+        Webhook env:
         TELEGRAM_WEBHOOK_URL, TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST,
         TELEGRAM_WEBHOOK_SECRET."""
         # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.

@@ -115,14 +115,16 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_conflict_retry_drops_pending_updates(monkeypatch):
-    """Conflict recovery must use drop_pending_updates=True (#75017).
+async def test_conflict_retry_drops_pending_updates_when_opted_in(monkeypatch):
+    """Conflict recovery uses drop_pending_updates=True when the operator opted in (#75017).
 
     Without this, each retry starts a new getUpdates session that
     immediately gets 409'd by the previous still-expiring session,
     creating the very conflict we are trying to recover from.
     """
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter = TelegramAdapter(
+        PlatformConfig(enabled=True, token="***", extra={"drop_pending_on_cold_boot": True})
+    )
     adapter.set_fatal_error_handler(AsyncMock())
     adapter._drain_polling_connections = AsyncMock()
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -148,6 +150,48 @@ async def test_conflict_retry_drops_pending_updates(monkeypatch):
         "Conflict retry must use drop_pending_updates=True to terminate "
         "stale getUpdates sessions on Telegram's servers (#75017)"
     )
+
+
+@pytest.mark.asyncio
+async def test_conflict_retry_preserves_pending_updates_by_default(monkeypatch):
+    """Conflict recovery must NOT discard the offline backlog by default (#143123).
+
+    The same ``drop_pending_updates`` parameter is both the session-takeover
+    mechanism and the queue-discard mechanism, so the takeover was silently
+    destroying the backlog on every 409 — the third drop site, which the
+    ``drop_pending_on_cold_boot`` knob did not reach.
+
+    With the knob off (the default) the retry preserves the queue and relies on
+    the ladder's growing delays to outlast Telegram's ~30s session hold.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["drop_pending_updates"] = kwargs.get("drop_pending_updates")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert captured.get("drop_pending_updates") is False, (
+        "Conflict retry must preserve Telegram's pending queue by default; "
+        "the offline backlog is a message a human is waiting on (#143123)"
+    )
+    # The preserved queue arms the redelivery counter, so the journal says what came back.
+    assert adapter._queued_updates_preserved is True
 
 
 @pytest.mark.asyncio

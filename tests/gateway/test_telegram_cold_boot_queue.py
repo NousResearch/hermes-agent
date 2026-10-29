@@ -1,8 +1,11 @@
 """Cold-boot pending-queue knob for the Telegram adapter.
 
-Contract: a cold boot drops Telegram's server-side pending updates unless
-``extra.drop_pending_on_cold_boot`` is false; a watcher reconnect always
-preserves them. Conflict recovery is a separate path and is not covered here.
+Contract (#11023): a cold boot PRESERVES Telegram's server-side pending updates by
+default — a message a human sent while the gateway was restarting must not vanish.
+An operator can still opt back into the old discard behaviour with
+``extra.drop_pending_on_cold_boot: true``. A watcher reconnect always preserves the
+queue regardless of the knob. Conflict recovery is a separate path and is not
+covered here.
 """
 
 import logging
@@ -35,9 +38,28 @@ async def _capture_drop_pending(adapter: TelegramAdapter, *, is_reconnect: bool)
 
 
 @pytest.mark.asyncio
-async def test_cold_boot_drops_queue_by_default():
-    """Default config: cold boot drops, reconnect preserves."""
+async def test_cold_boot_preserves_queue_by_default():
+    """Default config (#11023): cold boot preserves, reconnect preserves.
+
+    A message sent while the gateway was down is a message a human is waiting on.
+    Discarding it is indistinguishable from the bot going silent, so the default
+    flipped from discard to preserve. The persistent per-bot receipt file dedups
+    anything already answered, so preserving does not double-reply.
+    """
     adapter = _make_adapter()
+    assert adapter._drop_pending_on_cold_boot is False
+
+    cold = await _capture_drop_pending(adapter, is_reconnect=False)
+    assert cold["drop_pending_updates"] is False
+
+    warm = await _capture_drop_pending(adapter, is_reconnect=True)
+    assert warm["drop_pending_updates"] is False
+
+
+@pytest.mark.asyncio
+async def test_cold_boot_drops_queue_when_explicitly_opted_in():
+    """extra.drop_pending_on_cold_boot=true: the pre-#11023 discard behaviour, on request."""
+    adapter = _make_adapter(extra={"drop_pending_on_cold_boot": True})
     assert adapter._drop_pending_on_cold_boot is True
 
     cold = await _capture_drop_pending(adapter, is_reconnect=False)

@@ -1318,6 +1318,7 @@ userMessages.promptTimeout.vaultCode: 'Výzva k zadání ověřovacího kódu se
 userMessages.promptTimeout.vaultSaveLogin: 'Výzva k uložení přihlašovacích údajů byla zavřena: včas nepřišla odpověď, takže se nic neuložilo. Pošlete požadavek znovu, až budete připraveni.'
 userMessages.promptTimeout.vaultUnlockPrompt: 'Výzva k odemčení se zavřela: včas nepřišla odpověď, takže správce hesel zůstal zamčený. Až budete připraveni jej odemknout, pošlete požadavek znovu.'
 userMessages.rpc.launchCredentialsChanged: 'Tento chat už nemůže použít API klíč, se kterým byl spuštěn (změnil se nebo byl odebrán), proto se to neprovedlo. Chat nikdy sám nepřejde na jiný klíč. Napište /new a začněte nový chat se svým aktuálním klíčem.'
+userMessages.rpc.methodUnavailable: 'Tento backend Hermesu neposkytuje {0}, takže se to neprovedlo.'
 userMessages.rpc.notConnected: 'Hermes teď není připojen, takže se to neodeslalo. Připojí se automaticky; chvíli počkejte a zkuste to znovu, nebo napište /logs, pokud to přetrvává.'
 userMessages.rpc.sessionHasChildren: 'Tento chat má podřízené relace (například běhy subagentů), které by se smazáním odstranily také, proto smazán nebyl.'
 userMessages.rpc.sessionNotFound: 'Tento chat už není připojen k backendu (byl neaktivní nebo se backend restartoval). Vaše historie je uložena: napište /resume pro její znovuotevření.'

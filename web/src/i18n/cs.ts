@@ -122,6 +122,14 @@ export const cs = defineLocale({
     sharedMetricsReaskBody: 'Ptáme se znovu: starší verze mohla uložit „Ne, díky“ dřív, než jste tuto otázku uviděli.'
   },
 
+  systemMemory: {
+    activeProvider: 'Aktivní poskytovatel paměti',
+    noProvider: 'žádný — pouze vestavěná',
+    builtinLayer: 'Vestavěná vrstva',
+    builtinNote:
+      'MEMORY.md a USER.md je vlastní paměť Hermesu, oddělená od jakéhokoli externího poskytovatele. Obě se ve výchozím stavu načítají do relací; přepínače v konfiguraci (memory.memory_enabled / memory.user_profile_enabled) je vypínají. Poskytovatel je doplňuje, nikdy nenahrazuje.'
+  },
+
   status: {
     actionFailed: 'Akce se nezdařila',
     actionFinished: 'Hotovo',

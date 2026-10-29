@@ -338,6 +338,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'Člen není dostupný',
     members: 'Členové',
     refreshGroups: 'Obnovit skupiny brány',
+    openGroup: 'Otevřít skupinový chat',
     loadingGroup: 'Načítání skupiny…',
     loadingGroups: 'Načítání skupin brány…',
     emptyGroups: 'Na bráně nejsou žádné skupiny.',

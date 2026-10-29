@@ -1006,6 +1006,8 @@ platform:
       confirm_title: 'Potvrdit'
       already_resolved: 'Toto schválení již bylo vyřešeno~'
       expired: '⌛ Platnost schválení vypršela — příkaz nebyl spuštěn (časový limit již vypršel nebo bylo vyřešeno jinde)'
+      no_longer_pending: '⌛ Toto schválení už nečeká na vyřízení (vypršel mu časový limit nebo bylo vyřízeno jinde)'
+      click_failed: '⚠️ Vaši volbu se nepodařilo zaznamenat. Klikněte znovu, nebo odpovězte pomocí /approve či /deny.'
       by_user: '{label} — uživatel: {user}'
       resolved_once: 'Schváleno jednou'
       resolved_session: 'Schváleno pro relaci'

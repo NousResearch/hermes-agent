@@ -1050,6 +1050,17 @@ export const csOverrides = {
         nothingToInstall: 'Tento balíček tu nemá co nainstalovat.',
         reviewedByNous: 'Zkontrolováno Nous.',
         reviewedPin: sha => (sha ? `Zkontrolovaný pin ${sha}` : 'Zkontrolovaný pin'),
+        sourceMoved: sha =>
+          sha
+            ? `Repozitář se od vaší kontroly změnil. Před instalací si prohlédněte novou verzi (commit ${sha}).`
+            : 'Repozitář se od vaší kontroly změnil. Načítám novou verzi…',
+        legacyBackendConfirm:
+          'Tento backend je starší než aplikace, takže nemůže zaručit, že se nainstaluje právě verze, kterou jste zkontrolovali: pokud se repozitář mezitím změnil, nainstaluje se novější verze. Aktualizujte backend a tato záruka bude platit.',
+        installAnyway: 'Přesto nainstalovat',
+        partialInstall: sha =>
+          sha
+            ? `Je nainstalovaná jen část tohoto pluginu: část pro agenta je na commitu ${sha}, ale část pro desktop nemohla následovat, protože se repozitář od vaší kontroly změnil. Zapněte Vynutit přeinstalaci v Pokročilém nastavení, aby se obě části nahradily zobrazenou verzí, nebo zrušte a zůstane jen část pro agenta.`
+            : 'Je nainstalovaná jen část tohoto pluginu: část pro agenta je uvnitř, ale část pro desktop nemohla následovat, protože se repozitář od vaší kontroly změnil. Zapněte Vynutit přeinstalaci v Pokročilém nastavení, aby se obě části nahradily zobrazenou verzí, nebo zrušte a zůstane jen část pro agenta.',
         unverified: 'Neověřeno',
         verified: 'Ověřeno',
         versionLabel: 'Verze'
@@ -1595,6 +1606,35 @@ export const csOverrides = {
       dataKept: path => `Vaše konfigurace, chaty a tajemství jsou v ${path}. Odstraněním aplikace se nesmažou.`,
       openAppsSettings: 'Otevřít nastavení aplikací'
     },
+    memoryLayers: {
+      activeProvider: 'Aktivní poskytovatel paměti',
+      selectedProvider: 'Vybraný poskytovatel paměti',
+      selectedDesc: current => `Zatím není aktivní: dokud tuto volbu neuložíte, relace dál používají ${current}.`,
+      builtinMemory: 'pouze vestavěná paměť',
+      noProvider: 'Žádný — pouze vestavěná paměť',
+      noProviderDesc:
+        'Hermes používá jen vestavěnou vrstvu níže. Externího poskytovatele přidáte v Nastavení › Paměť a kontext.',
+      providerDesc: name => `${name} přidává do každé relace vlastní vybavování vzpomínek, nad vestavěnou vrstvou.`,
+      providerNotReadyDesc: name =>
+        `${name} je uložený poskytovatel, ale dokud není připraven, nic nevybavuje. Vestavěná vrstva funguje v obou případech.`,
+      providerUnknownDesc: name => `${name} je uložený poskytovatel; Hermes nedokázal zjistit, zda je připraven.`,
+      statusUnavailable: 'Stav paměti není dostupný',
+      statusUnavailableDesc: 'Nepodařilo se zjistit, který poskytovatel paměti je aktivní ani zda je připraven.',
+      retry: 'Zkusit znovu',
+      status: {
+        ready: 'připraven',
+        needs_config: 'nutné nastavit',
+        unavailable: 'nedostupný',
+        missing: 'nenainstalován'
+      },
+      builtinLayer: 'Vestavěná vrstva',
+      onByDefault: 'Ve výchozím stavu zapnuto',
+      on: 'Zapnuto',
+      off: 'Vypnuto',
+      onlyFile: file => `pouze ${file}`,
+      builtinDesc:
+        'MEMORY.md a USER.md je vlastní paměť Hermesu, oddělená od jakéhokoli externího poskytovatele. Obě se ve výchozím stavu načítají do relací; přepínače paměti a uživatelského profilu v Nastavení › Paměť a kontext je vypínají. Poskytovatel tuto vrstvu doplňuje, nikdy nenahrazuje.'
+    },
     customEndpoints: {
       active: 'Aktivní',
       apiKeySet: 'API klíč je nastaven',
@@ -2032,6 +2072,7 @@ export const csOverrides = {
         restartBusy:
           'Uloženo. Běží chat, takže se gateway nerestartovala. Po jeho skončení zvolte Restartovat gateway.',
         restartFailed: 'Uloženo, ale gateway se nepodařilo restartovat. Zkuste to znovu volbou Restartovat gateway.',
+        restartFailedBecause: reason => `Gateway se nepodařilo restartovat: ${reason}`,
         restartGateway: 'Restartovat gateway',
         restartNeeded: 'Nutný restart',
         running: 'Běží',
@@ -2816,7 +2857,8 @@ export const csOverrides = {
       defaultDirTitle: 'Výchozí adresář projektu',
       defaultDirDesc:
         'Nové relace začínají v této složce, pokud si nevyberete jinou. Ponechte ji nenastavenou, chcete-li použít domovský adresář.',
-      defaultDirUpdated: 'Výchozí složka projektu byla změněna. Nastavení se projeví v novém chatu (Ctrl/⌘+N).',
+      defaultDirUpdated: shortcut =>
+        `Výchozí složka projektu byla změněna — aby se změna projevila, začněte nový chat${shortcut ? ` (${shortcut})` : ''}.`,
       defaultsTo: label => `Výchozí ${label}.`,
       change: 'Změnit',
       choose: 'Vybrat',
@@ -3476,9 +3518,6 @@ export const csOverrides = {
       resume: 'Pokračovat',
       runNow: 'Spustit nyní',
       memoryData: 'Údaje o paměti',
-      memoryDataDesc: 'Vestavěné soubory paměti vkládané do každé relace',
-      memoryProvider: name => `Aktivní poskytovatel: ${name}`,
-      builtinMemory: 'vestavěné',
       memoryFile: 'Paměť agenta (MEMORY.md)',
       userFile: 'Uživatelský profil (USER.md)',
       bytes: size => size,
@@ -4951,6 +4990,8 @@ export const csOverrides = {
     versionDetailsBody:
       'Tato instalace je spravována mimo aplikaci. Aktualizujte ji stejným způsobem, jakým jste ji nainstalovali.',
     versionDetailsVersion: 'Verze',
+    versionDetailsClient: 'Toto zařízení',
+    versionDetailsBackend: 'Připojený backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Původ sestavení',
     versionDetailsDistribution: 'Distribuce',
@@ -5716,7 +5757,8 @@ export const csOverrides = {
     saveApply: 'Uložit & použít',
     notExpressible: 'Toto uspořádání je propletené (pinwheel) — zatím ho nelze vyjádřit jako vnořená rozdělení.',
     zoneCount: count => `Počet zón: ${count}`,
-    tabCount: count => `Počet karet: ${count}`
+    tabCount: count => `Počet karet: ${count}`,
+    tabActions: title => `Akce pro ${title}`
   },
   contextMenu: {
     link: {
@@ -6640,6 +6682,8 @@ export const csOverrides = {
   promptNotices: {
     legacySendUnconfirmed:
       'Server nemohl potvrdit dřívější odeslání této zprávy, takže už mohla proběhnout. Než ji pošlete znovu, zkontrolujte konverzaci.',
+    restoredDraftAttachmentsDropped:
+      'Přílohy neodeslané zprávy se nepodařilo obnovit. Před odesláním je znovu přiložte.',
     mcpReloadDeferred:
       'Tato konverzace je zaneprázdněná: změna MCP se projeví, až její tah skončí a MCP se znovu načte, nebo až konverzaci otevřete znovu',
     mcpReloadUnavailable: servers => `Nepřipojeno: ${servers}`,

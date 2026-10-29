@@ -684,6 +684,47 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
     # Coerced to the 300s default rather than raising ValueError.
     assert captured["cache_ttl_seconds"] == 300
 
+def test_a_snapshot_reader_keeps_the_previous_values_while_a_retry_loads(tmp_path, monkeypatch):
+    """A retry (one source still failing) must not expose an empty snapshot while its fetch runs: polled
+    reads build their scope from it unlocked and fell back to the stored values. The finished attempt
+    still replaces the snapshot whole, so a key the source dropped is revoked."""
+    import threading
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    (tmp_path / "config.yaml").write_text("secrets:\n  command:\n    enabled: true\n", encoding="utf-8")
+    first = {"GLM_API_KEY": "old", "OPENAI_API_KEY": "old-key"}
+    attempts, fetching, release = iter([first, {"GLM_API_KEY": "new"}]), threading.Event(), threading.Event()
+
+    def _apply(_cfg, _home_path, environ=None):
+        secrets = next(attempts)
+        if secrets is not first:
+            fetching.set()
+            assert release.wait(10)
+        environ.update(secrets)
+        return ApplyReport(
+            sources=[SourceReport(name="vault", label="vault", result=FetchResult(secrets=dict(secrets)),
+                                  applied=list(secrets)),
+                     SourceReport(name="command", label="command",
+                                  result=FetchResult().fail("helper exited 1", ErrorKind.AUTH_FAILED))],
+            provenance={name: AppliedVar(name=name, source="vault", shape="bulk", overrode_env=False)
+                        for name in secrets})
+
+    monkeypatch.setattr(reg_module, "apply_all", _apply)
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == first
+
+    retry = threading.Thread(target=env_loader.hydrate_profile_secret_sources, args=(tmp_path,))
+    retry.start()
+    try:
+        assert fetching.wait(10)
+        assert env_loader.get_secret_source_values(tmp_path) == first
+    finally:
+        release.set()
+        retry.join(10)
+    assert env_loader.get_secret_source_values(tmp_path) == {"GLM_API_KEY": "new"}
+
+
 
 def test_a_load_counts_as_tried_only_once_its_values_are_published(tmp_path, monkeypatch):
     """Polled reads skip the loader lock while ``secret_sources_tried`` is true, so a load must not count
@@ -725,6 +766,35 @@ def test_a_load_counts_as_tried_only_once_its_values_are_published(tmp_path, mon
         loader.join(10)
     assert env_loader.get_secret_source_values(tmp_path) == {"OPENAI_API_KEY": "vault-key"}
     assert env_loader.secret_sources_tried(tmp_path)
+
+
+def test_a_refused_retry_forgets_the_attempt_before_it_clears_the_snapshot(tmp_path, monkeypatch):
+    """A refusing (D32) retry clears the snapshot. A poll between the two clears must not see the home
+    as tried with that empty snapshot: it would skip the load, and with it the refusal."""
+    import threading
+
+    class _HeldPop(dict):
+        def pop(self, *args):
+            paused.set()
+            assert release.wait(10)
+            return super().pop(*args)
+
+    def _refuse(_home, _home_key):
+        raise RuntimeError("D32 refusal")
+
+    home_key, paused, release = str(tmp_path.resolve()), threading.Event(), threading.Event()
+    env_loader._SECRET_SOURCE_TRIED_AT[home_key] = env_loader._monotonic()
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", _HeldPop({home_key: {"GLM_API_KEY": "old"}}))
+    monkeypatch.setattr(env_loader, "_hydrate_profile_secret_sources", _refuse)
+    retry = threading.Thread(target=pytest.raises, args=(RuntimeError, env_loader.hydrate_profile_secret_sources, tmp_path))
+    retry.start()
+    try:
+        assert paused.wait(10)
+        assert not env_loader.secret_sources_tried(tmp_path)
+    finally:
+        release.set()
+        retry.join(10)
+    assert env_loader.get_secret_source_values(tmp_path) == {}
 
 
 @pytest.fixture

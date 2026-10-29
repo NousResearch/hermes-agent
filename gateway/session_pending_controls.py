@@ -29,6 +29,12 @@ class PendingControls:
                       'command': _redact_approval_command(data.get('command', '')),
                       'description': _redact_approval_command(data.get('description', '')),
                       'choices': choices}
+            # Guardian escalation context (approval-explain): the card renders the reason the
+            # guardian gave. Redact again here so this projection stays the trust boundary.
+            if data.get('smart_reason'):
+                prompt['smart_reason'] = _redact_approval_command(str(data['smart_reason']))
+            if data.get('smart_denied'):
+                prompt['smart_denied'] = True
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])
                 prompt['choices'] = ['once', 'deny']

@@ -14,11 +14,11 @@ import logging
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Optional
 
 from hermes_constants import hermes_home_key, normalize_scope
 
@@ -212,6 +212,19 @@ def _save_discovery_cache(cache: dict[str, list]) -> None:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
 
 
+class _DispatchGate:
+    """Per-registration source-dispatch permit with one-way revocation."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._revoked = False
+    def acquire(self) -> bool:
+        with self._lock:
+            return not self._revoked
+    def revoke(self) -> None:
+        with self._lock:
+            self._revoked = True
+
+
 @dataclass(eq=False, slots=True)
 class ToolEntry:
     """Metadata for one registered tool (identity semantics: restore/CAS paths compare ``is``)."""
@@ -230,6 +243,56 @@ class ToolEntry:
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
     execution_timeout: float | None = None
+    requires_gateway_source_context: bool = False
+    gateway_source_consent: Optional[Callable[[], bool]] = None
+    gateway_source_context_ack: "GatewaySourceContextBinding | None" = None
+    _source_dispatch_gate: _DispatchGate = field(default_factory=_DispatchGate, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class GatewaySourceContextBinding:
+    """Parent-retained provenance for one hosted registration (not unforgeable in-process)."""
+    entry: ToolEntry
+    registration: Any
+    handle_id: int
+    key: str
+    plugin_id: str
+    plugin_key: str
+    scope: str
+    profile_home: str
+    handler: Callable
+    callback_ref: int
+    generation: int
+    opted_in: bool
+    host: Any
+    context: Any
+    gate: Any
+
+    def matches(self, entry: ToolEntry) -> bool:
+        registration = self.registration
+        host, context = self.host, self.context
+        return (self.entry is entry and self.opted_in is True
+                and getattr(host, "alive", False) is True
+                and self.gate is entry._source_dispatch_gate and self.gate.acquire()
+                and entry.handler is self.handler and entry.requires_gateway_source_context is True
+                and getattr(registration, "active", False) is True
+                and getattr(registration, "kind", None) == "tool"
+                and getattr(registration, "key", None) == self.key
+                and getattr(registration, "plugin_key", None) == self.plugin_key
+                and self.handle_id > 0 and self.plugin_id == getattr(context, "plugin_id", None)
+                and getattr(context, "manifest", None) is not None
+                and self.scope == getattr(getattr(host, "_manager", None), "scope_key", None)
+                and self.profile_home == str(Path(host.home).resolve())
+                and self.generation == getattr(host, "_generation", None)
+                and self.callback_ref == getattr(self.handler, "__hermes_plugin_host_ref__", None)
+                and getattr(host, "_handles", {}).get(self.handle_id) is registration
+                and getattr(host, "_contexts", {}).get(self.plugin_key) is context
+                and getattr(host, "_source_bindings", {}).get(self.handle_id) is self)
+
+
+def _has_gateway_source_binding(entry: ToolEntry) -> bool:
+    binding = entry.gateway_source_context_ack
+    return type(binding) is GatewaySourceContextBinding and binding.matches(entry)
 
 
 class _PluginOverridePolicy:
@@ -516,6 +579,31 @@ class ToolRegistry:
         members = (e for e in entries if e.toolset == toolset)
         return any(not e.check_fn or _memo_check(e.check_fn, memo) for e in members)
 
+    def attach_gateway_source_binding(self, binding: GatewaySourceContextBinding) -> bool:
+        """Atomically attach only while this exact registration remains current."""
+        with self._lock:
+            current = self._slot(binding.scope).get(binding.key)
+            entry = binding.entry
+            if (current is not entry or entry._source_dispatch_gate is not binding.gate
+                    or not binding.gate.acquire() or entry.gateway_source_context_ack is not None
+                    or entry.handler is not binding.handler
+                    or entry.requires_gateway_source_context is not True
+                    or binding.registration is None or binding.key != entry.name
+                    or binding.scope != getattr(getattr(binding.host, "_manager", None), "scope_key", None)):
+                return False
+            entry.gateway_source_context_ack = binding
+            return True
+
+    def clear_gateway_source_binding(self, binding: GatewaySourceContextBinding, *, revoke: bool = True) -> bool:
+        """Identity-conditional clear; stale cleanup cannot affect a replacement."""
+        with self._lock:
+            if binding.entry.gateway_source_context_ack is not binding:
+                return False
+            binding.entry.gateway_source_context_ack = None
+            if revoke:
+                binding.gate.revoke()
+            return True
+
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
         with self._lock:
@@ -693,7 +781,10 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None, execution_timeout: float | None = None):
+        scope: Optional[str] = None, execution_timeout: float | None = None,
+        gateway_source_consent: Callable[[], bool] | None = None,
+        requires_gateway_source_context: bool = False,
+        ):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -753,12 +844,18 @@ class ToolRegistry:
                         "replacement is intentional, or deregister the existing tool first.",
                         name, toolset, existing.toolset)
                     return
+            if existing is not None:
+                existing._source_dispatch_gate.revoke()
+                existing.gateway_source_context_ack = None
             target[name] = ToolEntry(
                 name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides,
+                requires_gateway_source_context=requires_gateway_source_context is True,
+                gateway_source_consent=gateway_source_consent,
+                gateway_source_context_ack=None)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
@@ -816,6 +913,8 @@ class ToolRegistry:
                     raise PermissionError(
                         f"Plugin module {caller_mod!r} cannot deregister tool {name!r} (toolset "
                         f"{entry.toolset!r}) without operator opt-in (allow_tool_override).")
+            entry._source_dispatch_gate.revoke()
+            entry.gateway_source_context_ack = None
             del target[name]
             if scope is not None and not target:
                 self._scoped_tools.pop(scope, None)
@@ -846,6 +945,8 @@ class ToolRegistry:
             target = self._slot(scope, create=True)
             if target.get(name) is not current:
                 return False
+            current._source_dispatch_gate.revoke()
+            current.gateway_source_context_ack = None
             if previous is None:
                 target.pop(name, None)
             else:
@@ -936,6 +1037,29 @@ class ToolRegistry:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).
+            source = kwargs.pop("trusted_gateway_source", None)
+            if source is not None:
+                allowed = False
+                try:
+                    consented = (entry.requires_gateway_source_context is True
+                                 and _has_gateway_source_binding(entry)
+                                 and entry.gateway_source_consent is not None
+                                 and entry.gateway_source_consent() is True)
+                    complete = (type(source) is dict
+                                and set(source) == {"platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id"}
+                                and all(isinstance(source.get(k), str) and source[k].strip() for k in
+                                        ("platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id"))
+                                and source.get("session_id") == kwargs.get("session_id"))
+                    from gateway.session_context import _has_gateway_source_dispatch_permit
+                    if (consented and complete
+                            and _has_gateway_source_dispatch_permit(source, kwargs.get("session_id"))):
+                        with self._lock:
+                            current = self._lookup(name, scope or self.current_scope_key(), explicit_scope=scope is not None)
+                            allowed = current is entry and entry._source_dispatch_gate.acquire()
+                except Exception:
+                    allowed = False
+                if allowed:
+                    kwargs["trusted_gateway_source"] = dict(source)
             kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async

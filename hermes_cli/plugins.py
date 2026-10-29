@@ -464,6 +464,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        requires_gateway_source_context: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
@@ -482,10 +483,27 @@ class PluginContext(PluginCapabilityCtxMixin):
             logger.warning("Plugin %s tried to shadow global tool %s without override=True",
                            self.manifest.name, name)
             return None
+        source_gate = None
+        if requires_gateway_source_context is True:
+            manager = self._manager
+            manifest = self.manifest
+            plugin_id = self.plugin_id
+            def source_gate():
+                try:
+                    if manifest.source == "bundled":
+                        return False
+                    with _plugin_home_scope(manager.home_path):
+                        if manager._runs_in_plugin_host(manifest) is not True:
+                            return False
+                        entry = _plugin_settings_entry(load_config_readonly() or {}, plugin_id)
+                    return entry is not None and entry.get("allow_gateway_source_context") is True
+                except Exception:
+                    return False
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
+            override=override, scope=scope, gateway_source_consent=source_gate,
+            requires_gateway_source_context=requires_gateway_source_context is True,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         handle = None
@@ -676,6 +694,9 @@ class PluginContext(PluginCapabilityCtxMixin):
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)
         resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch."""
+        # Child/plugin-supplied kwargs are untrusted. In particular, never let a
+        # child echo trusted source metadata back through a nested dispatch.
+        kwargs.pop("trusted_gateway_source", None)
         from tools.registry import registry
         # In gateway mode _cli_ref is None — tools degrade gracefully (no spinner, TERMINAL_CWD).
         if "parent_agent" not in kwargs:

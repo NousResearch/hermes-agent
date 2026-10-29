@@ -818,6 +818,15 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
     dispatch_kwargs: dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
+    try:
+        from gateway.session_context import get_bound_session_source
+        source = get_bound_session_source()
+        required = ("platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id")
+        if all(isinstance(source.get(k), str) and source[k].strip() for k in required):
+            if source["session_id"] == ids.session_id:
+                dispatch_kwargs["trusted_gateway_source"] = source
+    except Exception:
+        pass
     if function_name == "execute_code":
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
@@ -829,6 +838,10 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)
+        if "trusted_gateway_source" in dispatch_kwargs:
+            from gateway.session_context import _scoped_gateway_source_dispatch
+            with _scoped_gateway_source_dispatch(ids.session_id):
+                return registry.dispatch(function_name, next_args, **dispatch_kwargs)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):

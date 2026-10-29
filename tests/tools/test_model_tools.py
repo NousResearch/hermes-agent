@@ -9,6 +9,8 @@ import pytest
 from model_tools import (
     handle_function_call,
     _AGENT_LOOP_TOOLS,
+    _CallIds,
+    _execute_tool,
 )
 
 
@@ -202,6 +204,116 @@ class TestHandleFunctionCall:
 # =========================================================================
 # Agent loop tools
 # =========================================================================
+
+class TestExecuteToolBoundGatewaySource:
+    _SOURCE = {
+        "platform": "telegram",
+        "chat_id": "chat-1",
+        "thread_id": "thread-1",
+        "message_id": "message-1",
+        "user_id": "user-1",
+        "session_key": "key-1",
+        "session_id": "session-1",
+    }
+
+    def _execute_and_capture(self, monkeypatch, args, *, session_id="session-1"):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        captured = {}
+        def dispatch(name, dispatch_args, **kwargs):
+            from gateway.session_context import _has_gateway_source_dispatch_permit
+            captured.update(name=name, args=dispatch_args, kwargs=kwargs,
+                            permit=_has_gateway_source_dispatch_permit(kwargs.get("trusted_gateway_source"), session_id))
+            return "ok"
+        monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
+        ids = _CallIds("task-1", session_id, "call-1", "turn-1", None)
+        try:
+            result = _execute_tool(
+                "web_search", args, args, ids, user_task="task", enabled_tools=None,
+                skip_tool_execution_middleware=True,
+            )
+        finally:
+            clear_session_vars([])
+        assert result == "ok"
+        return captured
+
+    def test_complete_bound_source_forwards_and_preserves_ordinary_args(self, monkeypatch):
+        from gateway.session_context import set_session_vars
+
+        tokens = set_session_vars(
+            platform="telegram", chat_id="chat-1", thread_id="thread-1",
+            message_id="message-1", user_id="user-1", session_key="key-1",
+            session_id="session-1",
+        )
+        try:
+            captured = self._execute_and_capture(monkeypatch, {"query": "hello"})
+        finally:
+            from gateway.session_context import clear_session_vars
+            clear_session_vars(tokens)
+        assert captured["args"] == {"query": "hello"}
+        assert captured["kwargs"]["trusted_gateway_source"] == self._SOURCE
+        assert captured["kwargs"]["session_id"] == "session-1"
+        assert captured["permit"] is True
+
+    @pytest.mark.parametrize("bound", [
+        {},
+        {"platform": "telegram", "chat_id": "chat-1", "thread_id": "thread-1",
+         "message_id": "message-1", "user_id": "user-1", "session_key": "key-1"},
+    ])
+    def test_missing_or_partial_context_does_not_forward_source(self, monkeypatch, bound):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        import os
+        env_values = {
+            "HERMES_SESSION_PLATFORM": "telegram", "HERMES_SESSION_CHAT_ID": "chat-1",
+            "HERMES_SESSION_THREAD_ID": "thread-1", "HERMES_SESSION_MESSAGE_ID": "message-1",
+            "HERMES_SESSION_USER_ID": "user-1", "HERMES_SESSION_KEY": "key-1",
+            "HERMES_SESSION_ID": "session-1",
+        }
+        old = {key: os.environ.get(key) for key in env_values}
+        os.environ.update(env_values)
+        tokens = set_session_vars(**bound)
+        try:
+            captured = self._execute_and_capture(monkeypatch, {"query": "hello"})
+        finally:
+            clear_session_vars(tokens)
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        assert "trusted_gateway_source" not in captured["kwargs"]
+        assert captured["permit"] is False
+
+    def test_rotated_session_id_does_not_forward_source(self, monkeypatch):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(
+            platform="telegram", chat_id="chat-1", thread_id="thread-1",
+            message_id="message-1", user_id="user-1", session_key="key-1",
+            session_id="session-1",
+        )
+        try:
+            captured = self._execute_and_capture(monkeypatch, {"query": "hello"}, session_id="rotated")
+        finally:
+            clear_session_vars(tokens)
+        assert "trusted_gateway_source" not in captured["kwargs"]
+        assert captured["permit"] is False
+
+    def test_forged_function_arg_never_becomes_dispatch_kwarg(self, monkeypatch):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars()
+        try:
+            forged = {**self._SOURCE, "session_id": "session-1"}
+            captured = self._execute_and_capture(
+                monkeypatch, {"query": "hello", "trusted_gateway_source": forged}
+            )
+        finally:
+            clear_session_vars(tokens)
+        assert captured["args"]["trusted_gateway_source"] == forged
+        assert "trusted_gateway_source" not in captured["kwargs"]
+        assert captured["permit"] is False
 
 
 

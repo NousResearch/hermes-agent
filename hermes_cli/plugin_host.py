@@ -80,6 +80,8 @@ class PluginHost:
         self._channel: Optional[Channel] = None
         self._contexts: dict[str, Any] = {}
         self._handles: dict[int, Any] = {}
+        self._source_bindings: dict[int, Any] = {}
+        self._source_bindings_lock = threading.Lock()
         self._handle_ids = itertools.count(1)
         self._base_context = self._build_base_context()
         self._loading: Optional[str] = None
@@ -136,6 +138,9 @@ class PluginHost:
         return env
 
     def ensure_started(self) -> Channel:
+        # Revoke stale-generation permits before publishing a replacement channel.
+        if not self.alive:
+            self._revoke_source_bindings()
         with self._lock:
             if self.alive:
                 return self._channel  # type: ignore[return-value]
@@ -172,7 +177,19 @@ class PluginHost:
         return (f"the plugin host for this profile exited (code {code}); Hermes restarts it and reloads "
                 f"its plugins automatically" if code is not None else "the plugin host is not running")
 
+    def _revoke_source_bindings(self, *, generation: Optional[int] = None, plugin_key: Optional[str] = None) -> None:
+        with self._source_bindings_lock:
+            removed = [(key, binding) for key, binding in self._source_bindings.items()
+                       if (generation is None or binding.generation == generation)
+                       and (plugin_key is None or binding.plugin_key == plugin_key)]
+            for key, _ in removed:
+                self._source_bindings.pop(key, None)
+        for _, binding in removed:
+            from tools.registry import registry
+            registry.clear_gateway_source_binding(binding)
+
     def _on_channel_close(self, generation: int, reason: str) -> None:
+        self._revoke_source_bindings(generation=generation)
         if self._stopping or generation != self._generation:
             return  # a deliberate shutdown, or a late close from a host already replaced
         culprit = self._loading
@@ -206,6 +223,7 @@ class PluginHost:
 
     def shutdown(self) -> None:
         self._stopping = True
+        self._revoke_source_bindings()
         with self._lock:
             proc, channel = self._proc, self._channel
             self._proc = self._channel = None
@@ -322,7 +340,17 @@ class PluginHost:
                           timeout=timeout)
 
     def _unload(self, plugin_key: str) -> None:
-        self._contexts.pop(plugin_key, None)
+        # Serialize context removal and binding detachment against issuance. Registry cleanup
+        # happens only after releasing this lock; registry paths never acquire the host lock.
+        with self._source_bindings_lock:
+            self._contexts.pop(plugin_key, None)
+            removed = [(key, binding) for key, binding in self._source_bindings.items()
+                       if binding.plugin_key == plugin_key]
+            for key, _ in removed:
+                self._source_bindings.pop(key, None)
+        for _, binding in removed:
+            from tools.registry import registry
+            registry.clear_gateway_source_binding(binding)
         channel = self._channel
         if channel is None or channel.closed_reason is not None:
             return
@@ -354,6 +382,38 @@ class PluginHost:
             self._releases.append(ref)
 
     def invoke(self, ref: int, args: tuple, kwargs: dict, *, generation: Optional[int] = None) -> Any:
+        kwargs = dict(kwargs)
+        source = kwargs.get("trusted_gateway_source")
+        if source is not None:
+            kwargs.pop("trusted_gateway_source", None)
+            try:
+                from tools.registry import GatewaySourceContextBinding, registry
+                from gateway.session_context import _has_gateway_source_dispatch_permit
+                with self._source_bindings_lock:
+                    candidates = tuple(self._source_bindings.values())
+                keys = {"platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id"}
+                valid_source = (self._stopping is False and self.alive is True
+                                and type(source) is dict and set(source) == keys
+                                and all(isinstance(source.get(k), str) and source[k].strip() for k in keys)
+                                and source.get("session_id") == kwargs.get("session_id")
+                                and _has_gateway_source_dispatch_permit(source, kwargs.get("session_id")))
+                for candidate in candidates:
+                    entry = candidate.entry
+                    current = registry.snapshot_registration(candidate.key, scope=candidate.scope)
+                    if (type(candidate) is GatewaySourceContextBinding and valid_source
+                            and candidate.host is self and candidate.callback_ref == ref
+                            and self.alive and candidate.generation == generation == self._generation
+                            and candidate.context is self._contexts.get(candidate.plugin_key)
+                            and candidate.handle_id in self._handles
+                            and self._handles[candidate.handle_id] is candidate.registration
+                            and entry.gateway_source_context_ack is candidate
+                            and current is entry and candidate.matches(entry)
+                            and entry.gateway_source_consent is not None
+                            and entry.gateway_source_consent() is True):
+                        kwargs["trusted_gateway_source"] = dict(source)
+                        break
+            except Exception:
+                pass
         return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)},
                           generation=generation)
 
@@ -385,7 +445,15 @@ class PluginHost:
         if method == "facade":
             return self._serve_facade(params)
         if method == "dispose":
-            handle = self._handles.pop(int(params["handle"]), None)
+            raw_handle = params.get("handle")
+            if type(raw_handle) is not int:
+                return None
+            with self._source_bindings_lock:
+                binding = self._source_bindings.pop(raw_handle, None)
+            if binding is not None:
+                from tools.registry import registry
+                registry.clear_gateway_source_binding(binding)
+            handle = self._handles.pop(raw_handle, None)
             if handle is not None:
                 handle.dispose()
             return None
@@ -411,7 +479,49 @@ class PluginHost:
         args = decode(params.get("args") or [], resolve)
         kwargs = decode(params.get("kwargs") or {}, resolve)
         result = getattr(ctx, method)(*args, **kwargs)
-        return self._encode_for_host(result)
+        encoded = self._encode_for_host(result)
+        if method == "register_tool" and result is not None and kwargs.get("requires_gateway_source_context") is True:
+            try:
+                from hermes_cli.plugins_ledger import PluginRegistration
+                from tools.registry import GatewaySourceContextBinding, registry
+                plugin_key = str(params.get("plugin"))
+                plugin_id = ctx.plugin_id
+                manifest = ctx.manifest
+                handle_id = encoded["__handle__"]
+                handler = kwargs.get("handler")
+                entry = registry.snapshot_registration(str(kwargs.get("name")), scope=self._manager.scope_key)
+                grant = False
+                if manifest.source != "bundled" and self._manager._runs_in_plugin_host(manifest) is True:
+                    from hermes_cli.plugins import _plugin_home_scope, _plugin_settings_entry, load_config_readonly
+                    with _plugin_home_scope(self._home):
+                        config = load_config_readonly() or {}
+                        setting = _plugin_settings_entry(config, plugin_id)
+                    grant = setting is not None and setting.get("allow_gateway_source_context") is True
+                current_ctx = self._contexts.get(plugin_key)
+                valid = (isinstance(result, PluginRegistration) and result.kind == "tool"
+                         and result.key == str(kwargs.get("name")) and self._handles.get(handle_id) is result
+                         and current_ctx is ctx and entry is not None and entry.handler is handler
+                         and entry.requires_gateway_source_context is True and grant)
+                callback_ref = getattr(handler, "__hermes_plugin_host_ref__", None)
+                if valid and type(callback_ref) is int:
+                    binding = GatewaySourceContextBinding(entry, result, handle_id, result.key,
+                        plugin_id, plugin_key, self._manager.scope_key, str(self._home.resolve()),
+                        handler, callback_ref, self._generation, True, self, ctx,
+                        entry._source_dispatch_gate)
+                    # Lock order is host map -> registry; registry never takes this host lock.
+                    # Unload removes the context under this same lock before any cleanup.
+                    with self._source_bindings_lock:
+                        if (self._stopping is False and self.alive is True
+                                and self._contexts.get(plugin_key) is ctx
+                                and self._generation == binding.generation
+                                and self._source_bindings.get(handle_id) is None
+                                and registry.attach_gateway_source_binding(binding)):
+                            self._source_bindings[handle_id] = binding
+                        else:
+                            binding.gate.revoke()
+            except Exception:
+                pass  # Missing or ambiguous proof is denial; ordinary registration still works.
+        return encoded
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:
         from hermes_cli.plugin_isolation import HOST_REMOTE_FACADES

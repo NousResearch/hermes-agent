@@ -54,6 +54,44 @@ _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_U
 # or child-process export: a bound id alone cannot authorize detached delivery.
 _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
 
+# Parent-process, task-local capability authorizing source metadata forwarding. Never serialized.
+_GATEWAY_SOURCE_DISPATCH_PERMIT: ContextVar[Any] = ContextVar("HERMES_GATEWAY_SOURCE_DISPATCH_PERMIT", default=None)
+_GATEWAY_SOURCE_FIELDS = frozenset({
+    "platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id",
+})
+
+
+@contextmanager
+def _scoped_gateway_source_dispatch(session_id: Any) -> Iterator[None]:
+    """Issue a temporary permit only from the actual bound task-local source."""
+    source = get_bound_session_source()
+    if (type(source) is not dict or set(source) != _GATEWAY_SOURCE_FIELDS
+            or source.get("session_id") != session_id
+            or not all(isinstance(source.get(key), str) and source[key].strip()
+                       for key in _GATEWAY_SOURCE_FIELDS)):
+        yield
+        return
+    permit = (session_id, tuple(sorted(source.items())))
+    token = _GATEWAY_SOURCE_DISPATCH_PERMIT.set(permit)
+    try:
+        yield
+    finally:
+        _GATEWAY_SOURCE_DISPATCH_PERMIT.reset(token)
+
+
+def _has_gateway_source_dispatch_permit(source: Any, session_id: Any) -> bool:
+    """Validate exact source against the private permit and current bound context."""
+    if (type(source) is not dict or set(source) != _GATEWAY_SOURCE_FIELDS
+            or not all(isinstance(source.get(key), str) and source[key].strip()
+                       for key in _GATEWAY_SOURCE_FIELDS)
+            or source.get("session_id") != session_id):
+        return False
+    permit = _GATEWAY_SOURCE_DISPATCH_PERMIT.get()
+    canonical = tuple(sorted(source.items()))
+    if permit != (session_id, canonical):
+        return False
+    return get_bound_session_source() == source
+
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
@@ -192,6 +230,29 @@ def get_session_env(name: str, default: str = "") -> str:
     if var is not None and (value := var.get()) is not _UNSET:
         return value
     return os.getenv(name, default)
+
+
+def get_bound_session_source() -> dict[str, str]:
+    """Return only explicitly bound, non-empty task-local routing identity strings.
+
+    Unlike :func:`get_session_env`, this trust-sensitive view never consults the process
+    environment and does not infer authority from surface classification. Missing or malformed
+    fields remain absent for the caller to validate as a complete identity tuple.
+    """
+    variables = {
+        "platform": _SESSION_PLATFORM,
+        "chat_id": _SESSION_CHAT_ID,
+        "thread_id": _SESSION_THREAD_ID,
+        "message_id": _SESSION_MESSAGE_ID,
+        "user_id": _SESSION_USER_ID,
+        "session_key": _SESSION_KEY,
+        "session_id": _SESSION_ID,
+    }
+    return {
+        key: value
+        for key, var in variables.items()
+        if isinstance((value := var.get()), str) and value.strip()
+    }
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

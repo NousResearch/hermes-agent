@@ -468,6 +468,34 @@ describe('desktop tree publication', () => {
   })
 
   it.skipIf(process.platform === 'win32')(
+    'publishes a desktop folder whose on-disk name differs only in case',
+    async () => {
+      // macOS and Windows find `desktop/plugin.js` in a folder named `Desktop/`, and their realpath
+      // returns the on-disk spelling. Stand that in on any filesystem: realpath answers `Desktop`.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const pkg = path.join(home, 'plugins', 'media')
+      write(path.join(pkg, 'desktop', 'plugin.js'), 'export default {}')
+      write(path.join(pkg, 'Desktop', 'plugin.js'), 'export default {}')
+      const realpath = fs.promises.realpath
+
+      const spy = vi
+        .spyOn(fs.promises, 'realpath')
+        .mockImplementation(async p =>
+          realpath(String(p) === path.join(pkg, 'desktop') ? path.join(pkg, 'Desktop') : p)
+        )
+
+      try {
+        expect(await materializeDesktopHalf(pkg, appRoot)).toBe(path.join(appRoot, 'media'))
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('export default {}')
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
     'still publishes a development checkout the user linked in, links inside it included',
     async () => {
       const home = makeHome()

@@ -453,6 +453,19 @@ def _docker_session_isolation_enabled() -> bool:
     return _session_scope().docker_session_isolated
 
 
+def _session_scoped_task(env_type: str, task_id: str) -> bool:
+    """True when *task_id* gets its own *env_type* sandbox for the life of its session.
+
+    That is per-session isolation for this backend, a real session key (not the shared
+    ``"default"``) and no RL/benchmark override (those keep their own lifecycle). Such a sandbox
+    must outlive each turn and go at session close or idle timeout, so its builder stamps
+    ``_session_scoped`` for :func:`~tools.terminal_tool_lifecycle.is_persistent_env`.
+    """
+    scope = _session_scope()
+    return (scope.env_type == env_type and scope.session_isolated and task_id != "default"
+            and not _has_isolation_overrides(task_id))
+
+
 def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
     """Key for a session-less task serving a routed (non-launch) profile home, else None.
 

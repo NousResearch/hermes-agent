@@ -37,7 +37,8 @@ class TerminalEnvironmentProvider(ProviderBase):
     * ``strip_env_keys`` — vendor credential env vars, stripped from every subprocess the agent
       spawns so a model-authored command can never read them.
     * ``session_isolated_when_nonpersistent`` — non-persistent mode gives each session its own
-      sandbox identity; opt in when a shared name would let two ephemeral runs destroy each other.
+      sandbox identity, kept between turns and cleaned up at session close or idle timeout; opt in
+      when a shared name would let two ephemeral runs destroy each other.
     * ``default_cwd`` — where commands start when ``terminal.cwd`` is unset or unusable there: an
       absolute in-sandbox path, or ``"~"`` for each sandbox's own home. With ``"~"``,
       ``create_environment`` receives ``cwd="~"`` (never expanded on the host) and the environment sets

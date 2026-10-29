@@ -250,3 +250,8 @@ to), set `session_isolated_when_nonpersistent = True`. With
 sandbox identity instead of sharing one — without this, two independent
 ephemeral runs could attach one live VM and delete it out from under each
 other.
+
+That sandbox lives for the session, as a per-session Docker container does:
+Hermes keeps it between turns and calls `cleanup()` when the session closes or
+after `terminal.lifetime_seconds` idle. Delegated subagents run in their
+parent's sandbox.

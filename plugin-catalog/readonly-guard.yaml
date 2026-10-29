@@ -1,0 +1,30 @@
+name: readonly-guard
+repo: https://github.com/mciocchi/hermes-readonly-guard
+sha: "1e7c2110c8d5df10062ecd04ba782b0a78974807"
+subdir: ""
+description: >-
+  Three-mode, per-session tool guard for Hermes: read-only (writes blocked; inspection
+  tools plus single allowlisted read-only shell commands), plan (the same, plus the plan
+  markdown), and writable. Switched from the status bar, /readonly or the dashboard API; a
+  session that is never switched follows a configurable default (read-only). Disclosure —
+  registers a pre_tool_call hook that can block any tool call, and fails closed when the
+  hook raises; writes <HERMES_HOME>/readonly-guard.state (session -> mode) and
+  plugins.entries.readonly-guard.settings.default_mode; a writable lease expires after
+  writable_expiry_minutes (30 by default) minutes without a message from the user, the expiry
+  is latched (a later message does not revive it), and a turn that is already running is
+  never interrupted; in read-only and plan modes it
+  runs single, allowlisted, read-only shell commands through terminal (a speed bump, not a
+  sandbox; on Windows those run under Git Bash); no network calls, no environment
+  variables, no Python dependencies.
+maintainer: mciocchi
+tier: community
+category: desktop
+docs_url: https://github.com/mciocchi/hermes-readonly-guard
+image: "https://raw.githubusercontent.com/mciocchi/hermes-readonly-guard/1e7c2110c8d5df10062ecd04ba782b0a78974807/docs/banner.png"
+version: "3.6"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

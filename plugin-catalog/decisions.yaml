@@ -1,6 +1,6 @@
 name: decisions
 repo: https://github.com/eve-ai-dev/hermes-decisions-plugin
-sha: 9a5ae05c94a8abf9282fda1f3b636ad5566d0c73
+sha: eeac2eac98a3d1f566dc020912bb378aece431f8
 description: Predicate Decisions API tools with background jobs and session-owned structured JSON results.
 maintainer: eve-ai-dev
 tier: community

@@ -65,9 +65,60 @@ def _reject_unsafe(action: str, args: dict[str, Any]) -> Optional[str]:
     if action == "key" and (blocked := next((b for b in _BLOCKED_KEY_COMBOS
                                              if b.issubset(_canon_key_combo(args.get("keys", "")))), None)) is not None:
         return json.dumps({"error": f"blocked key combo: {sorted(blocked)}", "hint": "Destructive system shortcuts are hard-blocked."})
+    if action == "run_steps":
+        unsupported = next((name for name in ("bring_to_front", "capture_after") if args.get(name)), None)
+        if unsupported:
+            return json.dumps({"error": f"`{unsupported}` is not supported for run_steps; use an explicit focus or observe step.",
+                               "code": f"run_steps_{unsupported}_unsupported"})
+    if action == "run_steps" and (err := _reject_unsafe_steps(args.get("steps"))):
+        return err
     if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
         return json.dumps({"error": "bring_to_front requires delivery_mode='foreground'",
                            "code": "bring_to_front_requires_foreground"})
+    return None
+
+def _reject_unsafe_steps(steps: Any) -> Optional[str]:
+    """Apply the same hard blocks to every step of a run_steps batch.
+
+    A batch is many input actions in one call, so it must face the same gate as the single-action
+    path: otherwise run_steps becomes a way around the blocked-type-pattern and blocked-key-combo
+    rules (e.g. a `cmd+shift+backspace` step would slip through where action='key' is refused).
+    """
+    if not isinstance(steps, list):
+        return None
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        if "tool" in step:
+            tool, raw = step.get("tool"), step.get("args")
+        else:
+            names = [name for name in step if name in ("click", "double_click", "right_click", "set_value",
+                                                       "type_text", "press_key", "hotkey", "scroll", "drag",
+                                                       "move_cursor", "type", "key", "middle_click")]
+            if len(names) != 1:
+                continue
+            tool, raw = names[0], step.get(names[0])
+        if not isinstance(raw, dict):
+            continue
+        # Ignore the separately supplied top-level args if a tagged action name is not a recognized step.
+        if tool not in {"click", "double_click", "right_click", "set_value", "type_text", "press_key",
+                        "hotkey", "scroll", "drag", "move_cursor", "type", "key", "middle_click"}:
+            continue
+        text = raw.get("text", raw.get("value") if tool in {"type", "type_text"} else None)
+        if isinstance(text, str) and any(pattern.search(text) for pattern in _BLOCKED_TYPE_PATTERNS):
+            return json.dumps({"error": f"blocked pattern in type text (step {i + 1})"})
+        if tool in {"key", "press_key", "hotkey"}:
+            # Canonicalize every chord component together: split modifiers must not be lost
+            # when keys/key already contains separators or when the translator changes aliases.
+            parts = []
+            for value in (raw.get("keys"), raw.get("key"), raw.get("modifiers")):
+                if isinstance(value, str):
+                    parts.append(value)
+                elif isinstance(value, list):
+                    parts.extend(item for item in value if isinstance(item, str))
+            keys = frozenset(part for item in parts for part in _canon_key_combo(item))
+            if any(blocked.issubset(keys) for blocked in _BLOCKED_KEY_COMBOS):
+                return json.dumps({"error": f"blocked key combo in step {i + 1}"})
     return None
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
@@ -266,6 +317,18 @@ def release_computer_use_session(session_id: str) -> bool:
                   lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
     return True
 
+def stop_all_computer_use_backends() -> None:
+    """Stop every cached computer-use backend so no ``cua-driver`` daemon outlives this process.
+
+    Public seam for hosts that exit through ``os._exit`` (the gateway does — see
+    ``gateway/run.py::_exit_after_graceful_shutdown``), which bypasses ``atexit`` and therefore
+    never runs the registered hook. Without this call, a private embedded daemon (launched
+    through LaunchServices on macOS, so it is a child of launchd and not of Hermes) survives
+    the restart with its ``--dangerously-bypass-approvals`` mode and its Accessibility /
+    Screen Recording grants intact (#126364). Never raises; the caller is on an exit path.
+    """
+    _shutdown_backend_atexit()
+
 @atexit.register
 def _shutdown_backend_atexit() -> None:
     """Stop all cached backends so cua-driver subprocesses don't outlive us. atexit only, no signal handlers: a
@@ -447,6 +510,26 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
 
+def _summarize_run_steps(action: str, args: dict[str, Any], fg: str) -> str:
+    parts = []
+    for step in args.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        tool = step.get("tool") or next(iter(step), "step")
+        raw = step.get("args") or (step.get(tool) if "args" not in step else {}) or {}
+        if not isinstance(raw, dict):
+            parts.append(str(tool))
+            continue
+        target = raw.get("name") or raw.get("role") or raw.get("element") or raw.get("coordinate") or ""
+        text = raw.get("text", raw.get("value", ""))
+        detail = f" {str(target)[:24]}" if target else ""
+        if text:
+            detail += f" {str(text)[:32]!r}"
+        parts.append(f"{str(tool)[:20]}{detail}")
+    summary = "; ".join(parts)
+    return f"run_steps [{summary[:140]}]{fg}"
+
+
 def _summarize_click(action: str, args: dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
@@ -478,6 +561,13 @@ _ACTIONS: dict[str, _ActionSpec] = {
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+    "run_steps": _input(lambda backend, action, args, **delivery: backend.run_steps(
+        args.get("steps") or [],
+        observe=args.get("observe"),
+        delay_ms=args.get("delay_ms"),
+        delivery_mode=args.get("delivery_mode"),
+        foreground_fallback=bool(args.get("foreground_fallback")),
+    ), summarize=_summarize_run_steps),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),

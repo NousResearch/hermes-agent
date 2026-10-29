@@ -32,12 +32,15 @@ _PROPERTIES: dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "run_steps",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "focus steal). Use `run_steps` to send an ordered BATCH of actions in ONE call; "
+            "separate calls do not provide batch-level validation or one end-of-batch observation. "
+            "Parallel tool calls have no guaranteed input order."
         ),
     },
     "mode": {
@@ -112,7 +115,7 @@ _PROPERTIES: dict[str, Any] = {
                 "meta",
             ],
         },
-        "description": "Modifier keys held during the action.",
+        "description": "Modifier keys held during click/drag/scroll actions; in run_steps click/drag steps this plural Hermes spelling is translated to the driver's singular `modifier` field.",
     },
     "from_element": {"type": "integer", "description": "Source element index (drag)."},
     "to_element": {"type": "integer", "description": "Target element index (drag)."},
@@ -160,7 +163,7 @@ _PROPERTIES: dict[str, Any] = {
         "type": "string",
         "enum": ["background", "foreground"],
         "description": (
-            "For input actions (click, type, key, drag, scroll). `background` (DEFAULT) delivers "
+            "For input actions (click, type, key, drag, scroll, run_steps). `background` (DEFAULT) delivers "
             "without raising the window or stealing focus. `foreground` briefly fronts the window "
             "then restores focus — a visible change needing its own approval; use it only when a "
             "result's verdict tells you to escalate there. Each result's `verdict` carries the "
@@ -170,17 +173,52 @@ _PROPERTIES: dict[str, Any] = {
     "bring_to_front": {
         "type": "boolean",
         "description": (
-            "Optional and only valid with delivery_mode='foreground'. Explicitly invokes "
-            "cua-driver's standalone bring_to_front tool before the input; it is never passed as "
-            "an input property. This persistent focus change has a separate approval scope. "
-            "Default false."
+            "Optional and only valid with delivery_mode='foreground' for single-action inputs. "
+            "Explicitly invokes cua-driver's standalone bring_to_front tool before the input; it is "
+            "never passed as an input property and has a separate approval scope. Not supported "
+            "for run_steps; use focus_app or an explicit foreground action instead. Default false."
         ),
     },
     "capture_after": {
         "type": "boolean",
         "description": (
-            "If true, take a follow-up capture after the action and include it in the response. "
+            "If true, take a follow-up capture after a single action and include it in the response. "
+            "Not supported for run_steps; use its observe argument for an end-of-batch read. "
             "Saves a round-trip when you need to verify an action's effect."
+        ),
+    },
+    "steps": {
+        "type": "array",
+        "items": {"type": "object"},
+        "maxItems": 64,
+        "description": (
+            "For action='run_steps': ordered driver actions, each as {'tool': <driver tool>, 'args': {...}} "
+            "or short form {'<tool>': {...}}. Hermes aliases: key uses keys='cmd+s' or key+modifiers; "
+            "type accepts text= or value=; right_click/middle_click select the click button. Click/drag "
+            "modifiers are translated to the driver's singular 'modifier' property; drag accepts "
+            "from_coordinate/to_coordinate pixel pairs (not element indices). A step may add wait_for "
+            "(must hold before) and/or expect (checks after); execution is ordered and stops at the first "
+            "failure, with all steps validated before the first runs. Capture a target window (or use "
+            "focus_app) first; role/name steps need a window. Maximum 64 steps. The driver press_key takes "
+            "a single key name; key combinations use the key alias or hotkey. Operator names like 'plus' "
+            "may not be valid key names; click an app's operator button by role/name instead."
+        ),
+    },
+    "observe": {
+        "type": "object",
+        "description": (
+            "For action='run_steps': optional end-of-batch observation — arguments for ONE "
+            "get_window_state read after the last step. Pass include_screenshot=true to see the "
+            "window. Defaults to a since='latest' diff of what changed."
+        ),
+    },
+    "delay_ms": {
+        "type": "integer",
+        "maximum": 2000,
+        "minimum": 0,
+        "description": (
+            "For action='run_steps': pause between steps in milliseconds (not after the last). "
+            "Default 0. Use a small delay (e.g. 50) when a target needs a moment to settle."
         ),
     },
 }

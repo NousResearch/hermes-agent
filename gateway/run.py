@@ -2,6 +2,8 @@
 
 Provides ``start_gateway()`` (start all configured adapters) and ``GatewayRunner`` (lifecycle).
 Run via ``python -m gateway.run`` or ``python cli.py --gateway``."""
+# health: allow FILE_LINES -- the os._exit funnel gains one teardown step (stop the embedded cua-driver daemon, #126364); the funnel stays in this module because hermes_cli/gateway.py and the exit tests import and monkeypatch it from gateway.run
+
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
@@ -5221,7 +5223,8 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
-    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs):
+    from gateway.shutdown_watchdog import stop_cua_backends_quietly
+    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs, stop_cua_backends_quietly):
         _best_effort(_step)
     os._exit(exit_code)
 

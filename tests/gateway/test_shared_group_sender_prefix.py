@@ -47,3 +47,37 @@ async def test_preprocess_includes_slack_author_mention_for_shared_thread():
     assert result == "[Alice | Slack user <@U123>] mention me again"
 
 
+@pytest.mark.asyncio
+async def test_preprocess_includes_google_chat_sender_email_for_shared_space():
+    """Shared Google Chat spaces show the sender's verified email next to the display name, so two
+    people called 'Alice' (or a renamed account) stay distinguishable to the agent."""
+    gchat = Platform("google_chat")
+    runner = _make_runner(GatewayConfig(platforms={gchat: PlatformConfig(enabled=True)}))
+    source = SessionSource(
+        platform=gchat,
+        chat_id="spaces/AAA",
+        chat_name="team-space",
+        chat_type="group",
+        user_id="alice@example.com",
+        user_name="Alice",
+        user_id_alt="users/123",
+        thread_id="spaces/AAA/threads/T1",
+    )
+    event = MessageEvent(text="what did I ask yesterday?", source=source)
+
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result == "[Alice | alice@example.com] what did I ask yesterday?"
+
+
+@pytest.mark.asyncio
+async def test_preprocess_google_chat_without_email_keeps_display_name_only():
+    gchat = Platform("google_chat")
+    runner = _make_runner(GatewayConfig(platforms={gchat: PlatformConfig(enabled=True)}))
+    source = SessionSource(platform=gchat, chat_id="spaces/AAA", chat_name="team-space", chat_type="group",
+                           user_id="users/123", user_name="Alice", thread_id="spaces/AAA/threads/T1")
+    event = MessageEvent(text="hi", source=source)
+
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result == "[Alice] hi"

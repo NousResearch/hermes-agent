@@ -1,4 +1,9 @@
-"""Loopback OIDC/model boundaries; daemon, auth, tickets and room controls are real."""
+"""Loopback OIDC/model boundaries; daemon, auth, tickets and room controls are real.
+
+Hermes is single-user: every signed-in Webapp tab is the machine owner, whichever IdP account it
+signed in with, so two tabs share one Group Chat list and either may stop or approve. Who may sign in
+is the login provider's app configuration, not Hermes's.
+"""
 import asyncio
 import base64
 from contextlib import ExitStack
@@ -18,6 +23,10 @@ from websockets.asyncio.client import connect
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc
 from tests.waiting import async_wait_until
+
+
+#: Two signed-in Webapp tabs, each acting as the machine owner (Hermes is single-user).
+TABS = ('tab1', 'tab2')
 
 
 class OIDC(BaseHTTPRequestHandler):
@@ -86,7 +95,7 @@ class Model(BaseHTTPRequestHandler):
             self.server.requests.append(body)
         text = str(next((m.get('content', '') for m in reversed(body.get('messages', []))
                          if m['role'] == 'user'), ''))
-        for actor in ('alice', 'bob'):
+        for actor in TABS:
             if 'BLOCK_' + actor in text:
                 self.server.blocked[actor].set()
                 self.server.release.wait(60)
@@ -120,8 +129,8 @@ def login(client, issuer, actor):
     response = client.get(authorize + '&' + urlencode({'subject': actor}))
     assert response.status_code == 302, response.text
     # public_url enables the gate; route its callback to the owned loopback listener.
-    callback = urlsplit(response.headers['location'])
-    response = client.get(callback.path + '?' + callback.query)
+    redirect = urlsplit(response.headers['location'])
+    response = client.get(redirect.path + '?' + redirect.query)
     assert response.status_code == 302, response.text
     identity = client.get('/api/auth/me')
     assert identity.status_code == 200, identity.text
@@ -151,7 +160,7 @@ def probe(tmp_path):
     (removal / 'sentinel').write_text('owned fixture')
     import shlex
     model.command = 'rm -r -- ' + shlex.quote(str(removal))
-    model.blocked = {actor: threading.Event() for actor in ('alice', 'bob')}
+    model.blocked = {actor: threading.Event() for actor in TABS}
     model.release = threading.Event()
     threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (oidc, model)]
     for thread in threads:
@@ -176,61 +185,68 @@ def probe(tmp_path):
 
     async def exercise(desc, tickets):
         origin = desc['api_origin'].replace('http:', 'ws:') + '/api/ws'
-        async with connect(origin + '?ticket=' + tickets[0]) as alice, connect(
-                origin + '?ticket=' + tickets[1]) as bob:
-            actors = [('alice', alice, bob), ('bob', bob, alice)]
-            for actor, ws, _ in actors:
-                result = await rpc(ws, 'groups.create', room_id=actor + '-room', name=actor, members=members)
+        async with connect(origin + '?ticket=' + tickets[0]) as one, connect(
+                origin + '?ticket=' + tickets[1]) as two:
+            tabs = [('tab1', one, two), ('tab2', two, one)]
+            rooms = sorted(tab + '-room' for tab, _, _ in tabs)
+            for tab, ws, _ in tabs:
+                result = await rpc(ws, 'groups.create', room_id=tab + '-room', name=tab, members=members)
                 assert 'result' in result, result
-            denials = 0
-            for actor, ws, other in actors:
-                room = actor + '-room'
-                listing = await rpc(ws, 'groups.list')
-                assert [r['room_id'] for r in listing['result']['rooms']] == [room], listing
+            shared = 0
+            for tab, ws, other in tabs:
+                room = tab + '-room'
+                # Every signed-in tab is the machine owner: one Group Chat list on both.
+                for viewer in (ws, other):
+                    listing = await rpc(viewer, 'groups.list')
+                    assert sorted(r['room_id'] for r in listing['result']['rooms']) == rooms, listing
                 state = await rpc(ws, 'groups.state', room_id=room)
                 assert state['result']['room']['room_id'] == room, state
                 sent = await rpc(ws, 'groups.send', room_id=room, event_id='own-input',
-                                 payload={'text': '@two BLOCK_' + actor, 'thread_id': 'thread'})
+                                 payload={'text': '@two BLOCK_' + tab, 'thread_id': 'thread'})
                 assert sent['result']['accepted'], sent
-                assert await asyncio.to_thread(model.blocked[actor].wait, 30), state
+                assert await asyncio.to_thread(model.blocked[tab].wait, 30), state
                 before = await rpc(ws, 'groups.log', room_id=room)
-                for method, params in [
-                    ('groups.create', {'name': 'hijack', 'members': members}),
-                    ('groups.state', {}), ('groups.log', {}),
-                    ('groups.send', {'event_id': 'forbidden', 'payload': {'text': 'FORBIDDEN', 'thread_id': 'thread'}}),
-                    ('groups.stop', {'cancel_id': 'foreign-stop'}),
-                ]:
-                    rejected = await rpc(other, method, room_id=room, **params)
-                    assert rejected.get('error', {}).get('message') == 'permission_denied', rejected
-                    denials += 1
-                after = await rpc(ws, 'groups.log', room_id=room)
+                for method in ('groups.state', 'groups.log'):
+                    seen = await rpc(other, method, room_id=room)
+                    assert 'result' in seen, seen
+                    shared += 1
+                # The single-owner contract still refuses what would rewrite a room or replay input:
+                # creating over another tab's existing room id, and reusing a sent event id.
+                hijack = await rpc(other, 'groups.create', room_id=room, name='hijack', members=members)
+                assert 'error' in hijack, hijack
+                replay = await rpc(other, 'groups.send', room_id=room, event_id='own-input',
+                                   payload={'text': 'FORBIDDEN', 'thread_id': 'thread'})
+                assert 'error' in replay, replay
+                after = await rpc(other, 'groups.log', room_id=room)
                 assert after == before, (before, after)
+                named = await rpc(other, 'groups.state', room_id=room)
+                assert named['result']['room']['name'] == tab, named
                 state = await rpc(ws, 'groups.state', room_id=room)
                 assert state['result']['driver_status']['counts'].get('running') == 1, state
-            for actor, ws, _ in actors:
-                stopped = await rpc(ws, 'groups.stop', room_id=actor + '-room', cancel_id='owner-stop')
+            for tab, ws, _ in tabs:
+                stopped = await rpc(ws, 'groups.stop', room_id=tab + '-room', cancel_id='owner-stop')
                 assert stopped['result']['cancelled'] >= 1, stopped
-                if actor == 'alice':
-                    sibling = await rpc(bob, 'groups.state', room_id='bob-room')
+                if tab == 'tab1':
+                    sibling = await rpc(two, 'groups.state', room_id='tab2-room')
                     assert sibling['result']['driver_status']['counts'].get('running') == 1, sibling
             model.release.set()
-            for actor, ws, _ in actors:
+            for tab, ws, _ in tabs:
                 deadline = time.monotonic() + 90
                 while True:
-                    state = await rpc(ws, 'groups.state', room_id=actor + '-room')
+                    state = await rpc(ws, 'groups.state', room_id=tab + '-room')
                     counts = state['result']['driver_status']['counts']
                     if not counts.get('running') and not counts.get('stopping'):
                         assert counts.get('cancelled', 0) >= 1, state
                         break
-                    assert time.monotonic() < deadline, f'{actor} room never settled its stop: {state}'
+                    assert time.monotonic() < deadline, f'{tab} room never settled its stop: {state}'
                     await asyncio.sleep(.1)
             assert len(model.requests) == 2, model.requests
-            sent = await rpc(alice, 'groups.send', room_id='alice-room', event_id='approval',
+            sent = await rpc(one, 'groups.send', room_id='tab1-room', event_id='approval',
                              payload={'text': '@two APPROVE_HOSTED', 'thread_id': 'approval-thread'})
             assert sent['result']['accepted'], sent
             deadline = time.monotonic() + 90
             while True:
-                state = await rpc(alice, 'groups.state', room_id='alice-room')
+                state = await rpc(two, 'groups.state', room_id='tab1-room')
                 actions = state['result']['driver_status']['pending_actions']
                 approvals = [a for a in actions if a['kind'] == 'approval']
                 if approvals:
@@ -240,16 +256,14 @@ def probe(tmp_path):
             assert removal.exists()
             action = approvals[0]
             params = {k: action[k] for k in ('member_id', 'task_id', 'execution_generation', 'request_id')}
-            denied = await rpc(bob, 'groups.approve', room_id='alice-room', choice='once', **params)
-            assert denied.get('error', {}).get('message') == 'permission_denied', denied
-            accepted = await rpc(alice, 'groups.approve', room_id='alice-room', choice='once', **params)
+            # The owner answers from whichever tab it has open.
+            accepted = await rpc(two, 'groups.approve', room_id='tab1-room', choice='once', **params)
             assert accepted.get('result', {}).get('approved'), accepted
             await async_wait_until(lambda: not removal.exists(), timeout=90,
                                    what='the approved removal to run')
 
             assert 'FORBIDDEN' not in json.dumps(model.requests)
-            return {'actors': oidc.logins, 'rooms': ['alice-room', 'bob-room'],
-                    'cross_actor_denials': denials, 'owner_stops': 2}
+            return {'actors': oidc.logins, 'rooms': rooms, 'shared_views': shared, 'owner_stops': 2}
 
     try:
         with daemon(root, target, env | {'HERMES_HOME': str(target)}, barrier=False), daemon(
@@ -259,6 +273,7 @@ def probe(tmp_path):
             for credential in ('', 'Bearer invalid'):
                 rejected = clients[0].post('/api/auth/ws-ticket', headers={'Authorization': credential})
                 assert rejected.status_code == 401, rejected.text
+            # A second IdP account is admitted like on main and acts as the same machine owner.
             tickets = [login(client, oidc.issuer, actor)
                        for client, actor in zip(clients, ('alice', 'bob'))]
             return asyncio.run(exercise(desc, tickets))

@@ -97,9 +97,9 @@ except urllib.error.HTTPError as h:
     )
     end = time.monotonic() + deadline_s
     last_err = ""
-    while time.monotonic() < end:
+    while (remaining := end - time.monotonic()) > 0:
         try:
-            r = docker_exec_sh(container, probe, timeout=10)
+            r = docker_exec_sh(container, probe, timeout=min(10.0, remaining))
         except subprocess.TimeoutExpired as exc:
             last_err = f"docker exec stalled: {exc}"  # a busy daemon: retry until the deadline
             continue

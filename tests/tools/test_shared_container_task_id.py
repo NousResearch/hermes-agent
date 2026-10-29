@@ -300,3 +300,77 @@ def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
         assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
     finally:
         clear_session_vars(tokens)
+
+
+def _pin_profile(monkeypatch, name: str) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: name
+    )
+
+
+def test_sessionless_default_profile_stays_default(monkeypatch):
+    """Default profile, no session: CLI and workers still share "default"."""
+    from gateway.session_context import reset_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PROFILE", raising=False)
+    reset_session_vars()
+    _pin_profile(monkeypatch, "default")
+    assert terminal_tool._resolve_container_task_id(None) == "default"
+    assert terminal_tool._resolve_container_task_id("kanban-task") == "default"
+
+
+def test_sessionless_named_profile_reuses_profile_container(monkeypatch):
+    """Named-profile process, no session: reuse profile:<name>, not "default"."""
+    from gateway.session_context import reset_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PROFILE", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
+    reset_session_vars()
+    _pin_profile(monkeypatch, "tenant-a")
+    assert terminal_tool._resolve_container_task_id(None) == "profile:tenant-a"
+    assert terminal_tool._resolve_container_task_id("t_b865ceb0") == "profile:tenant-a"
+
+
+def test_explicit_session_profile_wins_over_process_home(monkeypatch):
+    """A bound session profile is authoritative, even if the process home differs."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    _pin_profile(monkeypatch, "tenant-a")
+    tokens = set_session_vars(session_key="agent:main:desktop:1", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "profile:work"
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_key="agent:main:desktop:2", profile="tenant-a")
+    try:
+        assert terminal_tool._resolve_container_task_id("subagent-1") == "profile:tenant-a"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_sessionless_named_profile_ignored_when_not_persistent_docker(monkeypatch):
+    """The profile key is a persistent-Docker rule. Local stays "default"."""
+    from gateway.session_context import reset_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    reset_session_vars()
+    _pin_profile(monkeypatch, "tenant-a")
+    assert terminal_tool._resolve_container_task_id(None) == "default"
+
+
+def test_sessionless_custom_home_stays_default(monkeypatch):
+    """A home that is not a named profile must not invent profile:custom."""
+    from gateway.session_context import reset_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    reset_session_vars()
+    _pin_profile(monkeypatch, "custom")
+    assert terminal_tool._resolve_container_task_id(None) == "default"

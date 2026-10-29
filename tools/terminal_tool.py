@@ -481,6 +481,32 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
         return f"home:{override}"
 
 
+def _sessionless_container_key(profile_scoped: bool) -> str:
+    """Container key when no session is bound (CLI, cron, kanban dispatcher workers).
+
+    A routed home override keeps its existing key. Persistent Docker whose
+    process home is a named profile reuses ``profile:<name>`` — the same key
+    session-bound work of that profile uses. Dispatcher workers set
+    ``HERMES_HOME`` and clear session vars, so they are not a routed override;
+    without this they collapsed onto ``default`` and missed the profile sandbox.
+    The default profile, non-persistent backends, and a home that is not a
+    named profile stay ``default``.
+    """
+    routed = _routed_home_task_key(profile_scoped)
+    if routed:
+        return routed
+    if not profile_scoped:
+        return "default"
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = (get_active_profile_name() or "").strip()
+    except Exception:
+        return "default"
+    if not profile or profile in {"default", "custom"}:
+        return "default"
+    return f"profile:{profile}"
+
+
 def _qualify_task_key(key: str) -> str:
     """Prefix a session-derived key with the routed profile/home, or return it unchanged.
 
@@ -511,10 +537,11 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        default-profile gateway sessions share ONE container; other backends key
        ``session:<key>`` so switching profiles can't reuse another profile's
        SSHEnvironment on the wrong host.
-    4. No session key (CLI, cron): ``shared:<key>`` when opted in (else a CLI run of a
-       keyed profile would split from its gateway sessions); a routed multiplexed profile
-       keys its own home (``profile:<name>`` under persistent Docker, matching branch 3);
-       else ``"default"``, which subagent ids collapse onto to share the parent's container.
+    4. No session key (CLI, cron, kanban workers): ``shared:<key>`` when opted in
+       (else a CLI run of a keyed profile would split from its gateway sessions); a
+       routed multiplexed profile keys its own home; persistent Docker on a
+       named-profile process reuses ``profile:<name>`` (same sandbox as that
+       profile's session-bound work); else ``"default"``.
     """
     if task_id and _has_isolation_overrides(task_id):
         return _qualify_task_key(task_id)
@@ -525,8 +552,9 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # the gateway per-message via contextvars), scope the container to it so switching profiles can't reuse
     # a previous profile's SSHEnvironment and silently run commands on the wrong remote host. Subagents
     # inherit the same session key, so they still collapse onto the parent's container (the #16177
-    # shared-container intent). CLI mode has no session key and falls through to "default", behaviour
-    # unchanged. See commit e00f940a9. This runs *after* the isolation-override and
+    # shared-container intent). CLI mode has no session key. A named-profile process
+    # under persistent Docker reuses ``profile:<name>`` (:func:`_sessionless_container_key`);
+    # the default profile still falls through to "default". See commit e00f940a9. This runs *after* the isolation-override and
     # docker/container_persistent branches above: those paths already key containers per task_id, so they
     # stay authoritative where they apply and this only covers the cases that would otherwise collapse to
     # the shared "default" key (notably SSH).
@@ -537,7 +565,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
         return f"shared:{shared}"
     if not session_key:
-        return _routed_home_task_key(scope.docker_profile_scoped) or "default"
+        return _sessionless_container_key(scope.docker_profile_scoped)
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
     profile = _container_profile()

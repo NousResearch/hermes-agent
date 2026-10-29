@@ -1384,15 +1384,53 @@ class TestDetectSudoStdin:
     they are privilege-relevant invocations the agent can chain after
     acquiring the password.
 
-    `_normalize_command_for_detection` lowercases input before pattern
-    matching, so -S/-s and -A/-a are indistinguishable at the regex
-    layer; both letter-pairs are gated.
+    The structural sudo parser recognizes both cases of these short flags,
+    because either can participate in a non-interactive privilege chain.
     """
 
     def test_canonical_pipe_to_sudo_S_detected(self):
         is_dangerous, _, desc = detect_dangerous_command("echo pwd | sudo -S whoami")
         assert is_dangerous is True
         assert "sudo" in desc.lower()
+
+    def test_sudo_privilege_flags_detected_only_in_sudo_option_prefix(self):
+        for cmd in (
+            "sudo -S true",
+            "sudo -A true",
+            "sudo -s",
+            "sudo -a",
+            "sudo -nS true",
+            "sudo -Sn true",
+            "sudo --stdin true",
+            "sudo --askpass true",
+            "sudo -u root -S true",
+            "true; sudo -S true",
+            "true | sudo -S true",
+            "true & sudo -S true",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "sudo" in desc.lower(), cmd
+
+    def test_wrapped_command_options_are_not_sudo_flags(self):
+        for cmd in (
+            "sudo -n python approval_authority_installer.py --gateway-unit hermes-gateway-b7dd404e.service --agent-uid 1003",
+            "sudo -n docker rmi foo --all-tags-like-arg",
+            "sudo -n cmd -las",
+            "sudo -- cmd -S",
+            "sudo -u -S true",
+            "sudo -g -S true",
+            "sudo -C -S true",
+            "sudo -D -S true",
+            "sudo -h -S true",
+            "sudo -p -S true",
+            "sudo -r -S true",
+            "sudo -t -S true",
+            "sudo -T -S true",
+            "sudo -U -S true",
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
 
 
     def test_interactive_or_unrelated_sudo_safe(self):

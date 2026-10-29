@@ -427,15 +427,7 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
-    # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
-    # non-interactively read the password from stdin (-S) or askpass (-A); -s (shell) and -a (list) are gated as
-    # privilege chains (read SUDO_PASSWORD from .env -> sudo -S -s). Plain `sudo cmd` is TTY-bound and excluded. Input
-    # is lowercased, so S/s and A/a collapse. Lazy `[^;|&\n]*?` allows flag args without spanning separators. sudo
-    # resolves unambiguous long-flag prefixes: `--stdin` is the only long option starting with "st", `--askpass` the
-    # only one starting with "a".
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
-    # Combined short-flag form (-nS, -sa, -las).
-    (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+
     # Package-manager uninstall commands can remove installed software outside
     # the current project (notably `npm uninstall -g`). Treat their destructive
     # subcommands like other state-removing operations while leaving installs
@@ -576,7 +568,10 @@ _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
-_SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
+_SUDO_OPTIONS_WITH_ARG = {
+    "-c", "--close-from", "-C", "-D", "-g", "--group", "-h", "--host", "-p", "--prompt",
+    "-r", "--role", "-t", "--type", "-T", "--command-timeout", "-u", "--user", "-U", "--other-user",
+}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
 _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
@@ -1513,12 +1508,56 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+def _sudo_privilege_flag_description(command: str) -> str | None:
+    """Return the sudo-danger description only for sudo's own option prefix.
+
+    Once sudo reaches its command word (or ``--``), following tokens belong to
+    the wrapped program.  Matching them as sudo flags blocked benign installer
+    arguments such as ``--agent-uid`` and ``-las``.
+    """
+    for start, _, word in _iter_shell_command_word_spans(command):
+        if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "sudo":
+            continue
+        tokens = _shell_tokens_with_spans(command, start)
+        if tokens is None:
+            continue
+        skip_operand = False
+        for token, _, _, _ in tokens[1:]:
+            option = _deobfuscate_shell_word_for_detection(token)
+            if skip_operand:
+                skip_operand = False
+                continue
+            if option == "--" or not option.startswith("-") or option == "-":
+                break
+            flag, equals, _ = option.partition("=")
+            if flag.startswith("--"):
+                # sudo accepts unambiguous prefixes: --st[din] and --a[skpass].
+                if flag.startswith("--st") or flag.startswith("--a"):
+                    return "sudo with privilege flag (stdin/askpass/shell/list)"
+                if not equals and flag in _SUDO_OPTIONS_WITH_ARG:
+                    skip_operand = True
+                continue
+            for letter in flag[1:]:
+                if letter in "sSaA":
+                    return ("sudo with privilege flag (stdin/askpass/shell/list)"
+                            if len(flag) == 2 else "sudo with combined-flag privilege escalation")
+                if f"-{letter}" in _SUDO_OPTIONS_WITH_ARG:
+                    # An argument-taking short option owns the remainder of its
+                    # bundle, or the following token when it is the last letter.
+                    skip_operand = letter == flag[-1]
+                    break
+    return None
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    sudo_description = _sudo_privilege_flag_description(command)
+    if sudo_description:
+        return (True, sudo_description, sudo_description)
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None

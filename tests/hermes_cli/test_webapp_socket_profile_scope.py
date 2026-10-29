@@ -206,6 +206,28 @@ def test_billing_state_on_a_webapp_socket_reaches_its_tickets_profile_portal(gat
     assert "no profile secret scope" not in caplog.text
 
 
+def test_a_ticket_naming_no_profile_runs_unscoped_legacy_handlers_in_the_launch_scope(gateway, monkeypatch):
+    """The common Webapp tab: its ticket names no profile, and a legacy handler with no scope of its
+    own reads secrets only through ``gateway_ws``'s socket-wide scope. Unbound, a multiplexed
+    gateway refuses that read instead of answering with the launch profile's Portal."""
+    from agent.secret_scope import get_secret
+    from hermes_cli.web_routers import chat_ws
+    from tui_gateway import server
+    seen = []
+
+    def unwrapped_secret_read(rid, params):
+        seen.append(get_secret("HERMES_PORTAL_BASE_URL"))
+        return server._ok(rid, {})
+    monkeypatch.setitem(server._methods, "probe.portal", unwrapped_secret_read)
+    ws = _Socket(gateway.authority, [{"jsonrpc": "2.0", "id": "read", "method": "probe.portal", "params": {}}])
+
+    asyncio.run(chat_ws.gateway_ws(ws))
+
+    assert ws.closed is None, ws.closed
+    assert "result" in ws.reply("read"), ws.sent
+    assert seen == ["https://launch-portal.invalid"]
+
+
 @pytest.mark.parametrize("ticket", [None, "b"], ids=["launch-socket", "b-ticket-socket"])
 def test_a_long_verb_naming_another_profile_does_not_hold_the_socket_while_its_secrets_load(gateway, monkeypatch,
                                                                                            ticket):

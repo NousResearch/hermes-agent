@@ -288,6 +288,58 @@ tts:
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
 
+### Serving TTS over an OpenAI-compatible API (`hermes tts serve`)
+
+`hermes tts serve` runs the provider you have already configured as a local HTTP server that speaks OpenAI's `/v1/audio/speech` wire format. Local engines (Piper, KittenTTS, NeuTTS) are in-process Python libraries, so there is otherwise no way for an OpenAI-compatible client to reach them — this is the missing adapter.
+
+```bash
+hermes tts serve                 # http://127.0.0.1:5099
+hermes tts serve --port 8080     # different port
+hermes tts serve --host 0.0.0.0 --allow-remote   # LAN (see the warning below)
+```
+
+The server uses the provider and voice from your config — `tts.provider` is the authoritative selector, so there is no `--provider` flag to disagree with it. Set the provider the usual way first:
+
+```yaml
+tts:
+  provider: piper
+  piper:
+    voice: en_US-lessac-medium
+```
+
+**Profiles.** The server serves the profile it was started for. `hermes -p <profile> tts serve` resolves that profile's config and serves *its* provider and voice; each request is bound to that profile's scope, so a request thread cannot drift onto another profile's config. Two servers started for different profiles therefore speak with different voices at the same time:
+
+```bash
+hermes tts serve --port 5099                    # default profile
+hermes -p foodcoordinator tts serve --port 5101 # that profile's own provider/voice
+```
+
+`GET /health` reports which profile the server is speaking for, so you can confirm at a glance:
+
+```json
+{"ok": true, "provider": "piper", "voice": "en_US-lessac-medium"}
+```
+
+**Endpoints**
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/audio/speech` | OpenAI-compatible synthesis. Body: `input` (required), `model`, `voice`, `response_format`, `speed`. |
+| `GET /health` | Reports the provider and voice the server is speaking with. |
+| `GET /v1/models` | Lists the configured provider as the available model. |
+
+`response_format` accepts `mp3` (default), `opus`, `wav` and `flac`, and the bytes on the wire match the container you asked for. `voice` and `speed` are accepted for wire compatibility; whether they change anything depends on the provider (Piper, for example, takes its speed from `tts.piper.length_scale` rather than the per-request value).
+
+**Pointing the Hermes WebUI at it.** Set the TTS engine to **OpenAI TTS (server)** and the base URL to `http://127.0.0.1:5099/v1`. The WebUI's OpenAI branch still requires a key to be set (`VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY`) before it will call out, so give it any non-empty placeholder — the local server does not check it.
+
+```bash
+hermes config set tts.openai.base_url http://127.0.0.1:5099/v1
+```
+
+**Security.** The server has **no authentication** and binds to loopback by default. `--allow-remote` is the explicit opt-out for binding a LAN address; on a shared network, anyone who can reach the port can make the host speak, and with a metered provider configured they can spend your credits. Prefer an SSH tunnel or a reverse proxy with auth over exposing it directly.
+
+To keep it running across reboots, run it under systemd (a user unit), a `launchd` agent, or your existing process supervisor.
+
 ### Warm-up and unload via speech toggles (local engines)
 
 Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:

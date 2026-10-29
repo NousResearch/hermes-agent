@@ -556,6 +556,26 @@ _URL_BARE_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Command-line flags that carry a secret VALUE. ``ps``/``top`` render the full argv, so a
+# secret passed as a flag leaks verbatim into tool output — EasyTier's
+# ``--network-secret <hex>`` is the motivating case. The keyword must be a whole
+# ``-``/``_``-delimited segment so ``--tokenizer`` does not match ``token``.
+_CLI_SECRET_FLAG_RE = re.compile(
+    r"(--(?:[A-Za-z0-9]+[-_])*(?:secret|token|passwd|password|api[-_]?key|credential)"
+    r"(?:[-_][A-Za-z0-9]+)*)"       # flag name
+    r"(\s*=\s*|\s+)"                 # separator: ``=`` form or space form
+    r"([^\s'\"]+)",                  # value
+    re.IGNORECASE,
+)
+
+# Bearer token in a URL PATH segment (``wss://host/et-<32hex>``). Only applied when the
+# source is already classified secret-bearing: an arbitrary long path segment in ordinary
+# output is usually a real path (``/commit/<sha>``), so this must not fire globally.
+_URL_PATH_TOKEN_RE = re.compile(
+    r"((?:https?|wss?|ftp)://[^\s/\"']+/)([A-Za-z0-9_-]{24,})(?=[\s\"',;)\]]|$)",
+    re.IGNORECASE,
+)
+
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
@@ -971,6 +991,19 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
+    # ``ps``/``top`` dumps carry the whole argv: a secret passed as a CLI flag
+    # (``--network-secret <hex>``) has no ``KEY=value`` shape, so none of the assignment
+    # passes above catch it. Runs in both modes — a flag name containing "secret"/"token"
+    # is never a source-code fixture.
+    if "--" in text:
+        text = _CLI_SECRET_FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}***", text)
+
+    # Relay-URL bearer token in the path (``wss://host/et-<32hex>``). Strict mode only: the
+    # caller already established this text came from a secret-bearing file, so a long opaque
+    # path segment is a credential rather than a route.
+    if secret_file and "://" in text:
+        text = _URL_PATH_TOKEN_RE.sub(lambda m: f"{m.group(1)}***", text)
+
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
@@ -1127,6 +1160,20 @@ def _is_secret_file_arg(arg: str) -> bool:
         return False
     if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
         return True
+    # Any ``*.env`` basename is env-shaped, not just the ``.env*`` prefix family that
+    # _ENV_FILE_BASENAMES lists: operators name secret-bearing env files ``<service>.env``
+    # (``/etc/easytier/homelab.env``, ``/etc/easytier/oracle.env``). Missing them silently
+    # downgraded every read of those files to the lenient code_file path, where the whole
+    # file (network secret, relay URL token) printed verbatim into tool output.
+    if parts[-1].endswith(".env"):
+        return True
+    # ``*.toml`` service configs hold ``network_secret = "..."`` / ``api_key = "..."`` in
+    # plain sight (EasyTier's ``homelab.toml``). Strict mode is safe here because the
+    # assignment passes only mask credential-shaped keys with opaque values — verified:
+    # ``token = "1.0"``, ``max_tokens = 100`` and ``name = "my-crate"`` pass through
+    # untouched while ``api_key = "<32 hex>"`` is masked.
+    if parts[-1].endswith(".toml"):
+        return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
     # writes under ``backups/config/`` — same contents, same secrets.
     if parts[-1] != "config.yaml" and not parts[-1].startswith(("config.yaml.good.", "config.yaml.corrupt.")):
@@ -1199,8 +1246,11 @@ def redact_terminal_output(output: str, command: str | None = None, *, force: bo
     source/config dumps."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
-    redacted = redact_sensitive_text(output, force=force, code_file=code_file)
+    secret_file = _command_reads_secret_file(command)
+    code_file = not (is_env_dump_command(command) or secret_file)
+    redacted = redact_sensitive_text(
+        output, force=force, code_file=code_file, secret_file=secret_file
+    )
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
     # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.

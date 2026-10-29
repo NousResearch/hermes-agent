@@ -1796,6 +1796,49 @@ class TestLifecycleGuardDataArgumentExemption:
         check_gateway_lifecycle(prompt, str(script))
 
 
+
+class TestLifecycleGuardStringLiteralSplice:
+    """#141164: a raw-text match must not join words living in separate VALUES of one mapping.
+
+    Branch D's gap once spanned a dict's quoted key separator, so one inert dict of diagnostic
+    strings ({"purpose": "KILL/wait", "component": "Hermes", "layer": "gateway"}) read as a kill
+    command and the command was refused before Python started. A lifecycle command inside ONE
+    value still blocks, and so does a kill laundered as an argv list - the shape
+    subprocess.run(["pkill", "-f", "hermes.*gateway"]) actually has."""
+
+    def _scan(self, command, **kwargs):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, **kwargs
+        )
+
+    @pytest.mark.parametrize("command", [
+        # The exact live refusal: one dict of inert diagnostic strings, no operation at all.
+        '/usr/bin/python3 -B -c \'payload={"purpose":"KILL/wait","component":"Hermes",'
+        '"layer":"gateway"}; print("diagnostic-only", len(payload))\'',
+        # Same shape, one word per string value.
+        """/usr/bin/python3 -c 'data={"tool":"kill","app":"hermes","part":"gateway"}'""",
+    ])
+    def test_words_split_across_string_values_are_data(self, command):
+        assert self._scan(command) is False
+
+    @pytest.mark.parametrize("command", [
+        # Real killers keep blocking, quoted pattern included (token-aware pass).
+        'pkill -f "hermes.*gateway"',
+        "pkill -f hermes gateway",
+        'kill $(pgrep -f "hermes gateway")',
+        '''python3 -c "import subprocess; subprocess.run(['pkill','-f','hermes.*gateway'])"''',
+        "taskkill /F /IM hermes-gateway.exe",
+        # A lifecycle command inside ONE string value is still a command.
+        'python3 -c "import os; os.system(\'hermes gateway restart\')"',
+        "hermes gateway restart",
+    ])
+    def test_real_lifecycle_commands_still_blocked(self, command):
+        assert self._scan(command) is True
+
+
 class TestLifecycleGuardNeverRaises:
     """The guard must return a verdict for every input — binary referenced
     paths, NUL bytes, non-UTF-8, /dev/* nodes, directories, missing files —

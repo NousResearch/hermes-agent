@@ -159,6 +159,7 @@ class _Bridge:
     def __init__(self, lines=()):
         self.stdout = lines
         self.returncode: int | None = None
+        self.pid = 4242  # a stopped bridge's group is released (unregister only; never signalled)
 
     def poll(self):
         return self.returncode

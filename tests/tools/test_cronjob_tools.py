@@ -802,3 +802,57 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+class TestScheduleKnobToolSurface:
+    """The model-facing tool must expose the per-job timezone and grace knobs (§4/§5)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def _stored(self):
+        from cron.jobs import load_jobs
+        return load_jobs()[0]
+
+    def test_create_stores_timezone_and_grace(self):
+        created = json.loads(cronjob(
+            action="create", prompt="HK open", schedule="0 9 * * 1-5",
+            timezone="Asia/Hong_Kong", grace_minutes=45))
+        assert created["success"] is True, created
+        job = self._stored()
+        assert job["timezone"] == "Asia/Hong_Kong"
+        assert job["grace_minutes"] == 45
+        assert job["next_run_at"].endswith("+08:00") or job["next_run_at"].endswith("+09:00")
+
+    def test_create_rejects_an_unknown_zone(self):
+        created = json.loads(cronjob(
+            action="create", prompt="x", schedule="0 9 * * *",
+            timezone="Mars/Olympus_Mons"))
+        assert created["success"] is False
+        assert "timezone" in created["error"].lower()
+
+    def test_grace_zero_is_stored_not_dropped(self):
+        cronjob(action="create", prompt="x", schedule="0 9 * * *", grace_minutes=0)
+        assert self._stored()["grace_minutes"] == 0
+
+    def test_update_clears_the_zone_and_the_override(self):
+        created = json.loads(cronjob(
+            action="create", prompt="x", schedule="0 9 * * *",
+            timezone="Asia/Hong_Kong", grace_minutes=30))
+        job_id = created["job_id"]
+
+        updated = json.loads(cronjob(
+            action="update", job_id=job_id, timezone="", grace_minutes=""))
+        assert updated["success"] is True, updated
+        job = self._stored()
+        assert "timezone" not in job, "'' clears the pin; the key is dropped"
+        assert "grace_minutes" not in job
+
+    def test_grace_on_a_non_cron_schedule_is_an_error(self):
+        created = json.loads(cronjob(
+            action="create", prompt="x", schedule="every 2h", grace_minutes=30))
+        assert created["success"] is False
+        assert "grace_minutes" in created["error"]

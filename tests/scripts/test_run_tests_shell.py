@@ -16,6 +16,9 @@ def test_shell_runner_executes_tests_and_propagates_failure(tmp_path):
         "def test_canary():\n"
         f"    Path({str(marker)!r}).write_text('executed')\n"
         "    assert os.environ['PATHEXT'] == '.COM;.EXE;.BAT;.CMD'\n"
+        "    assert os.environ['ProgramFiles(x86)'] == 'Program Files (x86)'\n"
+        "    assert os.environ['COMSPEC'] == 'cmd.exe'\n"
+        "    assert os.environ['SYSTEMDRIVE'] == 'C:'\n"
         "    assert False, 'runner failure propagation canary'\n",
         encoding="utf-8",
     )
@@ -24,7 +27,9 @@ def test_shell_runner_executes_tests_and_propagates_failure(tmp_path):
         ["bash", str(root / "scripts/run_tests.sh"), "-j", "1", str(case)],
         cwd=tmp_path, capture_output=True, text=True, timeout=180,
         env={**os.environ, "HERMES_PYTHON": sys.executable, "HERMES_TEST_FILE_RETRIES": "0",
-             "PATHEXT": ".COM;.EXE;.BAT;.CMD"},
+             # Git for Windows' bash uppercases these names; vswhere discovery and cmd.exe need them.
+             "PATHEXT": ".COM;.EXE;.BAT;.CMD", "PROGRAMFILES(X86)": "Program Files (x86)",
+             "COMSPEC": "cmd.exe", "SYSTEMDRIVE": "C:"},
              check=False,
     )
     assert marker.read_text(encoding="utf-8") == "executed", result.stdout + result.stderr

@@ -46,7 +46,7 @@ def read_git_head(root: Path) -> str | None:
         out = subprocess.run(
             [git, "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=10,
             check=False,
         )
@@ -73,7 +73,7 @@ def _git_binary() -> str | None:
         installed = installed_package("git")
         if installed is not None and installed.binary is not None:
             return str(installed.binary)
-    except Exception as exc:  # noqa: BLE001 — boot must not die on a lookup
+    except Exception as exc:
         logger.debug("pm git lookup failed: %s", exc)
     import shutil
 

@@ -54,6 +54,15 @@ def inputs_fixture(tmp_path):
     }
 
 
+def with_webapp(data, tmp_path):
+    """Add a built Webapp renderer, the frontend only the Nix package passes today."""
+    webapp = tmp_path / "webapp"
+    webapp.mkdir()
+    (webapp / "index.html").write_text("built webapp", encoding="utf-8")
+    data["frontends"] = {**data["frontends"], "webapp": str(webapp)}
+    return data
+
+
 def build_cli(data, out, tmp_path):
     document = tmp_path / "inputs.json"
     document.write_text(json.dumps(data), encoding="utf-8")
@@ -64,12 +73,14 @@ def build_cli(data, out, tmp_path):
         cwd=tmp_path, env={"PATH": os.environ["PATH"], "HOME": str(home),
                           "HERMES_HOME": str(home / ".hermes"), "PYTHONPATH": str(ROOT)},
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
 
 
 @pytest.mark.platforms("posix")
 def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp_path):
     out, data = inputs_fixture(tmp_path)
+    with_webapp(data, tmp_path)
     (out / "provider-state").write_text("retain", encoding="utf-8")
     before = {p.relative_to(data["code"]): p.read_bytes() for p in Path(data["code"]).rglob("*") if p.is_file()}
     result = build_cli(data, out, tmp_path)
@@ -83,6 +94,7 @@ def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp
     assert (out / "app/hermes_cli/tui_dist/entry.js").is_file()
     assert json.loads((out / "app/hermes_cli/tui_dist/package.json").read_text())["type"] == "module"
     assert (out / "app/hermes_cli/web_dist/index.html").is_file()
+    assert (out / "app/apps/desktop/dist-webapp/index.html").read_text() == "built webapp"
     assert not (tmp_path / "home/.hermes").exists()
     moved = tmp_path / "relocated payload"
     out.rename(moved)
@@ -90,7 +102,7 @@ def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp
     run = subprocess.run([str(moved / manifest["runtime"]["commands"]["probe"]), "two words", "$(no)", ""],
                          cwd=tmp_path, env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home"),
                                             "PYTHONPATH": "/foreign", "PYTHONHOME": "/foreign"},
-                         text=True, capture_output=True, timeout=30)
+                         text=True, capture_output=True, timeout=30, check=False)
     assert run.returncode == 7, run.stderr
     assert json.loads(run.stdout) == [["two words", "$(no)", ""], "prepared", "1.2.3", "resource"]
     assert before == {p.relative_to(data["code"]): p.read_bytes() for p in Path(data["code"]).rglob("*") if p.is_file()}
@@ -101,6 +113,7 @@ def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp
 @pytest.mark.platforms("posix")
 def test_referenced_installed_code_uses_derived_command_map_without_copying(tmp_path):
     _, data = inputs_fixture(tmp_path)
+    with_webapp(data, tmp_path)
     out = tmp_path / "nix output"
     source = Path(data["code"])
     (source / "entry.py").write_text(
@@ -122,11 +135,13 @@ def test_referenced_installed_code_uses_derived_command_map_without_copying(tmp_
         "source": str(command), "destination": "bin/probe", "entry": "entry:main"}}
     assert Path(mapping["env"]["HERMES_TUI_DIR"]).resolve() == Path(data["frontends"]["tui"])
     assert Path(mapping["env"]["HERMES_WEB_DIST"]).resolve() == Path(data["frontends"]["web"])
+    assert Path(mapping["env"]["HERMES_WEBAPP_DIST"]).resolve() == Path(data["frontends"]["webapp"])
     assert mapping["env"]["HERMES_INSTALL_ROOT"] == str(out / "share/hermes-agent")
     assert not list(out.rglob("entry.py"))
     assert (out / "share/hermes-agent/skills").is_symlink()
     assert (out / "ui-tui").is_symlink()
     assert (out / "share/hermes-agent/web_dist").is_symlink()
+    assert (out / "share/hermes-agent/webapp_dist").is_symlink()
     assert not (out / "bin/probe").exists(), "Nix owns native makeWrapper"
     run = subprocess.run([mapping["commands"]["probe"]["source"]], cwd=tmp_path,
                          env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home"),
@@ -157,9 +172,56 @@ def test_fixed_root_keeps_privilege_shim_and_resolves_venv_command_symlink(tmp_p
     link.symlink_to("../../libexec/probe")
     run = subprocess.run([str(link), "ok"], cwd=tmp_path,
                          env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")},
-                         text=True, capture_output=True)
+                         text=True, capture_output=True, check=False)
     assert run.returncode == 7, run.stderr
     assert json.loads(run.stdout)[0] == ["ok"]
+
+
+@pytest.mark.platforms("posix")
+def test_fixed_layout_manifest_makes_the_tree_a_resolvable_payload(tmp_path):
+    """Regression for #138990: the image's ``repo: "."`` assembly must resolve like a payload.
+
+    The Dockerfile assembles /opt/hermes in place, so the manifest lands on the tree
+    itself. A store-Python child boots through committed_venv(), which resolves the
+    sealed venv from that manifest; without it every runtime_command child died with
+    "no dependency environment is committed for this install".
+
+    docker/build_agent.py passes the venv's own ``python``, which links out of the tree
+    (/usr/local/bin/python3) and back to the bundled interpreter, so the manifest's
+    storePython is the venv's ``bin/python`` (``.venv/bin/python`` in the image) and
+    venv_command must follow that chain.
+    """
+    out, data = inputs_fixture(tmp_path)
+    shutil.copytree(data["code"], out, dirs_exist_ok=True)
+    project = out / "pyproject.toml"
+    project.write_text(project.read_text(encoding="utf-8") + 'hermes="entry:main"\n', encoding="utf-8")
+    outside = tmp_path / "usr-local-bin-python3"
+    outside.symlink_to(data["python"])
+    venv_python = out / "venv/bin/python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(outside)
+    data.update(placement="fixed", repo=".", code=str(out), project=str(project), bin_dir="libexec",
+                python=str(venv_python))
+    result = build_cli(data, out, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((out / "manifest.json").read_text())["runtime"]["storePython"] == "venv/bin/python"
+    from pm.environments import committed_venv, payload_command_dir, payload_venv, store_root, venv_command
+
+    assert payload_venv(out) == out / "venv"
+    assert committed_venv(out) == out / "venv"
+    assert store_root(out, honor_runtime_override=False) == out / "tools"
+    assert payload_command_dir(out) == out / "libexec"
+    command = venv_command(out, out / "venv")
+    assert command[0] == str((out / "tools/python/bin/python3").resolve())
+    run = subprocess.run([*command, "-c", "import dependency; print(dependency.VALUE)"], cwd=tmp_path,
+                         env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")},
+                         text=True, capture_output=True, check=False, timeout=30)
+    assert run.stdout.strip() == "prepared", run.stderr
+    # A manifest naming another tree never claims this one.
+    manifest = json.loads((out / "manifest.json").read_text())
+    manifest["repo"] = "elsewhere"
+    (out / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert payload_venv(out) is None
 
 
 @pytest.mark.platforms("posix")
@@ -247,22 +309,31 @@ def test_payload_smoke_uses_relocated_manifest_commands(tmp_path):
         "  print(json.dumps([sys.argv[1:], dependency.VALUE]))\n"
         " else: print('fast path')\n", encoding="utf-8")
     data["bin_dir"] = "libexec"
+    harness = Path(data["site_packages"]) / "browser_harness"
+    harness.mkdir()
+    (harness / "__init__.py").write_text("", encoding="utf-8")
+    (harness / "run.py").write_text("print('harness ok')\n", encoding="utf-8")
     assert build_cli(data, out, tmp_path).returncode == 0
     shutil.rmtree(source)
     env = dict(os.environ, PYTHONPATH="/foreign", PYTHONHOME="/foreign", HERMES_PYTHON="/foreign")
     command = ["bash", str(ROOT / "scripts/smoke-payload.sh"), str(out)]
-    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"prepared"' in result.stdout
     assert out.is_dir(), "smoke must restore the artifact for packaging"
+    assert "harness ok" in result.stdout
+    shutil.rmtree(harness)
+    no_harness = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert no_harness.returncode != 0
+    assert "browser-harness failed" in no_harness.stdout + no_harness.stderr
     dependency = Path(data['site_packages']) / 'dependency.py'
     dependency.unlink()
-    missing_dep = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    missing_dep = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert missing_dep.returncode != 0
     assert 'SMOKE OK' not in missing_dep.stdout
     # A broken published command cannot be rescued by importing raw Python.
     (out / "libexec/hermes").unlink()
-    failed = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    failed = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert failed.returncode != 0
     assert "SMOKE OK" not in failed.stdout
     assert out.is_dir(), "failed smoke must also restore the artifact"
@@ -274,7 +345,7 @@ def test_payload_smoke_uses_relocated_manifest_commands(tmp_path):
     for path in (external, 'libexec/hermes'):
         manifest['runtime']['commands']['hermes'] = path
         (out / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
-        escaped = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+        escaped = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
         assert escaped.returncode != 0, escaped.stdout
         assert 'SMOKE OK' not in escaped.stdout
 
@@ -313,7 +384,7 @@ def test_prepared_environment_python_imports_app_from_unrelated_script(tmp_path)
     script.write_text("import entry\nfrom importlib.metadata import version\nprint(version('assembly-fixture'))\n", encoding="utf-8")
     run = subprocess.run([str(python), "-I", str(script)], cwd=tmp_path,
                          env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home"), "PYTHONDONTWRITEBYTECODE": "1"},
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, check=False)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "1.2.3"
 

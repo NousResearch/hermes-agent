@@ -3,7 +3,28 @@ import {
   type ModelOptionProvider,
   type ModelOptionsResult,
 } from "@hermes/shared";
+import { createDashboardSessionMutations } from "./session-mutations";
 
+const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
+
+import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
+import type { AgentPluginUpdateResponse } from "./api-plugins";
+import type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartRequest,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+export type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+import type {
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
 import { dashboardServingProfile } from "./profile-bootstrap";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -31,6 +52,7 @@ import {
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
 import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
+import type { AutomationBlueprint } from "@/lib/automation-blueprints";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -133,6 +155,9 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
+  "/api/plugins/", // a plugin's backend: the selected profile's copy, as its bundle is (PLG-3)
+  // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
+  "/api/shared-metrics",
 ];
 
 // The dashboard's own profile when nothing else named one. The backend injects it only
@@ -342,12 +367,9 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  return buildHermesWebSocketUrl({
-    authParam: await buildWsAuthParam(),
-    basePath: BASE,
-    params,
-    path,
-  });
+  const profile = getManagementProfile(); // a plugin socket names it as its REST calls do (PLG-3)
+  if (profile && path.startsWith("/api/plugins/") && !params?.profile) params = { ...params, profile };
+  return buildHermesWebSocketUrl({ authParam: await buildWsAuthParam(), basePath: BASE, params, path });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -408,19 +430,14 @@ export const api = {
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
-   * Returns the verified Session as JSON when gated mode is active and a
-   * valid cookie is attached. Loopback mode is unaffected — the endpoint
-   * still exists but is never useful there (no Session, no cookie). The
-   * AuthWidget component swallows 401s from this call: if the gate isn't
-   * engaged, /api/auth/me returns 401 and the widget renders nothing.
+   * Returns the verified Session when gated mode is active. In loopback mode,
+   * a valid injected session token returns a synthetic ``provider=loopback``
+   * identity; AuthWidget recognizes that provider and renders nothing, so it
+   * never exposes a logout action that would redirect to an unavailable login.
    *
-   * ``allowUnauthorized`` is load-bearing: in loopback mode this endpoint
-   * 401s by design, and fetchJSON's default loopback behaviour treats a
-   * 401 as a rotated session token and full-page-reloads to pick up a
-   * fresh one. Because every *other* dashboard request succeeds (and so
-   * clears the one-shot reload guard), that turns this expected 401 into
-   * an infinite reload loop. Opting out keeps the 401 a plain throw the
-   * widget can catch.
+   * ``allowUnauthorized`` remains load-bearing for a missing or stale loopback
+   * token: keep that 401 local to the widget instead of triggering the global
+   * rotated-token reload path.
    */
   getAuthMe: () =>
     fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
@@ -434,7 +451,7 @@ export const api = {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
+      window.location.assign(`${BASE}/login`);
       return r;
     }),
   getSessions: (
@@ -484,12 +501,7 @@ export const api = {
       ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
-      {
-        method: "DELETE",
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean }>(id, "DELETE", {}, profile),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
     fetchJSON<{ count: number }>(
       appendProfileParam("/api/sessions/empty/count", profile),
@@ -502,20 +514,13 @@ export const api = {
       },
     ),
   bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+    fetchJSON<{ ok: boolean; deleted: number; skipped_active?: string[] }>("/api/sessions/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(
-      `/api/sessions/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, profile: profile || undefined }),
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean; title: string }>(id, "PATCH", { title }, profile),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -523,12 +528,11 @@ export const api = {
   importSessions: (
     sessions: Array<Record<string, unknown>>,
     profile = getManagementProfile(),
-  ) =>
-    fetchJSON<SessionImportResponse>("/api/sessions/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessions, profile: profile || undefined }),
-    }),
+  ) => {
+    const id = sessions[0]?.id;
+    if (typeof id !== "string" || !id) return Promise.reject(new Error("session id is required"));
+    return mutateSessionHttp<SessionImportResponse>(id, "POST", { sessions }, profile);
+  },
   pruneSessions: (
     older_than_days: number,
     source?: string,
@@ -646,6 +650,14 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getSharedMetricsConsent: (profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
+  saveSharedMetricsConsent: (answer: { enabled: boolean; send: boolean }, profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(answer),
+    }),
   saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
@@ -1003,10 +1015,7 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
-  startWhatsAppOnboarding: (body: {
-    mode?: "bot" | "self-chat";
-    allowed_users?: string;
-  }) =>
+  startWhatsAppOnboarding: (body: WhatsAppOnboardingStartRequest) =>
     fetchJSON<WhatsAppOnboardingStartResponse>(
       "/api/messaging/whatsapp/onboarding/start",
       {
@@ -1056,8 +1065,8 @@ export const api = {
     ),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getPlugins: (profile = getManagementProfile()) => // the profile the caller's asset URLs will name
+    fetchJSON<PluginManifestResponse[]>(`/api/dashboard/plugins${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
@@ -1093,13 +1102,16 @@ export const api = {
       method: "POST",
     }),
 
-  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
       },
     ),
 
@@ -1441,7 +1453,8 @@ export const api = {
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *
  * Returned by the dashboard's gated middleware when a valid session cookie
- * is attached. ``email`` and ``display_name`` are empty strings under the
+ * is attached, or as a synthetic ``provider=loopback`` identity after token
+ * validation in local mode. ``email`` and ``display_name`` are empty strings under the
  * Nous Portal contract V1 (the access token has no email/name claims —
  * see Contract Anchor C4 in the plan). The AuthWidget surfaces a
  * truncated ``user_id`` instead.
@@ -1666,6 +1679,10 @@ export interface MessagingPlatformEnvVar {
   help: string;
   url: string | null;
   is_password: boolean;
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean;
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: string | null;
   advanced: boolean;
 }
 
@@ -1889,10 +1906,10 @@ export interface HookCreate {
 export interface UpdateCheckResponse {
   install_method: string;
   current_version: string;
-  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
-  // count (nix/pypi), or null when the check could not run.
+  // commits behind: >=1 known, 0 up to date, -1 unknown count (nix/pypi), null = check could not run.
   behind: number | null;
   update_available: boolean;
+  rollback_to?: string | null; // a stable release this build already contains: applying it moves back
   can_apply: boolean;
   update_command: string;
   message: string | null;
@@ -1975,6 +1992,15 @@ export interface PlatformStatus {
   error_message?: string;
   state: string;
   updated_at: string;
+}
+
+/** One profile's shared-metrics answer; `reask` = a pre-fix "off" asked once more. */
+export interface SharedMetricsConsent {
+  enabled: boolean;
+  send: boolean;
+  decided: boolean;
+  managed: boolean;
+  reask?: boolean;
 }
 
 export interface StatusResponse {
@@ -2166,38 +2192,6 @@ export interface TelegramOnboardingApplyResponse {
   restart_error?: string;
 }
 
-export interface WhatsAppOnboardingStartResponse {
-  pairing_id: string;
-  status:
-    | "starting"
-    | "installing"
-    | "waiting"
-    | "connected"
-    | "error"
-    | "expired"
-    | "cancelled";
-  qr_payload?: string | null;
-  expires_at: string;
-  mode: "bot" | "self-chat";
-  allowed_users: string;
-  account_id?: string | null;
-  account_name?: string | null;
-  account_phone?: string | null;
-  error?: string | null;
-}
-
-export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
-
-export interface WhatsAppOnboardingApplyResponse {
-  ok: boolean;
-  platform: "whatsapp";
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
@@ -2226,43 +2220,12 @@ export interface LogsResponse {
   lines: string[];
 }
 
-export interface ManagedFileEntry {
-  name: string;
-  path: string;
-  is_directory: boolean;
-  size: number | null;
-  mtime: number;
-  mime_type: string | null;
-}
-
-export interface ManagedFilesResponse {
-  root: string | null;
-  path: string;
-  parent: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-  entries: ManagedFileEntry[];
-}
-
-export interface ManagedFileReadResponse {
-  name: string;
-  path: string;
-  size: number;
-  mime_type: string;
-  data_url: string;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
-
-export interface ManagedFileWriteResponse {
-  ok: boolean;
-  path: string;
-  entry: ManagedFileEntry;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
+export type {
+  ManagedFileEntry,
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
 
 export interface AnalyticsDailyEntry {
   day: string;
@@ -2451,29 +2414,6 @@ export interface CronDeliveryTarget {
   home_env_var: string | null;
 }
 
-export interface AutomationBlueprintField {
-  name: string;
-  type: "time" | "enum" | "text" | "weekdays";
-  label: string;
-  default: string | null;
-  options: string[];
-  optional: boolean;
-  /** When false, options are suggestions — any value is accepted. */
-  strict?: boolean;
-  help: string;
-}
-
-export interface AutomationBlueprint {
-  key: string;
-  title: string;
-  description: string;
-  category: string;
-  tags: string[];
-  fields: AutomationBlueprintField[];
-  command: string;
-  appUrl: string;
-}
-
 export interface SkillInfo {
   name: string;
   description: string;
@@ -2572,17 +2512,8 @@ export interface ModelInfoResponse {
 
 export type { ModelOptionProvider, ModelOptionsResult };
 
-export interface AuxiliaryTaskAssignment {
-  task: string;
-  provider: string;
-  model: string;
-  base_url: string;
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
-}
+export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type { AgentPluginScanFinding, AgentPluginUpdateResponse } from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2626,29 +2557,6 @@ export interface ModelAssignmentRequest {
   base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
-}
-
-/** An auxiliary task still pinned to a provider that differs from the
- *  newly-selected main provider after a main-model switch. */
-export interface StaleAuxAssignment {
-  task: string;
-  provider: string;
-  model: string;
-}
-
-export interface ModelAssignmentResponse {
-  confirm_message?: string;
-  confirm_required?: boolean;
-  ok: boolean;
-  scope?: string;
-  provider?: string;
-  model?: string;
-  tasks?: string[];
-  reset?: boolean;
-  /** Auxiliary slots still pinned to a different provider than the new main.
-   *  Switching main never clears aux pins; this lets the UI warn the user
-   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
-  stale_aux?: StaleAuxAssignment[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
@@ -2815,7 +2723,7 @@ export interface CatalogEntry {
   repo: string;
   sha: string;
   sha_short: string;
-  tier: "official" | "community";
+  tier: "official" | "verified" | "community";
   maintainer: string;
   requires_hermes: string;
   platforms: string[];
@@ -2840,19 +2748,6 @@ export interface CatalogResponse {
   entries: CatalogEntry[];
   removed: CatalogRemovedEntry[];
   generated_at: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-  /** The new catalog pin widens the plugin; nothing changed until the client
-   *  retries with `accept_capabilities`. */
-  consent_required?: boolean;
-  sha?: string;
-  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

@@ -107,8 +107,9 @@ class TestKernelLifecycle(unittest.TestCase):
     def test_kernel_exits_when_its_backend_parent_dies(self):
         """A kernel must not outlive the host that spawned it, even when the
         host dies without cleanup (SIGKILL/OOM/crash). Windows: inherited
-        SYNCHRONIZE handle; POSIX: inherited death pipe. Both are proven the
-        same way — kill the host mid-cell, the kernel is gone within seconds."""
+        SYNCHRONIZE handle; POSIX: the kernel's group is registered with the
+        owner-death supervisor. Both are proven the same way — kill the host
+        mid-cell, the kernel is gone within seconds."""
         import psutil
 
         repo_root = str(Path(__file__).resolve().parents[2])
@@ -426,6 +427,22 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         for proc in runners:
             proc.wait(timeout=10)
             self.assertIsNotNone(proc.returncode)
+
+
+class TestInScriptToolErrors(unittest.TestCase):
+    def test_ignored_helper_error_is_reported_for_that_cell_only(self):
+        """A script that drops a helper's {"error": ...} return must not read as a clean success."""
+        def _handle(tool_name, tool_args, task_id=None):
+            if tool_name == "write_file":
+                return json.dumps({"error": "Refusing to overwrite a.py: never read"})
+            return json.dumps({"ok": True})
+
+        with _kernel_config(), patch("model_tools.handle_function_call", new=_handle):
+            failed = _run("import hermes_tools\nhermes_tools.write_file('a.py', 'x')\nprint('done')\n")
+            clean = _run("import hermes_tools\nhermes_tools.web_search(query='q')\n")
+        self.assertEqual(failed["status"], "success", failed)
+        self.assertEqual(failed["tool_errors"], [{"tool": "write_file", "error": "Refusing to overwrite a.py: never read"}])
+        self.assertNotIn("tool_errors", clean)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

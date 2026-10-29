@@ -2,11 +2,17 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
+import CatalogFeatured from "../../components/CatalogFeatured";
+import { isOfficialSkillSource, pickFeatured } from "../../../../apps/shared/src/catalog-featured";
+import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface Skill {
   name: string;
   description: string;
   overview?: string;
+  image?: string;
+  /** 1-based curated hero rank from catalog-curation.json; absent when uncurated. */
+  featured?: number;
   category: string;
   categoryLabel: string;
   source: string;
@@ -19,6 +25,7 @@ interface Skill {
   commands?: string[];
   docsPath?: string;
   identifier?: string;
+  installIdentifier?: string;
   installCmd?: string;
   /** Clickable URL to the skill's origin (repo / detail page). Synthesized
    *  in extract-skills.py for community skills that have no generated docs
@@ -203,6 +210,27 @@ const SOURCE_CONFIG: Record<
     border: "rgba(248, 113, 113, 0.2)",
     icon: "\u{2756}",
   },
+  "Weights & Biases": {
+    label: "Weights & Biases",
+    color: "#facc15",
+    bg: "rgba(250, 204, 21, 0.08)",
+    border: "rgba(250, 204, 21, 0.2)",
+    icon: "\u{2756}",
+  },
+  Qdrant: {
+    label: "Qdrant",
+    color: "#f43f5e",
+    bg: "rgba(244, 63, 94, 0.08)",
+    border: "rgba(244, 63, 94, 0.2)",
+    icon: "\u{2756}",
+  },
+  Pinecone: {
+    label: "Pinecone",
+    color: "#a3e635",
+    bg: "rgba(163, 230, 53, 0.08)",
+    border: "rgba(163, 230, 53, 0.2)",
+    icon: "\u{2756}",
+  },
 };
 
 const SOURCE_ORDER = [
@@ -222,6 +250,9 @@ const SOURCE_ORDER = [
   "GitHub",
   "gstack",
   "MiniMax",
+  "Weights & Biases",
+  "Qdrant",
+  "Pinecone",
 ];
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -300,6 +331,7 @@ function SkillCard({
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
+  const installUrl = skillCatalogInstallUrl(skill);
 
   return (
     <div
@@ -307,6 +339,7 @@ function SkillCard({
       onClick={onToggle}
       style={style}
     >
+      {skill.image && <img src={skill.image} alt="" loading="lazy" decoding="async" style={{ width: "100%", aspectRatio: "2 / 1", objectFit: "cover", display: "block" }} />}
       <div className={styles.cardAccent} style={{ background: src.color }} />
 
       <div className={styles.cardInner}>
@@ -350,6 +383,16 @@ function SkillCard({
             </span>
           ))}
         </div>
+
+        {!onPick && installUrl && (
+          <a
+            className={styles.pickBtn}
+            href={installUrl}
+            onClick={(e) => e.stopPropagation()}
+          >
+            Install in Hermes
+          </a>
+        )}
 
         {expanded && (
           <div className={styles.cardDetail}>
@@ -419,9 +462,9 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>{skill.installCmd || `hermes skills install ${skill.name}`}</code>
+              <code>{skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}</code>
               <CopyButton
-                text={skill.installCmd || `hermes skills install ${skill.name}`}
+                text={skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}
               />
             </div>
             {onPick ? (
@@ -482,6 +525,9 @@ const PAGE_SIZE = 60;
 // place that needs to follow.
 const SKILLS_URL = "/docs/api/skills.json";
 const META_URL = "/docs/api/skills-meta.json";
+// Idle timeout for the catalog fetch — abort only when the transfer has
+// produced no bytes for this long, so slow-but-alive downloads survive.
+const CATALOG_STALL_TIMEOUT_MS = 45_000;
 /** Mirrors the `max-width: 600px` blocks in styles.module.css. */
 const MOBILE_FILTER_QUERY = "(max-width: 600px)";
 
@@ -523,8 +569,8 @@ export default function SkillsDashboard() {
         {
           type: "hermes-skill-pick",
           name: skill.name,
-          identifier: skill.identifier || skill.name,
-          installCmd: skill.installCmd || `hermes skills install ${skill.name}`,
+          identifier: skillCatalogInstallIdentifier(skill) || skill.name,
+          installCmd: skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`,
           source: skill.source,
         },
         "*"
@@ -538,6 +584,8 @@ export default function SkillsDashboard() {
   // mount from the same CDN that serves the docs.
   const [data, setData] = useState<{ skills: Skill[]; meta: IndexMeta } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Bumped by the error card's Retry button to re-run the catalog load.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [search, setSearch] = useState("");
   // Debounced copy of `search` — used by the filter. Without the debounce,
@@ -557,16 +605,41 @@ export default function SkillsDashboard() {
   const filterDialogRef = useRef<HTMLElement>(null);
   const filterCloseRef = useRef<HTMLButtonElement>(null);
 
+  // The catalog comes from the docs CDN (skills.json 301s onto GitHub
+  // Pages, ~50 MB raw). A connection that silently hangs — polluted DNS,
+  // TLS resets — would otherwise leave the page on "Loading the
+  // catalog…" forever, so read the body as a stream and abort only when
+  // no bytes have arrived for CATALOG_STALL_TIMEOUT_MS. Slow-but-alive
+  // transfers keep resetting the timer and are never cut off (#97861).
   useEffect(() => {
+    const ctrl = new AbortController();
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const armStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => ctrl.abort(), CATALOG_STALL_TIMEOUT_MS);
+    };
     let cancelled = false;
+    const readJson = async (url: string): Promise<unknown> => {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
+      if (!res.body) return res.json();
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        armStallTimer();
+        text += decoder.decode(value, { stream: true });
+      }
+      return JSON.parse(text);
+    };
     (async () => {
       try {
+        armStallTimer();
         const [sk, mt] = await Promise.all([
-          fetch(SKILLS_URL).then((r) => {
-            if (!r.ok) throw new Error(`skills.json HTTP ${r.status}`);
-            return r.json();
-          }),
-          fetch(META_URL).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+          readJson(SKILLS_URL),
+          readJson(META_URL).catch(() => ({})),
         ]);
         if (cancelled) return;
         const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
@@ -575,13 +648,26 @@ export default function SkillsDashboard() {
         setData({ skills: skillsArr, meta: mt || {} });
       } catch (err) {
         if (cancelled) return;
+        if (ctrl.signal.aborted) {
+          setLoadError(
+            `catalog fetch stalled — no data received for ${CATALOG_STALL_TIMEOUT_MS / 1000}s`,
+          );
+          return;
+        }
         setLoadError(err instanceof Error ? err.message : String(err));
       }
     })();
     return () => {
       cancelled = true;
+      ctrl.abort();
+      if (stallTimer) clearTimeout(stallTimer);
     };
-  }, []);
+  }, [reloadKey]);
+
+  const retryCatalogLoad = () => {
+    setLoadError(null);
+    setReloadKey((k) => k + 1);
+  };
 
   // Debounce the search input — 150ms feels instant while preventing the
   // filter from running on every individual keystroke.
@@ -733,6 +819,19 @@ export default function SkillsDashboard() {
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
 
+  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // catalog-curation.json, rotated weekly, shown only while browsing everything.
+  const featured = useMemo(
+    () =>
+      pickFeatured(allSkillsLocal, (s) => ({
+        featured: s.featured,
+        official: isOfficialSkillSource(s.source),
+        pictured: Boolean(s.image),
+      })),
+    [allSkillsLocal],
+  );
+  const browsing = !search && sourceFilter === "all" && categoryFilter === "all" && !pickerMode;
+
   const handleSourceChange = useCallback(
     (src: string) => {
       setSourceFilter(src);
@@ -800,6 +899,12 @@ export default function SkillsDashboard() {
                 {" "}· auto-rebuilt twice daily
               </p>
             )}
+
+            <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.85 }}>
+              <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+              {" • "}
+              <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            </p>
 
             <div className={styles.statsRow}>
               <StatCard
@@ -1027,8 +1132,36 @@ export default function SkillsDashboard() {
                   Fetching 88k+ skills across every registry. One moment.
                 </p>
               </div>
+            ) : loadError ? (
+              <div className={styles.empty}>
+                <div className={styles.emptyIcon}>{"\u26A0\uFE0F"}</div>
+                <h3 className={styles.emptyTitle}>Couldn't load the catalog</h3>
+                <p className={styles.emptyDesc}>
+                  {loadError}. The catalog is served from a public CDN —
+                  restricted networks may need a working proxy. Check your
+                  connection and retry.
+                </p>
+                <button className={styles.emptyReset} onClick={retryCatalogLoad}>
+                  Retry
+                </button>
+              </div>
             ) : visible.length > 0 ? (
               <>
+                {featured && browsing && (
+                  <CatalogFeatured
+                    author={featured.author}
+                    cta="View skill"
+                    description={featured.description}
+                    href={featured.docsPath ? `/user-guide/skills/${featured.docsPath}` : featured.sourceUrl || "#"}
+                    label="Featured skill"
+                    tags={[
+                      SOURCE_CONFIG[featured.source]?.label || featured.source,
+                      featured.categoryLabel,
+                      featured.version && `v${featured.version}`,
+                    ]}
+                    title={featured.name}
+                  />
+                )}
                 <div className={styles.grid}>
                   {visible.map((skill, i) => {
                     const key = `${skill.source}-${skill.name}-${i}`;

@@ -47,6 +47,8 @@ export interface VersionStatusInput {
   latestTag?: null | string
   /** Remote mode: the client is one of two versions on screen, so it says so. */
   remote: boolean
+  /** Tooltip sentence for a move back to an older release; replaces the update line. */
+  rollback?: string
   /** The apply reached the restart stage — labels `restart`, not `update`. */
   restarting: boolean
   /** Client only: short commit sha of the running build. */
@@ -66,6 +68,39 @@ export interface VersionStatusResult {
   unknown: boolean
 }
 
+interface PendingLinesInput {
+  available: boolean
+  behind: number
+  branch?: string
+  copy: VersionStatusCopy
+  latestTag: null | string
+  rollback?: string
+  stable: boolean
+}
+
+/** The tooltip lines naming what is waiting: a rollback, a newer release, or commits behind. */
+function pendingLines({ available, behind, branch, copy, latestTag, rollback, stable }: PendingLinesInput): string[] {
+  if (rollback) {
+    return available ? [rollback] : []
+  }
+
+  const lines: string[] = []
+
+  if (available && stable && latestTag) {
+    lines.push(copy.releaseAvailable(latestTag))
+  }
+
+  if (!stable && behind > 0) {
+    lines.push(copy.commitsBehind(behind, branch || '...'))
+  }
+
+  if (available && (stable ? !latestTag : behind <= 0)) {
+    lines.push(copy.update)
+  }
+
+  return lines
+}
+
 export function resolveVersionStatus({
   applyMessage,
   applying,
@@ -76,6 +111,7 @@ export function resolveVersionStatus({
   latestTag = null,
   remote,
   restarting,
+  rollback,
   sha = null,
   target,
   updateAvailable,
@@ -83,7 +119,7 @@ export function resolveVersionStatus({
 }: VersionStatusInput): VersionStatusResult {
   // The label names the distance past the release; the commit stays in the
   // tooltip and the expanded version details.
-  const version: null | string = rawVersion && shortVersion(rawVersion)
+  const version: null | string = rawVersion && rawVersion !== 'unknown' ? shortVersion(rawVersion) : null
   const client = target === 'client'
   const busy = applying || restarting
   // updateAvailable covers every "behind but uncountable" shape: shallow
@@ -111,9 +147,9 @@ export function resolveVersionStatus({
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
-    !busy && available && stable && latestTag && copy.releaseAvailable(latestTag),
-    !busy && !stable && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
-    !busy && available && (stable ? !latestTag : behind <= 0) && copy.update,
+    ...(busy
+      ? []
+      : pendingLines({ available, behind, branch: client ? branch : 'main', copy, latestTag, rollback, stable })),
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     // The branch line is main-channel vocabulary; a stable checkout sits on

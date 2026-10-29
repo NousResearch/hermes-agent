@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+
+import { prepareElectronRuntime } from './electron-runtime.mjs'
 
 // npm.cmd needs a shell. Use npm's JS entrypoint so paths remain argv on Windows.
 export function npmCommand({ env = process.env } = {}) {
@@ -33,6 +36,20 @@ export function npmCommand({ env = process.env } = {}) {
   return [process.execPath, cli]
 }
 
+// npm's own manifest states its version — no child spawn. A node-under-node spawn
+// hits Windows Job-Object EBUSY (#123933), and the probe runs before the reuse
+// short-circuit: a read-only version read must not abort an otherwise complete run.
+// npm_execpath may point through a symlink; the manifest sits beside the resolved
+// CLI, never beside the link. Layouts without a readable manifest return undefined
+// so the caller falls back to the child probe, matching the pre-manifest behavior.
+function npmManifestVersion(cli) {
+  try {
+    return JSON.parse(readFileSync(join(dirname(realpathSync(cli)), '..', 'package.json'), 'utf8')).version
+  } catch {
+    return undefined
+  }
+}
+
 function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }) {
   if (!existsSync(receipt) || !existsSync(hiddenLock)) return false
   const installed = readFileSync(hiddenLock)
@@ -41,12 +58,41 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
     const nativeReceipt = `${receipt}.native-toolchain`
     if (!existsSync(nativeReceipt) || readFileSync(nativeReceipt, 'utf8') !== `${expected}${nativeKey}\n`) return false
   }
+  // Probe each locked entry's manifest, not its directory: a partial cleanup or
+  // snapshot restore can leave gutted directories behind, and product builders
+  // resolve tools through these manifests (#128935). npm itself never repairs
+  // such an entry — it trusts the hidden lockfile's claim that the package is
+  // installed — so only rejecting the receipt here routes the update to npm ci.
   return readFileSync(receipt, 'utf8') === expected && Object.keys(JSON.parse(installed).packages)
-    .every(path => existsSync(join(source, path)))
+    .every(path => existsSync(join(source, path, 'package.json')))
 }
 
-/** Install the full requested workspace union in one strict, locked operation. */
-export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain }) {
+// An interrupted Windows update can leave a nested .bin that npm ci's own rmdir
+// cannot clear (ENOTEMPTY, #75584); only deleting node_modules recovers it. npm's
+// debug log names the code while stdio stays on the terminal, so give each run
+// its own logs dir and retry once only on that code. Other failures keep the tree.
+function runNpmCi(node, npm, args, { source, env }) {
+  const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
+  // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
+  // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
+  const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
+    { cwd: source, env, stdio: 'inherit' })
+  try {
+    run()
+  } catch (error) {
+    const logged = readdirSync(logsDir).some(name => readFileSync(join(logsDir, name), 'utf8').includes('ENOTEMPTY'))
+    if (!logged) throw error
+    console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
+    rmSync(join(source, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
+    run()
+  } finally {
+    rmSync(logsDir, { recursive: true, force: true })
+  }
+}
+
+/** Install the full requested workspace union in one strict, locked operation.
+ *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
+export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
   source = resolve(source)
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
     throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
@@ -63,8 +109,11 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     }
     return path
   }))].sort()
+  const prepareElectron = electron && selected.includes('apps/desktop')
+    && Boolean(JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8')).devDependencies?.electron)
   const [node, npm] = npmCommand({ env })
-  const npmVersion = execFileSync(node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
+  const npmVersion = npmManifestVersion(npm) ?? execFileSync(
+    node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
   const { satisfies } = createRequire(npm)('semver')
   for (const [name, version] of [['node', process.versions.node], ['npm', npmVersion]]) {
     const range = manifest.engines?.[name]
@@ -97,6 +146,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   }
   const key = inputs.digest('hex')
   if (reuse && completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey })) {
+    if (prepareElectron) prepareElectronRuntime({ source, install, env })
     console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
     return { source, workspaces: selected }
   }
@@ -105,9 +155,8 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   rmSync(receipt, { force: true })
   rmSync(nativeReceipt, { force: true })
   console.log(`node-deps: installing workspace dependencies with npm ci (${selected.join(', ')})...`)
-  // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
-  // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
-  execFileSync(node, [npm, ...args, '--progress=true'], { cwd: source, env, stdio: 'inherit' })
+  runNpmCi(node, npm, args, { source, env })
+  if (prepareElectron) prepareElectronRuntime({ source, install, env })
   if (reuse) {
     const completed = `${key}\n${createHash('sha256').update(readFileSync(hiddenLock)).digest('hex')}\n`
     writeFileSync(receipt, completed)

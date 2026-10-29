@@ -242,9 +242,19 @@ def env_is_connected(*names: str) -> Callable[[Any], bool]:
     return is_connected
 
 
+def config_connected_extra(*keys: str) -> Callable[[Any], bool]:
+    """``PlatformEntry.config_connected_fn``: connected when the merged PlatformConfig carries a
+    token/api_key or every ``extra`` key (no env fallback; that is ``is_connected``'s job)."""
+
+    def config_connected(config: Any) -> bool:
+        return bool(config.token or config.api_key) or all(config.extra.get(k) for k in keys)
+
+    return config_connected
+
+
 def coerce_port(value: Any, default: int) -> int:
-    """``int(value)`` or ``default`` when unparseable."""
+    """``int(value)`` or ``default`` when unparseable (incl. non-finite YAML like ``.inf``)."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default

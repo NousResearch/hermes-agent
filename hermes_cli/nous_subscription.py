@@ -39,14 +39,14 @@ class _FeatureSpec:
     default_direct_env: tuple[str, ...] = ()
 
 
-_FEATURES: Dict[str, _FeatureSpec] = {
+_FEATURES: dict[str, _FeatureSpec] = {
     "web": _FeatureSpec(
         "Web tools", True, "firecrawl", "firecrawl", ("web", "backend"),
         "Web search & extract", "Firecrawl/Exa/Parallel/Tavily/Perplexity/Keenable key or SearXNG",
         ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
     ),
     "image_gen": _FeatureSpec(
-        "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation (FAL)", "FAL key",
+        "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation", "FAL key",
     ),
     "video_gen": _FeatureSpec(
         "Video generation", False, "fal-video", "fal-queue", ("video_gen", "provider"), "Video generation (FAL)", "FAL key",
@@ -61,7 +61,7 @@ _FEATURES: Dict[str, _FeatureSpec] = {
     ),
     "browser": _FeatureSpec(
         "Browser automation", True, "browser-use", "browser-use", ("browser", "cloud_provider"),
-        "Browser automation (Browser Use)", "Browser Use/Browserbase key or Camofox",
+        "Browser automation (Browser Use)", "Browser Use/Browserbase key",
         ("BROWSER_USE_API_KEY", "BROWSERBASE_API_KEY"),
     ),
     "modal": _FeatureSpec("Modal execution", False, "modal", "modal"),
@@ -69,12 +69,13 @@ _FEATURES: Dict[str, _FeatureSpec] = {
 
 _FEATURE_ORDER = tuple(_FEATURES)
 # Public / test-referenced views over the table.
-MANAGED_FEATURE_COVERAGE_CATEGORY: Dict[str, str] = {k: s.coverage for k, s in _FEATURES.items()}
+MANAGED_FEATURE_COVERAGE_CATEGORY: dict[str, str] = {k: s.coverage for k, s in _FEATURES.items()}
 _GATEWAY_SECTION_FIELDS = {k: s.section_field for k, s in _FEATURES.items() if s.section_field}
 _ALL_GATEWAY_KEYS = tuple(_GATEWAY_SECTION_FIELDS)
 _GATEWAY_TOOL_LABELS = {k: _FEATURES[k].offer_label for k in _ALL_GATEWAY_KEYS}
 # Sections apply_*_defaults always materialise before writing selections.
 _DEFAULT_SECTIONS = ("web", "tts", "stt", "browser")
+MANAGED_IMAGE_DEFAULT_KREA_MODEL = "krea-3"
 
 
 def _uses_gateway(section: object) -> bool:
@@ -112,7 +113,7 @@ class NousSubscriptionFeatures:
     subscribed: bool
     nous_auth_present: bool
     provider_is_nous: bool
-    features: Dict[str, NousFeatureState]
+    features: dict[str, NousFeatureState]
     account_info: Optional[NousPortalAccountInfo] = None
 
     def __getattr__(self, name: str) -> NousFeatureState:  # ``features.web`` -> per-key state
@@ -124,13 +125,13 @@ class NousSubscriptionFeatures:
         return (self.features[key] for key in _FEATURE_ORDER)
 
 
-def _section(config: Dict[str, object], key: str) -> Dict[str, object]:
+def _section(config: dict[str, object], key: str) -> dict[str, object]:
     """``config[key]`` when it is a dict, else ``{}`` (read-only view)."""
     value = config.get(key)
     return value if isinstance(value, dict) else {}
 
 
-def _ensure_section(config: Dict[str, object], key: str) -> Dict[str, object]:
+def _ensure_section(config: dict[str, object], key: str) -> dict[str, object]:
     """Return ``config[key]`` as a dict, creating/replacing it in ``config`` when missing."""
     value = config.get(key)
     if not isinstance(value, dict):
@@ -138,23 +139,25 @@ def _ensure_section(config: Dict[str, object], key: str) -> Dict[str, object]:
     return value
 
 
-def _select_nous(config: Dict[str, object], key: str) -> None:
+def _select_nous(config: dict[str, object], key: str, model: Optional[str] = None) -> None:
     """Store the managed ``nous`` selection in the ``key`` section (field per _GATEWAY_SECTION_FIELDS)."""
     section_key, field = _GATEWAY_SECTION_FIELDS[key]
     section = _ensure_section(config, section_key)
     section[field] = "nous"
     section.pop("use_gateway", None)
+    if model:
+        section["model"] = model
 
 
 def _norm(value: object, default: str = "") -> str:
     return str(value or default).strip().lower()
 
 
-def _provider_is_nous(config: Dict[str, object]) -> bool:
+def _provider_is_nous(config: dict[str, object]) -> bool:
     return _norm(_section(config, "model").get("provider")) == "nous"
 
 
-def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
+def _toolset_enabled(config: dict[str, object], toolset_key: str) -> bool:
     """True when some platform's configured toolsets cover every tool of ``toolset_key``."""
     from toolsets import resolve_toolset
 
@@ -169,7 +172,7 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
         toolset_names = list(parse_platform_toolsets_value(raw_toolsets) or [])
         if not toolset_names:
             toolset_names = [t for t in (_DEFAULT_PLATFORM_TOOLSETS.get(platform),) if t]
-        available_tools: Set[str] = set()
+        available_tools: set[str] = set()
         for toolset_name in toolset_names:
             if isinstance(toolset_name, str) and toolset_name:
                 try:
@@ -181,36 +184,31 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
     return False
 
 
-def _has_agent_browser() -> bool:
-    # Read the runtime's choice; a broken resolver is not permission to
-    # advertise an unchecked binary through a second discovery ladder.
-    try:
-        from tools.browser_tool_install import _find_agent_browser
-        _find_agent_browser(validate=False)
-    except (ImportError, OSError):
-        return False
-    return True
+def _has_browser_harness() -> bool:
+    """browser_exec's engine (browser-harness, a core venv dependency) is importable: the only local
+    requirement for a cloud browser provider, which hosts its own Chromium."""
+    from tools.browser_use_cli import _find_cli
+
+    return _find_cli() is not None
 
 
-def _local_browser_runnable() -> bool:
-    """True when the *local* browser backend would actually start: the CLI must be present AND a
-    Chromium build on disk (else agent-browser hangs until the command timeout) unless the Lightpanda
-    engine is selected. Mirrors the local-mode tail of tools.browser_tool_install.check_browser_requirements."""
-    if not _has_agent_browser():
+def _local_browser_runnable(browser_cfg: dict[str, object]) -> bool:
+    """True when the *local* browser would actually start: browser-harness plus the engine it attaches
+    to — ``lightpanda serve`` when ``browser.engine`` selects it, else a Chromium the launcher can run."""
+    if not _has_browser_harness():
         return False
-    try:
-        from tools.browser_tool_install import _chromium_installed
-        from tools.browser_tool_lightpanda_fallback import _using_lightpanda_engine
-    except Exception:
-        return True  # runtime probe unavailable: fall back to binary presence rather than crashing
-    return _using_lightpanda_engine() or _chromium_installed()
+    if str(browser_cfg.get("engine") or "auto").strip().lower() == "lightpanda":
+        return True
+    from hermes_cli.browser_runtime import chromium_executable
+
+    return chromium_executable() is not None
 
 
 # kind -> (default provider, provider -> display label)
 _PROVIDER_LABELS = {
     "browser": ("local", {
         "browserbase": "Browserbase", "browser-use": "Browser Use", "firecrawl": "Firecrawl",
-        "camofox": "Camofox", "local": "Local browser",
+        "local": "Local browser",
     }),
     "tts": ("edge", {
         "openai": "OpenAI TTS", "elevenlabs": "ElevenLabs", "edge": "Edge TTS", "xai": "xAI TTS",
@@ -259,7 +257,7 @@ def _state(key: str, **fields) -> NousFeatureState:
     return NousFeatureState(key, spec.label, spec.included_by_default, **fields)
 
 
-def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, web_gw: bool, direct_firecrawl: bool) -> NousFeatureState:
+def _web_feature(web_cfg: dict[str, object], tool_enabled: bool, managed: bool, web_gw: bool, direct_firecrawl: bool) -> NousFeatureState:
     # Per-capability overrides decide the active search/extract backend independently of web.backend.
     backend, search_backend, extract_backend = (_norm(web_cfg.get(k)) for k in ("backend", "search_backend", "extract_backend"))
     # The "nous" selection is serviced by Firecrawl — normalize so downstream vendor checks hold.
@@ -275,7 +273,8 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
         "perplexity": _any_env("PERPLEXITY_API_KEY") and not web_gw,
         "searxng": _any_env("SEARXNG_URL"),
     }
-    web_managed = backend == "firecrawl" and managed and not direct_firecrawl
+    web_managed = managed and (
+        (backend == "firecrawl" and not direct_firecrawl) or "nous" in {search_backend, extract_backend})
     active = web_managed or direct.get(backend) or direct.get(search_backend) or (extract_backend in ("tavily", "perplexity") and direct[extract_backend])
     return _state(
         "web", available=bool(managed or any(direct.values())), active=bool(tool_enabled and active),
@@ -283,6 +282,17 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
         current_provider=backend or search_backend or extract_backend or "",
         explicit_configured=bool(backend or search_backend or extract_backend),
     )
+
+
+def managed_image_partner(config: dict[str, object]) -> Optional[str]:
+    """Partner the image request is dispatched to (``"FAL"``, ``"Krea"`` or ``"Nous Portal"``);
+    ``None`` when a direct vendor owns it. Reads the stored values the way the runtime dispatcher
+    does, so the label and the route cannot disagree."""
+    from tools.image_generation_managed import FAL, KREA, PORTAL, managed_route
+
+    section = _section(config, "image_gen")
+    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}.get(
+        managed_route(section.get("provider"), section.get("model")))
 
 
 def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, selected: Optional[str]) -> NousFeatureState:
@@ -299,14 +309,14 @@ def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, sele
     )
 
 
-def _audio_provider(cfg: Dict[str, object], default: str, gw: bool) -> str:
+def _audio_provider(cfg: dict[str, object], default: str, gw: bool) -> str:
     provider = _norm(cfg.get("provider"), default)
     return "openai" if (provider == "nous" or gw) else (provider or default)
 
 
 def _audio_features(
-    tts_cfg: Dict[str, object], stt_cfg: Dict[str, object], tts_tool_enabled: bool,
-    managed: Dict[str, bool], selected: Dict[str, Optional[str]], use_gateway: Dict[str, bool],
+    tts_cfg: dict[str, object], stt_cfg: dict[str, object], tts_tool_enabled: bool,
+    managed: dict[str, bool], selected: dict[str, Optional[str]], use_gateway: dict[str, bool],
 ) -> tuple[NousFeatureState, NousFeatureState]:
     tts_gw, stt_gw = use_gateway["tts"], use_gateway["stt"]
     # STT default is "local" (faster-whisper, needs a pip install); Nous subscribers are routed to the
@@ -344,33 +354,27 @@ def _audio_features(
 
 
 def _browser_feature(
-    browser_cfg: Dict[str, object], tool_enabled: bool, managed: bool, selected: Optional[str], browser_gw: bool, direct_firecrawl: bool,
+    browser_cfg: dict[str, object], tool_enabled: bool, managed: bool, browser_gw: bool, direct_firecrawl: bool,
 ) -> NousFeatureState:
     """Resolve browser availability using the same precedence as runtime."""
     explicit = "cloud_provider" in browser_cfg
     provider = normalize_browser_cloud_provider(browser_cfg.get("cloud_provider") if explicit else None)
     if provider == "nous" or browser_gw:
         provider = "browser-use"
-    # CAMOFOX_URL is the server address, not a selection: an explicit different choice wins over it.
-    direct_camofox = _any_env("CAMOFOX_URL") and (selected is None or selected == "camofox")
     direct_browserbase = bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID")) and not browser_gw
     direct_browser_use = _any_env("BROWSER_USE_API_KEY") and not browser_gw
-    # local_available = the agent-browser CLI is present, the only local requirement for cloud providers.
-    local_available = _has_agent_browser()
-    local_runnable = _local_browser_runnable()
+    local_available = _has_browser_harness()
+    local_runnable = _local_browser_runnable(browser_cfg)
     browser_use_managed = bool(tool_enabled and local_available and managed and not direct_browser_use)
 
     if explicit:
         cloud_available = {
-            "camofox": direct_camofox, "browserbase": local_available and direct_browserbase,
+            "browserbase": local_available and direct_browserbase,
             "browser-use": local_available and (managed or direct_browser_use), "firecrawl": local_available and direct_firecrawl,
         }
         current = provider if provider in cloud_available else "local"
         available = bool(cloud_available.get(current, local_runnable))
         managed_now = browser_use_managed if current == "browser-use" else False
-    # Never-configured autodetect: CAMOFOX_URL activates Camofox when no selection was stored.
-    elif direct_camofox:
-        current, available, managed_now = "camofox", True, False
     elif managed or direct_browser_use:
         current, available, managed_now = "browser-use", bool(local_available), browser_use_managed
     elif direct_browserbase:
@@ -383,7 +387,7 @@ def _browser_feature(
     )
 
 
-def _modal_feature(terminal_cfg: Dict[str, object], tool_enabled: bool, managed: bool, managed_tools_flag: bool) -> NousFeatureState:
+def _modal_feature(terminal_cfg: dict[str, object], tool_enabled: bool, managed: bool, managed_tools_flag: bool) -> NousFeatureState:
     terminal_backend = _norm(terminal_cfg.get("backend"), "local")
     modal_mode = normalize_modal_mode(terminal_cfg.get("modal_mode"))
     direct_modal = has_direct_modal_credentials()
@@ -406,7 +410,7 @@ def _modal_feature(terminal_cfg: Dict[str, object], tool_enabled: bool, managed:
     )
 
 
-def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *, force_fresh: bool = False) -> NousSubscriptionFeatures:
+def get_nous_subscription_features(config: Optional[dict[str, object]] = None, *, force_fresh: bool = False) -> NousSubscriptionFeatures:
     if config is None:
         config = load_config() or {}
     provider_is_nous = _provider_is_nous(config)
@@ -449,7 +453,7 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         "tts": tts,
         "stt": stt,
         "browser": _browser_feature(
-            _section(config, "browser"), enabled["browser"], managed["browser"], selected["browser"], use_gateway["browser"], direct_firecrawl,
+            _section(config, "browser"), enabled["browser"], managed["browser"], use_gateway["browser"], direct_firecrawl,
         ),
         "modal": _modal_feature(_section(config, "terminal"), enabled["terminal"], managed["modal"], managed_tools_flag),
     }
@@ -463,7 +467,15 @@ def _has_managed_default_direct(key: str) -> bool:
     return bool(key in ("tts", "stt") and resolve_openai_audio_api_key()) or _any_env(*_FEATURES[key].default_direct_env)
 
 
-def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: Optional[Iterable[str]] = None, force_fresh: bool = False) -> set[str]:
+def _krea_image_default(config: dict[str, object], account_info) -> Optional[str]:
+    """Krea 3 for accounts entitled to Krea when no image model is stored; the free pool is not
+    entitled and keeps the FAL default."""
+    if _section(config, "image_gen").get("model") or not (account_info and account_info.tool_gateway_entitled_for("krea")):
+        return None
+    return MANAGED_IMAGE_DEFAULT_KREA_MODEL
+
+
+def apply_nous_managed_defaults(config: dict[str, object], *, enabled_toolsets: Optional[Iterable[str]] = None, force_fresh: bool = False) -> set[str]:
     features = get_nous_subscription_features(config, force_fresh=force_fresh)
     account_info = features.account_info
     if not (account_info and account_info.logged_in and account_info.tool_gateway_entitled and features.provider_is_nous):
@@ -489,7 +501,10 @@ def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: 
     # Video gen is not funded by the free tool pool: only wire managed video for entitled (paid) users.
     for key, category in (("image_gen", None), ("video_gen", "fal-video")):
         if key in selected_toolsets and not fal_key_is_configured() and (category is None or account_info.tool_gateway_entitled_for(category)):
-            _select_nous(config, key)
+            model = None
+            if key == "image_gen" and not features.features[key].explicit_configured:
+                model = _krea_image_default(config, account_info)
+            _select_nous(config, key, model=model)
             changed.add(key)
     return changed
 
@@ -497,10 +512,11 @@ def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: 
 # Tool Gateway offer — per-tool checklist after model selection
 
 
-def _get_gateway_direct_credentials() -> Dict[str, bool]:
+def _get_gateway_direct_credentials() -> dict[str, bool]:
     """tool_key -> has_direct_credentials. Env-configured keyless local backends (SearXNG, CAMOFOX_URL)
     count as configured so they are never classified "unconfigured" and pre-checked; Whisper shares
-    the audio key with TTS."""
+    the audio key with TTS. CAMOFOX_URL: the home browses through Camofox (the ``camofox`` plugin
+    since it left core), so the managed browser is offered, not pre-checked over it."""
     fal_direct = fal_key_is_configured()
     audio_direct = bool(resolve_openai_audio_api_key())
     return {
@@ -519,7 +535,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
     }
 
 
-def get_gateway_eligible_tools(config: Optional[Dict[str, object]] = None, *, force_fresh: bool = False) -> tuple[list[str], list[str], list[str], list[str]]:
+def get_gateway_eligible_tools(config: Optional[dict[str, object]] = None, *, force_fresh: bool = False) -> tuple[list[str], list[str], list[str], list[str]]:
     """(unconfigured, has_direct, explicit_configured, already_managed) tool key lists: no credentials
     and no explicit non-nous selection (safe to pre-check) / own API keys / explicit non-nous selection
     stored (e.g. keyless SearXNG) even with nothing to detect / ``use_gateway`` explicitly set."""
@@ -550,17 +566,17 @@ def get_gateway_eligible_tools(config: Optional[Dict[str, object]] = None, *, fo
     return unconfigured, has_direct, explicit_configured, already_managed
 
 
-def apply_gateway_defaults(config: Dict[str, object], tool_keys: list[str]) -> set[str]:
+def apply_gateway_defaults(config: dict[str, object], tool_keys: list[str], account_info=None) -> set[str]:
     """Store the managed selection for ``tool_keys``; returns the set of tools actually changed."""
     for key in _DEFAULT_SECTIONS:
         _ensure_section(config, key)
     changed = [key for key in _ALL_GATEWAY_KEYS if key in tool_keys]  # table order: config key order
     for key in changed:
-        _select_nous(config, key)
+        _select_nous(config, key, model=_krea_image_default(config, account_info) if key == "image_gen" else None)
     return set(changed)
 
 
-def prompt_enable_tool_gateway(config: Dict[str, object], *, force_fresh: bool = True) -> set[str]:
+def prompt_enable_tool_gateway(config: dict[str, object], *, force_fresh: bool = True) -> set[str]:
     """If eligible tools exist, show a per-tool checklist to route them through the Tool Gateway.
     Triggered by a live free pool or paid access; explicit_configured tools (e.g. ``web.backend:
     searxng``) are configured on purpose and never offered, like already_managed."""
@@ -604,7 +620,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object], *, force_fresh: bool =
     newly_declined = [k for k in unconfigured if k not in chosen_keys and k not in declined]
     if newly_declined or (declined & set(chosen_keys)):
         config["tool_gateway_declined_tools"] = sorted((declined | set(newly_declined)) - set(chosen_keys))
-    changed = apply_gateway_defaults(config, chosen_keys) if chosen_keys else set()
+    changed = apply_gateway_defaults(config, chosen_keys, account_info) if chosen_keys else set()
     if changed or newly_declined:
         from hermes_cli.config import save_config
 
@@ -656,7 +672,7 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
     """Run the Nous Portal device-code OAuth and persist credentials only (no model selection, no
     provider switch, no Tool Gateway bulk prompt). ``False`` if the user declined or the flow failed."""
     try:
-        import hermes_cli.auth as auth
+        from hermes_cli import auth
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  Could not start Nous Portal login: {exc}")
         return False
@@ -675,10 +691,15 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
             prior_active_provider = auth._load_auth_store().get("active_provider")
         auth_state = None
         # Interrupting the import question defaults to importing.
-        if auth._read_shared_nous_state() and _confirm("  Found existing Nous OAuth credentials. Import them? [Y/n]: ") is not False:
+        from hermes_cli.anon_auth import is_guest_state
+
+        shared = auth._read_shared_nous_state()
+        if shared and not is_guest_state(shared) and _confirm("  Found existing Nous OAuth credentials. Import them? [Y/n]: ") is not False:
             auth_state = auth._try_import_shared_nous_state(timeout_seconds=15.0)
         if auth_state is None:
             auth_state = auth._nous_device_code_login()
+        from hermes_cli.anon_auth import settle_after_upgrade
+        from hermes_cli.guest_handoff import drain, result_lines
         with auth._auth_store_lock():
             auth_store = auth._load_auth_store()
             auth._save_provider_state(auth_store, "nous", auth_state)
@@ -687,9 +708,13 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
             else:
                 auth_store.pop("active_provider", None)
             auth._save_auth_store(auth_store)
-        auth._write_shared_nous_state(auth_state)
+        auth._write_shared_nous_state(auth_state, renewal=False)
+        handoff = drain()  # a replaced free tier hands its apps over once both saves land
         auth._sync_nous_pool_from_auth_store()
+        settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print("  Nous Portal login successful.")
+        for line in (line for view in handoff for line in result_lines(view)):
+            print(f"  {line}")
         return True
     except KeyboardInterrupt:
         print("\n  Login cancelled.")
@@ -700,25 +725,3 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
     except Exception as exc:
         print(f"  Nous Portal login failed: {exc}")
         return False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -270,4 +270,4 @@ def setup_tts(config: dict):
     _setup_tts_provider(config)
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

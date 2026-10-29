@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.models import azure_foundry_model_api_mode, copilot_model_api_mode, curated_models_for_provider, fetch_api_models, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_model_ids
+from hermes_cli.models import azure_foundry_model_api_mode, curated_models_for_provider, fetch_api_models, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_model_ids
 from hermes_cli.models_local import fetch_lmstudio_models
 from hermes_cli.models_validate import validate_requested_model
 
@@ -57,6 +57,23 @@ class TestCuratedModelsForProvider:
         ):
             assert curated_models_for_provider("nous") == [("m-static", "")]
 
+    def test_stepfun_merges_live_and_static(self):
+        """StepFun Step Plan API returns a subset; curated list merges with static."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "***", "base_url": "https://api.stepfun.ai/step_plan/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["step-3.5-flash", "step-3.5-flash-2603"],
+        ):
+            models = curated_models_for_provider("stepfun")
+        model_ids = [m[0] for m in models]
+        # Live models appear first, static-only models appended
+        assert model_ids[0] == "step-3.5-flash"
+        assert "step-3.7-flash" in model_ids
+        # No duplicates
+        assert len(model_ids) == len(set(model_ids))
+
 
 # -- normalize_provider ------------------------------------------------------
 
@@ -67,7 +84,6 @@ class TestNormalizeProvider:
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("step") == "stepfun"
-        assert normalize_provider("github-copilot") == "copilot"
 
 
 # -- provider_model_ids ------------------------------------------------------
@@ -172,36 +188,8 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == base + "/v1"
         assert probe["used_fallback"] is True
 
-    def test_probe_api_models_uses_copilot_catalog(self):
-        class _Resp:
-            def __enter__(self):
-                return self
 
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
-
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()) as mock_urlopen:
-            probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
-
-        assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
-        assert probe["models"] == ["gpt-5.4", "claude-sonnet-4.6"]
-        assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
-        assert probe["used_fallback"] is False
-
-
-class TestCopilotNormalization:
-
-    def test_copilot_api_mode_gpt5_uses_responses(self):
-        """GPT-5+ models should use Responses API (matching opencode)."""
-        assert copilot_model_api_mode("gpt-5.4") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.4-mini") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.3-codex") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.2-codex") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.2") == "codex_responses"
-
+class TestModelApiModeNormalization:
 
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
@@ -214,6 +202,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
+        # claude-haiku-5-5 400s ModelProtocolUnsupported on chat/completions and responses (#134844).
+        assert opencode_model_api_mode("opencode-go", "claude-haiku-5-5") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/claude-haiku-5-5") == "anthropic_messages"
         # All Qwen models on Go route via /v1/messages (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "qwen3.7-plus") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "qwen3.6-plus") == "anthropic_messages"
@@ -832,6 +823,25 @@ class TestProfileCatalogAuthoritative:
                 "other-vendor/model-a", "relay-owned-catalog", api_key="k")
         assert result["accepted"] is True
         assert result["recognized"] is True
+
+    def test_nebius_relay_base_url_validates_against_relay_listing(self, monkeypatch):
+        """A configured relay base URL must decide Nebius Token Factory validation (#121388)."""
+        relay_base_url = "https://relay.example.invalid/v1"
+        calls = []
+
+        def fetch_relay_models(_api_key, base_url, **_kwargs):
+            calls.append(base_url)
+            return ["relay-only/model"] if base_url == relay_base_url else ["canonical-only/model"]
+
+        monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda _provider: ["canonical-only/model"])
+        monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch_relay_models)
+
+        result = validate_requested_model(
+            "relay-only/model", "nebius-token-factory", api_key="k", base_url=relay_base_url)
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert calls == [relay_base_url]
 
 
 # -- validate — whitespace in self-hosted / user-configured ids --------------

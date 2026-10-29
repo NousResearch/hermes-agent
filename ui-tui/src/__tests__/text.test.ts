@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { t } from '../i18n/runtime.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
@@ -44,8 +45,8 @@ describe('buildVerboseToolTrailLine', () => {
       'first line\nsecond :: line'
     )
 
-    expect(line).toContain('Args:\n{')
-    expect(line).toContain('Result:\nfirst line\nsecond :: line')
+    expect(line).toContain(`${t('libText.text.argsLabel')}:\n{`)
+    expect(line).toContain(`${t('libText.text.resultLabel')}:\nfirst line\nsecond :: line`)
     expect(parseToolTrailResultLine(line)).toEqual({
       call: 'Terminal("npm test") (1.3s)',
       detail: 'Args:\n{\n  "cmd": "npm test"\n}\nResult:\nfirst line\nsecond :: line',
@@ -141,7 +142,7 @@ describe('boundedLiveRenderText', () => {
     const out = boundedLiveRenderText(['a', 'b', 'c', 'd'].join('\n'), { maxChars: 100, maxLines: 2 })
 
     expect(out).toContain('c\nd')
-    expect(out).toContain('omitted 2 lines')
+    expect(out).toContain(t('libText.text.omittedLinesChars', t('libText.text.showingLiveTail'), '2', '4'))
     expect(out).not.toContain('a\nb')
   })
 })
@@ -169,7 +170,7 @@ describe('pasteTokenLabel', () => {
   it('builds readable long-paste labels with counts', () => {
     const label = pasteTokenLabel('Vampire Bondage ropes slipped from her neck, still stained with blood', 250)
     expect(label.startsWith('[[ ')).toBe(true)
-    expect(label).toContain('[250 lines]')
+    expect(label).toContain(t('libText.text.pasteLinesChip', '250'))
     expect(label.endsWith(' ]]')).toBe(true)
   })
 })

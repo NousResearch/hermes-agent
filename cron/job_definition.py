@@ -15,10 +15,11 @@ JOB_DEFINITION_FIELDS = frozenset({
     "script", "no_agent", "monitor_script", "monitor_url", "context_from",
     "schedule", "schedule_display", "deliver", "origin", "enabled_toolsets",
     "workdir", "attach_to_session", "reasoning_effort", "failure_deliver",
+    "timezone", "grace_minutes",
 })
 
 
-def merge_job_definition(local: Dict[str, Any], authored: Dict[str, Any]) -> Dict[str, Any]:
+def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dict[str, Any]:
     """Refresh authored fields while preserving this store's scheduler-owned state.
 
     Raises ValueError when the authored schedule cannot be scheduled (unparseable string,
@@ -32,7 +33,10 @@ def merge_job_definition(local: Dict[str, Any], authored: Dict[str, Any]) -> Dic
     if isinstance(merged.get("schedule"), str):
         merged["schedule"] = parse_schedule(merged["schedule"])
 
-    if local.get("schedule") != merged.get("schedule"):
+    # A zone change moves every wall-clock occurrence exactly like an expr change: the instant on
+    # file belongs to the old zone and the next scan would re-anchor past it without firing.
+    if (local.get("schedule") != merged.get("schedule")
+            or local.get("timezone") != merged.get("timezone")):
         merged.pop("pending_slot", None)
         _clear_quota_hold(merged)
         if is_job_runnable(merged):
@@ -45,7 +49,7 @@ def merge_job_definition(local: Dict[str, Any], authored: Dict[str, Any]) -> Dic
     return merged
 
 
-def import_job_definitions(shipped: Dict[str, Dict[str, Any]], *, paused_reason: str) -> None:
+def import_job_definitions(shipped: dict[str, dict[str, Any]], *, paused_reason: str) -> None:
     """Merge *shipped* (job id -> authored record) into the active store under its lock.
 
     Unknown ids arrive with the marker set ``create_job(paused=True)`` writes; known ids keep
@@ -70,7 +74,7 @@ def import_job_definitions(shipped: Dict[str, Dict[str, Any]], *, paused_reason:
         save_jobs(merged)
 
 
-def _merge_or_name(local: Dict[str, Any], authored: Dict[str, Any]) -> Dict[str, Any]:
+def _merge_or_name(local: dict[str, Any], authored: dict[str, Any]) -> dict[str, Any]:
     try:
         return merge_job_definition(local, authored)
     except ValueError as exc:

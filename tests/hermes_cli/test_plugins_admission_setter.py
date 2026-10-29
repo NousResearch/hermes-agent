@@ -5,9 +5,9 @@ import sys
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    plugin_world as plugin_world,
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
     worker_command,
-    isolated_python as isolated_python,
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 
@@ -93,7 +93,8 @@ def test_ui_conflict_is_reported_without_changing_selection(plugin_world, surfac
         assert not result["ok"] and "plugin-proof-dep" in result["error"]
     else:
         with pytest.raises(AdmissionRefused, match="plugin-proof-dep"):
-            plugins_cmd._persist_plugin_selection(["plugin-worker-proof", "conflicting-ui-plugin"], {0, 1}, set())
+            # plugin-worker-proof is ticked on open; ticking the conflicting plugin is the refused flip.
+            plugins_cmd._persist_plugin_selection(["plugin-worker-proof", "conflicting-ui-plugin"], {0, 1}, set(), {0})
     assert {path: path.read_bytes() for path in watched} == before
     world.imports()
 

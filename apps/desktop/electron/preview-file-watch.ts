@@ -32,10 +32,12 @@ export function sendPreviewFileChangedToOwner(
 ): boolean {
   if (!owner || owner.isDestroyed()) {
     onDestroyed?.()
+
     return false
   }
 
   owner.send(PREVIEW_FILE_CHANGED_CHANNEL, payload)
+
   return true
 }
 

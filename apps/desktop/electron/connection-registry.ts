@@ -884,6 +884,34 @@ export function connectionIdForLabel(label: string, taken: Iterable<string>): st
   }
 }
 
+/**
+ * Settle the connection id a pre-save OAuth login must write its session for.
+ * The registry editor can open the sign-in window BEFORE the draft is saved,
+ * and the login window's cookie partition is derived from this id
+ * (oauth-partition.ts) — so it must equal the id the eventual save uses. An
+ * explicit draft id wins; otherwise mint from the label exactly like
+ * normalizeConnectionInput will (labelSlug maps an empty label to
+ * 'connection', so even an unnamed draft gets a stable, unique id). The
+ * editor's save path never promotes a fresh entry to primary, so a pending
+ * draft always ends up on its own partition.
+ */
+export function connectionIdForPendingLogin(opts: {
+  connectionId?: unknown
+  label?: unknown
+  registry: ConnectionRegistry
+}): string {
+  if (typeof opts.connectionId === 'string' && opts.connectionId.trim()) {
+    return opts.connectionId.trim()
+  }
+
+  const label = typeof opts.label === 'string' ? opts.label : ''
+
+  return connectionIdForLabel(
+    label,
+    opts.registry.connections.map(c => c.id)
+  )
+}
+
 // ── Validation ──────────────────────────────────────────────────────────────
 
 export interface ConnectionInput {
@@ -1669,20 +1697,40 @@ export function reconcileRegistryDrift(
 
     const target = normalizedSshTarget(ssh)
 
-    const alreadyRegistered = registry.connections.some(
+    const registered = registry.connections.find(
       connection =>
         connection.kind === 'ssh' &&
         normalizedSshTarget(connection) === target &&
         (connection.port ?? 22) === (ssh.port ?? 22)
     )
 
-    if (alreadyRegistered) {
+    const { mode: _mode, ...sshFields } = ssh
+
+    if (registered) {
       // Route is known; if primary names another source, that is the user's
       // Connections-panel choice, not drift.
-      return unchanged
-    }
+      //
+      // Known by target is not enough, though: the router tags the live
+      // window by the FULL route identity (matchingConnectionId also compares
+      // keyPath, remoteHermesPath and remoteProfile). A v1 route carrying a
+      // keyPath the registered entry never had resolves to no connectionId,
+      // the renderer treats the untagged window as the unscoped local backend
+      // ("This device") and the roster force-spawns a phantom local child.
+      // Align the registered entry's identity fields with the route the app
+      // actually dials so both sides compare equal.
+      if (matchingConnectionId(registry, { ...ssh, kind: 'ssh' }, 'unique')) {
+        return unchanged
+      }
 
-    const { mode: _mode, ...sshFields } = ssh
+      const { host: _host, user: _user, port: _port, ...identityFields } = sshFields
+      const aligned: RegistryConnection = { ...registered }
+      delete aligned.keyPath
+      delete aligned.remoteHermesPath
+      delete aligned.remoteProfile
+      Object.assign(aligned, identityFields)
+
+      return { changed: true, registry: upsertConnection(registry, aligned) }
+    }
 
     let entry: RegistryConnection
 

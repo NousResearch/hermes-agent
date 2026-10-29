@@ -5,8 +5,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+import time
 from types import MappingProxyType
 
+from pm.filesystem import long_root, native
 from pm.install import InstalledPackage
 from pm.lock import Lockfile
 from pm.package import InstallError
@@ -66,12 +68,14 @@ def build_requirements_environment(
     requirements: Sequence[str], *, out: Path, python: Path | None = None,
     cache: Path | None = None, env: Mapping[str, str] | None = None,
     wheelhouse: Path | None = None, offline: bool = False, sealed: bool = False,
-    explicit: bool = False,
+    explicit: bool = False, lock: Path | None = None,
 ) -> Path:
     """Create and check a fresh environment. Never mutate an existing destination.
 
     Wheelhouse builds disable indexes and source builds. Failure removes only
-    this invocation's exclusively claimed output, not prior builds.
+    this invocation's exclusively claimed output, not prior builds. *lock* is the
+    uv.lock the requirements were exported from: its overrides apply to the
+    install and the closing check.
     """
     from pm.environment import _fresh_build, managed_environment
     from pm.operations import _require_install_allowed, _requirements
@@ -79,6 +83,7 @@ def build_requirements_environment(
     _require_install_allowed(explicit)
     requirements = _requirements(requirements) if requirements or isinstance(requirements, str) else []
     out = Path(out).absolute()
+    lock = Path(lock).absolute() if lock is not None else None
     wheelhouse = Path(wheelhouse).absolute() if wheelhouse is not None else None
     if wheelhouse is not None and not wheelhouse.is_dir():
         raise InstallError("venv", f"wheelhouse directory is missing: {wheelhouse}")
@@ -89,8 +94,8 @@ def build_requirements_environment(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    with _fresh_build(environment, sealed=sealed):
-        environment.install_requirements(requirements, wheelhouse=wheelhouse)
+    with _fresh_build(environment, sealed=sealed, lock=lock):
+        environment.install_requirements(requirements, wheelhouse=wheelhouse, lock=lock)
     return environment.executable
 
 
@@ -127,7 +132,7 @@ def _copy_links(package, entry: Path) -> None:
             if path.is_symlink() or is_junction(path):
                 if (Path(os.readlink(path)).is_absolute() or not path.exists()
                         or not path.resolve().is_relative_to(entry)):
-                    raise InstallError(package.name, f"tool copy link escapes entry: {path}")
+                    raise InstallError(package.name, f"tool copy link escapes entry: {native(path)}")
 
 
 @dataclass(frozen=True)
@@ -163,6 +168,8 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
     source_store = Path(source_store).resolve()
     if not (source_store / "facts.json").is_file():
         raise InstallError("tools", f"source facts missing: {source_store}")
+    # Admission walks and digests whole tool trees: spell the root like Store does.
+    source_store = long_root(source_store)
     facts = Facts(source_store / "facts.json", strict=True)
     lock = lock if lock is not None else _lockfile()
     entries, envs = {}, []
@@ -187,7 +194,9 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
         if ((binary is not None and (not binary.is_file() or not binary.resolve().is_relative_to(entry)))
                 or facts.env_for(package.name, source_store) != env):
             raise InstallError(package.name, "tool source failed verification: binary or environment")
-        entries[package.name] = InstalledPackage(entry, version, binary)
+        # The selection leaves PM (bundle scripts compare and execute it): ordinary spelling.
+        entries[package.name] = InstalledPackage(Path(native(entry)), version,
+                                                 Path(native(binary)) if binary is not None else None)
         envs.append(env)
     return VerifiedTools(MappingProxyType(entries), tuple(envs))
 
@@ -231,8 +240,11 @@ def stage_tools(names: Sequence[str], *, source_store: Path, out: Path, target: 
                 raise InstallError(package.name, "tool copy source failed verification", "run preparation again")
         staged = Facts(out / "facts.json", strict=True)
         for package in packages:
+            started = time.monotonic()
             _install(package, lock, staged, destination, target,
                      copy_from=(facts, source), _lock_held=True, _fresh_copy=True)
+            # Copy plus re-digest of a large tree runs silently for minutes on Windows.
+            print(f"    copied {package.name} ({time.monotonic() - started:.1f}s)", flush=True)
     return out
 
 

@@ -132,14 +132,14 @@ VALID_HOOKS: set[str] = {
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset", "on_session_delete",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
-    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    # on_write_rejected: /memory|/skills reject <id> [reason]; kwargs subsystem, pending_id, reason, record.
+    "on_skill_lifecycle", "subagent_start", "subagent_stop", "on_write_rejected",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
-    # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
-    # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
-    # platform, reason, invalidation_reason. Return values are ignored.
+    # agent_loop_stopped: a turn was interrupted mid-run (/stop, or /new's running-agent fast-path; see
+    # gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key, platform, reason, invalidation_reason.
     "agent_loop_stopped",
     # Approval observers (returns ignored; veto via pre_tool_call). Kwargs: command, description, pattern_key,
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|

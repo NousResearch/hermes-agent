@@ -345,7 +345,7 @@ Review staged writes from the CLI or any messaging platform:
 ```
 /memory pending             # list staged memory writes (auto ones tagged [auto])
 /memory approve <id>        # apply one (or 'all')
-/memory reject <id>         # drop one (or 'all')
+/memory reject <id> [reason]  # drop one (or 'all'); kept with the reason in pending/rejected/
 /memory approval on         # turn the gate on (or 'off') and persist it
 ```
 
@@ -360,6 +360,20 @@ the write is refused and stays pending for you to reject. A `replace`/`patch`/`r
 staged before this pinning existed has no verifiable target and is refused too:
 reject it and recreate the change. `/memory approve` lists the full text of
 every entry it overwrote or removed.
+
+A rejection is kept under `~/.hermes/pending/rejected/memory/<id>.json` with its
+id, action, target, origin, times, reason and a SHA-256 of the proposed write,
+but not the proposed text, and plugins receive the same record through the
+[`on_write_rejected`](./hooks.md#on_write_rejected) hook. Kept rejections older
+than `retention_days` are deleted the next time the pending store is listed or
+written to:
+
+```yaml
+memory:
+  rejected_writes:
+    keep_content: false   # true = also keep the proposed text (and pass it to on_write_rejected)
+    retention_days: 30    # delete kept rejections older than this; 0 = keep them
+```
 
 ## Background review notifications (`display.memory_notifications`)
 
@@ -531,7 +545,7 @@ inline, but the full diff stays out-of-band:
 /skills pending             # list staged skill writes + a one-line gist each
 /skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
 /skills approve <id>        # apply it (or 'all')
-/skills reject <id>         # drop it (or 'all')
+/skills reject <id> [reason]  # drop it (or 'all'); kept with the reason in pending/rejected/
 /skills approval on         # turn the gate on (or 'off') and persist it
 ```
 

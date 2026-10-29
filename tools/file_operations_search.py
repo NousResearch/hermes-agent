@@ -212,7 +212,7 @@ def _extract_unreadable_paths(diagnostics: str) -> list[str]:
         match = _PERMISSION_DENIED_RE.match(line.strip())
         if not match:
             continue
-        path = match.group("path").strip()
+        path = match.group("path")  # exact spelling: a dir named " " is not its parent
         if match.group("tool") == "find":
             path = _FIND_QUOTES_RE.sub("", path)
         if path and path not in seen:
@@ -822,8 +822,24 @@ class SearchMixin:
                          file_glob: Optional[str], limit: int, offset: int,
                          output_mode: str, context: int, order: str = "discovery") -> SearchResult:
         if target == "files":
-            return self._search_files(pattern, path, limit, offset, order)
-        return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context)
+            result = self._search_files(pattern, path, limit, offset, order)
+        else:
+            result = self._search_content(pattern, path, file_glob, limit, offset, output_mode, context)
+        return self._unreadable_root_error(result, path) or result
+
+    def _unreadable_root_error(self, result: SearchResult, path: str) -> Optional[SearchResult]:
+        """An error when the search root itself was skipped as unreadable: nothing was
+        searched, so the empty result's "Nothing matched in the readable part" is false."""
+        if result.error or result.total_count or not result.skipped_paths:
+            return None
+        def key(item: str) -> str:
+            return _normalized_filename_search_root(self.env, item, self.cwd)
+
+        root = key(path)
+        if not any(key(item) == root for item in result.skipped_paths):
+            return None
+        return SearchResult(error=(f"Search root is not readable (permission denied): {path}. "
+                                   "Fix its permissions or search a readable path."))
 
     def _path_not_found_result(self, path: str) -> SearchResult:
         """Error result for a missing search root, with nearby-entry suggestions."""

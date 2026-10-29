@@ -88,3 +88,49 @@ def test_a_real_error_past_the_stderr_cap_is_not_read_as_permission_only(monkeyp
     assert "No such file or directory" in text
     assert omitted[0] == 4  # permission lines past the cap
     assert not file_operations_search._is_permission_only_error(text)
+
+
+@pytest.mark.parametrize("engine", ["rg", "no-rg"])
+@pytest.mark.parametrize("target", ["files", "content"])
+def test_an_unreadable_root_is_an_error_not_an_empty_readable_part(tmp_path, monkeypatch, engine, target):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "a.log").write_text("needle\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    if engine == "rg" and not ops._has_command("rg"):
+        pytest.skip("needs ripgrep")
+    if engine == "no-rg":
+        real_has = ops._has_command
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: False if cmd == "rg" else real_has(cmd))
+    locked.chmod(0)
+    try:
+        result = ops.search("*.log" if target == "files" else "needle", path="locked", target=target)
+    finally:
+        locked.chmod(0o755)
+    assert result.error == ("Search root is not readable (permission denied): locked. "
+                            "Fix its permissions or search a readable path.")
+    assert result.total_count == 0
+
+
+@pytest.mark.parametrize("child_name", ["foo\\..", " "])
+@pytest.mark.parametrize("engine", ["rg", "no-rg"])
+def test_an_unreadable_child_whose_name_could_pass_for_the_root_is_not_the_root(tmp_path, monkeypatch, engine, child_name):
+    # On POSIX foo\.. and " " are ordinary directory names, not "foo/.." or the
+    # root itself: skipping one is a partial search under ".", not an unreadable root.
+    child = tmp_path / child_name
+    child.mkdir()
+    (tmp_path / "a.log").write_text("hay\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    if engine == "rg" and not ops._has_command("rg"):
+        pytest.skip("needs ripgrep")
+    if engine == "no-rg":
+        real_has = ops._has_command
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: False if cmd == "rg" else real_has(cmd))
+    child.chmod(0)
+    try:
+        result = ops.search("needle", path=".", target="content")
+    finally:
+        child.chmod(0o755)
+    assert result.error is None
+    assert [os.path.basename(p) for p in result.skipped_paths] == [child_name]
+    assert result.total_count == 0

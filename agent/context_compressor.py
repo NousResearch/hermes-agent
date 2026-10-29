@@ -5421,7 +5421,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             # back to the OS. #76905's trim lifecycle covers the gateway/TUI housekeeping loops but not the
             # CLI compression path, so RSS keeps the pre-compaction high-water mark until exit. (#70782)
             from hermes_cli.mem_trim import trim_memory
-            trim_memory(reason="post-compression")
+            # collect=False: a full gc.collect() holds the GIL for seconds on a large heap,
+            # freezing an in-process dashboard's event loop for the whole collection (#146375).
+            # The compacted-away message dicts this trim targets are typically acyclic and
+            # already freed by reference counting by now, so malloc_trim(0) alone still returns
+            # the pages compaction freed without forcing a full collection first.
+            trim_memory(reason="post-compression", collect=False)
         except Exception as exc:
             logger.debug("post-compression memory trim failed: %s: %s", type(exc).__name__, exc)
 

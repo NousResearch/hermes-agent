@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import re
 from typing import Any, Callable, Dict, Optional
 
 from agent.message_metadata import append_message
@@ -34,6 +35,73 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
     "_dropped_toolcall_nudge",
 )
+
+_TEXTUAL_INVOKE_RE = re.compile(
+    r"(?:^|\r?\n)[ \t]*card[ \t]*\r?\n[ \t]*"
+    r"<invoke\b[^>]*\bname\s*=\s*(?P<quote>[\"'])(?P<name>[^\"']+)"
+    r"(?P=quote)[^>]*>.*</invoke>[ \t]*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _textual_invoke_tool_name(content: str, valid_tool_names) -> Optional[str]:
+    """Recognize the observed trailing card/invoke leak, never parse or execute XML.
+
+    Requiring a standalone card marker leaves ordinary trailing XML examples alone;
+    only tools exposed in this conversation can trigger native-call recovery.
+    """
+    if not isinstance(content, str) or not content:
+        return None
+    match = _TEXTUAL_INVOKE_RE.search(content)
+    if not match:
+        return None
+    name = match.group("name").strip()
+    return name if name in (valid_tool_names or ()) else None
+
+
+def _retry_dropped_tool_call(
+    agent: Any, assistant_message: Any, finish_reason: str, final_response: str,
+    final_msg: dict, messages: list,
+) -> bool:
+    """Share the existing three-consecutive-stall budget and ephemeral nudge lifecycle."""
+    from agent.conversation_loop import _DROPPED_TOOLCALL_NUDGE_CONTENT
+
+    if assistant_message.tool_calls or getattr(agent, "_dropped_toolcall_retries", 0) >= 3:
+        return False
+    tool_name = (
+        _textual_invoke_tool_name(final_response, agent.valid_tool_names)
+        if finish_reason == "stop" else None
+    )
+    if finish_reason != "tool_calls" and tool_name is None:
+        return False
+
+    agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
+    logger.warning(
+        "finish_reason=%s without a native tool call (textual tool=%r) "
+        "— re-prompting (retry %d/3, model=%s provider=%s)",
+        finish_reason, tool_name, agent._dropped_toolcall_retries, agent.model, agent.provider,
+    )
+    agent._emit_diagnostic_status(
+        "↻ Model signaled a tool call but sent none — "
+        f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+    )
+    nudge = _DROPPED_TOOLCALL_NUDGE_CONTENT
+    if tool_name is not None:
+        nudge = (
+            "Your previous turn wrote tool-call markup as plain text "
+            f"for the {tool_name!r} tool, so no call ran. "
+            "Do not emit XML, a card label, narration, or restate "
+            "intent — issue the provider-native structured tool call "
+            "now to continue the task."
+        )
+    # Neither the leaked text nor its retry instruction may become durable few-shot context.
+    final_msg["_dropped_toolcall_nudge"] = True
+    append_message(messages, final_msg)
+    append_message(messages, {
+        "role": "user", "content": nudge, "_dropped_toolcall_nudge": True,
+    })
+    agent._session_messages = messages
+    return True
 
 
 @dataclass
@@ -117,7 +185,7 @@ def finish_text_response(
     iteration-limit summarization; the final message is appended and flushed only after the
     stop gates accept it."""
     from agent.conversation_loop import (
-        _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
+        _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE,
     )
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
@@ -329,34 +397,10 @@ def finish_text_response(
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response
 
-    # Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with empty
-    # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
-    if (
-        finish_reason == "tool_calls"
-        and not assistant_message.tool_calls
-        and getattr(agent, "_dropped_toolcall_retries", 0) < 3
+    # Recover empty structured calls and the observed card/invoke text leak through one budget.
+    if _retry_dropped_tool_call(
+        agent, assistant_message, finish_reason, final_response, final_msg, messages,
     ):
-        agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
-        logger.warning(
-            "finish_reason=tool_calls with empty tool_calls array "
-            "(narration only) — re-prompting to emit the call "
-            "(retry %d/3, model=%s provider=%s)",
-            agent._dropped_toolcall_retries, agent.model, agent.provider,
-        )
-        agent._emit_diagnostic_status(
-            "↻ Model signaled a tool call but sent none — "
-            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
-        )
-        # Both halves of the re-prompt pair are ephemeral scaffolding: never persisted,
-        # and the finalization pop strips an unanswered tail pair.
-        final_msg["_dropped_toolcall_nudge"] = True
-        append_message(messages, final_msg)
-        append_message(messages, {
-            "role": "user",
-            "content": _DROPPED_TOOLCALL_NUDGE_CONTENT,
-            "_dropped_toolcall_nudge": True,
-        })
-        agent._session_messages = messages
         final_response = None
         return _verdict("continue")
 

@@ -206,7 +206,7 @@ def reconnect_mcp_server(server_name: str) -> bool:
     return server is not None and _signal_reconnect(server)
 
 
-def _wait_for_server_session_ready(srv: Any, *, old_session: Any = None, timeout: float = 15.0) -> bool:
+def wait_for_server_session_ready(srv: Any, *, old_session: Any = None, timeout: float = 15.0) -> bool:
     """Poll until the server exposes a usable, ready session (during a reconnect ``srv.session`` is
     briefly None or stale; retrying blindly burns breaker strikes). With ``old_session`` the observed
     session must differ. Iteration-bounded, not deadline-bounded: tests freeze ``time.monotonic``."""
@@ -223,6 +223,9 @@ def _wait_for_server_session_ready(srv: Any, *, old_session: Any = None, timeout
         if i < iterations - 1:
             time.sleep(0.25)
     return False
+
+
+_wait_for_server_session_ready = wait_for_server_session_ready  # original private spelling, kept as an alias
 
 
 def _signal_reconnect_and_wait(server_name: str, srv: Any, *, op_description: str, timeout: float = 15.0) -> bool:

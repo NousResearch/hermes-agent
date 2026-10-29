@@ -11,7 +11,8 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
-import re
+import os
+import subprocess
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -19,9 +20,9 @@ from typing import Iterator, List, Optional, Tuple
 from tools.plugin_guard_context import (
     STEP_DOWN, catalog_cap, is_agent_facing, is_authorized_keys_prose, is_base64_archive_roundtrip,
     is_base64_media, is_benign_lazy_os_import, is_ci_workflow, is_coin_name_only,
-    is_disclosed_config_note, is_doc_prose, is_env_dump_in_safety_clause, is_google_installed_app_secret,
-    is_hex_in_char_class, is_inert_fixture_line, is_json_prose_value, is_locale_catalog,
-    is_loopback_continuation, is_loopback_only, is_pip_install_in_prose_literal,
+    is_disclosed_config_note, is_doc_prose, is_env_dump_in_safety_clause, is_hex_in_char_class,
+    is_inert_fixture_line, is_json_prose_value, is_locale_catalog, is_loopback_continuation,
+    is_loopback_only, is_own_proc_read, is_pip_install_in_prose_literal, is_public_client_key,
     is_quoted_injection_phrase, is_regex_alternation_token, is_repo_root_traversal,
     is_self_uninstall_doc, is_sudo_inert, is_test_tree, is_trusted_installer_pipe, logical_line, prose_cap)
 from tools.skills_guard import (
@@ -108,6 +109,11 @@ MAX_PLUGIN_FILE_COUNT = 400
 MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
 MAX_PLUGIN_SINGLE_FILE_KB = 1024       # 1MB single file
 
+# Committed bytecode (catalog rule 17): an unchecked-hash or sourceless ``.pyc`` is imported in
+# place of the ``.py`` this scanner read, so it is the same reviewable-but-unscannable tier as a
+# bundled binary (``SEVERITY_REMAP["binary_file"]``).
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+
 
 def _walk(plugin_dir: Path) -> Iterator[tuple[Path, str]]:
     """Yield (path, "a/b/c" relative path) for every non-excluded entry under plugin_dir."""
@@ -182,8 +188,6 @@ def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) ->
             f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
         line = lines[f.line - 1] if 0 < f.line <= len(lines) else f.match
         joined = logical_line(lines, f.line - 1) if 0 < f.line <= len(lines) else line
-        if f.pattern_id == "proc_access" and _is_benign_proc_read(joined):
-            continue
         f.severity = _context_severity(f, rel_path, line, joined, doc_prose or locale_catalog, is_code,
                                        locale_catalog)
         if _is_defensive_documentation(f, rel_path):
@@ -205,20 +209,6 @@ def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) ->
 
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-
-# /proc files every process may read about itself: cgroup membership and mount layout.
-# Container CPU-quota detection needs them to find the controller hierarchy, and language
-# runtimes read them for container resource discovery, so a read-only mention is not
-# process introspection (#144123). A write or any other /proc path keeps the finding.
-_BENIGN_PROC_PATHS = frozenset({"/proc/self/cgroup", "/proc/self/mountinfo"})
-_PROC_PATH_RE = re.compile(r"/proc/(?:self|\d+)/[\w.\-/]*")
-_PROC_WRITE_RE = re.compile(r"write_text|write_bytes|\.write\s*\(|open\s*\([^)]*['\"][wa]|>\s*/proc/")
-
-
-def _is_benign_proc_read(text: str) -> bool:
-    """True when every /proc path on *text* is the cgroup/mountinfo pair and none is written."""
-    paths = [m.group(0).rstrip("/") for m in _PROC_PATH_RE.finditer(text)]
-    return bool(paths) and all(p in _BENIGN_PROC_PATHS for p in paths) and not _PROC_WRITE_RE.search(text)
 
 
 def _at_most(severity: str, cap: str) -> str:
@@ -275,6 +265,7 @@ def _inert_context_cap(f: Finding, rel_path: str, line: str, joined: str, is_cod
         or is_loopback_continuation(f, line, joined)   # loopback health check over a `\`-continuation
         or is_hex_in_char_class(f, line)          # `[\x00-\x1F]`: a control-char filter, not a payload
         or (is_code and is_pip_install_in_prose_literal(f, line))  # "no pip install is needed" message
+        or is_own_proc_read(f, joined)            # `/proc/self/cgroup`: container placement, read only
     )
     if to_low:
         return "low"
@@ -292,8 +283,8 @@ def _inert_context_cap(f: Finding, rel_path: str, line: str, joined: str, is_cod
     )
     if to_medium:
         return _at_most(sev, "medium")
-    if is_google_installed_app_secret(f, line):
-        return _at_most(sev, "high")    # public installed-app OAuth client secret, reviewable caution
+    if is_public_client_key(f, line):
+        return _at_most(sev, "high")    # public-by-design client key (GOCSPX-, phc_), reviewable caution
     return sev
 
 
@@ -324,9 +315,32 @@ def _dangerous_findings_summary(findings: list[Finding]) -> str:
     return f"{len(critical)} critical of {len(findings)} findings{names}"
 
 
+def _tracked_bytecode(plugin_dir: Path) -> set[str]:
+    """``.pyc``/``.pyo`` the checkout tracks. ``hermes plugins validate`` imports the plugin before
+    it scans, so an untracked ``__pycache__`` that run wrote is not shipped content; only the index
+    says what the pinned commit carries. Not a checkout (or no git) → empty."""
+    try:
+        out = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", "-C", str(plugin_dir), "ls-files", "-z", "--", "*.pyc", "*.pyo"],
+            capture_output=True, check=True, timeout=60, stdin=subprocess.DEVNULL,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {os.fsdecode(p) for p in out.split(b"\0") if p}
+
+
+def _bytecode_findings(plugin_dir: Path) -> list[Finding]:
+    """Tracked bytecode anywhere, plus bytecode outside ``__pycache__`` (CPython 3 never writes it
+    there, so it was shipped even when the tree is not a checkout)."""
+    loose = {rel for f, rel in _walk(plugin_dir) if rel.endswith(_BYTECODE_SUFFIXES) and f.is_file()}
+    return [_finding("bytecode_file", SEVERITY_REMAP["binary_file"], "structural", rel, "committed bytecode",
+                     "committed Python bytecode runs in place of the scanned source (catalog rule 17)")
+            for rel in sorted(loose | _tracked_bytecode(plugin_dir))]
+
+
 def _check_plugin_structure(plugin_dir: Path) -> list[Finding]:
     """Structural checks sized for plugin repositories."""
-    findings: list[Finding] = []
+    findings: list[Finding] = _bytecode_findings(plugin_dir)
     file_count = 0
     total_size = 0
     resolved_root = plugin_dir.resolve()

@@ -8,6 +8,7 @@ content (credential-store exfiltration, reverse shells, prompt injection
 in docs) is flagged or blocked.
 """
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -959,53 +960,71 @@ class TestCatalogSweepFalsePositives:
         assert hit is not None and hit.severity in ("high", "critical"), format_scan_report(result)
         assert result.verdict in ("caution", "dangerous")
 
-
-class TestBenignProcIntrospection:
-    """#144123: /proc/self/cgroup and /proc/self/mountinfo are read by container CPU-quota
-    detection (and by language runtimes), so a read-only mention is not process
-    introspection. Writes, other proc paths and a bare /proc/self keep the finding."""
-
-    def test_container_layout_read_is_safe(self, tmp_path):
-        files = dict(BASE_FILES)
-        files["capacity.py"] = (
-            "from pathlib import Path\n\n"
-            "def container_layout():\n"
-            "    return (\n"
-            '        Path("/proc/self/cgroup").read_text(),\n'
-            '        Path("/proc/self/mountinfo").read_text(),\n'
-            "    )\n"
-        )
-        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
-        assert [f for f in result.findings if f.pattern_id == "proc_access"] == []
-        assert result.verdict == "safe", format_scan_report(result)
-
-    def test_doc_mention_is_safe(self, tmp_path):
-        files = {**BASE_FILES, "README.md": "# x\n\nReads /proc/self/cgroup for the CPU quota.\n"}
-        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
-        assert result.verdict == "safe", format_scan_report(result)
-
-    @pytest.mark.parametrize("line", [
-        'Path("/proc/self/status").read_text()\n',
-        'Path("/proc/1/cmdline").read_text()\n',
-        'print(Path("/proc/self").read_text())\n',
-        '(Path("/proc/self/cgroup"), Path("/proc/self/status"))\n',
-    ])
-    def test_other_proc_paths_still_flag(self, tmp_path, line):
-        files = {**BASE_FILES, "probe.py": line}
-        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
-        hit = next((f for f in result.findings if f.pattern_id == "proc_access"), None)
-        assert hit is not None and hit.severity == "high", format_scan_report(result)
-
-    @pytest.mark.parametrize("line", [
-        'Path("/proc/self/cgroup").write_text("x")\n',
-        'handle = open("/proc/self/mountinfo", "w")\n',
-    ])
-    def test_writes_still_flag(self, tmp_path, line):
-        files = {**BASE_FILES, "writer.py": line}
-        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
-        hit = next((f for f in result.findings if f.pattern_id == "proc_access"), None)
-        assert hit is not None and hit.severity == "high", format_scan_report(result)
     def test_scanner_version_contract(self):
         # A bump un-blocks previously-quarantined packages; assert the contract (changed), not a literal.
-        assert PLUGIN_SCANNER_VERSION != "plugin-guard-v10"
+        assert PLUGIN_SCANNER_VERSION != "plugin-guard-v11"
         assert PLUGIN_SCANNER_VERSION.startswith("plugin-guard-v")
+
+
+# Built at runtime so no full vendor-shaped key sits in the source (forge secret scanning).
+_FAKE_KEY_BODY = "Ab3" * 14 + "x"
+
+
+class TestProcKeyAndBytecodeShapes:
+    """Shapes real catalog pins tripped (telesec, hermes-lcm-x, hermes-emotion), each next to the
+    attack twin that must keep its severity."""
+
+    def test_benign_proc_reads_and_public_client_key_install_without_a_block(self, tmp_path):
+        # #144123 (hermes-lcm-x cpu_capacity.py): container placement reads, plus the pid-reuse
+        # start-time read. Kept visible at low, never deleted.
+        files = {**BASE_FILES, "capacity.py": (
+            "from pathlib import Path\n"
+            'groups = Path("/proc/self/cgroup").read_text()\n'
+            'mounts = Path("/proc/self/mountinfo").read_text()\n'
+            'container = open("/proc/1/cgroup", "rb").read()\n'
+            'start = Path("/proc/self/stat").read_text().split()[21]\n'
+        )}
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        proc = [f for f in result.findings if f.pattern_id == "proc_access"]
+        assert len(proc) == 4 and {f.severity for f in proc} == {"low"}, format_scan_report(result)
+        assert result.verdict == "safe", format_scan_report(result)
+
+        # telesec telemetry.py:27: a PostHog project key is a write-only ingest key, public by design.
+        files = {**BASE_FILES, "telemetry.py": f'API_KEY = "phc_{_FAKE_KEY_BODY}"  # public\n'}
+        (tmp_path / "posthog").mkdir()
+        result = scan_plugin(_mk_plugin(tmp_path / "posthog", files), source="owner/repo")
+        assert result.verdict == "caution", format_scan_report(result)
+        assert [f.severity for f in result.findings if f.pattern_id == "hardcoded_secret"] == ["high"]
+
+    @pytest.mark.parametrize("rel,text,pattern_id,severity", [
+        ("probe.py", 'Path("/proc/1/environ").read_bytes()\n', "proc_access", "high"),
+        ("probe.py", 'Path("/proc/self/environ").read_bytes()\n', "proc_access", "high"),
+        ("probe.py", 'os.listdir("/proc/self/fd")\n', "proc_access", "high"),
+        ("probe.py", 'open("/proc/1/root/home/u/.netrc").read()\n', "proc_access", "high"),
+        ("probe.py", 'print(Path("/proc/self").read_text())\n', "proc_access", "high"),
+        ("probe.py", '(Path("/proc/self/cgroup"), Path("/proc/1/cmdline"))\n', "proc_access", "high"),
+        ("writer.py", 'Path("/proc/self/cgroup").write_text("x")\n', "proc_access", "high"),
+        ("keys.py", f'API_KEY = "phx_{_FAKE_KEY_BODY}"\n', "hardcoded_secret", "critical"),
+        ("keys.py", f'api_key = "phc_{_FAKE_KEY_BODY}"; token = "a8f3k2m9q7w1z5x0c4v6b8n2"\n',
+         "hardcoded_secret", "critical"),
+    ])
+    def test_attack_twins_keep_their_severity(self, tmp_path, rel, text, pattern_id, severity):
+        result = scan_plugin(_mk_plugin(tmp_path, {**BASE_FILES, rel: text}), source="owner/repo")
+        hit = next((f for f in result.findings if f.pattern_id == pattern_id), None)
+        assert hit is not None and hit.severity == severity, format_scan_report(result)
+
+    def test_committed_bytecode_flags_but_a_cache_the_validate_run_wrote_does_not(self, tmp_path):
+        """Catalog rule 17 (hermes-emotion shipped tests/__pycache__/*.pyc): tracked bytecode runs in
+        place of the scanned source. ``hermes plugins validate`` imports the plugin before it scans,
+        so an untracked ``__pycache__`` is that run's own output and must not read as shipped."""
+        plugin = _mk_plugin(tmp_path, {**BASE_FILES, "tests/__pycache__/t.cpython-312.pyc": "x",
+                                       "__pycache__/__init__.cpython-314.pyc": "x"})
+        subprocess.run(["git", "init", "-q", str(plugin)], check=True)
+        subprocess.run(["git", "-C", str(plugin), "add", "-f", "plugin.yaml", "__init__.py",
+                        "tests/__pycache__/t.cpython-312.pyc"], check=True)
+
+        result = scan_plugin(plugin, source="owner/repo")
+
+        assert [(f.pattern_id, f.file, f.severity) for f in result.findings] == [
+            ("bytecode_file", "tests/__pycache__/t.cpython-312.pyc", "high")], format_scan_report(result)
+        assert result.verdict == "caution"

@@ -717,6 +717,7 @@ hermes_cli = [
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",
+  "process_supervisor.sh",
 ]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —

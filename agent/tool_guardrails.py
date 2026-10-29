@@ -282,6 +282,12 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked web_search: this turn has already made {cap} web searches, the per-turn limit. "
         "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
     ),
+    "loop_web_search_budget_warning": (
+        "Search budget: {count}/{cap} web searches used this turn ({remaining} left, and successful "
+        "searches count too). Finish discovery with the results you already have — extract the URLs you "
+        "found rather than starting another batch of searches. If coverage stays incomplete, report it as "
+        "partial with explicit gaps."
+    ),
     "loop_subagent_cap": (
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
@@ -386,6 +392,19 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
         warnings = self.config.warnings_enabled
+
+        # Warn in the last fifth of the per-turn web_search budget so the agent can
+        # finish discovery with the results it already has instead of being hard-blocked
+        # one search later. Fires only on a successful search: a failed one already has
+        # its own failure diagnostic below, and the budget warning must not mask it.
+        if warnings and tool_name == "web_search" and not failed:
+            cap = self.config.loop_caps.max_web_searches
+            searches = self._turn_web_search_count
+            if cap and searches >= max(1, cap - max(1, cap // 5)):
+                return self._decide(
+                    "warn", "loop_web_search_budget_warning", tool_name, searches, signature,
+                    cap=cap, remaining=max(0, cap - searches),
+                )
 
         if failed:
             # An identical failing call is only a REPLAY if nothing landed in between;

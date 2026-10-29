@@ -284,6 +284,8 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     )
     agent._emit_diagnostic_status("Content filter terminated stream; switching to fallback...")
     if agent._try_activate_fallback():
+        # The partial left the reply; a streaming client withdraws it too (#142333).
+        agent._fire_stream_retract()
         # Roll partial content back to the last clean turn so the fallback gets a
         # coherent continuation point; unmark survivors (their text left the partial).
         if st.truncated_response_parts:

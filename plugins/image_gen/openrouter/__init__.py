@@ -74,6 +74,8 @@ _GEMINI_RATIOS = (
 _MAI_RATIOS = ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "auto")
 _KREA_RATIOS = ("1:1", "4:3", "3:2", "16:9", "4:5", "2:3", "9:16")
 _OPENAI_QUALITY = ("auto", "low", "medium", "high")
+_GPT_IMAGE_25_QUALITY = _OPENAI_QUALITY + ("xhigh", "max")
+_GPT_IMAGE_25_RATIOS = ("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto")
 _NO_KNOBS = {"quality": (), "background": (), "output_format": (), "compression": False, "seed": False}
 
 
@@ -100,6 +102,16 @@ _IMAGE_API_MODELS: dict[str, dict[str, Any]] = {
         aspect_ratios=("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"),
         quality=_OPENAI_QUALITY, background=("auto", "opaque"), compression=True, max_n=10, max_refs=16,
     ),
+    "openai/gpt-image-2.5-sunburst": _image_api_model(
+        "OpenAI GPT Image 2.5 Sunburst",
+        "Up to 16 references; quality up to max; transparent backgrounds",
+        aspect_ratios=_GPT_IMAGE_25_RATIOS, quality=_GPT_IMAGE_25_QUALITY,
+        background=("auto", "transparent", "opaque"), compression=True, max_n=10, max_refs=16),
+    "openai/gpt-image-2.5-flare": _image_api_model(
+        "OpenAI GPT Image 2.5 Flare",
+        "Same knobs as Sunburst; up to 16 references; quality up to max",
+        aspect_ratios=_GPT_IMAGE_25_RATIOS, quality=_GPT_IMAGE_25_QUALITY,
+        background=("auto", "transparent", "opaque"), compression=True, max_n=10, max_refs=16),
     "openai/gpt-image-1-mini": _image_api_model(
         "OpenAI GPT Image 1 Mini",
         "The only model here with background=transparent (cut-out PNG)",

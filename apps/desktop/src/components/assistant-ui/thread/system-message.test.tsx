@@ -95,6 +95,27 @@ describe('background report disclosure', () => {
   })
 })
 
+describe('self-improvement review row', () => {
+  // The label span's `shrink-0` means anything that lands in it cannot wrap,
+  // so the label/detail split must survive a localized summary.
+  const label = (container: HTMLElement) => container.querySelector('.tool-memory-legendary-title')?.textContent
+  const detail = (container: HTMLElement) => container.querySelector('.tool-memory-legendary-meta')?.textContent
+
+  it('splits an English summary at its ASCII colon', () => {
+    const { container } = render(<Harness text={"review:Self-improvement review: skill 'theme' patched"} />)
+
+    expect(label(container)).toBe('Self-improvement review')
+    expect(detail(container)).toBe("skill 'theme' patched")
+  })
+
+  it('splits a Chinese summary at its full-width colon', () => {
+    const { container } = render(<Harness text={"review:自我改进回顾：技能 'theme' 已修补"} />)
+
+    expect(label(container)).toBe('自我改进回顾')
+    expect(detail(container)).toBe("技能 'theme' 已修补")
+  })
+})
+
 describe('system message timestamp text separation', () => {
   it('separates an ordinary system row timestamp in accessible and copied text', () => {
     const { container } = render(<Harness text="Review saved." />)

@@ -17,6 +17,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone, UTC
 from pathlib import Path
+from collections.abc import Collection
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -24,6 +25,7 @@ from fastapi import APIRouter, HTTPException
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
@@ -52,6 +54,8 @@ _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "h
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
 load_env = late("load_env", "hermes_cli.config")
+get_secret_source_values = late("get_secret_source_values", "hermes_cli.env_loader")
+builtin_platform_status = late("builtin_platform_status", "gateway.config_env")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
@@ -157,23 +161,30 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 
 def _platform_enablement(
-    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
+    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
+    source_keys: Collection[str] = (),
 ) -> tuple[bool, bool, dict | None]:
-    """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
-    config.yaml + .env only — load_gateway_config()'s env-override layer reads
-    os.environ and would leak the root install's tokens into the profile's state."""
+    """(enabled, configured, home_channel). Profile-scoped: the profile's config.yaml, .env and
+    enabled secret sources only, never ``load_gateway_config()`` (see ``builtin_platform_status``)."""
     required = entry["required_env"]
     if scoped:
-        configured = bool(required) and all(env_on_disk.get(key) for key in required)
+        # ``source_keys``: names the profile's enabled secret sources resolved (1Password, Bitwarden, a plugin).
+        configured = bool(required) and all(env_on_disk.get(key) or key in source_keys for key in required)
         try:
-            plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
+            config = load_config()
+            plat_cfg = (config.get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
-            # Setup writes credentials without a platforms entry; explicit disable wins.
-            raw_enabled = plat_cfg.get("enabled")
-            enabled = False if raw_enabled is False else bool(raw_enabled) or configured
+            status = None if required else builtin_platform_status(platform_id, config)
+            if status is not None:
+                enabled, configured = status  # token-free built-in: nothing to judge but the gateway's verdict
+            else:
+                # Setup writes credentials without a platforms entry; explicit disable wins.
+                raw_enabled = plat_cfg.get("enabled")
+                enabled = False if raw_enabled is False else bool(raw_enabled) or configured
             home_channel = hc if isinstance(hc, dict) else None
-        except Exception:
+        except Exception:  # health: allow BLE001 -- one platform's bad config must not blank the page
+            _log.debug("Profile-scoped status for %s failed", platform_id, exc_info=True)
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
@@ -193,7 +204,7 @@ def _platform_enablement(
 
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
-    scoped: bool = False, profile_home: Optional[Path] = None,
+    scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -228,12 +239,12 @@ def _messaging_platform_payload(
     for key in entry["env_vars"]:
         value, info = env_value(key), _messaging_env_info(key)
         env_vars.append({
-            "key": key, "required": key in entry["required_env"], "is_set": bool(value),
+            "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
             "value": value if info["is_list"] else None, **info,
         })
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
     if gateway_running and runtime_platform.get("mirrored_from"):
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
@@ -290,7 +301,12 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # ``hermes --profile X serve``).
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
     runtime = served_profile_runtime(own_home, runtime) or runtime
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
+    # Credentials a secret manager supplies have no .env line; only values the profile's enabled
+    # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
+    source_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
+    source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
+                                        profile_home=scoped_dir, source_keys=source_keys)
             for entry in entries]
 
 
@@ -419,24 +435,29 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
     env = with_hermes_node_path()
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
-    return subprocess.Popen(
+    # Owned: a SIGKILLed dashboard must not leave a pairing bridge holding the session dir.
+    return spawn_owned(
         [node, str(bridge_script), "--pair-only", "--pair-json", "--session", str(session_path)],
-        cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        encoding="utf-8", errors="replace", start_new_session=True, env=env,
-        creationflags=windows_hide_flags(),
+        purpose="whatsapp-pairing", cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(),
     )
 
 
 def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
-    try:
-        proc.terminate()
-        proc.wait(timeout=3)
-    except Exception:
-        with contextlib.suppress(Exception):
-            proc.kill()
+    if proc.poll() is None:
+        try:
+            proc.terminate()
             proc.wait(timeout=3)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+                proc.wait(timeout=3)
+    if proc.poll() is not None:
+        # Stopped; one we failed to stop stays covered by the owner-death supervisor. timeout=0:
+        # callers run on the event loop.
+        release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
 
 
 def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WHATSAPP_ONBOARDING_TERMINAL_STATUSES) -> None:
@@ -490,6 +511,7 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
                 if record.status not in {"cancelled", "expired"}:
                     _apply_pairing_event(record, payload)
         returncode = proc.wait()
+        release_process_group_once_empty(proc.pid, proc=proc)
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return

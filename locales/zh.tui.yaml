@@ -1338,6 +1338,7 @@ userMessages.promptTimeout.vaultCode: "验证码提示已关闭：未及时回�
 userMessages.promptTimeout.vaultSaveLogin: "保存登录信息的提示已关闭：未及时回应，因此未保存任何内容。准备好后请重新发送你的请求。"
 userMessages.promptTimeout.vaultUnlockPrompt: "解锁提示已关闭：未及时回应，密码管理器仍保持锁定。准备好解锁时请重新发送你的请求。"
 userMessages.rpc.launchCredentialsChanged: "此聊天无法再使用它开始时的 API 密钥（已被更改或删除），因此未执行该操作。聊天不会自行切换到其他密钥。输入 /new 以当前密钥开始新聊天。"
+userMessages.rpc.methodUnavailable: "此 Hermes 后端不提供 {0}，因此未执行。"
 userMessages.rpc.notConnected: "Hermes 目前未连接，所以刚才的内容没有发送。它会自动重连；请稍等片刻再试，如果问题持续，请输入 /logs。"
 userMessages.rpc.sessionHasChildren: "此聊天有子会话（例如子代理运行），删除它会一并移除这些会话，因此未删除。"
 userMessages.rpc.sessionNotFound: "此聊天已不再连接到后端（长时间空闲或后端已重启）。你的历史记录已保存：输入 /resume 重新打开。"

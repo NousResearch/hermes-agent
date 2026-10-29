@@ -869,6 +869,7 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("TAIL", body)
 
 
+@pytest.mark.platforms("posix")  # AF_UNIX socketpair
 class TestRpcTokenAuthorization(unittest.TestCase):
     """The per-session RPC token must gate socket dispatch (fail-closed).
 

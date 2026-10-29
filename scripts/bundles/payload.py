@@ -38,8 +38,13 @@ def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] =
     with tempfile.TemporaryDirectory(prefix="hermes-archive-") as temp:
         archive = Path(temp) / "source.tar"
         pathspecs = [f":(exclude){name}" for name in exclude]
+        # git archive applies checkout eol conversion. Git for Windows sets
+        # core.autocrlf=true system-wide, which would rewrite every text file
+        # lacking an eol attribute to CRLF: the payload must carry the
+        # revision's bytes (plus .gitattributes rules), not builder config.
         subprocess.run(
-            ["git", "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
+            ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+             "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
             cwd=repo, check=True)
         if destination.exists():
             shutil.rmtree(destination)

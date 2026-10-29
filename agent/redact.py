@@ -972,7 +972,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+        def _sub_auth_header(m: re.Match) -> str:
+            val = m.group(3)
+            if code_file and re.fullmatch(
+                r"\{[^{}]+\}|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|%(?:\([A-Za-z_][A-Za-z0-9_]*\))?s",
+                val,
+            ):
+                return m.group(0)
+            return m.group(1) + (m.group(2) or "") + _mask_token(val)
+        text = _AUTH_HEADER_RE.sub(_sub_auth_header, text)
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)

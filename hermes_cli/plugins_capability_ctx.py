@@ -1,5 +1,6 @@
-"""Capability-gated ``PluginContext`` surface: ``has_capability`` probing and
-``side_question`` (ask the session's own agent after a turn, ``llm.side_question``)."""
+"""Capability-gated ``PluginContext`` surface: ``has_capability`` probing, ``side_question`` (ask
+the session's own agent after a turn, ``llm.side_question``) and ``fork_session`` (run a bounded
+background copy of it, ``llm.session_fork``)."""
 
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ class PluginCapabilityCtxMixin:
         returns None and leaves the attempt to a consented plugin."""
         from agent.side_question_lease import SIDE_QUESTION_CAPABILITY, redeem_side_question
 
-        if not self._side_question_granted(SIDE_QUESTION_CAPABILITY):
+        if not self._granted_in_own_home(SIDE_QUESTION_CAPABILITY):
             if not getattr(self, "_side_question_denial_logged", False):
                 self._side_question_denial_logged = True
                 logger.info("Plugin %s called ctx.side_question without the %s capability; returning None",
@@ -44,7 +45,36 @@ class PluginCapabilityCtxMixin:
         return redeem_side_question(
             token, prompt, plugin_id=self.plugin_id, home=self._manager.home_path, timeout=timeout)
 
-    def _side_question_granted(self, capability: str) -> bool:
+    def fork_session(
+        self, token: str, prompt: str, *, tools=(), max_iterations: int = 8, input_budget: Optional[int] = None,
+        task: Optional[str] = None, timeout: Optional[float] = None,
+    ):
+        """Fork the session's own agent after the turn that just ended and run ``prompt`` in the
+        background; a :class:`agent.plugin_session_fork.PluginForkHandle`, or None.
+
+        ``token`` is ``post_llm_call``'s ``side_question_token`` (same lease rules as
+        :meth:`side_question`). The fork sees the whole session (memory included) on its warm
+        prompt cache, may call only ``tools`` (names the session already advertises, e.g. this
+        plugin's own), runs at most ``max_iterations`` (<= 16) loop iterations within the review's
+        input-token budget (``input_budget`` can only lower it), auto-denies dangerous commands,
+        writes nothing to the transcript, and is cancelled when the session starts its next turn.
+        ``task`` routes it through one of this plugin's ``register_auxiliary_task`` lanes. Needs
+        ``llm.session_fork``; without it this returns None and leaves the token unspent."""
+        from agent.plugin_session_fork import start_session_fork
+        from agent.side_question_lease import SESSION_FORK_CAPABILITY
+
+        if not self._granted_in_own_home(SESSION_FORK_CAPABILITY):
+            if not getattr(self, "_session_fork_denial_logged", False):
+                self._session_fork_denial_logged = True
+                logger.info("Plugin %s called ctx.fork_session without the %s capability; returning None",
+                            self.plugin_id, SESSION_FORK_CAPABILITY)
+            return None
+        owned = [key for key, entry in self._manager._aux_tasks.items() if entry.get("plugin") == self.plugin_id]
+        return start_session_fork(
+            token, prompt, plugin_id=self.plugin_id, home=self._manager.home_path, tools=tools,
+            max_iterations=max_iterations, input_budget=input_budget, task=task, timeout=timeout, owned_tasks=owned)
+
+    def _granted_in_own_home(self, capability: str) -> bool:
         """Consent read from THIS manager's profile home: plugins call from their own threads,
         where the active profile may be the launch profile's."""
         try:

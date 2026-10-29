@@ -55,6 +55,9 @@ _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
 _SYNC_BACK_MAX_BYTES_KEY = "sync_back_max_bytes"  # config.yaml terminal.<key>
+_SYNC_BACK_KEY = "sync_back"  # config.yaml terminal.<key>
+_FALSE_WORDS = frozenset({"false", "0", "no", "off"})
+_TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
 _SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
 # A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
 # a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs). Entry names embed the
@@ -77,6 +80,23 @@ def _sync_back_max_bytes() -> int:
         except (TypeError, ValueError):
             logger.warning("sync_back: ignoring non-integer terminal.%s=%r", _SYNC_BACK_MAX_BYTES_KEY, raw)
     return _SYNC_BACK_MAX_BYTES
+
+
+def _sync_back_enabled() -> bool:
+    """config.yaml ``terminal.sync_back`` (default true). False stops teardown from pulling the
+    remote ``~/.hermes`` back: a sandbox that is not trusted cannot rewrite or add host files
+    under the synced dirs (skills, caches). A value that is neither a boolean nor a boolean word
+    turns it off (with a warning): someone who set the key meant to change the default."""
+    from hermes_cli.config import load_config
+
+    raw = ((load_config() or {}).get("terminal") or {}).get(_SYNC_BACK_KEY)
+    if raw is None or isinstance(raw, bool):
+        return raw is not False
+    word = str(raw).strip().lower()
+    if word in _TRUE_WORDS or word in _FALSE_WORDS:
+        return word in _TRUE_WORDS
+    logger.warning("sync_back: terminal.%s=%r is not a boolean — treating it as false", _SYNC_BACK_KEY, raw)
+    return False
 
 
 def _sync_back_temp_prefix() -> str:
@@ -212,6 +232,10 @@ class FileSyncManager:
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
+        # Read once, here: backends build the manager while creating the sandbox, inside the owning
+        # profile's scope. Teardown can run later on the idle reaper's thread, where a config read
+        # would answer with the launch profile's terminal settings.
+        self._sync_back_enabled = _sync_back_enabled()
 
     def sync(self, *, force: bool = False) -> None:
         """Run a sync cycle: upload changed files, delete removed files. Rate-limited to once
@@ -313,7 +337,11 @@ class FileSyncManager:
     def sync_back(self, hermes_home: Path | None = None) -> None:
         """Pull remote changes back to the host: download the remote ``.hermes/`` as a tar and
         apply only files whose SHA-256 differs from what was pushed. SIGINT is deferred until
-        complete; concurrent gateway sandboxes are serialized via a file lock."""
+        complete; concurrent gateway sandboxes are serialized via a file lock. With
+        ``terminal.sync_back: false`` nothing is downloaded or applied."""
+        if not self._sync_back_enabled:
+            logger.info("sync_back: off (terminal.%s: false) — remote changes stay in the sandbox", _SYNC_BACK_KEY)
+            return
         with self._transaction_lock:
             self._sync_back_transaction(hermes_home=hermes_home)
 

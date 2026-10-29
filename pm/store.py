@@ -16,6 +16,9 @@ from typing import IO
 
 from pm.filesystem import is_junction, long_root, retry_held
 
+# Inert desktop metadata that must never decide a package's layout or digest.
+JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", ".localized"})
+
 
 
 ALL_TARGETS = (
@@ -270,19 +273,39 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+def _is_os_metadata(path: Path) -> bool:
+    """Only inert regular metadata files are excluded, never links or directories.
+
+    A directory or executable that happens to carry one of these names is
+    payload, not metadata: skipping it would hide real package bytes and let a
+    tree digest change under a caller that only added a .DS_Store.
+    """
+    if path.name not in JUNK_NAMES and not path.name.startswith("._"):
+        return False
+    mode = path.lstat().st_mode
+    return stat.S_ISREG(mode) and not mode & 0o111
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
     (bin/, cmd/, lib/...). Refuses on name collisions. The tree was extracted
     seconds ago, when a Windows scanner still holds it (#131884)."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
-    entries = list(dest.iterdir())
+    entries = [entry for entry in dest.iterdir() if not _is_os_metadata(entry)]
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
-    for item in list(inner.iterdir()):
+    items = list(inner.iterdir())
+    # Check the whole move before modifying the layout. Duplicate desktop
+    # metadata is harmless; every other collision must preserve both trees.
+    for item in items:
         target = dest / item.name
-        if target.exists():
+        if os.path.lexists(target) and not (_is_os_metadata(item) and _is_os_metadata(target)):
             return
+    for item in items:
+        target = dest / item.name
+        if os.path.lexists(target):
+            target.unlink()  # both entries were verified as regular metadata
         retry_held(lambda: item.rename(target))
     retry_held(inner.rmdir)
 
@@ -327,6 +350,8 @@ def tree_digest(root: Path) -> str:
         dirnames[:] = descend
         for fname in filenames:
             path = Path(dirpath) / fname
+            if _is_os_metadata(path):
+                continue
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])
 

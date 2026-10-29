@@ -129,8 +129,15 @@ def collect_acceptance(contract: str, published_pr: str | None,
         pr = repository["pullRequest"]
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
+        if pr["state"] == "CLOSED":
+            receipt.update(
+                classification="closed",
+                detail=f"Completion contract PR {url} is closed without merge.",
+                recovery="Reopen the declared completion PR or explicitly rebind the card's completion contract before completing it.",
+            )
+            return receipt
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
-            raise ValueError("PR is closed or current head is unavailable")
+            raise ValueError("PR state or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
         rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
@@ -172,7 +179,14 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
-        if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+        if current["state"] == "closed" and not current.get("merged"):
+            receipt.update(
+                classification="closed",
+                detail=f"Completion contract PR {url} closed without merge while collecting evidence.",
+                recovery="Reopen the declared completion PR or explicitly rebind the card's completion contract before completing it.",
+            )
+            return receipt
+        if current["head"]["sha"] != sha or current["base"]["ref"] != branch:
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")

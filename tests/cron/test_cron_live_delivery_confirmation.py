@@ -152,6 +152,8 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
 
     async def _deliver_to_platform(target, text, metadata, transport=None):
         router_calls.append({"target": target, "text": text, "metadata": metadata})
+        if isinstance(send_result, BaseException):
+            raise send_result
         return send_result
 
     router._deliver_to_platform = _deliver_to_platform
@@ -395,3 +397,27 @@ class TestStandaloneSendIsBounded:
 
         assert error is None
         assert f"delivered to telegram:{CHAT_ID}" in caplog.text
+
+
+@pytest.mark.parametrize("outcome", [None, {}, {"success": False, "delivered": False}, RuntimeError("connection lost after send"), TimeoutError()])
+def test_uncertain_live_send_is_not_replayed(outcome):
+    error, router_calls, standalone_calls = _run(_job(), "Nightly report.", outcome)
+    assert len(router_calls) == 1
+    assert standalone_calls == []
+    assert "delivery uncertain" in error
+
+
+def test_attachment_failure_after_confirmed_text_does_not_replay_text(monkeypatch, tmp_path):
+    media = tmp_path / "report.png"
+    media.write_bytes(b"image")
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path,))
+
+    def failed_media(*args, **kwargs):
+        raise RuntimeError("attachment transport closed")
+
+    monkeypatch.setattr(sched_delivery, "_send_media_via_adapter", failed_media)
+    error, router_calls, standalone_calls = _run(
+        _job(), f"Nightly report.\nMEDIA:{media}", _SendResult(message_id=1234))
+    assert len(router_calls) == 1
+    assert standalone_calls == []
+    assert "delivery uncertain" in error

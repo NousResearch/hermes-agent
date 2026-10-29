@@ -1,11 +1,12 @@
 """A cron payload the live lane rejected as reconnect-only is not lost when standalone fails (#125363).
 
-``send_path_degraded`` means the adapter that owns the connection will deliver after it reconnects.
-The router raises that rejection (``DeliveryRouter._deliver_to_platform`` -> RuntimeError), so it
-reaches the cron lane on the EXCEPTION arm of ``_deliver_via_live_adapter``. A satellite profile's
+An explicit ``not_dispatched`` rejection proves the adapter never attempted a provider send.
+Its ``send_path_degraded`` code additionally permits delivery after it reconnects.
+The router preserves that proof as ``DeliveryNotDispatchedError``, which ``_live_send_text``
+handles as permission to try standalone. A satellite profile's
 cron worker has no platform token, so the standalone fallback fails; the payload must then wait in
-the delivery ledger for that adapter's post-reconnect sweep. Any other failure still falls through
-to standalone exactly as before and queues nothing.
+the delivery ledger for that adapter's post-reconnect sweep. Other provider failures have uncertain
+outcomes and must not be replayed or queued.
 """
 
 import asyncio
@@ -44,7 +45,8 @@ def _deliver_through_router(monkeypatch, loop, *, live_error: str):
         is_relay = False
 
         async def send(self, platform, chat_id, content, metadata=None):
-            return SendResult(success=False, error=live_error, retryable=live_error == "send_path_degraded")
+            return SendResult(success=False, error=live_error, retryable=live_error == "send_path_degraded",
+                              not_dispatched=live_error == "send_path_degraded")
 
     fields = {name: None for name in sd._TargetDelivery.__dataclass_fields__}
     fields.update(job={"id": "job-1"}, platform=Platform.TELEGRAM, platform_name="telegram", chat_id="-100",
@@ -56,9 +58,10 @@ def _deliver_through_router(monkeypatch, loop, *, live_error: str):
         sd, "_standalone_send",
         lambda t, content, media: standalone_calls.append(content) or (None, "You must pass the token from BotFather"))
     target_errors, delivery_errors = [], []
-    assert not sd._deliver_via_live_adapter(
+    handled = sd._deliver_via_live_adapter(
         t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors, unverified_targets=[])
-    sd._deliver_standalone(t, "the report", [], target_errors, delivery_errors)
+    if not handled:
+        sd._deliver_standalone(t, "the report", [], target_errors, delivery_errors)
     return standalone_calls, delivery_errors
 
 
@@ -70,8 +73,8 @@ def test_reconnect_only_rejection_survives_a_failed_standalone_for_the_sweep(mon
     assert [(row["chat_id"], row["thread_id"], row["content"]) for row in claimed] == [("-100", "42", "the report")]
 
 
-def test_other_live_failures_still_fall_to_standalone_and_queue_nothing(monkeypatch, gateway_loop):
+def test_other_live_failures_are_not_replayed_or_queued(monkeypatch, gateway_loop):
     standalone_calls, errors = _deliver_through_router(monkeypatch, gateway_loop, live_error="chat not found")
-    assert standalone_calls == ["the report"]
-    assert any("BotFather" in e for e in errors) and not any("queued" in e for e in errors)
+    assert standalone_calls == []
+    assert any("delivery uncertain" in e for e in errors) and not any("queued" in e for e in errors)
     assert dl.sweep_failed_for_runtime("telegram", profile="satellite") == []

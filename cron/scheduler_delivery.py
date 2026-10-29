@@ -1272,9 +1272,9 @@ def _live_send_text(
     target_errors: list, delivery_errors: list, unverified_targets: list,
 ) -> tuple[bool, bool, Any]:
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
-    Re-raises a real send error so the caller falls through to standalone."""
+    The second flag also stops attachments and session seeding after an uncertain send."""
     from agent.async_utils import safe_schedule_threadsafe
-    from gateway.delivery import DeliveryRouter, DeliveryTarget, PartialDeliveryError
+    from gateway.delivery import DeliveryNotDispatchedError, DeliveryRouter, DeliveryTarget, PartialDeliveryError
     job = t.job
     router = DeliveryRouter(t.config, t.target_adapters)
     route_target = DeliveryTarget(
@@ -1315,12 +1315,9 @@ def _live_send_text(
             logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
             target_errors.append(msg)
             return False, False, None
-        logger.warning(
-            "Job '%s': live adapter send to %s:%s timed out "
-            "after 60s; already dispatched (in flight), "
-            "assuming delivered (skipping standalone fallback "
-            "to avoid duplicate)",
-            job["id"], t.platform_name, t.chat_id)
+        _note_target_error(
+            job, f"delivery uncertain for {t.where}: live adapter confirmation timed out "
+            "after dispatch; send not replayed", delivery_errors)
         return True, True, None
     except PartialDeliveryError as ex:
         # The head of a split send is already on screen: a standalone resend would duplicate it.
@@ -1329,12 +1326,17 @@ def _live_send_text(
             job, f"live adapter send to {t.where} delivered {raw.get('delivered_chunks', '?')} of "
             f"{raw.get('total_chunks', '?')} chunks, then failed: {ex}", delivery_errors)
         return True, False, None
-    except Exception as ex:
-        # Real send error (not a slow confirmation): fall through to standalone. The router raises
-        # a failed SendResult's error string, so this is where send_path_degraded arrives.
+    except DeliveryNotDispatchedError as ex:
         t.live_error = str(ex)
-        target_errors.append(f"live adapter send failed: {ex}")
-        raise
+        target_errors.append(f"live adapter send rejected before dispatch: {ex}")
+        return False, False, None
+    except Exception as ex:
+        # A provider may have accepted the send before its confirmation failed.
+        logger.debug("Live adapter confirmation failed", exc_info=True)
+        _note_target_error(
+            job, f"delivery uncertain for {t.where}: {type(ex).__name__}: {ex}; "
+            "send not replayed", delivery_errors)
+        return True, True, None
 
     # _deliver_to_platform returns a SendResult, or a plain dict {"success": True, "delivered":
     # False, ...} when the silence-narration filter drops the message.
@@ -1356,9 +1358,12 @@ def _live_send_text(
             err, shape = getattr(send_result, "error", None), type(send_result).__name__
         msg = f"live adapter send to {t.where} returned unconfirmed result ({shape}, error={err})"
         t.live_error = str(err) if err else None
-        _warn_live_lane_failure(job, msg, t.is_relay)
-        target_errors.append(msg)
-        return False, False, None
+        if isinstance(send_result, dict) and send_result.get("filtered") == "silence_narration":
+            _warn_live_lane_failure(job, msg, t.is_relay)
+            target_errors.append(msg)
+            return False, False, None
+        _note_target_error(job, f"delivery uncertain: {msg}; send not replayed", delivery_errors)
+        return True, True, None
     if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
         requested_thread_id = send_raw_response.get("requested_thread_id") or t.thread_id
         _note_target_error(
@@ -1443,9 +1448,9 @@ def _deliver_via_live_adapter(
     t: _TargetDelivery, cleaned_text: str, media_files: list, *, target_errors: list,
     delivery_errors: list, unverified_targets: list,
 ) -> bool:
-    """Deliver one target via the live gateway adapter; True once delivered. ``target_errors`` =
-    this lane's soft failures (surfaced only if standalone also fails); ``delivery_errors`` =
-    partial failures (media, thread fallback) that surface even on success."""
+    """Handle a live target; True also forbids replay after an uncertain send. ``target_errors`` =
+    safe-to-retry failures (surfaced only if standalone also fails); ``delivery_errors`` =
+    uncertainty and partial failures (media, thread fallback) that surface even on success."""
     job = t.job
     route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
     delivered = False
@@ -1468,12 +1473,12 @@ def _deliver_via_live_adapter(
             )
 
         # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation
-        # timeout (loop contended, text already assumed delivered) — record the drop instead.
+        # timeout or an uncertain text result — record the drop instead.
         # Send extracted media files as native attachments via the live adapter, using the same
         # DM-topic-aware routing as the text send (#22773 — media previously used a bare thread_id and
         # landed in the General lane for private DM topics). Skip on an in-flight confirmation timeout: the
         # gateway loop is contended, so each media send would also block its 30s budget, and the text
-        # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
+        # payload is already in flight (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
         if adapter_ok and not timed_out and media_files:
             _live_send_media(t, media_metadata, media_files, delivery_errors)
@@ -1481,9 +1486,11 @@ def _deliver_via_live_adapter(
             _note_target_error(
                 job,
                 f"{len(media_files)} media attachment(s) not delivered to "
-                f"{t.where} (live adapter confirmation timed out)",
+                f"{t.where} (live adapter text delivery unconfirmed)",
                 delivery_errors)
 
+        if timed_out:
+            return True  # In flight or unconfirmed: never replay or seed an unseen result.
         if adapter_ok:
             # Log WHERE it went: a ghost delivery in the wrong lane is otherwise indistinguishable.
             logger.info(
@@ -1500,7 +1507,9 @@ def _deliver_via_live_adapter(
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
-        _warn_live_lane_failure(job, err_msg, t.is_relay)
+        logger.debug("Live adapter delivery failed", exc_info=True)
+        _note_target_error(job, f"delivery uncertain: {err_msg}; send not replayed", delivery_errors)
+        return True
     return delivered
 
 

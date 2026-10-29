@@ -881,7 +881,7 @@ catalog: CatalogTranslations
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
-      pet: {
+      companion: {
         title: string
         intro: string
         restartHint: string
@@ -907,7 +907,7 @@ catalog: CatalogTranslations
         renameTitle: string
         renamePlaceholder: string
         renameSave: string
-        exportPet: (name: string) => string
+        exportCompanion: (name: string) => string
         adoptFailed: (slug: string) => string
         uninstallFailed: (slug: string) => string
         renameFailed: (slug: string) => string
@@ -2110,7 +2110,7 @@ catalog: CatalogTranslations
     settings: string
     changeTheme: string
     changeColorMode: string
-    pets: {
+    companions: {
       title: string
       placeholder: string
       loading: string
@@ -2125,7 +2125,7 @@ catalog: CatalogTranslations
       toggleFailed: (enabled: boolean) => string
       noneAvailable: string
     }
-    generatePet: {
+    generateCompanion: {
       title: string
       placeholder: string
       promptHint: string

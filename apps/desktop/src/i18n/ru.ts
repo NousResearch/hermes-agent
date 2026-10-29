@@ -369,7 +369,7 @@ export const ruOverrides = {
       appearanceTypography: 'Шрифты и масштаб',
       appearanceWindowLayout: 'Окно и расположение',
       appearanceChatDisplay: 'Отображение чата',
-      appearancePet: 'Питомец',
+      appearanceCompanion: 'Питомец',
       appearanceGeneral: 'Общие',
       modelMain: 'Основная модель',
       modelAuxiliary: 'Вспомогательные модели',
@@ -584,10 +584,10 @@ export const ruOverrides = {
       installed: name => `Установлена «${name}».`,
       removeTheme: 'Удалить тему',
       importedBadge: 'Импортирована',
-      pet: {
+      companion: {
         title: 'Питомец',
         intro:
-          'Заберите анимированного питомца из petdex, который парит над приложением и реагирует на действия Hermes — «бегает», пока выполняются инструменты, радуется успеху и хмурится при ошибках.',
+          'Заберите анимированного питомца из companiondex, который парит над приложением и реагирует на действия Hermes — «бегает», пока выполняются инструменты, радуется успеху и хмурится при ошибках.',
         restartHint:
           'Питомцам нужен быстрый перезапуск — текущее приложение запустилось до появления этой функции. Выйдите из Hermes и откройте снова, затем вернитесь сюда.',
         scaleTitle: 'Размер',
@@ -597,7 +597,7 @@ export const ruOverrides = {
         chooseTitle: 'Выбрать питомца',
         chooseDesc: 'Выбор установит его (при необходимости) и сделает активным.',
         searchPlaceholder: 'Поиск питомцев…',
-        unreachable: 'Не удалось связаться с галереей petdex. Проверьте соединение и откройте страницу заново.',
+        unreachable: 'Не удалось связаться с галереей companiondex. Проверьте соединение и откройте страницу заново.',
         noMatch: query => `Нет питомцев, подходящих под «${query}».`,
         installedTag: 'установлен',
         generatedTag: 'Сгенерирован',
@@ -612,7 +612,7 @@ export const ruOverrides = {
         renameTitle: 'Переименовать питомца',
         renamePlaceholder: 'Имя вашего питомца',
         renameSave: 'Сохранить',
-        exportPet: name => `Экспортировать ${name}`,
+        exportCompanion: name => `Экспортировать ${name}`,
         adoptFailed: slug => `Не удалось забрать ${slug}`,
         uninstallFailed: slug => `Не удалось удалить ${slug}`,
         renameFailed: slug => `Не удалось переименовать ${slug}`,
@@ -1621,11 +1621,11 @@ export const ruOverrides = {
     settings: 'Настройки',
     changeTheme: 'Сменить тему',
     changeColorMode: 'Сменить цветовой режим…',
-    pets: {
+    companions: {
       title: 'Питомцы',
       placeholder: 'Поиск питомцев…',
-      loading: 'Загрузка галереи petdex…',
-      error: 'Не удалось подключиться к галерее petdex.',
+      loading: 'Загрузка галереи companiondex…',
+      error: 'Не удалось подключиться к галерее companiondex.',
       staleBackend: 'Перезапустите Hermes, чтобы использовать питомцев — бэкенд старше этой функции.',
       empty: 'Совпадающих питомцев нет.',
       turnOff: 'Отключить',
@@ -1636,7 +1636,7 @@ export const ruOverrides = {
       toggleFailed: enabled => `Не удалось ${enabled ? 'включить' : 'отключить'} питомца.`,
       noneAvailable: 'Питомцев пока нет — выберите ниже для установки.'
     },
-    generatePet: {
+    generateCompanion: {
       title: 'Сгенерировать питомца',
       placeholder: 'Опишите питомца для генерации…',
       promptHint: 'Введите описание и нажмите Enter, чтобы получить четыре варианта облика.',
@@ -2622,7 +2622,7 @@ export const ruOverrides = {
       '/tools': 'Управлять доступными агенту инструментами',
       '/memory': 'Просмотреть ожидающие записи в память или переключить их одобрение',
       '/bundles': 'Показать наборы навыков',
-      '/pet': 'Переключить или выбрать питомца petdex',
+      '/companion': 'Переключить или выбрать питомца companiondex',
       '/hatch': 'Создать нового питомца',
       '/learn': 'Создать навык на основе каталогов, URL, беседы или заметок',
       '/init': 'Просканировать репозиторий и создать или обновить инструкции AGENTS.md',

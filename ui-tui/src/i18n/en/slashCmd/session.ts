@@ -55,8 +55,8 @@ export const slashCmdSessionEn = {
       changedCleared: (value: string) => `personality: ${value} · transcript cleared`,
       defaultValue: 'default'
     },
-    pet: {
-      noOutput: '/pet: no output',
+    companion: {
+      noOutput: '/companion: no output',
       // {0}=warning text, {1}=command output
       warning: (warning: string, body: string) => `warning: ${warning}\n${body}`
     },

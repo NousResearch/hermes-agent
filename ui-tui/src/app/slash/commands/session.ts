@@ -522,24 +522,24 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle / adopt / resize an animated pet',
-    name: 'pet',
-    usage: '/pet [toggle | list | scale <n> | <slug>]',
+    help: 'toggle / adopt / resize an animated companion',
+    name: 'companion',
+    usage: '/companion [toggle | list | scale <n> | <slug>]',
     run: (arg, ctx, cmd) => {
       const sub = arg.trim().toLowerCase()
 
       // Gallery picker — the interactive browse surface.
       if (sub === 'list') {
-        return patchOverlayState({ petPicker: true })
+        return patchOverlayState({ companionPicker: true })
       }
 
-      // Bare /pet and /pet toggle flip display.pet.enabled via the slash worker.
+      // Bare /companion and /companion toggle flip display.companion.enabled via the slash worker.
       ctx.gateway.gw
         .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
         .then(
           ctx.guarded<SlashExecResponse>(r => {
-            const body = r.output || t('slashCmd.session.pet.noOutput')
-            ctx.transcript.sys(r.warning ? t('slashCmd.session.pet.warning', r.warning, body) : body)
+            const body = r.output || t('slashCmd.session.companion.noOutput')
+            ctx.transcript.sys(r.warning ? t('slashCmd.session.companion.warning', r.warning, body) : body)
           })
         )
         .catch(ctx.guardedErr)

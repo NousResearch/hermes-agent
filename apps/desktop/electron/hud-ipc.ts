@@ -223,7 +223,7 @@ export function registerHudIpc({
     // NOT setPosition: on Windows, a transparent frameless window silently
     // grows ~1px per setPosition call (worse at >100% DPI). The renderer
     // snapshots outerWidth/outerHeight when the composer drag arms and
-    // re-pins to that size on every move (same pattern as the pet overlay).
+    // re-pins to that size on every move (same pattern as the companion overlay).
     hudWindow.setBounds({
       x: origin.x,
       y: origin.y,
@@ -236,7 +236,7 @@ export function registerHudIpc({
   // (see spawnHudWindow — a transparent frameless window must not expose a
   // system resize hot-zone, or dragging grows it), which on Windows/Linux also
   // blocks programmatic setBounds sizing — so briefly flip resizable on while
-  // the size actually changes, exactly like the pet overlay's wheel-scale does.
+  // the size actually changes, exactly like the companion overlay's wheel-scale does.
   ipcMain.on('hermes:hud:set-bounds', (event, bounds) => {
     const hudWindow = getHudWindow()
 

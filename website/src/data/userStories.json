@@ -1140,7 +1140,7 @@
     "date": "2026-07-12",
     "category": "creative",
     "headline": "A Live2D body for the agent that speaks when a cron fires",
-    "quote": "Pet works on Mac and talks to my Hermes VPS via tailscale. It utilizes TTS whenever a long task completes or a cron fires.",
+    "quote": "Companion works on Mac and talks to my Hermes VPS via tailscale. It utilizes TTS whenever a long task completes or a cron fires.",
     "size": "sm"
   },
   {

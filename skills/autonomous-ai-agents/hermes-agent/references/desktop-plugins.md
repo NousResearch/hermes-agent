@@ -142,12 +142,12 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
   `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
   capability isn't available.
-- `ctx.pet.say(text, { id?, tone?: 'info'|'wait'|'error', ttlMs? })` — a short
-  plain-text line in the core pet's speech bubble (in-window and popped out),
+- `ctx.companion.say(text, { id?, tone?: 'info'|'wait'|'error', ttlMs? })` — a short
+  plain-text line in the core companion's speech bubble (in-window and popped out),
   labelled with your plugin name; returns a disposer. 120-char cap, TTL default
   6 s (1–30 s), same `id` replaces, rate-limited, cleared on unload; core
-  error/waiting states win; nothing shows without a visible pet
-  (`ctx.pet.visible`). `ctx.pet.clear(id?)`. Never locate the pet canvas in
+  error/waiting states win; nothing shows without a visible companion
+  (`ctx.companion.visible`). `ctx.companion.clear(id?)`. Never locate the companion canvas in
   the DOM or overlay it yourself.
 - `ctx.runAction('view.showBrowser')` — run a built-in app action through the
   same handler as its shortcut/palette entry, so a rebound shortcut can't break

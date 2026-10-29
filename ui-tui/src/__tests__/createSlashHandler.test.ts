@@ -412,24 +412,24 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('opens the pet picker for /pet list only', () => {
+  it('opens the companion picker for /companion list only', () => {
     const ctx = buildCtx()
 
-    expect(createSlashHandler(ctx)('/pet list')).toBe(true)
-    expect(getOverlayState().petPicker).toBe(true)
+    expect(createSlashHandler(ctx)('/companion list')).toBe(true)
+    expect(getOverlayState().companionPicker).toBe(true)
     expect(gatewayWork(ctx)).toEqual([])
 
     resetOverlayState()
-    expect(createSlashHandler(ctx)('/pet')).toBe(true)
-    expect(getOverlayState().petPicker).toBe(false)
-    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet' }))
+    expect(createSlashHandler(ctx)('/companion')).toBe(true)
+    expect(getOverlayState().companionPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'companion' }))
 
     resetOverlayState()
-    expect(createSlashHandler(ctx)('/pet toggle')).toBe(true)
-    expect(getOverlayState().petPicker).toBe(false)
+    expect(createSlashHandler(ctx)('/companion toggle')).toBe(true)
+    expect(getOverlayState().companionPicker).toBe(false)
     expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
       'slash.exec',
-      expect.objectContaining({ command: 'pet toggle' })
+      expect.objectContaining({ command: 'companion toggle' })
     )
   })
 

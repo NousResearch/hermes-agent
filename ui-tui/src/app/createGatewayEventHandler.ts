@@ -30,6 +30,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
+import { flashCompanion, flashGoodVibes } from './companionFlashStore.js'
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import { createBillingVerificationPresenter, createFreeTierChallengePresenter } from './gatewayBrowserLinks.js'
@@ -45,7 +46,6 @@ import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
 import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
-import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
 import {
@@ -564,7 +564,7 @@ function handleErrorEvent(
   }
 
   turnController.recordError()
-  flashPet('failed')
+  flashCompanion('failed')
 
   const message = String(payload?.message || t('gatewayMsg.error.unknown'))
 
@@ -1540,9 +1540,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'reaction':
         // Core-detected affection (ily / <3 / good bot): flash the ♥ and let the
-        // pet celebrate. Same signal drives the desktop's floating hearts.
+        // companion celebrate. Same signal drives the desktop's floating hearts.
         flashGoodVibes()
-        flashPet('jump')
+        flashCompanion('jump')
 
         return
 
@@ -1875,8 +1875,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
           msgs.forEach(appendMessage)
 
-          // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
-          flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
+          // Companion beat: celebrate a finished plan, otherwise a clean-finish wave.
+          flashCompanion(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
 
           if (bellOnComplete && stdout?.isTTY) {
             stdout.write('\x07')

@@ -199,7 +199,7 @@ _pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
 #     per-run throwaway, never a credential.
 #
 # These are test-infrastructure knobs, not credentials — same class as the
-# HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER / HERMES_RUN_E2E opt-ins
+# HERMES_RUN_SLOW_COMPANION_TESTS / HERMES_E2E_BROWSER / HERMES_RUN_E2E opt-ins
 # forwarded below.
 # SSL_CERT_FILE/DIR are trust-store locations: the pinned interpreter's
 # OpenSSL has no compiled-in bundle path on NixOS, so network tests (PM
@@ -247,7 +247,7 @@ exec env -i \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
   PYTHONUTF8=1 \
-  ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
+  ${HERMES_RUN_SLOW_COMPANION_TESTS:+HERMES_RUN_SLOW_COMPANION_TESTS="$HERMES_RUN_SLOW_COMPANION_TESTS"} \
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
   ${HERMES_RUN_E2E:+HERMES_RUN_E2E="$HERMES_RUN_E2E"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \

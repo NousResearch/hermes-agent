@@ -1637,10 +1637,10 @@ slash:
     description: "Hersien hangende geheueskrywings / wissel die goedkeuringshek"
   bundles:
     description: "Lys vaardigheidsbundels (aliasse /<name> vir meerdere vaardighede)"
-  pet:
-    description: "Wissel of neem 'n petdex-gelukbringer aan (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Wissel of neem 'n companiondex-gelukbringer aan (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Genereer 'n nuwe petdex-troeteldier uit 'n beskrywing"
+    description: "Genereer 'n nuwe companiondex-troeteldier uit 'n beskrywing"
   learn:
     description: "Leer 'n herbruikbare vaardigheid uit enigiets wat jy beskryf (gidse, URL's, hierdie geselsie, notas)"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) Geen basiskonsep het teruggekom nie — probeer weer."
       failed: "(x_x) Uitbroei het misluk: {error}"
       hatched: "(^_^)b {name} het uitgebroei en is aangeneem — dit verskyn binnekort!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} is uit — dit verskyn binnekort."
       put_away_named: "(-_-)zzZ {name} is weggesit."
       put_away: "(-_-)zzZ Troeteldier weggesit."
-      usage_scale: "(o_o) Gebruik: /pet scale <faktor>  (bv. /pet scale 0.5)"
+      usage_scale: "(o_o) Gebruik: /companion scale <faktor>  (bv. /companion scale 0.5)"
       scale_set: "(^_^) Troeteldierskaal → {scale}."
-      fetching: "(o_o) Haal '{name}' uit die petdex…"
+      fetching: "(o_o) Haal '{name}' uit die companiondex…"
       adopt_failed: "(x_x) Kon nie '{name}' aanneem nie: {error}"
       error: "(x_x) {error}"
     diff:

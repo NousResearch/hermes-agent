@@ -1,6 +1,6 @@
 /**
  * The avatar editor shared by Edit Profile and New Bot: shape grid + color
- * swatches, the Generate and Upload tabs, and the petdex Pet tab.
+ * swatches, the Generate and Upload tabs, and the companiondex Companion tab.
  */
 
 import {
@@ -38,8 +38,8 @@ import {
   pickImageFromDevice,
   probeImagen
 } from './avatar-image'
+import { CompanionTab } from './companion'
 import { useBots } from './i18n'
-import { PetTab } from './pet'
 
 interface AvatarPickerProps {
   /** `null` = no explicit pick, i.e. the name's deterministic hue. */
@@ -128,7 +128,7 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
           { id: 'bot', label: b.avatar.tabBot },
           { id: 'generate', label: b.avatar.tabGenerate },
           { id: 'upload', label: b.avatar.upload },
-          { id: 'pet', label: b.avatar.tabPet }
+          { id: 'companion', label: b.avatar.tabCompanion }
         ]}
         value={tab}
       />
@@ -281,7 +281,7 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
           {b.editor.chooseImage}
         </Button>
       ) : null}
-      {tab === 'pet' ? <PetTab image={image} onImage={onImage} /> : null}
+      {tab === 'companion' ? <CompanionTab image={image} onImage={onImage} /> : null}
     </div>
   )
 }

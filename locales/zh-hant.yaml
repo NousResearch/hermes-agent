@@ -1637,10 +1637,10 @@ slash:
     description: "檢視待處理的記憶寫入／切換批准關卡"
   bundles:
     description: "列出技能套件（以 /<name> 作為多個技能的別名）"
-  pet:
-    description: "切換或領養 petdex 吉祥物（/pet、/pet list、/pet <slug>）"
+  companion:
+    description: "切換或領養 companiondex 吉祥物（/companion、/companion list、/companion <slug>）"
   hatch:
-    description: "根據描述產生新的 petdex 寵物"
+    description: "根據描述產生新的 companiondex 寵物"
   learn:
     description: "從你描述的任何內容學習可重用技能（目錄、URL、此聊天、筆記）"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) 沒有收到基礎草稿 — 請再試一次。"
       failed: "(x_x) 孵化失敗：{error}"
       hatched: "(^_^)b {name} 已孵化並被領養 — 馬上就會出現！"
-    pet:
+    companion:
       is_out: "(^_^)b {name} 出來了 — 馬上就會出現。"
       put_away_named: "(-_-)zzZ 已收起 {name}。"
       put_away: "(-_-)zzZ 已收起寵物。"
-      usage_scale: "(o_o) 用法：/pet scale <factor>  （例如 /pet scale 0.5）"
+      usage_scale: "(o_o) 用法：/companion scale <factor>  （例如 /companion scale 0.5）"
       scale_set: "(^_^) 寵物縮放 → {scale}。"
-      fetching: "(o_o) 正在從 petdex 取得「{name}」…"
+      fetching: "(o_o) 正在從 companiondex 取得「{name}」…"
       adopt_failed: "(x_x) 無法領養「{name}」：{error}"
       error: "(x_x) {error}"
     diff:

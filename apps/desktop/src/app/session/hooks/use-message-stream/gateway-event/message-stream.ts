@@ -11,9 +11,9 @@ import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { flashCompanionActivity, markCompanionUnread, setCompanionActivity } from '@/store/companion'
 import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
 import { notify } from '@/store/notifications'
-import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
@@ -300,7 +300,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: true })
+      setCompanionActivity({ reasoning: true })
     }
 
     return true
@@ -312,7 +312,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: true })
+      setCompanionActivity({ reasoning: true })
     }
 
     return true
@@ -328,7 +328,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: true })
+      setCompanionActivity({ reasoning: true })
     }
 
     return true
@@ -338,7 +338,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // Status transition only; the aggregator's reply arrives via the normal
     // message stream. No reasoning/transcript mutation here.
     if (isActiveEvent) {
-      setPetActivity({ reasoning: true })
+      setCompanionActivity({ reasoning: true })
     }
 
     return true
@@ -362,7 +362,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: true })
+      setCompanionActivity({ reasoning: true })
     }
 
     return true
@@ -378,7 +378,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: true })
+      setCompanionActivity({ reasoning: true })
     }
 
     return true
@@ -445,18 +445,18 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     if (isActiveEvent) {
       setTurnStartedAt(null)
 
-      // Pet beat: a finished turn always celebrates — go straight to the
+      // Companion beat: a finished turn always celebrates — go straight to the
       // jump, never linger on the run/reason pose. One atom update (clears
       // toolRunning/reasoning AND sets celebrate together) so no stray "run"
       // frame leaks to the sprite — including the popped-out overlay, which
       // mirrors each activity change. The jump runs ~2 loops, then settles.
-      flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+      flashCompanionActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
 
-      // Light up the pet's mail icon if the user wasn't looking when the turn
+      // Light up the companion's mail icon if the user wasn't looking when the turn
       // finished — a glanceable "new message" hint on the popped-out overlay.
       // Cleared when they open the app via the mail icon or refocus the window.
       if (typeof document !== 'undefined' && !document.hasFocus()) {
-        markPetUnread()
+        markCompanionUnread()
       }
     }
 

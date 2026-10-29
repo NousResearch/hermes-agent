@@ -80,7 +80,7 @@ class CLITerminalMixin:
             return
         self._terminal_io_broken = True
         try:
-            self._pet_stop_anim()
+            self._companion_stop_anim()
         except Exception:
             pass
         logger.warning(
@@ -159,7 +159,7 @@ class CLITerminalMixin:
         # A viewport refill paints at once, before prompt_toolkit's next erase; after CSI 3J
         # the whole history goes through the usual print (the screen was cleared anyway).
         _replay_output_history(fit, None if fit is None else app.renderer.output)
-        self._pet_queue_kitty_frame()
+        self._companion_queue_kitty_frame()
         self._app_invalidate(app, "force_full_redraw", swallow=True)
 
     def _schedule_focus_regain_redraw(self, min_interval: float = 1.0) -> None:
@@ -413,7 +413,7 @@ class CLITerminalMixin:
             if new_width is not None:
                 self._last_resize_width = new_width
             if width_changed:
-                self._pet_queue_kitty_frame()
+                self._companion_queue_kitty_frame()
             # Its redraw is skipped, and the next recovery scheduled, if the width moved again
             # since it was read above (``_output_waits_for_resize``).
             original_on_resize()

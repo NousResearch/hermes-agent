@@ -74,7 +74,7 @@ export type DesktopActionId =
   | 'journey'
   | 'new'
   | 'palette'
-  | 'pet'
+  | 'companion'
   | 'profile'
   | 'queue'
   | 'reasoning'
@@ -322,15 +322,15 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'text'
   },
   {
-    name: '/pet',
-    description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)',
-    surface: action('pet'),
+    name: '/companion',
+    description: 'Toggle or adopt a companiondex mascot (/companion, /companion list, /companion boba)',
+    surface: action('companion'),
     argumentMode: 'options'
   },
   {
     name: '/hatch',
-    description: 'Generate a new pet (opens the pet generator)',
-    aliases: ['/generate-pet'],
+    description: 'Generate a new companion (opens the companion generator)',
+    aliases: ['/generate-companion'],
     surface: action('hatch')
   },
   // T11: commands the shared gateway refuses as slash.exec (or Desktop marked terminal-only), on the
@@ -405,15 +405,15 @@ const REGISTRY_DESKTOP_SURFACE: Readonly<Record<string, string | null>> = deskto
  * Commands the Python registry has never heard of, so they cannot ride the
  * dump above. `/density`, `/details`, `/logs`, `/mouse` are Ink-process-local
  * display toggles handled inside `ui-tui/src/app/slash/commands/core.ts`
- * (three are advertised through `tui_gateway/server.py::_TUI_EXTRA`); `/pets`
- * is the plural typo of the desktop's own `/pet` action and points at the
+ * (three are advertised through `tui_gateway/server.py::_TUI_EXTRA`); `/companions`
+ * is the plural typo of the desktop's own `/companion` action and points at the
  * sidebar instead of falling through as an unknown skill.
  */
 export const TS_ONLY_NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
   advanced: [],
   'composer-voice': [],
   messaging: [],
-  settings: ['/pets'],
+  settings: ['/companions'],
   terminal: ['/density', '/details', '/logs', '/mouse']
 }
 

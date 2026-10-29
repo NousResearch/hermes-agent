@@ -688,7 +688,7 @@ export const frOverrides = {
       appearanceTypography: 'Typographie',
       appearanceWindowLayout: 'Fenêtre et disposition',
       appearanceChatDisplay: 'Affichage des conversations',
-      appearancePet: 'Compagnon',
+      appearanceCompanion: 'Compagnon',
       appearanceGeneral: 'Général',
       modelMain: 'Modèle principal',
       modelAuxiliary: 'Modèles auxiliaires',
@@ -1111,10 +1111,10 @@ export const frOverrides = {
       installed: name => `« ${name} » installé.`,
       removeTheme: 'Supprimer le thème',
       importedBadge: 'Importé',
-      pet: {
+      companion: {
         title: 'Animal de compagnie',
         intro:
-          "Adoptez une mascotte petdex animée qui flotte au-dessus de l'application et réagit aux actions de Hermes — court pendant l'exécution des outils, fête les réussites, boude les erreurs.",
+          "Adoptez une mascotte companiondex animée qui flotte au-dessus de l'application et réagit aux actions de Hermes — court pendant l'exécution des outils, fête les réussites, boude les erreurs.",
         restartHint:
           "Les animaux de compagnie nécessitent un redémarrage rapide — l'application en cours a démarré avant l'ajout de cette fonctionnalité. Fermez et rouvrez Hermes, puis revenez ici.",
         scaleTitle: 'Taille',
@@ -1124,7 +1124,7 @@ export const frOverrides = {
         chooseTitle: 'Choisir un animal',
         chooseDesc: "Le choisir l'installe (si nécessaire) et l'active.",
         searchPlaceholder: 'Rechercher des animaux…',
-        unreachable: "Impossible d'atteindre la galerie petdex. Vérifiez votre connexion et rouvrez cette page.",
+        unreachable: "Impossible d'atteindre la galerie companiondex. Vérifiez votre connexion et rouvrez cette page.",
         noMatch: query => `Aucun animal ne correspond à « ${query} ».`,
         installedTag: 'installé',
         generatedTag: 'Généré',
@@ -1139,7 +1139,7 @@ export const frOverrides = {
         renameTitle: "Renommer l'animal",
         renamePlaceholder: 'Nommez votre animal',
         renameSave: 'Enregistrer',
-        exportPet: name => `Exporter ${name}`,
+        exportCompanion: name => `Exporter ${name}`,
         adoptFailed: slug => `Impossible d'adopter ${slug}`,
         uninstallFailed: slug => `Impossible de désinstaller ${slug}`,
         renameFailed: slug => `Impossible de renommer ${slug}`,
@@ -2699,11 +2699,11 @@ export const frOverrides = {
     settings: 'Paramètres',
     changeTheme: 'Changer le thème',
     changeColorMode: 'Changer le mode couleur…',
-    pets: {
+    companions: {
       title: 'Animaux de compagnie',
       placeholder: 'Rechercher des animaux…',
-      loading: 'Chargement de la galerie petdex…',
-      error: "Impossible d'atteindre la galerie petdex…",
+      loading: 'Chargement de la galerie companiondex…',
+      error: "Impossible d'atteindre la galerie companiondex…",
       staleBackend: 'Redémarrez Hermes pour utiliser les animaux — le backend précède cette fonctionnalité.',
       empty: 'Aucun animal correspondant.',
       turnOff: 'Éteindre',
@@ -2714,7 +2714,7 @@ export const frOverrides = {
       toggleFailed: enabled => `Impossible d'${enabled ? 'activer' : 'désactiver'} l'animal.`,
       noneAvailable: "Aucun animal disponible — choisissez-en un ci-dessous pour l'installer."
     },
-    generatePet: {
+    generateCompanion: {
       title: 'Générer un animal',
       placeholder: 'Décrivez un animal à générer…',
       promptHint: 'Saisissez une description, puis appuyez sur Entrée pour générer quatre apparences.',
@@ -3848,7 +3848,7 @@ export const frOverrides = {
       '/tools': 'Gérer les outils : /tools [list|disable|enable] [name...]',
       '/memory': 'Examiner les écritures mémoire en attente / activer ou désactiver la validation',
       '/bundles': 'Lister les lots de skills (alias /<name> pour plusieurs skills)',
-      '/pet': 'Afficher/masquer ou adopter une mascotte petdex (/pet, /pet list, /pet boba)',
+      '/companion': 'Afficher/masquer ou adopter une mascotte companiondex (/companion, /companion list, /companion boba)',
       '/hatch': 'Générer une nouvelle mascotte (ouvre le générateur)',
       '/learn':
         'Apprendre une skill réutilisable à partir de ce que vous décrivez (dossiers, URL, cette conversation, notes)',

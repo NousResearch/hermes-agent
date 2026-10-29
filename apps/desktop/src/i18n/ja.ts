@@ -312,7 +312,7 @@ export const jaOverrides = {
       appearanceTypography: 'フォントと表示倍率',
       appearanceWindowLayout: 'ウィンドウとレイアウト',
       appearanceChatDisplay: 'チャット表示',
-      appearancePet: 'ペット',
+      appearanceCompanion: 'ペット',
       appearanceGeneral: '一般',
       modelMain: 'メインモデル',
       modelAuxiliary: '補助モデル',
@@ -614,10 +614,10 @@ export const jaOverrides = {
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
       importedBadge: 'インポート済み',
-      pet: {
+      companion: {
         title: 'ペット',
         intro:
-          'アプリ上に浮かぶ petdex のアニメーションマスコットを採用しましょう。ツール実行中は走り、成功すると喜び、エラーでしょんぼりと、Hermes の状態に反応します。',
+          'アプリ上に浮かぶ companiondex のアニメーションマスコットを採用しましょう。ツール実行中は走り、成功すると喜び、エラーでしょんぼりと、Hermes の状態に反応します。',
         restartHint:
           'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
         scaleTitle: 'サイズ',
@@ -627,7 +627,7 @@ export const jaOverrides = {
         chooseTitle: 'ペットを選ぶ',
         chooseDesc: '選ぶと（必要に応じて）インストールされ、アクティブになります。',
         searchPlaceholder: 'ペットを検索…',
-        unreachable: 'petdex ギャラリーに接続できませんでした。接続を確認してこのページを開き直してください。',
+        unreachable: 'companiondex ギャラリーに接続できませんでした。接続を確認してこのページを開き直してください。',
         noMatch: query => `「${query}」に一致するペットがありません。`,
         installedTag: 'インストール済み',
         generatedTag: '生成',
@@ -642,7 +642,7 @@ export const jaOverrides = {
         renameTitle: 'ペットの名前を変更',
         renamePlaceholder: 'ペットに名前を付ける',
         renameSave: '保存',
-        exportPet: name => `${name} をエクスポート`,
+        exportCompanion: name => `${name} をエクスポート`,
         adoptFailed: slug => `${slug} を採用できませんでした`,
         uninstallFailed: slug => `${slug} をアンインストールできませんでした`,
         renameFailed: slug => `${slug} の名前を変更できませんでした`,
@@ -1458,11 +1458,11 @@ export const jaOverrides = {
     settings: '設定',
     changeTheme: 'テーマを変更',
     changeColorMode: 'カラーモードを変更…',
-    pets: {
+    companions: {
       title: 'ペット',
       placeholder: 'ペットを検索…',
-      loading: 'petdex ギャラリーを読み込み中…',
-      error: 'petdex ギャラリーに接続できません。',
+      loading: 'companiondex ギャラリーを読み込み中…',
+      error: 'companiondex ギャラリーに接続できません。',
       staleBackend: 'ペット機能を使うには Hermes を再起動してください。',
       empty: '一致するペットがありません。',
       turnOff: 'オフ',
@@ -1473,7 +1473,7 @@ export const jaOverrides = {
       toggleFailed: enabled => `ペットを${enabled ? 'オン' : 'オフ'}にできませんでした。`,
       noneAvailable: '利用可能なペットがありません。'
     },
-    generatePet: {
+    generateCompanion: {
       title: 'ペットを生成',
       placeholder: '生成するペットを説明…',
       promptHint: '説明を入力して Enter を押すと、4 つの見た目を生成します。',
@@ -2366,7 +2366,7 @@ export const jaOverrides = {
       '/tools': 'エージェントが使えるツールを切り替え',
       '/memory': '保留中のメモリ書き込みを確認し、承認を切り替え',
       '/bundles': 'スキルバンドルを一覧表示',
-      '/pet': 'petdex マスコットを切り替え',
+      '/companion': 'companiondex マスコットを切り替え',
       '/hatch': '新しいペットを生成',
       '/learn': 'ディレクトリ、URL、会話、メモから再利用可能なスキルを学ぶ',
       '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',

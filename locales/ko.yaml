@@ -1637,10 +1637,10 @@ slash:
     description: "대기 중인 메모리 쓰기 리뷰 / 승인 게이트 전환"
   bundles:
     description: "스킬 번들 목록 (여러 스킬을 묶은 /<name> 별칭)"
-  pet:
-    description: "petdex 마스코트 전환 또는 입양 (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "companiondex 마스코트 전환 또는 입양 (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "설명을 바탕으로 새 petdex 펫 생성"
+    description: "설명을 바탕으로 새 companiondex 펫 생성"
   learn:
     description: "설명한 내용(디렉터리, URL, 이 채팅, 메모)에서 재사용 가능한 스킬 학습"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) 기본 초안이 돌아오지 않았어요 — 다시 시도해 주세요."
       failed: "(x_x) 부화 실패: {error}"
       hatched: "(^_^)b {name}이(가) 부화해서 입양됐어요 — 곧 나타날 거예요!"
-    pet:
+    companion:
       is_out: "(^_^)b {name}이(가) 나왔어요 — 곧 나타날 거예요."
       put_away_named: "(-_-)zzZ {name}을(를) 재웠어요."
       put_away: "(-_-)zzZ 펫을 재웠어요."
-      usage_scale: "(o_o) 사용법: /pet scale <배율>  (예: /pet scale 0.5)"
+      usage_scale: "(o_o) 사용법: /companion scale <배율>  (예: /companion scale 0.5)"
       scale_set: "(^_^) 펫 크기 → {scale}."
-      fetching: "(o_o) petdex에서 '{name}' 가져오는 중…"
+      fetching: "(o_o) companiondex에서 '{name}' 가져오는 중…"
       adopt_failed: "(x_x) '{name}'을(를) 입양하지 못했어요: {error}"
       error: "(x_x) {error}"
     diff:

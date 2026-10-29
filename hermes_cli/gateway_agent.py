@@ -167,7 +167,7 @@ class GatewayAgent:
         self.context_compressor = _CompressorView()
         self._reset_session_figures()
         # Main's store type, the one /new, /resume and /branch swap in: a read-only mirror of the gateway's
-        # todo snapshot (``_set_todos``), read by the pet's done-plan beat.
+        # todo snapshot (``_set_todos``), read by the companion's done-plan beat.
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
         # Part of the _compress_context seam: it sets the owner's report here and compress_now reads it.

@@ -400,25 +400,25 @@ export interface MessageReaction {
   seen?: boolean | null
   [key: string]: unknown
 }
-export interface PetCancelParams {
+export interface CompanionCancelParams {
   profile?: string | null
   token?: string | null
 }
-export interface PetCancelResult {
+export interface CompanionCancelResult {
   ok: boolean
 }
-export interface PetGenerateStatusResult {
+export interface CompanionGenerateStatusResult {
   available: boolean
-  providers: PetGenProvider[]
+  providers: CompanionGenProvider[]
 }
-/** ``agent/pet/generate/imagegen.py::list_sprite_providers`` row. */
-export interface PetGenProvider {
+/** ``agent/companion/generate/imagegen.py::list_sprite_providers`` row. */
+export interface CompanionGenProvider {
   name: string
   label: string
   default: boolean
 }
 /** ``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one). */
-export interface PetGenerateParams {
+export interface CompanionGenerateParams {
   profile?: string | null
   prompt?: string | null
   referenceImage?: string | null
@@ -426,16 +426,16 @@ export interface PetGenerateParams {
   style?: string | null
   provider?: string | null
 }
-export interface PetGenerateResult {
+export interface CompanionGenerateResult {
   ok: boolean
   token: string
-  drafts: PetDraft[]
+  drafts: CompanionDraft[]
 }
-export interface PetDraft {
+export interface CompanionDraft {
   index: number
   dataUri: string
 }
-export interface PetHatchParams {
+export interface CompanionHatchParams {
   profile?: string | null
   token: string
   name: string
@@ -446,15 +446,15 @@ export interface PetHatchParams {
   style?: string | null
   provider?: string | null
 }
-/** The hatched pet is installed but NOT active (``pet.select`` adopts, ``pet.remove`` discards). */
-export interface PetHatchResult {
+/** The hatched companion is installed but NOT active (``companion.select`` adopts, ``companion.remove`` discards). */
+export interface CompanionHatchResult {
   ok: boolean
   slug: string
   displayName: string
   warnings?: unknown[]
-  pet: PetSpritePayload
+  companion: CompanionSpritePayload
 }
-export interface PetSpritePayload {
+export interface CompanionSpritePayload {
   slug?: string | null
   displayName?: string | null
   mime?: string | null
@@ -2628,12 +2628,12 @@ export interface ProjectsProjectSessionsResult {
   project?: ProjectTreeNode | null
 }
 /** ``knownRevision``: the spritesheet revision the caller already holds (send-once bytes). */
-export interface PetInfoParams {
+export interface CompanionInfoParams {
   profile?: string | null
   knownRevision?: string | null
 }
-/** ``server._pet_sprite_payload`` behind ``enabled``; every sprite field is absent when the pet display is off, ``spritesheetBase64`` is elided when ``spritesheetUnchanged``. */
-export interface PetInfoResult {
+/** ``server._companion_sprite_payload`` behind ``enabled``; every sprite field is absent when the companion display is off, ``spritesheetBase64`` is elided when ``spritesheetUnchanged``. */
+export interface CompanionInfoResult {
   enabled: boolean
   slug?: string | null
   displayName?: string | null
@@ -2651,7 +2651,7 @@ export interface PetInfoResult {
   stateRows?: string[] | null
   [key: string]: unknown
 }
-export interface PetInfoMetaResult {
+export interface CompanionInfoMetaResult {
   enabled: boolean
   slug?: string | null
   displayName?: string | null
@@ -2659,14 +2659,14 @@ export interface PetInfoMetaResult {
   spritesheetRevision?: string | null
 }
 /** ``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width. */
-export interface PetCellsParams {
+export interface CompanionCellsParams {
   profile?: string | null
   state?: string | null
   cols?: number | null
   graphics?: boolean
 }
 /** Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics`` set): ``frames`` are transmit escapes and ``placeholder`` the text grid. */
-export interface PetCellsResult {
+export interface CompanionCellsResult {
   enabled: boolean
   slug?: string | null
   displayName?: string | null
@@ -2681,16 +2681,16 @@ export interface PetCellsResult {
   rows?: number | null
   placeholder?: string[] | null
 }
-export interface PetGalleryParams {
+export interface CompanionGalleryParams {
   profile?: string | null
   localOnly?: boolean
 }
-export interface PetGalleryResult {
+export interface CompanionGalleryResult {
   enabled: boolean
   active?: string
-  pets?: PetGalleryEntry[]
+  companions?: CompanionGalleryEntry[]
 }
-export interface PetGalleryEntry {
+export interface CompanionGalleryEntry {
   slug: string
   displayName: string
   installed: boolean
@@ -2698,41 +2698,41 @@ export interface PetGalleryEntry {
   curated?: boolean | null
   generated?: boolean
 }
-export interface PetSlugParams {
+export interface CompanionSlugParams {
   profile?: string | null
   slug: string
 }
-export interface PetSlugResult {
+export interface CompanionSlugResult {
   ok: boolean
   slug: string
   displayName?: string | null
 }
-export interface PetRenameParams {
+export interface CompanionRenameParams {
   profile?: string | null
   slug: string
   name: string
 }
-export interface PetExportResult {
+export interface CompanionExportResult {
   ok: boolean
   filename: string
   zipBase64: string
 }
-/** ``url``: spritesheet source for a not-yet-installed pet. */
-export interface PetThumbParams {
+/** ``url``: spritesheet source for a not-yet-installed companion. */
+export interface CompanionThumbParams {
   profile?: string | null
   slug: string
   url?: string | null
 }
-export interface PetThumbResult {
+export interface CompanionThumbResult {
   ok: boolean
   slug: string
   dataUri?: string | null
 }
-export interface PetScaleParams {
+export interface CompanionScaleParams {
   profile?: string | null
   scale?: unknown
 }
-export interface PetScaleResult {
+export interface CompanionScaleResult {
   ok: boolean
   scale: number
 }
@@ -6005,8 +6005,8 @@ export interface WakeDetectedPayload {
   profile?: string | null
   start_new_session: boolean
 }
-/** ``change_watcher._pet_changed_payload`` — ``pet.info.meta``-shaped; ``{enabled: false}`` when off. */
-export interface PetChangedPayload {
+/** ``change_watcher._companion_changed_payload`` — ``companion.info.meta``-shaped; ``{enabled: false}`` when off. */
+export interface CompanionChangedPayload {
   enabled: boolean
   slug?: string | null
   displayName?: string | null
@@ -6014,16 +6014,16 @@ export interface PetChangedPayload {
   spritesheetRevision?: string | null
   [key: string]: unknown
 }
-/** ``methods_session`` pet.generate: token-only init frame, then one per draft. */
-export interface PetGenerateProgressPayload {
+/** ``methods_session`` companion.generate: token-only init frame, then one per draft. */
+export interface CompanionGenerateProgressPayload {
   token: string
   count: number
   index?: number | null
   dataUri?: string | null
   [key: string]: unknown
 }
-/** ``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form. */
-export interface PetHatchProgressPayload {
+/** ``methods_session`` companion.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form. */
+export interface CompanionHatchProgressPayload {
   event: string
   detail?: string | null
   state?: string | null
@@ -6031,7 +6031,7 @@ export interface PetHatchProgressPayload {
   total?: string | null
   [key: string]: unknown
 }
-/** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
+/** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except companion.changed. */
 export type ChangeSignalPayload = Record<string, unknown>
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY' | 'ALIAS_TAKEN'
 
@@ -6081,6 +6081,36 @@ export interface RpcMethods {
   'command.resolve': { params: CommandResolveParams; result: CommandResolveResult }
   /** Categorized slash metadata (registry, quick, plugin, skill) for completion menus. */
   'commands.catalog': { params: CommandsCatalogParams; result: CommandsCatalogResult }
+  /** Stop an in-flight companion generate/hatch by token (idempotent). */
+  'companion.cancel': { params: CompanionCancelParams; result: CompanionCancelResult }
+  /** Half-block cell frames (or a kitty placement) for one companion state. */
+  'companion.cells': { params: CompanionCellsParams; result: CompanionCellsResult }
+  /** Turn the companion display off from the desktop picker. */
+  'companion.disable': { params: ProfileParams; result: OkResult }
+  /** Export an installed companion as a re-importable .zip. */
+  'companion.export': { params: CompanionSlugParams; result: CompanionExportResult }
+  /** Companiondex gallery + local install state (installed-only offline); localOnly skips the remote manifest. */
+  'companion.gallery': { params: CompanionGalleryParams; result: CompanionGalleryResult }
+  /** Candidate base looks for a new companion (draft step); drafts also stream via companion.generate.progress. */
+  'companion.generate': { params: CompanionGenerateParams; result: CompanionGenerateResult }
+  /** Whether companion generation is possible (a reference-capable image backend) and which providers. */
+  'companion.generate.status': { params: ProfileParams; result: CompanionGenerateStatusResult }
+  /** Turn a base draft into a full spritesheet companion; progress streams via companion.hatch.progress. */
+  'companion.hatch': { params: CompanionHatchParams; result: CompanionHatchResult }
+  /** Active companion for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy. */
+  'companion.info': { params: CompanionInfoParams; result: CompanionInfoResult }
+  /** Cheap active-companion metadata used to avoid full payload refreshes. */
+  'companion.info.meta': { params: ProfileParams; result: CompanionInfoMetaResult }
+  /** Uninstall a companion (delete its directory); if it was active, turn the display off. */
+  'companion.remove': { params: CompanionSlugParams; result: CompanionSlugResult }
+  /** Rename a companion's display name + realign its slug/dir; follows the active slug in config. */
+  'companion.rename': { params: CompanionRenameParams; result: CompanionSlugResult }
+  /** Persist display.companion.scale (clamped to engine bounds) from the desktop slider. */
+  'companion.scale': { params: CompanionScaleParams; result: CompanionScaleResult }
+  /** Adopt a companion: install (if needed) + activate; writes display.companion.* to config. */
+  'companion.select': { params: CompanionSlugParams; result: CompanionSlugResult }
+  /** Idle-frame PNG data URI for the picker (desktop CSP breaks CDN <img>). */
+  'companion.thumb': { params: CompanionThumbParams; result: CompanionThumbResult }
   /** Path / @-reference completions for the composer (files, folders, profiles, plugin providers). */
   'complete.path': { params: CompletePathParams; result: CompletionItemsResult }
   /** Ranked slash-command / skill completions for a ``/`` token. */
@@ -6273,36 +6303,6 @@ export interface RpcMethods {
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
   'pdf.attach': { params: PdfAttachParams; result: PdfAttachResult }
-  /** Stop an in-flight pet generate/hatch by token (idempotent). */
-  'pet.cancel': { params: PetCancelParams; result: PetCancelResult }
-  /** Half-block cell frames (or a kitty placement) for one pet state. */
-  'pet.cells': { params: PetCellsParams; result: PetCellsResult }
-  /** Turn the pet display off from the desktop picker. */
-  'pet.disable': { params: ProfileParams; result: OkResult }
-  /** Export an installed pet as a re-importable .zip. */
-  'pet.export': { params: PetSlugParams; result: PetExportResult }
-  /** Petdex gallery + local install state (installed-only offline); localOnly skips the remote manifest. */
-  'pet.gallery': { params: PetGalleryParams; result: PetGalleryResult }
-  /** Candidate base looks for a new pet (draft step); drafts also stream via pet.generate.progress. */
-  'pet.generate': { params: PetGenerateParams; result: PetGenerateResult }
-  /** Whether pet generation is possible (a reference-capable image backend) and which providers. */
-  'pet.generate.status': { params: ProfileParams; result: PetGenerateStatusResult }
-  /** Turn a base draft into a full spritesheet pet; progress streams via pet.hatch.progress. */
-  'pet.hatch': { params: PetHatchParams; result: PetHatchResult }
-  /** Active pet for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy. */
-  'pet.info': { params: PetInfoParams; result: PetInfoResult }
-  /** Cheap active-pet metadata used to avoid full payload refreshes. */
-  'pet.info.meta': { params: ProfileParams; result: PetInfoMetaResult }
-  /** Uninstall a pet (delete its directory); if it was active, turn the display off. */
-  'pet.remove': { params: PetSlugParams; result: PetSlugResult }
-  /** Rename a pet's display name + realign its slug/dir; follows the active slug in config. */
-  'pet.rename': { params: PetRenameParams; result: PetSlugResult }
-  /** Persist display.pet.scale (clamped to engine bounds) from the desktop slider. */
-  'pet.scale': { params: PetScaleParams; result: PetScaleResult }
-  /** Adopt a pet: install (if needed) + activate; writes display.pet.* to config. */
-  'pet.select': { params: PetSlugParams; result: PetSlugResult }
-  /** Idle-frame PNG data URI for the picker (desktop CSP breaks CDN <img>). */
-  'pet.thumb': { params: PetThumbParams; result: PetThumbResult }
   /** Cheapest liveness probe; answered on the WS reader thread even while every agent is mid-turn. */
   ping: { params: PingParams; result: PingResult }
   /** One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links. */
@@ -6576,6 +6576,21 @@ export const RPC_METHODS = [
   'command.dispatch',
   'command.resolve',
   'commands.catalog',
+  'companion.cancel',
+  'companion.cells',
+  'companion.disable',
+  'companion.export',
+  'companion.gallery',
+  'companion.generate',
+  'companion.generate.status',
+  'companion.hatch',
+  'companion.info',
+  'companion.info.meta',
+  'companion.remove',
+  'companion.rename',
+  'companion.scale',
+  'companion.select',
+  'companion.thumb',
   'complete.path',
   'complete.slash',
   'config.get',
@@ -6672,21 +6687,6 @@ export const RPC_METHODS = [
   'onboarding.state',
   'paste.collapse',
   'pdf.attach',
-  'pet.cancel',
-  'pet.cells',
-  'pet.disable',
-  'pet.export',
-  'pet.gallery',
-  'pet.generate',
-  'pet.generate.status',
-  'pet.hatch',
-  'pet.info',
-  'pet.info.meta',
-  'pet.remove',
-  'pet.rename',
-  'pet.scale',
-  'pet.select',
-  'pet.thumb',
   'ping',
   'plugins.catalog.lookup',
   'plugins.list',
@@ -7019,6 +7019,12 @@ export interface BackendGatewayEventMap {
   'browser.progress': BrowserProgressPayload
   /** A /btw side question was answered. */
   'btw.complete': SideAgentCompletePayload
+  /** The active companion / its spritesheet changed (watcher). */
+  'companion.changed': CompanionChangedPayload
+  /** Companion base-draft generation progress. */
+  'companion.generate.progress': CompanionGenerateProgressPayload
+  /** Companion hatch (row drawing) progress. */
+  'companion.hatch.progress': CompanionHatchProgressPayload
   /** A connection operation opened on this session; the desktop renders its card. */
   'connection.request': ConnectionRequestPayload
   /** One transition or the settlement of an open connection operation. */
@@ -7069,12 +7075,6 @@ export interface BackendGatewayEventMap {
   'pairing.changed': ChangeSignalPayload
   /** Focus / reveal a named desktop pane. */
   'pane.reveal': PaneRevealPayload
-  /** The active pet / its spritesheet changed (watcher). */
-  'pet.changed': PetChangedPayload
-  /** Pet base-draft generation progress. */
-  'pet.generate.progress': PetGenerateProgressPayload
-  /** Pet hatch (row drawing) progress. */
-  'pet.hatch.progress': PetHatchProgressPayload
   /** gateway_state.json moved; refetch platform status. */
   'platforms.changed': ChangeSignalPayload
   /** Close the preview pane or one tab. */
@@ -7170,6 +7170,9 @@ export const GATEWAY_EVENT_TYPES = [
   'bot_relay.outbox.pending',
   'browser.progress',
   'btw.complete',
+  'companion.changed',
+  'companion.generate.progress',
+  'companion.hatch.progress',
   'connection.request',
   'connection.update',
   'cron.changed',
@@ -7195,9 +7198,6 @@ export const GATEWAY_EVENT_TYPES = [
   'onboarding.ended',
   'pairing.changed',
   'pane.reveal',
-  'pet.changed',
-  'pet.generate.progress',
-  'pet.hatch.progress',
   'platforms.changed',
   'preview.close',
   'preview.open',

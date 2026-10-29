@@ -129,7 +129,7 @@ test('does not reveal a destroyed window', () => {
   assert.equal(harness.scheduledCallback, null)
 })
 
-// The pet overlay reveals with showInactive() and the HUD with show() + focus(),
+// The companion overlay reveals with showInactive() and the HUD with show() + focus(),
 // so the fallback has to run the caller's action rather than a plain show().
 test('the fallback runs the caller reveal action, not a plain show', () => {
   const actions: string[] = []

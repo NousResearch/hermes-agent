@@ -15,7 +15,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
-from agent.pet import render as pet_render
+from agent.companion import render as companion_render
 from contextlib import suppress
 from hermes_constants import get_hermes_home
 from prompt_toolkit.application import Application
@@ -155,7 +155,7 @@ class CLITuiRuntimeMixin:
             _cprint(f"  {_DIM}{_attached}{_RST}")
 
         self._agent_running = self._interactive_turn = True
-        self._pet_turn_error = self._pet_reasoning = False
+        self._companion_turn_error = self._companion_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
         try:
@@ -182,12 +182,12 @@ class CLITuiRuntimeMixin:
     def _tui_after_turn(self):
         """Post-turn bookkeeping after chat() returns (normal, error, or interrupt)."""
         from cli import _DIM, _RST, _cprint
-        self._agent_running = self._pet_reasoning = False
+        self._agent_running = self._companion_reasoning = False
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
         self.__dict__.pop("_running_tool_labels", None)
-        self._pet_react_turn_end()
+        self._companion_react_turn_end()
         self._turn_summary_emit()
         self._interactive_turn = False
         self._app.invalidate()
@@ -414,7 +414,7 @@ class CLITuiRuntimeMixin:
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
         # runs 24-bit there. ColorDepth is imported lazily for tests that stub prompt_toolkit.
         extra_kw = {}
-        if pet_render.supports_kitty_placeholders():
+        if companion_render.supports_kitty_placeholders():
             from prompt_toolkit.output import ColorDepth
 
             extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT
@@ -496,10 +496,10 @@ class CLITuiRuntimeMixin:
         return self.session_id if getattr(self, "_gateway_session_open", False) else None
 
     def _tui_shutdown(self):
-        """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
+        """Teardown after the app exits: interrupt agent, stop voice/companion, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
-        self._pet_stop_anim()
+        self._companion_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
             print(f"{_DIM}{t('cli.tui.shutting_down')}{_RST}", flush=True)

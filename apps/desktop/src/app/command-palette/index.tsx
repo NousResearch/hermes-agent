@@ -72,10 +72,10 @@ import {
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
+import { openCompanionGenerate } from '@/store/companion-generate'
 import { completeFlow, recordAction } from '@/store/desktop-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
-import { openPetGenerate } from '@/store/pet-generate'
 import { toggleBrowserTab } from '@/store/preview'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $connection, $cronSessions, $messagingSessions, $sessions } from '@/store/session'
@@ -114,10 +114,10 @@ import { SECTIONS } from '../settings/constants'
 import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings/settings-search'
 import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 
+import { CompanionInlineToggle, CompanionPalettePage } from './companion-palette-page'
 import { usePaletteContributions } from './contrib'
 import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
-import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
@@ -730,7 +730,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // Search/sub-page are local to a mount, and this component remounts per open
   // (keyed by open count), so each open starts clean without a reset effect.
 
-  // Deep-link into a nested page (e.g. `/pet list` → pets picker).
+  // Deep-link into a nested page (e.g. `/companion list` → companions picker).
   useEffect(() => {
     if (pendingPage) {
       setPage(pendingPage)
@@ -1033,17 +1033,17 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           },
           {
             icon: PawPrint,
-            id: 'appearance-pets',
-            keywords: ['pet', 'petdex', 'mascot', 'pets', '/pet', 'paw'],
-            label: cc.pets.title,
-            to: 'pets'
+            id: 'appearance-companions',
+            keywords: ['companion', 'companiondex', 'mascot', 'companions', '/companion', 'paw'],
+            label: cc.companions.title,
+            to: 'companions'
           },
           {
             icon: Egg,
-            id: 'appearance-generate-pet',
-            keywords: ['pet', 'generate', 'create', 'make', 'new pet', 'mascot', 'hatch', 'ai'],
-            label: cc.generatePet.title,
-            run: () => openPetGenerate()
+            id: 'appearance-generate-companion',
+            keywords: ['companion', 'generate', 'create', 'make', 'new companion', 'mascot', 'hatch', 'ai'],
+            label: cc.generateCompanion.title,
+            run: () => openCompanionGenerate()
           }
         ]
       },
@@ -1488,10 +1488,10 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           }
         ]
       },
-      // Server-driven page: browse petdex gallery, adopt/switch, toggle off.
-      pets: {
-        title: t.commandCenter.pets.title,
-        placeholder: t.commandCenter.pets.placeholder,
+      // Server-driven page: browse companiondex gallery, adopt/switch, toggle off.
+      companions: {
+        title: t.commandCenter.companions.title,
+        placeholder: t.commandCenter.companions.placeholder,
         groups: []
       },
       // Server-driven page: items come from the Marketplace, rendered by
@@ -1670,16 +1670,16 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             onValueChange={setSearch}
             placeholder={placeholder}
             ref={inputRef}
-            right={page === 'pets' ? <PetInlineToggle /> : undefined}
+            right={page === 'companions' ? <CompanionInlineToggle /> : undefined}
             value={search}
           />
           <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
             {/* Server-driven pages render their own list; the rest show groups. */}
-            {page === 'pets' ? (
-              <PetPalettePage
+            {page === 'companions' ? (
+              <CompanionPalettePage
                 onGenerate={() => {
                   closeCommandPalette()
-                  openPetGenerate()
+                  openCompanionGenerate()
                 }}
                 search={search}
               />

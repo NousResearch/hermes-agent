@@ -14,14 +14,14 @@ export interface ProgressProps extends Omit<React.ComponentProps<'div'>, 'childr
   /** No known endpoint — animate instead of showing a fixed width. */
   indeterminate?: boolean
   /**
-   * Use the continuous sliding animation for the indeterminate state (the pet
+   * Use the continuous sliding animation for the indeterminate state (the companion
    * hatch look) instead of the default pulse. No effect when determinate.
    */
   animated?: boolean
   /** Swap the fill to the destructive color for error / over-limit states. */
   destructive?: boolean
   size?: keyof typeof TRACK_HEIGHT
-  /** Override the fill color/shape (e.g. billing's tone mapping, pet's accent). */
+  /** Override the fill color/shape (e.g. billing's tone mapping, companion's accent). */
   fillClassName?: string
   fillStyle?: React.CSSProperties
   /** Extra content inside the track, behind the fill (e.g. a threshold marker). */

@@ -1,14 +1,14 @@
 import { type CSSProperties } from 'react'
 
 import { createParticleEmitter, ParticleField, type ParticleFieldConfig } from '@/components/particles/particle-field'
-import { $petActive, flashPetActivity } from '@/store/pet'
-import { $petOverlayActive, forwardPetReaction } from '@/store/pet-overlay'
+import { $companionActive, flashCompanionActivity } from '@/store/companion'
+import { $companionOverlayActive, forwardCompanionReaction } from '@/store/companion-overlay'
 import { $vibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 
 /**
  * TikTok-style floating hearts — a thin skin over {@link ParticleField} (pixel
- * heart glyph + pink). Placed two ways: rising from the composer when no pet is
- * out, or from the pet when one is. Fired by the core `reaction` event (affection
+ * heart glyph + pink). Placed two ways: rising from the composer when no companion is
+ * out, or from the companion when one is. Fired by the core `reaction` event (affection
  * in a user message) via {@link burstVibeHearts}. Gated by Settings → Appearance
  * → Vibe Hearts (`$vibeHeartsEnabled`), on by default.
  */
@@ -24,9 +24,9 @@ export const COMPOSER_HEART_CONFIG: Partial<ParticleFieldConfig> = {
   duration: [320, 700]
 }
 
-/** Pet placement: a compact puff off the pet. The field box spans feet→head, so
- *  rise ≥100% carries hearts from the feet to ~10-20% above the pet before fading. */
-const PET_HEART_CONFIG: Partial<ParticleFieldConfig> = {
+/** Companion placement: a compact puff off the companion. The field box spans feet→head, so
+ *  rise ≥100% carries hearts from the feet to ~10-20% above the companion before fading. */
+const COMPANION_HEART_CONFIG: Partial<ParticleFieldConfig> = {
   count: 10,
   spawnWindowMs: 450,
   size: [6, 12],
@@ -55,23 +55,23 @@ export const playVibeHearts = (count?: number) => emitter.burst(count)
 /**
  * Fire a vibe burst (from the core `reaction` event). Routes to where the
  * affection should land:
- *  - pet popped out  → forward to the overlay window + celebrate (mirrored)
- *  - pet in-window   → play here (on the pet) + celebrate
- *  - no pet          → play here (composer)
+ *  - companion popped out  → forward to the overlay window + celebrate (mirrored)
+ *  - companion in-window   → play here (on the companion) + celebrate
+ *  - no companion          → play here (composer)
  */
 export const burstVibeHearts = (count?: number) => {
   if (!$vibeHeartsEnabled.get()) {
     return
   }
 
-  const overlay = $petOverlayActive.get()
+  const overlay = $companionOverlayActive.get()
 
-  if (overlay || $petActive.get()) {
-    flashPetActivity({ celebrate: true })
+  if (overlay || $companionActive.get()) {
+    flashCompanionActivity({ celebrate: true })
   }
 
   if (overlay) {
-    forwardPetReaction('vibe')
+    forwardCompanionReaction('vibe')
   } else {
     playVibeHearts(count)
   }
@@ -98,22 +98,22 @@ export function HeartField({ config, className, style }: HeartFieldProps) {
 }
 
 /**
- * Pet-anchored hearts, feet→~10-20% above. One place owns the geometry so the
- * in-window pet and the popped-out overlay stay identical. `petW`/`petH` are the
+ * Companion-anchored hearts, feet→~10-20% above. One place owns the geometry so the
+ * in-window companion and the popped-out overlay stay identical. `companionW`/`companionH` are the
  * rendered sprite dimensions (frame × scale).
  */
-export function PetHeartField({ petW, petH }: { petW: number; petH: number }) {
+export function CompanionHeartField({ companionW, companionH }: { companionW: number; companionH: number }) {
   return (
     <HeartField
-      config={PET_HEART_CONFIG}
+      config={COMPANION_HEART_CONFIG}
       style={{
         bottom: 0,
-        height: Math.max(96, petH),
+        height: Math.max(96, companionH),
         left: '50%',
         pointerEvents: 'none',
         position: 'absolute',
         transform: 'translateX(-50%)',
-        width: Math.max(90, petW * 1.5),
+        width: Math.max(90, companionW * 1.5),
         zIndex: 2
       }}
     />

@@ -48,7 +48,7 @@ const SUBPAGE_ICONS: Record<string, IconComponent> = {
   appearanceTypography: CircleLetterA,
   appearanceWindowLayout: Monitor,
   appearanceChatDisplay: MessageCircle,
-  appearancePet: PawPrint,
+  appearanceCompanion: PawPrint,
   appearanceGeneral: Settings2,
   modelMain: Box,
   modelAuxiliary: Cpu,

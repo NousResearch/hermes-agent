@@ -13,7 +13,7 @@ import { QuickEntryApp } from './quick-entry-app'
  *
  * The index.html boot script paints an OPAQUE themed background to avoid a flash
  * in normal windows; this window is a floating card on a transparent backdrop,
- * so force the host layers see-through (same trick as the pet overlay).
+ * so force the host layers see-through (same trick as the companion overlay).
  */
 export function mountQuickEntry(): void {
   const style = document.createElement('style')

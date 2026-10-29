@@ -2,7 +2,7 @@
  * Hermes Bot Mode — a "one chat per agent" roster for the Hermes desktop.
  *
  * Left pane "Bots": one row per Hermes profile (a bot = an agent profile) with
- * a customizable avatar (shape + color + eyes, image, or pet). Click opens that
+ * a customizable avatar (shape + color + eyes, image, or companion). Click opens that
  * bot's chat; right-click → Edit Profile (avatar, title, description).
  * "New Bot" creates a profile — Name / Title / Description with an
  * "Advanced" disclosure for full profile config.

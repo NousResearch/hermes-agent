@@ -293,7 +293,7 @@ export function HudShell() {
   // Edge/corner resize frame. The window is created non-resizable so dragging can
   // never be misread as a resize gesture (the Windows transparent-frameless
   // growth bug); the handle is the one sanctioned way to change size, driving
-  // the same flip-resizable-for-the-call pattern the pet overlay uses.
+  // the same flip-resizable-for-the-call pattern the companion overlay uses.
   const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
   const hudWindowing = window.hermesDesktop?.hud?.windowing
   const resizeDirections = hudResizeDirections(hudWindowing?.clientPlacement !== false)
@@ -305,7 +305,7 @@ export function HudShell() {
   // opaque themed background onto <html> as an INLINE style (the anti-white-
   // flash trick), and an inline style beats any stylesheet rule — so without
   // this the window is a solid slab and every translucent panel below is just
-  // glass over a white wall. A style tag with `!important` is what the pet
+  // glass over a white wall. A style tag with `!important` is what the companion
   // overlay and quick entry already do; they get it at mount because they are
   // bespoke roots, and the HUD needs the same because it is not.
   useEffect(() => {

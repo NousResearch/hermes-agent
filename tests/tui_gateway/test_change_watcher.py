@@ -1,10 +1,10 @@
 """The generalized change watcher (#73618): cheap on-disk signatures →
-``pet.changed`` / ``cron.changed`` / ``sessions.changed`` global broadcasts.
+``companion.changed`` / ``cron.changed`` / ``sessions.changed`` global broadcasts.
 
 Behavior contracts, exercised against a real temp HERMES_HOME (no mocks on the
 filesystem path): first sighting seeds silently, a moved signature broadcasts
 once, the sessions floor coalesces a write burst but keeps its trailing edge,
-and the pet signature only moves for a *renderable* pet.
+and the companion signature only moves for a *renderable* companion.
 """
 
 import os
@@ -361,39 +361,39 @@ def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
     assert ("sessions.changed", {}) in events
 
 
-def test_pet_sig_stays_off_without_a_renderable_pet(watcher_home):
+def test_companion_sig_stays_off_without_a_renderable_companion(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    # Config flips enabled but no pet exists on disk → signature stays ("off",).
-    (home / "config.yaml").write_text("display:\n  pet:\n    enabled: true\n    slug: boba\n")
+    # Config flips enabled but no companion exists on disk → signature stays ("off",).
+    (home / "config.yaml").write_text("display:\n  companion:\n    enabled: true\n    slug: boba\n")
     server._cfg_cache = None
     server._broadcast_watched_changes(now=10.0)
 
-    assert not [e for e in events if e[0] == "pet.changed"]
+    assert not [e for e in events if e[0] == "companion.changed"]
 
 
-def test_renderable_pet_broadcasts_meta_payload(watcher_home, monkeypatch):
+def test_renderable_companion_broadcasts_meta_payload(watcher_home, monkeypatch):
     home, events = watcher_home
-    (home / "config.yaml").write_text("display:\n  pet:\n    enabled: true\n    slug: boba\n")
+    (home / "config.yaml").write_text("display:\n  companion:\n    enabled: true\n    slug: boba\n")
     server._cfg_cache = None
     server._broadcast_watched_changes(now=0.0)
 
     sheet = home / "sheet.png"
     sheet.write_text("png")
 
-    class FakePet:
+    class FakeCompanion:
         slug = "boba"
         display_name = "Boba"
         exists = True
         spritesheet = sheet
 
-    monkeypatch.setattr(server, "_pet_active_selection", lambda: (True, FakePet(), 0.33))
+    monkeypatch.setattr(server, "_companion_active_selection", lambda: (True, FakeCompanion(), 0.33))
     server._broadcast_watched_changes(now=10.0)
 
-    pet_events = [e for e in events if e[0] == "pet.changed"]
-    assert pet_events
-    payload = pet_events[0][1]
+    companion_events = [e for e in events if e[0] == "companion.changed"]
+    assert companion_events
+    payload = companion_events[0][1]
     assert payload["enabled"] is True
     assert payload["slug"] == "boba"
     assert payload["spritesheetRevision"]

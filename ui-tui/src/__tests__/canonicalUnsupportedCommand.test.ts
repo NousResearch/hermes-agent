@@ -18,7 +18,7 @@ beforeEach(() => {
 it.each([
   ['/snapshot', 'snapshot'],
   ['/plugins enable foo', 'plugins'],
-  ['/pet toggle', 'pet']
+  ['/companion toggle', 'companion']
 ])('%s refused by the shared gateway names the command', async (cmd, name) => {
   const request = vi.fn(async (method: string) => {
     if (method === 'slash.exec' || method === 'command.dispatch') {

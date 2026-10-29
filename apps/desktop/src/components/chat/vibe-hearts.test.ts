@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { flashPetActivity, forwardPetReaction, burst, overlay } = vi.hoisted(() => ({
-  flashPetActivity: vi.fn(),
-  forwardPetReaction: vi.fn(),
+const { flashCompanionActivity, forwardCompanionReaction, burst, overlay } = vi.hoisted(() => ({
+  flashCompanionActivity: vi.fn(),
+  forwardCompanionReaction: vi.fn(),
   burst: vi.fn(),
   overlay: { active: false }
 }))
@@ -12,14 +12,14 @@ vi.mock('@/components/particles/particle-field', () => ({
   ParticleField: () => null
 }))
 
-vi.mock('@/store/pet', () => ({
-  $petActive: { get: () => false },
-  flashPetActivity
+vi.mock('@/store/companion', () => ({
+  $companionActive: { get: () => false },
+  flashCompanionActivity
 }))
 
-vi.mock('@/store/pet-overlay', () => ({
-  $petOverlayActive: { get: () => overlay.active },
-  forwardPetReaction
+vi.mock('@/store/companion-overlay', () => ({
+  $companionOverlayActive: { get: () => overlay.active },
+  forwardCompanionReaction
 }))
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
@@ -27,8 +27,8 @@ import { setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 
 describe('burstVibeHearts', () => {
   beforeEach(() => {
-    flashPetActivity.mockClear()
-    forwardPetReaction.mockClear()
+    flashCompanionActivity.mockClear()
+    forwardCompanionReaction.mockClear()
     burst.mockClear()
     overlay.active = false
     setVibeHeartsEnabled(true)
@@ -43,15 +43,15 @@ describe('burstVibeHearts', () => {
     setVibeHeartsEnabled(false)
     burstVibeHearts()
     expect(burst).not.toHaveBeenCalled()
-    expect(flashPetActivity).not.toHaveBeenCalled()
-    expect(forwardPetReaction).not.toHaveBeenCalled()
+    expect(flashCompanionActivity).not.toHaveBeenCalled()
+    expect(forwardCompanionReaction).not.toHaveBeenCalled()
   })
 
   it('forwards to the popped-out overlay when on', () => {
     overlay.active = true
     burstVibeHearts()
-    expect(forwardPetReaction).toHaveBeenCalledWith('vibe')
-    expect(flashPetActivity).toHaveBeenCalledOnce()
+    expect(forwardCompanionReaction).toHaveBeenCalledWith('vibe')
+    expect(flashCompanionActivity).toHaveBeenCalledOnce()
     expect(burst).not.toHaveBeenCalled()
   })
 
@@ -61,8 +61,8 @@ describe('burstVibeHearts', () => {
     overlay.active = true
     setVibeHeartsEnabled(false)
     burstVibeHearts()
-    expect(forwardPetReaction).not.toHaveBeenCalled()
-    expect(flashPetActivity).not.toHaveBeenCalled()
+    expect(forwardCompanionReaction).not.toHaveBeenCalled()
+    expect(flashCompanionActivity).not.toHaveBeenCalled()
     expect(burst).not.toHaveBeenCalled()
   })
 })

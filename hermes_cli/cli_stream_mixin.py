@@ -752,14 +752,14 @@ class CLIStreamMixin:
             self._invalidate()
             return
 
-        # Feed the pet: tools mean "running"; a failed tool latches the turn to end on a sulk.
+        # Feed the companion: tools mean "running"; a failed tool latches the turn to end on a sulk.
         if event_type == "tool.started":
-            self._pet_reasoning = False
+            self._companion_reasoning = False
             self.__dict__.pop("_tool_gen_announced", None)
         elif event_type == "tool.completed" and kwargs.get("is_error"):
-            self._pet_turn_error = True
+            self._companion_turn_error = True
         elif event_type and event_type.startswith("reasoning"):
-            self._pet_reasoning = True
+            self._companion_reasoning = True
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0

@@ -99,7 +99,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes computer-use` | Install or check the Computer Use (cua-driver) backend (macOS/Windows/Linux). |
-| `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
+| `hermes companions` | Browse, install, and select [companiondex](../user-guide/features/companions.md) animated companions shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration (`migrate`, `cleanup`), from the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin; `hermes claw migrate` is the same as `hermes import-agent openclaw`. |
@@ -1748,26 +1748,26 @@ of the update if cua-driver is on PATH, so most users will not need to
 call `--upgrade` manually. Use it when upstream ships a fix you want
 right now without waiting for the next Hermes update.
 
-## `hermes pets`
+## `hermes companions`
 
 ```bash
-hermes pets <list|install|select|show|off|scale|remove|doctor>
+hermes companions <list|install|select|show|off|scale|remove|doctor>
 ```
 
-[Petdex](https://github.com/crafter-station/petdex) is a public gallery of animated sprite pets for coding agents. Install one and Hermes shows it reacting to agent activity across the CLI, TUI, and desktop app.
+[Companiondex](https://github.com/crafter-station/companiondex) is a public gallery of animated sprite companions for coding agents. Install one and Hermes shows it reacting to agent activity across the CLI, TUI, and desktop app.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | Browse the petdex gallery. |
-| `install` | Install a pet from the gallery. |
-| `select` | Set the active pet (writes `display.pet.*`). |
-| `show` | Animate the active pet in the terminal. |
-| `off` | Disable the pet display. |
-| `scale` | Resize the pet everywhere (`display.pet.scale`). |
-| `remove` | Delete an installed pet. |
-| `doctor` | Check pet setup + terminal graphics support. |
+| `list` | Browse the companiondex gallery. |
+| `install` | Install a companion from the gallery. |
+| `select` | Set the active companion (writes `display.companion.*`). |
+| `show` | Animate the active companion in the terminal. |
+| `off` | Disable the companion display. |
+| `scale` | Resize the companion everywhere (`display.companion.scale`). |
+| `remove` | Delete an installed companion. |
+| `doctor` | Check companion setup + terminal graphics support. |
 
-You can also generate a brand-new pet from a text description with the `/hatch` slash command. See [Pets](../user-guide/features/pets.md).
+You can also generate a brand-new companion from a text description with the `/hatch` slash command. See [Companions](../user-guide/features/companions.md).
 
 ## `hermes sessions`
 

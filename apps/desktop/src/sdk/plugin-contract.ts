@@ -1,11 +1,12 @@
 // The plugin authoring contract types; the SDK barrel re-exports them.
 
 export type {
+  CompanionMessageTone,
+  CompanionSayOptions,
   HermesPlugin,
-  PetMessageTone,
-  PetSayOptions,
   PluginAppActionId,
   PluginAppActionInfo,
+  PluginCompanion,
   PluginContext,
   PluginContribution,
   PluginFileEntry,
@@ -15,7 +16,6 @@ export type {
   PluginNativeNotificationInput,
   PluginNotificationAction,
   PluginOs,
-  PluginPet,
   PluginPreview,
   PluginRestOptions,
   PluginRunActionResult,

@@ -3,9 +3,9 @@ repo: https://github.com/ahrazzle/TamaHermes
 subdir: plugins/tamahermes
 sha: d25f76fdf5d8032910ffbe1dca3ba00bf442061f
 description: >-
-  Grow a local TamaHermes pet from real Hermes agent activity. Disclosure — hooks write a pet
+  Grow a local TamaHermes companion from real Hermes agent activity. Disclosure — hooks write a companion
   ledger and sprite atlas under $HERMES_HOME only; the optional python -m tamahermes CLI
-  additionally reads/writes ~/.codex, ~/.petdex and ~/.evopet, runs an unauthenticated loopback
+  additionally reads/writes ~/.codex, ~/.companiondex and ~/.evocompanion, runs an unauthenticated loopback
   preview server (127.0.0.1:8765) and on macOS compiles a Swift overlay and installs a
   RunAtLoad+KeepAlive LaunchAgent with no uninstall command. No network egress, no credential
   reads.

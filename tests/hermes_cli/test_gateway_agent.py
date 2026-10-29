@@ -1093,7 +1093,7 @@ def test_new_session_reads_zero_without_a_stats_round_trip(make_agent):
 
 def test_todo_updates_after_a_session_switch_reach_the_cli_todo_store(make_agent):
     """/new, /resume and /branch give the agent a fresh ``tools.todo_tool.TodoStore``; the gateway's
-    later ``todo.updated`` must still land where the CLI reads it (``read()``: the pet's done-plan beat)."""
+    later ``todo.updated`` must still land where the CLI reads it (``read()``: the companion's done-plan beat)."""
     from types import SimpleNamespace
 
     from hermes_cli.cli_commands_mixin import _sync_agent_to_session

@@ -7,7 +7,7 @@ emitter it was typed from — that emitter is the source of truth, the hand-writ
 anything conditional is ``X | None = None``.
 
 A handful of payloads stay ``extra="allow"`` on purpose: their closed shape is owned by another
-module (the skin engine, the pet store, the goal/loop/heartbeat state files, the free-tier bootstrap
+module (the skin engine, the companion store, the goal/loop/heartbeat state files, the free-tier bootstrap
 record) or they are watcher signals whose payload is ``{}`` today and may grow. Everything else is
 closed, so a drifted emitter fails the suite (``registry.check_payload`` raises under
 ``HERMES_TEST_ISOLATION``).
@@ -813,11 +813,11 @@ event("voice.transcript", VoiceTranscriptPayload, doc="A voice capture produced 
 event("wake.detected", WakeDetectedPayload, doc="A wake phrase fired.")
 
 
-# ── pets ──────────────────────────────────────────────────────────────────────────────────────
+# ── companions ──────────────────────────────────────────────────────────────────────────────────────
 
 
-class PetChangedPayload(OpenPayload):
-    """``change_watcher._pet_changed_payload`` — ``pet.info.meta``-shaped; ``{enabled: false}`` when off."""
+class CompanionChangedPayload(OpenPayload):
+    """``change_watcher._companion_changed_payload`` — ``companion.info.meta``-shaped; ``{enabled: false}`` when off."""
 
     enabled: bool
     slug: str | None = None
@@ -826,8 +826,8 @@ class PetChangedPayload(OpenPayload):
     spritesheetRevision: str | None = None
 
 
-class PetGenerateProgressPayload(OpenPayload):
-    """``methods_session`` pet.generate: token-only init frame, then one per draft."""
+class CompanionGenerateProgressPayload(OpenPayload):
+    """``methods_session`` companion.generate: token-only init frame, then one per draft."""
 
     token: str
     count: int
@@ -835,8 +835,8 @@ class PetGenerateProgressPayload(OpenPayload):
     dataUri: str | None = None
 
 
-class PetHatchProgressPayload(OpenPayload):
-    """``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form."""
+class CompanionHatchProgressPayload(OpenPayload):
+    """``methods_session`` companion.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form."""
 
     event: str
     detail: str | None = None
@@ -845,16 +845,16 @@ class PetHatchProgressPayload(OpenPayload):
     total: str | None = None
 
 
-event("pet.changed", PetChangedPayload, doc="The active pet / its spritesheet changed (watcher).")
-event("pet.generate.progress", PetGenerateProgressPayload, doc="Pet base-draft generation progress.")
-event("pet.hatch.progress", PetHatchProgressPayload, doc="Pet hatch (row drawing) progress.")
+event("companion.changed", CompanionChangedPayload, doc="The active companion / its spritesheet changed (watcher).")
+event("companion.generate.progress", CompanionGenerateProgressPayload, doc="Companion base-draft generation progress.")
+event("companion.hatch.progress", CompanionHatchProgressPayload, doc="Companion hatch (row drawing) progress.")
 
 
 # ── change watcher signals (payload is {} today) ─────────────────────────────────────────────
 
 
 class ChangeSignalPayload(OpenPayload):
-    """``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed."""
+    """``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except companion.changed."""
 
 
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
@@ -868,20 +868,63 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 
 
 __all__ = [
-    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
-    "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
-    "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
-    "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",
-    "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload", "PreviewClosePayload",
-    "PreviewOpenPayload", "PreviewRestartProgressPayload", "ReactionPayload", "ResumePhaseStatus",
-    "ReviewSummaryPayload", "SessionControlSnapshot", "SessionControlUpdatePayload",
-    "SessionReclaimedPayload", "SessionResumeProgressPayload", "SessionTitlePayload", "SessionUsagePayload",
-    "SetupReadyPayload", "SideAgentCompletePayload", "SkinPayload", "StatusUpdatePayload",
-    "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
-    "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
-    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolProgressPayload",
+    "BillingBlock",
+    "BillingStepUpVerificationPayload",
+    "BrowserProgressPayload",
+    "ChangeSignalPayload",
+    "CompanionChangedPayload",
+    "CompanionGenerateProgressPayload",
+    "CompanionHatchProgressPayload",
+    "ErrorPayload",
+    "ErrorSurface",
+    "FreeTierChallengePayload",
+    "GatewayReadyPayload",
+    "MessageCompletePayload",
+    "MessageInterimPayload",
+    "MessageReaction",
+    "MessageReactionPayload",
+    "MoaAggregatingPayload",
+    "MoaPhasePayload",
+    "MoaProgressPayload",
+    "MoaReferencePayload",
+    "NoticePayload",
+    "NotificationClearPayload",
+    "NotificationShowPayload",
+    "OpenPayload",
+    "PaneRevealPayload",
+    "PreviewClosePayload",
+    "PreviewOpenPayload",
+    "PreviewRestartProgressPayload",
+    "ReactionPayload",
+    "ResumePhaseStatus",
+    "ReviewSummaryPayload",
+    "SessionControlSnapshot",
+    "SessionControlUpdatePayload",
+    "SessionReclaimedPayload",
+    "SessionResumeProgressPayload",
+    "SessionTitlePayload",
+    "SessionUsagePayload",
+    "SetupReadyPayload",
+    "SideAgentCompletePayload",
+    "SkinPayload",
+    "StatusUpdatePayload",
+    "StreamDeltaPayload",
+    "SubagentEventPayload",
+    "SubagentOutputTailEntry",
+    "TerminalClosePayload",
+    "TerminalOutputPayload",
+    "TipShowPayload",
+    "TodoUpdatedPayload",
+    "ToolCompletePayload",
+    "ToolGeneratingPayload",
+    "ToolLabel",
+    "ToolLabelKind",
+    "ToolOutputRiskPayload",
+    "ToolProgressPayload",
     "ToolStartPayload",
-    "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
-    "VoiceTranscriptPayload", "WakeDetectedPayload",
+    "TurnStatus",
+    "VoicePartialPayload",
+    "VoiceStatusPayload",
+    "VoiceTranscriptPayload",
+    "WakeDetectedPayload",
 ]

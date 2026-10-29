@@ -64,7 +64,7 @@ CHUNK = 1 << 20
 JUDGED_FILES = ("config.yaml", ".env", "auth.json", "state.db", "gateway_state.json")
 # Trees that must survive: every entry under them is judged.
 JUDGED_ROOTS = ("memories", "cron", "sessions", "profiles", "photon",
-                "desktop-plugins", "tui-widgets", "skins", "pets",
+                "desktop-plugins", "tui-widgets", "skins", "companions",
                 "skills/" + SKILL_ARCHIVE)
 # Trees recorded for the report but never judged (see the module docstring).
 ADVISORY_ROOTS = (SKILLS_ROOT,)

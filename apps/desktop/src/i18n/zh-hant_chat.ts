@@ -115,7 +115,7 @@ export const zhHantChat = {
       '/tools': '管理工具',
       '/memory': '檢視待處理的記憶寫入，或切換核准閘門',
       '/bundles': '列出技能套件（可用 /<name> 作為多個技能的別名）',
-      '/pet': '切換或領養 petdex 吉祥物（/pet、/pet list、/pet boba）',
+      '/companion': '切換或領養 companiondex 吉祥物（/companion、/companion list、/companion boba）',
       '/hatch': '產生新的寵物（開啟寵物產生器）',
       '/learn': '從你描述的任何內容（目錄、URL、此聊天、筆記）學習可重用的技能',
       '/init': '掃描儲存庫並產生或更新 AGENTS.md 專案指引',

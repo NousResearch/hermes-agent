@@ -1,6 +1,6 @@
 """Every remote-party-supplied URL fetch refuses internal targets before a socket opens.
 
-Provider response URLs, model-supplied image refs, manifest-derived pet URLs, and remote
+Provider response URLs, model-supplied image refs, manifest-derived companion URLs, and remote
 sitemap ``<loc>`` entries all route through ``tools.url_safety``: the URL is checked up
 front and every redirect hop is re-validated at TCP connect. A loopback listener records
 hits — the invariant is that it sees none for the hostile target.
@@ -40,7 +40,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     "</loc></sitemap></sitemapindex>").encode()
             ctype = "application/xml"
         elif self.path.endswith(".json"):
-            body, ctype = b'{"pets": []}', "application/json"
+            body, ctype = b'{"companions": []}', "application/json"
         else:
             body, ctype = PNG, "image/png"
         self.send_response(200)
@@ -74,7 +74,7 @@ def _sitemap_catalog(url: str, monkeypatch):
 
 
 def _fetch_manifest(url: str, monkeypatch):
-    from agent.pet import manifest
+    from agent.companion import manifest
 
     monkeypatch.setattr(manifest, "MANIFEST_URL", url)
     return manifest.fetch_manifest(timeout=5, force=True)
@@ -89,10 +89,10 @@ SITES = {
         "plugins.image_gen.openai")._load_image_bytes(u),
     "image_gen/openai-codex::_remote_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
         "plugins.image_gen.openai-codex")._remote_image_to_data_url(u),
-    "pet/store::_http_get": lambda u, mp, tmp: importlib.import_module("agent.pet.store")._http_get(u, 5),
-    "pet/store::_download": lambda u, mp, tmp: importlib.import_module("agent.pet.store")._download(
+    "companion/store::_http_get": lambda u, mp, tmp: importlib.import_module("agent.companion.store")._http_get(u, 5),
+    "companion/store::_download": lambda u, mp, tmp: importlib.import_module("agent.companion.store")._download(
         u, tmp / "sheet.png", timeout=5),
-    "pet/manifest::fetch_manifest": lambda u, mp, tmp: _fetch_manifest(u, mp),
+    "companion/manifest::fetch_manifest": lambda u, mp, tmp: _fetch_manifest(u, mp),
     "tui_gateway/methods_images::_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
         "tui_gateway.methods_images")._image_to_data_url(u, 1_000_000),
     "skills_hub_skillssh::_sitemap_catalog": lambda u, mp, tmp: _sitemap_catalog(u, mp),

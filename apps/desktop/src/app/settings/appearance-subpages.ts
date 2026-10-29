@@ -4,7 +4,7 @@ export const APPEARANCE_SUBPAGES = [
   { id: 'typography', labelKey: 'appearanceTypography' },
   { id: 'window-layout', labelKey: 'appearanceWindowLayout' },
   { id: 'chat-display', labelKey: 'appearanceChatDisplay' },
-  { id: 'pet', labelKey: 'appearancePet' }
+  { id: 'companion', labelKey: 'appearanceCompanion' }
 ] as const
 
 export type AppearanceSubpageId = (typeof APPEARANCE_SUBPAGES)[number]['id']

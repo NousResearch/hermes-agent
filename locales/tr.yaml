@@ -1637,10 +1637,10 @@ slash:
     description: "Bekleyen bellek yazımlarını incele / onay kapısını aç/kapat"
   bundles:
     description: "Skill paketlerini listele (birden çok skill için /<name> takma adları)"
-  pet:
-    description: "Bir petdex maskotu aç/kapat veya sahiplen (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Bir companiondex maskotu aç/kapat veya sahiplen (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Bir açıklamadan yeni bir petdex evcil hayvanı oluştur"
+    description: "Bir açıklamadan yeni bir companiondex evcil hayvanı oluştur"
   learn:
     description: "Tarif ettiğiniz her şeyden (dizinler, URL'ler, bu sohbet, notlar) yeniden kullanılabilir bir skill öğren"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) Temel taslak gelmedi — yeniden deneyin."
       failed: "(x_x) Yumurtadan çıkarma başarısız oldu: {error}"
       hatched: "(^_^)b {name} yumurtadan çıktı ve sahiplenildi — kısa süre içinde belirecek!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} dışarıda — kısa süre içinde belirecek."
       put_away_named: "(-_-)zzZ {name} kaldırıldı."
       put_away: "(-_-)zzZ Evcil hayvan kaldırıldı."
-      usage_scale: "(o_o) Kullanım: /pet scale <çarpan>  (örn. /pet scale 0.5)"
+      usage_scale: "(o_o) Kullanım: /companion scale <çarpan>  (örn. /companion scale 0.5)"
       scale_set: "(^_^) Evcil hayvan ölçeği → {scale}."
-      fetching: "(o_o) '{name}' petdex'ten getiriliyor…"
+      fetching: "(o_o) '{name}' companiondex'ten getiriliyor…"
       adopt_failed: "(x_x) '{name}' sahiplenilemedi: {error}"
       error: "(x_x) {error}"
     diff:

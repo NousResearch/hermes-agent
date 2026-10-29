@@ -39,14 +39,14 @@ def test_no_new_undocumented_config_keys_or_slash_commands(drift, gaps):
 def test_detects_each_documentation_form(drift, monkeypatch):
     docs = (
         "Set `agent.max_turns` to cap a run.\n"
-        "Every `auxiliary.<task>.timeout` is in seconds; `display.pet.*` tunes the pet.\n"
+        "Every `auxiliary.<task>.timeout` is in seconds; `display.companion.*` tunes the companion.\n"
         "Per model: `providers.<id>.models.<model>.timeout_seconds`.\n"
         "```yaml\ncompression:\n  threshold: 0.5\n```\n"
         "This sentence has emphasis on *agent.* things.\n"
     )
     monkeypatch.setattr(drift, "_docs_text", lambda: docs)
     monkeypatch.setattr(drift, "config_leaves", lambda: [
-        "agent.max_turns", "auxiliary.vision.timeout", "display.pet.size",
+        "agent.max_turns", "auxiliary.vision.timeout", "display.companion.size",
         "compression.threshold", "agent.secret_knob", "auxiliary.vision.api_key",
         "providers.nous.models.hermes.timeout_seconds"])
     monkeypatch.setattr(drift, "slash_commands", list)

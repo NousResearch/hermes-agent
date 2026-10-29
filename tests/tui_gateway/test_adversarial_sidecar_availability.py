@@ -11,7 +11,7 @@ from tui_gateway.ws import _dispatch_request
 
 @pytest.mark.asyncio
 # The two namespaces only this test pins: the legacy fallback gate's own tests do not cover them.
-@pytest.mark.parametrize('method,params', [('pet.info.meta', {}), ('projects.list', {})])
+@pytest.mark.parametrize('method,params', [('companion.info.meta', {}), ('projects.list', {})])
 async def test_registered_presentation_sidecar_remains_available_on_canonical_transport(method, params, tmp_path, monkeypatch):
     monkeypatch.setattr(server, '_LONG_HANDLERS', server._LONG_HANDLERS - {method})
     home = str(server._launch_home())

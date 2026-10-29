@@ -691,7 +691,7 @@ export const esOverrides = {
       appearanceTypography: 'Tipografía',
       appearanceWindowLayout: 'Ventana y diseño',
       appearanceChatDisplay: 'Visualización del chat',
-      appearancePet: 'Mascota',
+      appearanceCompanion: 'Mascota',
       appearanceGeneral: 'General',
       modelMain: 'Modelo principal',
       modelAuxiliary: 'Modelos auxiliares',
@@ -1107,10 +1107,10 @@ export const esOverrides = {
       installed: name => `Instalado “${name}”.`,
       removeTheme: 'Quitar tema',
       importedBadge: 'Importado',
-      pet: {
+      companion: {
         title: 'Mascota',
         intro:
-          'Adopta una mascota animada de petdex que flota sobre la app y reacciona a lo que hace Hermes: corre mientras se ejecutan herramientas, celebra los éxitos y se entristece con los errores.',
+          'Adopta una mascota animada de companiondex que flota sobre la app y reacciona a lo que hace Hermes: corre mientras se ejecutan herramientas, celebra los éxitos y se entristece con los errores.',
         restartHint:
           'Las mascotas necesitan un reinicio rápido: la aplicación en ejecución se inició antes de que se añadiera esta función. Cierra y vuelve a abrir Hermes y luego vuelve aquí.',
         scaleTitle: 'Tamaño',
@@ -1120,7 +1120,7 @@ export const esOverrides = {
         chooseTitle: 'Elige una mascota',
         chooseDesc: 'Al elegir una, se instala si es necesario y queda activa.',
         searchPlaceholder: 'Buscar mascotas…',
-        unreachable: 'No se pudo acceder a la galería de petdex. Revisa tu conexión y vuelve a abrir esta página.',
+        unreachable: 'No se pudo acceder a la galería de companiondex. Revisa tu conexión y vuelve a abrir esta página.',
         noMatch: query => `No hay mascotas que coincidan con “${query}”.`,
         installedTag: 'instalada',
         generatedTag: 'Generada',
@@ -1135,7 +1135,7 @@ export const esOverrides = {
         renameTitle: 'Cambiar nombre de mascota',
         renamePlaceholder: 'Nombra a tu mascota',
         renameSave: 'Guardar',
-        exportPet: name => `Exportar ${name}`,
+        exportCompanion: name => `Exportar ${name}`,
         adoptFailed: slug => `No se pudo adoptar ${slug}`,
         uninstallFailed: slug => `No se pudo desinstalar ${slug}`,
         renameFailed: slug => `No se pudo cambiar el nombre de ${slug}`,
@@ -2682,11 +2682,11 @@ export const esOverrides = {
     settings: 'Configuración',
     changeTheme: 'Cambiar tema...',
     changeColorMode: 'Cambiar modo de color...',
-    pets: {
+    companions: {
       title: 'Mascotas',
       placeholder: 'Buscar mascotas…',
-      loading: 'Cargando la galería petdex…',
-      error: 'No se pudo acceder a la galería petdex.',
+      loading: 'Cargando la galería companiondex…',
+      error: 'No se pudo acceder a la galería companiondex.',
       staleBackend: 'Reinicia Hermes para usar mascotas; el backend es anterior a esta función.',
       empty: 'No hay mascotas coincidentes.',
       turnOff: 'Desactivar',
@@ -2697,7 +2697,7 @@ export const esOverrides = {
       toggleFailed: enabled => `No se pudo ${enabled ? 'encender' : 'apagar'} la mascota.`,
       noneAvailable: 'No hay mascotas disponibles. Elige una de abajo para instalarla.'
     },
-    generatePet: {
+    generateCompanion: {
       title: 'Generar una mascota',
       placeholder: 'Describe una mascota para generar…',
       promptHint: 'Escribe una descripción y pulsa Intro para crear cuatro versiones.',
@@ -3831,7 +3831,7 @@ export const esOverrides = {
       '/tools': 'Gestionar herramientas: /tools [list|disable|enable] [name...]',
       '/memory': 'Revisar las escrituras de memoria pendientes / activar o desactivar la aprobación',
       '/bundles': 'Listar los paquetes de skills (alias /<name> para varias skills)',
-      '/pet': 'Mostrar u ocultar o adoptar una mascota de petdex (/pet, /pet list, /pet boba)',
+      '/companion': 'Mostrar u ocultar o adoptar una mascota de companiondex (/companion, /companion list, /companion boba)',
       '/hatch': 'Generar una mascota nueva (abre el generador)',
       '/learn': 'Aprender una skill reutilizable a partir de lo que describas (carpetas, URL, este chat, notas)',
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',

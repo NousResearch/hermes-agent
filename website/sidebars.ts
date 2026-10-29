@@ -137,7 +137,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/spotify',
-            'user-guide/features/pets',
+            'user-guide/features/companions',
             'user-guide/features/tts',
             'user-guide/features/deliverable-mode',
           ],

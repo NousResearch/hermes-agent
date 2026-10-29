@@ -29,7 +29,7 @@ export function isSecondaryWindow(): boolean {
 
 let watchWindowCache: boolean | null = null
 
-// A "hud" window is HUD mode: the chrome-free floating chat. Unlike the pet
+// A "hud" window is HUD mode: the chrome-free floating chat. Unlike the companion
 // overlay / quick entry it is a FULL app renderer with its own gateway — the
 // flag only tells the shell to render the slim floating layout (composer +
 // scrollback) instead of the pane tree, so the composer it shows is the real
@@ -109,7 +109,7 @@ export function windowBrowserTabId(): null | string {
 
 // True for any window that is NOT the primary app instance — a secondary
 // session window, the HUD, or a popped-out Browser. Single-claim channels
-// (the quick-entry capture bridge, the pet overlay control bridge) and the
+// (the quick-entry capture bridge, the companion overlay control bridge) and the
 // install/onboarding overlays belong to the primary alone.
 export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isBrowserWindow()
 

@@ -62,7 +62,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/footer` | control | HermesCLI._handle_footer_command | slash.exec | unavailable: terminal | slash.exec | per-session setting (gateway handler) |
 | `/goal` | control | HermesCLI._handle_goal_command | slash.exec | slash.exec | slash.exec |  |
 | `/handoff` | refused | HermesCLI._handle_handoff_command | slash.exec: refused | action: handoff | slash.exec: refused | client-local (cli_only) |
-| `/hatch` (/generate-pet) | refused | HermesCLI._handle_hatch_command | slash.exec: refused | action: hatch | slash.exec: refused | client-local (cli_only) |
+| `/hatch` (/generate-companion) | refused | HermesCLI._handle_hatch_command | slash.exec: refused | action: hatch | slash.exec: refused | client-local (cli_only) |
 | `/heartbeat` (/hb) | control | HermesCLI._handle_heartbeat_command | slash.exec | slash.exec | slash.exec |  |
 | `/help` | read | HermesCLI._cmd_help | local | action: help | local |  |
 | `/history` | refused | HermesCLI.show_history | local | action: history | slash.exec: refused | client-local (cli_only) |
@@ -84,7 +84,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/paste` | refused | HermesCLI._handle_paste_command | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/pause` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |
 | `/personality` | control | HermesCLI._handle_personality_command | canonical route | slash.exec | slash.exec | per-session setting (gateway handler) |
-| `/pet` | refused | HermesCLI._handle_pet_command | slash.exec | action: pet | slash.exec: refused | client-local (cli_only) |
+| `/companion` | refused | HermesCLI._handle_companion_command | slash.exec | action: companion | slash.exec: refused | client-local (cli_only) |
 | `/plan` | control | HermesCLI._handle_plan_command | slash.exec | slash.exec | slash.exec |  |
 | `/platform` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging adapters; `pause`/`resume` mutate them |
 | `/platforms` (/gateway) | read | HermesCLI._show_gateway_status | slash.exec | unavailable: terminal | slash.exec | client-local (cli_only) |

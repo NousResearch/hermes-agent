@@ -43,7 +43,7 @@ export function showBootFailure(error: unknown, reload: () => void = () => locat
 
   const root = document.getElementById('root')
 
-  // A transparent window (the pet, the wake indicator) is click-through or too small for a
+  // A transparent window (the companion, the wake indicator) is click-through or too small for a
   // notice, and would only paint it over the user's desktop: there the cause is logged alone.
   if (!root || root.hasChildNodes() || isTransparentWindow()) {
     return

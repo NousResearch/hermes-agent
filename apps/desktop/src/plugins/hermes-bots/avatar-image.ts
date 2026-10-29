@@ -133,7 +133,7 @@ export async function generateAvatarImage(
   return res.image_data || res.image
 }
 
-/** The roster backfill draws the live SVG at 160x160. Pets are 96x104
+/** The roster backfill draws the live SVG at 160x160. Companions are 96x104
  *  and uploads are 256. Use that to tell a still face-copy from a real picture. */
 export function isBackfilledFacePng(dataUrl: null | string | undefined) {
   if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) {

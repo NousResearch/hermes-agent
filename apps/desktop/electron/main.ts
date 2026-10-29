@@ -134,6 +134,8 @@ import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
 import { createCloudSessionRecovery } from './cloud-session-recovery'
 import { installCommandScreenshot } from './command-screenshot'
+import { companionOverlayClickThrough, shouldPopInOnOverlayClosed } from './companion-overlay'
+import { placeCompanionOverlay, registerCompanionOverlayIpc } from './companion-overlay-ipc'
 import { composerImageTimestamp } from './composer-image-name'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
@@ -419,8 +421,6 @@ import {
   payloadTicketRuntime,
   requireBundledPayload
 } from './payload-backend'
-import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
-import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
@@ -1495,7 +1495,7 @@ function writePersistedTranslucency(state) {
 let translucencyState = readPersistedTranslucency()
 
 // Chat windows whose webContents backing follows translucency (primary,
-// instance peers, session windows). The HUD / pet overlay / quick entry /
+// instance peers, session windows). The HUD / companion overlay / quick entry /
 // wake indicator are `transparent: true` windows that own their backgrounds —
 // painting a themed backing onto them would turn them into opaque rectangles.
 const translucencyBackedWindows = new WeakSet()
@@ -1577,7 +1577,7 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
 // themed anti-flash backing.
 //
 // Call sites also register the window in translucencyBackedWindows so a live
-// toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
+// toggle can re-apply. The HUD, companion overlay, quick entry and wake indicator
 // are `transparent: true` windows that own their backgrounds and are
 // deliberately not chat windows.
 function chatWindowSurfaceOptions() {
@@ -12080,7 +12080,7 @@ async function startHermes(requestedProfile?: string) {
 // stays confined to the dev server / packaged file URL, and the preview /
 // devtools / zoom / context-menu affordances behave identically everywhere.
 //
-// `zoom` is opt-out for the pet overlay: it sizes its own OS window to fit the
+// `zoom` is opt-out for the companion overlay: it sizes its own OS window to fit the
 // sprite in unzoomed CSS px (overlayWindowSize -> setBounds) and has its own
 // Alt+wheel scale, so inheriting the global UI zoom would render the mascot
 // larger than its window and crop it. Chat windows keep zoom on.
@@ -12473,7 +12473,7 @@ function createBrowserWindow(tabId) {
 // command). Unlike the compact session windows they carry no `?win` flag; a
 // separate `peer=1` marker prevents them from replaying app-launch source
 // restoration after joining that shared backend. The primary mainWindow stays
-// the notification / deep-link / pet-overlay anchor and
+// the notification / deep-link / companion-overlay anchor and
 // is NOT tracked here. The set holds a strong reference so an open peer isn't
 // garbage-collected, and drops it on close.
 const instanceWindows = new Set<any>()
@@ -12596,32 +12596,32 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
 registerWindowSizing({ mainWindow: (): BrowserWindow | null => mainWindow })
 registerMachineProfile()
 
-// The pet overlay: a single transparent, frameless, always-on-top window that
-// hosts ONLY the floating mascot. Shift-clicking the in-window pet "pops it out"
+// The companion overlay: a single transparent, frameless, always-on-top window that
+// hosts ONLY the floating mascot. Shift-clicking the in-window companion "pops it out"
 // here so it can leave the app's bounds and stay visible while Hermes is
 // minimized (Codex-style task-completion glance). It carries no gateway
 // connection of its own — the main renderer is the single source of truth and
-// pushes pet state over IPC (hermes:pet-overlay:state); the overlay just renders
-// it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
-let petOverlayWindow = null
+// pushes companion state over IPC (hermes:companion-overlay:state); the overlay just renders
+// it. Control flows back (pop-in, composer submit) via hermes:companion-overlay:control.
+let companionOverlayWindow = null
 // Set once the app is really exiting (before-quit, or the primary window's
 // close on Windows/Linux where closing it IS quitting). Distinct from
 // isQuittingForHandoff, which is specific to the update/swap hand-off and is
-// reset when a hand-off is aborted: a quit latch must never reset. The pet
+// reset when a hand-off is aborted: a quit latch must never reset. The companion
 // overlay's 'closed' handler reads it to suppress its pop-in echo so the
-// persisted popped-out flag survives for the next boot's restorePetOverlay
+// persisted popped-out flag survives for the next boot's restoreCompanionOverlay
 // (#55920).
 let appQuitting = false
 // Real quit proceeding; see shouldQuitOnLastChatClosed (#130810).
 let quitInProgress = false
 // Set while a close is in flight: Electron's close() is async and can be
-// aborted on macOS, so the window may still be alive after closePetOverlay().
-// openPetOverlay must never reuse (or leave) a closing window — otherwise two
+// aborted on macOS, so the window may still be alive after closeCompanionOverlay().
+// openCompanionOverlay must never reuse (or leave) a closing window — otherwise two
 // overlays can coexist and the orphaned one, rendering nothing, becomes an
 // invisible mouse-enabled transparent region that eats desktop clicks.
-let petOverlayClosing = false
+let companionOverlayClosing = false
 
-function petOverlayUrl() {
+function companionOverlayUrl() {
   if (DEV_SERVER) {
     return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=overlay#/`
   }
@@ -12629,7 +12629,7 @@ function petOverlayUrl() {
   return `${pathToFileURL(resolveRendererIndex()).toString()}?win=overlay#/`
 }
 
-function spawnPetOverlayWindow(bounds) {
+function spawnCompanionOverlayWindow(bounds) {
   const win = new BrowserWindow({
     width: Math.max(80, Math.round(bounds?.width || 220)),
     height: Math.max(80, Math.round(bounds?.height || 220)),
@@ -12658,7 +12658,7 @@ function spawnPetOverlayWindow(bounds) {
     // or it (a frameless, taskbar-skipping panel) becomes the app's switcher
     // anchor and the Hermes icon drops out of cmd/alt-tab — especially when the
     // main window is minimized. We flip this on only while the composer needs
-    // the keyboard (see hermes:pet-overlay:set-focusable).
+    // the keyboard (see hermes:companion-overlay:set-focusable).
     focusable: false,
     show: false,
     // Fully transparent — the renderer paints only the sprite + bubble.
@@ -12675,7 +12675,7 @@ function spawnPetOverlayWindow(bounds) {
     }
   })
 
-  // Float above other apps and follow the user across desktops so the pet is
+  // Float above other apps and follow the user across desktops so the companion is
   // always reachable. `floating` + `type: panel` is the macOS NSPanel path; the
   // more aggressive `screen-saver` level can interfere with normal app/window
   // switching semantics.
@@ -12684,7 +12684,7 @@ function spawnPetOverlayWindow(bounds) {
 
   // The overlay is a transparent rectangle; only the sprite pixels should be
   // interactive. The renderer toggles click-through as the cursor enters/
-  // leaves the sprite (hermes:pet-overlay:ignore-mouse), but the window MUST
+  // leaves the sprite (hermes:companion-overlay:ignore-mouse), but the window MUST
   // start click-through from the main process: if the overlay page is slow to
   // load, blank, or its renderer has died, a mouse-enabled transparent window
   // sits over the desktop eating clicks (the invisible "dead zone" bug). The
@@ -12692,7 +12692,7 @@ function spawnPetOverlayWindow(bounds) {
   // keeps mousemove flowing to the page so the renderer can re-arm
   // interactivity the moment the cursor touches a solid sprite pixel. Linux
   // has no forward, so there the overlay stays a solid window instead.
-  if (petOverlayClickThrough()) {
+  if (companionOverlayClickThrough()) {
     win.setIgnoreMouseEvents(true, { forward: true })
   }
 
@@ -12700,7 +12700,7 @@ function spawnPetOverlayWindow(bounds) {
     // Electron docs: macOS may transform process type on each
     // setVisibleOnAllWorkspaces() call unless skipTransformProcessType=true,
     // which briefly hides the Dock/cmd-tab presence. Keep Hermes in the normal
-    // ForegroundApplication class so shift-clicking the pet never drops the app
+    // ForegroundApplication class so shift-clicking the companion never drops the app
     // out of app switchers.
     win.setVisibleOnAllWorkspaces(
       true,
@@ -12710,9 +12710,9 @@ function spawnPetOverlayWindow(bounds) {
     // Not supported everywhere — best effort.
   }
 
-  // Pet overlay opts out of global UI zoom (see zoomWiringForWindowKind): it
+  // Companion overlay opts out of global UI zoom (see zoomWiringForWindowKind): it
   // owns its window-fit + scale, and inheriting zoom would crop the sprite.
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('petOverlay'))
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('companionOverlay'))
 
   wireWindowReveal(win, { show: () => win.showInactive() })
 
@@ -12721,35 +12721,35 @@ function spawnPetOverlayWindow(bounds) {
   installWindowRendererLifecycle(win, { kind: 'overlay', callbacks: { log: rememberLog } })
 
   win.on('closed', () => {
-    // A stale window openPetOverlay replaced must not touch its replacement.
-    if (petOverlayWindow !== win) {
+    // A stale window openCompanionOverlay replaced must not touch its replacement.
+    if (companionOverlayWindow !== win) {
       return
     }
 
-    petOverlayWindow = null
-    petOverlayClosing = false
+    companionOverlayWindow = null
+    companionOverlayClosing = false
 
     // If the overlay went away on its own (e.g. ⌘W), tell the main renderer to
-    // pop the pet back in so it doesn't stay hidden. Never during a quit:
-    // popInPet() persists $petOverlayActive=false, which would wipe the
-    // popped-out state the next boot's restorePetOverlay() needs (#55920).
+    // pop the companion back in so it doesn't stay hidden. Never during a quit:
+    // popInCompanion() persists $companionOverlayActive=false, which would wipe the
+    // popped-out state the next boot's restoreCompanionOverlay() needs (#55920).
     if (
       shouldPopInOnOverlayClosed({ appQuitting, mainWindowAlive: Boolean(mainWindow && !mainWindow.isDestroyed()) })
     ) {
-      mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'pop-in' })
+      mainWindow.webContents.send('hermes:companion-overlay:control', { type: 'pop-in' })
     }
   })
 
-  attachRendererConsoleCapture(win, 'pet-overlay', rememberLog)
-  loadWindowUrl(win, petOverlayUrl(), 'Pet overlay')
+  attachRendererConsoleCapture(win, 'companion-overlay', rememberLog)
+  loadWindowUrl(win, companionOverlayUrl(), 'Companion overlay')
 
   return win
 }
 
-function openPetOverlay(bounds) {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed() && !petOverlayClosing) {
+function openCompanionOverlay(bounds) {
+  if (companionOverlayWindow && !companionOverlayWindow.isDestroyed() && !companionOverlayClosing) {
     if (bounds) {
-      petOverlayWindow.setBounds({
+      companionOverlayWindow.setBounds({
         x: Math.round(bounds.x),
         y: Math.round(bounds.y),
         width: Math.max(80, Math.round(bounds.width)),
@@ -12757,51 +12757,51 @@ function openPetOverlay(bounds) {
       })
     }
 
-    petOverlayWindow.showInactive()
+    companionOverlayWindow.showInactive()
 
-    return petOverlayWindow
+    return companionOverlayWindow
   }
 
   // A previous close was requested but never finished (close() can be aborted
   // on macOS) — force the stale window down before spawning a replacement so
   // two overlays can never coexist. Detach it first so its 'closed' handler
-  // (sync or not) can't pop the pet back in over the replacement.
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    const stale = petOverlayWindow
-    petOverlayWindow = null
+  // (sync or not) can't pop the companion back in over the replacement.
+  if (companionOverlayWindow && !companionOverlayWindow.isDestroyed()) {
+    const stale = companionOverlayWindow
+    companionOverlayWindow = null
     stale.destroy()
   }
 
-  petOverlayClosing = false
-  petOverlayWindow = spawnPetOverlayWindow(bounds)
+  companionOverlayClosing = false
+  companionOverlayWindow = spawnCompanionOverlayWindow(bounds)
 
-  return petOverlayWindow
+  return companionOverlayWindow
 }
 
-function closePetOverlay() {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    petOverlayClosing = true
-    petOverlayWindow.close()
+function closeCompanionOverlay() {
+  if (companionOverlayWindow && !companionOverlayWindow.isDestroyed()) {
+    companionOverlayClosing = true
+    companionOverlayWindow.close()
   }
 
-  // The 'closed' handler nulls petOverlayWindow and clears the flag — do NOT
+  // The 'closed' handler nulls companionOverlayWindow and clears the flag — do NOT
   // null here: an open() racing a slow/aborted close would otherwise spawn a
-  // second overlay while the first is still on screen (see petOverlayClosing).
+  // second overlay while the first is still on screen (see companionOverlayClosing).
 }
 
-// Re-home the popped-out pet after a display change: an overlay that still
+// Re-home the popped-out companion after a display change: an overlay that still
 // fits its display stays put, one pushed past a work-area edge is clamped back
 // in, and one on no display is re-centered on the main window's display (see
-// resolvePetOverlayBounds). The corrected spot is pushed
+// resolveCompanionOverlayBounds). The corrected spot is pushed
 // back to the renderer via the existing 'bounds' control channel, which it
 // persists for the next pop-out/restart.
-function rehomePetOverlay() {
-  if (!petOverlayWindow || petOverlayWindow.isDestroyed() || petOverlayClosing) {
+function rehomeCompanionOverlay() {
+  if (!companionOverlayWindow || companionOverlayWindow.isDestroyed() || companionOverlayClosing) {
     return
   }
 
-  const current = petOverlayWindow.getBounds()
-  const resolved = placePetOverlay(current, mainWindow)
+  const current = companionOverlayWindow.getBounds()
+  const resolved = placeCompanionOverlay(current, mainWindow)
 
   if (!resolved) {
     return
@@ -12816,10 +12816,10 @@ function rehomePetOverlay() {
     return
   }
 
-  petOverlayWindow.setBounds(resolved)
+  companionOverlayWindow.setBounds(resolved)
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'bounds', bounds: resolved })
+    mainWindow.webContents.send('hermes:companion-overlay:control', { type: 'bounds', bounds: resolved })
   }
 }
 
@@ -12829,7 +12829,7 @@ function rehomePetOverlay() {
 // window showing only the composer and its scrollback, so Hermes can be driven
 // while the user works in another app.
 //
-// Unlike the pet overlay / quick entry, this is a FULL app renderer with its
+// Unlike the companion overlay / quick entry, this is a FULL app renderer with its
 // own gateway — the same thing createInstanceWindow() spawns, reshaped. That
 // is deliberate: the HUD renders the real chat surface, so its composer is the
 // app's composer (slash commands, attachments, queue, voice) instead of a
@@ -13162,7 +13162,7 @@ function spawnHudWindow(sessionId, profile) {
     // composer drag calls setPosition, which must move the window, not resize
     // it. Resizing is done by the renderer's edge/corner handles through
     // `hermes:hud:set-bounds`, which flips resizable on for the call — the
-    // same pattern the pet overlay uses for its wheel-scale.
+    // same pattern the companion overlay uses for its wheel-scale.
     resizable: false,
     // macOS AppKit's constrainFrameRect clamps setBounds to the current
     // display unless this is on. The HUD is moved by renderer-driven
@@ -13431,7 +13431,7 @@ function spawnQuickEntryWindow() {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
+    // Same rationale as the companion overlay: on Windows/Linux keep the helper out
     // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
     // capture window never becomes the app's cmd-tab anchor.
     skipTaskbar: !IS_MAC,
@@ -13440,7 +13440,7 @@ function spawnQuickEntryWindow() {
     // renderer forces transparency (quick-entry-root.tsx) — the OS then
     // caches a full-frame shadow that renders as a stray detached blur blob
     // behind the card (#99172). The card draws its own CSS box-shadow, so the
-    // native one only double-paints; the other transparent overlays (pet,
+    // native one only double-paints; the other transparent overlays (companion,
     // HUD) already run shadowless. Other platforms keep it.
     hasShadow: !IS_MAC,
     alwaysOnTop: true,
@@ -13469,7 +13469,7 @@ function spawnQuickEntryWindow() {
     // Not supported everywhere — best effort.
   }
 
-  // Opts out of global UI zoom for the same reason as the pet overlay: it sizes
+  // Opts out of global UI zoom for the same reason as the companion overlay: it sizes
   // its own OS window and a zoomed composer would overflow it.
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
 
@@ -13803,7 +13803,7 @@ function createWindow() {
 
     // On Windows/Linux, closing the primary window IS quitting (the
     // window-all-closed handler calls app.quit()). Latch the quit flag here,
-    // before 'closed' fires closePetOverlay() — otherwise the overlay's
+    // before 'closed' fires closeCompanionOverlay() — otherwise the overlay's
     // 'closed' handler echoes pop-in and wipes the persisted popped-out state
     // the next boot needs (#55920).
     if (!IS_MAC) {
@@ -13813,7 +13813,7 @@ function createWindow() {
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
-    closePetOverlay()
+    closeCompanionOverlay()
     wakeIndicatorController.close()
 
     if (mainWindow === createdMainWindow) {
@@ -14366,12 +14366,12 @@ ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
   setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
 })
 
-// --- Pet overlay (pop-out mascot) — see pet-overlay-ipc.ts. ---------------
-registerPetOverlayIpc({
+// --- Companion overlay (pop-out mascot) — see companion-overlay-ipc.ts. ---------------
+registerCompanionOverlayIpc({
   getMainWindow: () => mainWindow,
-  getPetOverlayWindow: () => petOverlayWindow,
-  openPetOverlay,
-  closePetOverlay
+  getCompanionOverlayWindow: () => companionOverlayWindow,
+  openCompanionOverlay,
+  closeCompanionOverlay
 })
 
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
@@ -16624,7 +16624,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
 
   // Repaint the native (Windows/Linux) titlebar overlay on every open chat
   // window, not just the primary — instance peers and session windows share the
-  // one app theme. applyTitleBarOverlay no-ops on the frameless pet overlay.
+  // one app theme. applyTitleBarOverlay no-ops on the frameless companion overlay.
   for (const win of BrowserWindow.getAllWindows()) {
     applyTitleBarOverlay(win)
   }
@@ -17892,17 +17892,17 @@ app.whenReady().then(() => {
     screen.on('display-removed', reposition)
   }
 
-  // The popped-out pet must never be stranded on a disconnected display: when
+  // The popped-out companion must never be stranded on a disconnected display: when
   // the topology changes, pull an off-screen overlay back onto the display
   // that holds the main window (and persist the corrected spot). Unlike the
-  // wake indicator this applies on every platform — the pet overlay exists
-  // everywhere, and rehomePetOverlay is a cheap no-op while the pet is in the
+  // wake indicator this applies on every platform — the companion overlay exists
+  // everywhere, and rehomeCompanionOverlay is a cheap no-op while the companion is in the
   // window or still on-screen.
-  screen.on('display-added', rehomePetOverlay)
+  screen.on('display-added', rehomeCompanionOverlay)
 
-  screen.on('display-metrics-changed', rehomePetOverlay)
+  screen.on('display-metrics-changed', rehomeCompanionOverlay)
 
-  screen.on('display-removed', rehomePetOverlay)
+  screen.on('display-removed', rehomeCompanionOverlay)
 
   // A hard crash can interrupt the in-memory restore loop after exact remote
   // serves were drained. The owner-only recovery journal survives that crash;
@@ -18116,7 +18116,7 @@ app.on('before-quit', event => {
   }
 
   // Quit is really proceeding: latch both before ANY teardown below closes
-  // the pet overlay — its 'closed' handler must not echo pop-in during quit,
+  // the companion overlay — its 'closed' handler must not echo pop-in during quit,
   // or the persisted popped-out state is wiped and the overlay never restores
   // (#55920).
   appQuitting = true
@@ -18197,8 +18197,8 @@ app.on('before-quit', event => {
   }
 
   // The always-on-top overlay isn't a "real" app window; close it so a stray
-  // pet can't keep the process alive or float over a quit app.
-  closePetOverlay()
+  // companion can't keep the process alive or float over a quit app.
+  closeCompanionOverlay()
   wakeIndicatorController.close()
 
   // Same for the HUD — an always-on-top panel outliving the app would leave a

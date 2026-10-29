@@ -1637,10 +1637,10 @@ slash:
     description: "Переглянути записи в пам'ять, що очікують / перемкнути шлюз схвалення"
   bundles:
     description: "Перелічити набори навичок (псевдоніми /<name> для кількох навичок)"
-  pet:
-    description: "Перемкнути або взяти улюбленця petdex (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Перемкнути або взяти улюбленця companiondex (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Згенерувати нового улюбленця petdex за описом"
+    description: "Згенерувати нового улюбленця companiondex за описом"
   learn:
     description: "Вивчити багаторазову навичку з будь-чого, що ви опишете (каталоги, URL, цей чат, нотатки)"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) Базовий ескіз не повернувся — спробуйте ще раз."
       failed: "(x_x) Вилуплення не вдалося: {error}"
       hatched: "(^_^)b {name}: вилуплено й прийнято — незабаром з'явиться!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} виходить — незабаром з'явиться."
       put_away_named: "(-_-)zzZ {name} сховано."
       put_away: "(-_-)zzZ Улюбленця сховано."
-      usage_scale: "(o_o) Використання: /pet scale <factor>  (напр. /pet scale 0.5)"
+      usage_scale: "(o_o) Використання: /companion scale <factor>  (напр. /companion scale 0.5)"
       scale_set: "(^_^) Масштаб улюбленця → {scale}."
-      fetching: "(o_o) Отримуємо '{name}' з petdex…"
+      fetching: "(o_o) Отримуємо '{name}' з companiondex…"
       adopt_failed: "(x_x) Не вдалося прийняти '{name}': {error}"
       error: "(x_x) {error}"
     diff:

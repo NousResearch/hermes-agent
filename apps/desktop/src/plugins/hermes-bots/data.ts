@@ -167,11 +167,11 @@ export function clearBotAttention(key: string) {
 
 /** The persisted record adds two keys the shared domain model deliberately
  *  omits: `chat`, the dead canonical-chat pointer that mergeServerMeta strips
- *  on sight, and `pet`, the extracted pet icon that stays local and is never
+ *  on sight, and `companion`, the extracted companion icon that stays local and is never
  *  sent to the server. */
 interface StoredBotMeta extends BotMeta {
   chat?: unknown
-  pet?: unknown
+  companion?: unknown
 }
 
 /** Appearance records keyed by meta key — `connectionId::profile`, or the bare
@@ -374,7 +374,7 @@ async function persistBotMetaPatch(
   route: null | ProfileRoute,
   patch: StoredBotMeta
 ): Promise<null | ProfilesConfigureResult> {
-  const { image: _image, pet: _pet, ...fields } = patch
+  const { image: _image, companion: _companion, ...fields } = patch
 
   for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
     const server = await readServerBotMeta(bot, name, route)

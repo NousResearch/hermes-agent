@@ -390,7 +390,7 @@ class CLIInitMixin:
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
     def _init_runtime_state(self, resume):
-        """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
+        """Session store + all per-run mutable state (queues, overlays, companion/voice/status-bar fields)."""
         from cli import _hermes_home
         from hermes_cli.left_core_migration import serve_notices_on_stderr
         serve_notices_on_stderr()
@@ -540,19 +540,19 @@ class CLIInitMixin:
         self._spinner_text = self._command_status = ""
         self._last_scrollback_tool: str = ""  # "new" mode dedup
         self._command_running = self._command_blocks_input = False
-        # Petdex mascot (display.pet): kitty placeholders on kitty/Ghostty, half-blocks elsewhere.
-        self._pet_renderer = self._pet_anim_thread = None
-        self._pet_slug = self._pet_kitty_pending = ""
-        self._pet_enabled = self._pet_anim_running = False
-        self._pet_cols: int = 18
-        self._pet_scale: float = 0.7
-        self._pet_frames_cache: dict = {}
-        self._pet_kitty_cache: dict = {}
-        self._pet_kitty_image_id = self._pet_frame_idx = 0
-        self._pet_lock = threading.Lock()
-        self._pet_cfg_checked = self._pet_event_until = 0.0
-        self._pet_event: str = ""
-        self._pet_reasoning = self._pet_turn_error = False
+        # Companiondex mascot (display.companion): kitty placeholders on kitty/Ghostty, half-blocks elsewhere.
+        self._companion_renderer = self._companion_anim_thread = None
+        self._companion_slug = self._companion_kitty_pending = ""
+        self._companion_enabled = self._companion_anim_running = False
+        self._companion_cols: int = 18
+        self._companion_scale: float = 0.7
+        self._companion_frames_cache: dict = {}
+        self._companion_kitty_cache: dict = {}
+        self._companion_kitty_image_id = self._companion_frame_idx = 0
+        self._companion_lock = threading.Lock()
+        self._companion_cfg_checked = self._companion_event_until = 0.0
+        self._companion_event: str = ""
+        self._companion_reasoning = self._companion_turn_error = False
         self._attached_images: list[Path] = []
         self._image_counter = 0
         # Ctrl+S prompt stash; in-memory only because drafts routinely contain secrets.

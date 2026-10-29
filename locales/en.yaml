@@ -1708,10 +1708,10 @@ slash:
     description: "Review pending memory writes / toggle the approval gate"
   bundles:
     description: "List skill bundles (aliases /<name> for multiple skills)"
-  pet:
-    description: "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)"
+  companion:
+    description: "Toggle or adopt a companiondex mascot (/companion, /companion list, /companion <slug>)"
   hatch:
-    description: "Generate a new petdex pet from a description"
+    description: "Generate a new companiondex companion from a description"
   learn:
     description: "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)"
   init:
@@ -2819,21 +2819,21 @@ cli:
       progress_compose: "┊ composing spritesheet…"
       progress_save: "┊ saving…"
       progress_drawing: "┊ drawing {state}…"
-      describe_prompt: "(o_o) Describe your pet: "
+      describe_prompt: "(o_o) Describe your companion: "
       usage: "(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)"
-      default_name: "Pet"
+      default_name: "Companion"
       designing: "(o_o) Designing '{concept}'… (a minute of image-model calls)"
       base_failed: "(x_x) Couldn't generate a base look: {error}"
       no_base_draft: "(x_x) No base draft came back — try again."
       failed: "(x_x) Hatch failed: {error}"
       hatched: "(^_^)b {name} hatched and adopted — it'll pop in shortly!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} is out — it'll pop in shortly."
       put_away_named: "(-_-)zzZ {name} put away."
-      put_away: "(-_-)zzZ Pet put away."
-      usage_scale: "(o_o) Usage: /pet scale <factor>  (e.g. /pet scale 0.5)"
-      scale_set: "(^_^) Pet scale → {scale}."
-      fetching: "(o_o) Fetching '{name}' from petdex…"
+      put_away: "(-_-)zzZ Companion put away."
+      usage_scale: "(o_o) Usage: /companion scale <factor>  (e.g. /companion scale 0.5)"
+      scale_set: "(^_^) Companion scale → {scale}."
+      fetching: "(o_o) Fetching '{name}' from companiondex…"
       adopt_failed: "(x_x) Couldn't adopt '{name}': {error}"
       error: "(x_x) {error}"
     diff:

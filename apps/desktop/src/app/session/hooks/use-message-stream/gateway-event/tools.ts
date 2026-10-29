@@ -5,8 +5,8 @@ import { leaveIntroOnLayout } from '@/components/onboarding/first-run/intro'
 import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { connectorText, recordOf } from '@/lib/connector-tools'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { flashCompanionActivity, setCompanionActivity } from '@/store/companion'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
-import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { setupBeatResult } from '@/store/setup-beat'
@@ -136,7 +136,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: false, toolRunning: true })
+      setCompanionActivity({ reasoning: false, toolRunning: true })
     }
 
     return true
@@ -151,7 +151,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
 
     if (isActiveEvent) {
-      setPetActivity({ reasoning: false, toolRunning: true })
+      setCompanionActivity({ reasoning: false, toolRunning: true })
     }
 
     return true
@@ -172,13 +172,13 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       noteToolOutcome(ctx, sessionId, state?.cwd ?? '', pendingProduction)
 
       if (isActiveEvent) {
-        setPetActivity({ toolRunning: false })
+        setCompanionActivity({ toolRunning: false })
 
         // A tool can fail without ending the turn when the agent recovers
-        // and continues. Surface that failure as a short pet beat too;
+        // and continues. Surface that failure as a short companion beat too;
         // otherwise only turn-level errors ever reach the failed state.
         if (payload?.error) {
-          flashPetActivity({ error: true })
+          flashCompanionActivity({ error: true })
         }
       }
 

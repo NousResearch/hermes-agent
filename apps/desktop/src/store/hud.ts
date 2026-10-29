@@ -5,7 +5,7 @@
  * composer with the reply scrolling above it, so Hermes can be driven while
  * the user works in another app (Figma, a browser).
  *
- * It is NOT a puppet window. Unlike the pet overlay / quick entry, the HUD is
+ * It is NOT a puppet window. Unlike the companion overlay / quick entry, the HUD is
  * a full app renderer with its own gateway — the same thing `openWindow()`
  * spawns, just reshaped. That is the whole design: the HUD renders `ChatView`
  * in its `hud` variant, so the composer IS the app's composer (attachments,

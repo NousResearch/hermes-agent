@@ -1637,10 +1637,10 @@ slash:
     description: "مراجعة كتابات الذاكرة قيد الانتظار / تبديل بوابة الموافقة"
   bundles:
     description: "سرد حزم المهارات (أسماء بديلة /<name> لعدة مهارات)"
-  pet:
-    description: "تبديل أو تبنّي تميمة petdex (/pet، /pet list، /pet <slug>)"
+  companion:
+    description: "تبديل أو تبنّي تميمة companiondex (/companion، /companion list، /companion <slug>)"
   hatch:
-    description: "توليد حيوان أليف petdex جديد من وصف"
+    description: "توليد حيوان أليف companiondex جديد من وصف"
   learn:
     description: "تعلّم مهارة قابلة لإعادة الاستخدام من أي شيء تصفه (مجلدات، روابط، هذه المحادثة، ملاحظات)"
   init:
@@ -2727,13 +2727,13 @@ cli:
       no_base_draft: "(x_x) لم تُرجَع أي مسودة أساسية — حاول مجددًا."
       failed: "(x_x) فشل الفتح: {error}"
       hatched: "(^_^)b فُتح {name} واعتُمد — سيظهر بعد قليل!"
-    pet:
+    companion:
       is_out: "(^_^)b {name} خرج — سيظهر بعد قليل."
       put_away_named: "(-_-)zzZ تم إبعاد {name}."
       put_away: "(-_-)zzZ تم إبعاد الحيوان الأليف."
-      usage_scale: "(o_o) الاستخدام: /pet scale <factor>  (مثال: /pet scale 0.5)"
+      usage_scale: "(o_o) الاستخدام: /companion scale <factor>  (مثال: /companion scale 0.5)"
       scale_set: "(^_^) مقياس الحيوان الأليف ← {scale}."
-      fetching: "(o_o) جارٍ جلب '{name}' من petdex…"
+      fetching: "(o_o) جارٍ جلب '{name}' من companiondex…"
       adopt_failed: "(x_x) تعذّر اعتماد '{name}': {error}"
       error: "(x_x) {error}"
     diff:

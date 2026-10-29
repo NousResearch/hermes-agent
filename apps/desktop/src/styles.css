@@ -66,15 +66,15 @@
 
 /* Pause continuous animations only when the window is hidden/minimized, not
    merely unfocused. main.tsx owns this attribute for the primary window;
-   wake/pet overlays retain their purpose-built visibility behavior. */
+   wake/companion overlays retain their purpose-built visibility behavior. */
 :root[data-renderer-animations-paused]
   :is(
     .shimmer,
     .quest-glow,
-    .pet-egg,
-    .pet-egg__glow,
-    .pet-egg-shadow,
-    .pet-wobble,
+    .companion-egg,
+    .companion-egg__glow,
+    .companion-egg-shadow,
+    .companion-wobble,
     .progress-slide,
     .kanban-arc,
     .glyph-spinner__strip,
@@ -2748,12 +2748,12 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Pet egg hatch (Cmd-K → Pets → Generate)                                    */
-/* The incubation wobble + reveal flash/pop give the draft→pet step a         */
+/* Companion egg hatch (Cmd-K → Companions → Generate)                                    */
+/* The incubation wobble + reveal flash/pop give the draft→companion step a         */
 /* Pokémon-style "egg is hatching" beat instead of a bare spinner.            */
 /* -------------------------------------------------------------------------- */
 
-.pet-egg {
+.companion-egg {
   position: relative;
   width: 5.5rem;
   height: 7rem;
@@ -2769,12 +2769,12 @@ button[data-slot='aui_msg-reactions'] svg {
     inset 0.35rem 0.4rem 0.7rem color-mix(in srgb, #fff 70%, transparent),
     0 0.4rem 0.9rem color-mix(in srgb, #000 22%, transparent);
   transform-origin: 50% 88%;
-  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+  animation: companion-egg-wobble 2.4s ease-in-out infinite;
 }
 
 /* Compact egg (empty-state hero). Children are %-based so they track the size;
    only the rem box-shadow needs scaling down to stay crisp. */
-.pet-egg--sm {
+.companion-egg--sm {
   width: 3.25rem;
   height: 4.1rem;
   box-shadow:
@@ -2783,7 +2783,7 @@ button[data-slot='aui_msg-reactions'] svg {
     0 0.25rem 0.55rem color-mix(in srgb, #000 22%, transparent);
 }
 
-.pet-egg__shine {
+.companion-egg__shine {
   position: absolute;
   top: 14%;
   left: 22%;
@@ -2795,48 +2795,48 @@ button[data-slot='aui_msg-reactions'] svg {
   opacity: 0.85;
 }
 
-.pet-egg__spot {
+.companion-egg__spot {
   position: absolute;
   border-radius: 50%;
   background: color-mix(in srgb, var(--ui-accent) 70%, #b89b63);
   opacity: 0.55;
 }
 
-.pet-egg__glow {
+.companion-egg__glow {
   position: absolute;
   inset: -35%;
   border-radius: 50%;
   background: radial-gradient(circle, color-mix(in srgb, var(--ui-accent) 55%, transparent) 0%, transparent 62%);
-  animation: pet-egg-glow 2.4s ease-in-out infinite;
+  animation: companion-egg-glow 2.4s ease-in-out infinite;
   pointer-events: none;
 }
 
-.pet-egg-shadow {
+.companion-egg-shadow {
   width: 4.5rem;
   height: 0.8rem;
   border-radius: 50%;
   /* Lighter on light backgrounds (~20% less ink); dark mode keeps it grounded. */
   background: radial-gradient(
     circle,
-    color-mix(in srgb, #000 var(--pet-egg-shadow-ink, 26%), transparent) 0%,
+    color-mix(in srgb, #000 var(--companion-egg-shadow-ink, 26%), transparent) 0%,
     transparent 72%
   );
-  animation: pet-egg-shadow 2.4s ease-in-out infinite;
+  animation: companion-egg-shadow 2.4s ease-in-out infinite;
 }
 
-.dark .pet-egg-shadow {
-  --pet-egg-shadow-ink: 32%;
+.dark .companion-egg-shadow {
+  --companion-egg-shadow-ink: 32%;
 }
 
 /* Contact shadow sized for the compact incubator egg (roughly its footprint). */
-.pet-egg-shadow--sm {
+.companion-egg-shadow--sm {
   width: 3rem;
   height: 0.6rem;
 }
 
-/* Contact shadow under the revealed pet — mirrors the floating mascot's in-app
+/* Contact shadow under the revealed companion — mirrors the floating mascot's in-app
    shadow: an ellipse at the feet, ~55% of the sprite width, sitting behind it. */
-.pet-contact-shadow {
+.companion-contact-shadow {
   position: absolute;
   bottom: -0.15rem;
   left: 50%;
@@ -2849,18 +2849,18 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* Hatch wiggle for the pixel egg (rocks around its base). */
-.pet-wobble {
+.companion-wobble {
   transform-origin: 50% 85%;
-  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+  animation: companion-egg-wobble 2.4s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pet-wobble {
+  .companion-wobble {
     animation: none;
   }
 }
 
-@keyframes pet-egg-wobble {
+@keyframes companion-egg-wobble {
   0%,
   62%,
   100% {
@@ -2899,7 +2899,7 @@ button[data-slot='aui_msg-reactions'] svg {
   }
 }
 
-@keyframes pet-egg-glow {
+@keyframes companion-egg-glow {
   0%,
   100% {
     opacity: 0.35;
@@ -2914,7 +2914,7 @@ button[data-slot='aui_msg-reactions'] svg {
   }
 }
 
-@keyframes pet-egg-shadow {
+@keyframes companion-egg-shadow {
   0%,
   62%,
   100% {
@@ -2927,11 +2927,11 @@ button[data-slot='aui_msg-reactions'] svg {
   }
 }
 
-.pet-reveal {
-  animation: pet-reveal-pop 620ms cubic-bezier(0.22, 1.4, 0.4, 1) both;
+.companion-reveal {
+  animation: companion-reveal-pop 620ms cubic-bezier(0.22, 1.4, 0.4, 1) both;
 }
 
-@keyframes pet-reveal-pop {
+@keyframes companion-reveal-pop {
   0% {
     opacity: 0;
     transform: scale(0.35) translateY(0.4rem);
@@ -2960,30 +2960,30 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* Landing a reaction should feel like something — same pop shape as
-   pet-reveal-pop, scaled down for an inline glyph. */
+   companion-reveal-pop, scaled down for an inline glyph. */
 .reaction-pop {
   animation: reaction-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pet-egg,
-  .pet-egg__glow,
-  .pet-egg-shadow,
-  .pet-reveal {
+  .companion-egg,
+  .companion-egg__glow,
+  .companion-egg-shadow,
+  .companion-reveal {
     animation: none;
   }
   .reaction-pop {
     animation: none;
   }
-  .pet-reveal {
+  .companion-reveal {
     opacity: 1;
     transform: none;
   }
 }
 
-/* Pet generation progress bar — determinate (hatch rows: done/total) or         */
+/* Companion generation progress bar — determinate (hatch rows: done/total) or         */
 /* indeterminate (drafts, which return together so a % would just snap).         */
-/* Sliding indeterminate block for the `accent` Progress variant (pet hatch
+/* Sliding indeterminate block for the `accent` Progress variant (companion hatch
    flow). Color/positioning come from the primitive; this owns the animation. */
 .progress-slide {
   width: 40%;
@@ -3026,7 +3026,7 @@ button[data-slot='aui_msg-reactions'] svg {
    style (the anti-white-flash trick), and an inline style beats a stylesheet
    rule. Against that opaque wall every translucent panel below is just glass
    over white — which is exactly how this shipped: a plain opaque slab. The
-   pet overlay and quick entry inject a style tag at mount for the same
+   companion overlay and quick entry inject a style tag at mount for the same
    reason; HudShell does it too. See `hud-shell.tsx`. */
 
 [data-hud-shell] {

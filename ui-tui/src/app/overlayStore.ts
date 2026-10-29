@@ -31,7 +31,7 @@ const buildOverlayState = (): OverlayState => ({
   journey: false,
   modelPicker: false,
   pager: null,
-  petPicker: false,
+  companionPicker: false,
   pluginsHub: false,
   secret: null,
   vaultCode: null,
@@ -57,7 +57,7 @@ const BLOCKING_KEYS = [
   'journey',
   'modelPicker',
   'pager',
-  'petPicker',
+  'companionPicker',
   'pluginsHub',
   'secret',
   'sessions',
@@ -87,7 +87,7 @@ export const $isBlocked = computed($overlayState, overlay => BLOCKING_KEYS.some(
  *   (`ActiveWidgetSlot`, `sdk/host.tsx:209`, outside the ComposerPane
  *   subtree) so it can anchor the full-screen absolute `Overlay`
  *   (`components/overlay.tsx`) against the whole terminal.
- * - The FloatingOverlays set — `modelPicker`, `pager`, `petPicker`,
+ * - The FloatingOverlays set — `modelPicker`, `pager`, `companionPicker`,
  *   `sessions`, `skillsHub`, `pluginsHub`, `connectors` — but ONLY when the rule sits at
  *   the top.  That panel is `position="absolute" bottom="100%"` inside
  *   ComposerPane's relative Box (`appOverlays.tsx:387`), so it grows UPWARD
@@ -128,7 +128,7 @@ export const hasFloatingPanel = (overlay: OverlayState): boolean =>
     overlay.connectors ||
     overlay.modelPicker ||
     overlay.pager ||
-    overlay.petPicker ||
+    overlay.companionPicker ||
     overlay.pluginsHub ||
     overlay.sessions ||
     overlay.skillsHub
@@ -140,7 +140,7 @@ export const $isStatusRuleOccluded = computed([$overlayState, $uiState], (overla
 
 /**
  * SINGLE SOURCE for the credential prompts (sudo, secret, the vault cards):
- * Esc / Ctrl+C decline them, the tab title and pet read them as "waiting on
+ * Esc / Ctrl+C decline them, the tab title and companion read them as "waiting on
  * you". Add new credential prompts HERE so no gate silently misses one.
  */
 export const SENSITIVE_PROMPTS = ['sudo', 'secret', 'vaultUnlock', 'vaultSaveLogin', 'vaultCode'] as const
@@ -183,7 +183,7 @@ export const resetFlowOverlays = () =>
     widget: $overlayState.get().widget,
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,
-    petPicker: $overlayState.get().petPicker,
+    companionPicker: $overlayState.get().companionPicker,
     pluginsHub: $overlayState.get().pluginsHub,
     sessions: $overlayState.get().sessions,
     skillsHub: $overlayState.get().skillsHub

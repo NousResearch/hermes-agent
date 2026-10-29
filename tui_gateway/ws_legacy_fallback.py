@@ -1,7 +1,7 @@
 """Legacy-handler fallback for authority-backed WebSocket connections.
 
 Session verbs live on the session authority; methods it answers ``-32601`` for may still have a
-legacy sidecar handler (pet, wake word, connectors, config). That fallback must not widen what
+legacy sidecar handler (companion, wake word, connectors, config). That fallback must not widen what
 the connection's ticket grants (R2-M3):
 
 * only connections holding the authority's full interactive grant reach legacy dispatch — a

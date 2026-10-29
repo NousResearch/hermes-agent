@@ -257,7 +257,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(win.hermesDesktop?.openSessionInTerminal).toBeUndefined()
     expect(win.hermesDesktop?.connections).toBeUndefined()
     expect(win.hermesDesktop?.onOpenFindBarRequested).toBeUndefined()
-    expect(win.hermesDesktop?.petOverlay).toBeUndefined()
+    expect(win.hermesDesktop?.companionOverlay).toBeUndefined()
     expect(win.hermesDesktop?.quickEntry).toBeUndefined()
   })
 

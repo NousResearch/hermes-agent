@@ -663,7 +663,7 @@ def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, 
     from hermes_state_runtime import RuntimeStoreError
     for failure in (RuntimeStoreError('session_busy'), RuntimeStoreError('launch_credentials_unavailable'),
                     OSError('config.yaml unreadable')):
-        async def fail(authority, ref, failure=failure):
+        async def fail(authority, ref, failure=failure, **kwargs):
             raise failure
         monkeypatch.setattr(refresh, 'commit_refresh', fail)
         with caplog.at_level(logging.INFO, logger=refresh.__name__):

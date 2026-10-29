@@ -72,6 +72,9 @@ class CanonicalResumeParams(ProfileParams):
     # A renderer (the Ink TUI) asks for main's display projection of the same rows
     # (``tui_gateway.session_history._history_to_messages``) as ``display_messages``.
     display_projection: bool = False
+    # The attaching shell's allowlisted environment (``agent.session_client_env``): a resume from a new
+    # local shell rebinds the session to the client attached now (#144587). Absent: the frozen map is kept.
+    client_env: dict[str, str] | None = None
 
 
 class CanonicalSessionHandle(Result):

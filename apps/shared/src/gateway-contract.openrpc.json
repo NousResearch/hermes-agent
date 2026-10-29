@@ -9569,6 +9569,21 @@
             "default": false,
             "title": "Display Projection",
             "type": "boolean"
+          },
+          "client_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Env"
           }
         },
         "title": "CanonicalResumeParams",
@@ -38271,6 +38286,21 @@
             "default": true,
             "title": "Inline Images",
             "type": "boolean"
+          },
+          "client_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Env"
           }
         },
         "required": [

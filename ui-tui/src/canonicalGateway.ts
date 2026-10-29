@@ -38,6 +38,11 @@ export function canonicalRequest(method: string, original: Record<string, unknow
     delete params.cols
     delete params.omit_messages
 
+    // The attaching shell's environment rebinds the session to the client attached now (#144587).
+    // The create contract's `client_env` is the proxy for a gateway new enough to take it: an older
+    // owner refuses unknown resume params, so strip it there and the resume works as before.
+    if (!contract?.parameters.includes('client_env')) { delete params.client_env }
+
     if (renders) { params.display_projection = true }
   }
 
@@ -146,6 +151,14 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   }
 
   return options
+}
+
+/** The attaching shell's environment for `session.resume`: the session rebinds to the client
+ * attached now (#144587). Empty when the launcher sent none — the frozen map is kept. */
+export function localResumeOptions(env = process.env): Record<string, unknown> {
+  const clientEnv = parseClientEnv(env.HERMES_TUI_CLIENT_ENV)
+
+  return clientEnv ? { client_env: clientEnv } : {}
 }
 
 function parseClientEnv(raw?: string): Record<string, string> | undefined {

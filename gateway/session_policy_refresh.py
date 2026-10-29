@@ -18,6 +18,36 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def normalise_resumed_client_env(authority, raw, *, client_local=False):
+    """A resume's ``client_env`` validated like create's: the attaching shell's map filtered by the
+    profile's CURRENT allowlist. Returns the ``(env_json, rules_json, remote)`` triple the refresh
+    folds into the stored policy. Raises ``invalid_params`` (fail-closed, like create's ``_refuse``),
+    never a silent keep: the caller validates before the best-effort refresh, which must not fail a resume."""
+    from agent.session_client_env import client_env_rules, normalise_client_env
+    from gateway.run import _load_gateway_config
+    from hermes_state_runtime import RuntimeStoreError
+    home = Path(authority.db.db_path).resolve().parent
+    rules = client_env_rules(_load_gateway_config(home / 'config.yaml'), local=client_local)
+    try:
+        env = normalise_client_env(raw, rules)
+    except ValueError as exc:
+        raise RuntimeStoreError('invalid_params', field='client_env', detail=str(exc)) from exc
+    return json.dumps(env, sort_keys=True), json.dumps(rules, sort_keys=True), not client_local
+
+
+def _with_resumed_client_env(policy, triple):
+    """*policy* with the attaching shell's env folded in when it differs; the same policy otherwise, so
+    an unchanged shell commits no new generation. Never raises: the caller already normalised."""
+    if triple is None:
+        return policy
+    env_json, rules_json, remote = triple
+    if (policy.client_env_json, policy.client_env_rules_json,
+            policy.client_env_remote) == (env_json, rules_json, remote):
+        return policy
+    return replace(policy, client_env_json=env_json, client_env_rules_json=rules_json,
+                   client_env_remote=remote)
+
+
 def _follow(target, live, key):
     if key in live:
         target[key] = live[key]
@@ -134,10 +164,11 @@ def _server_name(servers, name):
     return name[4:] if name.startswith('mcp-') and name not in servers else name
 
 
-def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
+def _prepare(authority, session_id, mcp_only=False, adopt_only=False, client_env=None):
     """Off the owner loop: the stored policy, its refresh from this profile home's files, and the generation
     it was derived at. None when the session takes no refresh or nothing moved. *adopt_only*: the adoption
-    of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment)."""
+    of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment).
+    *client_env*: an already-normalised triple the commit folds into the stored policy when it differs."""
     from gateway.run import _load_gateway_config
     from gateway.session_policy import SURFACES, restore_policy
     from hermes_state_local import local_receipt
@@ -158,9 +189,13 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
         from gateway.session_local_migration import follow_bot_chat
         base = follow_bot_chat(authority, session_id, old, live, picked)
     if adopt_only:
-        return None if base is old else (stored, old, base, {}, set(), generation)
+        if base is old:
+            base = _with_resumed_client_env(base, client_env)
+            return None if base is old else (stored, old, base, {}, set(), generation)
+        return (stored, old, _with_resumed_client_env(base, client_env), {}, set(), generation)
     policy, secrets, replaced = refreshed_policy(base, live, terminal, picked=picked, mcp_only=mcp_only)
-    return None if policy is old else (stored, old, policy, secrets, replaced, generation)
+    policy = _with_resumed_client_env(base if policy is old else policy, client_env)
+    return None if policy is base and base is old else (stored, old, policy, secrets, replaced, generation)
 
 
 def _rebind(authority, session_id, old, policy, fresh, replaced):
@@ -202,7 +237,7 @@ async def refresh_settled(authority, session_id):
         await asyncio.wait({running})  # its outcome is its caller's; a cancelled waiter leaves it running
 
 
-async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False):
+async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False, client_env=None):
     """Commit an idle local session's refresh as its next policy generation: True when one was committed,
     False when nothing moved. Raises the store's refusal (``session_busy`` while a turn runs or waits).
     One refresh per session at a time, run to its publication even when the caller is cancelled: a second
@@ -210,16 +245,17 @@ async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False):
     from gateway.session_runtime_workers import track_mutation
     await refresh_settled(authority, ref.session_id)
     refreshes = _in_flight(authority)
-    task = refreshes[ref.session_id] = track_mutation(authority, _commit_refresh(authority, ref, mcp_only, adopt_only))
+    task = refreshes[ref.session_id] = track_mutation(
+        authority, _commit_refresh(authority, ref, mcp_only, adopt_only, client_env))
     task.add_done_callback(lambda done: refreshes.pop(ref.session_id, None) if refreshes.get(ref.session_id)
                            is done else None)
     return await asyncio.shield(task)
 
 
-async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
+async def _commit_refresh(authority, ref, mcp_only, adopt_only=False, client_env=None):
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_mutation_prepared import commit_refreshed_policy
-    prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only, adopt_only)
+    prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only, adopt_only, client_env)
     # An MCP-only refresh never runs follow_bot_chat: it neither settles nor commits an adoption, so it
     # leaves a pending one for the next open.
     pending = _pending_adoptions(authority) if not mcp_only else set()
@@ -242,17 +278,21 @@ async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
     return True
 
 
-async def refresh_resumed_policy(authority, ref, *, attached=False):
+async def refresh_resumed_policy(authority, ref, *, attached=False, client_env=None):
     """Commit the config refresh of an idle local session before it is attached. Never fails the resume:
     a busy session, a revoked launch credential or an unreadable profile keeps the stored policy. Only a turn
     running or queued (or admitted during the commit) is expected; anything else is a WARNING.
 
     *attached*: this client already holds the session (Desktop's warm reopen). The settings refresh is once
-    per attachment, but a frozen Bot Chat whose adoption a busy open refused is adopted on any later open."""
-    if attached and ref.session_id not in _pending_adoptions(authority):
+    per attachment, but a frozen Bot Chat whose adoption a busy open refused is adopted on any later open.
+    *client_env*: an already-normalised ``(env_json, rules_json, remote)`` triple from
+    ``normalise_resumed_client_env``; when the attaching shell's map differs from the stored one the commit
+    carries it, so the next turn binds the client attached now (#144587)."""
+    if attached and ref.session_id not in _pending_adoptions(authority) and client_env is None:
         return
     try:
-        await (commit_refresh(authority, ref, adopt_only=True) if attached else commit_refresh(authority, ref))
+        await (commit_refresh(authority, ref, adopt_only=True, client_env=client_env) if attached
+               else commit_refresh(authority, ref, client_env=client_env))
     except Exception as exc:  # health: allow BLE001 -- a refresh is best-effort; the resume itself must proceed
         reason = getattr(exc, 'reason', None) or type(exc).__name__
         busy = reason in {'session_busy', 'unknown_execution', 'revision_conflict'}

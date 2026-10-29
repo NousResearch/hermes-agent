@@ -664,7 +664,17 @@ class AuthorityConnection:
             # (CFG-2); a snapshot poll on this attachment does not. Any open still adopts a frozen Bot Chat
             # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
             from gateway.session_policy_refresh import refresh_resumed_policy
-            await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
+            triple = None
+            if params.get('client_env') is not None:
+                # The attaching shell's allowlisted environment, validated fail-closed like create's: a
+                # new local shell rebinds the session to the client attached now (#144587). Host-bound
+                # values apply only over the gateway's own ticketed attach (``native_owner``), never a
+                # value the client sends — the same proof creation trusts.
+                from gateway.session_policy_refresh import normalise_resumed_client_env
+                triple = normalise_resumed_client_env(self.authority, params['client_env'],
+                                                      client_local=self.native_owner)
+            await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions,
+                                         client_env=triple)
         # ``omit_messages``: the client pages the transcript itself (Desktop over REST), so the attach reads no
         # compression lineage (a whole-lineage read here made every open of a long chat cost seconds).
         omit = params.get('omit_messages') is True

@@ -6,7 +6,16 @@ import { isTargetSessionBusy } from '@/app/session/hooks/use-prompt-actions/util
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
-import { setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $currentFastMode,
+  $currentReasoningEffort,
+  $currentServiceTier,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier
+} from '@/store/session'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { PRE_TURN_LIVE_SETTLE_GRACE_MS } from './utils'
@@ -400,5 +409,27 @@ describe('message.complete sidebar refresh coalescing', () => {
     })
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('runtime preference paint preserves composer intent', () => {
+  it.each([false, true])('does not persist heartbeat speed/effort over a manual fast=%s choice', manualFast => {
+    mountStream()
+    setCurrentFastMode(manualFast)
+    setCurrentReasoningEffort('high')
+    setCurrentServiceTier('ultrafast')
+
+    const keys = [
+      'hermes.desktop.composer.fast',
+      'hermes.desktop.composer.reasoning-effort',
+      'hermes.desktop.composer.service-tier'
+    ]
+
+    const before = keys.map(key => localStorage.getItem(key))
+    sessionInfo(ACTIVE_SID, { fast: !manualFast, reasoning_effort: 'low', service_tier: 'default' })
+    expect($currentFastMode.get()).toBe(!manualFast)
+    expect($currentReasoningEffort.get()).toBe('low')
+    expect($currentServiceTier.get()).toBe('default')
+    expect(keys.map(key => localStorage.getItem(key))).toEqual(before)
   })
 })

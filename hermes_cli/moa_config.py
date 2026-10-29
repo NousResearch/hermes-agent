@@ -209,17 +209,24 @@ def validate_moa_payload(raw: Any) -> list[str]:
     return problems
 
 
-def _normalize_preset(raw: Any) -> dict[str, Any]:
+def _normalize_preset(raw: Any, *, seed_factory_defaults: bool = False) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
     cleaned = (_clean_slot(item, include_enabled=True) for item in _reference_slots(raw.get("reference_models")))
     refs = [item for item in cleaned if item is not None]
+    # Named or explicitly incomplete presets belong to the user. Factory routes
+    # only seed absent fields in a new/legacy flat config, never replace their choices.
+    if seed_factory_defaults and "reference_models" not in raw:
+        refs = _default_reference_models()
+    aggregator = _clean_slot(raw.get("aggregator")) or {}
+    if seed_factory_defaults and "aggregator" not in raw:
+        aggregator = deepcopy(DEFAULT_MOA_AGGREGATOR)
     policy = str(raw.get("degraded_reference_policy") or "loud").strip().lower()
     return {
         "enabled": _coerce_bool(raw.get("enabled"), True),
-        "reference_models": refs or _default_reference_models(),
-        "aggregator": _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR),
+        "reference_models": refs,
+        "aggregator": aggregator,
         # None means 'don't send it — provider default applies'.
         "reference_temperature": _coerce_number(raw.get("reference_temperature"), float),
         "aggregator_temperature": _coerce_number(raw.get("aggregator_temperature"), float),
@@ -259,7 +266,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
             if clean_name:
                 presets[clean_name] = _normalize_preset(preset)
     if not presets:  # Legacy flat config becomes the default preset.
-        presets[DEFAULT_MOA_PRESET_NAME] = _normalize_preset(raw)
+        presets[DEFAULT_MOA_PRESET_NAME] = _normalize_preset(raw, seed_factory_defaults=True)
 
     default_name = str(raw.get("default_preset") or "").strip()
     if not default_name or default_name not in presets:

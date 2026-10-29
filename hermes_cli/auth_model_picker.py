@@ -80,8 +80,9 @@ class _ModelPickerRows:
             usage = usage.with_pricing(pricing)
         self.usage = usage
         if self.window_mode:
-            from hermes_cli.model_picker_usage import usage_levels
-            self.levels = usage_levels(all_models, pricing)
+            from hermes_cli.model_picker_usage import usage_tag_levels
+            # Tags only: dimming reads ``usage.blocks`` (free_ids), so subscription-billed rows still never dim.
+            self.levels = usage_tag_levels(all_models, pricing)
             self.has_pricing = False
             self.has_cache = False
             self.any_on_sale = False

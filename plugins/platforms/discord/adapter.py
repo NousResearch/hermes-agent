@@ -1273,6 +1273,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._playback_timeout_seconds = self._load_playback_timeout()
         self._voice_receivers: dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        # Voice reconnect repair: discord.py stops a connection's SocketReader when the voice
+        # socket reconnects and never starts another (a Thread cannot be restarted). The client
+        # still reports is_connected(), so capture dies silently (#142093).
+        self._voice_recovering: set[int] = set()  # guilds with a repair in flight
+        self._voice_last_recovery: dict[int, float] = {}  # guild_id -> monotonic stamp
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Voice-reply mode ("off"|"voice_only"|"all") per linked text-channel id (set by run.py) so
@@ -4000,6 +4005,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     # UDP keepalive interval; Discord drops the UDP route after ~60s of silence.
     _KEEPALIVE_INTERVAL = 15
+    # A dead socket reader is repaired by leaving and re-joining; keep retries far enough apart
+    # that a voice server rejecting the re-join cannot turn into a connect/disconnect storm.
+    _VOICE_RECOVERY_COOLDOWN = 20.0
 
     def discard_pending_voice_input(self, guild_id: int) -> None:
         """Drop speech the receiver holds but has not emitted, before the text binding moves: audio
@@ -4007,6 +4015,65 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         receiver = self._voice_receivers.get(guild_id)
         if receiver is not None:
             receiver.discard_pending()
+
+    @staticmethod
+    def _voice_capture_dead(vc: Any) -> bool:
+        """True when a voice client is connected but no longer reading its socket.
+
+        discord.py runs one SocketReader thread per voice connection. A reconnect stops that
+        thread and starts a new one only inside ``connect()``; because ``is_connected()`` keeps
+        returning True, the stopped reader is the only signal that capture has silently stopped
+        (#142093). Missing internals read as healthy so a library change degrades to the old
+        behaviour instead of a reconnect loop.
+        """
+        conn = getattr(vc, "_connection", None)
+        reader = getattr(conn, "_socket_reader", None)
+        is_alive = getattr(reader, "is_alive", None)
+        if not callable(is_alive):
+            return False
+        try:
+            return not is_alive()
+        except Exception:
+            return False
+
+    async def _recover_voice_connection(self, guild_id: int, vc: Any) -> None:
+        """Rebuild capture after a reconnect left the socket reader dead.
+
+        The old connection cannot be repaired: its reader thread cannot be restarted and its
+        listener list was cleared on reconnect, so the only recovery is a fresh connect. The
+        channel binding and source metadata are captured first because leaving clears them.
+        """
+        if guild_id in self._voice_recovering:
+            return
+        self._voice_recovering.add(guild_id)
+        text_channel_id = self._voice_text_channels.get(guild_id)
+        source = self._voice_sources.get(guild_id)
+        channel = getattr(vc, "channel", None)
+        try:
+            logger.warning(
+                "Voice socket reader for guild %s stopped after a reconnect; re-joining to restore capture",
+                guild_id,
+            )
+            # This coroutine runs inside the listen loop it is about to replace; drop the handle
+            # first so leave_voice_channel cannot cancel the task doing the recovery.
+            self._voice_listen_tasks.pop(guild_id, None)
+            try:
+                await self.leave_voice_channel(guild_id)
+            except Exception as e:
+                logger.warning("Voice teardown before re-join failed for guild %s: %s", guild_id, e)
+            if channel is None:
+                logger.warning("Cannot re-join voice for guild %s: channel is no longer known", guild_id)
+                return
+            await asyncio.sleep(1.0)  # let the voice server release the old session
+            rejoined = await self.join_voice_channel(channel, text_channel_id=text_channel_id, source=source)
+            if rejoined:
+                logger.info("Voice capture restored for guild %s after reconnect", guild_id)
+            else:
+                logger.warning("Re-join after a dead voice socket reader failed for guild %s", guild_id)
+        except Exception as e:
+            logger.error("Voice reconnect repair failed for guild %s: %s", guild_id, e, exc_info=True)
+        finally:
+            self._voice_recovering.discard(guild_id)
 
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
@@ -4018,6 +4085,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             while receiver._running:
                 await asyncio.sleep(0.2)
                 now = time.monotonic()
+                # Capture dies silently when a reconnect leaves the socket reader stopped: the
+                # client still looks connected and check_silence() simply never returns speech.
+                _vc = self._voice_clients.get(guild_id)
+                if _vc is not None and _vc.is_connected() and self._voice_capture_dead(_vc):
+                    if now - self._voice_last_recovery.get(guild_id, 0.0) >= self._VOICE_RECOVERY_COOLDOWN:
+                        self._voice_last_recovery[guild_id] = now
+                        await self._recover_voice_connection(guild_id, _vc)
+                        if self._voice_receivers.get(guild_id) is not receiver:
+                            return  # a fresh receiver and its loop took over
+                    continue  # nothing can be drained while the reader is dead
                 if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
                     last_keepalive = now
                     try:

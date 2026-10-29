@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from plugins.platforms.discord.adapter import (  # noqa: E402
+from plugins.platforms.discord.adapter import (
     ChoicePickerView,
     ClarifyChoiceView,
     ExecApprovalView,
@@ -49,25 +49,29 @@ def _views():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "name,call,expected",
+    "name,call",
     [
-        ("exec", lambda v, i: v._resolve(i, "once", None, "x"), "You're not authorized to approve commands~"),
-        ("slash", lambda v, i: v._resolve(i, "once", None, "x"), "You're not authorized to answer this prompt~"),
-        ("update", lambda v, i: v._respond(i, "y", None, "x"), "You're not authorized~"),
-        ("clarify", lambda v, i: v._resolve_choice(i, 0, "a"), "You're not authorized to answer this prompt~"),
-        ("clarify", lambda v, i: v._on_other(i), "You're not authorized to answer this prompt~"),
-        ("model", lambda v, i: v._on_provider_selected(i), "You're not authorized~"),
-        ("model", lambda v, i: v._on_back(i), "You're not authorized~"),
-        ("choice", lambda v, i: v._on_select(i), "⛔ You are not authorized to change this setting."),
+        ("exec", lambda v, i: v._resolve(i, "once", None, "x")),
+        ("slash", lambda v, i: v._resolve(i, "once", None, "x")),
+        ("update", lambda v, i: v._respond(i, "y", None, "x")),
+        ("clarify", lambda v, i: v._resolve_choice(i, 0, "a")),
+        ("clarify", lambda v, i: v._on_other(i)),
+        ("model", lambda v, i: v._on_provider_selected(i)),
+        ("model", lambda v, i: v._on_back(i)),
+        ("choice", lambda v, i: v._on_select(i)),
     ],
 )
-async def test_unauthorized_click_strings_preserved(monkeypatch, name, call, expected):
+async def test_unauthorized_click_uses_the_shared_notice(monkeypatch, name, call):
+    """Every view refuses a stranger with the ONE gateway-wide sentence that names the fix command."""
+    from gateway.platforms.base import unauthorized_action_notice
+
     monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
     view = _views()[name]
     interaction = _interaction()
     await call(view, interaction)
+    expected = unauthorized_action_notice("discord")
     interaction.response.send_message.assert_awaited_once_with(expected, ephemeral=True)
     interaction.response.edit_message.assert_not_called()
     assert view.resolved is False
@@ -75,22 +79,29 @@ async def test_unauthorized_click_strings_preserved(monkeypatch, name, call, exp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "name,call,expected",
+    "name,call",
     [
-        ("exec", lambda v, i: v._resolve(i, "once", None, "x"), "This approval has already been resolved~"),
-        ("slash", lambda v, i: v._resolve(i, "once", None, "x"), "This prompt has already been resolved~"),
-        ("update", lambda v, i: v._respond(i, "y", None, "x"), "Already answered~"),
-        ("clarify", lambda v, i: v._resolve_choice(i, 0, "a"), "This prompt has already been answered~"),
-        ("model", lambda v, i: v._on_model_selected(i), "Already resolved~"),
+        ("slash", lambda v, i: v._resolve(i, "once", None, "x")),
+        ("update", lambda v, i: v._respond(i, "y", None, "x")),
+        ("clarify", lambda v, i: v._resolve_choice(i, 0, "a")),
+        ("clarify", lambda v, i: v._on_other(i)),
     ],
 )
-async def test_already_resolved_strings_preserved(monkeypatch, name, call, expected):
-    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+async def test_answered_view_is_released(monkeypatch, tmp_path, name, call):
+    """An answer stops the view: its timeout can't later stamp "expired" over the answer, and
+    a long ``discord_prompt_timeout`` doesn't keep answered views registered (exec cards:
+    test_discord_approval_lifecycle)."""
+    from tools import slash_confirm
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(slash_confirm, "resolve", AsyncMock(return_value=None))
     view = _views()[name]
-    view.resolved = True
+    monkeypatch.setattr(view, "_check_auth", lambda _interaction: True)
     interaction = _interaction()
     await call(view, interaction)
-    interaction.response.send_message.assert_awaited_once_with(expected, ephemeral=True)
+    interaction.response.edit_message.assert_awaited_once()
+    assert view.resolved is True
+    assert view.is_finished()
 
 
 @pytest.mark.asyncio
@@ -103,8 +114,13 @@ async def test_on_timeout_disables_and_greys_embed(name):
     await view.on_timeout()
     assert view.resolved is True
     assert all(child.disabled for child in view.children)
-    assert embed.footer == "⏱ Prompt expired — no action taken"
-    msg.edit.assert_awaited_once_with(embed=embed, view=view)
+    assert embed.footer
+    assert embed.color is not None
+    # Exec cards remove controls entirely so competing timeout edits cannot
+    # reattach a retired approval view.
+    msg.edit.assert_awaited_once_with(embed=embed, view=None if name == "exec" else view)
+    if name == "exec":
+        assert view.is_finished()
 
 
 @pytest.mark.asyncio

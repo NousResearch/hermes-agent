@@ -244,3 +244,18 @@ def test_broadcast_filter_runs_before_allowlist():
     assert adapter._should_process_message(msg) is False
 
 
+
+
+def test_device_qualified_bot_ids_match_bare_mention_and_quote_ids():
+    """Baileys reports the bot's own ids as ``<user>:<device>@lid`` while inbound
+    mentionedJid / quoted participant ids are bare — both must normalize equal."""
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+    device_qualified = ["447999674698:14@s.whatsapp.net", "116342762025117:14@lid"]
+
+    assert adapter._should_process_message(
+        _group_message("hi there", botIds=device_qualified, mentionedIds=["116342762025117@lid"])
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("and this?", botIds=device_qualified, quotedParticipant="447999674698@s.whatsapp.net")
+    ) is True
+    assert adapter._should_process_message(_group_message("hello everyone", botIds=device_qualified)) is False

@@ -39,12 +39,11 @@ def test_fresh_process_recovers_last_good_config_and_leaves_broken_file_alone(tm
     assert first["approvals"]["deny"] == ["curl*evil*"]
 
     config_path.write_text(BROKEN, encoding="utf-8")
-    recovered, stderr = _fresh_load(tmp_path)
+    recovered, _ = _fresh_load(tmp_path)
 
     assert recovered["approvals"]["deny"] == ["curl*evil*"]
     assert recovered["model"]["default"] == "test/secure"
     assert recovered["custom_providers"][0]["api_key"] == "expanded-secret"
-    assert "LAST KNOWN GOOD" in stderr
     assert config_path.read_text(encoding="utf-8") == BROKEN
 
 

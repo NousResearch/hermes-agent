@@ -1,0 +1,89 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-emptied-mapping-pruned",
+  "description": "Proves d5-provenance: A mapping emptied because a higher group's lock governs its only key is dropped, not left as an empty leaf; every group provenance leaf names a group.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-low",
+      "priority": 1,
+      "values": {
+        "a": {
+          "b": 1
+        }
+      },
+      "locks": [
+        "a"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-high",
+      "priority": 2,
+      "values": {
+        "z": 1
+      },
+      "locks": [
+        "a.b"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "z": 1
+    },
+    "provenance": {
+      "z": "group"
+    },
+    "groupProvenance": {
+      "z": "g-high"
+    },
+    "locks": [
+      {
+        "path": "a",
+        "level": "group",
+        "groupId": "g-low"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "a.c",
+      "value": "p",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-low"
+      }
+    }
+  ]
+}

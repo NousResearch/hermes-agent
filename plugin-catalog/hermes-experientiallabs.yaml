@@ -1,0 +1,15 @@
+name: hermes-experientiallabs
+repo: https://github.com/kyoto-aircon/hermes-experientiallabs
+sha: 0d26c3eac2965105a507f6ed90e046bf6f981056
+description: "Experiential Labs - OpenAI-compatible multi-model gateway provider (chat, /model picker, aux and curated fallback models, /usage wallet snapshot). All network calls go to api.experientiallabs.ai - /v1 chat + models via Hermes' own transport, /api/v1/credits and /api/v1/key only when /usage runs; no telemetry; credentials resolve through Hermes routes (hermes auth / .env). Disclosure — When you pick Experiential Labs as your model, every prompt, tool result and attachment of that session goes to api.experientiallabs.ai, a third-party gateway that routes to upstream model vendors. /usage sends your key to its Cost API (GET /credits and /key) or to the cost_api_base you set. Independent integration, not affiliated with Experiential Labs."
+maintainer: kyoto-aircon
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+version: "0.4.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - EXPLABS_API_KEY

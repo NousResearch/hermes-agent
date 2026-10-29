@@ -1,9 +1,12 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
-import { getBaseColors, skinPref, ThemeProvider, useTheme } from './context'
-import { BUILTIN_THEME_LIST, everforestTheme } from './presets'
+import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { readableInk } from './color'
+import { skinPref, ThemeProvider, useTheme } from './context'
+import { everforestTheme, midnightTheme } from './presets'
+import type { DesktopTheme } from './types'
+import { installUserTheme } from './user-themes'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -13,6 +16,8 @@ const bloomberg = (foreground: string) => ({
 })
 
 const cssVar = (name: string) => window.document.documentElement.style.getPropertyValue(name)
+
+const customStyleEl = () => window.document.getElementById('hermes-desktop-custom-css') as HTMLStyleElement | null
 
 describe('ThemeProvider ← backend skin sync', () => {
   beforeEach(() => {
@@ -93,6 +98,86 @@ describe('ThemeProvider ← backend skin sync', () => {
   })
 })
 
+describe('ThemeProvider ← local bridge fallback', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  it('uses the local bridge skin when a remote gateway has not connected yet', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const [{ ThemeProvider: FreshThemeProvider }, freshSync] = await Promise.all([
+        import('./context'),
+        import('./backend-sync')
+      ])
+
+      expect(freshSync.$backendThemes.get().bloomberg?.name).toBe('bloomberg')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(cssVar('--theme-background-seed')).toBe('#000000')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
+  })
+
+  it('keeps a saved desktop appearance ahead of the local bridge fallback', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      window.localStorage.setItem('hermes-desktop-theme-v2', 'everforest')
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const { ThemeProvider: FreshThemeProvider } = await import('./context')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(window.document.documentElement.dataset.hermesTheme).toBe('everforest')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
+  })
+})
+
 describe('ThemeProvider highlight preview', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -162,70 +247,175 @@ describe('ThemeProvider highlight preview', () => {
   })
 })
 
-// `--dt-primary-solid` is the loud brand fill of every shipped preset. The
-// desktop's original ensureContrast ladder (5 rungs of 0.2 toward the pole
-// opposite the background, re-mixed from the ORIGINAL colour) is reproduced
-// here as a reference implementation; the shared @hermes/shared/color ladder
-// must land byte-identical for every preset in every mode, or presets change
-// colour under users on an "only math moved" refactor.
-describe('ThemeProvider --dt-primary-solid preset parity', () => {
-  const hexToRgb = (hex: string): [number, number, number] =>
-    [0, 2, 4].map(i => parseInt(hex.replace(/^#/, '').slice(i, i + 2), 16)) as [number, number, number]
+describe('ThemeProvider customCSS injection', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
 
-  const rgbToHex = (rgb: [number, number, number]) =>
-    `#${rgb
-      .map(n =>
-        Math.round(Math.min(255, Math.max(0, n)))
-          .toString(16)
-          .padStart(2, '0')
+  it('injects customCSS from an applied backend skin', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() =>
+      ingestBackendSkin({ ...bloomberg('#ff9f0a'), customCSS: '.chat-input { font-size: 16px; }' }, { apply: true })
+    )
+
+    expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 16px; }')
+  })
+
+  it('replaces customCSS in the SAME <style> tag when the active skin changes', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() => ingestBackendSkin({ ...bloomberg('#ff9f0a'), customCSS: 'a { color: red; }' }, { apply: true }))
+    const first = customStyleEl()
+    expect(first?.textContent).toBe('a { color: red; }')
+
+    act(() =>
+      ingestBackendSkin(
+        { name: 'forest', colors: { background: '#001100', ui_text: '#66ff66' }, customCSS: 'b { color: blue; }' },
+        { apply: true }
       )
-      .join('')}`
+    )
 
-  const oldMix = (a: string, b: string, amount: number) => {
-    const ar = hexToRgb(a)
-    const br = hexToRgb(b)
+    const second = customStyleEl()
+    expect(second).not.toBeNull()
+    expect(second?.id).toBe(first?.id) // one tag reused — no accumulation
+    expect(second?.textContent).toBe('b { color: blue; }')
+  })
 
-    return rgbToHex([
-      ar[0] + (br[0] - ar[0]) * amount,
-      ar[1] + (br[1] - ar[1]) * amount,
-      ar[2] + (br[2] - ar[2]) * amount
-    ])
+  it('removes the style tag when switching to a CSS-less skin', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() => ingestBackendSkin({ ...bloomberg('#ff9f0a'), customCSS: 'a { color: red; }' }, { apply: true }))
+    expect(customStyleEl()).not.toBeNull()
+
+    act(() => ingestBackendSkin(bloomberg('#00ff00'), { apply: true }))
+
+    expect(customStyleEl()).toBeNull()
+  })
+
+  it('applies customCSS for a built-in-named user skin without shadowing the built-in palette', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() =>
+      ingestBackendSkin(
+        {
+          name: 'mono',
+          colors: { background: '#ff00ff', ui_text: '#00ff00' },
+          customCSS: '.status-bar { background: black; }'
+        },
+        { apply: true }
+      )
+    )
+
+    // The user's CSS lands…
+    expect(customStyleEl()?.textContent).toBe('.status-bar { background: black; }')
+    // …but the palette policy still holds: the backend theme is never
+    // registered under a built-in name, so the painted background is the
+    // desktop's built-in mono, not the user YAML's #ff00ff.
+    expect($backendThemes.get().mono).toBeUndefined()
+    expect(cssVar('--theme-background-seed')).not.toBe('#ff00ff')
+  })
+
+  it('applies customCSS from a default-named user skin under the desktop default', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    act(() =>
+      ingestBackendSkin(
+        { name: 'default', colors: { background: '#123456' }, customCSS: '.chat-input { font-size: 18px; }' },
+        { apply: true }
+      )
+    )
+
+    expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 18px; }')
+  })
+})
+
+describe('ThemeProvider theme typography (#41766)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  // The merged typography is DEFAULT ← nous ← theme, so a user theme that sets
+  // only the new knobs still inherits the font stacks.
+  const bigTypeTheme: DesktopTheme = {
+    ...midnightTheme,
+    name: 'bigtype',
+    label: 'Big Type',
+    description: 'Test theme with typography overrides',
+    typography: { baseSize: '1.125rem', lineHeight: '1.65', letterSpacing: '0.01em' }
   }
 
-  const linearize = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+  it('paints baseSize/lineHeight/letterSpacing when the active theme provides them', () => {
+    installUserTheme(bigTypeTheme)
 
-  const oldLuminance = (hex: string) => {
-    const [r, g, b] = hexToRgb(hex).map(v => linearize(v / 255))
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
 
-    return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!
-  }
+    act(() => ctx!.setTheme('bigtype'))
 
-  const oldContrast = (a: string, b: string) => {
-    const la = oldLuminance(a)
-    const lb = oldLuminance(b)
+    expect(cssVar('--dt-base-size')).toBe('1.125rem')
+    expect(cssVar('--dt-line-height')).toBe('1.65')
+    expect(cssVar('--dt-letter-spacing')).toBe('0.01em')
+  })
 
-    return la >= lb ? (la + 0.05) / (lb + 0.05) : (lb + 0.05) / (la + 0.05)
-  }
+  it('drops the inline vars when switching to a theme without them, restoring the styles.css defaults', () => {
+    installUserTheme(bigTypeTheme)
 
-  const oldEnsureContrast = (color: string, bg: string, min: number) => {
-    if (oldContrast(color, bg) >= min) {
-      return color
-    }
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
 
-    const towards = oldLuminance(bg) < 0.5 ? '#ffffff' : '#000000'
-    let best = color
+    act(() => ctx!.setTheme('bigtype'))
+    expect(cssVar('--dt-base-size')).toBe('1.125rem')
 
-    for (let amount = 0.2; amount <= 1.0001; amount += 0.2) {
-      best = oldMix(color, towards, Math.min(amount, 1))
+    // Built-ins carry no size/leading/tracking opinion — the inline values must
+    // go away so :root's own declarations apply again.
+    act(() => ctx!.setTheme('mono'))
 
-      if (oldContrast(best, bg) >= min) {
-        return best
-      }
-    }
+    expect(cssVar('--dt-base-size')).toBe('')
+    expect(cssVar('--dt-line-height')).toBe('')
+    expect(cssVar('--dt-letter-spacing')).toBe('')
+  })
+})
 
-    return best
-  }
+function ThemeProbe({ onReady }: { onReady: (ctx: ReturnType<typeof useTheme>) => void }) {
+  onReady(useTheme())
 
+  return null
+}
+
+describe('ThemeProvider boot-failure palette', () => {
   beforeEach(() => {
     window.localStorage.clear()
     __resetBackendSkinSync()
@@ -233,35 +423,50 @@ describe('ThemeProvider --dt-primary-solid preset parity', () => {
 
   afterEach(cleanup)
 
-  let ctx: ReturnType<typeof useTheme>
+  it.each([true, false])('persists the resolved colours with explicit midground tokens: %s', explicit => {
+    const colors = {
+      ...midnightTheme.colors,
+      foreground: '#123456',
+      ring: '#eeeeee',
+      midground: explicit ? '#234567' : undefined,
+      midgroundForeground: explicit ? '#fedcba' : undefined
+    }
 
-  function Probe() {
-    ctx = useTheme()
-
-    return null
-  }
-
-  const cases = BUILTIN_THEME_LIST.flatMap(theme =>
-    (['light', 'dark'] as const).map(mode => [theme.name, mode] as const)
-  )
-
-  it.each(cases)('%s/%s keeps the pre-refactor loud fill', (name, mode) => {
+    installUserTheme({ ...midnightTheme, name: 'boot-palette', colors, darkColors: colors })
+    let ctx: ReturnType<typeof useTheme>
     render(
       <ThemeProvider>
-        <Probe />
+        <ThemeProbe onReady={value => (ctx = value)} />
       </ThemeProvider>
     )
 
-    act(() => ctx.previewTheme(name, mode))
+    act(() => ctx!.setTheme('boot-palette'))
 
-    const primary = getBaseColors(name, mode).primary
-    const expected = oldEnsureContrast(primary, '#fcfcfc', 4.5)
+    const midground = colors.midground ?? colors.ring
+    const snapshot = JSON.parse(window.localStorage.getItem('hermes-boot-palette')!)
+    expect(snapshot).toEqual({
+      background: window.localStorage.getItem('hermes-boot-background'),
+      foreground: colors.foreground,
+      accent: midground,
+      accentForeground: colors.midgroundForeground ?? readableInk(midground)
+    })
+    expect(snapshot.accentForeground).toBe(cssVar('--dt-midground-foreground'))
+  })
 
-    expect(cssVar('--dt-primary-solid')).toBe(expected)
+  it('stores no snapshot for a theme whose accent is a var() the notice could not resolve', () => {
+    window.localStorage.setItem('hermes-boot-palette', '{"stale":true}')
+    const colors = { ...midnightTheme.colors, midground: 'var(--theme-primary)', midgroundForeground: '#161616' }
+    installUserTheme({ ...midnightTheme, name: 'boot-palette-var', colors, darkColors: colors })
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
 
-    // At least some presets need a lift; the assertion must not be vacuous.
-    if (name === 'nous' && mode === 'dark') {
-      expect(expected).not.toBe(primary)
-    }
+    act(() => ctx!.setTheme('boot-palette-var'))
+
+    expect(window.localStorage.getItem('hermes-boot-palette')).toBeNull()
+    expect(window.localStorage.getItem('hermes-boot-background')).not.toBeNull()
   })
 })

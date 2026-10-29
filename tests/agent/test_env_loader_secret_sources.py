@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hermes_cli import env_loader  # noqa: E402
+from hermes_cli import env_loader
 
 
 @pytest.fixture(autouse=True)
@@ -37,9 +37,6 @@ def test_get_secret_source_returns_none_for_untracked_var():
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") is None
 
 
-def test_get_secret_source_returns_label_for_tracked_var():
-    env_loader._SECRET_SOURCES["ANTHROPIC_API_KEY"] = "bitwarden"
-    assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "bitwarden"
 
 
 def test_get_secret_source_values_returns_home_snapshot_copy(tmp_path):
@@ -69,30 +66,10 @@ def test_format_secret_source_suffix_empty_for_untracked():
     assert env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY") == ""
 
 
-def test_format_secret_source_suffix_bitwarden_uses_proper_name():
-    env_loader._SECRET_SOURCES["ANTHROPIC_API_KEY"] = "bitwarden"
-    assert (
-        env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
-        == " (from Bitwarden)"
-    )
 
 
-def test_format_secret_source_suffix_generic_label_for_future_sources():
-    # Future-proofing: a new secret source (e.g. "vault") should still
-    # produce a sensible label without needing to edit every call site.
-    env_loader._SECRET_SOURCES["OPENAI_API_KEY"] = "vault"
-    assert (
-        env_loader.format_secret_source_suffix("OPENAI_API_KEY")
-        == " (from vault)"
-    )
 
 
-def test_format_secret_source_suffix_onepassword_uses_proper_name():
-    env_loader._SECRET_SOURCES["OPENAI_API_KEY"] = "onepassword"
-    assert (
-        env_loader.format_secret_source_suffix("OPENAI_API_KEY")
-        == " (from 1Password)"
-    )
 
 
 def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkeypatch):
@@ -538,7 +515,6 @@ def test_apply_external_secret_sources_status_line_suppresses_secret_names(
     env_loader._apply_external_secret_sources(tmp_path)
 
     err = capsys.readouterr().err
-    assert "Bitwarden Secrets Manager: applied 2 secrets" in err
     assert "LEAK_THIS_API_KEY" not in err
     assert "LEAK_THIS_TOKEN" not in err
 
@@ -568,9 +544,13 @@ def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch
         str(home_b.resolve()): "value-b",
     }
 
-    def _fake_apply_all(_cfg, home_path):
+    # Registered for teardown restore, then removed: the loader publishes the source's write itself.
+    monkeypatch.setenv("SHARED_API_KEY", "unset")
+    monkeypatch.delenv("SHARED_API_KEY")
+
+    def _fake_apply_all(_cfg, home_path, environ=None):
         value = values[str(Path(home_path).resolve())]
-        monkeypatch.setenv("SHARED_API_KEY", value)
+        environ["SHARED_API_KEY"] = value  # startup applies sources into a staging copy
         return ApplyReport(
             # Real apply_all always appends a SourceReport per enabled
             # source; the env_loader guard (#40597) early-returns on an

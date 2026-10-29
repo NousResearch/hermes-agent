@@ -22,28 +22,28 @@ router = APIRouter()
 
 SNAPSHOT_TTL_SECONDS = 120
 _SCAN_LOCK = threading.Lock()
-_SNAPSHOT_CACHE: Optional[Dict[str, Any]] = None
+_SNAPSHOT_CACHE: Optional[dict[str, Any]] = None
 _SNAPSHOT_CACHE_AT = 0
 # Key order is part of the /scan-status wire shape.
-_SCAN_STATUS: Dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "last_error": None, "last_duration_ms": None, "run_count": 0}
+_SCAN_STATUS: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "last_error": None, "last_duration_ms": None, "run_count": 0}
 
-ERROR_RE = re.compile(r"\b(error|failed|failure|traceback|exception|permission denied|not found|eaddrinuse|already in use|timed out|blocked)\b", re.I)
-PORT_RE = re.compile(r"\b(port\s+)?(3000|5173|8000|8080|9119)\b.*\b(in use|already|taken|eaddrinuse)\b|\beaddrinuse\b", re.I)
-INSTALL_RE = re.compile(r"\b(npm|pnpm|yarn|pip|uv)\b.*\b(install|add)\b", re.I)
-SUCCESS_RE = re.compile(r"\b(success|passed|built|compiled|done|exit_code[\"']?\s*[:=]\s*0|verified|ok)\b", re.I)
+ERROR_RE = re.compile(r"\b(error|failed|failure|traceback|exception|permission denied|not found|eaddrinuse|already in use|timed out|blocked)\b", re.IGNORECASE)
+PORT_RE = re.compile(r"\b(port\s+)?(3000|5173|8000|8080|9119)\b.*\b(in use|already|taken|eaddrinuse)\b|\beaddrinuse\b", re.IGNORECASE)
+INSTALL_RE = re.compile(r"\b(npm|pnpm|yarn|pip|uv)\b.*\b(install|add)\b", re.IGNORECASE)
+SUCCESS_RE = re.compile(r"\b(success|passed|built|compiled|done|exit_code[\"']?\s*[:=]\s*0|verified|ok)\b", re.IGNORECASE)
 FILE_RE = re.compile(r"(?:/home/|~/?|\./|/mnt/)[\w./-]+\.(?:py|js|ts|tsx|jsx|css|html|md|json|yaml|yml|svg|sql|sh)")
 
 TIER_NAMES = ["Copper", "Silver", "Gold", "Diamond", "Olympian"]
 
 def _ach(
     id: str, name: str, description: str, category: str, icon: str, *,
-    metric: Optional[str] = None, tiers: Optional[List[int]] = None,
-    requires: Optional[List[tuple]] = None, secret: bool = False) -> Dict[str, Any]:
+    metric: Optional[str] = None, tiers: Optional[list[int]] = None,
+    requires: Optional[list[tuple]] = None, secret: bool = False) -> dict[str, Any]:
     """Build one catalog entry. ``kind`` is derived: ``requires`` -> multi_condition; a
     ``max_*`` metric is a per-session best (best_session); anything else accumulates over
     the whole history (lifetime)."""
     kind = "multi_condition" if requires is not None else ("best_session" if metric.startswith("max_") else "lifetime")
-    item: Dict[str, Any] = {"id": id, "name": name, "description": description, "category": category, "kind": kind, "icon": icon}
+    item: dict[str, Any] = {"id": id, "name": name, "description": description, "category": category, "kind": kind, "icon": icon}
     if secret:
         item["secret"] = True
     if requires is not None:
@@ -54,7 +54,7 @@ def _ach(
     return item
 
 
-ACHIEVEMENTS: List[Dict[str, Any]] = [
+ACHIEVEMENTS: list[dict[str, Any]] = [
     # Agent Autonomy — mostly best-session feats
     _ach("let_him_cook", "Let Him Cook", "Let Hermes run a serious autonomous tool chain in one session.", "Agent Autonomy", "flame", metric="max_tool_calls_in_session", tiers=[200, 500, 1200, 3000, 8000]),
     _ach("autonomous_avalanche", "Autonomous Avalanche", "Accumulate a lifetime avalanche of Hermes tool calls across sessions.", "Agent Autonomy", "avalanche", metric="total_tool_calls", tiers=[1000, 3000, 8000, 20000, 50000]),
@@ -139,6 +139,9 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 
 SNAPSHOT_FILE = "scan_snapshot.json"
 CHECKPOINT_FILE = "scan_checkpoint.json"
+# Checkpoint schema 2: per-session stats read the compaction-archived display history, not just
+# the active window. Version 1 caches were computed active-only and are rescanned once.
+_CHECKPOINT_SCHEMA_VERSION = 2
 
 
 def _data_dir() -> Path:
@@ -161,7 +164,10 @@ def _data_file(name: str) -> Path:
         legacy = get_hermes_home() / "plugins" / "hermes-achievements" / name
         if legacy.exists():
             try:
-                path.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+                # Two statements so the read (utf-8-sig, tolerates a BOM)
+                # and the write (utf-8, never emits one) stay distinct.
+                legacy_text = legacy.read_text(encoding="utf-8-sig")
+                path.write_text(legacy_text, encoding="utf-8")
             except Exception:
                 pass
     return path
@@ -171,7 +177,7 @@ def _read_json(name: str) -> Any:
     """Parsed data file, or ``None`` when missing/unreadable."""
     path = _data_file(name)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 
@@ -192,16 +198,16 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def load_state() -> Dict[str, Any]:
+def load_state() -> dict[str, Any]:
     data = _read_json("state.json")
     return {"unlocks": {}} if data is None else data
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state(state: dict[str, Any]) -> None:
     _write_json("state.json", state)
 
 
-def load_checkpoint() -> Dict[str, Any]:
+def load_checkpoint() -> dict[str, Any]:
     data = _read_json(CHECKPOINT_FILE)
     if isinstance(data, dict):
         data.setdefault("schema_version", 1)
@@ -209,10 +215,10 @@ def load_checkpoint() -> Dict[str, Any]:
         data.setdefault("sessions", {})
         if isinstance(data.get("sessions"), dict):
             return data
-    return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+    return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": 0, "sessions": {}}
 
 
-def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
+def session_fingerprint(meta: dict[str, Any]) -> dict[str, Any]:
     return {"last_active": meta.get("last_active"), "started_at": meta.get("started_at"), "model": meta.get("model"), "title": meta.get("title") or meta.get("preview") or "Untitled"}
 
 
@@ -220,12 +226,12 @@ def _cache_is_fresh(now: int) -> bool:
     return _SNAPSHOT_CACHE is not None and (now - _SNAPSHOT_CACHE_AT) <= SNAPSHOT_TTL_SECONDS
 
 
-def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], now: Optional[int] = None) -> bool:
+def _is_snapshot_stale(snapshot: Optional[dict[str, Any]], now: Optional[int] = None) -> bool:
     ts = int(snapshot.get("generated_at") or 0) if isinstance(snapshot, dict) else 0
     return ts <= 0 or (int(now or time.time()) - ts) > SNAPSHOT_TTL_SECONDS
 
 
-def _scan_status_payload(now: Optional[int] = None) -> Dict[str, Any]:
+def _scan_status_payload(now: Optional[int] = None) -> dict[str, Any]:
     current = int(now or time.time())
     snap = _SNAPSHOT_CACHE if isinstance(_SNAPSHOT_CACHE, dict) else None
     generated_at = int(snap.get("generated_at") or 0) if snap else 0
@@ -245,7 +251,7 @@ def _tool_name_from_call(call: Any) -> Optional[str]:
     return call.get("name") or (call.get("function") or {}).get("name")
 
 
-def _content(msg: Dict[str, Any]) -> str:
+def _content(msg: dict[str, Any]) -> str:
     content = msg.get("content")
     if content is None:
         return ""
@@ -257,7 +263,7 @@ def _content(msg: Dict[str, Any]) -> str:
         return str(content)
 
 
-def _count_tool(tool_names: List[str], *needles: str) -> int:
+def _count_tool(tool_names: list[str], *needles: str) -> int:
     lowered = [name.lower() for name in tool_names]
     return sum(1 for name in lowered if any(needle in name for needle in needles))
 
@@ -283,11 +289,11 @@ def is_local_model_name(model_name: str) -> bool:
     return bool(name) and name != "none" and any(marker in name for marker in _LOCAL_MARKERS)
 
 
-def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    tool_names: Set[str] = set()
-    tool_sequence: List[str] = []
-    files_touched: Set[str] = set()
-    full_text_parts: List[str] = []
+def analyze_messages(session_id: str, title: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    tool_names: set[str] = set()
+    tool_sequence: list[str] = []
+    files_touched: set[str] = set()
+    full_text_parts: list[str] = []
     error_count = 0
     for msg in messages:
         text = _content(msg)
@@ -315,7 +321,7 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     lower = full_text.lower()
 
     def hits(pattern: str) -> int:
-        return len(re.findall(pattern, full_text, re.I))
+        return len(re.findall(pattern, full_text, re.IGNORECASE))
     web_calls = _count_tool(tool_sequence, "web_search", "web_extract")
     browser_calls = _count_tool(tool_sequence, "browser")
 
@@ -352,14 +358,14 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         "permission_denied_events": hits(r"permission denied|eacces|operation not permitted"),
         "install_error_events": 1 if INSTALL_RE.search(full_text) and ERROR_RE.search(full_text) else 0,
         "install_success_events": 1 if INSTALL_RE.search(full_text) and SUCCESS_RE.search(full_text) else 0,
-        "restart_after_error_events": 1 if error_count and re.search(r"\brestart|reload|kill|start\b", full_text, re.I) else 0,
+        "restart_after_error_events": 1 if error_count and re.search(r"\brestart|reload|kill|start\b", full_text, re.IGNORECASE) else 0,
         "env_var_error_events": hits(r"missing .*env|api key|environment variable|not configured|unauthorized|auth"),
         "yaml_error_events": hits(r"yaml|yml|colon|parse error") if ERROR_RE.search(full_text) else 0,
         "docker_conflict_events": hits(r"docker.*(name|container).*already|container name conflict|Conflict\. The container"),
         "frontend_activity_events": hits(r"\.(css|svg|tsx|jsx)|frontend|tailwind|react"),
         "css_activity_events": hits(r"\.css|tailwind|style|className|visual"),
         "git_events": hits(r"\bgit\s+(commit|push|merge|rebase|status|diff)"),
-        "tiny_patch_after_errors_events": 1 if error_count >= 5 and re.search(r"one character|single character|typo", full_text, re.I) else 0,
+        "tiny_patch_after_errors_events": 1 if error_count >= 5 and re.search(r"one character|single character|typo", full_text, re.IGNORECASE) else 0,
         "context_events": hits(r"compress|context window|token|cache"),
         "gateway_events": hits(r"gateway|discord|telegram|slack|api_server"),
         "plugin_events": hits(r"plugin|dashboard-plugins|__HERMES_PLUGIN|manifest\.json"),
@@ -383,19 +389,19 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
 
 # ---- Evaluation ----
 
-def _result(*, unlocked: bool, discovered: bool, state: str, tier, progress: int, next_tier, next_threshold: int, progress_pct: int) -> Dict[str, Any]:
+def _result(*, unlocked: bool, discovered: bool, state: str, tier, progress: int, next_tier, next_threshold: int, progress_pct: int) -> dict[str, Any]:
     """Uniform evaluation result (key order is part of the wire shape)."""
     return {"unlocked": unlocked, "discovered": discovered, "state": state, "tier": tier, "progress": progress, "next_tier": next_tier, "next_threshold": next_threshold, "progress_pct": progress_pct}
 
 
-def _state(definition: Dict[str, Any], unlocked: bool, any_progress: bool) -> tuple[str, bool]:
+def _state(definition: dict[str, Any], unlocked: bool, any_progress: bool) -> tuple[str, bool]:
     """``(state, discovered)``: secret badges stay hidden until the first matching signal."""
     secret = bool(definition.get("secret"))
     state = "unlocked" if unlocked else ("secret" if secret and not any_progress else "discovered")
     return state, any_progress or not secret
 
 
-def evaluate_tiered(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_tiered(definition: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
     progress = int(aggregate.get(definition["threshold_metric"], 0) or 0)
     tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
     achieved = [t for t in tiers_list if progress >= t["threshold"]]
@@ -410,7 +416,7 @@ def evaluate_tiered(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Di
         progress=progress, next_tier=next_tiers[0]["name"] if next_tiers else None, next_threshold=next_threshold, progress_pct=pct)
 
 
-def evaluate_requirements(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_requirements(definition: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
     requirements = definition.get("requirements", [])
     if not requirements:
         state, discovered = _state(definition, False, False)
@@ -431,7 +437,7 @@ def evaluate_requirements(definition: Dict[str, Any], aggregate: Dict[str, Any])
         next_threshold=100, progress_pct=100 if complete else min(99, pct))
 
 
-def evaluate_definition(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_definition(definition: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
     if "threshold_metric" in definition:
         return evaluate_tiered(definition, aggregate)
     return evaluate_requirements(definition, aggregate)
@@ -506,7 +512,7 @@ def metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric.replace("_", " "))
 
 
-def criteria_for(definition: Dict[str, Any]) -> str:
+def criteria_for(definition: dict[str, Any]) -> str:
     if definition.get("secret") and definition.get("state") == "secret":
         return "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
     if "threshold_metric" in definition:
@@ -521,7 +527,7 @@ def criteria_for(definition: Dict[str, Any]) -> str:
     return "Requirement: complete the matching Hermes behavior."
 
 
-def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
+def display_achievement(item: dict[str, Any]) -> dict[str, Any]:
     clean = dict(item)
     if clean.get("state") == "secret":
         return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
@@ -531,14 +537,14 @@ def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
 
 # ---- Scanning + aggregation ----
 
-def _scan_meta(mode: str, total: int, *, rescanned: int = 0, reused: int = 0, scanned_so_far: Optional[int] = None, expected_total: Optional[int] = None) -> Dict[str, Any]:
+def _scan_meta(mode: str, total: int, *, rescanned: int = 0, reused: int = 0, scanned_so_far: Optional[int] = None, expected_total: Optional[int] = None) -> dict[str, Any]:
     meta = {"mode": mode, "sessions_total": total, "sessions_rescanned": rescanned, "sessions_reused": reused}
     if scanned_so_far is not None:
         meta.update(sessions_scanned_so_far=scanned_so_far, sessions_expected_total=expected_total)
     return meta
 
 
-def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
+def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] = None, progress_every: int = 250) -> dict[str, Any]:
     """Scan Hermes sessions and build per-session achievement stats.
 
     ``limit=None`` (default) scans the ENTIRE history (SQLite ``LIMIT -1``); a former cap
@@ -558,14 +564,16 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
     except Exception as exc:
         return {"sessions": [], "aggregate": {}, "error": f"Could not open SessionDB: {exc}", "scan_meta": _scan_meta("failed", 0)}
 
-    previous_sessions = load_checkpoint()["sessions"]  # load_checkpoint guarantees a dict
+    previous_checkpoint = load_checkpoint()
+    previous_sessions = previous_checkpoint["sessions"]  # load_checkpoint guarantees a dict
+    checkpoint_is_current = int(previous_checkpoint.get("schema_version") or 0) == _CHECKPOINT_SCHEMA_VERSION
     reused = rescanned = 0
     db_limit = -1 if (limit is None or limit <= 0) else int(limit)
     try:
         sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
         total_sessions = len(sessions_meta)
-        sessions: List[Dict[str, Any]] = []
-        checkpoint_sessions: Dict[str, Any] = {}
+        sessions: list[dict[str, Any]] = []
+        checkpoint_sessions: dict[str, Any] = {}
         for idx, meta in enumerate(sessions_meta, start=1):
             sid = meta.get("id")
             if not sid:
@@ -574,11 +582,14 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
             cached = previous_sessions.get(sid)
             cached = cached if isinstance(cached, dict) else {}
             title = meta.get("title") or meta.get("preview")
-            if isinstance(cached.get("stats"), dict) and cached.get("fingerprint") == fp:
+            if checkpoint_is_current and isinstance(cached.get("stats"), dict) and cached.get("fingerprint") == fp:
                 stats = dict(cached["stats"])
                 reused += 1
             else:
-                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid))
+                # Compaction-archived display history too (deduped, no Undo/Rewind rows): the active
+                # window shrinks after compaction, and stats read from it were never monotonic
+                # (#112273). Rewound rows stay out — that work was undone.
+                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid, include_compacted=True))
                 rescanned += 1
             stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):
@@ -599,7 +610,7 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                     progress_callback(list(sessions), idx, total_sessions)
                 except Exception:
                     pass  # Advisory — a broken publisher must never abort the scan.
-        _write_json(CHECKPOINT_FILE, {"schema_version": 1, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
+        _write_json(CHECKPOINT_FILE, {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
     finally:
         db.close()
     return {
@@ -641,13 +652,13 @@ _SESSION_EVENT_KEYS = [
 ]
 
 
-def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+def aggregate_stats(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     # Key order is part of the /rescan wire shape.
-    agg: Dict[str, Any] = {"session_count": len(sessions)}
+    agg: dict[str, Any] = {"session_count": len(sessions)}
     for key in (*_SESSION_MAX_METRICS, *_SESSION_SUM_METRICS, "distinct_model_count", "distinct_provider_count", "local_model_chat_sessions", "weekend_sessions", "night_sessions", *_SESSION_EVENT_KEYS):
         agg[key] = 0
-    model_names: Set[str] = set()
-    provider_names: Set[str] = set()
+    model_names: set[str] = set()
+    provider_names: set[str] = set()
     for s in sessions:
         for key, stat in _SESSION_MAX_METRICS.items():
             agg[key] = max(agg[key], s.get(stat, 0))
@@ -674,7 +685,7 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
     return agg
 
 
-def evidence_for(definition: Dict[str, Any], sessions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def evidence_for(definition: dict[str, Any], sessions: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     key = _SESSION_MAX_METRICS.get(definition.get("threshold_metric"))
     if not sessions or key is None:
         return None
@@ -684,7 +695,7 @@ def evidence_for(definition: Dict[str, Any], sessions: List[Dict[str, Any]]) -> 
 
 # ---- Snapshot assembly ----
 
-def _snapshot(evaluated: List[Dict[str, Any]], scan: Dict[str, Any], now: int) -> Dict[str, Any]:
+def _snapshot(evaluated: list[dict[str, Any]], scan: dict[str, Any], now: int) -> dict[str, Any]:
     """Wire payload shared by finished, partial and pending snapshots."""
     return {
         "achievements": evaluated,
@@ -699,13 +710,15 @@ def _snapshot(evaluated: List[Dict[str, Any]], scan: Dict[str, Any], now: int) -
         "generated_at": now}
 
 
-def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dict[str, Any]:
+def _compute_from_scan(scan: dict[str, Any], *, is_partial: bool = False) -> dict[str, Any]:
     """Evaluate every achievement definition against a scan result. Used by ``compute_all``
     for finished scans AND by the background progress callback for in-flight snapshots;
     ``is_partial=True`` skips persisting ``state.json`` unlocks — an "unlock time" from
-    half a scan could be invalidated by a later session."""
+    half a scan could be invalidated by a later session. Persisted unlocks are still read
+    for partials: the background scan publishes them to the cache, so an earned badge would
+    otherwise render as locked for the whole rescan (#112273)."""
     aggregate = scan.get("aggregate", {})
-    state = load_state() if not is_partial else {"unlocks": {}}
+    state = load_state()
     unlocks = state.setdefault("unlocks", {})
     now = int(time.time())
     evaluated = []
@@ -714,6 +727,11 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
         unlock_id = definition["id"]
         if not is_partial and result["unlocked"] and unlock_id not in unlocks:
             unlocks[unlock_id] = {"unlocked_at": now, "first_tier": result.get("tier"), "evidence": evidence_for(definition, scan.get("sessions", []))}
+        # Sticky unlocks: state.json is a floor. A badge earned on evidence that rewind/compaction
+        # later removed from the scan basis must not flicker back to locked (#112273).
+        if unlock_id in unlocks and not result["unlocked"]:
+            result.update(unlocked=True, discovered=True, state="unlocked",
+                          tier=result.get("tier") or unlocks[unlock_id].get("first_tier"))
         item = {**definition, **result}
         if result["unlocked"]:
             item["unlocked_at"] = unlocks.get(unlock_id, {}).get("unlocked_at")
@@ -724,7 +742,7 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     return _snapshot(evaluated, scan, now)
 
 
-def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
+def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> dict[str, Any]:
     scan = scan_sessions(progress_callback=progress_callback, progress_every=progress_every)
     return _compute_from_scan(scan, is_partial=False)
 
@@ -733,7 +751,7 @@ _BACKGROUND_SCAN_THREAD: Optional[threading.Thread] = None
 _BACKGROUND_SCAN_LOCK = threading.Lock()
 
 
-def _build_pending_snapshot(now: int) -> Dict[str, Any]:
+def _build_pending_snapshot(now: int) -> dict[str, Any]:
     """Structurally-complete placeholder served while the first-ever scan runs, so the UI
     renders an empty list + spinner without special-casing "no data"."""
     evaluated = [
@@ -745,7 +763,7 @@ def _build_pending_snapshot(now: int) -> Dict[str, Any]:
     return _snapshot(evaluated, {"scan_meta": _scan_meta("pending", 0), "error": None}, now)
 
 
-def _set_cache(snapshot: Dict[str, Any], at: int) -> None:
+def _set_cache(snapshot: dict[str, Any], at: int) -> None:
     global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
     _SNAPSHOT_CACHE = _json_safe(snapshot)
     _SNAPSHOT_CACHE_AT = at
@@ -797,7 +815,7 @@ def _start_background_scan() -> None:
         thread.start()
 
 
-def evaluate_all(force: bool = False) -> Dict[str, Any]:
+def evaluate_all(force: bool = False) -> dict[str, Any]:
     """Return the current achievements payload: a fresh in-memory cache is returned as is;
     a stale on-disk snapshot is served while a background rescan runs (UI decorates it with
     ``is_stale=True``); with no snapshot yet an empty-but-valid "pending" payload is served

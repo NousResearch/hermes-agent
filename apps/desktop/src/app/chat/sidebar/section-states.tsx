@@ -1,8 +1,14 @@
+import { useStore } from '@nanostores/react'
+
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
+import { AlertTriangle, ExternalLink } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $corruptSessionStores } from '@/store/session'
 
 import { SidebarRowCluster, SidebarRowShell, SidebarRowStack } from './chrome'
 
@@ -21,6 +27,26 @@ export function SidebarSessionSkeletons() {
       ))}
     </SidebarRowStack>
   )
+}
+
+interface SessionAreaCounts {
+  cronJobs: number
+  loading: boolean
+  messaging: number
+  profileGroups: number
+  projects: number
+  sessions: number
+}
+
+/** Whether the sidebar renders its session area instead of the blank state. Filtered down to
+ *  nothing still renders it: the empty state is what tells you the filter, not an empty account,
+ *  is why the list is bare. Messaging threads and cron jobs live inside this area too, so a profile
+ *  whose only sessions are threads or scheduled jobs never collapses to the blank state (#63593).
+ *  Every profile keeps a section, chats or not; a lone empty profile keeps the blank state. */
+export function hasSessionArea(counts: SessionAreaCounts): boolean {
+  const { cronJobs, loading, messaging, profileGroups, projects, sessions } = counts
+
+  return loading || sessions > 0 || projects > 0 || messaging > 0 || cronJobs > 0 || profileGroups > 1
 }
 
 export function SidebarBlankState({ onNewProject }: { onNewProject: () => void }) {
@@ -70,6 +96,53 @@ export function SidebarLoadErrorState({ onRetry }: { onRetry: () => void }) {
           {t.common.retry}
         </Button>
       </div>
+    </div>
+  )
+}
+
+const SESSION_STORAGE_RECOVERY_URL =
+  'https://hermes-agent.nousresearch.com/docs/user-guide/session-storage-recovery#when-the-three-steps-do-not-work'
+
+interface SidebarStorageCorruptNoticeProps {
+  openRecoveryGuide?: (url: string) => void
+}
+
+// A structurally corrupt state.db empties (or thins out) the list below it,
+// which reads as deleted history (#72046). Persistent while the backend
+// reports the store corrupt; there is nothing to dismiss until it is recovered.
+export function SidebarStorageCorruptNotice({
+  openRecoveryGuide = openExternalLink
+}: SidebarStorageCorruptNoticeProps) {
+  const profiles = useStore($corruptSessionStores)
+  const { t } = useI18n()
+  const copy = t.sidebar.storageCorrupt
+
+  if (profiles.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="shrink-0 px-2 pb-1 pt-1">
+      <Alert className="gap-x-2 px-3 py-2 text-xs" data-testid="storage-corrupt-notice" variant="destructive">
+        <AlertTriangle />
+        <AlertTitle className="line-clamp-none">{copy.title}</AlertTitle>
+        <AlertDescription>
+          <p>{copy.body(profiles.join(', '))}</p>
+          <p>{copy.action}</p>
+          <code className="break-all text-[0.7rem]">
+            hermes sessions recover --source &lt;state.db&gt; --inspect-only
+          </code>
+          <Button
+            className="-ml-1 mt-0.5 text-(--ui-text-secondary)"
+            onClick={() => openRecoveryGuide(SESSION_STORAGE_RECOVERY_URL)}
+            size="sm"
+            variant="ghost"
+          >
+            <ExternalLink />
+            {copy.guide}
+          </Button>
+        </AlertDescription>
+      </Alert>
     </div>
   )
 }

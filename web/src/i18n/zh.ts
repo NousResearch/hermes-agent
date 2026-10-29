@@ -91,9 +91,18 @@ export const zh: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "当前记忆提供方",
+    noProvider: "无 — 仅内置",
+    builtinLayer: "内置层",
+    builtinNote: "MEMORY.md 和 USER.md 是 Hermes 自己的记忆，独立于任何外部提供方。两者默认都会载入会话；配置开关 (memory.memory_enabled / memory.user_profile_enabled) 可分别关闭。外部提供方是对它们的补充，绝不会取代它们。",
+  },
+
   status: {
     actionFailed: "操作失败",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步骤（重新运行 `hermes update` 以完成）",
     actions: "操作",
     agent: "代理",
     activeSessions: "活跃会话",
@@ -160,9 +169,14 @@ export const zh: Translations = {
     deleteSelectedConfirmMessage:
       "此操作将永久删除所选的 {count} 个会话及其所有消息。无法撤销。",
     selectedSessionsDeleted: "已删除 {count} 个会话",
+    selectedSessionsSkippedActive: "已删除 {deleted} 个；{count} 个因仍有回合运行中而保留",
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",
+    workspace: "工作区",
+    workspaceDefault: "默认",
+    workspaceRescan: "重新扫描仓库",
+    workspaceCustom: "其他路径…",
     previousPage: "上一页",
     nextPage: "下一页",
     roles: {
@@ -320,6 +334,8 @@ export const zh: Translations = {
     disableRuntime: "禁用",
     enableAfterInstall: "安装后启用",
     enableRuntime: "启用",
+    toggleTakesEffectAfterRestart:
+      "已保存 — 重启网关以应用更改。",
     forceReinstall: "强制重装（先删除已有目录）",
     headline: "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
     identifierLabel: "Git 地址或 owner/repo",

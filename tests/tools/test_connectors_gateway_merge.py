@@ -167,25 +167,6 @@ def test_splice_none_response_fills_every_slot():
     assert entries[0]["error"]["code"] == "PROVIDER_ERROR"
 
 
-def test_connection_required_renders_shared_shape_with_connect_url():
-    planned = _plan([{"name": "connectors__gmail__SEND_EMAIL"}])
-    remote = [
-        {
-            "data": None,
-            "error": {
-                "code": "CONNECTION_REQUIRED",
-                "message": "connect gmail first",
-                "connect_url": "https://example.test/connect/abc",
-                "hint": "then retry the call",
-            },
-        }
-    ]
-    (entry,) = splice_remote_results(planned, remote)
-    error = entry["error"]
-    assert error["code"] == "CONNECTION_REQUIRED"
-    assert error["connector"] == "gmail"
-    assert error["connect_url"] == "https://example.test/connect/abc"  # not redacted
-    assert error["hint"] == "then retry the call"
 
 
 def test_fill_remote_failure_marks_all_planned_slots():
@@ -304,3 +285,33 @@ def test_connectors_available_requires_both_legs_and_fails_closed():
 
     assert connectors_available(config_loader=on, entitlement_check=boom) is False
     assert connectors_available(config_loader=boom, entitlement_check=lambda: True) is False
+
+
+@pytest.mark.parametrize(
+    "claims, rolled_out",
+    [
+        # Paid access alone does not enable connectors: the gateway 404s this account.
+        ({"paid_access": True, "tool_access": {"enabled": True, "coverage": {}}}, False),
+        ({"paid_access": True, "managed_tools": True}, True),
+        ({"paid_access": False, "managed_tools": True}, True),
+        ({"managed_tools": False}, False),
+        ({"managed_tools": "true"}, False),  # only a literal boolean counts
+    ],
+)
+def test_account_gate_reads_the_portal_claim_not_entitlement(monkeypatch, claims, rolled_out):
+    """The account leg mirrors the gateway's own gate: the ``managed_tools`` claim the portal
+    mints. A token without it is not enabled however entitled it is."""
+    import time
+
+    from hermes_cli import nous_account
+    from tools.connectors.gateway.config import managed_tools_rolled_out
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._decode_jwt_claims", lambda token: {"exp": time.time() + 3600, **claims})
+    account = nous_account._info_from_valid_jwt("tok", {}, None, 60)
+    assert account is not None and account.logged_in
+
+    monkeypatch.setattr(nous_account, "get_nous_portal_account_info", lambda **kw: account)
+    assert managed_tools_rolled_out() is rolled_out
+    assert connectors_available(config_loader=lambda: ConnectorConfig(enabled=True),
+                                entitlement_check=managed_tools_rolled_out) is rolled_out

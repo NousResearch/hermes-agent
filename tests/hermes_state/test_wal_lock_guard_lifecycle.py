@@ -17,7 +17,7 @@ import hermes_state_lockguard as lg
 from hermes_state import SessionDB
 from tests.hermes_state._wal_generation_harness import make_db, pin_wal, require_wal
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 def _foreign_exclusive_ok(path: str) -> bool:
@@ -71,3 +71,32 @@ def test_guard_never_outlives_the_handle_under_fd_reuse(tmp_path, monkeypatch):
     assert _foreign_exclusive_ok(str(path)), "a lock survived the last handle's close"
     assert not lg._HANDLES
     assert sqlite3.connect(path).execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
+
+
+def test_closing_writer_stays_guarded_until_sqlite_closes(tmp_path, monkeypatch):
+    """close() lifts the OFD guard before SQLite's own close so a true last close still ends the
+    generation. A stray close had already cancelled this process's POSIX locks, so in that gap a
+    sibling's close could take EXCLUSIVE and unlink -wal/-shm under the still-open connection
+    (every concurrent opener then refuses with DeletedWalGenerationError)."""
+    pin_wal(monkeypatch)
+    path = tmp_path / "state.db"
+    db = make_db(path, "s", "seed")
+    require_wal(db)
+    for name in ("state.db", "state.db-shm"):  # the stray close the guard exists for
+        os.close(os.open(tmp_path / name, os.O_RDONLY))
+    shm = os.stat(f"{path}-shm").st_ino
+    in_gap: dict = {}
+    real_close = db._close_connection_quietly
+
+    def _sibling_closes_in_the_gap(conn):
+        subprocess.run([sys.executable, "-c",
+                        f"import sqlite3; c = sqlite3.connect({str(path)!r}); "
+                        "c.execute('select count(*) from messages').fetchone(); c.close()"], check=True)
+        in_gap["shm"] = os.stat(f"{path}-shm").st_ino if os.path.exists(f"{path}-shm") else None
+        real_close(conn)
+
+    monkeypatch.setattr(db, "_close_connection_quietly", _sibling_closes_in_the_gap)
+    db.close()
+    assert in_gap["shm"] == shm, "a sibling's close unlinked -shm under the closing writer"
+    assert not os.path.exists(f"{path}-wal"), "the true last close must still end the generation"
+    assert _foreign_exclusive_ok(str(path)) and not lg._HANDLES

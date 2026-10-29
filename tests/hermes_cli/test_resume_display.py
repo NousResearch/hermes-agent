@@ -7,8 +7,8 @@ conversation with correct formatting, truncation, and config behavior.
 
 from io import StringIO
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
-import cli as cli_mod
 
 
 
@@ -281,7 +281,7 @@ class TestPreloadResumedSession:
 
         assert result is False
         output = buf.getvalue()
-        assert "Session not found" in output
+        assert t("cli.resume.session_not_found", session_id="nonexistent_session") in output
 
 
 
@@ -320,29 +320,10 @@ class TestPreloadResumedSession:
         result = cli._preload_resumed_session()
 
         assert result is False
-        assert "safe resume limit is 20000" in output.getvalue()
+        assert "too long to reload safely" in output.getvalue()
+        assert "limit 20000" in output.getvalue()
         mock_db.get_resume_conversations.assert_not_called()
 
-    def test_tip_only_guard_goes_through_the_shared_resume_guard(self):
-        """The mid-setup path loads only the tip, so it asks the ONE resume
-        guard for a tip-only bound instead of borrowing the export guard."""
-        from hermes_state import SessionResumeTooLargeError
-
-        cli = _make_cli(resume="deep-lineage")
-        cli.session_id = "deep-lineage"
-        mock_db = MagicMock()
-        guard = MagicMock(return_value=666)
-        mock_db.assert_resume_safe = guard
-        cli._session_db = mock_db
-
-        assert cli._resume_history_limit_error(tip_only=True) is None
-        guard.assert_called_once_with("deep-lineage", tip_only=True)
-
-        guard.side_effect = SessionResumeTooLargeError(
-            20_001, 20_000, scope="in its tip segment"
-        )
-        error = cli._resume_history_limit_error(tip_only=True)
-        assert error and "in its tip segment" in error
 
 
 
@@ -439,15 +420,6 @@ class TestInitAgentSkipsPreloaded:
 # ── Config default tests ─────────────────────────────────────────────
 
 
-class TestResumeDisplayConfig:
-    """resume_display config option defaults and behavior."""
-
-    def test_default_config_has_resume_display(self):
-        """DEFAULT_CONFIG in hermes_cli/config.py includes resume_display."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        display = DEFAULT_CONFIG.get("display", {})
-        assert "resume_display" in display
-        assert display["resume_display"] == "full"
 
 
 

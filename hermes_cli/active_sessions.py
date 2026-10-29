@@ -12,6 +12,7 @@ import logging
 import collections
 import math
 import os
+import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -122,10 +123,15 @@ class ActiveSessionRefusal(str):
 
     reason: str
 
-    def __new__(cls, message: str, reason: str) -> "ActiveSessionRefusal":
+    def __new__(cls, message: str, reason: str) -> ActiveSessionRefusal:
         obj = super().__new__(cls, message)
         obj.reason = reason
         return obj
+
+    def __getnewargs_ex__(self) -> tuple[tuple[str, str], dict[str, Any]]:
+        # copy/pickle rebuild via __new__: without the reason, publishing a refused turn's
+        # message.complete (deepcopy of the payload) raises and the viewer hangs.
+        return (str(self), self.reason), {}
 
 
 def format_refusal_stderr(message: str) -> str:
@@ -148,16 +154,23 @@ def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -
     return bool(existing_live and incoming_live) and existing_live == incoming_live
 
 
-def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
+def session_owner_details(session_id: str, entry: dict[str, Any]) -> str:
+    """The ``Details:`` line shared by every owner-refusal message."""
     surface = str(entry.get("surface") or "another surface")
-    pid = entry.get("pid")
     started = _optional_float(entry.get("started_at"))
-    age = f", lease age {format_age(time.time() - started)}" if started else ""
+    age = f" {format_age(time.time() - started)} ago" if started else ""
+    return f"Details: session {session_id} opened by {surface}{age}."
+
+
+def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
+    """Refusal text for a session another live process holds.
+
+    Contract shared with the TUI/Desktop surfaces: the FIRST line is the plain user sentence
+    (no lease/pid/owner jargon); the second line is ``Details: ...`` for logs and bug reports.
+    """
     return (
-        f"Session {session_id} already has a live owner ({surface}, pid {pid}{age}). "
-        "Its turn activity is unknown; an open lease does not mean a turn is running. "
-        "Attach through a compatible owner, or close the session in its owning surface "
-        "before resuming here. Do not delete a live owner's lease to force a takeover."
+        "This chat is open in another Hermes window/terminal. Use it there, or start a new chat here.\n"
+        + session_owner_details(session_id, entry)
     )
 
 
@@ -174,7 +187,7 @@ def _lock_path(registry_home: str | Path | None = None) -> Path:
 
 
 def _lease_paths(
-    lease: Optional["ActiveSessionLease"] = None, registry_home: str | Path | None = None
+    lease: Optional[ActiveSessionLease] = None, registry_home: str | Path | None = None
 ) -> tuple[Path, Path]:
     if lease is not None and lease.state_path is not None and lease.lock_path is not None:
         return lease.state_path, lease.lock_path
@@ -222,7 +235,7 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
         return ActiveSessionRegistryError(f"active session registry {what}: {path}")
 
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return []
@@ -238,7 +251,7 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
         return []
     valid = [entry for entry in entries if isinstance(entry, dict)]
     if not strict:
-        return valid
+        return _without_queued_releases(path, valid)
     if len(valid) != len(entries):
         raise invalid("contains invalid entries")
     seen_leases: set[str] = set()
@@ -259,7 +272,50 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
             if bad():
                 raise invalid(f"contains {what}")
         seen_leases.add(lease_id)
-    return valid
+    return _without_queued_releases(path, valid)
+
+
+# Leases this process has queued for release (gateway/active_lease_io.py) whose durable drop has not
+# landed yet, keyed by registry file. Every in-process read hides them, so a claim, count or
+# ownership check made right after a turn end sees the registry as if the release had already run
+# (a slot freed, the session unowned); the next locked write persists the drop. Other processes
+# still see the entry until the release worker rewrites the file.
+_queued_releases: dict[str, set[str]] = {}
+_queued_releases_lock = threading.Lock()
+
+
+def _registry_key(path: Path) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def mark_release_queued(lease: ActiveSessionLease) -> None:
+    """Retire ``lease`` from this process's view of the registry now; its file write comes later."""
+    if not isinstance(lease, ActiveSessionLease) or not lease.enabled or lease.released:
+        return
+    state_path, _ = _lease_paths(lease)
+    with _queued_releases_lock:
+        _queued_releases.setdefault(_registry_key(state_path), set()).add(lease.lease_id)
+
+
+def _unmark_release_queued(state_path: Path, lease_id: str) -> None:
+    """Make ``lease_id`` visible again to the caller holding the registry lock, which drops it."""
+    key = _registry_key(state_path)
+    with _queued_releases_lock:
+        queued = _queued_releases.get(key)
+        if queued is not None:
+            queued.discard(lease_id)
+            if not queued:
+                del _queued_releases[key]
+
+
+def _without_queued_releases(path: Path, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not _queued_releases:
+        return entries
+    with _queued_releases_lock:
+        queued = set(_queued_releases.get(_registry_key(path), ()))
+    if not queued:
+        return entries
+    return [e for e in entries if str(e.get("lease_id") or "") not in queued]
 
 
 def _nonblank_str(v: Any) -> bool:
@@ -301,6 +357,21 @@ def _process_start_time(pid: int) -> Optional[float]:
         return None
 
 
+_OWN_START: tuple[int, float] | None = None  # (pid, create_time); published atomically, re-read after fork
+
+
+def _own_start_time() -> Optional[float]:
+    """This process's create_time, read from psutil once instead of per lease probe."""
+    global _OWN_START
+    pid = os.getpid()
+    if _OWN_START is None or _OWN_START[0] != pid:
+        start = _process_start_time(pid)
+        if start is None:
+            return None
+        _OWN_START = (pid, start)
+    return _OWN_START[1]
+
+
 def _optional_float(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -320,24 +391,38 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
         pid_int = 0
     if pid_int <= 0:
         return unknown_dead
-    try:
-        from gateway.status import _pid_exists
-        exists = bool(_pid_exists(pid_int))
-    except Exception:
-        return unknown_dead
-    if not exists:
-        return False
+    is_self = pid_int == os.getpid()  # trivially exists; the (pid, start) identity check still applies
+    if not is_self:
+        try:
+            from gateway.status import _pid_exists
+            if not _pid_exists(pid_int):
+                return False
+        except Exception:
+            return unknown_dead
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True
-    current_start = _process_start_time(pid_int)
+    current_start = _own_start_time() if is_self else _process_start_time(pid_int)
     if current_start is None:
         return True if lenient else None
     return abs(current_start - expected_start) < 0.001
 
 
-def _prune_dead(entries: list[dict[str, Any]], *, strict: bool = False) -> list[dict[str, Any]]:
-    """Keep entries whose owner is alive; tracked/strict entries must be provably so."""
+def _prune_dead(
+    entries: list[dict[str, Any]], *, strict: bool = False,
+    target_session_id: str | None = None, target_pid: int | None = None,
+) -> list[dict[str, Any]]:
+    """Keep entries whose owner is alive; tracked/strict entries must be provably so.
+
+    With ``target_session_id`` only THAT session's owner has to be provable: an
+    unrelated sibling whose liveness is unknowable (pid present, start time
+    unreadable — an LXC ``/proc`` after a backend restart) stays in the live set,
+    so it still fences its own session and still counts toward capacity, but no
+    longer refuses every claim/release for a different session id. See #113683.
+    ``target_pid`` scopes the same way by owner pid (the orphan sweep only ever
+    reclaims this process's own leases).
+    """
+    targeted = target_session_id is not None or target_pid is not None
     live: list[dict[str, Any]] = []
     for entry in entries:
         tracked = strict or bool(entry.get("track_liveness"))
@@ -345,7 +430,14 @@ def _prune_dead(entries: list[dict[str, Any]], *, strict: bool = False) -> list[
             entry.get("pid"), entry.get("process_start_time"), lenient=not tracked
         )
         if state is None:
-            raise ActiveSessionRegistryError("active session owner liveness is unknown")
+            if (
+                not targeted
+                or (target_session_id is not None
+                    and str(entry.get("session_id") or "") == str(target_session_id))
+                or (target_pid is not None and entry.get("pid") == target_pid)
+            ):
+                raise ActiveSessionRegistryError("active session owner liveness is unknown")
+            state = True
         if state:
             live.append(entry)
     return live
@@ -393,15 +485,21 @@ def _holds_session(entries: list[dict[str, Any]], session_id: str) -> bool:
 
 def _read_live_entries(
     state_path: Path, *, track_liveness: bool, warn: str,
+    target_session_id: str | None = None, target_pid: int | None = None,
 ) -> Optional[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """``(raw, pruned)`` from the registry, or None when it is unreadable.
 
     Liveness-tracked callers re-raise instead (they must not proceed on an unprovable
     registry); untracked callers get ``warn`` logged and decide how to degrade.
+    ``target_session_id`` is the session the caller is about to claim/release (see
+    ``_prune_dead``).
     """
     try:
         raw_entries = _read_entries(state_path, strict=True)
-        return raw_entries, _prune_dead(raw_entries, strict=track_liveness)
+        return raw_entries, _prune_dead(
+            raw_entries, strict=track_liveness,
+            target_session_id=target_session_id, target_pid=target_pid,
+        )
     except ActiveSessionRegistryError:
         if track_liveness:
             raise
@@ -419,7 +517,7 @@ def _lease_entry(
         "session_id": str(session_id),
         "surface": str(surface),
         "pid": os.getpid(),
-        "process_start_time": _process_start_time(os.getpid()),
+        "process_start_time": _own_start_time(),
         "started_at": now,
         "updated_at": now,
     }
@@ -471,6 +569,7 @@ def try_acquire_active_session(
             state_path, track_liveness=track_liveness,
             warn="Active-session registry is unavailable; refusing the session "
                  "rather than risking a concurrent writer",
+            target_session_id=key,
         )
         if loaded is None:
             return None, ActiveSessionRefusal(
@@ -530,12 +629,14 @@ def release_active_session(lease: ActiveSessionLease) -> None:
     # See #85431.
     state_path, lock_path = _lease_paths(lease)
     with _FileLock(lock_path):
+        _unmark_release_queued(state_path, lease.lease_id)
         if lease.released:
             return
         loaded = _read_live_entries(
             state_path, track_liveness=lease.track_liveness,
             warn="Active-session registry is unavailable; preserving it while "
                  "releasing an untracked lease",
+            target_session_id=lease.session_id,
         )
         if loaded is not None:
             _drop_lease(state_path, loaded[1], lease.lease_id)
@@ -563,6 +664,7 @@ def transfer_active_session(
             state_path, track_liveness=lease.track_liveness,
             warn="Active-session registry is unavailable; refusing to overwrite "
                  "it during lease transfer",
+            target_session_id=lease.session_id,
         )
         if loaded is None:
             return False
@@ -620,6 +722,7 @@ def _release_orphaned_leases_in_home(registry_home: Path, live_lease_ids: set[st
         loaded = _read_live_entries(
             state_path, track_liveness=False,
             warn="Active-session registry is unavailable; skipping orphaned-lease sweep",
+            target_pid=os.getpid(),
         )
         if loaded is None:
             return 0
@@ -642,8 +745,7 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     root = get_default_hermes_root()
     homes = [root]
     try:
-        homes.extend(p for p in (root / "profiles").iterdir()
-                     if p.is_dir() and not p.name.startswith("."))
+        homes.extend(p for p in (root / "profiles").iterdir() if named_profile_is_live(p))
     except OSError:
         pass
 
@@ -659,14 +761,35 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
 def active_session_registry_snapshot(
     registry_home: str | Path | None = None, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return live leases; attachment callers require provable liveness."""
+    """Return live leases; attachment callers require provable liveness.
+
+    The per-entry liveness probes in ``_prune_dead`` run AFTER the file lock
+    is released: holding an exclusive, unfair lock across process-introspection
+    syscalls starves concurrent pollers once a handful of leases exist
+    (#115578). The prune write-back re-locks and drops only the lease ids
+    already proven dead, so a lease created between the snapshot and the
+    write-back is never lost.
+    """
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         raw_entries = _read_entries(state_path, strict=True)
-        entries = _prune_dead(raw_entries, strict=strict)
-        if entries != raw_entries:
-            _write_entries(state_path, entries)
-        return entries
+    entries = _prune_dead(raw_entries, strict=strict)
+    if entries != raw_entries:
+        live_lease_ids = {str(entry.get("lease_id") or "") for entry in entries}
+        dead_lease_ids = {
+            str(entry.get("lease_id") or "")
+            for entry in raw_entries
+            if str(entry.get("lease_id") or "") not in live_lease_ids
+        }
+        with _FileLock(lock_path):
+            current_entries = _read_entries(state_path, strict=True)
+            kept_entries = [
+                entry for entry in current_entries
+                if str(entry.get("lease_id") or "") not in dead_lease_ids
+            ]
+            if len(kept_entries) != len(current_entries):
+                _write_entries(state_path, kept_entries)
+    return entries
 
 
 @contextmanager
@@ -678,7 +801,9 @@ def active_session_liveness_guard(
     new backend can acquire a lease between the check and the caller's ``end_session``."""
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
-        entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
+        entries = _prune_dead(
+            _read_entries(state_path, strict=True), strict=True, target_session_id=session_id,
+        )
         entries = _drop_self_orphans(entries, own_live_lease_ids)
         _write_entries(state_path, entries)
         yield _holds_session(entries, session_id)
@@ -700,7 +825,10 @@ def release_active_session_liveness_guard(
 
     state_path, lock_path = _lease_paths(lease)
     with _FileLock(lock_path):
-        entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
+        _unmark_release_queued(state_path, lease.lease_id)
+        entries = _prune_dead(
+            _read_entries(state_path, strict=True), strict=True, target_session_id=session_id,
+        )
         kept = [e for e in entries if str(e.get("lease_id") or "") != lease.lease_id]
         kept = _drop_self_orphans(kept, own_live_lease_ids)
         if len(kept) != len(entries):

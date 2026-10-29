@@ -47,6 +47,7 @@ class _RecordingDB:
         self.closed = 0
         self.rows: dict = {}
         self.reopen_error: Exception | None = None
+        self.read_error: Exception | None = None
 
     def close(self):
         self.closed += 1
@@ -65,9 +66,13 @@ class _RecordingDB:
             raise self.reopen_error
 
     def get_resume_conversations(self, _target):
+        if self.read_error is not None:
+            raise self.read_error
         return ([], [])
 
     def get_ancestor_display_prefix(self, _target):
+        if self.read_error is not None:
+            raise self.read_error
         return []
 
     def get_messages_as_conversation(self, _target, **_kwargs):
@@ -157,12 +162,17 @@ def test_deferred_desktop_resume_keeps_stored_workspace_provenance(
 
 
 def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
-    """The 'resume failed' early return must not leak the handle."""
+    """The 'resume failed' early return must not leak the handle.
+
+    #85303 made the mount read-only (resume no longer calls ``reopen_session``),
+    so the failure this guards against moved to the history read: a read that
+    raises must still surface as a resume error AND close the profile handle.
+    """
 
     def _factory(db_path=None, **kwargs):
         db = _RecordingDB(db_path=db_path, **kwargs)
         db.rows["s1"] = {"id": "s1", "cwd": ""}
-        db.reopen_error = RuntimeError("database is locked")
+        db.read_error = RuntimeError("database is locked")
         profile_dbs.append(db)
         return db
 
@@ -171,7 +181,7 @@ def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
     resp = _resume(session_id="s1", profile="work")
 
     assert resp["error"]["code"] == 5000
-    assert "resume failed" in resp["error"]["message"]
+    assert "database is locked" in resp["error"]["message"]
     assert profile_dbs[0].closed == 1
 
 
@@ -203,7 +213,7 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         "_live_session_payload",
         lambda sid, session, **_k: {"session_id": sid, "message_count": 0, "messages": [], "info": {}},
     )
-    monkeypatch.setattr(server, "_child_run_active", lambda _key: False)
+    monkeypatch.setattr(server, "_child_run_active", lambda *a, **k: False)
 
     resp = _resume(session_id="s1", profile="work")
 
@@ -303,7 +313,7 @@ def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monk
     monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": "test"})
@@ -350,7 +360,7 @@ def test_resume_drops_half_built_session_when_init_session_raises(
         server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test")
     )
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
 
@@ -394,7 +404,7 @@ def test_resume_eager_never_transfers_shared_launch_db(profile_dbs, monkeypatch)
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(
         server, "_stored_session_runtime_overrides", lambda _found: {}

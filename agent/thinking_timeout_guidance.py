@@ -36,17 +36,16 @@ def is_thinking_timeout(classified: object, model: str, error_msg: str) -> bool:
 
 
 def build_thinking_timeout_guidance(provider: str, model: str, model_label: Optional[str] = None) -> str:
-    """User-facing guidance appended to the final response. ``model`` is used verbatim in
-    the config snippet so it is copy-pasteable; ``model_label`` is the optional prose name."""
+    """User-facing guidance appended to the final response: easiest fix first (``/reasoning
+    low``), the config knob last. ``model`` is used verbatim in the config path so it is
+    copy-pasteable; ``model_label`` is the optional prose name."""
+    from hermes_constants import display_hermes_home
+
     label = model_label or model
     return (
-        "\n\nThe model's thinking phase exceeded the upstream proxy's idle timeout before the first content token "
-        "arrived. This is a "
-        f"known issue with reasoning models (like {label}) behind cloud "
-        "gateways (NVIDIA NIM, OpenAI, Anthropic, DeepSeek). Workarounds in priority order:\n"
-        f"1. Set `providers.{provider}.models.{model}.stale_timeout_seconds: 900` "
-        "in `~/.hermes/config.yaml` to extend the per-call timeout. (Hermes's built-in floor is 600s for known "
-        "reasoning models — if you still see this after raising, the upstream cap is even shorter.)\n2. Lower "
-        "`reasoning_budget` or set `reasoning_effort: medium` on this model if the provider supports it.\n3. Use a "
-        "smaller / faster reasoning model if the task doesn't require deep thinking."
+        f"{label} was thinking for so long that the connection timed out before it wrote anything "
+        "(common for reasoning models behind cloud gateways such as NVIDIA NIM, OpenAI, Anthropic, "
+        "DeepSeek). Easiest fixes: `/reasoning low`, or switch to a faster model with /model. "
+        f"Advanced: set `providers.{provider}.models.{model}.stale_timeout_seconds: 900` in "
+        f"`{display_hermes_home()}/config.yaml` to allow a longer wait."
     )

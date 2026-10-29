@@ -12,12 +12,13 @@ from agent.monitoring.events import CronExecutionEvent
 from agent.monitoring.gateway_health import GatewayMetric, _contains_any, _safe_instance_id
 from cron.jobs import (
     _compute_grace_seconds,
-    get_catch_up_occurrence_count,
     get_ticker_heartbeat_age,
     get_ticker_success_age,
     load_jobs,
 )
+from cron.occurrences import get_catch_up_occurrence_count
 from cron.scheduler import get_running_job_ids
+from cron.store_health import degraded_records
 from hermes_time import now as _now
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,10 @@ def _is_overdue(job: dict[str, Any], now: datetime) -> bool:
     try:
         if next_run.tzinfo is None and now.tzinfo is not None:
             next_run = next_run.replace(tzinfo=now.tzinfo)
-        return (now - next_run).total_seconds() > _compute_grace_seconds(schedule)
+        # A per-job grace override moves the scheduler's own overdue line; the metric must
+        # agree with it or the dashboard flags jobs the ticker considers on time.
+        return (now - next_run).total_seconds() > _compute_grace_seconds(
+            schedule, job.get("grace_minutes"))
     except (TypeError, ValueError):
         return False
 
@@ -151,6 +155,11 @@ _METRIC_GROUPS: tuple[tuple[Callable[[list[GatewayMetric]], None], str], ...] = 
     (_single_metric("hermes.cron.scheduler.catch_up_occurrences", lambda: get_catch_up_occurrence_count()), "cron catch-up metric unavailable"),
     (_job_metrics, "cron job metrics unavailable"),
     (_single_metric("hermes.cron.jobs.running", lambda: len(get_running_job_ids())), "cron running-job metric unavailable"),
+    # Host-wide: the exporter runs in the launch profile's scope, but every served profile's ticker
+    # shares this process, so a secondary profile's outage must not read as healthy.
+    (_single_metric("hermes.cron.store.writable", lambda: int(not degraded_records())), "cron store metric unavailable"),
+    (_single_metric("hermes.cron.store.skipped_runs", lambda: sum(r.skipped_runs for r in degraded_records())),
+     "cron store metric unavailable"),
 )
 
 
@@ -168,26 +177,3 @@ __all__ = [
     "CronHealthSnapshot", "build_cron_health_snapshot", "classify_cron_error", "emit_execution_state",
     "project_execution_event",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import hashlib  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'GatewayHealthSnapshot': ('agent.monitoring.gateway_health', 'GatewayHealthSnapshot'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

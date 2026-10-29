@@ -92,9 +92,18 @@ export const it: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Provider di memoria attivo",
+    noProvider: "nessuno — solo integrata",
+    builtinLayer: "Livello integrato",
+    builtinNote: "MEMORY.md e USER.md sono la memoria propria di Hermes, indipendente da qualsiasi provider esterno. Entrambi vengono caricati nelle sessioni per impostazione predefinita; le opzioni di configurazione (memory.memory_enabled / memory.user_profile_enabled) disattivano ciascuno. Un provider si aggiunge a essi; non li sostituisce mai.",
+  },
+
   status: {
     actionFailed: "Azione non riuscita",
     actionFinished: "Completata",
+    actionFinishedOwed: "Aggiornato, ma ancora in sospeso (riesegui `hermes update` per completare)",
     actions: "Azioni",
     agent: "Agente",
     activeSessions: "Sessioni attive",
@@ -162,9 +171,14 @@ export const it: Translations = {
     deleteSelectedConfirmMessage:
       "Verranno eliminate definitivamente {count} sessioni selezionate e tutti i loro messaggi. L'operazione non può essere annullata.",
     selectedSessionsDeleted: "{count} sessioni eliminate",
+    selectedSessionsSkippedActive: "{deleted} eliminate; {count} mantenute perché un turno è in corso",
     failedToDeleteSelected: "Impossibile eliminare le sessioni selezionate",
     resumeInChat: "Riprendi nella chat",
     newChat: "Nuova chat",
+    workspace: "area di lavoro",
+    workspaceDefault: "Predefinito",
+    workspaceRescan: "Riesamina i repository",
+    workspaceCustom: "Altro percorso…",
     previousPage: "Pagina precedente",
     nextPage: "Pagina successiva",
     roles: {
@@ -324,6 +338,8 @@ export const it: Translations = {
     disableRuntime: "Disabilita",
     enableAfterInstall: "Abilita dopo l'installazione",
     enableRuntime: "Abilita",
+    toggleTakesEffectAfterRestart:
+      "Salvato: riavvia il gateway per applicare la modifica.",
     forceReinstall: "Forza reinstallazione (elimina prima la cartella esistente)",
     headline:
       "Scopri, installa, abilita e aggiorna i plugin Hermes (parità con `hermes plugins`).",

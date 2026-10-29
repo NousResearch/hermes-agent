@@ -15,6 +15,8 @@ from typing import Any, Dict
 
 from cron.scheduler_provider import CronScheduler
 
+from ._nas_client import NasCronClientError
+
 logger = logging.getLogger("cron.chronos")
 
 
@@ -32,9 +34,15 @@ class ChronosCronScheduler(CronScheduler):
 
     def __init__(self) -> None:
         # Best-effort job_id -> fire_at cache; a cold process simply re-arms (idempotent).
-        self._armed: Dict[str, str] = {}
+        self._armed: dict[str, str] = {}
         self._lock = threading.Lock()
         self._client = None  # lazily constructed (no network in is_available)
+        # Set when NAS answered 403 invalid_client: the Nous token in auth.json is not this
+        # instance's provisioned identity, so every arm would fail the same way for the life of
+        # the process. Once set, NAS is left alone and the built-in ticker fires jobs (#97494).
+        self._identity_rejected = False
+        self._stop_event = None
+        self._ticker_kwargs: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
@@ -66,6 +74,10 @@ class ChronosCronScheduler(CronScheduler):
 
     def start(self, stop_event, *, adapters=None, loop=None, interval=60):
         """Arm all enabled jobs via NAS, then RETURN — no loop, no periodic wake (scale-to-zero)."""
+        # Kept so a later identity rejection (boot or mid-life re-arm) can hand this process's
+        # fires to the built-in ticker with the gateway's own adapters/loop.
+        self._ticker_kwargs = {"adapters": adapters, "loop": loop, "interval": interval}
+        self._stop_event = stop_event
         # A new lifecycle can't prove what an interrupted process did: classify unknown, never requeue.
         self.recover_interrupted()
         self._reconcile_logged(logger.warning, "start()")
@@ -74,15 +86,23 @@ class ChronosCronScheduler(CronScheduler):
         pass
 
     def on_jobs_changed(self) -> None:
-        self._reconcile_logged(logger.debug, "on_jobs_changed")
+        if not self._identity_rejected:
+            self._reconcile_logged(logger.debug, "on_jobs_changed")
 
-    def register_job(self, job: Dict[str, Any]) -> None:
+    def register_job(self, job: dict[str, Any]) -> None:
         """Arm the first one-shot for a new job; may raise so creation can report it."""
-        self._arm_one_shot(job)
+        try:
+            self._arm_one_shot(job)
+        except NasCronClientError as e:
+            if not e.identity_rejected:
+                raise
+            self._note_identity_rejected()  # the job is stored; the ticker fires it
 
-    def _arm_one_shot(self, job: Dict[str, Any]) -> None:
+    def _arm_one_shot(self, job: dict[str, Any]) -> None:
         """Arm one one-shot at next_run_at (agent computes the time; NAS executes).
         dedup_key=(job_id, fire_at) makes re-arming the same fire a no-op."""
+        if self._identity_rejected:
+            return  # the built-in ticker owns this process's fires; NAS would 403 again
         job_id = job["id"]
         fire_at = job.get("next_run_at")
         if not fire_at:
@@ -93,11 +113,38 @@ class ChronosCronScheduler(CronScheduler):
         with self._lock:
             self._armed[job_id] = fire_at
 
-    def _arm_logged(self, job: Dict[str, Any], what: str) -> None:
+    def _note_identity_rejected(self) -> None:
+        """403 invalid_client is deterministic: NAS maps the bearer to a provisioned instance via an
+        ``agent:*`` client or the hosted bootstrap session, and a plain ``hermes auth`` login is
+        neither — re-logging in cannot fix it, which is what users try first (#97494). Without
+        NAS the jobs have no trigger at all (the misfire sweep runs them ``misfire_grace_minutes``
+        late), so the built-in ticker takes over this process's fires."""
+        with self._lock:
+            if self._identity_rejected:
+                return
+            self._identity_rejected = True
+        logger.warning(
+            "Chronos: NAS rejected this agent's Nous credential for agent-cron (403 invalid_client). "
+            "The Nous token in auth.json is not this instance's provisioned identity (an agent:* client "
+            "or the hosted bootstrap session), so no job can be armed. A normal `hermes auth` re-login "
+            "cannot fix this; the hosted credential has to be restored from the Nous Portal. Falling back "
+            "to the built-in cron ticker for this process so scheduled jobs keep firing on time.")
+        if self._stop_event is None:
+            return  # start() never ran (e.g. a CLI `hermes cron add`); nothing to tick here
+        from agent.memory_provider import spawn_context_thread
+        from cron.scheduler_provider import InProcessCronScheduler
+        spawn_context_thread(
+            InProcessCronScheduler().start, name="cron-scheduler-chronos-fallback",
+            args=(self._stop_event,), kwargs=self._ticker_kwargs).start()
+
+    def _arm_logged(self, job: dict[str, Any], what: str) -> None:
         """Best-effort arm: log a warning instead of raising (reconcile/fire must not die)."""
         try:
             self._arm_one_shot(job)
         except Exception as e:
+            if isinstance(e, NasCronClientError) and e.identity_rejected:
+                self._note_identity_rejected()
+                return
             logger.warning("Chronos failed to %s: %s", what, e)
 
     def _cancel(self, job_id: str) -> None:
@@ -107,7 +154,7 @@ class ChronosCronScheduler(CronScheduler):
             with self._lock:
                 self._armed.pop(job_id, None)
 
-    def _list_armed(self) -> Dict[str, str]:
+    def _list_armed(self) -> dict[str, str]:
         """Armed one-shots (job_id -> fire_at): in-memory map when warm, else ask NAS ({} on
         failure — reconcile then re-arms idempotently)."""
         with self._lock:
@@ -126,7 +173,7 @@ class ChronosCronScheduler(CronScheduler):
     def reconcile(self) -> None:
         """Converge NAS one-shots toward jobs.json: arm missing/changed, cancel orphans."""
         from cron.jobs import get_job, load_jobs
-        desired: Dict[str, str] = {
+        desired: dict[str, str] = {
             j["id"]: j["next_run_at"] for j in load_jobs()
             if j.get("enabled") and j.get("next_run_at") and j.get("state") != "paused"}
         observed = self._list_armed()
@@ -158,11 +205,3 @@ class ChronosCronScheduler(CronScheduler):
 def register(ctx) -> None:
     """Plugin entrypoint — plugins/cron_providers discovery collects the provider here."""
     ctx.register_cron_scheduler(ChronosCronScheduler())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

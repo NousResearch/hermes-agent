@@ -51,7 +51,7 @@ sys.exit(2)
 '''
 
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="fake bw is a shebang script; the backend under test is host-agnostic")
+pytestmark = pytest.mark.platforms("posix")  # fake bw is a shebang script; the backend under test is host-agnostic
 
 
 @pytest.fixture
@@ -129,7 +129,7 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
     finally:
         unlock_mod.set_unlock_prompt_callback(None)
 
-    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8-sig").splitlines()]
     unlock_calls = [c for c in calls if c["argv"][:2] == ["unlock", "--raw"]]
     assert len(unlock_calls) == 1 and unlock_calls[0]["pw"] == "correct horse" and unlock_calls[0]["stdin"] == ""
     assert all("correct horse" not in " ".join(c["argv"]) for c in calls), "master password must never be argv"
@@ -168,3 +168,124 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.release_session("sess-A")
         assert not backend.is_unlocked()
         unlock_mod.set_current_session_id(None)
+
+
+def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
+    """A Bitwarden login with several URIs binds all of them (deduped, first stays
+    primary); non-web URIs and URIs marked match=Never (5) never widen the fill set."""
+    backend = BitwardenLoginBackend({"enabled": True})
+    items_json = json.dumps([{
+        "id": "multi", "type": 1, "name": "Amazon", "creationDate": "2026-01-01T00:00:00Z",
+        "login": {"username": "jane@example.com", "uris": [
+            {"uri": "https://amazon.co.uk/signin"},
+            {"uri": "https://www.amazon.co.uk"},
+            {"uri": "https://eu.account.amazon.com"},
+            {"uri": "androidapp://com.amazon.shopping"},
+            {"uri": "not a url"},
+            {"uri": "https://never.amazon.co.uk", "match": 5},
+        ]},
+    }])
+    with patch.object(BitwardenLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", return_value=items_json):
+        metas = backend.list_items()
+    assert len(metas) == 1
+    assert metas[0].origin == "https://amazon.co.uk"
+    assert list(metas[0].allowed_origins) == ["https://amazon.co.uk", "https://www.amazon.co.uk",
+                                              "https://eu.account.amazon.com"]
+
+
+def test_onepassword_multi_url_item_binds_every_saved_web_origin():
+    """A 1Password login with several websites binds all of them; the app URI is kept
+    out of the fill set and a single-URL item is unchanged."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend, _all_origins, _web_origins
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    items_json = json.dumps([{
+        "id": "multi", "title": "Amazon", "created_at": "2026-01-01T00:00:00Z",
+        "additional_information": "jane@example.com",
+        "urls": [{"href": "https://amazon.co.uk"}, {"href": "https://www.amazon.co.uk"},
+                 {"href": "https://eu.account.amazon.com"}, {"href": "androidapp://com.amazon.shopping"},
+                 {"href": "::not parseable::"}],
+    }, {
+        "id": "single", "title": "Shop", "created_at": "2026-01-01T00:00:00Z",
+        "urls": [{"href": "https://shop.example.com"}],
+    }])
+    with patch.object(OnePasswordLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", return_value=items_json):
+        metas = {m.id: m for m in backend.list_items()}
+    assert metas["op:multi"].origin == "https://amazon.co.uk"
+    assert list(metas["op:multi"].allowed_origins) == ["https://amazon.co.uk", "https://www.amazon.co.uk",
+                                                       "https://eu.account.amazon.com"]
+    assert metas["op:single"].origin == "https://shop.example.com"
+    assert list(metas["op:single"].allowed_origins) == ["https://shop.example.com"]
+    # helpers: dedupe keeps first occurrence; app-only items keep their single origin
+    assert _all_origins(["https://a.com/x", "https://a.com/y"]) == ["https://a.com"]
+    assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
+
+
+def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
+    """Vault reads use the same explicit 1Password CLI config location."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    monkeypatch.setenv("OP_CONFIG_DIR", "/tmp/op-config")
+    backend = OnePasswordLoginBackend({"enabled": True})
+
+    assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+# A stand-in `op` holding the real CLI's service-account rule: `item get` without a vault query exits 1
+# with op's own message (op 2.32 checks this client-side, before it even decodes the token).
+_FAKE_OP = r'''#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a") as log:
+    log.write(json.dumps(argv) + "\n")
+if argv[:2] == ["item", "list"]:
+    print(json.dumps([{"id": i, "title": i, "vault": {"id": "vault-" + i[-1]},
+                       "urls": [{"href": "https://example.com/login"}]} for i in ("item-a", "item-b", "item-c")])); sys.exit(0)
+if argv[:2] == ["item", "get"]:
+    if os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") and "--vault" not in argv:
+        sys.stderr.write("a vault query must be provided when this command is called by a service account\n"); sys.exit(1)
+    if "item-c" in argv:  # a revoked/garbled token: op's own wording mentions a session
+        sys.stderr.write("error initializing client: Validation: (failed to session.DecodeSACredentials)\n"); sys.exit(1)
+    print("123456" if "--otp" in argv else "dummy-password"); sys.exit(0)
+sys.exit(2)
+'''
+
+
+@pytest.fixture
+def fake_op_service_account(tmp_path):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    token = lambda name, default="": "dummy-sa-token" if name == "OP_SERVICE_ACCOUNT_TOKEN" else default
+    with patch("agent.secret_scope.get_secret", side_effect=token):
+        # a fresh backend per tool call, exactly as backend_for_handle builds one: nothing listed yet
+        yield (lambda: OnePasswordLoginBackend({"binary_path": str(exe)})), tmp_path / "op.log"
+
+
+def test_onepassword_service_account_reads_name_the_items_own_vault(fake_op_service_account):
+    """#108335: a service account can list logins but every fill/OTP read failed because
+    `op item get` never named a vault. Each read now carries the vault its listing reported."""
+    new_backend, log = fake_op_service_account
+    fill = new_backend()  # a fill: get_meta proves handle + origin, then the read reuses that listing
+    assert fill.get_meta("op:item-b") is not None
+    assert fill.resolve_password("op:item-b") == "dummy-password"
+    assert new_backend().resolve_otp("op:item-a") == "123456"  # a code read on a fresh backend lists once
+    calls = [a[:2] if a[:2] == ["item", "list"] else a for a in map(json.loads, log.read_text(encoding="utf-8-sig").splitlines())]
+    assert calls == [["item", "list"], ["item", "get", "item-b", "--vault", "vault-b", "--fields", "label=password", "--reveal"],
+                     ["item", "list"], ["item", "get", "item-a", "--vault", "vault-a", "--otp"]]
+
+
+def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_service_account):
+    """A handle no listing returned is refused before any secret read, and a token op rejects
+    surfaces op's error rather than an unlock prompt a service account can never satisfy."""
+    new_backend, log = fake_op_service_account
+    with pytest.raises(RuntimeError, match="not found"):
+        new_backend().resolve_password("op:--help")
+    assert new_backend().resolve_otp("op:ghost") is None
+    assert all(json.loads(a)[:2] != ["item", "get"] for a in log.read_text(encoding="utf-8-sig").splitlines())
+    with pytest.raises(RuntimeError, match="DecodeSACredentials"):
+        new_backend().resolve_password("op:item-c")

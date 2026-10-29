@@ -92,9 +92,18 @@ export const es: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Proveedor de memoria activo",
+    noProvider: "ninguno — solo integrada",
+    builtinLayer: "Capa integrada",
+    builtinNote: "MEMORY.md y USER.md son la memoria propia de Hermes, independiente de cualquier proveedor externo. Ambos se cargan en las sesiones por defecto; los interruptores de configuración (memory.memory_enabled / memory.user_profile_enabled) desactivan cada uno. Un proveedor se suma a ellos; nunca los reemplaza.",
+  },
+
   status: {
     actionFailed: "Acción fallida",
     actionFinished: "Finalizado",
+    actionFinishedOwed: "Actualizado, pero aún pendiente (vuelve a ejecutar `hermes update` para terminar)",
     actions: "Acciones",
     agent: "Agente",
     activeSessions: "Sesiones activas",
@@ -162,9 +171,14 @@ export const es: Translations = {
     deleteSelectedConfirmMessage:
       "Esto elimina permanentemente {count} sesiones seleccionadas y todos sus mensajes. No se puede deshacer.",
     selectedSessionsDeleted: "{count} sesiones eliminadas",
+    selectedSessionsSkippedActive: "{deleted} eliminadas; {count} conservadas porque hay un turno en curso",
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
     newChat: "Nuevo chat",
+    workspace: "espacio de trabajo",
+    workspaceDefault: "Predeterminado",
+    workspaceRescan: "Volver a buscar repositorios",
+    workspaceCustom: "Otra ruta…",
     previousPage: "Página anterior",
     nextPage: "Página siguiente",
     roles: {
@@ -325,6 +339,8 @@ export const es: Translations = {
     disableRuntime: "Deshabilitar",
     enableAfterInstall: "Habilitar tras instalar",
     enableRuntime: "Habilitar",
+    toggleTakesEffectAfterRestart:
+      "Guardado: reinicia el gateway para aplicar el cambio.",
     forceReinstall: "Forzar reinstalación (eliminar carpeta existente primero)",
     headline:
       "Descubre, instala, habilita y actualiza complementos de Hermes (equivalente a `hermes plugins`).",

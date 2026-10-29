@@ -145,14 +145,15 @@ Gateway 从多个来源读取配置：
 
 ## 平台适配器
 
-大多数消息平台以插件适配器形式位于 `plugins/platforms/<name>/adapter.py`；少数旧适配器仍直接位于 `gateway/platforms/`。它们都继承 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
+所有消息平台都以插件适配器形式位于 `plugins/platforms/<name>/`；`gateway/platforms/` 只保留基类和 HTTP 入站适配器（`api_server`、`webhook`、`msgraph_webhook`）。它们都继承 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
 
 ```text
 plugins/platforms/                  # 插件打包的适配器（每个一个目录）
 ├── telegram/adapter.py     # Telegram Bot API（长轮询或 webhook）
 ├── discord/adapter.py      # Discord bot（通过 discord.py）
 ├── slack/adapter.py        # Slack Socket Mode
-├── whatsapp/adapter.py     # WhatsApp Business Cloud API
+├── whatsapp/adapter.py     # WhatsApp（通过本地 Baileys 桥接）
+├── whatsapp_cloud/adapter.py # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix（通过 mautrix，可选 E2EE）
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # 电子邮件（通过 IMAP/SMTP）
@@ -162,17 +163,16 @@ plugins/platforms/                  # 插件打包的适配器（每个一个目
 ├── wecom/adapter.py        # 企业微信（WeCom）回调
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
+├── signal/adapter.py       # Signal（通过 signal-cli HTTP 守护进程，SSE + JSON-RPC）
 ├── irc/adapter.py          # IRC（作用域锁的标准示例）
-├── homeassistant/adapter.py # Home Assistant 对话集成
+├── bluebubbles/adapter.py  # Apple iMessage（通过 BlueBubbles macOS 服务端）
+├── weixin/adapter.py       # 微信（个人版，通过 iLink Bot API）
+├── qqbot/                  # QQ Bot（腾讯 QQ，通过官方 API v2）
+├── yuanbao/adapter.py      # 元宝（腾讯）私信/群组适配器
 └── …                       # google_chat、ntfy、photon、raft、simplex 等
 
-gateway/platforms/                  # 核心 base 与旧的直接适配器
+gateway/platforms/                  # 核心 base 与 HTTP 入站适配器
 ├── base.py              # BasePlatformAdapter — 所有平台的共享逻辑
-├── signal.py            # Signal（通过 signal-cli REST API）
-├── weixin.py            # 微信（个人版，通过 iLink Bot API）
-├── bluebubbles.py       # Apple iMessage（通过 BlueBubbles macOS 服务端）
-├── qqbot/               # QQ Bot（腾讯 QQ，通过官方 API v2，子包）
-├── yuanbao.py           # 元宝（腾讯）私信/群组适配器
 ├── msgraph_webhook.py   # Microsoft Graph 变更通知 webhook（Teams、Outlook 等）
 ├── webhook.py           # 入站/出站 webhook 适配器
 └── api_server.py        # REST API 服务器适配器
@@ -193,7 +193,7 @@ gateway/platforms/                  # 核心 base 与旧的直接适配器
 
 - **直接回复** — 将响应发回原始聊天
 - **主频道投递** — 将 cron 任务输出和后台结果路由至已配置的主频道
-- **显式目标投递** — `send_message` 工具指定 `telegram:-1001234567890`，或通过 [`hermes send` CLI](/guides/pipe-script-output) 封装同一工具供 shell 脚本使用
+- **显式目标投递** — `send_message` 工具指定 `telegram:-1001234567890`，或通过 [`hermes send` CLI](../guides/pipe-script-output.md) 封装同一工具供 shell 脚本使用
 - **跨平台投递** — 投递至与原始消息不同的平台
 
 Cron 任务投递**不会**镜像到 gateway 会话历史中 — 它们仅存在于各自的 cron 会话中。这是有意为之的设计选择，以避免消息交替违规。
@@ -264,4 +264,4 @@ Gateway 作为长期运行进程运行，管理方式如下：
 - [Cron 内部机制](./cron-internals.md)
 - [ACP 内部机制](./acp-internals.md)
 - [Agent 循环内部机制](./agent-loop.md)
-- [消息 Gateway（用户指南）](/user-guide/messaging)
+- [消息 Gateway（用户指南）](../user-guide/messaging/index.md)

@@ -12,6 +12,8 @@ __pycache__
 *.egg-info/
 dist/
 build/
+!scripts/build/
+!scripts/build/**
 
 # Virtual environments
 venv/
@@ -27,6 +29,8 @@ node_modules
 .notebooklm-playwright/
 .pip-cache/
 .uv-cache/
+.cache/
+.build/
 
 # Built artifacts that are regenerated inside the image.  Excluded so local
 # rebuilds on the developer's machine don't invalidate the npm-install layer
@@ -58,6 +62,8 @@ htmlcov/
 
 # Documentation
 *.md
+!skills/**/*.md
+!optional-skills/**/*.md
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
@@ -70,12 +76,33 @@ runtime/
 
 # ---------- Not needed inside the Docker image ----------
 
-# Desktop app source (Tauri/Electron); never installed in the container.
+# Desktop app source (Tauri/Electron); the app is never installed in the container.
 # apps/shared is the dashboard↔desktop websocket helper and is linked from
 # web/package.json as a file: workspace dep — keep it in the build context.
+# apps/desktop is the Webapp renderer's build input (webapp_build stage); its
+# local build outputs stay out.
 apps/
 !apps/shared/
 !apps/shared/**
+!apps/desktop/
+!apps/desktop/**
+apps/desktop/dist/
+apps/desktop/dist-webapp/
+apps/desktop/build/
+apps/desktop/release/
+# The negations above override the global dependency and secret rules.
+apps/**/node_modules
+apps/desktop/**/.env
+apps/desktop/**/.env.*
+apps/desktop/**/.vite
+apps/desktop/**/.cache
+apps/desktop/**/coverage
+apps/desktop/**/playwright-report
+apps/desktop/**/test-results
+apps/desktop/**/*.p12
+apps/desktop/**/*.pfx
+apps/desktop/**/*.pem
+apps/desktop/**/*.key
 
 # Test suite — not shipped in production images
 tests/
@@ -83,8 +110,15 @@ tests/
 # Documentation site (Docusaurus)
 website/
 
-# Assets only used by the GitHub README
+# Keep the source artwork needed by web's icon-generation prebuild.
 assets/
+!assets/
+assets/*
+!assets/nous-girl-black.svg
+!assets/nous-girl-white.svg
+!assets/dmg-volume.png
+!assets/backgrounds/
+!assets/backgrounds/**
 infographic/
 
 # Plugin-level docs (hermes-achievements ships docs/ but the runtime doesn't read them)
@@ -99,6 +133,7 @@ packaging/
 # Design and planning documents
 plans/
 .plans/
+.hermes/
 
 # Repo-level dotfiles that are git-only or dev-tooling config
 .envrc

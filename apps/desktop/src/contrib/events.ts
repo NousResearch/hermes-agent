@@ -11,6 +11,21 @@ import type { GatewayEvent } from '@hermes/shared'
 export type GatewayEventListener = (event: GatewayEvent) => void
 
 const listeners = new Map<string, Set<GatewayEventListener>>()
+let activeDisposerTracker: ((dispose: () => void) => void) | null = null
+
+/** Run a plugin registration while associating its event listeners with its
+ * unload disposer list. Runtime plugins are evaluated afresh on every reload,
+ * so their host subscriptions must leave with the previous module instance. */
+export function trackGatewayEventDisposers<T>(track: (dispose: () => void) => void, register: () => T): T {
+  const previous = activeDisposerTracker
+  activeDisposerTracker = track
+
+  try {
+    return register()
+  } finally {
+    activeDisposerTracker = previous
+  }
+}
 
 /** Subscribe to gateway events by `type` (`'*'` = everything). Returns a disposer. */
 export function onGatewayEvent(type: string, listener: GatewayEventListener): () => void {
@@ -18,13 +33,17 @@ export function onGatewayEvent(type: string, listener: GatewayEventListener): ()
   set.add(listener)
   listeners.set(type, set)
 
-  return () => {
+  const dispose = () => {
     set.delete(listener)
 
     if (set.size === 0) {
       listeners.delete(type)
     }
   }
+
+  activeDisposerTracker?.(dispose)
+
+  return dispose
 }
 
 /** Fan an event to subscribers (wiring-side; call before app dispatch). */

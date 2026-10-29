@@ -21,14 +21,14 @@ from plugins.platforms.email.adapter import (
 class TestSafeDecode:
     def test_unknown_8bit_charset_falls_back(self):
         # QQ Mail emits the RFC 1428 "unknown-8bit" placeholder (#35901).
-        assert _safe_decode("你好".encode("utf-8"), "unknown-8bit") == "你好"
+        assert _safe_decode("你好".encode(), "unknown-8bit") == "你好"
 
     def test_garbage_charset_label_never_raises(self):
         assert _safe_decode(b"Hello", "charset") == "Hello"
         assert _safe_decode(b"Hello", "not-a-codec-!!") == "Hello"
 
     def test_none_charset_defaults_to_utf8(self):
-        assert _safe_decode("héllo".encode("utf-8"), None) == "héllo"
+        assert _safe_decode("héllo".encode(), None) == "héllo"
 
     def test_gb2312_label_decodes_gbk_extensions(self):
         # gb2312-labelled mail routinely contains GBK-only characters.
@@ -80,7 +80,7 @@ class TestExtractTextBodyCharsets:
     def test_unknown_charset_body_does_not_raise(self):
         # LookupError from an unknown Content-Type charset aborted the
         # fetch and dropped the message (#55383).
-        msg = self._msg("正文内容".encode("utf-8"), "unknown-8bit")
+        msg = self._msg("正文内容".encode(), "unknown-8bit")
         assert "正文内容" in _extract_text_body(msg)
 
     def test_bogus_charset_body_does_not_raise(self):

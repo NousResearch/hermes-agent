@@ -15,6 +15,7 @@ are stubbed to isolate the test machine's real credentials).
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -920,4 +921,42 @@ class TestCredentialPoolAuthStoreIntegration:
         ):
             creds = _read_assignee_credentials(home)
 
+        assert "openai-codex" not in creds
+
+    def test_real_judo_auth_store_copy_uses_borrowed_anthropic_and_rejects_codex(self, tmp_path):
+        """Exercise the real auth.json/.env schema without exposing secrets."""
+        source_home = Path.home() / ".hermes" / "profiles" / "judo"
+        source_auth = source_home / "auth.json"
+        source_env = source_home / ".env"
+        if not source_auth.is_file() or not source_env.is_file():
+            pytest.skip("local judo auth.json/.env not available")
+
+        home = tmp_path / "judo"
+        home.mkdir()
+        shutil.copy2(source_auth, home / "auth.json")
+        shutil.copy2(source_env, home / ".env")
+
+        auth = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+        for entry in auth.get("credential_pool", {}).get("anthropic", []):
+            entry["last_status"] = STATUS_EXHAUSTED
+            entry["last_error_code"] = 400
+        for entry in auth.get("credential_pool", {}).get("openai-codex", []):
+            entry["last_status"] = STATUS_EXHAUSTED
+            entry["last_error_code"] = 401
+        (home / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+
+        with (
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  return_value={"api_key": "stale-codex-token", "base_url": None}),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "",
+                "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "",
+                "OPENAI_API_KEY": "",
+            }),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+        ):
+            creds = _read_assignee_credentials(home)
+
+        assert "anthropic" in creds
         assert "openai-codex" not in creds

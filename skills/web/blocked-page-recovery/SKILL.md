@@ -31,7 +31,7 @@ ladder, cheapest first.
 Run it in one shot with the bundled script:
 
 ```bash
-python3 scripts/recover_page.py "https://example.com/blocked-article" --json
+python scripts/recover_page.py "https://example.com/blocked-article" --json
 ```
 
 The script tries each route in order, validates every body (see "Fake

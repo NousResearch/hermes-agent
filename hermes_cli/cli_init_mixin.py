@@ -389,9 +389,23 @@ class CLIInitMixin:
 
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
-    def _init_runtime_state(self, resume):
+    def _init_runtime_state(self, resume, session_id=None):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         from cli import _hermes_home
+        if session_id:
+            # Defensive second gate for programmatic callers (cli.main / Fire); the `hermes` CLI
+            # already rejects malformed ids at parse time via _parser._session_id_type, and
+            # main._reject_session_id_conflict exits before construction on a resume clash.
+            from hermes_state_ids import is_known_session_id
+
+            if not is_known_session_id(session_id):
+                raise ValueError(
+                    f"invalid session id {session_id!r}: expected a recognized Hermes "
+                    "session-id shape (e.g. 20260225_143052_a1b2c3)")
+            if resume:
+                raise ValueError(
+                    "--session-id starts a fresh session and cannot be combined "
+                    "with --resume (pass one or the other)")
         from hermes_cli.left_core_migration import serve_notices_on_stderr
         serve_notices_on_stderr()
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
@@ -409,7 +423,10 @@ class CLIInitMixin:
         self._init_session_store()
         self._pending_title: Optional[str] = None
         self._resumed = bool(resume)
-        self.session_id = resume or new_session_id(self.session_start)
+        # ``session_id`` (chat --session-id): fresh session, orchestrator-chosen id — the mint is
+        # replaced, nothing else. resume wins structurally (both set is a ValueError above), so
+        # hooks in agent/conversation_loop.py fire with exactly the pre-registered routing key.
+        self.session_id = resume or session_id or new_session_id(self.session_start)
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         self._history_file = _hermes_home / ".hermes_history"

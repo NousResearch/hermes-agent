@@ -1399,6 +1399,31 @@ def _create_titled_session(title: str) -> Optional[str]:
         return None
 
 
+def _reject_session_id_conflict(args) -> None:
+    """``--session-id`` starts a FRESH session; ``--resume``/``-c`` continue an existing one — error, not precedence.
+
+    An argparse mutually-exclusive group cannot express this: the flags may arrive on different
+    parsers (``hermes --resume X chat --session-id Y``), and grouping top-level ``--resume``/
+    ``--continue`` together would wrongly make today's legal ``-r`` + ``-c`` combos an error.
+    Runs FIRST in cmd_chat so every launch path (full/fast/Termux dispatch) fails before
+    bootstrap or session side effects; exit 2 mirrors argparse's own usage-error code.
+    """
+    if not getattr(args, "session_id", None):
+        return
+    if getattr(args, "resume", None):
+        conflict = "--resume/-r"
+    elif getattr(args, "continue_last", None):
+        conflict = "-c/--continue"
+    else:
+        return
+    print(
+        f"Error: --session-id cannot be combined with {conflict}: --session-id starts a "
+        "FRESH session with the given id, --resume/-c continue an existing one. Pass one or the other.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _resolve_continue_arg(args, *, use_tui: bool) -> None:
     """Resolve ``-c/--continue`` into ``args.resume``.
 
@@ -1680,6 +1705,7 @@ _CHAT_PASSTHROUGH = (
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    _reject_session_id_conflict(args)
     from hermes_cli.stream_json import stream_json_requested
     # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
     # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).
@@ -1758,6 +1784,10 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
+        # chat --session-id: NOT in _CHAT_PASSTHROUGH — passthrough feeds **kwargs to
+        # _launch_tui too, and the TUI entry point has no session_id parameter (the flag is
+        # accepted-but-ignored there, per its help text).
+        "session_id": getattr(args, "session_id", None),
         **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH + (("api_key", None), ("base_url", None))},
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -3010,6 +3040,7 @@ def _set_chat_arg_defaults(args) -> None:
         ("toolsets", None),
         ("verbose", False),
         ("resume", None),
+        ("session_id", None),
         ("continue_last", None),
         ("worktree", False),
     ]:

@@ -48,10 +48,13 @@ def _build_full_manifest(
         bot_events.extend(["assistant_thread_context_changed", "assistant_thread_started"])
     elif messaging_experience == "agent":
         features["agent_view"] = {"agent_description": "Chat with Hermes in Slack Messages."}
-        bot_scopes.append("assistant:write")
+        # Slack Code channels: one channel per task, opened by the agent or from Slack's UI. The Stop
+        # button arrives as agent_session_stopped.
+        features["code_channels"] = {"enabled": True}
+        bot_scopes.extend(["assistant:write", "code_channels:manage"])
         # Slack includes current viewing context in Agent DM events only after this subscription
         # is enabled; the adapter uses it to preserve the referred channel across the agent turn.
-        bot_events.extend(["app_context_changed", "app_home_opened"])
+        bot_events.extend(["agent_session_stopped", "app_context_changed", "app_home_opened"])
 
     bot_scopes.sort()
     bot_events.sort()

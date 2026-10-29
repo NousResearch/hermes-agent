@@ -3008,6 +3008,7 @@ export const en: Translations = {
     manage: 'Manage',
     showRuns: 'Show runs',
     hideRuns: 'Hide runs',
+    uncategorized: 'Uncategorized',
     runHistory: 'Run history',
     actionsTitle: 'Cron job actions',
     resume: 'Resume cron',

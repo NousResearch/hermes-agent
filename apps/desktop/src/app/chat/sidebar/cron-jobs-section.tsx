@@ -21,11 +21,10 @@ import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from '../../cron/job-state'
-import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from '../../cron/open-cron-run'
+import { openCronRun, reconcileCronRunVerdicts } from '../../cron/open-cron-run'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
-import { SidebarLoadMoreRow } from './load-more-row'
 
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
 
@@ -39,10 +38,17 @@ const PEEK_RUN_LIMIT = 5
 const PEEK_POLL_INTERVAL_MS = 8000
 const PEEK_BACKSTOP_INTERVAL_MS = 60_000
 
-// Keep the section compact: show a few jobs up front, reveal more in larger
-// steps on demand (mirrors the messaging sections in the sidebar).
-const INITIAL_VISIBLE_JOBS = 3
-const LOAD_MORE_STEP = 10
+// Jobs name their category as a 【…】 prefix, so the section folds them into one
+// folder per prefix instead of paging through a single flat list.
+const PREFIX_RE = /^【([^】]*)】/
+
+// Folders the schedules actually use, in the order the day reads. Any other
+// prefix sorts in after these; the prefix-less bucket always comes last.
+const PREFERRED_GROUP_ORDER = ['日报', '周报', '月报', '备份', '监控', '台账', '看护', '纪律', '清理']
+
+// Folder key for jobs whose name carries no 【prefix】. A real key is always a
+// matched prefix, so this sentinel can never collide with one.
+const UNCATEGORIZED_GROUP_KEY = '\u0000uncategorized'
 
 function nextRunMs(job: CronJob): null | number {
   if (!job.next_run_at) {
@@ -65,6 +71,59 @@ function formatRunTime(seconds?: null | number): string {
   const date = new Date(seconds * 1000)
 
   return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
+}
+
+// Script-only (no_agent) jobs have no agent sessions; the runs endpoint
+// surfaces their per-fire output docs as rows with source='cron_output'
+// (see _list_cron_output_runs in hermes_cli/web_routers/cron.py).
+function isSyntheticCronOutputRun(run: SessionInfo): boolean {
+  return run.source === 'cron_output'
+}
+
+interface CronJobGroup {
+  jobs: CronJob[]
+  key: string
+  // null marks the uncategorized bucket: its header falls back to an i18n label.
+  label: null | string
+}
+
+// One folder per 【prefix】, keeping the incoming (upcoming-first) order inside
+// each folder. Preferred folders lead in their listed order, then the remaining
+// prefixes alphabetically, then the prefix-less bucket.
+function groupJobsByPrefix(jobs: CronJob[]): CronJobGroup[] {
+  const byKey = new Map<string, CronJobGroup>()
+
+  for (const job of jobs) {
+    const match = jobTitle(job).match(PREFIX_RE)
+    const prefix = match ? match[1].trim() : null
+    const key = prefix ?? UNCATEGORIZED_GROUP_KEY
+    const group = byKey.get(key)
+
+    if (group) {
+      group.jobs.push(job)
+    } else {
+      byKey.set(key, { jobs: [job], key, label: prefix })
+    }
+  }
+
+  const uncategorized = byKey.get(UNCATEGORIZED_GROUP_KEY)
+
+  if (uncategorized) {
+    byKey.delete(UNCATEGORIZED_GROUP_KEY)
+  }
+
+  const ordered = [...byKey.values()].sort((a, b) => {
+    const ai = PREFERRED_GROUP_ORDER.indexOf(a.key)
+    const bi = PREFERRED_GROUP_ORDER.indexOf(b.key)
+
+    if (ai !== -1 || bi !== -1) {
+      return ai === -1 ? 1 : bi === -1 ? -1 : ai - bi
+    }
+
+    return a.key.localeCompare(b.key)
+  })
+
+  return uncategorized ? [...ordered, uncategorized] : ordered
 }
 
 interface SidebarCronJobsSectionProps {
@@ -94,11 +153,12 @@ export function SidebarCronJobsSection({
   onToggle,
   open
 }: SidebarCronJobsSectionProps) {
+  const { t } = useI18n()
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
   const [peekJobId, setPeekJobId] = useState<null | string>(null)
-  // Rows revealed so far; starts compact, grows in steps via "load more".
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_JOBS)
+  // Folders the user opened; empty means every folder starts collapsed.
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set())
   const [triggeringJobIds, setTriggeringJobIds] = useState<ReadonlySet<string>>(() => new Set())
   const triggerControllerRef = useRef<CronTriggerController | null>(null)
 
@@ -176,9 +236,22 @@ export function SidebarCronJobsSection({
     })
   }, [jobs])
 
-  const cap = Math.min(visibleCount, max)
-  const shown = sorted.slice(0, cap)
-  const hiddenCount = Math.min(sorted.length, max) - shown.length
+  // The cap still bounds the section; folders group whatever survives it.
+  const groups = useMemo(() => groupJobsByPrefix(sorted.slice(0, max)), [max, sorted])
+
+  const toggleGroup = (key: string) => {
+    setExpandedGroups(current => {
+      const next = new Set(current)
+
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+
+      return next
+    })
+  }
 
   return (
     <SidebarGroup className="shrink-0 p-0 pb-1">
@@ -197,28 +270,68 @@ export function SidebarCronJobsSection({
       </div>
       {open && (
         <SidebarGroupContent className="scrollbar-fade flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
-          {shown.map(job => (
-            <CronJobSidebarRow
-              busy={triggeringJobIds.has(job.id)}
-              expanded={peekJobId === job.id}
-              job={job}
-              key={job.id}
-              nowMs={nowMs}
-              onManage={() => onManageJob(job.id)}
-              onOpenRun={onOpenRun}
-              onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
-              onTrigger={() => triggerJob(job.id)}
-            />
-          ))}
-          {hiddenCount > 0 && (
-            <SidebarLoadMoreRow
-              onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
-              step={Math.min(LOAD_MORE_STEP, hiddenCount)}
-            />
-          )}
+          {groups.map(group => {
+            const isExpanded = expandedGroups.has(group.key)
+
+            return (
+              <div className="flex flex-col gap-px" key={group.key}>
+                <CronJobGroupHeader
+                  count={group.jobs.length}
+                  expanded={isExpanded}
+                  label={group.label ? `【${group.label}】` : t.cron.uncategorized}
+                  onToggle={() => toggleGroup(group.key)}
+                />
+                {isExpanded &&
+                  group.jobs.map(job => (
+                    <CronJobSidebarRow
+                      busy={triggeringJobIds.has(job.id)}
+                      expanded={peekJobId === job.id}
+                      job={job}
+                      key={job.id}
+                      nowMs={nowMs}
+                      onManage={() => onManageJob(job.id)}
+                      onOpenRun={onOpenRun}
+                      onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
+                      onTrigger={() => triggerJob(job.id)}
+                    />
+                  ))}
+              </div>
+            )
+          })}
         </SidebarGroupContent>
       )}
     </SidebarGroup>
+  )
+}
+
+// A folder's header: caret + name on the left, the number of jobs it holds on
+// the right. Same row chrome as the jobs it heads, one weight up so the level
+// above them reads at a glance.
+function CronJobGroupHeader({
+  count,
+  expanded,
+  label,
+  onToggle
+}: {
+  count: number
+  expanded: boolean
+  label: string
+  onToggle: () => void
+}) {
+  return (
+    <SidebarRowShell
+      actions={<span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums">{count}</span>}
+      className="hover:bg-(--chrome-action-hover)"
+    >
+      <SidebarRowBody
+        aria-expanded={expanded}
+        className="focus-visible:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        onClick={onToggle}
+      >
+        <DisclosureCaret className="text-(--ui-text-tertiary)" open={expanded} />
+        <SidebarRowLabel className="font-medium">{label}</SidebarRowLabel>
+      </SidebarRowBody>
+    </SidebarRowShell>
   )
 }
 
@@ -405,6 +518,9 @@ function CronJobSidebarRuns({
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  // Single-open inline output for script-only runs, same idiom as the section's
+  // peek: one row's record at a time, or the list stops being scannable.
+  const [openOutputRunId, setOpenOutputRunId] = useState<null | string>(null)
   const visible = usePaneVisible()
 
   useEffect(() => {
@@ -464,13 +580,23 @@ function CronJobSidebarRuns({
       ) : (
         <>
           {runs.map(run =>
-            !isCronRunRow(run) ? (
-              // Output-doc rows have no backing session to open.
-              <div
-                className="truncate rounded-md px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) tabular-nums"
-                key={run.id}
-              >
-                {formatRunTime(run.last_active || run.started_at)}
+            isSyntheticCronOutputRun(run) ? (
+              // Output-doc rows have no backing session to open, so the row
+              // opens the record itself instead: same affordances as the
+              // session rows above it, one line of run data underneath.
+              <div className="flex flex-col gap-px" key={run.id}>
+                <button
+                  aria-expanded={openOutputRunId === run.id}
+                  className={cn(
+                    'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                    'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                  )}
+                  onClick={() => setOpenOutputRunId(prev => (prev === run.id ? null : run.id))}
+                  type="button"
+                >
+                  {formatRunTime(run.last_active || run.started_at)}
+                </button>
+                {openOutputRunId === run.id && <CronRunOutput run={run} />}
               </div>
             ) : (
               // One click to the run's transcript; a run the scheduler never
@@ -492,6 +618,18 @@ function CronJobSidebarRuns({
           )}
         </>
       )}
+    </div>
+  )
+}
+
+// What a script-only run actually left behind: the status title the backend
+// stamped on the row plus the head of its output doc. Both already ride along on
+// the run row, so opening this costs no fetch.
+function CronRunOutput({ run }: { run: SessionInfo }) {
+  return (
+    <div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-(--chrome-action-hover)/40 px-1.5 py-1 text-[0.6875rem] text-(--ui-text-secondary)">
+      {run.title && <span className="font-medium">{run.title}</span>}
+      {run.preview && <div>{run.preview}</div>}
     </div>
   )
 }

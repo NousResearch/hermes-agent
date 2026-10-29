@@ -1494,6 +1494,7 @@
     "cron.topOfHour",
     "cron.triggerNow",
     "cron.triggered",
+    "cron.uncategorized",
     "cron.updated",
     "cron.weekdaysAt",
     "desktop.archiveFailed",

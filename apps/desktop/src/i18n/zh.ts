@@ -2905,6 +2905,7 @@ export const zhOverrides = {
     manage: '管理',
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',
+    uncategorized: '未分类',
     runHistory: '运行记录',
 
     actionsTitle: '定时任务操作',

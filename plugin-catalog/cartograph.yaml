@@ -1,0 +1,21 @@
+name: cartograph
+title: Cartograph
+repo: https://github.com/anthony-maio/cartograph
+sha: e2e06db1c79f3de60760d9045ae6908ddf4e4b21
+subdir: assets/hermes
+description: Map local repositories and retrieve task-focused source excerpts with line references.
+maintainer: anthony-maio
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+version: "0.1.0"
+docs_url: https://github.com/anthony-maio/cartograph/blob/e2e06db1c79f3de60760d9045ae6908ddf4e4b21/assets/hermes/README.md
+known_issues:
+  - Requires Node 20 or newer and a separately installed Cartograph 1.3.0 npm runtime; configure node_path and cli_path before use.
+capabilities:
+  provides_tools:
+    - cartograph_analyze
+    - cartograph_context
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

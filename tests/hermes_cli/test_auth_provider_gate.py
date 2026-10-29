@@ -1,6 +1,7 @@
 """Tests for is_provider_explicitly_configured()."""
 
 import json
+from pathlib import Path
 import pytest
 
 
@@ -50,6 +51,23 @@ def test_ambient_pool_source_does_not_count_as_explicit(tmp_path, monkeypatch):
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("copilot") is False
+
+
+def test_qwen_pool_source_distinguishes_borrowed_and_manual_credentials(tmp_path, monkeypatch):
+    """Provenance only: a manual Qwen login is explicit, but neither source supplies a catalog."""
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {"model": {"provider": "openai-codex"}})
+    entry = {"source": "qwen-cli", "access_token": "test-qwen-token"}
+    store = {"active_provider": "openai-codex", "credential_pool": {"qwen-oauth": [entry]}}
+    _write_auth_store(tmp_path, store)
+    assert is_provider_explicitly_configured("qwen-oauth") is False
+
+    entry["source"] = "manual:qwen_cli"
+    _write_auth_store(tmp_path, store)
+    assert is_provider_explicitly_configured("qwen-oauth") is True
 
 
 def test_vertex_adc_counts_as_explicit_when_config_present(tmp_path, monkeypatch):

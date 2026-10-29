@@ -216,6 +216,35 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_manifest_probe_beside_checkout_is_not_hermes_state():
+    """PM's payload probes read ``<checkout>/../manifest.json`` to detect a
+    packaged payload. For a checkout that is a child of the home, the candidate
+    IS ``<home>/manifest.json`` — an existence probe of a packaging file, not a
+    read of Hermes state. Siblings stay refused."""
+    from tests.home_io_guard import HomeIOGuard
+
+    guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
+    guard.check(PROJECT_ROOT.parent / "manifest.json")
+    guard.check(PROJECT_ROOT.parent / "manifest.json", metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "config.yaml")
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "state.db")
+
+
+def test_manifest_json_in_other_workspace_still_refused():
+    """The exemption is file-precise: a manifest.json that is NOT the checkout's
+    sibling payload probe is still treated as Hermes state and refused."""
+    from tests.home_io_guard import HomeIOGuard
+
+    other_workspace = PROJECT_ROOT.parent / "kanban" / "workspaces" / "t_other"
+    guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(other_workspace / "manifest.json")
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(other_workspace / "manifest.json", metadata=True)
+
+
 @pytest.mark.parametrize("kind", ["environments", "test-environment"])
 def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, kind):
     """scripts/run_tests.sh runs ``<home>/installs/<key>/<kind>/<gen>/venv`` with HOME pointed at the

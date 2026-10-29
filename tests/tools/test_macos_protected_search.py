@@ -92,6 +92,31 @@ def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeyp
 
 
 @pytest.mark.platforms("macos")
+@pytest.mark.parametrize("top", ["rg: Work"])
+def test_grep_pruned_anchored_relative_home_parent_still_prunes_protected(tmp_path, monkeypatch, top):
+    """A relative root that gets ``./``-anchored (named like engine stderr) and
+    contains $HOME: find prints paths under ``./<root>``, so the
+    protected ``-path`` predicates must use that spelling too or find walks Downloads."""
+    work = tmp_path / "work"
+    home = work / top / "alice"
+    (home / "proj").mkdir(parents=True)
+    (home / "proj" / "notes.txt").write_text("needle here\n")
+    protected = home / "Downloads"
+    protected.mkdir()
+    (protected / "secret.txt").write_text("needle protected\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(work)))
+    monkeypatch.setattr(ops, "_has_command", lambda command: command in {"grep", "find"})
+
+    result = ops.search("needle", path=top, target="content")
+
+    matched_paths = [m.path for m in (result.matches or [])]
+    assert result.error is None
+    assert any(p.endswith("alice/proj/notes.txt") for p in matched_paths), matched_paths
+    assert not any("Downloads" in p for p in matched_paths), matched_paths
+
+
+@pytest.mark.platforms("macos")
 def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     """Non-local environments get no exclusions: platform facts describe the
     controller, not the execution host (macOS controller + Linux SSH backend

@@ -137,6 +137,9 @@ def _bundled_rg() -> Optional[str]:
 # ("rg: ...", indented carets) never match.
 _SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
+# Engine-stderr line prefixes; the search lanes classify these lines as diagnostics.
+_DIAGNOSTIC_PREFIXES = ("rg: ", "grep: ", "find: ")
+
 
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
@@ -149,7 +152,7 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         if not line.strip():
             continue
         # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
-        if line.lstrip().startswith(("rg: ", "grep: ", "find: ")):
+        if line.lstrip().startswith(_DIAGNOSTIC_PREFIXES):
             diagnostics.append(line)
         elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
             payload.append(line)
@@ -512,6 +515,13 @@ def _find_literal_path_expressions(roots: list[str]) -> list[str]:
     left alone: find does not read them as escapes inside a bracket-free pattern,
     and doubling them would break matching on backslash-shaped roots."""
     return [re.sub(r"([*?\[\]])", r"\\\1", root) for root in roots]
+
+
+def _diagnostic_safe_root(root: str) -> str:
+    """``./``-anchor a relative root named like engine stderr (``rg: data``). Every
+    result line starts with the root, and the lanes tell stderr from results by these
+    prefixes, so such a root would turn all of its own results into diagnostics."""
+    return f"./{root}" if root.lstrip().startswith(_DIAGNOSTIC_PREFIXES) else root
 
 
 class SearchMixin:
@@ -1116,9 +1126,10 @@ class SearchMixin:
                       "https://github.com/BurntSushi/ripgrep#installation")
 
         # Prune hidden descendant dirs (and hidden files, matching rg's default) while
-        # still allowing an explicitly selected hidden root; dash-prefixed roots get
-        # ``./`` so find doesn't parse them as options.
-        find_roots = [f"./{root}" if root.startswith("-") else root for root in roots]
+        # still allowing an explicitly selected hidden root. ``./`` keeps dash-prefixed
+        # roots from parsing as options and roots named like stderr (``find: x``) from
+        # reading as diagnostics.
+        find_roots = [f"./{root}" if root.startswith("-") else _diagnostic_safe_root(root) for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
         hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
@@ -1215,7 +1226,7 @@ class SearchMixin:
                 return SearchResult(error=capability_error)
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
-        root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
+        root_args = " ".join(self._escape_native_tool_arg(_diagnostic_safe_root(root)) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
@@ -1266,7 +1277,8 @@ class SearchMixin:
         # as a coherent page. Only the single-root path supplements (a multi-root
         # walk is already the merged view across roots).
         if limit_reason != "search_timeout" and isinstance(path, str) and self._has_command("find"):
-            dirs, directory_limit_reason = self._search_directories_with_find(glob_pattern, path, fetch_limit)
+            dirs, directory_limit_reason = self._search_directories_with_find(
+                glob_pattern, _diagnostic_safe_root(path), fetch_limit)
             if dirs:
                 existing = set(all_files)
                 merged_entries = self._sort_paths_by_mtime(
@@ -1359,7 +1371,7 @@ class SearchMixin:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
-        cmd_parts.append(self._escape_native_tool_arg(path))
+        cmd_parts.append(self._escape_native_tool_arg(_diagnostic_safe_root(path)))
         ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
@@ -1415,7 +1427,12 @@ class SearchMixin:
         (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
         grep's exit code, so a hard grep error surfaces as an empty result."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
-        q_root = self._escape_shell_arg(path or ".")
+        find_root = _diagnostic_safe_root(path or ".")
+        q_root = self._escape_shell_arg(find_root)
+        if find_root != (path or "."):
+            # find prints descendants under the anchored ``./<root>`` spelling, so the
+            # protected ``-path`` predicates must use it too or they never match.
+            protected_paths = [f"./{item}" for item in protected_paths]
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
         # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
         # symlinked root answered a confident ``total_count: 0`` on every platform (#116270).

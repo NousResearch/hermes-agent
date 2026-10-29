@@ -7,6 +7,8 @@ Subcommands:
 - ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
+- ``hermes vault add-origin`` authorize another exact origin for a local login,
+  preserving its password and authenticator key.
 - ``hermes vault key``   where the vault key lives; ``key migrate --to keychain|file`` moves it.
 
 The vault backs the password-blind browser autofill tools
@@ -108,6 +110,16 @@ def _cmd_add(args) -> None:
         return
 
     c.print(f"[green]Stored.[/] handle=[bold]{meta.id}[/] kind={meta.kind} origin={meta.origin or '-'}")
+
+
+def _cmd_add_origin(args) -> None:
+    from agent.vault_store import get_vault_store
+
+    meta = get_vault_store().add_origin(args.handle, args.origin)
+    _console().print(
+        f"[green]Authorized.[/] handle={meta.id} origins={', '.join(meta.allowed_origins)} "
+        "(password and authenticator key unchanged)"
+    )
 
 
 def _cmd_list(args) -> None:
@@ -259,6 +271,13 @@ def register_cli(subparser) -> None:
         help="Item kind (interactive prompt when omitted)",
     )
     p_add.set_defaults(_vault_handler=_cmd_add)
+
+    p_origin = subs.add_parser(
+        "add-origin", help="Authorize another exact origin for a local login without replacing its password",
+    )
+    p_origin.add_argument("handle", help="Local login handle (see `hermes vault list`)")
+    p_origin.add_argument("origin", help="Explicitly trusted HTTP(S) origin, e.g. https://www.example.com")
+    p_origin.set_defaults(_vault_handler=_cmd_add_origin)
 
     p_list = subs.add_parser("list", help="List vault items (metadata only, never values)")
     p_list.set_defaults(_vault_handler=_cmd_list)

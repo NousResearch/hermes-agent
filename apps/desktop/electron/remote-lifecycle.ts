@@ -1390,6 +1390,7 @@ async function spawnRemoteDashboard(
           logPath,
           tokenFingerprint: fingerprintToken(token),
           protocolVersion: PROTOCOL_VERSION,
+          devServer,
           startedAt: new Date().toISOString()
         }
       })
@@ -1599,7 +1600,11 @@ async function connect(deps) {
       Boolean(reuseToken) &&
       lock.tokenFingerprint === fingerprintToken(reuseToken) &&
       lock.hermesPath === hermesPath &&
-      lock.hermesHome === hermesHome
+      lock.hermesHome === hermesHome &&
+      // The backend trusts a dev renderer's origin only from the HERMES_DESKTOP_DEV_SERVER it was
+      // spawned with; one spawned for another renderer (or none, as older records and packaged builds
+      // are) would refuse every renderer socket, so it is replaced rather than reused.
+      (lock.devServer ?? '') === devServer
 
     if (reusable) {
       const creationTime = lock.creationTime || (await remoteProcessCreationTime(ssh, lock.pid))
@@ -1726,6 +1731,7 @@ async function connect(deps) {
     logPath,
     tokenFingerprint: fingerprintToken(spawnToken),
     protocolVersion: PROTOCOL_VERSION,
+    devServer,
     startedAt: new Date().toISOString(),
     ...(creationTime ? { creationTime } : {})
   }

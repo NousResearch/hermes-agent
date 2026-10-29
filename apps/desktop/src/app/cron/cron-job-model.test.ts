@@ -167,11 +167,38 @@ describe('cronEditorUpdates', () => {
   it('clears a previous pin when the override is reset to default', () => {
     const updates = cronEditorUpdates(
       { deliver: 'local', model: '', name: 'Daily', prompt: 'go', provider: '', schedule: '0 9 * * *' },
-      { scriptOnlyJob: false }
+      { initialModel: 'claude-sonnet-4', initialProvider: 'anthropic', scriptOnlyJob: false }
     )
 
     expect(updates.model).toBe(null)
     expect(updates.provider).toBe(null)
+    expect(updates.base_url).toBe(null)
+  })
+
+  it('clears a stale endpoint only when an agent job changes its model binding', () => {
+    const values = {
+      deliver: 'local',
+      model: 'new-model',
+      name: 'Daily',
+      prompt: 'go',
+      provider: 'custom:new',
+      schedule: '0 9 * * *'
+    }
+
+    expect(
+      cronEditorUpdates(values, {
+        initialModel: 'old-model',
+        initialProvider: 'custom:old',
+        scriptOnlyJob: false
+      }).base_url
+    ).toBe(null)
+    expect(
+      cronEditorUpdates(values, {
+        initialModel: 'new-model',
+        initialProvider: 'custom:new',
+        scriptOnlyJob: false
+      })
+    ).not.toHaveProperty('base_url')
   })
 
   it('never touches model fields on script-only jobs', () => {

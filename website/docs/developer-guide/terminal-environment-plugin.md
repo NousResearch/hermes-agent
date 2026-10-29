@@ -253,5 +253,6 @@ other.
 
 That sandbox lives for the session, as a per-session Docker container does:
 Hermes keeps it between turns and calls `cleanup()` when the session closes or
-after `terminal.lifetime_seconds` idle. Delegated subagents run in their
-parent's sandbox.
+once it has been idle for `terminal.lifetime_seconds` (checked periodically).
+On a gateway serving several profiles, session close does not yet reach it and
+the idle cleanup removes it. Delegated subagents run in their parent's sandbox.

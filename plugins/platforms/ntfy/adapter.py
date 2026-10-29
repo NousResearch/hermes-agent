@@ -131,6 +131,7 @@ class NtfyAdapter(BasePlatformAdapter):
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional[httpx.AsyncClient] = None
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
+        self._last_seen_id: Optional[str] = None
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -202,8 +203,11 @@ class NtfyAdapter(BasePlatformAdapter):
     async def _consume_stream(self, url: str, headers: dict[str, str]) -> None:
         """Open an HTTP streaming connection and dispatch events."""
         # poll=false keeps a persistent streaming connection alive with keepalive events
+        params = {"poll": "false"}
+        if self._last_seen_id:
+            params["since"] = self._last_seen_id
         async with self._http_client.stream(
-            "GET", url, headers=headers, params={"poll": "false"},
+            "GET", url, headers=headers, params=params,
             timeout=httpx.Timeout(connect=15.0, read=STREAM_TIMEOUT_SECONDS, write=15.0, pool=15.0),
         ) as response:
             self._fatal_status(response.status_code)
@@ -246,6 +250,8 @@ class NtfyAdapter(BasePlatformAdapter):
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
+        if event.get("id"):
+            self._last_seen_id = event["id"]
         if _ECHO_TAG in (event.get("tags") or []):
             logger.debug("[%s] Skipping own message (echo tag)", self.name)
             return

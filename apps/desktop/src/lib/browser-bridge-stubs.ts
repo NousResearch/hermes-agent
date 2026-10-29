@@ -63,9 +63,15 @@ export const BROWSER_BRIDGE_STUBS = {
   getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
   windowControls: {
     custom: false,
-    minimize: () => { throw browserUnsupported('Native window controls') },
-    toggleMaximize: () => { throw browserUnsupported('Native window controls') },
-    close: () => { throw browserUnsupported('Native window controls') }
+    minimize: () => {
+      throw browserUnsupported('Native window controls')
+    },
+    toggleMaximize: () => {
+      throw browserUnsupported('Native window controls')
+    },
+    close: () => {
+      throw browserUnsupported('Native window controls')
+    }
   },
   getPathForFile: () => '',
   normalizePreviewTarget: async () => null,
@@ -126,8 +132,17 @@ export const BROWSER_BRIDGE_STUBS = {
     startAnyway: async () => ({ ok: false })
   },
   updates: {
-    apply: async () => ({ command: 'hermes update', manual: true, message: 'Run `hermes update` on the server host', ok: false }),
-    check: async () => ({ message: 'Use `hermes update` on the server host', reason: 'browser-hosted', supported: false }),
+    apply: async () => ({
+      command: 'hermes update',
+      manual: true,
+      message: 'Run `hermes update` on the server host',
+      ok: false
+    }),
+    check: async () => ({
+      message: 'Use `hermes update` on the server host',
+      reason: 'browser-hosted',
+      supported: false
+    }),
     onProgress: noopUnsubscribe
   },
   watchPreviewFile: async (url: string) => ({ id: `browser:${url}`, path: url })

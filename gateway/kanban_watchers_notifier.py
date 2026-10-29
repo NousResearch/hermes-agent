@@ -747,7 +747,7 @@ class _KanbanNotification:
                                        thread_id=self.sub.get("thread_id") or None,
                                        event_id=ev.id, event_kind=ev.kind,
                                        notifier_profile=self.sub_profile or None)
-                except Exception:
+                except Exception:  # health: allow BLE001 -- observer hook must not affect delivery state; traceback logged above
                     logger.debug("kanban notifier: kanban_notify_delivered hook failed for %s",
                                  self.task_id, exc_info=True)
                 self.clear_failures()

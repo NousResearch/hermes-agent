@@ -161,15 +161,26 @@ def collect_acceptance(contract: str, published_pr: str | None,
             if not selected:
                 outcomes.append("missing")
                 receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
-            for check in selected:
-                is_run = "conclusion" in check
-                outcome = check.get("conclusion") if is_run else check["state"]
-                classification = _classify(check, sha, outcome, is_run)
-                outcomes.append(classification)
-                receipt["checks"].append({"name": context, "id": check["id"],
-                    "url": check.get("html_url") or check.get("target_url"),
-                    "head_sha": check.get("head_sha", check.get("sha")),
-                    "classification": classification, "conclusion": outcome})
+                continue
+            # Keep only the LATEST run per context (newest by completed_at,
+            # tie-broken by id). GitHub's check-runs?filter=latest dedupes per
+            # check-SUITE, not per context name, so a re-run returns both the
+            # old suite's failed run and the new suite's successful run.
+            # Classifying on the raw accumulated list would pick the stale
+            # failure (first non-success) and permanently block the card.
+            def _run_key(c):
+                if "conclusion" in c:
+                    return (c.get("completed_at") or "", c["id"])
+                return (c.get("created_at") or "", c["id"])
+            latest = max(selected, key=_run_key)
+            is_run = "conclusion" in latest
+            outcome = latest.get("conclusion") if is_run else latest["state"]
+            classification = _classify(latest, sha, outcome, is_run)
+            outcomes.append(classification)
+            receipt["checks"].append({"name": context, "id": latest["id"],
+                "url": latest.get("html_url") or latest.get("target_url"),
+                "head_sha": latest.get("head_sha", latest.get("sha")),
+                "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):

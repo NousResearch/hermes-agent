@@ -1,12 +1,16 @@
-"""Fail-closed gate: a completion whose evidence cites a GitHub PR the card's
-``completion_contract`` does not bind is refused before any state change.
+"""Fail-closed gate: a completion whose evidence names a GitHub PR the card's
+``completion_contract`` does not bind (or whose head is not green) is refused
+before any state change.
 
-The contract is the card's publication claim — ``local-only`` makes no PR
-claim, ``owner/repo`` binds every PR of that repo, an exact PR URL binds that
-one PR. A completion citing a PR outside the bound scope would let a worker
-close a publication card on a sibling PR (or a PR of another repo) whose CI
-the card never declared. The gate refuses after an auditable
+The contract is the card's publication claim — ``local-only``/absent makes no
+PR claim, ``owner/repo`` binds every PR of that repo, an exact PR URL binds
+that one PR. A completion naming a PR outside the bound scope would let a
+worker close a publication card on a sibling PR (or a PR of another repo)
+whose CI the card never declared. The gate refuses after an auditable
 ``completion_blocked_unbound_pr`` event; nothing is mutated.
+
+Fail-closed on ambiguity: a bare ``#<n>`` / ``PR #<n>`` ref whose owning repo
+cannot be resolved is refused, not silently completed.
 """
 import json
 
@@ -29,6 +33,8 @@ def _events(conn, task_id, kind):
 
 
 def test_unbound_pr_in_result_is_refused(board):
+    """A full PR URL in the result that is not bound by the contract is
+    refused (reason=unbound)."""
     with connect() as conn:
         tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
         with pytest.raises(kb.UnboundPrClaimError) as exc:
@@ -36,27 +42,31 @@ def test_unbound_pr_in_result_is_refused(board):
         assert exc.value.task_id == tid
         assert exc.value.pr_url == "https://github.com/other/repo/pull/9"
         assert exc.value.contract == "acme/repo"
+        assert exc.value.reason == "unbound"
         assert kb.get_task(conn, tid).status != "done"
         events = _events(conn, tid, "completion_blocked_unbound_pr")
         assert len(events) == 1
         assert events[0]["contract"] == "acme/repo"
         assert events[0]["unbound_prs"] == ["https://github.com/other/repo/pull/9"]
+        assert events[0]["reason"] == "unbound"
 
 
 def test_unbound_pr_in_summary_is_refused(board):
     with connect() as conn:
         tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
-        with pytest.raises(kb.UnboundPrClaimError):
+        with pytest.raises(kb.UnboundPrClaimError) as exc:
             kb.complete_task(conn, tid, summary="see https://github.com/other/repo/pull/9")
+        assert exc.value.reason == "unbound"
         assert kb.get_task(conn, tid).status != "done"
 
 
 def test_unbound_pr_in_metadata_is_refused(board):
     with connect() as conn:
         tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
-        with pytest.raises(kb.UnboundPrClaimError):
+        with pytest.raises(kb.UnboundPrClaimError) as exc:
             kb.complete_task(conn, tid, result="done",
                              metadata={"published_pr": "https://github.com/other/repo/pull/9"})
+        assert exc.value.reason == "unbound"
         assert kb.get_task(conn, tid).status != "done"
 
 
@@ -73,14 +83,13 @@ def test_sibling_pr_in_same_repo_is_refused(board):
         assert kb.get_task(conn, tid).status != "done"
 
 
-def test_bound_pr_passes_gate(board):
-    """A PR inside the bound scope passes the gate (the green acceptance check
-    is a separate concern — here the gate must not block it)."""
+def test_bound_pr_passes_gate(board, monkeypatch):
+    """A PR inside the bound scope passes the gate (the green check is
+    mocked green here)."""
     with connect() as conn:
         # owner/repo contract: any PR of that repo is bound.
         tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
-        # The gate itself must not raise for a bound PR; acceptance may still
-        # refuse (no gh here), but the refusal must NOT be the unbound-PR gate.
+        monkeypatch.setattr(kb, "_check_pr_green", lambda *a, **kw: None)
         try:
             kb.complete_task(conn, tid, result="done",
                              metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
@@ -96,18 +105,90 @@ def test_bound_pr_passes_gate(board):
             pytest.fail("bound PR must not trip the unbound-PR gate")
 
 
-def test_local_only_contract_is_exempt(board):
-    """A local-only card makes no PR claim; citing a PR is background context,
-    not a publication claim."""
+def test_local_only_contract_refuses_pr(board):
+    """A local-only card makes no PR claim; naming a PR is a publication claim
+    the contract does not bind. Refused (reason=unbound)."""
     with connect() as conn:
         tid = kb.create_task(conn, title="local", completion_contract="local-only")
-        # No gh on PATH here, so acceptance would fail — but the gate must not
-        # be the reason. The local-only contract is exempt from the gate.
-        try:
+        with pytest.raises(kb.UnboundPrClaimError) as exc:
             kb.complete_task(conn, tid,
                              summary="https://github.com/acme/repo/pull/7 is background context")
+        assert exc.value.reason == "unbound"
+        assert exc.value.contract == "local-only"
+        assert kb.get_task(conn, tid).status != "done"
+
+
+def test_absent_contract_refuses_pr(board):
+    """A card with no completion_contract (None) makes no PR claim; naming a
+    PR is refused (reason=unbound)."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="no-contract")
+        with pytest.raises(kb.UnboundPrClaimError) as exc:
+            kb.complete_task(conn, tid, result="shipped in https://github.com/acme/repo/pull/7")
+        assert exc.value.reason == "unbound"
+        assert exc.value.contract == "local-only"
+        assert kb.get_task(conn, tid).status != "done"
+
+
+def test_bare_ref_unresolvable_is_refused(board):
+    """A bare #<n> ref with no contract repo to resolve against is refused
+    (reason=unresolvable). Fail-closed: an unknown-repo PR is exactly the
+    shape that hides a red CI."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="local", completion_contract="local-only")
+        with pytest.raises(kb.UnboundPrClaimError) as exc:
+            kb.complete_task(conn, tid, result="shipped in PR #42")
+        assert exc.value.reason == "unresolvable"
+        assert exc.value.pr_url == "#42"
+        assert kb.get_task(conn, tid).status != "done"
+        events = _events(conn, tid, "completion_blocked_unbound_pr")
+        assert len(events) == 1
+        assert events[0]["reason"] == "unresolvable"
+
+
+def test_bare_ref_resolves_to_bound_repo_passes_gate(board, monkeypatch):
+    """A bare #<n> ref with an owner/repo contract resolves to a bound PR.
+    The gate passes the binding check; the green check runs (mocked green
+    here)."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
+        # Mock the green check to pass (no gh on PATH in the test env).
+        monkeypatch.setattr(kb, "_check_pr_green", lambda *a, **kw: None)
+        try:
+            kb.complete_task(conn, tid, result="shipped in PR #7")
         except kb.UnboundPrClaimError:
-            pytest.fail("local-only contract must be exempt from the unbound-PR gate")
+            pytest.fail("bare ref resolving to the bound repo must not trip the gate")
+
+
+def test_bare_ref_resolves_to_different_pr_is_refused(board):
+    """A bare #<n> ref that resolves to a different PR than the exact-URL
+    contract is refused (reason=unbound)."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="publish",
+                             completion_contract="https://github.com/acme/repo/pull/7")
+        with pytest.raises(kb.UnboundPrClaimError) as exc:
+            kb.complete_task(conn, tid, result="shipped in PR #8")
+        assert exc.value.reason == "unbound"
+        assert exc.value.pr_url == "https://github.com/acme/repo/pull/8"
+        assert kb.get_task(conn, tid).status != "done"
+
+
+def test_not_green_is_refused(board, monkeypatch):
+    """A bound PR whose head is not green is refused by prepare_acceptance
+    (returns False, not an exception). The unbound-PR gate passes the binding
+    check; the green check is the job of the PR acceptance layer."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="publish",
+                             completion_contract="https://github.com/acme/repo/pull/7")
+        # Mock prepare_acceptance to return False (simulating a red CI).
+        monkeypatch.setattr(
+            "hermes_cli.kanban_pr_acceptance_store.prepare_acceptance",
+            lambda *a, **kw: False,
+        )
+        ok = kb.complete_task(conn, tid, result="done",
+                              metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        assert ok is False
+        assert kb.get_task(conn, tid).status != "done"
 
 
 def test_no_pr_cited_passes_gate(board):

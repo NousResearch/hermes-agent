@@ -230,3 +230,240 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+@pytest.mark.platforms("linux")
+def test_rerun_stale_failure_latest_success_is_green_v2(tmp_path, monkeypatch):
+    """Two check suites for the same head, same context name: suite A (older)
+    failure, suite B (newer) success ⇒ classification == 'success'.
+
+    GitHub's check-runs?filter=latest dedupes per check-SUITE, not per context
+    name, so a re-run returns both the old suite's failed run and the new
+    suite's successful run. The kernel must classify on the LATEST run per
+    context, not the first non-success in the raw accumulated list.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    sha = "a" * 40
+    state = {"requests": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            state["requests"].append(self.path)
+            if self.path == "/graphql":
+                value = {"data": {"repository": {"pullRequest": {
+                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
+                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+            elif "/rules/branches/" in self.path:
+                value = [[]]
+            elif "/check-runs" in self.path:
+                # Two runs for the same context: older failure, newer success.
+                run_a = {"id": 100, "name": "required", "head_sha": sha,
+                         "app": {"id": 1}, "status": "completed", "conclusion": "failure",
+                         "completed_at": "2026-10-29T04:56:36Z",
+                         "html_url": "https://github.com/acme/repo/actions/runs/100"}
+                run_b = {"id": 200, "name": "required", "head_sha": sha,
+                         "app": {"id": 1}, "status": "completed", "conclusion": "success",
+                         "completed_at": "2026-10-29T05:07:17Z",
+                         "html_url": "https://github.com/acme/repo/actions/runs/200"}
+                value = [{"total_count": 2, "check_runs": [run_a, run_b]}]
+            elif "/statuses" in self.path:
+                value = [[]]
+            elif "/pulls/" in self.path:
+                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
+                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    kb.init_db()
+    try:
+        with connect() as conn:
+            tid = kb.create_task(conn, title="rerun-green", completion_contract="acme/repo")
+            ok = kb.complete_task(conn, tid, result="done",
+                                  metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            assert ok is True
+            task = kb.get_task(conn, tid)
+            assert task.status == "done"
+            receipts = [json.loads(r[0]) for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+            assert receipts and receipts[-1]["classification"] == "success"
+            # The receipt should only contain the LATEST run (id=200), not the stale one.
+            assert len(receipts[-1]["checks"]) == 1
+            assert receipts[-1]["checks"][0]["id"] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.platforms("linux")
+def test_rerun_latest_failure_is_red(tmp_path, monkeypatch):
+    """Two check suites for the same head, same context name: suite A (older)
+    success, suite B (newer) failure ⇒ classification == 'failure'.
+
+    Guards against over-correcting into 'always green': the LATEST run wins,
+    and if the latest is a failure, the classification must be failure.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    sha = "a" * 40
+    state = {"requests": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            state["requests"].append(self.path)
+            if self.path == "/graphql":
+                value = {"data": {"repository": {"pullRequest": {
+                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
+                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+            elif "/rules/branches/" in self.path:
+                value = [[]]
+            elif "/check-runs" in self.path:
+                # Two runs for the same context: older success, newer failure.
+                run_a = {"id": 100, "name": "required", "head_sha": sha,
+                         "app": {"id": 1}, "status": "completed", "conclusion": "success",
+                         "completed_at": "2026-10-29T04:56:36Z",
+                         "html_url": "https://github.com/acme/repo/actions/runs/100"}
+                run_b = {"id": 200, "name": "required", "head_sha": sha,
+                         "app": {"id": 1}, "status": "completed", "conclusion": "failure",
+                         "completed_at": "2026-10-29T05:07:17Z",
+                         "html_url": "https://github.com/acme/repo/actions/runs/200"}
+                value = [{"total_count": 2, "check_runs": [run_a, run_b]}]
+            elif "/statuses" in self.path:
+                value = [[]]
+            elif "/pulls/" in self.path:
+                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
+                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    kb.init_db()
+    try:
+        with connect() as conn:
+            tid = kb.create_task(conn, title="rerun-red", completion_contract="acme/repo")
+            ok = kb.complete_task(conn, tid, result="done",
+                                  metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            assert ok is False
+            task = kb.get_task(conn, tid)
+            assert task.status != "done"
+            receipts = [json.loads(r[0]) for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+            assert receipts and receipts[-1]["classification"] == "failure"
+            # The receipt should only contain the LATEST run (id=200), not the stale one.
+            assert len(receipts[-1]["checks"]) == 1
+            assert receipts[-1]["checks"][0]["id"] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.platforms("linux")
+def test_context_with_no_runs_is_missing(tmp_path, monkeypatch):
+    """A required context with no check runs at all ⇒ classification == 'missing'.
+
+    Guards against the grouping fix turning an absent context into 'success'.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    sha = "a" * 40
+    state = {"requests": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            state["requests"].append(self.path)
+            if self.path == "/graphql":
+                value = {"data": {"repository": {"pullRequest": {
+                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
+                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+            elif "/rules/branches/" in self.path:
+                value = [[]]
+            elif "/check-runs" in self.path:
+                # No runs for the required context.
+                value = [{"total_count": 0, "check_runs": []}]
+            elif "/statuses" in self.path:
+                value = [[]]
+            elif "/pulls/" in self.path:
+                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
+                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    kb.init_db()
+    try:
+        with connect() as conn:
+            tid = kb.create_task(conn, title="missing-context", completion_contract="acme/repo")
+            ok = kb.complete_task(conn, tid, result="done",
+                                  metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            assert ok is False
+            task = kb.get_task(conn, tid)
+            assert task.status != "done"
+            receipts = [json.loads(r[0]) for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+            assert receipts and receipts[-1]["classification"] == "missing"
+            assert len(receipts[-1]["checks"]) == 1
+            assert receipts[-1]["checks"][0]["classification"] == "missing"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

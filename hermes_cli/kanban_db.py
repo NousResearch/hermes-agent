@@ -2604,19 +2604,51 @@ class EmptyCompletionError(ValueError):
 
 
 class UnboundPrClaimError(ValueError):
-    """``complete_task`` refused: the completion evidence cites a GitHub PR
-    that the card's ``completion_contract`` does not bind. A ``ValueError`` so
-    tool error handlers treat it as recoverable — the worker retries with the
-    bound PR (or the bound repo's PR) instead of stalling."""
+    """``complete_task`` refused: the completion evidence names a GitHub PR the
+    card's ``completion_contract`` does not bind (or the PR's head is not green).
+    A ``ValueError`` so tool error handlers treat it as recoverable — the worker
+    retries with the bound PR (or the bound repo's PR) instead of stalling.
 
-    def __init__(self, task_id: str, pr_url: str, contract: str):
+    ``reason`` is one of:
+      - ``"unbound"``: the PR is not bound by the contract (local-only/absent
+        contract, or a contract bound to a different PR/repo).
+      - ``"unresolvable"``: a bare ``#<n>`` / ``PR #<n>`` ref whose owning repo
+        cannot be resolved from the contract or metadata (fail-closed).
+      - ``"not_green"``: the PR is bound but its head is not green under the
+        kernel's own acceptance rules.
+    """
+
+    def __init__(self, task_id: str, pr_url: str, contract: str, reason: str,
+                 detail: str = ""):
         self.task_id = task_id
         self.pr_url = pr_url
         self.contract = contract
-        super().__init__(
-            f"completion blocked: {task_id} cites PR {pr_url}, which is not bound "
-            f"by the card's completion_contract ({contract})"
-        )
+        self.reason = reason
+        self.detail = detail
+        if reason == "unbound":
+            msg = (
+                f"completion blocked: {task_id} names PR {pr_url}, which is not "
+                f"bound by the card's completion_contract ({contract}). "
+                f"Set the contract to bind that PR (via "
+                f"hermes/scripts/kanban-rearm-pr-contract.py for an existing "
+                f"card) and pass metadata.published_pr, then retry."
+            )
+        elif reason == "unresolvable":
+            msg = (
+                f"completion blocked: {task_id} names PR {pr_url}, but the "
+                f"owning repository cannot be resolved from the card's "
+                f"completion_contract ({contract}) or metadata. Fail-closed: "
+                f"an unknown-repo PR is exactly the shape that hides a red CI. "
+                f"Pass a full https://github.com/<owner>/<repo>/pull/<n> URL in "
+                f"metadata.published_pr, then retry."
+            )
+        else:  # not_green
+            msg = (
+                f"completion blocked: {task_id} names PR {pr_url}, which is "
+                f"bound by the card's completion_contract ({contract}), but the "
+                f"PR's head is not green: {detail}"
+            )
+        super().__init__(msg)
 
 
 class ArtifactPreservationError(RuntimeError):
@@ -2834,62 +2866,174 @@ def _gate_unbound_pr_claim(
     summary: Optional[str],
     metadata: Optional[dict],
 ) -> None:
-    """Refuse a completion whose evidence cites a GitHub PR the card's
-    ``completion_contract`` does not bind.
+    """Refuse a completion whose evidence names a GitHub PR the card's
+    ``completion_contract`` does not bind, or whose head is not green.
 
-    The contract is the card's publication claim: ``local-only`` cards make
+    The contract is the card's publication claim: ``local-only``/absent makes
     no PR claim, ``owner/repo`` binds every PR of that repo, and an exact PR
-    URL binds that one PR. A completion that cites a PR outside the bound
-    scope would let a worker close a publication card on a sibling PR (or a
-    PR of another repo) whose CI the card never declared — the green
-    acceptance check would then run against the bound PR, not the one the
-    evidence actually points at. Fail closed: any PR-shaped URL in the
-    evidence must be inside the bound scope, or the completion is refused
-    after an auditable event.
+    URL binds that one PR. A completion that names a PR outside the bound
+    scope would let a worker close a publication card on a sibling PR (or a PR
+    of another repo) whose CI the card never declared — the green acceptance
+    check would then run against the bound PR, not the one the evidence
+    actually points at.
+
+    This is the built-in, model-independent enforcement: a card that forgets
+    (or is created with) ``completion_contract=None`` / ``local-only`` must
+    still be refused when its completion names a PR. Fail closed on ambiguity:
+    a bare ``#<n>`` / ``PR #<n>`` ref whose owning repo cannot be resolved is
+    refused, not silently completed.
+
+    Review approvals are exempt: a human vouches for the card and the approval
+    is the record.
     """
-    from hermes_cli.kanban_pr_acceptance import _PR
+    from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
     row = conn.execute(
-        "SELECT status, completion_contract, result FROM tasks WHERE id = ?",
+        "SELECT status, completion_contract, result, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return
-    contract = row["completion_contract"] or "local-only"
-    if contract == "local-only":
-        return
     if row["status"] == "review":
         # A human vouches for the card; the approval is the record.
         return
+    contract = row["completion_contract"] or "local-only"
     text = "\n".join(
         part for part in (result, summary, row["result"]) if part
     )
     if isinstance(metadata, dict):
         text += "\n" + json.dumps(metadata, default=str)
-    cited = {m.group(0) for m in _PR.finditer(text)}
-    if not cited:
+
+    # 1. Full PR URLs in the evidence.
+    cited_urls = {m.group(0) for m in _PR.finditer(text)}
+    # 2. Bare #<n> / PR #<n> refs (not part of a full URL).
+    bare_refs = set()
+    for m in re.finditer(r"(?<![\w/])#([1-9][0-9]*)", text):
+        # Skip if this #<n> is part of a full PR URL already captured.
+        start = m.start()
+        prefix = text[max(0, start - 60):start]
+        if not re.search(r"github\.com/[\w./-]+/pull$", prefix):
+            bare_refs.add(int(m.group(1)))
+
+    if not cited_urls and not bare_refs:
         return
+
+    # Resolve the contract's repo slug (for bare-ref resolution).
+    contract_repo = None
     if _PR.fullmatch(contract):
-        allowed = {contract}
-    else:
+        contract_repo = _PR.fullmatch(contract).group(1)
+    elif contract != "local-only":
+        contract_repo = contract  # owner/repo
+
+    # Build the set of bound PR URLs.
+    if _PR.fullmatch(contract):
+        bound_urls = {contract}
+    elif contract != "local-only":
         owner, repo = contract.split("/", 1)
-        allowed = {
-            f"https://github.com/{owner}/{repo}/pull/{n}"
-            for n in re.findall(r"(\d+)", "\n".join(cited))
-        }
-    unbound = sorted(cited - allowed)
-    if not unbound:
+        bound_urls = set()
+        for n in bare_refs:
+            bound_urls.add(f"https://github.com/{owner}/{repo}/pull/{n}")
+        # Also bind any full URL in the evidence that matches the contract repo.
+        for url in cited_urls:
+            m = _PR.fullmatch(url)
+            if m and m.group(1) == contract_repo:
+                bound_urls.add(url)
+    else:
+        bound_urls = set()  # local-only/absent: no PR is bound
+
+    # Check each cited full URL.
+    for url in sorted(cited_urls):
+        if url in bound_urls:
+            # Bound: the PR is bound by the contract. The green check is
+            # handled by prepare_acceptance (which returns False on red CI).
+            continue
+        # Unbound: the PR is not bound by the contract.
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_unbound_pr",
+                {
+                    "contract": contract,
+                    "unbound_prs": [url],
+                    "reason": "unbound",
+                    "result_preview": _first_line(result, 200) or None,
+                    "summary_preview": _first_line(summary, 200) or None,
+                },
+            )
+        raise UnboundPrClaimError(task_id, url, contract, "unbound")
+
+    # Check each bare ref.
+    for n in sorted(bare_refs):
+        if contract_repo is None:
+            # No repo to resolve against: fail-closed.
+            pr_display = f"#{n}"
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_blocked_unbound_pr",
+                    {
+                        "contract": contract,
+                        "unbound_prs": [pr_display],
+                        "reason": "unresolvable",
+                        "result_preview": _first_line(result, 200) or None,
+                        "summary_preview": _first_line(summary, 200) or None,
+                    },
+                )
+            raise UnboundPrClaimError(task_id, pr_display, contract, "unresolvable")
+        # Resolve the bare ref to a full URL using the contract's repo.
+        url = f"https://github.com/{contract_repo}/pull/{n}"
+        if url not in bound_urls:
+            # The bare ref resolves to a PR in the contract repo, but the
+            # contract is an exact-URL contract bound to a different PR.
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_blocked_unbound_pr",
+                    {
+                        "contract": contract,
+                        "unbound_prs": [url],
+                        "reason": "unbound",
+                        "result_preview": _first_line(result, 200) or None,
+                        "summary_preview": _first_line(summary, 200) or None,
+                    },
+                )
+            raise UnboundPrClaimError(task_id, url, contract, "unbound")
+        # The bare ref is bound: run the green check.
+        _check_pr_green(conn, task_id, url, contract, row["assignee"],
+                        result=result, summary=summary)
+
+
+def _check_pr_green(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pr_url: str,
+    contract: str,
+    assignee: Optional[str],
+    *,
+    result: Optional[str],
+    summary: Optional[str],
+) -> None:
+    """Run the kernel's own green check on a bound PR; refuse if not green.
+
+    Uses ``collect_acceptance`` (the same function the existing acceptance
+    path uses) so the gate and the acceptance path agree on what "green"
+    means. The check runs outside the write transaction (network I/O); the
+    refusal event is recorded in its own transaction.
+    """
+    from hermes_cli.kanban_pr_acceptance import collect_acceptance
+    receipt = collect_acceptance(contract, pr_url, assignee=assignee)
+    if receipt["ok"]:
         return
+    detail = f"{receipt['classification']}: {receipt.get('detail', '')}"
     with write_txn(conn):
         _append_event(
             conn, task_id, "completion_blocked_unbound_pr",
             {
                 "contract": contract,
-                "unbound_prs": unbound,
+                "unbound_prs": [pr_url],
+                "reason": "not_green",
+                "classification": receipt["classification"],
                 "result_preview": _first_line(result, 200) or None,
                 "summary_preview": _first_line(summary, 200) or None,
             },
         )
-    raise UnboundPrClaimError(task_id, unbound[0], contract)
+    raise UnboundPrClaimError(task_id, pr_url, contract, "not_green", detail)
 
 
 def _stage_completion_artifacts(

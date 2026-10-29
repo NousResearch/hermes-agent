@@ -65,7 +65,10 @@ def _normalize_questions(questions) -> tuple:
         choices = item.get("choices")
         if choices is not None:
             if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
-                return None, f"questions[{index}].choices must be a list of strings."
+                bad = choices if not isinstance(choices, list) else next(c for c in choices if not isinstance(c, str))
+                return None, (f"questions[{index}].choices must be a list of plain strings; got "
+                              f"{json.dumps(bad, ensure_ascii=False, default=str)[:120]}. Write each option as one "
+                              'string, e.g. "choices": ["A — first option", "B — second option"].')
             for pos, choice in enumerate(choices):
                 if len(choice.strip()) > MAX_CHOICE_CHARS:
                     return None, (f"questions[{index}].choices[{pos}] is {len(choice.strip())} characters; the limit is "

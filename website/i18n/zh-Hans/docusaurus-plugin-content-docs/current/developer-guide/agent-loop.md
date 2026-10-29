@@ -6,7 +6,7 @@ description: "AIAgent 执行流程、API 模式、工具、回调及回退行为
 
 # Agent Loop 内部机制
 
-核心编排引擎是 `run_agent.py` 中的 `AIAgent` 类——这是一个大型文件（15k+ 行），负责处理从 prompt（提示词）组装到工具分发再到 provider 故障转移的所有逻辑。
+核心编排引擎是 `AIAgent` 类。`run_agent.py` 现在只是一个薄门面（facade）：循环本身在 `agent/conversation_loop.py`，每一轮各阶段在 `agent/turn_*.py`（迭代准备、API 调用、API 错误、溢出、截断、恢复），构造函数装配在 `agent/agent_init.py`，而其余从 prompt 组装到工具分发再到 provider 故障转移的逻辑，分散在专注于各自主题的 `agent/*.py` 模块中，以 mixin 方式混入 `AIAgent`。
 
 ## 核心职责
 
@@ -149,7 +149,7 @@ for each tool_call in response.tool_calls:
 
 ### Agent 级工具
 
-部分工具在到达 `handle_function_call()` 之前，由 `run_agent.py` *提前*拦截：
+部分工具在到达 `handle_function_call()` 之前，由 `agent/tool_executor.py`（从 `agent/conversation_loop.py` 调用）*提前*拦截：
 
 | 工具 | 拦截原因 |
 |------|---------|
@@ -193,6 +193,7 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 2. 按顺序尝试每个回退 provider
 3. 成功后，使用新 provider 继续对话
 4. 遇到 401/403 时，在故障转移前尝试刷新凭据
+5. 一个 Codex Responses 轮次若因「仅推理输出」停滞（连续三次续写均无可见文本或工具调用），也会以 `incomplete_response` 原因故障转移到下一个回退；若该停滞已耗尽迭代预算，回退模型只得到恰好一次有界的 grace call
 
 回退系统也独立覆盖辅助任务——视觉、压缩和网页提取各自拥有独立的回退链，可通过 `auxiliary.*` 配置节进行配置。
 
@@ -222,7 +223,10 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 
 | 文件 | 用途 |
 |------|------|
-| `run_agent.py` | AIAgent 类——完整的 agent loop |
+| `run_agent.py` | `AIAgent` 门面（facade）——公共入口点；循环和各轮阶段在 `agent/` 中 |
+| `agent/conversation_loop.py` | agent 循环（`run_conversation()` 主体） |
+| `agent/turn_*.py` | 轮次阶段：iteration_prep、api_call、api_error、overflow、truncation、recovery |
+| `agent/tool_executor.py` | 工具调用执行与 agent 级工具拦截 |
 | `agent/prompt_builder.py` | 从内存、技能、上下文文件和个性组装系统 prompt |
 | `agent/context_engine.py` | ContextEngine ABC——可插拔的上下文管理 |
 | `agent/context_compressor.py` | 默认引擎——有损摘要算法 |

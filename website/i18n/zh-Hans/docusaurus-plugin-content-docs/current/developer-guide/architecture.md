@@ -52,11 +52,11 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 
 ```text
 hermes-agent/
-├── run_agent.py              # AIAgent — 核心对话循环（大文件）
-├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
+├── run_agent.py              # AIAgent 门面（facade）——循环逻辑在 agent/conversation_loop.py + agent/turn_*.py
+├── cli.py                    # HermesCLI 门面（facade）——mixin 在 hermes_cli/cli_*_mixin.py
 ├── model_tools.py            # 工具发现、schema 收集、分发
 ├── toolsets.py               # 工具分组与平台预设
-├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
+├── hermes_state.py           # SQLite 会话/状态数据库门面（facade）（+ hermes_state_*.py 兄弟模块）
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── batch_runner.py           # 批量轨迹生成
 │
@@ -71,19 +71,19 @@ hermes-agent/
 │   ├── anthropic_adapter.py  # Anthropic Messages API 格式转换
 │   ├── display.py            # KawaiiSpinner、工具预览格式化
 │   ├── skill_commands.py     # Skill 斜杠命令
-│   ├── memory_manager.py    # 记忆管理器编排
-│   ├── memory_provider.py   # 记忆提供者 ABC
+│   ├── memory_manager.py     # 记忆管理器编排
+│   ├── memory_provider.py    # 记忆提供者 ABC
 │   └── trajectory.py         # 轨迹保存辅助函数
 │
 ├── hermes_cli/               # CLI 子命令与设置
-│   ├── main.py               # 入口点——所有 `hermes` 子命令（大文件）
+│   ├── main.py               # 入口点——`hermes` 子命令（解析器在 subcommands/、main_*.py）
 │   ├── config.py             # DEFAULT_CONFIG、OPTIONAL_ENV_VARS、迁移
 │   ├── commands.py           # COMMAND_REGISTRY——斜杠命令中央定义
-│   ├── auth.py               # PROVIDER_REGISTRY、凭据解析
+│   ├── auth.py               # PROVIDER_REGISTRY、凭据解析（+ auth_*.py 兄弟模块）
 │   ├── runtime_provider.py   # Provider → api_mode + 凭据
 │   ├── models.py             # 模型目录、provider 模型列表
 │   ├── model_switch.py       # /model 命令逻辑（CLI + gateway 共用）
-│   ├── setup.py              # 交互式设置向导（大文件）
+│   ├── setup.py              # 交互式设置向导（+ setup_*.py 兄弟模块）
 │   ├── skin_engine.py        # CLI 主题引擎
 │   ├── skills_config.py      # hermes skills——按平台启用/禁用
 │   ├── skills_hub.py         # /skills 斜杠命令
@@ -99,17 +99,17 @@ hermes-agent/
 │   ├── process_registry.py   # 后台进程管理
 │   ├── file_tools.py         # read_file、write_file、patch、search_files
 │   ├── web_tools.py          # web_search、web_extract
-│   ├── browser_tool.py       # 10 个浏览器自动化工具
+│   ├── browser_tool.py       # 浏览器自动化工具门面（facade）（+ browser_tool_*.py 兄弟模块）
 │   ├── code_execution_tool.py # execute_code 沙箱
 │   ├── delegate_tool.py      # 子 agent 委托
-│   ├── mcp_tool.py           # MCP 客户端（大文件）
+│   ├── mcp_tool.py           # MCP 客户端门面（facade）（+ mcp_tool_*.py 兄弟模块）
 │   ├── credential_files.py   # 基于文件的凭据透传
 │   ├── env_passthrough.py    # 沙箱环境变量透传
 │   ├── ansi_strip.py         # ANSI 转义字符剥离
 │   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity）
 │
 ├── gateway/                  # 消息平台 gateway
-│   ├── run.py                # GatewayRunner——消息分发（大文件）
+│   ├── run.py                # GatewayRunner 门面（facade）——消息分发（+ run_*.py 兄弟模块）
 │   ├── session.py            # SessionStore——对话持久化
 │   ├── delivery.py           # 出站消息投递
 │   ├── pairing.py            # DM 配对授权
@@ -120,9 +120,13 @@ hermes-agent/
 │   └── platforms/            # 核心入站适配器：api_server、webhook、
 │                             #   msgraph_webhook
 │
-├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
-│                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
-│                             #   yuanbao、matrix、feishu 等
+├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、
+│                             #   whatsapp、matrix、mattermost、email、sms、dingtalk、
+│                             #   feishu、wecom、irc、line、teams、google_chat、
+│                             #   buzz、ntfy、photon、raft、simplex、whatsapp_cloud、
+│                             #   signal、weixin、bluebubbles、qqbot、yuanbao
+│                             #   （Home Assistant：`homeassistant` 目录插件）
+│
 ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
 ├── cron/                     # 调度器（jobs.py、scheduler.py）
 ├── plugins/memory/           # 记忆提供者插件
@@ -130,7 +134,7 @@ hermes-agent/
 ├── skills/                   # 内置 skill（始终可用）
 ├── optional-skills/          # 官方可选 skill（需显式安装）
 ├── website/                  # Docusaurus 文档站点
-└── tests/                    # Pytest 测试套件（3,000+ 个测试）
+└── tests/                    # Pytest 测试套件（约 25,000 个测试、约 1,250 个文件）
 ```
 
 ## 数据流
@@ -189,7 +193,7 @@ hermes-agent/
 
 ### Agent 循环
 
-同步编排引擎（`run_agent.py` 中的 `AIAgent`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
+同步编排引擎（`AIAgent`，由 `run_agent.py` 门面（facade）对外暴露；循环逻辑在 `agent/conversation_loop.py` 和 `agent/turn_*.py`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
 
 → [Agent 循环内部机制](./agent-loop.md)
 
@@ -197,11 +201,11 @@ hermes-agent/
 
 在对话生命周期中构建和维护 prompt：
 
-- **`prompt_builder.py`** — 从以下来源组装系统 prompt：个性（SOUL.md）、记忆（MEMORY.md、USER.md）、skill、上下文文件（AGENTS.md、.hermes.md）、工具使用指引以及模型专项指令
+- **`system_prompt.py` + `prompt_builder.py`** — 按有序层级（`stable` → `context` → `volatile`）组装系统 prompt：身份/工具指引，上下文文件，然后是 skills 索引/记忆/档案/时间戳块
 - **`prompt_caching.py`** — 为前缀缓存应用 Anthropic 缓存断点
 - **`context_compressor.py`** — 当上下文超出阈值时对中间对话轮次进行摘要
 
-→ [Prompt 组装](./prompt-assembly.md)，[上下文压缩与 Prompt 缓存](./context-compression-and-caching.md)
+→ [Prompt 组装](./prompt-assembly.md)、[上下文压缩与 Prompt 缓存](./context-compression-and-caching.md)
 
 ### Provider 解析
 
@@ -223,7 +227,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### 消息 Gateway
 
-长驻进程，包含 20 个平台适配器、统一会话路由、用户授权（白名单 + DM 配对）、斜杠命令分发、hook 系统、cron 触发和后台维护。
+长驻进程，包含 25+ 个平台适配器（内置 + 随包插件）、统一会话路由、用户授权（白名单 + DM 配对）、斜杠命令分发、hook 系统、cron 触发和后台维护。
 
 → [Gateway 内部机制](./gateway-internals.md)
 
@@ -231,7 +235,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 三种发现来源：`~/.hermes/plugins/`（用户级）、`.hermes/plugins/`（项目级）和 pip entry point。插件通过上下文 API 注册工具、hook 和 CLI 命令。存在两种专用插件类型：记忆提供者（`plugins/memory/`）和上下文引擎（`plugins/context_engine/`）。两者均为单选——每种同时只能激活一个，通过 `hermes plugins` 或 `config.yaml` 配置。
 
-→ [插件指南](./plugins/index.md)，[记忆提供者插件](./memory-provider-plugin.md)
+→ [插件指南](./plugins/index.md)、[记忆提供者插件](./memory-provider-plugin.md)
 
 ### Cron
 

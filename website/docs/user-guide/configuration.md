@@ -232,6 +232,7 @@ terminal:
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
+  process_priority: normal  # normal | low — local backend: run commands below Hermes' CPU priority
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
@@ -358,6 +359,30 @@ import os
 hermes_home = Path(os.environ["HERMES_HOME"])
 real_home = Path(os.environ.get("HERMES_REAL_HOME", os.environ["HOME"]))
 ```
+
+#### `terminal.process_priority`
+
+A CPU-bound command the agent starts (`make -j`, a parallel test run, a runaway
+script) competes with Hermes itself for CPU. On a busy host that can stall the
+gateway or Desktop backend that answers every profile. Set `low` to run local
+terminal commands — foreground and `background=true` alike — below Hermes' own
+priority:
+
+```yaml
+terminal:
+  process_priority: low   # default: normal
+```
+
+| Platform | `low` means |
+|---|---|
+| Linux | `nice -n 10` (everything the shell starts inherits it) |
+| macOS | `taskpolicy -c utility` (macOS largely ignores nice) |
+| Windows | No effect |
+
+On Linux, priority only matters under contention: an idle machine runs the command
+at full speed either way. On macOS the utility clamp can keep work on efficiency
+cores, so long builds may run slower even when the machine is idle. It applies to
+the local backend only; container and remote backends run on their own machines.
 
 :::warning
 The agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, or switch to Docker for sandboxing.

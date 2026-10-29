@@ -831,6 +831,30 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
         return [], True
 
 
+def process_priority_prefix() -> list[str]:
+    """argv prefix that runs a host terminal command below Hermes' own CPU priority when
+    ``terminal.process_priority: low``, so a CPU-bound command (``make -j``, a test swarm) cannot
+    starve the gateway/serve loop that answers every profile. An argv prefix rather than a
+    ``preexec_fn`` (unsafe in the threaded gateway; a macOS QoS clamp set there does not survive
+    ``exec``); niceness and the clamp are inherited by everything the shell starts. macOS largely
+    ignores nice, so it gets the ``utility`` QoS clamp instead. No-op on Windows."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.config_home import HomeInitializationError
+    from hermes_platform.host.facts import os_family
+    from hermes_platform.resolver import locate_command
+    try:  # an unavailable home (unmounted, unreadable) must not break every terminal command
+        terminal_cfg = load_config_readonly().get("terminal")
+    except HomeInitializationError:
+        return []
+    level = terminal_cfg.get("process_priority") if isinstance(terminal_cfg, dict) else None
+    if str(level or "").strip().lower() != "low" or os_family() == "win32":
+        return []
+    if os_family() == "darwin" and (taskpolicy := locate_command("/usr/sbin/taskpolicy").command):
+        return [*taskpolicy, "-c", "utility"]
+    nice = locate_command("nice").command
+    return [*nice, "-n", "10"] if nice else []
+
+
 def _resolve_shell_init_files() -> list[str]:
     """Files to source before the login-shell snapshot (``~``/``${VAR}`` expanded,
     missing dropped). ``auto_source_bashrc`` applies only without an explicit list:
@@ -1110,7 +1134,7 @@ class LocalEnvironment(BaseEnvironment):
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        args = [*process_priority_prefix(), bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",

@@ -320,11 +320,10 @@ DEFAULT_CONFIG = {
         # HERMES_HOME/home; "real" = force real HOME; "profile" = force HERMES_HOME/home when it
         # exists (strict per-profile isolation).
         "home_mode": "auto",
-        # Extra files sourced in the login shell when building the per-session env snapshot — for
-        # nvm/pyenv/asdf/PATH entries registered by files a bash login shell skips (~/.bashrc,
-        # ~/.zshrc, ~/.zprofile). Supports ~ and ${VAR}; missing files skipped. When empty and the
-        # shell is bash, ~/.profile, ~/.bash_profile, ~/.bashrc are auto-sourced in that order (see
-        # auto_source_bashrc).
+        # Extra files sourced in the login shell for the per-session env snapshot (nvm/pyenv/asdf PATH
+        # entries in files a bash login shell skips: ~/.bashrc, ~/.zshrc, ~/.zprofile). Supports ~ and
+        # ${VAR}; missing files skipped. Empty + bash = ~/.profile, ~/.bash_profile, ~/.bashrc are
+        # auto-sourced in that order (see auto_source_bashrc).
         "shell_init_files": [],
         # Source ~/.profile, ~/.bash_profile, ~/.bashrc in the snapshot login shell to capture PATH
         # additions, functions, and aliases that `bash -l -c` misses (bash skips bashrc when
@@ -332,6 +331,7 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
+        "process_priority": "normal",  # "low" = local terminal commands run below Hermes' CPU priority (nice 10 / macOS utility QoS)
         # The default sandbox for every container backend: the nikolaik/python-nodejs base
         # (Python 3.13 / Node 26) plus a display stack, so Bot Screen, computer_use and the
         # bot's browser run INSIDE the sandbox and the pane can watch them (see bot_desktop).

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from hermes_cli.route_identity import normalize_route_base_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,7 +121,7 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     return (
         _normalize_provider_id(str(entry.get("provider") or "").strip()),
         str(entry.get("model") or "").strip().lower(),
-        _normalized_base_url(entry.get("base_url")).lower(),
+        normalize_route_base_url(_normalized_base_url(entry.get("base_url"))),
     )
 
 

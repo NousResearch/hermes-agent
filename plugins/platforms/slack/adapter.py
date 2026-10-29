@@ -4617,8 +4617,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Ignoring DM because Slack DMs are disabled: channel=%s user=%s",
                 channel_id, user_id)
             return
-        # Only a 1:1 IM earns DM exemptions (no mention needed, free reactions); an MPIM obeys
-        # channel gating, though session/thread scoping treats both as DM-style.
+        # Only 1:1 IMs bypass channel gating; both IMs and MPIMs use DM-style session scoping.
         is_one_to_one_dm = channel_type == "im"
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
@@ -4675,9 +4674,11 @@ class SlackAdapter(BasePlatformAdapter):
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
-        # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        # Accepted human messages get lifecycle reactions regardless of how they passed routing.
+        if self._reactions_enabled() and not (
+            self._event_declares_bot_sender(event)
+            or await self._resolve_user_is_bot(user_id, chat_id=channel_id, team_id=team_id)
+        ):
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.

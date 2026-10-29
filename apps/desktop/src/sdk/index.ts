@@ -25,7 +25,6 @@ import { capabilityScoped, getApiRequestConnection } from '@/api/client'
 import { mutateSessionFenced } from '@/api/sessions'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
-import { syncWorkspaceRoute } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import {
   $newSessionTabAction,
@@ -110,6 +109,7 @@ import type { SessionMutationSnapshot } from '../../../shared/src/session-http-m
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
+import { navigate, preview } from './navigation'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
@@ -639,19 +639,9 @@ export const host = {
     return completeMcpDesktopOAuth({ ...options, profile })
   },
 
-  /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
-  navigate: (path: string) => {
-    const to = path.startsWith('#') ? path.slice(1) : path
+  navigate,
 
-    window.location.hash = `#${to}`
-    // The router follows the hash and fronts the workspace pane on a route
-    // CHANGE (wiring's `syncWorkspaceRoute` effect). Re-issuing the current
-    // route — palette/statusbar/hotkey while already on the page with a tile
-    // focused — changes nothing, so no event fires and the page stays behind
-    // the tile. Reveal imperatively, the same way `navigateToWorkspacePage`
-    // does for the sidebar and keybinds.
-    syncWorkspaceRoute(to)
-  },
+  preview,
 
   warmProfile,
   dropLeftoverProfilePrefs,

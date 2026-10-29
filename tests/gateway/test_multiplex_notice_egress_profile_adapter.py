@@ -66,7 +66,9 @@ async def test_restart_marker_from_secondary_session_notifies_via_its_own_bot(tm
     event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=src, message_id="7")
     (tmp_path / ".restart_notify.json").write_text(json.dumps(_restart_notify_payload(event)))
 
-    assert await r._send_restart_notification() == ("telegram", "42", None)
+    # The return is the served notice KEY (the marker's ``delivered_targets`` vocabulary), so a
+    # secondary's is prefixed with its profile — that chat is not owed an "online" broadcast.
+    assert await r._send_restart_notification() == ("sec:telegram", "42", None)
     assert r._profile_adapters["sec"][Platform.TELEGRAM].sent == ["42"]
     assert r.adapters[Platform.TELEGRAM].sent == []
 

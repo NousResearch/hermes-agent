@@ -38,6 +38,18 @@ Hermes on Discord is not a webhook that replies statelessly. It runs through the
 
 That matters because behavior in a busy server depends on both Discord routing and Hermes session policy.
 
+### Delivery route
+
+Every Discord reply — text included — rides the standalone-send REST path
+(`StandaloneSendPolicy(all_sends=True)` in
+`plugins/platforms/discord/send_targets.py`), addressed as
+`hermes send --to discord:<channel_id>[:<thread_id>]`. The gateway socket is
+ingest-only: it never carries outbound sends. Include `:<thread_id>` to deliver
+into an existing thread; omit it for the channel top level. A bot that is
+**read-only at the guild seat** (no Send Messages permission on the channel)
+therefore still replies normally — the route is REST, so read-only at the guild
+seat is the route working as designed, not a fault.
+
 ### Session Model in Discord
 
 By default:

@@ -5695,20 +5695,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                  + len(self._approval_mention_content() or "") + 1)
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
-    async def expire_exec_approval(self, chat_id: str, message_id: str, content: str) -> SendResult:
-        """Remove Discord's components when the backend approval expires."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        try:
-            channel = await self._resolve_channel(chat_id)
-            msg = channel.get_partial_message(int(message_id))
-            content = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)[0]
-            await msg.edit(content=content, view=None)
-            return SendResult(success=True, message_id=message_id)
-        except Exception as exc:
-            logger.warning("[Discord] Failed to expire approval card: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
-
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
         require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
@@ -6427,8 +6413,9 @@ def _define_discord_view_classes() -> None:
         def _first_embed(message):
             return message.embeds[0] if message.embeds else None
 
-        async def _expire_embed(self, footer: str) -> None:
-            """Grey out the original message's embed after a timeout (best effort)."""
+        async def _expire_embed(self, footer: str, *, keep_controls: bool = True) -> None:
+            """Grey out the original message's embed and stamp ``footer`` (best effort). The disabled
+            buttons stay unless ``keep_controls`` is False, which removes them."""
             msg = self._message
             if msg:
                 try:
@@ -6436,9 +6423,9 @@ def _define_discord_view_classes() -> None:
                     if embed:
                         embed.color = discord.Color.greyple()
                         embed.set_footer(text=footer)
-                    await msg.edit(embed=embed, view=self)
+                    await msg.edit(embed=embed, view=self if keep_controls else None)
                 except Exception:
-                    pass  # message deleted or too old to edit
+                    logger.debug("[Discord] Could not stamp prompt card", exc_info=True)  # deleted / too old
 
         async def _finalize_embed(self, interaction: discord.Interaction, color, footer: str) -> None:
             """Mark resolved, stamp the embed (color + footer), disable buttons, edit in place, then

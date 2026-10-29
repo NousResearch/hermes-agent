@@ -95,6 +95,13 @@ class PluginOperationError(Exception):
             self.failure_class = failure_class
 
 
+class PluginSourceMoved(PluginOperationError):
+    """The source is no longer at the commit the install dialog reviewed. Clients answer it by reading
+    the source again (``plugins.manage`` error ``data.reason == "source_moved"``), never by resending."""
+
+    failure_class = "clone_failed"
+
+
 class PluginScanBlocked(PluginOperationError):
     """Plugin failed the security scan and was not installed."""
 

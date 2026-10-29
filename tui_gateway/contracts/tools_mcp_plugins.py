@@ -617,6 +617,8 @@ class PluginsAction(WireEnum):
     toggle = "toggle"
     install = "install"
     inspect = "inspect"
+    install_desktop = "install_desktop"
+    remove_desktop = "remove_desktop"
     update = "update"
     remove = "remove"
     settings = "settings"
@@ -626,7 +628,12 @@ class PluginsAction(WireEnum):
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
-    (+ ``force``, ``enable``, ``ref``); ``inspect``: ``identifier``/``repo`` or ``catalog_name``; ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
+    (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no
+    ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;
+    ``install_desktop``: ``identifier``/``repo`` (https only) or ``catalog_name`` + ``ref`` (the commit
+    ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto
+    the host that serves this client; ``remove_desktop``: ``name``
+    (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose
     security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
@@ -641,6 +648,7 @@ class PluginsManageParams(ProfileParams):
     catalog_name: str | None = None
     force: bool | None = None
     ref: str | None = None
+    inspected_sha: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
     names: list[str] | None = None
@@ -859,6 +867,13 @@ class PluginsManageResult(Result):
     agent_name: str | None = None
     desktop_name: str | None = None
     insecure: bool | None = None
+    # ``install_desktop`` → the folder it published on the host that serves this client (``plugin_name``,
+    # ``path``, the cloned ``sha``) and whether that folder is the desktop half of a package
+    # (``paired_with_agent``); ``remove_desktop`` → the same ``plugin_name``/``path`` gone, with
+    # ``unpaired_from`` naming the package whose half it was.
+    path: str | None = None
+    paired_with_agent: bool | None = None
+    unpaired_from: str | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

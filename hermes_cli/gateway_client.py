@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
+import contextvars
 import json
 import os
 from pathlib import Path
@@ -247,23 +248,53 @@ def private_control_query(home: Path, request: bytes, timeout: float = 5) -> byt
     return bytes(data)
 
 
-def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None) -> str:
+# An owner that predates ``restart_wait`` refuses the unknown parameter with exactly this answer.
+_UNKNOWN_TICKET_PARAMS = "PermissionError: invalid bootstrap parameters"
+
+
+def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None,
+                    refuse_restart_wait=False) -> str:
     from hermes_cli.gateway_runtime import control_home_for
     from hermes_cli.gateway_runtime_discovery import _identify_response
     # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
     home = control_home_for(home, endpoint)
     # ``subject`` names the principal a same-user caller acts for (the standalone dashboard's
     # authenticated user) instead of the socket UID; the owner's peer gate stays the boundary.
-    request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
-        "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id, "purpose": purpose,
-        **({"scope": scope} if scope else {}), **({"subject": subject} if subject else {}),
-    }}).encode() + b"\n"
-    grant = _identify_response(private_control_query(home, request))
+    # ``restart_wait``: the owner refuses the socket at admission if a restart wait has opened by then.
+    params = {"profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id, "purpose": purpose,
+              **({"scope": scope} if scope else {}), **({"subject": subject} if subject else {}),
+              **({"restart_wait": "refuse"} if refuse_restart_wait else {})}
+    request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": params}).encode() + b"\n"
+    answer = private_control_query(home, request)
+    refused = json.loads(answer.split(b"\n", 1)[0]) if refuse_restart_wait else None
+    if isinstance(refused, dict) and refused.get("error") == _UNKNOWN_TICKET_PARAMS:
+        # An owner older than this client (the code on disk was updated under it) cannot hold the
+        # policy; refusing it outright would strand the caller until it restarts. The pre-dial check stands.
+        del params["restart_wait"]
+        answer = private_control_query(home, json.dumps(
+            {"protocol": 1, "id": 1, "verb": "session-ticket", "params": params}).encode() + b"\n")
+    grant = _identify_response(answer)
     if any(grant.get(k) != v for k, v in {
         "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id, "runtime_protocol": 1,
     }.items()) or not isinstance(grant.get("ticket"), str) or not grant["ticket"]:
         raise GatewayClientError("Gateway bootstrap identity changed; retry launch")
     return grant["ticket"]
+
+
+# A restart's after-turn wait admits clients so a human can answer a parked prompt (#139041). A machine
+# poller held in it (a Kanban worker reading its card's receipt) keeps the turn the wait is waiting
+# on alive, so the restart, and ``hermes update`` behind it, is held until its cap.
+_REFUSE_RESTART_WAIT: contextvars.ContextVar[bool] = contextvars.ContextVar("refuse_restart_wait", default=False)
+
+
+@contextmanager
+def outside_restart_wait():
+    """``connect_gateway`` calls inside never attach to an owner in its restart's after-turn wait."""
+    token = _REFUSE_RESTART_WAIT.set(True)
+    try:
+        yield
+    finally:
+        _REFUSE_RESTART_WAIT.reset(token)
 
 
 @asynccontextmanager
@@ -272,7 +303,10 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     (maintenance that must never start a gateway); default ensures one, starting it if needed.
     ``subject``: mint the ticket for this principal (the caller's authenticated dashboard user)
     rather than the socket identity; only a peer the owner already trusts may name one.
-    ``max_size``: the largest frame accepted; a ``session.resume`` answer carries the whole history."""
+    ``max_size``: the largest frame accepted; a ``session.resume`` answer carries the whole history.
+    Inside ``outside_restart_wait()`` an owner in a restart's after-turn wait is refused as
+    ``draining`` (``restart_wait``) instead of attached, and the ticket carries that policy so the
+    owner also refuses the socket when the wait opens between discovery and the dial."""
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
@@ -296,7 +330,7 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
         # A client's own start: the daemon it may launch ends itself once idle (no client, adapter,
         # cron/kanban work or admission), and the next client starts a fresh one.
         result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
-        if not attachable(result):
+        if not attachable(result) or (_REFUSE_RESTART_WAIT.get() and result.state != "ready"):
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:
                 # A multi-line startup report (redacted traceback tail + where the full log is).
@@ -306,7 +340,8 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
                                           result.state, result.reason_code)
         endpoint = result.endpoint
         try:
-            ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
+            policy: dict = {"refuse_restart_wait": True} if _REFUSE_RESTART_WAIT.get() else {}
+            ticket = await asyncio.to_thread(_session_ticket, home, endpoint, **policy)
         except DiscoveryError as exc:
             # The control socket refused the ticket: the verdict discovery gives the same refusal.
             detail = exc.bounded_detail(500)

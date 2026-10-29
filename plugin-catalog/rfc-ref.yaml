@@ -1,21 +1,22 @@
 name: rfc-ref
 repo: https://github.com/EloquentBrush0x/hermes-context-refs
-sha: 7d10da5365b5f6d9cfac8c9f5ce8fdc8273f6624
+sha: eb0a3913b79023464b1c06753c82a8a7324e5621
 subdir: rfc-ref
 description: >-
   @rfc:<number> context references: attach an IETF RFC's record from the RFC Editor to a message
   (title, status, date, authors, abstract, what it obsoletes and updates and what obsoletes or
-  updates it, errata link). Disclosure — sends one HTTPS GET per reference to
-  www.rfc-editor.org/rfc/rfc<number>.json only (the referenced RFC number leaves the machine); no
-  API key, no caching, no files written, no subprocess; register() only adds the @rfc: reference
-  provider.
+  updates it, errata link), or one section of its text with @rfc:<number>#<section>. Disclosure —
+  sends HTTPS GET requests to www.rfc-editor.org only: rfc<number>.json per reference, plus
+  rfc<number>.txt for a section (the referenced RFC number leaves the machine; a section is cut
+  locally); no API key, no caching, no files written, no subprocess; register() only adds the
+  @rfc: reference provider.
 maintainer: EloquentBrush0x
 tier: community
 category: web
 requires_hermes: ">=0.21"
 docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/rfc-ref
-version: "1.0.0"
-image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/7d10da5365b5f6d9cfac8c9f5ce8fdc8273f6624/docs/rfc-ref-card.png
+version: "1.1.0"
+image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/eb0a3913b79023464b1c06753c82a8a7324e5621/docs/rfc-ref-card.png
 platforms: []
 capabilities:
   provides_tools: []

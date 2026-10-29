@@ -50,8 +50,8 @@ from typing import Any, Dict, Optional, Set
 from agent.i18n import t
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
 
 try:
@@ -554,8 +554,23 @@ def _thread_root(relates_to: dict) -> Optional[str]:
 
 
 def _extra_csv_set(config, key: str, env_name: str) -> set[str]:
-    """Resolve a room/user list: scoped env var → config.extra[key] → empty."""
-    return _csv_set(_extra_or_secret(config.extra, key, env_name, "", blank_is_unset=False))
+    """Resolve a room/user list: scoped env var → config.extra[key] → empty.
+
+    ``hermes config set`` stores a list literal verbatim into a string-typed key, and both
+    ``allowed_rooms`` and ``free_response_rooms`` are declared ``""`` in ``DEFAULT_CONFIG``, so the
+    value on disk can be the literal ``'["!a", "!b"]'``. Comma-splitting that yields quoted garbage
+    matching no room or user, which silently denies every allowlisted room (#76457). Decode it the
+    way every other platform gate already does.
+
+    An EMPTY literal is deliberately NOT adopted. ``_is_allowed_matrix_room_event`` is permissive
+    on an empty set, so decoding ``'[]'`` into ``[]`` would turn a value that denies every group
+    room today into one that admits every joined room. Whether an explicit empty allowlist should
+    mean deny-all or allow-all is a semantic question this change does not answer, so ``'[]'``
+    keeps exactly the behaviour it has.
+    """
+    raw = _extra_or_secret(config.extra, key, env_name, "", blank_is_unset=False)
+    decoded = _decode_json_list_literal(raw)
+    return _csv_set(decoded if decoded else raw)
 
 
 def _recovery_key_output_path() -> Optional[Path]:

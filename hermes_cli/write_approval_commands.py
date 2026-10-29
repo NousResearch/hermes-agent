@@ -77,10 +77,17 @@ def _approve(subsystem: str, rest: list[str], memory_store) -> str:
         targets = [rec]
 
     applied, failed, overwritten, patched, removed = 0, [], [], [], []
-    for rec in targets:
-        ok, msg, result = _apply_one(subsystem, rec, memory_store)
+    for listed in targets:
+        rec = wa.claim_pending(subsystem, listed["id"])  # one approver wins; the other sees it gone
+        if rec is None:
+            failed.append(f"{listed['id']}: no longer pending (already approved or rejected)")
+            continue
+        ok, msg, result = False, "not applied", {}
+        try:
+            ok, msg, result = _apply_one(subsystem, rec, memory_store)
+        finally:
+            wa.finish_claim(subsystem, rec["id"], applied=ok)
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
             applied += 1
             overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
             patched.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))

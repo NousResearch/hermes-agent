@@ -55,3 +55,34 @@ def test_existing_binary_resolves_runnable_cmd_over_posix_shim(tmp_path: Path, m
     out = subprocess.run([str(resolved)], capture_output=True, text=True, encoding="utf-8", errors="replace",
                          check=True, stdin=subprocess.DEVNULL)
     assert "wrapper-ran" in out.stdout
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("suffix", (".cmd", ".exe", ".bat"))
+def test_existing_binary_prefers_native_candidate_across_bases(tmp_path: Path, monkeypatch, suffix):
+    """A native npm wrapper must outrank a staged extensionless POSIX shim."""
+    monkeypatch.setattr(install, "hermes_lsp_bin_dir", lambda: tmp_path / "lsp" / "bin")
+    staged = tmp_path / "lsp" / "bin" / "tool"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(staged, 0o755)
+    npm_bin = tmp_path / "lsp" / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    native = npm_bin / f"tool{suffix}"
+    native.write_text("wrapper", encoding="utf-8")
+
+    assert install._existing_binary("tool") == str(native)
+
+
+@pytest.mark.platforms("posix")
+def test_posix_resolution_keeps_staging_base_precedence(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(install, "hermes_lsp_bin_dir", lambda: tmp_path / "lsp" / "bin")
+    staged = tmp_path / "lsp" / "bin" / "tool"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(staged, 0o755)
+    npm_bin = tmp_path / "lsp" / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    (npm_bin / "tool").write_text("npm", encoding="utf-8")
+
+    assert install._existing_binary("tool") == str(staged)

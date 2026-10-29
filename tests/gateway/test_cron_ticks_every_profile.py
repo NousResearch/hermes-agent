@@ -84,3 +84,67 @@ def test_secondary_profile_is_ticked_with_multiplex_profiles_off(
     )
     served = {name for name, _home in enumerate_homes()}
     assert "secondary" in served, "a secondary profile's cron must still be ticked"
+
+
+class _ExternalProvider:
+    """A configured external ``cron.provider`` (one unscoped remote registry)."""
+
+    name = "external-test"
+
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+        return None
+
+    def stop(self):
+        return None
+
+
+def _started_provider(gateway_run, monkeypatch, launch_profile):
+    from cron import scheduler_provider, scheduler_thread
+
+    external = _ExternalProvider()
+    monkeypatch.setattr(scheduler_provider, "resolve_cron_scheduler", lambda: external)
+    monkeypatch.setattr(scheduler_thread, "SupervisedTickerThread", _CapturedTicker)
+    monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *_a, **_kw: None)
+    runner = types.SimpleNamespace(
+        config=types.SimpleNamespace(multiplex_profiles=False),
+        adapters={},
+        _profile_adapters=None,
+        _primary_profile_name=launch_profile,
+        _draining=False,
+        _external_drain_active=False,
+    )
+
+    async def _start():
+        return gateway_run._start_gateway_start_cron_and_housekeeping(runner)
+
+    cron_stop, provider, _thread, housekeeping = asyncio.run(_start())
+    cron_stop.set()
+    if isinstance(housekeeping, threading.Thread):
+        housekeeping.join(timeout=5)
+    return external, provider
+
+
+def test_a_standalone_gateway_keeps_its_external_cron_provider(isolated_profiles, monkeypatch):
+    """A standalone gateway ticks one home, so an external provider is not forced back to the
+    built-in multiplex ticker."""
+    from gateway import run as gateway_run
+
+    solo = isolated_profiles / "profiles" / "solo"
+    solo.mkdir()
+    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+    monkeypatch.setenv("HERMES_HOME", str(solo))
+
+    external, provider = _started_provider(gateway_run, monkeypatch, "solo")
+    assert provider is external
+
+
+def test_the_host_gateway_still_uses_the_builtin_ticker_for_several_profiles(
+    isolated_profiles, monkeypatch
+):
+    """Control: the host ticks default + secondary, which an external provider cannot scope."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from gateway import run as gateway_run
+
+    external, provider = _started_provider(gateway_run, monkeypatch, "default")
+    assert provider is not external
+    assert isinstance(provider, InProcessCronScheduler)

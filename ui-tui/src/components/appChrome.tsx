@@ -479,8 +479,18 @@ export function StatusRule({
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
-  const providerUsage = (name: string, provider: UsageMeterInfo['claude']) =>
-    `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
+  const providerUsage = (name: string, provider: UsageMeterInfo['claude']) => {
+    if (!provider.accounts || provider.accounts.length <= 1) {
+      return `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
+    }
+    return `${name} ${provider.accounts
+      .map(account => {
+        const marker = account.active ? '●' : ''
+        const values = account.available ? account.windows.map(window => `${window.usedPercent}%`).join('/') : '—'
+        return `${marker}${account.label} ${values}`
+      })
+      .join(' ')}`
+  }
 
   const usageMeterText = usageMeter
     ? `${providerUsage('Claude', usageMeter.claude)} · ${providerUsage('Codex', usageMeter.codex)}`

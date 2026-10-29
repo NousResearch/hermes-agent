@@ -32,6 +32,13 @@ interface ProviderUsage {
   available: boolean;
   unavailable_reason?: string;
   windows: UsageWindow[];
+  accounts?: UsageAccount[];
+}
+
+interface UsageAccount extends ProviderUsage {
+  label: string;
+  active: boolean;
+  status?: string | null;
 }
 
 interface SystemUsageMeterResponse {
@@ -92,6 +99,33 @@ function ProviderGauges({ label, usage }: { label: string; usage: ProviderUsage 
       </div>
 
       {available ? (
+        usage?.accounts && usage.accounts.length > 1 ? (
+          usage.accounts.map((account) => (
+            <div key={account.label} className="flex flex-col gap-1">
+              <span className="text-[10px] text-text-tertiary">
+                {account.active ? "● " : ""}{account.label}
+              </span>
+              {account.windows.map((w) => {
+                const isLongHorizon = /week/i.test(w.label);
+                return (
+                  <div key={w.label} className="flex flex-col gap-0.5">
+                    <div className="flex items-center justify-between text-[10px] tracking-wide text-text-tertiary">
+                      <span className="truncate">{w.label}</span>
+                      <span className="shrink-0 tabular-nums">{formatCountdown(w.reset_at, now)}</span>
+                    </div>
+                    <Progress
+                      value={Math.max(0, Math.min(100, w.used_percent))}
+                      barProps={{ className: cn(gaugeTone(w.used_percent), isLongHorizon && "py-0.5") }}
+                      className={isLongHorizon ? "min-h-[0.9rem] opacity-70" : "min-h-[1.4rem]"}
+                    >
+                      {!isLongHorizon && <span className="text-[10px]">{Math.round(w.used_percent)}%</span>}
+                    </Progress>
+                  </div>
+                );
+              })}
+            </div>
+          ))
+        ) : (
         usage!.windows.map((w) => {
           // Longer-horizon windows (weekly, etc.) change slowly and matter
           // less turn-to-turn than the short session window — render them
@@ -121,6 +155,7 @@ function ProviderGauges({ label, usage }: { label: string; usage: ProviderUsage 
             </div>
           );
         })
+        )
       ) : (
         <div className="wrap-break-word text-[10px] text-text-tertiary">
           {usage?.unavailable_reason ?? "unavailable"}

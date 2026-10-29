@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import math
+import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -44,6 +47,138 @@ class AccountUsageSnapshot:
     @property
     def available(self) -> bool:
         return bool(self.windows or self.details) and not self.unavailable_reason
+
+
+@dataclass(frozen=True)
+class PooledUsageSnapshot:
+    """A usage reading annotated with the pool credential it belongs to."""
+
+    label: str
+    fingerprint: str
+    active: bool
+    status: Optional[str]
+    snapshot: AccountUsageSnapshot
+
+
+_POOL_USAGE_CACHE: dict[tuple[str, str], tuple[AccountUsageSnapshot, float]] = {}
+_POOL_USAGE_CACHE_TTL = 300.0
+_POOL_USAGE_CACHE_LOCK = threading.Lock()
+
+
+def _usage_credential_fingerprint(token: Optional[str], entry: Optional[dict] = None) -> str:
+    existing = (entry or {}).get("secret_fingerprint")
+    if isinstance(existing, str) and existing:
+        return existing
+    if not token:
+        return ""
+    return f"sha256:{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _active_pool_token(provider: str) -> Optional[str]:
+    try:
+        if provider == "anthropic":
+            return (resolve_anthropic_token() or "").strip() or None
+        if provider == "openai-codex":
+            return str(resolve_codex_runtime_credentials(refresh_if_expiring=False)["api_key"] or "").strip() or None
+    except Exception:
+        return None
+    return None
+
+
+def _pool_entry_token(entry: dict) -> str:
+    token = entry.get("access_token") or entry.get("api_key") or ""
+    return str(token).strip()
+
+
+def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) -> Optional[AccountUsageSnapshot]:
+    now = time.monotonic()
+    if token:
+        key = (provider, fingerprint)
+        with _POOL_USAGE_CACHE_LOCK:
+            cached = _POOL_USAGE_CACHE.get(key)
+            if cached and now - cached[1] < _POOL_USAGE_CACHE_TTL:
+                return cached[0]
+    snapshot = fetch_account_usage(provider, api_key=token) if token else fetch_account_usage(provider)
+    if token and snapshot is not None and snapshot.available:
+        with _POOL_USAGE_CACHE_LOCK:
+            _POOL_USAGE_CACHE[(provider, fingerprint)] = (snapshot, now)
+    return snapshot
+
+
+def fetch_pool_account_usage(provider: Optional[str]) -> list[PooledUsageSnapshot]:
+    """Fetch usage once per credential in a provider's pool.
+
+    Pool discovery intentionally goes through ``hermes_cli.auth`` so profile
+    shadowing and global fallback semantics stay in one place. Tokens never
+    leave this module; only a short fingerprint is returned to callers.
+    """
+    normalized = str(provider or "").strip().lower()
+    if not normalized:
+        return []
+    from hermes_cli.auth import read_credential_pool
+
+    raw_entries = read_credential_pool(normalized)
+    # ``read_credential_pool`` deliberately returns metadata-only borrowed
+    # entries. Hydrate those through the pool's public loader; never inspect
+    # auth.json here or copy a token into the returned model.
+    if raw_entries and any(not _pool_entry_token(entry) for entry in raw_entries if isinstance(entry, dict)):
+        try:
+            from agent.credential_pool import load_pool
+
+            hydrated = {entry.id: entry for entry in load_pool(normalized).entries()}
+            enriched = []
+            for raw_entry in raw_entries:
+                if not isinstance(raw_entry, dict):
+                    enriched.append(raw_entry)
+                    continue
+                entry = hydrated.get(str(raw_entry.get("id") or ""))
+                token = entry.runtime_api_key if entry is not None else ""
+                enriched.append({**raw_entry, "access_token": token})
+            raw_entries = enriched
+        except Exception:
+            pass
+    active_token = _active_pool_token(normalized)
+    active_fingerprint = _usage_credential_fingerprint(active_token)
+    if not raw_entries:
+        snapshot = _fetch_pool_snapshot(normalized, None, "")
+        if snapshot is None:
+            return []
+        return [PooledUsageSnapshot("default", "", True, None, snapshot)]
+
+    readings: list[PooledUsageSnapshot] = []
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        token = _pool_entry_token(raw_entry)
+        fingerprint = _usage_credential_fingerprint(token, raw_entry)
+        snapshot = (
+            _fetch_pool_snapshot(normalized, token, fingerprint)
+            if token
+            else AccountUsageSnapshot(
+                provider=normalized,
+                source="credential_pool",
+                fetched_at=_utc_now(),
+                unavailable_reason="Credential entry has no usable token.",
+            )
+        )
+        if snapshot is None:
+            snapshot = AccountUsageSnapshot(
+                provider=normalized,
+                source="credential_pool",
+                fetched_at=_utc_now(),
+                unavailable_reason="Usage lookup unavailable.",
+            )
+        label = str(raw_entry.get("label") or raw_entry.get("source") or normalized)
+        readings.append(
+            PooledUsageSnapshot(
+                label=label,
+                fingerprint=fingerprint,
+                active=bool(active_token and (token == active_token or fingerprint == active_fingerprint)),
+                status=raw_entry.get("last_status"),
+                snapshot=snapshot,
+            )
+        )
+    return readings
 
 
 def _title_case_slug(value: Optional[str]) -> Optional[str]:

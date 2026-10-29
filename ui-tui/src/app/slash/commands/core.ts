@@ -671,8 +671,18 @@ export const coreCommands: SlashCommand[] = [
           .then(response => {
             const info = toUsageMeterInfo(response)
 
-            const label = (name: string, provider: NonNullable<typeof info>['claude']) =>
-              `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : (provider.unavailableReason || '—')}`
+            const label = (name: string, provider: NonNullable<typeof info>['claude']) => {
+              if (!provider.accounts || provider.accounts.length <= 1) {
+                return `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : (provider.unavailableReason || '—')}`
+              }
+              return `${name} ${provider.accounts
+                .map(account => {
+                  const marker = account.active ? '●' : ''
+                  const values = account.available ? account.windows.map(window => `${window.usedPercent}%`).join('/') : '—'
+                  return `${marker}${account.label} ${values}`
+                })
+                .join(' ')}`
+            }
 
             ctx.transcript.sys(
               `usage meter ${state} — ${label('Claude', info!.claude)} · ${label('Codex', info!.codex)}`

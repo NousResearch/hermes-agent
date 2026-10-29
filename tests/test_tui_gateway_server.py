@@ -1143,12 +1143,16 @@ def test_system_usage_meter_returns_both_providers_when_one_is_unavailable(monke
     assert resp["result"] == {
         "claude": {
             "available": True,
+            "accounts": [{"label": "default", "active": True, "status": None, "available": True, "windows": [
+                {"label": "Current session", "used_percent": 23, "remaining_percent": 77, "reset_at": None},
+                {"label": "Current week", "used_percent": 61, "remaining_percent": 39, "reset_at": None},
+            ]}],
             "windows": [
                 {"label": "Current session", "used_percent": 23, "remaining_percent": 77, "reset_at": None},
                 {"label": "Current week", "used_percent": 61, "remaining_percent": 39, "reset_at": None},
             ],
         },
-        "codex": {"available": False, "windows": []},
+        "codex": {"available": False, "windows": [], "accounts": []},
     }
 
 
@@ -1240,8 +1244,8 @@ def test_system_usage_meter_discards_malformed_windows(monkeypatch):
     resp = server._methods["system.usage_meter"]("u4", {})
 
     assert resp["result"] == {
-        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
-        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
+        "claude": {"available": True, "accounts": [{"label": "default", "active": True, "status": None, "available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]}], "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
+        "codex": {"available": True, "accounts": [{"label": "default", "active": True, "status": None, "available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]}], "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
     }
 
 
@@ -1261,8 +1265,8 @@ def test_system_usage_meter_keeps_valid_windows_after_malformed_entry(monkeypatc
     resp = server._methods["system.usage_meter"]("u5", {})
 
     assert resp["result"] == {
-        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
-        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
+        "claude": {"available": True, "accounts": [{"label": "default", "active": True, "status": None, "available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]}], "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
+        "codex": {"available": True, "accounts": [{"label": "default", "active": True, "status": None, "available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]}], "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
     }
 
 

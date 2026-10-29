@@ -53,6 +53,15 @@ export interface AccountUsageMeterInfo {
   available: boolean
   unavailableReason?: string
   windows: AccountUsageMeterWindow[]
+  accounts?: AccountUsageMeterAccount[]
+}
+
+export interface AccountUsageMeterAccount {
+  label: string
+  active: boolean
+  available: boolean
+  unavailableReason?: string
+  windows: AccountUsageMeterWindow[]
 }
 
 export interface AccountUsageMeterWindow {

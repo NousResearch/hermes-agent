@@ -2,41 +2,46 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SystemUsageMeterProvider, SystemUsageMeterResponse } from '../gatewayTypes.js'
+import type { SystemUsageMeterAccount, SystemUsageMeterProvider, SystemUsageMeterResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import type { AccountUsageMeterInfo, UsageMeterInfo } from './interfaces.js'
+import type { AccountUsageMeterInfo, AccountUsageMeterAccount, UsageMeterInfo } from './interfaces.js'
 import { $uiState, patchUiState } from './uiStore.js'
 
 const USAGE_METER_POLL_MS = 30_000
 
-const normalizeProvider = (provider: SystemUsageMeterProvider | undefined): AccountUsageMeterInfo => {
-  const windows = Array.isArray(provider?.windows)
-    ? provider.windows.flatMap(window => {
+const normalizeWindows = (windows: SystemUsageMeterProvider['windows']) =>
+  Array.isArray(windows)
+    ? windows.flatMap(window => {
         if (
           !window ||
           typeof window.label !== 'string' ||
           typeof window.used_percent !== 'number' ||
           !Number.isFinite(window.used_percent)
-        ) {
-          return []
-        }
-
-        return [
-          {
-            label: window.label,
-            usedPercent: Math.max(0, Math.min(100, Math.round(window.used_percent)))
-          }
-        ]
+        ) return []
+        return [{ label: window.label, usedPercent: Math.max(0, Math.min(100, Math.round(window.used_percent))) }]
       })
     : []
+
+const normalizeAccount = (account: SystemUsageMeterAccount): AccountUsageMeterAccount => ({
+  label: account.label,
+  active: account.active === true,
+  available: account.available === true && normalizeWindows(account.windows).length > 0,
+  ...(typeof account.unavailable_reason === 'string' ? { unavailableReason: account.unavailable_reason } : {}),
+  windows: normalizeWindows(account.windows)
+})
+
+const normalizeProvider = (provider: SystemUsageMeterProvider | undefined): AccountUsageMeterInfo => {
+  const windows = normalizeWindows(provider?.windows ?? [])
+  const accounts = Array.isArray(provider?.accounts) ? provider.accounts.map(normalizeAccount) : undefined
 
   return {
     available: provider?.available === true && windows.length > 0,
     ...(typeof provider?.unavailable_reason === 'string'
       ? { unavailableReason: provider.unavailable_reason }
       : {}),
-    windows
+    windows,
+    ...(accounts ? { accounts } : {})
   }
 }
 

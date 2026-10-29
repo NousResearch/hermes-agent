@@ -1,0 +1,88 @@
+from dataclasses import replace
+
+from agent import account_usage
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+
+def _snapshot(provider="anthropic", *, unavailable_reason=None):
+    return AccountUsageSnapshot(
+        provider=provider,
+        source="test",
+        fetched_at=account_usage._utc_now(),
+        windows=(AccountUsageWindow(label="Session", used_percent=25),),
+        unavailable_reason=unavailable_reason,
+    )
+
+
+def test_fetch_pool_account_usage_reads_each_pool_entry_and_marks_active(monkeypatch):
+    entries = [
+        {"id": "a", "label": "work", "access_token": "sk-ant-oat-work", "source": "manual"},
+        {"id": "b", "label": "backup", "access_token": "sk-ant-oat-backup", "source": "manual"},
+    ]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat-backup")
+    calls = []
+
+    def fake_fetch(provider, *, api_key=None, base_url=None):
+        calls.append((provider, api_key))
+        return _snapshot()
+
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
+
+    readings = account_usage.fetch_pool_account_usage("anthropic")
+
+    assert [reading.label for reading in readings] == ["work", "backup"]
+    assert [reading.active for reading in readings] == [False, True]
+    assert [key for _, key in calls] == ["sk-ant-oat-work", "sk-ant-oat-backup"]
+    assert all(reading.fingerprint.startswith("sha256:") for reading in readings)
+
+
+def test_pool_429_only_marks_that_account_unavailable(monkeypatch):
+    entries = [
+        {"id": "a", "label": "work", "access_token": "token-a", "source": "manual"},
+        {"id": "b", "label": "backup", "access_token": "token-b", "source": "manual"},
+    ]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-b")
+
+    def fake_fetch(provider, *, api_key=None, base_url=None):
+        if api_key == "token-a":
+            return _snapshot(unavailable_reason="Usage endpoint returned HTTP 429. Rate limited; wait before retrying.")
+        return _snapshot()
+
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
+    readings = account_usage.fetch_pool_account_usage("anthropic")
+
+    assert readings[0].snapshot.available is False
+    assert readings[1].snapshot.available is True
+
+
+def test_empty_pool_preserves_single_account_shape(monkeypatch):
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: [])
+    snapshot = _snapshot()
+    monkeypatch.setattr(account_usage, "fetch_account_usage", lambda provider: snapshot)
+
+    readings = account_usage.fetch_pool_account_usage("anthropic")
+
+    assert len(readings) == 1
+    assert readings[0].label == "default"
+    assert readings[0].active is True
+    assert readings[0].snapshot is snapshot
+
+
+def test_pool_usage_reuses_snapshot_cache_per_credential(monkeypatch):
+    entries = [{"id": "a", "label": "work", "access_token": "token-a", "source": "manual"}]
+    monkeypatch.setattr("hermes_cli.auth.read_credential_pool", lambda provider: entries)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "token-a")
+    calls = []
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        lambda provider, *, api_key=None, base_url=None: calls.append(api_key) or snapshot,
+    )
+
+    account_usage.fetch_pool_account_usage("anthropic")
+    account_usage.fetch_pool_account_usage("anthropic")
+
+    assert calls == ["token-a"]

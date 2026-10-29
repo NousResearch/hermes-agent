@@ -2993,6 +2993,14 @@ catalog: CatalogTranslations
     pasteImage: string
     url: string
     promptSnippets: string
+    capabilityMenu: {
+      search: (kind: string) => string
+      noSkills: string
+      noPlugins: string
+      noConnectors: string
+      mcpServers: string
+      loadPluginsFailed: string
+    }
     tipPre: string
     tipPost: string
     snippetsTitle: string

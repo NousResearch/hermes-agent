@@ -190,6 +190,14 @@ export const zhHantChat = {
     pasteImage: '貼上圖片',
     url: 'URL…',
     promptSnippets: '提示詞片段…',
+    capabilityMenu: {
+      search: kind => `搜尋${kind}`,
+      noSkills: '沒有已安裝的技能',
+      noPlugins: '沒有已安裝的外掛',
+      noConnectors: '沒有已連線的應用程式或已安裝的伺服器',
+      mcpServers: 'MCP 伺服器',
+      loadPluginsFailed: '無法載入外掛'
+    },
     tipPre: '提示：輸入 ',
     tipPost: ' 以行內參照檔案。',
     snippetsTitle: '提示詞片段',

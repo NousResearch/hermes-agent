@@ -169,6 +169,14 @@ export const arChat = {
     pasteImage: 'لصق صورة',
     url: 'رابط',
     promptSnippets: 'مقتطفات جاهزة',
+    capabilityMenu: {
+      search: kind => `البحث في ${kind}`,
+      noSkills: 'لا توجد مهارات مثبّتة',
+      noPlugins: 'لا توجد إضافات مثبّتة',
+      noConnectors: 'لا توجد تطبيقات متصلة أو خوادم مثبّتة',
+      mcpServers: 'خوادم MCP',
+      loadPluginsFailed: 'تعذّر تحميل الإضافات'
+    },
     tipPre: 'نصيحة: اكتب ',
     tipPost: ' للإشارة إلى الملفات ضمن النص.',
     snippetsTitle: 'مقتطفات الموجّهات',

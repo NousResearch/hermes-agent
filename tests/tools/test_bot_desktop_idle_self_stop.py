@@ -150,6 +150,23 @@ def test_a_self_stop_does_not_sit_out_the_kill_grace(abandoned_screen):
     assert time.monotonic() - began < 3, "the self-stop waited for stop()'s SIGKILL grace"
 
 
+def test_a_killed_sleep_does_not_end_the_self_stop(abandoned_screen):
+    """The watch loop ran under the launcher's ``set -e``: a sleep killed from outside made ``wait`` fail and
+    ended the loop silently, so that screen never stopped itself."""
+    import psutil
+    _, launcher = abandoned_screen(idle_stop_minutes=0.15)  # the first check is due 9 s after start
+
+    def first_sleep():
+        for proc in psutil.process_iter(["cmdline"]):
+            with contextlib.suppress(psutil.Error):
+                if proc.info["cmdline"] == ["sleep", "9"] and os.getpgid(proc.pid) == launcher:
+                    return proc
+        return None
+
+    wait_until(first_sleep, timeout=10, what="the watch loop's first sleep").kill()
+    wait_until(lambda: not _alive(launcher), timeout=60, what="the screen to stop itself after its sleep was killed")
+
+
 def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_screen, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import runtime

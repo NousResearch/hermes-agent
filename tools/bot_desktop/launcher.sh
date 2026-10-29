@@ -294,6 +294,9 @@ if [[ -n "${HERMES_BD_IDLE_CMD:-}" ]]; then
   # Sleep first: a screen just started cannot be idle, so the first check is due a window from now
   # (runtime.py passes that delay), not while Xfce is still coming up.
   (
+    # Not under the launcher's `set -e`: a sleep or check killed from outside (a stray pkill, the OOM killer)
+    # makes `wait` fail, and that must cost at most one slow retry, not the self-stop for the rest of the screen's life.
+    set +e
     sleeper=
     trap 'kill $sleeper 2>/dev/null; exit 0' TERM
     out="$(dirname "$HERMES_BD_ENV_FILE")/idle-watch.out"
@@ -301,7 +304,8 @@ if [[ -n "${HERMES_BD_IDLE_CMD:-}" ]]; then
     while :; do
       [[ "$delay" =~ ^[0-9]+$ ]] || delay=300
       sleep "$delay" & sleeper=$!
-      wait "$sleeper"
+      # Killed (status > 128): check now. A sleep that cannot sleep at all would spin the check: give up.
+      wait "$sleeper" || (( $? > 128 )) || { echo "idle self-stop: sleep failed; off for this screen" >&2; exit 0; }
       sleeper=
       kill -0 "$$" 2>/dev/null || exit 0
       eval "set -- $HERMES_BD_IDLE_CMD"

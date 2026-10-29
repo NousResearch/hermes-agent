@@ -791,6 +791,19 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
                       "Finish your turn now; that process's completion notification carries the "
                       "delivery outcome — the reply (relay it then, attributed to that agent) or "
                       "the delivery failure (report it; the message was NOT delivered).")
+            # LOCAL PATCH (group-session replies). notify_on_complete=True is only a PROMISE of a
+            # push completion, and some surfaces never keep it. Observed on Telegram group topics:
+            # the runner settles the delivery and writes the reply to its receipt, the sender's
+            # session stays alive, and no notification is ever injected — the transcript holds a
+            # `queued` tool row and nothing else, so the orchestrator waits forever for a reply
+            # that already arrived.
+            #
+            # Arm the durable leg ONLY where push is known to fail. It cannot be armed
+            # unconditionally: the push path does not add the process to
+            # ``process_registry._completion_consumed`` (only an explicit wait/log does), so on a
+            # working surface both legs fire and the sender is told the reply twice.
+            if _push_completion_unreliable(agent):
+                _persist_reply_when_done(proc_id, agent)
         return json.dumps({
             "status": "queued",
             "delivery_id": delivery_id or (_dm_delivery_id(dm_file) if dm_file else ""),
@@ -806,6 +819,35 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
     finally:
         if dm_file and not transferred:
             _unlink_dm_file(dm_file)
+
+
+def _push_completion_unreliable(agent: Any) -> bool:
+    """LOCAL PATCH. True when THIS sender's surface promises a push completion notification
+    but does not deliver one, so ``message_agent`` must also arm the durable transcript leg.
+
+    Currently that is a group chat (Telegram group/supergroup topic). Evidence: every
+    ``display_kind="process_complete"`` row in the store belongs to a ``chat_type='dm'``
+    session; group sessions hold the ``queued`` tool row and never receive the reply, even
+    with the session still open and the runner exiting 0.
+
+    Read from the session row rather than the adapter so it works for any group-like
+    surface. Fails CLOSED (False) on any error: a missing durable leg leaves the stock
+    behaviour, while a wrong True would duplicate the reply on a healthy surface.
+    """
+    try:
+        db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+        if not db or not session_id:
+            return False
+        getter = getattr(db, "get_session", None)
+        row: Any = getter(session_id) if callable(getter) else None
+        if row is None:
+            return False
+        keys = row.keys() if hasattr(row, "keys") else ()
+        chat_type = str((row["chat_type"] if "chat_type" in keys else "") or "").strip().lower()
+        return chat_type in {"group", "supergroup", "channel"}
+    except Exception:  # pragma: no cover — never break a delivery over a diagnostic
+        logger.debug("_push_completion_unreliable failed", exc_info=True)
+        return False
 
 
 def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:

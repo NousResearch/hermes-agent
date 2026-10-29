@@ -37,7 +37,7 @@ from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import (
-    demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
+    _message_ref, demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -968,7 +968,8 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
         if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
             break  # no room for marker + content: a marker-only quote would overshoot the budget
         text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
-        collected.append("> " + text.replace("\n", "\n> "))
+        ref = _message_ref(msg)
+        collected.append("> " + (f"[{ref}] " if ref else "") + text.replace("\n", "\n> "))
         used += len(text)
     if not collected:
         return ""
@@ -981,20 +982,18 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
     )
 
 
-def _build_recovery_footer(session_id: str, region_len: int) -> str:
-    """Deterministic pointer to the compacted region in session history.
-    state.db keeps every pre-compaction message; naming the session_search re-access path lets the model
-    treat compaction as deferred retrieval, not loss."""
+def _build_recovery_footer(session_id: str, turns: list[dict[str, Any]]) -> str:
+    """Deferred-retrieval pointer, with an exact range when both region endpoints carry uids."""
     if not session_id:
         return ""
-    return (
-        "\n\n" + _LEAN_RECOVERY_HEADING + "\n"
-        f"The {region_len} compacted message(s) remain fully preserved in "
-        "session history. If you need any detail this summary does not carry "
-        "(exact command output, file contents, error text, earlier "
-        "reasoning), recover it with: "
-        f"session_search(query='<keywords>', session_id='{session_id}') — "
-        "do not guess at lost specifics when you can look them up."
+    first, last = (_message_ref(turns[0]), _message_ref(turns[-1])) if turns else ("", "")
+    span = (f" The region spans {first} … {last} ({len(turns)} messages): "
+            f"session_search(ref='{first}', window=10) opens its start, then scroll forward.") if first and last else ""
+    return ("\n\n" + _LEAN_RECOVERY_HEADING + "\n"
+        f"The {len(turns)} compacted message(s) remain fully preserved in session history. "
+        "If you need any detail this summary does not carry (exact command output, file contents, error text, "
+        f"earlier reasoning), recover it with: session_search(query='<keywords>', session_id='{session_id}') — "
+        "do not guess at lost specifics when you can look them up." + span
     )
 
 
@@ -1028,7 +1027,8 @@ _LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
 _LEAN_ANCHOR_BUDGET_CHARS = 7_000
 _ANCHOR_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
     ("PRs/issues", re.compile(r"#\d{3,6}\b"), 120),
-    ("commits", re.compile(r"\b[0-9a-f]{9,40}\b"), 40),
+    # Not our own ``m:<hex>`` message refs (stubs and quotes from earlier compactions): they are not commits.
+    ("commits", re.compile(r"(?<!\bm:)\b[0-9a-f]{9,40}\b"), 40),
     ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
     ("files", re.compile(r"\b[\w./-]+/[\w.-]+\.(?:py|ts|tsx|js|rs|md|yaml|yml|json|toml|sh)\b"), 80),
     ("errors", re.compile(r"\b(?:[A-Z][a-zA-Z]*Error|Exception|ENOSPC|EACCES|SIGKILL|Traceback)\b[^\n]{0,90}"), 40),
@@ -3593,7 +3593,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         for heading, build in (
             (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
-            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
+            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", turns_to_summarize)),
         ):
             if heading not in summary:
                 summary += build()

@@ -12,6 +12,9 @@ def build_tts_parser(subparsers, *, cmd_tts: Callable) -> None:
         help="Text-to-speech utilities",
         description="Serve the configured TTS provider over an OpenAI-compatible API",
     )
+    # `hermes tts` with no sub-action should say what the sub-actions are, not
+    # fall back to the top-level usage.
+    tts_parser.set_defaults(func=cmd_tts)
     tts_subparsers = tts_parser.add_subparsers(dest="tts_command")
 
     serve_parser = tts_subparsers.add_parser(

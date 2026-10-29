@@ -75,3 +75,49 @@ class TestHeartbeatShapedSendDoesNotSeal:
         seals = [o for o in t.ops if o["op"] == "draft" and o.get("final")]
         assert len(seals) == 1
         assert seals[0]["content"] == "partial answer, done."
+
+
+class TestStatusLaneDoesNotSeal:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event_type", ["lifecycle", "warn"])
+    async def test_agent_status_mid_stream_leaves_stream_open(self, tmp_path, monkeypatch, event_type):
+        """The agent status lane (``TurnRunner._status_callback_sync``) fires mid-turn —
+        keepalive retries, fallback restores, interrupted streams. The relay adapter has no
+        ``send_or_update_status``, so the status lands on ``adapter.send``; unmarked, it sealed
+        the live Slack stream with the status text and the answer posted as a duplicate."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from gateway.config import Platform
+        from gateway.run_turn_runner import TurnRunner
+        from gateway.session import SessionSource
+        from gateway.turn_context import TurnContext
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter, _ = _connected_adapter()
+        t = RecordingTransport()
+        adapter._transport = t
+        md = {"thread_ts": "1700.5", "message_id": "1700.501"}
+        await adapter.send_draft("C1", 7, "partial answer", metadata=md)
+
+        source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="channel", thread_id="1700.5")
+        ctx = TurnContext(source=source, user_config={}, _run_still_current=lambda: True,
+                          _status_adapter=adapter, _status_chat_id="C1", _status_thread_metadata=dict(md))
+        turn = TurnRunner(SimpleNamespace(), ctx)
+        loop = asyncio.get_running_loop()
+        scheduled = []
+        turn._schedule = lambda coro, *_: scheduled.append(asyncio.run_coroutine_threadsafe(coro, loop)) or scheduled[-1]
+
+        await asyncio.to_thread(turn._status_callback_sync, event_type,
+                                "Stream interrupted - using delivered content as final response")
+        await asyncio.gather(*(asyncio.wrap_future(f) for f in scheduled))
+
+        sends = [o for o in t.ops if o["op"] == "send"]
+        assert len(sends) == 1
+        assert "_interim_send" not in (sends[0].get("metadata") or {})
+        assert not [o for o in t.ops if o["op"] == "draft" and o.get("final")]
+
+        rf = await adapter.send("C1", "partial answer, done.", metadata=dict(md))
+        assert rf.success
+        seals = [o for o in t.ops if o["op"] == "draft" and o.get("final")]
+        assert [s["content"] for s in seals] == ["partial answer, done."]

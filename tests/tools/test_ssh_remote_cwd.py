@@ -60,6 +60,8 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
 
 @pytest.mark.parametrize(("cwd", "env_type", "expected"), [
     (HOST_HOME, "ssh", "~"),
+    (r"C:\Users\charl", "ssh", "~"),  # a Windows host cwd (Desktop TERMINAL_CWD pin)
+    ("workspace", "ssh", "~"),  # a relative host path
     (f"{HOST_HOME}/proj", "ssh", "~/proj"),
     ("~bob/src", "ssh", "~bob/src"),
     ("/home/ubuntu", "ssh", "/home/ubuntu"),

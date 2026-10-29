@@ -63,7 +63,7 @@ async def burst_gate(adapter, event, session_key):
         return holds_busy_burst(adapter, session_key)
     if (cmd := event.get_command()) and _serial(adapter):
         from hermes_cli.commands import is_interrupt_then_dispatch
-        if is_interrupt_then_dispatch(cmd):
+        if is_interrupt_then_dispatch(cmd) and not event.source.is_bot:  # a bot's never drops human input
             discard_busy_burst(adapter, session_key)
         for key, burst in list(adapter.__dict__.get('_shared_bursts', {}).items()):
             _flush(adapter, key, burst)

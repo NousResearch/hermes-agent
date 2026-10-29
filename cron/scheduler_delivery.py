@@ -708,6 +708,33 @@ def bot_chat_message(job: dict, content: str) -> str:
     )
 
 
+def _deferrable_failure(exc: Exception) -> Optional[str]:
+    """Why a failed ``bot_relay.deliver`` admitted nothing a same-id resend cannot finish, or None.
+
+    An owner-state refusal (``OWNER_STATE_REFUSALS``: a drain for restart or update, a full FIFO,
+    compression busy, a live CLI holding the chat, ...) leaves the id resendable on the authority,
+    and a ``PreDialError`` never reached it. The door is idempotent per id, so the defer lane's
+    later resend admits at most once (#141890). A failure after the dial and every other refusal
+    keep the unverified outcome."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tools.bot_failure_reasons import OWNER_STATE_REFUSALS
+    from tools.bot_live_delivery import PreDialError
+    if isinstance(exc, PreDialError):
+        return "target authority unreachable before the send"
+    if isinstance(exc, GatewayRPCError) and str(exc) in OWNER_STATE_REFUSALS:
+        return f"target owner busy ({exc})"
+    return None
+
+
+def _park_bot_chat_delivery(job: dict, key: str, content: str, home, target: str, *,
+                            for_failure: bool, why: str) -> str:
+    """Park a never-admitted output under its delivery id; a later tick admits it (``drain_legacy_pending``)."""
+    from cron.bot_chat_legacy import defer
+    defer(key, job, content, home, for_failure=for_failure)
+    job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
+    return f"{target} queued (receipt {key}): {why}; admitted once it clears"
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
                          for_failure: bool = False) -> Optional[str]:
     """Admit job output to the target profile's authority as a real inbound Bot Chat turn.
@@ -716,8 +743,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     ``suppressed`` — a durable disposition, never a send — and flagged on the job); anything
     else is an explicit unverified status string so Optional[str] callers cannot misreport
     admission as delivery. ``profile`` is ``""`` for the job's own profile. There is no
-    second-writer fallback: a target whose authority is not ready gets the payload parked under
-    the same delivery id (``cron.bot_chat_legacy.defer``) and admitted by a later tick.
+    second-writer fallback: a target whose authority is not ready, or refused the send for its own
+    state, gets the payload parked under the same delivery id (``cron.bot_chat_legacy.defer``)
+    and admitted by a later tick.
     """
     import hashlib
     import json
@@ -763,15 +791,20 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             try:
                 owner = find_canonical_live_owner(home)
             except ValueError:  # the target's gateway is down or starting: not a disposition
-                from cron.bot_chat_legacy import defer
-                defer(key, job, content, home, for_failure=for_failure)
-                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
-                return f"{target} queued (receipt {key}): target profile not running; admitted once it is"
+                return _park_bot_chat_delivery(job, key, content, home, target, for_failure=for_failure,
+                                               why="target profile not running")
             if owner is None:
                 return f"bot-chat delivery to profile '{profile_label}' unverified: no canonical Bot Chat"
             # A failure notice rides as ``diagnostic`` so the target's reply stays muted.
-            receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
-                **({"notification_category": "diagnostic"} if for_failure else {}))
+            try:
+                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
+                    **({"notification_category": "diagnostic"} if for_failure else {}))
+            except Exception as exc:
+                if (why := _deferrable_failure(exc)) is None:
+                    raise
+                # Nothing was admitted under this id: a refused page waits in the defer lane
+                # instead of ending in the failed lane.
+                return _park_bot_chat_delivery(job, key, content, home, target, for_failure=for_failure, why=why)
         if (receipt["message"] != message
                 or receipt.get("notification_category", "result") != ("diagnostic" if for_failure else "result")):
             raise ValueError("delivery id already belongs to a different payload")

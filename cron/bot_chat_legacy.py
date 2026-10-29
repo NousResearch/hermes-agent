@@ -1,6 +1,7 @@
 """``cron/bot_chat_pending``: Bot Chat outputs whose target owner was not running yet.
 
-``defer`` parks one (a cross-profile target whose gateway is down or still starting), and
+``defer`` parks one (a target whose gateway is down or still starting, or that refused the send
+for its own state: ``tools.bot_failure_reasons.OWNER_STATE_REFUSALS``), and
 the retired CLI lane left records of the same shape behind. Each still-``queued`` record is handed,
 under its own id, to the target profile's live owner through the canonical
 ``tools.bot_live_delivery.deliver_to_live_owner`` door (idempotent per id). Records are

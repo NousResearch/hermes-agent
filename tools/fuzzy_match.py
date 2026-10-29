@@ -301,6 +301,58 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
 # unique replacement, never safe under replace_all.
 SIMILARITY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
 
+# Line-window strategies that may splice over a boundary line they only
+# resemble at the edges. A window is spliced only when it is recoverable
+# byte-for-byte outside old_string (sys-mepvca: a block_anchor window
+# silently dropped a trailing comment the pattern never mentioned). The
+# per-line normalizing strategies stay ungated: they match every line, so
+# their boundaries are exact.
+RECOVERY_GATED_STRATEGIES = frozenset({
+    "trimmed_boundary", "block_anchor", "context_aware"})
+
+
+def _window_line_is_recoverable(window_line: str, pattern_line: str) -> bool:
+    """One window-boundary line vs the old_string line it would be spliced over.
+
+    Accepts the drift the gated strategies are built on — indentation, edge
+    whitespace, Unicode normalisation. Vetoes the corruption class: the
+    window line carries a clause (e.g. a trailing comment) old_string never
+    named, so splicing over it would silently delete bytes outside the
+    region the caller asked to replace.
+    """
+    if window_line == pattern_line or window_line.strip() == pattern_line.strip():
+        return True
+    if window_line.lstrip() == pattern_line or pattern_line.lstrip() == window_line:
+        return True  # indentation-only drift
+    if _unicode_normalize(window_line) == _unicode_normalize(pattern_line):
+        return True  # typography drift (region text is kept verbatim)
+    w, p = window_line.strip(), _unicode_normalize(pattern_line.strip())
+    # Containment with whitespace-only extra: the shorter line is the same
+    # bytes, so no un-named content rides in the delta.
+    if (w.startswith(p) and not w[len(p):].strip()) or \
+       (w.endswith(p) and not w[:len(w) - len(p)].strip()):
+        return True
+    if (p.startswith(w) and not p[len(w):].strip()) or \
+       (p.endswith(w) and not p[:len(p) - len(w)].strip()):
+        return True
+    return False
+
+
+def _window_is_recoverable(content: str, pattern: str, start: int, end: int) -> bool:
+    """True only when the window's BOUNDARY lines are recoverable against
+    old_string's first/last lines. Interior lines are the block the caller
+    deliberately replaced; similarity drift there is judged by the strategy.
+    A mismatch at the boundary means unnamed neighbour bytes would be
+    consumed: veto the window and fall through to the next strategy.
+    """
+    pattern_lines = pattern.split('\n')
+    window_lines = content[start:end].split('\n')
+    if len(window_lines) != len(pattern_lines):
+        return False
+    return (
+        _window_line_is_recoverable(window_lines[0], pattern_lines[0])
+        and _window_line_is_recoverable(window_lines[-1], pattern_lines[-1]))
+
 
 def boundary_note(strategies: Iterable[Optional[str]], target: str = "old_string's",
                   where: str = "") -> Optional[str]:
@@ -417,6 +469,15 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             drift_err = _detect_escape_drift(content, matches, old_string, new_string)
             if drift_err:
                 return content, 0, None, drift_err
+
+        # A gated window whose boundary line carries content old_string never
+        # named (e.g. a trailing comment) would splice that clause away: veto
+        # the match and fall through to the next strategy (sys-mepvca).
+        if strategy_name in RECOVERY_GATED_STRATEGIES:
+            matches = [m for m in matches
+                       if _window_is_recoverable(content, old_string, m[0], m[1])]
+            if not matches:
+                continue
 
         effective_new = _maybe_unescape_new_string(new_string, content, matches)
         new_content = _apply_replacements(

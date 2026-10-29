@@ -258,9 +258,11 @@ def test_the_background_review_whitelist_holds_no_agent_spawning_tool(caplog):
     assert "ignoring agent-spawning tools ['cronjob_manage', 'delegate_task']" in caplog.text
 
 
-def test_own_task_inheriting_background_review_routes_the_fork(forks):
-    """``inherit_from="background_review"`` (a core block outside the picker) is kept, and the
-    fork's ``task=`` lane follows ``auxiliary.background_review`` at read time."""
+@pytest.mark.parametrize("granted", [True, False])
+def test_own_task_inheriting_background_review_routes_the_fork_only_with_the_grant(forks, granted):
+    """``inherit_from="background_review"`` (a core block outside the picker) is kept. With
+    ``llm.allow_task_override`` the fork's ``task=`` lane follows ``auxiliary.background_review``
+    at read time; without it the lane keeps no core route, so the fork runs on the session model."""
     _install_plugin(PLUGIN, declares=True, body=(
         "def register(ctx):\n"
         "    ctx.register_auxiliary_task('wisdom_suggest', display_name='Suggest', description='d',\n"
@@ -270,13 +272,16 @@ def test_own_task_inheriting_background_review_routes_the_fork(forks):
     cfg_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     cfg["auxiliary"] = {"background_review": {"provider": "openrouter", "model": "vendor/review"}}
+    if granted:
+        cfg["plugins"]["entries"][PLUGIN]["llm"] = {"allow_task_override": True}
     cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
     parent = _agent()
     token = issue_side_question_token(parent, [], "turn-1")
     assert _settled(_ctx(manager).fork_session(token, "q", task="wisdom_suggest")).outcome == "ok"
     task_cfg = forks.built[0]["task_cfg"]
-    assert (task_cfg["provider"], task_cfg["model"]) == ("openrouter", "vendor/review")
+    route = (task_cfg.get("provider"), task_cfg.get("model"))
+    assert route == (("openrouter", "vendor/review") if granted else (None, None))
 
 
 def test_fork_shape_origin_approvals_budget_and_usage(forks, consented):

@@ -55,10 +55,20 @@ def _auth_db(path, value=None):
 
 class TestRealProfileResolvers:
 
-
     def test_data_dir_unknown_browser_is_none(self):
         import hermes_cli.browser_connect as bc
         assert bc.real_profile_data_dir("firefox", "Windows") is None
+
+    def test_comet_browser_resolves_data_dir_and_darwin_bundle(self):
+        import hermes_cli.browser_connect as bc
+        assert "comet" in bc._BROWSER_BY_KEY
+        assert ("ai.perplexity.comet", "comet") in bc._DARWIN_BUNDLE_MAP
+        darwin_dir = bc.real_profile_data_dir("comet", "Darwin")
+        assert darwin_dir is not None and darwin_dir.endswith("Application Support/Comet")
+        win_dir = bc.real_profile_data_dir("comet", "Windows")
+        assert win_dir is not None and win_dir.endswith(r"Comet\User Data")
+        linux_dir = bc.real_profile_data_dir("comet", "Linux")
+        assert linux_dir is not None and linux_dir.endswith("comet")
 
 
 

@@ -932,7 +932,10 @@ def _migrate_unique_idempotency_index(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA index_list(tasks)")}
     if "idx_tasks_idempotency_unique" in existing:
         return
-    conn.execute("BEGIN IMMEDIATE")
+    # A caller already inside a transaction (plain sqlite3 connections open one on DML) gets a
+    # savepoint instead: BEGIN would raise "cannot start a transaction within a transaction".
+    own_txn = not conn.in_transaction
+    conn.execute("BEGIN IMMEDIATE" if own_txn else "SAVEPOINT idempotency_index")
     try:
         dupes = conn.execute(
             "SELECT idempotency_key FROM tasks WHERE idempotency_key IS NOT NULL AND status != 'archived' "
@@ -954,10 +957,14 @@ def _migrate_unique_idempotency_index(conn: sqlite3.Connection) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_unique ON tasks(idempotency_key) "
             "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
         )
-        conn.execute("COMMIT")
+        conn.execute("COMMIT" if own_txn else "RELEASE idempotency_index")
     except Exception:
         with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute("ROLLBACK")
+            if own_txn:
+                conn.execute("ROLLBACK")
+            else:
+                conn.execute("ROLLBACK TO idempotency_index")
+                conn.execute("RELEASE idempotency_index")
         raise
 
 

@@ -23,9 +23,10 @@ FILLER_GUARD_WINDOW_SECONDS = 30
 FILLER_MAX_WORDS = 3
 _FILLER_STATE_TTL_SECONDS = 300  # prune horizon; anything older can no longer gate a call
 _FILLER_GLOBAL_KEY = "\0global"  # no resolvable session: one shared key, so the guard still applies (coarsely)
-_FILLER_ECHO = (f"Rejected: this looks like a filler echo of a clarify call made seconds ago. If a real decision "
-                f"is needed, ask a substantive question (more than {FILLER_MAX_WORDS} words, or with choices); "
-                "otherwise continue working and reply in prose.")
+_FILLER_ECHO = (f"Rejected: this call contains a filler free-text question (at most {FILLER_MAX_WORDS} "
+                "words, no choices) fired seconds after a previous clarify call. Resend any real "
+                "questions substantively (more words, or with choices) in one call, or skip them and "
+                "continue working and reply in prose.")
 _last_clarify_at: Dict[str, float] = {}  # session key -> time.monotonic() of its latest validated call
 _last_clarify_lock = threading.Lock()
 
@@ -136,11 +137,12 @@ def _filler_session_key() -> str:
 
 
 def _is_filler_echo(normalized: list[dict]) -> bool:
-    """Record this call for its session, then say whether EVERY question is terse free-text (the
-    echo shape, single or batched — a mixed batch keeps its substantive question and passes) fired
-    within FILLER_GUARD_WINDOW_SECONDS of the session's previous call. Rejected calls record too,
-    so a continuing burst stays blocked."""
-    terse = all(not q["choices"] and len(q["question"].split()) <= FILLER_MAX_WORDS
+    """Record this call for its session, then say whether ANY question carries the filler shape
+    (terse free-text — the echo shape, alone or inside a batch) fired within
+    FILLER_GUARD_WINDOW_SECONDS of the session's previous call. The whole call bounces with the
+    corrective error so no placeholder entry can render during a degeneration burst. Rejected
+    calls record too, so a continuing burst stays blocked."""
+    terse = any(not q["choices"] and len(q["question"].split()) <= FILLER_MAX_WORDS
                 for q in normalized)
     key = _filler_session_key()
     with _last_clarify_lock:

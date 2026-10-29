@@ -1,6 +1,6 @@
-"""Filler guard in tools/clarify_tool.py: a call whose questions are ALL terse free-text (the
-post-compaction echo shape), fired within the burst window of the same session's previous clarify
-call, is rejected before any card is shown; a mixed batch keeps its substantive question."""
+"""Filler guard in tools/clarify_tool.py: a call where ANY question is terse free-text (the
+post-compaction echo shape, alone or inside a batch), fired within the burst window of the same
+session's previous clarify call, bounces wholly with a corrective error before any card shows."""
 
 import contextlib
 import json
@@ -129,6 +129,16 @@ class TestRejects:
         with session("A"):
             assert _rejected(_ask([{"question": "state"}, {"question": "list"}], cb), cb)
 
+    def test_mixed_batch_with_a_substantive_question_is_rejected(self, clock):
+        # Option B (owner call 2026-10-28): one filler question bounces the WHOLE call; the
+        # corrective error tells the model to resend the real questions substantively.
+        _prime(clock)
+        clock.advance(1)
+        cb = RecordingCallback()
+        with session("A"):
+            assert _rejected(_ask([{"question": "Which database should the migration target?"},
+                                   {"question": "state"}], cb), cb)
+
     def test_real_dispatch_path_rejects(self, clock):
         _prime(clock)
         clock.advance(3)
@@ -172,15 +182,6 @@ class TestAllows:
         cb = RecordingCallback()
         with session("A"):
             assert _shown(_ask(_one("Pick one", choices=["a", "b"]), cb), cb)
-
-    def test_mixed_batch_with_a_substantive_question_is_shown(self, clock):
-        _prime(clock)
-        clock.advance(1)
-        cb = RecordingCallback()
-        with session("A"):
-            result = _ask([{"question": "Which database should the migration target?"},
-                           {"question": "state"}], cb)
-        assert _shown(result, cb) and len(result["responses"]) == 2
 
     def test_other_session_is_not_gated(self, clock):
         _prime(clock, "A")

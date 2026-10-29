@@ -10,8 +10,12 @@ logger = logging.getLogger(__name__)
 
 class MatrixKeyRecoveryMixin:
     def _acquire_matrix_store_lock(self) -> bool:
-        from gateway.status import _try_acquire_file_lock
+        from gateway.status import _try_acquire_file_lock, _get_scope_lock_path
 
+        client = self._client
+        if client is None or not client.mxid or not client.device_id:
+            self._set_fatal_error("matrix_device_unknown", "Matrix E2EE requires a resolved account and device", retryable=True)
+            return False
         handle = (self._store_dir / "adapter.lock").open("a+")
         if not _try_acquire_file_lock(handle):
             handle.close()
@@ -21,6 +25,24 @@ class MatrixKeyRecoveryMixin:
                 "matrix-crypto-store", str(self._crypto_db_path.resolve()), "Matrix crypto store"):
             handle.close()
             return False
+        import json
+
+        identity = json.dumps([str(client.mxid), str(client.device_id)])
+        device_path = _get_scope_lock_path("matrix-device-owner", identity).with_suffix(".lock")
+        try:
+            device_path.parent.mkdir(parents=True, exist_ok=True)
+            device_handle = device_path.open("a+")
+            if not _try_acquire_file_lock(device_handle):
+                device_handle.close()
+                self._set_fatal_error("matrix_device_busy", "Matrix account/device is already in use", retryable=True)
+                self._release_platform_lock()
+                handle.close()
+                return False
+        except BaseException:
+            self._release_platform_lock()
+            handle.close()
+            raise
+        self._matrix_device_lock_handle = device_handle
         self._matrix_store_lock_handle = handle
         return True
 
@@ -28,6 +50,10 @@ class MatrixKeyRecoveryMixin:
         handle = getattr(self, "_matrix_store_lock_handle", None)
         if handle is not None:
             from gateway.status import _release_file_lock
+            device_handle = self._matrix_device_lock_handle
+            _release_file_lock(device_handle)
+            device_handle.close()
+            self._matrix_device_lock_handle = None
             self._release_platform_lock()
             _release_file_lock(handle)
             handle.close()
@@ -35,14 +61,7 @@ class MatrixKeyRecoveryMixin:
 
     async def _abort_connect(self, api: Any, crypto_db: Any = None) -> bool:
         """Close what connect() opened so far; always False so callers can ``return await``."""
-        try:
-            if crypto_db is not None:
-                await crypto_db.stop()
-        finally:
-            try:
-                await api.session.close()
-            finally:
-                self._release_matrix_store_lock()
+        await self._close_matrix_resources(api, crypto_db)
         return False
 
 
@@ -194,16 +213,13 @@ class MatrixKeyRecoveryMixin:
         """Optional mode: log + disable E2EE and return True; required mode: close + return False."""
         from plugins.platforms.matrix.adapter import _E2EE_INSTALL_HINT
 
-        crypto_db = getattr(self, "_crypto_db", None)
-        if crypto_db is not None:
-            await crypto_db.stop()
-            self._crypto_db = None
-        self._release_matrix_store_lock()
+        await self._close_matrix_resources(api, self._crypto_db, close_http=self._e2ee_mode != "optional")
         if self._e2ee_mode == "optional":
             logger.warning(
                 "Matrix: failed to %s optional E2EE client; continuing without encrypted-room "
                 "support: %s. %s", what, exc, _E2EE_INSTALL_HINT)
             self._encryption = False
+            self._closing = False
             return True
         logger.error("Matrix: failed to %s E2EE client: %s. %s", what, exc, _E2EE_INSTALL_HINT)
-        return await self._abort_connect(api)
+        return False

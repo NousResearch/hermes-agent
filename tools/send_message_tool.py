@@ -668,7 +668,7 @@ def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
 # plugin's standalone sender. Names resolve at call time so tests can monkeypatch the senders.
 _CHUNKED_ROUTES = {
     "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
-        pc, cid, chunk, media_files=media, thread_id=tid)),
+        pc, cid, chunk, media_files=media, thread_id=tid, force_document=fd)),
     "slack": (False, [], _via_adapter_route),
     "wecom": (True, None, _via_adapter_route)}
 

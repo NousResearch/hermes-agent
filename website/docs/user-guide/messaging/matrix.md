@@ -916,11 +916,22 @@ access. Requests from the bot's own account keep mautrix's default policy.
 Private Olm one-time keys are stored before their public halves are uploaded.
 If an upload response is lost, the next attempt reuses unpublished keys. One
 adapter owns each crypto store at a time, including adapters in the same process.
-Stop the owning gateway before opening that store elsewhere.
+The resolved account/device also has an exclusive claim across store
+paths and profiles. E2EE startup refuses an unresolved account or device identity.
+Stop the owning gateway before opening that identity elsewhere.
+
+Shutdown stops admission and waits for in-flight sends and SDK crypto callbacks,
+including background session-unwedging work. Store and device ownership is released
+only after these operations drain and the database and HTTP session close.
+A cleanup failure is surfaced and retains both claims, even for an ephemeral
+adapter whose caller exits; retry cleanup or restart the process after diagnosing
+the failed resource.
 
 `hermes send --to matrix:ROOM --message "hello"` uses the live gateway's adapter
 and event loop through its local control socket, preserving the selected profile.
-An uncertain relay response returns an error without retrying. When E2EE is
-optional or required, the standalone HTTP sender refuses delivery: start a gateway
-with relay support instead. Standalone HTTP delivery remains available with E2EE
-off.
+The lower-level send-message and plugin standalone paths also relay text, native
+media and thread metadata through that owner under the selected profile's scope.
+An uncertain relay response returns an error without trying an ephemeral adapter
+or plaintext HTTP transport. When no gateway is available and E2EE is optional or
+required, the standalone HTTP sender refuses delivery: start a gateway with relay
+support instead. Standalone HTTP delivery remains available with E2EE off.

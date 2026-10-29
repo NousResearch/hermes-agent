@@ -203,6 +203,7 @@ def test_real_store_lock_refuses_same_process_owner_and_recovers(tmp_path):
     first, second = _make_adapter(), _make_adapter()
     for adapter in (first, second):
         adapter._store_dir = tmp_path
+        adapter._client = MagicMock(mxid="@bot:example.org", device_id="BOT")
     try:
         assert first._acquire_matrix_store_lock()
         assert not second._acquire_matrix_store_lock()

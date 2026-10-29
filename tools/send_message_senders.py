@@ -409,7 +409,7 @@ async def _resolve_slack_user_target(token, chat_id):
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
-async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None, force_document=False):
     """Matrix adapter send (native media preserved). Prefer the live gateway adapter's persistent
     olm/megolm session: ephemeral per-send connects re-init E2EE and claim one-time keys, which
     under bursts exhausts recipient OTKs and silently drops messages — ephemeral is cron-only.
@@ -427,7 +427,13 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
         from tools.send_message_tool import _dispatch_on_gateway_loop
-        return await _dispatch_on_gateway_loop(runner, lambda: _matrix_send_core(live_adapter, chat_id, message, media_files, metadata), "Matrix live gateway send failed")
+        return await _dispatch_on_gateway_loop(runner, lambda: _matrix_send_core(live_adapter, chat_id, message, media_files, metadata, force_document=force_document), "Matrix live gateway send failed")
+    from gateway.matrix_send_relay import relay_matrix_delivery
+    relayed = await asyncio.to_thread(
+        relay_matrix_delivery, chat_id, message, media_files=media_files,
+        thread_id=thread_id, force_document=force_document)
+    if relayed is not None:
+        return relayed
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
@@ -437,27 +443,29 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     try:
         if not await adapter.connect():
             return _error("Matrix connect failed")
-        return await _matrix_send_core(adapter, chat_id, message, media_files, metadata)
+        return await _matrix_send_core(adapter, chat_id, message, media_files, metadata, force_document=force_document)
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
     finally:
-        with contextlib.suppress(Exception):
-            await adapter.disconnect()
+        await adapter.disconnect()
 
 
-async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
+async def _matrix_send_core(adapter, chat_id, message, media_files, metadata, *, force_document=False):
     """Core send logic shared by live and ephemeral Matrix adapters."""
-    last_result = None
-    if message.strip():
-        last_result = await adapter.send(chat_id, message, metadata=metadata)
-        if not last_result.success:
-            return _error(f"Matrix send failed: {last_result.error}")
-    for media_path, is_voice in media_files:
-        if not os.path.exists(media_path):
-            return _error(f"Media file not found: {media_path}")
-        ext = os.path.splitext(media_path)[1].lower()
-        method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
-        last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
-        if not last_result.success:
-            return _error(f"Matrix media send failed: {last_result.error}")
-    return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)
+    activity_factory = getattr(type(adapter), "_matrix_activity", None)
+    activity = activity_factory(adapter) if activity_factory else contextlib.nullcontext()
+    async with activity:
+        last_result = None
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix send failed: {last_result.error}")
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Media file not found: {media_path}")
+            ext = os.path.splitext(media_path)[1].lower()
+            method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
+            last_result = await getattr(adapter, "send_document" if force_document else method)(chat_id, media_path, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix media send failed: {last_result.error}")
+        return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)

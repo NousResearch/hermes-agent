@@ -792,9 +792,10 @@ def ensure_matrix_deps() -> bool:
 
 
 from plugins.platforms.matrix.adapter_key_recovery import MatrixKeyRecoveryMixin
+from plugins.platforms.matrix.adapter_lifecycle import MatrixLifecycleMixin, matrix_operation, track_matrix_activity
 
 
-class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
+class MatrixAdapter(MatrixLifecycleMixin, MatrixKeyRecoveryMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -1225,6 +1226,7 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
                 await self._share_matrix_keys_crash_safely(olm, current_otk_count)
             olm._share_keys = _share_keys_crash_safely
             olm.allow_key_share = self._allow_matrix_key_share
+            olm._unwedge_session = track_matrix_activity(self, olm._unwedge_session)
             await olm.load()
             if not await self._verify_device_keys_on_server(client, olm):
                 return await self._abort_connect(api, crypto_db)
@@ -1303,10 +1305,8 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
         if self._client is not None:
-            try:
-                await self.disconnect()
-            except Exception as exc:
-                logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
+            await self.disconnect()
+        self._closing = False
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
@@ -1323,6 +1323,7 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
             mxid=UserID(self._user_id) if self._user_id else UserID(""), device_id=self._device_id or None,
             api=api, state_store=state_store, sync_store=sync_store)
         self._client = client
+        self._track_matrix_client(client)
         if not await self._connect_authenticate(client, api):
             return False
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
@@ -1347,35 +1348,7 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
         self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
         return True
 
-    async def disconnect(self) -> None:
-        self._closing = True
-        if self._sync_task and not self._sync_task.done():
-            self._sync_task.cancel()
-            try:
-                await self._sync_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        for tasks in (self._invite_join_tasks.values(), self._reaction_redaction_tasks):
-            pending = list(tasks)
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-        self._invite_join_tasks.clear()
-        self._reaction_redaction_tasks.clear()
-        if getattr(self, "_crypto_db", None):
-            try:
-                await self._crypto_db.stop()
-            except Exception as exc:
-                logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
-        self._release_matrix_store_lock()
-        if self._client:
-            with suppress(Exception):
-                await self._client.api.session.close()
-            self._client = None
-        logger.info("Matrix: disconnected")
-
+    @matrix_operation
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -1402,6 +1375,7 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
+    @matrix_operation
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
@@ -1466,6 +1440,7 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         await self._set_typing(chat_id, 0)
 
+    @matrix_operation
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
@@ -1762,6 +1737,7 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
         """Markdown passes through; strip image markdown (media is uploaded separately)."""
         return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
 
+    @matrix_operation
     async def _upload_and_send(
         self, room_id: str, data: bytes, filename: str, content_type: str, msgtype: str,
         caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
@@ -3104,6 +3080,12 @@ class MatrixAdapter(MatrixKeyRecoveryMixin, BasePlatformAdapter):
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery via the Client-Server API (cron without gateway)."""
+    from gateway.matrix_send_relay import relay_matrix_delivery
+    relayed = await asyncio.to_thread(
+        relay_matrix_delivery, chat_id, message, media_files=media_files,
+        thread_id=thread_id, force_document=force_document)
+    if relayed is not None:
+        return relayed
     extra = getattr(pconfig, "extra", {}) or {}
     if _resolve_e2ee_mode(extra) != "off":
         return send_error("Encrypted Matrix delivery requires the live gateway adapter; standalone sending is disabled")

@@ -123,6 +123,29 @@ class TestHasAwsCredentials:
             assert has_aws_credentials({}) is False
 
 
+class TestBedrockOpenAIClientKwargs:
+    def test_key_cmd_bearer_is_not_replaced_by_sigv4(self):
+        """A dynamic bearer is explicit auth, not an invitation to use the ambient AWS chain."""
+        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+        from agent.command_token_source import build_command_token_provider
+
+        token_provider = build_command_token_provider("token-helper", "test-bedrock")
+        assert callable(token_provider)
+        kwargs = {
+            "base_url": "https://bedrock-mantle.us-east-1.api.aws/openai/v1",
+            "api_key": token_provider,
+        }
+        with patch(
+            "agent.bedrock_adapter.build_bedrock_openai_http_client",
+            side_effect=AssertionError("a bearer token must not install SigV4"),
+        ):
+            result = configure_bedrock_openai_client_kwargs(kwargs)
+
+        assert result is kwargs
+        assert result["api_key"] is token_provider
+        assert "http_client" not in result
+
+
 class TestScopedAwsSessionKwargs:
     """A served multiplex profile never signs with the launch profile's ambient AWS chain (#116313)."""
 

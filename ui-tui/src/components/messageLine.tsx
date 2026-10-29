@@ -256,6 +256,15 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
+    // Failure lines reach the transcript through the plain system-message path
+    // (sys("error: ...")), so ROLE.system hands them an empty body colour and
+    // they inherit the terminal default instead of the theme error tone. The
+    // "error: " prefix is the literal marker every emitter uses, so paint those
+    // lines with ui_error.
+    if (msg.role === 'system' && /^error:\s/.test(msg.text)) {
+      return <Text color={t.color.error}>{msg.text}</Text>
+    }
+
     return <Text {...(body ? { color: body } : {})}>{msg.text}</Text>
   })()
 

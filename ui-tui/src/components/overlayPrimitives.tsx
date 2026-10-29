@@ -1,6 +1,5 @@
 import type { Key } from '@hermes/ink'
 import { Text, useInput } from '@hermes/ink'
-import { mix } from '@hermes/shared/color'
 import { type ReactNode, useState } from 'react'
 
 import type { UsageModelData } from '../gatewayTypes.js'
@@ -20,14 +19,15 @@ export function clampOverlayWidth(preferred: number, maxWidth?: number, min = 24
 
 /**
  * THE scrollbar treatment (transcript + overlays): thumb rides the theme
- * base, accent while interacting; track recedes via an explicit blend toward
- * the surface. Never SGR dim — terminal-interpreted, it renders as a black
- * slab on transparent profiles (terminal.background #00000000).
+ * base, accent while interacting; the track IS the surface, so no control
+ * paints a blend the palette never specified. Never SGR dim —
+ * terminal-interpreted, it renders as a black slab on transparent profiles
+ * (terminal.background #00000000).
  */
 export function scrollbarColors(t: Theme, hover: boolean, grabbed: boolean): { thumb: string; track: string } {
   return {
     thumb: grabbed || hover ? t.color.accent : t.color.primary,
-    track: mix(hover ? t.color.border : t.color.muted, t.color.completionBg, hover ? 0.25 : 0.55)
+    track: t.color.completionBg
   }
 }
 

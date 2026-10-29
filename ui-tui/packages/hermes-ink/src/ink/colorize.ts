@@ -28,12 +28,22 @@ function boostChalkLevelForXtermJs(): boolean {
   return false
 }
 
+/**
+ * Explicit 24-bit opt-in (``HERMES_TUI_TRUECOLOR=1``) — the same escape hatch
+ * ``ui-tui/src/lib/forceTruecolor.ts`` seeds ``COLORTERM``/``FORCE_COLOR`` from.
+ * Terminal.app needs it because it never advertises COLORTERM; tmux needs it
+ * because the passthrough clamp below is a blanket downgrade.
+ */
+function hasTruecolorOverride(env: NodeJS.ProcessEnv = process.env): boolean {
+  return /^(?:1|true|yes|on)$/i.test((env.HERMES_TUI_TRUECOLOR ?? '').trim())
+}
+
 export function shouldUseRichEightBitDowngradeForLegacyAppleTerminal(
   env: NodeJS.ProcessEnv = process.env,
   level = chalk.level
 ): boolean {
   const termProgram = (env.TERM_PROGRAM ?? '').trim()
-  const truecolorOverride = /^(?:1|true|yes|on)$/i.test((env.HERMES_TUI_TRUECOLOR ?? '').trim())
+  const truecolorOverride = hasTruecolorOverride(env)
   const advertisesTruecolor = /^(?:truecolor|24bit)$/i.test((env.COLORTERM ?? '').trim())
 
   return (
@@ -82,12 +92,19 @@ export function richEightBitColorNumber(red: number, green: number, blue: number
  * `tmux show -gv terminal-overrides` to detect this would add a subprocess on
  * startup — not worth it.
  *
+ * The one exception is an explicit opt-in: `HERMES_TUI_TRUECOLOR=1` means the
+ * user asserts the outer terminal renders RGB SGR, so the clamp must not fight
+ * it. Without this the opt-in is silently negated under tmux — forceTruecolor
+ * raises chalk to level 3 and this clamp immediately drops it back to 2, so
+ * every accent/border/secondary colour renders as its nearest xterm-256 index
+ * (e.g. `#F3FF03` → 226) instead of `38;2;…`.
+ *
  * $TMUX is a pty-lifecycle env var set by tmux itself; it never comes from
  * globalSettings.env, so reading it here is correct. chalk is a singleton, so
  * this clamps ALL truecolor output (fg+bg+hex) across the entire app.
  */
 function clampChalkLevelForTmux(): boolean {
-  if (process.env.TMUX && chalk.level > 2) {
+  if (process.env.TMUX && chalk.level > 2 && !hasTruecolorOverride(process.env)) {
     chalk.level = 2
 
     return true

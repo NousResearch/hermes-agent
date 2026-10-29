@@ -403,10 +403,16 @@ def _lease_row_matches(row: sqlite3.Row | None, lease: DriverLease) -> bool:
     ) == (lease.gateway_id, lease.authority_epoch, lease.process_generation, lease.lease_generation)
 
 
-def _require_active_lease(conn: sqlite3.Connection, lease: DriverLease, *, now: float) -> sqlite3.Row:
+def _require_active_lease(
+    conn: sqlite3.Connection, lease: DriverLease, *, now: float, allow_expired: bool = False
+) -> sqlite3.Row:
+    """Authority match + lease-row generation match + unreleased must hold; ``allow_expired``
+    additionally tolerates plain expiry of our own lease (live first-party settlement only)."""
     _require_room_authority(conn, lease.room_id, lease.gateway_id, lease.authority_epoch)
     row = conn.execute(_SELECT_LEASE, (lease.room_id,)).fetchone()
-    if not _lease_row_matches(row, lease) or row["released_at"] is not None or float(row["expires_at"]) <= now:
+    if not _lease_row_matches(row, lease) or row["released_at"] is not None or (
+        not allow_expired and float(row["expires_at"]) <= now
+    ):
         raise StaleLeaseError("driver lease is stale or expired")
     return row
 
@@ -475,12 +481,14 @@ def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None,
+    allow_expired_lease: bool = False) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
     is raised. ``lease_first`` checks the lease before the row load (recovery paths) instead of after the
-    replay (settlement paths: an identical replay still succeeds after the lease moved on).
+    replay (settlement paths: an identical replay still succeeds after the lease moved on);
+    ``allow_expired_lease`` relaxes only that post-replay check and never the lease-first one.
     """
     params = (*set_params, identity.room_id, identity.task_id, *fence_params)
     with _transaction(db_path) as conn:
@@ -490,7 +498,7 @@ def _transition(
         if replay is not None and (replayed := replay(row)) is not None:
             return replayed
         if lease is not None and not lease_first:
-            _require_active_lease(conn, lease, now=now)
+            _require_active_lease(conn, lease, now=now, allow_expired=allow_expired_lease)
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
@@ -674,13 +682,21 @@ def start_task(
 
 
 def settle_task(
-    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    allow_expired_lease: bool = False
 ) -> dict[str, Any]:
-    """Commit one terminal result if every lease and task fence still matches."""
+    """Commit one terminal result if every lease and task fence still matches.
+
+    ``allow_expired_lease`` serves the live in-process terminal callback only: plain expiry of our
+    own unreleased, un-reclaimed lease must not discard an already-completed first-party result, so
+    the post-replay check drops only its ``expires_at > now`` term. Reclaim, release and authority
+    transfer still fence; historical harvest paths keep the strict check.
+    """
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _run_fence_transition(
         db_path, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now, replay=replay,
-        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
+        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
+        allow_expired_lease=allow_expired_lease)
 
 
 def settle_stopping_task(

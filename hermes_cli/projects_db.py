@@ -217,6 +217,28 @@ def find_by_primary_path(conn: sqlite3.Connection, path: str, *, include_archive
     return None
 
 
+def find_by_folder_path(
+    conn: sqlite3.Connection, path: str, *, exclude_project_id: Optional[str] = None,
+    include_archived: bool = False,
+) -> Optional[Project]:
+    """The first (oldest) project owning ``path`` as ANY of its folders, else None.
+
+    Ownership, not just primacy: a folder claimed as primary by one project and as a
+    secondary by another still collides, and the sidebar files missing sessions under
+    whichever project it happens to scan first (``build_tree`` breaks equal-depth ties by
+    project order). ``exclude_project_id`` skips the project being edited.
+    """
+    key = _primary_path_key(path)
+    if not key:
+        return None
+    for proj in list_projects(conn, include_archived=include_archived):
+        if proj.id == exclude_project_id:
+            continue
+        if any(_primary_path_key(f.path) == key for f in proj.folders):
+            return proj
+    return None
+
+
 def create_project(
     conn: sqlite3.Connection, *, name: str, slug: Optional[str] = None, folders: Optional[Iterable[str]] = None,
     primary_path: Optional[str] = None, description: Optional[str] = None, icon: Optional[str] = None,
@@ -236,12 +258,16 @@ def create_project(
         folder_paths.insert(0, primary)
     if primary is None and folder_paths:
         primary = folder_paths[0]
-    existing = find_by_primary_path(conn, primary) if primary and not allow_duplicate_path else None
-    if existing is not None:
-        raise ValueError(
-            f"folder already belongs to project '{existing.slug}' ({existing.id}); "
-            "switch to it instead of creating a duplicate"
-        )
+    if not allow_duplicate_path:
+        # Every folder, not just the primary: the sidebar ties equal-depth matches by project
+        # order, so a secondary folder shared with an older project is just as invisible.
+        for candidate in folder_paths:
+            existing = find_by_folder_path(conn, candidate)
+            if existing is not None:
+                raise ValueError(
+                    f"folder already belongs to project '{existing.slug}' ({existing.id}); "
+                    "switch to it instead of creating a duplicate"
+                )
     with write_txn(conn):
         conn.execute(
             "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived) "
@@ -309,6 +335,17 @@ def add_folder(conn: sqlite3.Connection, project_id: str, path: str, *, label: O
         raise ValueError("folder path must not be empty")
     if get_project(conn, project_id) is None:
         raise ValueError(f"no such project: {project_id}")
+    # One folder, one owner. Without this a folder can be claimed by two projects at once,
+    # and the sidebar's tie-break (equal-depth match -> oldest project) then silently files
+    # every session under whichever project was created first, while the project the user
+    # actually aimed at shows empty. `create_project` always refused this; adding a folder
+    # did not, which is how the two got out of sync.
+    shared = find_by_folder_path(conn, norm, exclude_project_id=project_id)
+    if shared is not None:
+        raise ValueError(
+            f"folder already belongs to project '{shared.slug}' ({shared.id}); "
+            "remove it there first instead of sharing it between projects"
+        )
     with write_txn(conn):
         conn.execute(
             "INSERT OR IGNORE INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, 0, ?)",

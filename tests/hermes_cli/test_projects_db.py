@@ -121,6 +121,60 @@ def test_find_by_primary_path(conn):
     assert pdb.find_by_primary_path(conn, "") is None
 
 
+def test_find_by_folder_path_matches_any_folder_not_just_the_primary(conn):
+    a = pdb.create_project(conn, name="A", folders=["/www/a", "/www/a-shared"])
+    b = pdb.create_project(conn, name="B", folders=["/www/b"])
+
+    assert pdb.find_by_folder_path(conn, "/www/a").id == a
+    # A secondary folder counts as ownership, not just the primary one.
+    assert pdb.find_by_folder_path(conn, "/www/a-shared").id == a
+    assert pdb.find_by_folder_path(conn, "/www/b").id == b
+    assert pdb.find_by_folder_path(conn, "/www/a/").id == a
+    assert pdb.find_by_folder_path(conn, "/www/nope") is None
+    assert pdb.find_by_folder_path(conn, "") is None
+    # The project being edited is not its own collision.
+    assert pdb.find_by_folder_path(conn, "/www/a", exclude_project_id=a) is None
+
+
+def test_add_folder_refuses_a_folder_another_project_owns(conn):
+    owner = pdb.create_project(conn, name="Inbox", folders=["/www/inbox"])
+    other = pdb.create_project(conn, name="Crypto", folders=["/www/crypto"])
+
+    with pytest.raises(ValueError, match="already belongs to project 'inbox'"):
+        pdb.add_folder(conn, other, "/www/inbox")
+    with pytest.raises(ValueError, match="already belongs to project"):
+        pdb.add_folder(conn, other, "/www/inbox/")
+
+    # Refused means untouched, on both sides.
+    assert [f.path for f in pdb.get_project(conn, other).folders] == ["/www/crypto"]
+    assert [f.path for f in pdb.get_project(conn, owner).folders] == ["/www/inbox"]
+
+    # Its own folder, and a genuinely free one, still go through.
+    pdb.add_folder(conn, other, "/www/extra")
+    pdb.add_folder(conn, other, "/www/crypto")
+    assert sorted(f.path for f in pdb.get_project(conn, other).folders) == [
+        "/www/crypto", "/www/extra"]
+
+
+def test_add_folder_ignores_an_archived_owner(conn):
+    owner = pdb.create_project(conn, name="Old", folders=["/www/old"])
+    other = pdb.create_project(conn, name="New", folders=["/www/new"])
+    pdb.archive_project(conn, owner)
+
+    pdb.add_folder(conn, other, "/www/old")
+    assert "/www/old" in [f.path for f in pdb.get_project(conn, other).folders]
+
+
+def test_create_dedups_a_secondary_folder_collision(conn):
+    pdb.create_project(conn, name="A", folders=["/www/a"])
+
+    # The collision is not the FIRST folder, so the primary-only guard would let it past.
+    with pytest.raises(ValueError, match="already belongs to project 'a'"):
+        pdb.create_project(conn, name="C", folders=["/www/c", "/www/a"])
+
+    assert [p.slug for p in pdb.list_projects(conn)] == ["a"]
+
+
 
 
 

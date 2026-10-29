@@ -7732,11 +7732,10 @@ def _ladder_credential_rungs(
     # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
     if pool_provider and _credential_rung_accepts(first_err):
         recovery_err = first_err
-        # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
-        # another request with the same exhausted key.
+        # No backoff retry for a payment/quota error: the same exhausted key stays refused.
         if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
-            resp, recovery_err = yield from _rung(
-                _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
+            from agent.auxiliary_rate_limit_backoff import rate_limit_retry_rungs
+            resp, recovery_err = yield from rate_limit_retry_rungs(first_err, client, kwargs, f"{task or 'call'}{tag}")
             if recovery_err is None:
                 return resp, None
         if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
@@ -7926,12 +7925,12 @@ def _aux_recovery_ladder(
 
 
 def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
-    """Run a ladder generator, feeding each step's result (or exception) back in."""
+    """Run a ladder generator, feeding each step's result (or exception) back in; a ``wait`` step sleeps."""
     try:
         step = next(ladder)
         while True:
             try:
-                result = perform(step)
+                result = time.sleep(step.args[0]) if step.kind == "wait" else perform(step)
             except Exception as exc:
                 step = ladder.throw(exc)
             else:
@@ -7942,11 +7941,12 @@ def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
 
 async def _drive_ladder_async(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
     """Async twin of :func:`_drive_ladder` (``perform`` is awaited)."""
+    import asyncio
     try:
         step = next(ladder)
         while True:
             try:
-                result = await perform(step)
+                result = await (asyncio.sleep(step.args[0]) if step.kind == "wait" else perform(step))
             except Exception as exc:
                 step = ladder.throw(exc)
             else:

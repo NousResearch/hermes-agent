@@ -6,8 +6,10 @@ backoff. These tests drive the real boto3 client the adapter builds against a lo
 and count the requests that reach it.
 """
 
+import asyncio
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -30,13 +32,15 @@ CONVERSE_OK = {"output": {"message": {"role": "assistant", "content": [{"text": 
 def fake_bedrock(monkeypatch):
     """Local bedrock-runtime endpoint; ``mode`` is ``hang`` (never answers until teardown) or
     ``throttle`` (400 ThrottlingException) / ``unavailable`` (503) for the first ``fail_first``
-    requests, then a Converse answer. Yields the list of request paths it received."""
-    state = {"mode": "hang", "hits": [], "fail_first": 10**6}
+    requests, or until ``fail_for`` seconds after the first request, then a Converse answer.
+    Yields the state; ``hits`` lists request paths, ``times`` their monotonic arrival."""
+    state = {"mode": "hang", "hits": [], "times": [], "fail_first": 10**6, "fail_for": None}
     release = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             state["hits"].append(self.path)
+            state["times"].append(time.monotonic())
             self.rfile.read(int(self.headers.get("content-length", 0)))
             if state["mode"] == "hang":
                 release.wait(30)
@@ -45,7 +49,9 @@ def fake_bedrock(monkeypatch):
                 "throttle": (400, "ThrottlingException", {"message": "Too many requests, please wait before trying again."}),
                 "unavailable": (503, "ServiceUnavailableException", {"message": "Service unavailable, try later."}),
             }[state["mode"]]
-            if len(state["hits"]) > state["fail_first"]:
+            window = state["fail_for"]
+            if (len(state["hits"]) > state["fail_first"] if window is None
+                    else state["times"][-1] - state["times"][0] >= window):
                 status, error_type, payload = 200, None, CONVERSE_OK
             body = json.dumps(payload).encode()
             self.send_response(status)
@@ -127,3 +133,33 @@ def test_auxiliary_call_recovers_from_one_transient_bedrock_refusal(fake_bedrock
 
     assert response.choices[0].message.content == "pong"
     assert len(fake_bedrock["hits"]) == 2
+
+
+@pytest.mark.real_retry_backoff
+@pytest.mark.parametrize("caller", ["sync", "async"])
+def test_auxiliary_call_waits_out_a_bedrock_throttle_window(fake_bedrock, monkeypatch, caller):
+    """A throttle lasting ~300ms is backed off, not re-sent at once: botocore no longer waits
+    between attempts, so an immediate re-send lands in the same window and the task fails."""
+    from agent import auxiliary_client
+    from agent.auxiliary_client import (
+        AsyncBedrockAuxiliaryClient, BedrockAuxiliaryClient, async_call_llm, call_llm,
+    )
+
+    _use_config(monkeypatch, {})
+    fake_bedrock.update(mode="throttle", fail_for=0.3)
+    client = BedrockAuxiliaryClient(REGION, MODEL)
+    monkeypatch.setattr(auxiliary_client, "_get_auxiliary_task_config",
+                        lambda task: {"provider": "bedrock", "model": MODEL, "max_output_tokens": 0})
+    monkeypatch.setattr(
+        auxiliary_client, "_get_cached_client",
+        lambda *a, async_mode=False, **k: (AsyncBedrockAuxiliaryClient(client) if async_mode else client, MODEL))
+    messages = [{"role": "user", "content": "ping"}]
+
+    if caller == "sync":
+        response = call_llm(task="session_search", messages=messages)
+    else:
+        response = asyncio.run(async_call_llm(task="session_search", messages=messages))
+
+    assert response.choices[0].message.content == "pong"
+    times = fake_bedrock["times"]
+    assert times[1] - times[0] >= 0.25, "the throttled call was re-sent without a backoff"

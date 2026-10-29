@@ -57,6 +57,56 @@ def session_timestamps(meta: dict, created_fallback: datetime | None = None) -> 
     return created, updated
 
 
+def _clean_str(value: Any) -> str:
+    """``str(value).strip()`` for a possibly-missing wire value (``None`` → ``""``)."""
+    return "" if value is None else str(value).strip()
+
+
+def resolve_display_identity(
+    *,
+    agent: Any = None,
+    mirror: dict | None = None,
+    pending: dict | None = None,
+    configured_model: str | None = None,
+    configured_provider: str | None = None,
+    custom_resolver: Any = None,
+) -> tuple[str, str]:
+    """The ``(model, provider)`` every status surface reports for one session.
+
+    One shared precedence — pending switch, metadata mirror, live agent, configured
+    default — so the status bar and ``/status`` cannot disagree. ``custom_resolver``
+    resolves the ``"custom"`` sentinel against the owning profile when a surface can
+    reach it.
+    """
+    mirror = mirror or {}
+    pending = pending or {}
+    tiers = (
+        (pending.get("display_model"), pending.get("display_provider")),
+        (mirror.get("model"), mirror.get("provider")),
+        (getattr(agent, "model", None), getattr(agent, "provider", None)),
+        (configured_model, configured_provider),
+    )
+    model = provider = ""
+    for tier_model, tier_provider in tiers:
+        if _clean_str(tier_model):
+            model = _clean_str(tier_model)
+            provider = _clean_str(tier_provider)
+            break
+    if not model:
+        return "", ""
+    if not provider:
+        for _, tier_provider in tiers:
+            candidate = _clean_str(tier_provider)
+            if candidate:
+                provider = candidate
+                break
+    if provider == "custom" and "provider" not in mirror and custom_resolver is not None:
+        resolved = custom_resolver(agent) or ""
+        if resolved:
+            provider = resolved
+    return model, provider
+
+
 def build_status_fields(
     session_id: str,
     agent: Any,
@@ -65,6 +115,9 @@ def build_status_fields(
     title: str | None = None,
     model: str | None = None,
     provider: str | None = None,
+    mirror: dict | None = None,
+    pending: dict | None = None,
+    custom_resolver: Any = None,
     created: datetime | None = None,
     last_activity: datetime | None = None,
     created_fallback: datetime | None = None,
@@ -74,12 +127,10 @@ def build_status_fields(
 ) -> dict[str, Any]:
     """Common ``/status`` facts, pre-formatted for display.
 
-    ``agent`` wins for model / provider / tokens; the keyword values are the surface's fallback
-    (CLI ``self.model``, TUI metadata mirror, gateway's resolved route) and are also what a
-    surface passes when it has no live agent. ``created`` / ``last_activity`` override the
-    ``meta`` row scan for surfaces whose session store is authoritative (gateway SessionEntry).
-    ``home`` is an explicit owning-profile path for multiplexed surfaces; omitted callers keep
-    the process/current-profile lookup.
+    Model / provider come from :func:`resolve_display_identity`; ``model`` /
+    ``provider`` are the configured seed (last tier). ``created`` / ``last_activity``
+    override the ``meta`` row scan for surfaces whose session store is authoritative.
+    ``home`` is an explicit owning-profile path for multiplexed surfaces.
     """
     from hermes_constants import display_hermes_home
 
@@ -91,12 +142,15 @@ def build_status_fields(
     if tokens is None:
         tokens = getattr(agent, "session_total_tokens", 0) or 0
     row_title = meta.get("title") if title is None else title
+    display_model, display_provider = resolve_display_identity(
+        agent=agent, mirror=mirror, pending=pending, custom_resolver=custom_resolver,
+        configured_model=model, configured_provider=provider)
     return {
         "session_id": str(session_id or ""),
         "path": display_hermes_home(Path(home) if home else None),
         "title": (row_title or "").strip(),
-        "model": getattr(agent, "model", None) or model or "",
-        "provider": getattr(agent, "provider", None) or provider or "",
+        "model": display_model,
+        "provider": display_provider,
         "created": created.strftime(STATUS_STAMP),
         "last_activity": last_activity.strftime(STATUS_STAMP),
         "tokens": f"{int(tokens or 0):,}",

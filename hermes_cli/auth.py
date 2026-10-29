@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_signature, is_truthy_value
+from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -510,8 +510,8 @@ def _load_global_auth_store() -> dict[str, Any]:
         _global_auth_store_cache = None
         return {}
     try:
-        cache_key: Optional[tuple[str, tuple[int, int, int, int]]] = (
-            str(global_path.resolve(strict=False)), file_signature(global_path.stat()))
+        cache_key: Optional[tuple[str, tuple[Any, ...]]] = (
+            str(global_path.resolve(strict=False)), file_cache_version(global_path))
     except Exception:
         cache_key = None
     cached = _global_auth_store_cache
@@ -1882,19 +1882,19 @@ def _resolve_nous_access_token(
 
 # Process-level memo for get_nous_auth_status(): it validates via a synchronous refresh POST
 # (~350ms) and read-only UI surfaces call it many times per render (~31x per menu paint), burning
-# single-use refresh tokens. Keyed on auth.json path + mtime so profile switches don't share a memo
+# single-use refresh tokens. Keyed on auth.json path + file_cache_version so profile switches don't share a memo
 # and login/logout/add/remove invalidate naturally.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[tuple[float, str, Optional[float], dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[tuple[float, str, Optional[tuple[Any, ...]], dict[str, Any]]] = None
 
-# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store); same invalidation rule.
-_global_auth_store_cache: Optional[tuple[str, int, dict[str, Any]]] = None
+# Memo for _load_global_auth_store(): (path, file_cache_version, store); same invalidation rule.
+_global_auth_store_cache: Optional[tuple[str, tuple[Any, ...], dict[str, Any]]] = None
 
 
-def _auth_file_cache_key() -> tuple[str, Optional[float]]:
+def _auth_file_cache_key() -> tuple[str, Optional[tuple[Any, ...]]]:
     auth_file = _auth_file_path()
     try:
-        return _resolved_key(auth_file), auth_file.stat().st_mtime
+        return _resolved_key(auth_file), file_cache_version(auth_file)
     except Exception:  # missing file included: key without an mtime
         return _resolved_key(auth_file), None
 

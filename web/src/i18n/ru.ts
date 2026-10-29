@@ -92,6 +92,14 @@ export const ru: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Активный провайдер памяти",
+    noProvider: "нет — только встроенная",
+    builtinLayer: "Встроенный слой",
+    builtinNote: "MEMORY.md и USER.md — собственная память Hermes, независимая от внешних провайдеров. По умолчанию оба файла загружаются в сессии; переключатели конфигурации (memory.memory_enabled / memory.user_profile_enabled) отключают каждый из них. Внешний провайдер дополняет их, но никогда не заменяет.",
+  },
+
   status: {
     actionFailed: "Ошибка действия",
     actionFinished: "Завершено",

@@ -170,9 +170,11 @@ def _legacy_order(path, record):
 
 def _home(authority, actor, profile):
     from gateway.session_authorities import served_profile_name
+    from tools.bot_mode_probe import _handle, _hermes_root, _roster
     home = Path(authority.db.db_path).parent.resolve()
     name = served_profile_name(home)
-    if actor.profile_id != authority.profile_id or profile not in (name, 'hermes' if name == 'default' else name):
+    handle = _handle(name, [n for n, _d in _roster(_hermes_root(home))]) if name == 'default' else name
+    if actor.profile_id != authority.profile_id or profile not in (name, handle):
         raise RuntimeStoreError('profile_mismatch')
     if 'session:submit' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -216,7 +218,8 @@ def displaceable_bot_chat(authority, row):
     unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
     adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
     over the API, so it would refuse every delivery for good. A bound local chat, old local history
-    a native open adopts and a local row a login stamped as its own are never moved."""
+    a native open adopts (``_kept_local_history``) and a Desktop row a login stamped as its own are
+    never moved."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_PREFIX
 
@@ -273,16 +276,26 @@ def release_superseded_bot_chat_at_boot(db, store):
 
 def _kept_local_history(db, row):
     """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
-    or Desktop row a native open adopts, or one a login stamped as its owner. A local-source row
-    no open can ever adopt (a route column left by a crash or reconnect, another profile's stamp)
-    is not: it held the title and refused every delivery for good (#141243)."""
+    or Desktop row a native open adopts (unstamped, or stamped with a subject a native ticket
+    carries: the host's own OS identity, or a structured login subject a same-user peer forwards),
+    or a Desktop row a served login stamped with its label (kept as on main, even with a route
+    column or another profile's name). Any other local-source row no open can ever adopt (a route
+    column left by a crash or reconnect, another profile's stamp, or outside Desktop any other
+    stamp, such as a login label ``basic:alice``) is not: it held the title and refused every
+    delivery for good (#141243, #143715)."""
+    from gateway.session_identity import parse_authenticated_subject
+    from gateway.session_worker_reservation import owner_worker_subject
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
-    if row.get('user_id') and not legacy_account_label(row):
-        return True
+    user_id = row.get('user_id')
+    if (user_id and not legacy_account_label(row) and user_id != owner_worker_subject()
+            and parse_authenticated_subject(user_id) is None):
+        # A Desktop row a login stamped stays where it is, as on main (#140183). On any other local
+        # source such a stamp names no subject a native ticket carries, so nobody adopts it (#143715).
+        return row.get('source') == 'desktop'
     try:
-        validate_legacy_row(db, row)
+        validate_legacy_row(db, row, subject=user_id)
     except RuntimeStoreError:
         return False
     return True
@@ -410,9 +423,9 @@ def _admission_outcome(authority, admission_id, fallback=None):
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.
-        from gateway.response_filters import is_intentional_silence_response
-        if status == 'settled' and is_intentional_silence_response(reply):
-            reply = ''
+        from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+        if status == 'settled':
+            reply = '' if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)
     elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
         status = fallback['status']
     return status, reply
@@ -760,7 +773,8 @@ async def deliver(connection, params):
 def _require_same_delivery(record, actor, message, author, category):
     """A delivery id names one delivery: the same message, principal, author and category (the
     mailbox writer's identity), whether its receipt is admission-backed or refused."""
-    if (record['message'] != message or record['principal_id'] != actor.subject
+    from gateway.owner_identity import same_owner
+    if (record['message'] != message or not same_owner(record['principal_id'], actor.subject)
             or record.get('author') != author
             or record.get('notification_category', 'result') != category):
         raise RuntimeStoreError('admission_conflict')

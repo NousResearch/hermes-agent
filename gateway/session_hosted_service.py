@@ -7,6 +7,7 @@ from pathlib import Path
 from gateway.session_contract import Principal
 from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
 from gateway.session_hosted_controls import HostedControls
+from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -113,7 +114,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 if historical is None:
                     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, actor_subject))
                     return True
-            if row is None or row[0] != actor_subject:
+            if row is None or not same_owner(row[0], actor_subject):
                 raise RuntimeStoreError('permission_denied')
             return True
         return write(conn) if conn is not None else self.authority.db._execute_write(write)
@@ -213,7 +214,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if type(generation) is not int or generation < 1:
                 raise ValueError('invalid generation')
             owner = self._owner(identity.room_id)
-            if owner != row['principal_id']:
+            if not same_owner(owner, row['principal_id']):
                 raise ValueError('foreign owner')
             room = self._room(identity.room_id)
             task = next(t for t in list_tasks(self.db_path, room_id=identity.room_id)
@@ -251,6 +252,8 @@ async def _ensure_hosted_service(runner, authority):
         service = getattr(authority, 'hosted_room_service', None)
         if service is None:
             loop = asyncio.get_running_loop()
+            from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+            await asyncio.to_thread(import_standalone_rooms, Path(authority.db.db_path), runtime_epoch=authority.epoch)
             service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
             authority.hosted_room_service = service
         if not getattr(service, '_transport_installed', False):
@@ -271,6 +274,8 @@ def start_ready_hosted_services(runner):
     for service in services:
         # start() only releases its thread; preparation and disk access happened above.
         service.start()
+    from gateway.hosted_rooms_gateway_import import import_after_ready
+    import_after_ready(serving_authorities(runner))
 
 
 async def stop_hosted_service(runner, timeout=5):

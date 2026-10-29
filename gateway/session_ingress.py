@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+# ``(authority, session_id, generation)`` of the executing claim: a wait before the turn has an
+# agent (the memory hold) watches it, since a Stop then only latches ``pending_stops``.
+executing_claim: ContextVar = ContextVar('executing_claim', default=None)
 # The live session while the executing turn is one its viewer submitted (``is_viewer_input``), else None.
 viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
@@ -283,6 +286,7 @@ async def execute_admission(authority, ref, row):
     captured = {}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
+    claim_token = executing_claim.set((authority, ref.session_id, row['generation']))
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
     event._turn_marker_handoff = True
     handed = False
@@ -336,6 +340,7 @@ async def execute_admission(authority, ref, row):
         if not handed:
             await _release_turn_marker(authority, event)
         executing_admission.reset(token)
+        executing_claim.reset(claim_token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)
         admission_author.reset(author_token)

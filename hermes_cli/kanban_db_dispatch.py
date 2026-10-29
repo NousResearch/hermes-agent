@@ -1959,13 +1959,13 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
 
 
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
-    """Classify system memory pressure: ok/elevated/critical/unknown.
-
-    Reuses :func:`gateway.memory_status.classify_pressure` so "critical" matches
-    the dashboard banner and lifecycle-ledger OOM heuristics. ``unknown``
-    (non-Linux, read failure) imposes no restriction — never brick dispatch
-    where /proc is unavailable.
-    """
+    """Classify system memory pressure: ok/elevated/critical/unknown. Reuses
+    :func:`gateway.memory_status.classify_pressure` so "critical" matches the dashboard banner and
+    lifecycle-ledger OOM heuristics; people waiting on the gateway's memory guard read "critical"
+    (they go first). ``unknown`` (non-Linux, read failure) never bricks dispatch."""
+    from gateway.admission_memory import get_gate
+    if sample is None and get_gate().people_waiting():
+        return "critical"
     if sample is None:
         sample = _system_memory_sample()
     if not sample:

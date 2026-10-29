@@ -738,6 +738,8 @@ gateway:
     reject_goal: "Agent loop — gebruik /goal status / pause / clear / wait tydens die lopie, of /stop voordat jy 'n nuwe doelwit stel."
     reject_loop: "Agent loop — gebruik /loop status / pause / stop tydens die lopie, of /stop voordat jy 'n nuwe lus stel."
     draining_maintenance: "⏳ Hierdie agent word vir 'n onderhoudsaksie gedreineer en aanvaar nie nou nuwe beurte nie. Dit sal oor 'n oomblik terug wees — stuur asseblief binnekort weer."
+    memory_waiting: "⏳ Hierdie gasheer het min geheue, dus wag jou boodskap om te begin eerder as om 'n ineenstorting te waag. Dit begin vanself sodra geheue vrykom (wag tot {minutes} min)."
+    memory_gave_up: "⚠️ Die gasheer het vir {minutes} min te min geheue gehad om jou beurt veilig te begin, dus is niks uitgevoer nie. Stuur asseblief weer sodra ander werk klaar is."
     another_turn_running: "⏳ Nog 'n beurt loop steeds op hierdie sessie. Om die transkripsie te beskerm, is hierdie boodskap nie verwerk nie. Wag tot die aktiewe beurt klaar is en stuur dit dan weer."
     behavior_queue_short: "gaan in die tou vir die volgende beurt"
     behavior_queue_long: "Boodskappe sal in die tou geplaas word vir die volgende beurt terwyl Hermes besig is."

@@ -596,6 +596,9 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
     )
+    # The CLI's browser daemon and Chrome fork from it later and inherit the raised score.
+    from hermes_platform.oom import prefer_as_oom_victim
+    prefer_as_oom_victim(proc.pid)
     try:
         stdout, stderr = proc.communicate(input=code, timeout=timeout)
     except subprocess.TimeoutExpired:

@@ -747,6 +747,8 @@ gateway:
     reject_goal: "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
     reject_loop: "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
     draining_maintenance: "⏳ This agent is draining for a maintenance action and isn't accepting new turns right now. It'll be back in a moment — please resend shortly."
+    memory_waiting: "⏳ This host is low on memory, so your message is waiting to start instead of risking a crash. It starts on its own as soon as memory frees up (waiting up to {minutes} min)."
+    memory_gave_up: "⚠️ The host stayed too low on memory for {minutes} min to start your turn safely, so nothing was run. Please resend once other work has finished."
     another_turn_running: "⏳ Another turn is still running on this session. To protect the transcript, this message was not processed. Wait for the active turn to finish, then resend it."
     behavior_queue_short: "queues for next turn"
     behavior_queue_long: "Messages will be queued for the next turn while Hermes is busy."

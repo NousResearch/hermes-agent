@@ -738,6 +738,8 @@ gateway:
     reject_goal: "代理正在執行中 — 執行途中可使用 /goal status / pause / clear / wait，或先 /stop 再設定新目標。"
     reject_loop: "代理正在執行中 — 執行途中可使用 /loop status / pause / stop，或先 /stop 再設定新迴圈。"
     draining_maintenance: "⏳ 此代理正在為維護操作收尾，目前不接受新的回合。稍後即會恢復 — 請稍後重新傳送。"
+    memory_waiting: "⏳ 這台主機記憶體不足，為避免當機，你的訊息正在等待開始。記憶體一釋出就會自動開始（最多等待 {minutes} 分鐘）。"
+    memory_gave_up: "⚠️ 主機記憶體在 {minutes} 分鐘內一直不足，無法安全開始你的回合，因此沒有執行任何操作。請在其他工作完成後重新傳送。"
     another_turn_running: "⏳ 此工作階段仍有另一輪在執行中。為保護對話紀錄，這則訊息未被處理。請等目前這一輪結束後再重新傳送。"
     behavior_queue_short: "排入下一輪佇列"
     behavior_queue_long: "Hermes 忙碌時，訊息會排入下一輪的佇列。"

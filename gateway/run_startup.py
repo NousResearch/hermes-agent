@@ -1681,6 +1681,9 @@ class GatewayStartupMixin:
     async def _start_impl(self) -> bool:
         logger.info("Starting Hermes Gateway...")
         self._start_install_faulthandler()
+        from gateway.admission_memory import configure as configure_memory_guard
+        from gateway.run import _load_gateway_config, get_hermes_home
+        configure_memory_guard(_load_gateway_config(), get_hermes_home())
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():
             return True

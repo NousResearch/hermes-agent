@@ -624,6 +624,10 @@ async def admit_managed(authority, ref, row, policy):
         result = workspace_unavailable_result(policy)
         authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
         return result['final_response']
+    from gateway.session_managed_memory import hold_managed_for_memory
+    refusal = await hold_managed_for_memory(authority, ref, row, policy)
+    if refusal is not None:
+        return refusal
     return await execute_managed(authority, ref, row, policy)
 
 

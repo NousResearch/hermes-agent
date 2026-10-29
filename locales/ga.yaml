@@ -738,6 +738,8 @@ gateway:
     reject_goal: "Tá an gníomhaire ag rith — úsáid /goal status / pause / clear / wait i lár an reatha, nó /stop roimh sprioc nua a shocrú."
     reject_loop: "Tá an gníomhaire ag rith — úsáid /loop status / pause / stop i lár an reatha, nó /stop roimh lúb nua a shocrú."
     draining_maintenance: "⏳ Tá an gníomhaire seo ag draenáil le haghaidh gníomh cothabhála agus ní ghlacann sé le sealanna nua faoi láthair. Beidh sé ar ais i gceann nóiméid — seol arís go luath le do thoil."
+    memory_waiting: "⏳ Tá cuimhne íseal ar an óstach seo, mar sin tá do theachtaireacht ag fanacht le tosú seachas tuairteáil a riosca. Tosóidh sé uaidh féin a luaithe a shaorfar cuimhne (ag fanacht suas le {minutes} nóim)."
+    memory_gave_up: "⚠️ D'fhan cuimhne an óstaigh ró-íseal ar feadh {minutes} nóim le do sheal a thosú go sábháilte, mar sin níor ritheadh aon rud. Seol arís é nuair a bheidh obair eile críochnaithe."
     another_turn_running: "⏳ Tá seal eile fós ag rith ar an seisiún seo. Chun an traschríbhinn a chosaint, níor próiseáladh an teachtaireacht seo. Fan go gcríochnóidh an seal gníomhach, ansin seol arís í."
     behavior_queue_short: "cuirtear i scuaine don chéad seal eile"
     behavior_queue_long: "Cuirfear teachtaireachtaí i scuaine don chéad seal eile fad a bhíonn Hermes gnóthach."

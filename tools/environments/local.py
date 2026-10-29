@@ -1148,6 +1148,8 @@ class LocalEnvironment(BaseEnvironment):
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
+            from hermes_platform.oom import prefer_as_oom_victim
+            prefer_as_oom_victim(proc.pid)
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
                 # Record the group leader's start-time fingerprint so _kill_process can

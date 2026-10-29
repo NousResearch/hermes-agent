@@ -738,6 +738,8 @@ gateway:
     reject_goal: "O agente está em execução — use /goal status / pause / clear / wait durante a execução, ou /stop antes de definir um novo objetivo."
     reject_loop: "O agente está em execução — use /loop status / pause / stop durante a execução, ou /stop antes de definir um novo loop."
     draining_maintenance: "⏳ Este agente está sendo drenado para uma ação de manutenção e não está aceitando novos turnos agora. Ele voltará em instantes — reenvie em breve."
+    memory_waiting: "⏳ Este host está com pouca memória, então sua mensagem aguarda para começar em vez de arriscar uma falha. Ela começa sozinha assim que houver memória livre (espera de até {minutes} min)."
+    memory_gave_up: "⚠️ O host ficou com pouca memória por {minutes} min para iniciar seu turno com segurança, então nada foi executado. Reenvie quando o restante do trabalho terminar."
     another_turn_running: "⏳ Outro turno ainda está em execução nesta sessão. Para proteger a transcrição, esta mensagem não foi processada. Aguarde o turno ativo terminar e reenvie."
     behavior_queue_short: "enfileira para o próximo turno"
     behavior_queue_long: "As mensagens serão enfileiradas para o próximo turno enquanto o Hermes estiver ocupado."

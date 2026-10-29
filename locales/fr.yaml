@@ -859,6 +859,8 @@ gateway:
     reject_goal: "L'agent est en cours d'exécution — utilisez /goal status / pause / clear / wait pendant l'exécution, ou /stop avant de définir un nouvel objectif."
     reject_loop: "L'agent est en cours d'exécution — utilisez /loop status / pause / stop pendant l'exécution, ou /stop avant de définir une nouvelle boucle."
     draining_maintenance: "⏳ Cet agent se vide pour une opération de maintenance et n'accepte pas de nouveaux tours pour le moment. Il sera de retour dans un instant — merci de renvoyer votre message d'ici peu."
+    memory_waiting: "⏳ Cet hôte manque de mémoire : ton message attend de démarrer plutôt que de risquer un plantage. Il démarrera tout seul dès que de la mémoire se libère (attente jusqu'à {minutes} min)."
+    memory_gave_up: "⚠️ L'hôte est resté trop à court de mémoire pendant {minutes} min pour démarrer ton tour en sécurité ; rien n'a été exécuté. Renvoie ton message quand les autres tâches seront terminées."
     another_turn_running: "⏳ Un autre tour est encore en cours sur cette session. Pour protéger la transcription, ce message n'a pas été traité. Attendez la fin du tour actif, puis renvoyez-le."
     behavior_queue_short: "mise en file pour le prochain tour"
     behavior_queue_long: "Les messages seront mis en file pour le prochain tour pendant que Hermes est occupé."

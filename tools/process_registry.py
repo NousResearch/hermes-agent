@@ -27,6 +27,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.oom import prefer_as_oom_victim
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
@@ -1167,7 +1168,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         pty_env.setdefault("GIT_PAGER", "cat")
         pty_env.setdefault("PAGER", "cat")
         pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
-        session.pid = pty_proc.pid
+        session.pid = prefer_as_oom_victim(pty_proc.pid)
         session.host_start_time = self._safe_host_start_time(session.pid)
         session._pty = pty_proc
         self._track_started(session, self._pty_reader_loop, f"proc-pty-reader-{session.id}")
@@ -1215,11 +1216,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         spawn_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
-        # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
-        # give the worker a new session, so from an interactive TUI the worker would
-        # share the foreground process group and background spawns would stop the whole
-        # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
-        # the scope attaches to the invoked process, not the spawning session.
+        # start_new_session is REQUIRED with systemd-run --scope too: the scope does not give the
+        # worker a new session, so from an interactive TUI the worker would share the foreground
+        # process group and background spawns would stop the whole session (observed as dead TUIs in
+        # state T). Cgroup isolation is unaffected: the scope attaches to the invoked process.
         output = open_output_log(log) if log else subprocess.PIPE
         try:
             proc = subprocess.Popen(
@@ -1230,7 +1230,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if log:
                 os.close(output)
         session.process, session.output_log = proc, str(log or "")
-        session.pid = proc.pid
+        session.pid = prefer_as_oom_victim(proc.pid)
         session.host_start_time = self._safe_host_start_time(session.pid)
         try:
             self._track_started(session, self._log_reader_loop if log else self._reader_loop, f"proc-reader-{session.id}")

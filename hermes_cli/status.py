@@ -241,6 +241,16 @@ def _render_gateway(ctx):
         status_text, manager = _GATEWAY_FALLBACK.get(platform, ("N/A", "(not supported on this platform)"))
         _kv("Status:", color(status_text, Colors.DIM))
         _kv("Manager:", manager)
+    _render_memory_guard(ctx)
+
+
+def _render_memory_guard(ctx):
+    """Memory headroom as the gateway's admission guard sees it, plus turns waiting on it."""
+    if not sys.platform.startswith("linux"):
+        return
+    from gateway.admission_memory import status_line
+    line = status_line(ctx.config, get_hermes_home())
+    _kv("Memory:", color(line, Colors.GREEN if line.startswith("ok") else Colors.YELLOW))
 
 
 def _load_json(path: Path, encoding: str = "utf-8"):
@@ -402,6 +412,7 @@ def _render_summary(ctx):
     except Exception:
         _kv("Gateway:", "unknown")
     _summary_row("Platforms:", _connected_platform_labels, "none configured")
+    _render_memory_guard(ctx)
     _kv("Jobs:", _cron_summary())
     _banner(("  Run 'hermes status --full' for every section",), Colors.DIM)
     print()

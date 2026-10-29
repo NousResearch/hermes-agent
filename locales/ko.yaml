@@ -738,6 +738,8 @@ gateway:
     reject_goal: "에이전트가 실행 중이에요 — 실행 중에는 /goal status / pause / clear / wait를 사용하거나, 새 목표를 설정하기 전에 /stop하세요."
     reject_loop: "에이전트가 실행 중이에요 — 실행 중에는 /loop status / pause / stop을 사용하거나, 새 루프를 설정하기 전에 /stop하세요."
     draining_maintenance: "⏳ 이 에이전트는 유지 관리 작업을 위해 정리 중이어서 지금은 새 턴을 받지 않아요. 곧 돌아올 테니 잠시 후 다시 보내 주세요."
+    memory_waiting: "⏳ 이 호스트의 메모리가 부족해 충돌 위험 대신 메시지 시작을 대기 중입니다. 메모리가 확보되면 자동으로 시작합니다(최대 {minutes}분 대기)."
+    memory_gave_up: "⚠️ 호스트 메모리가 {minutes}분 동안 부족해 턴을 안전하게 시작할 수 없어 아무것도 실행하지 않았습니다. 다른 작업이 끝난 뒤 다시 보내 주세요."
     another_turn_running: "⏳ 이 세션에서 다른 턴이 아직 실행 중이에요. 대화 기록을 보호하기 위해 이 메시지는 처리하지 않았어요. 활성 턴이 끝난 뒤 다시 보내 주세요."
     behavior_queue_short: "다음 턴 대기열에 추가"
     behavior_queue_long: "Hermes가 바쁠 때 받은 메시지는 다음 턴 대기열에 추가돼요."

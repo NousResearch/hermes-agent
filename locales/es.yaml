@@ -738,6 +738,8 @@ gateway:
     reject_goal: "El agente está en ejecución — usa /goal status / pause / clear / wait durante la ejecución, o /stop antes de definir un nuevo objetivo."
     reject_loop: "El agente está en ejecución — usa /loop status / pause / stop durante la ejecución, o /stop antes de definir un nuevo bucle."
     draining_maintenance: "⏳ Este agente se está vaciando para una acción de mantenimiento y ahora mismo no acepta turnos nuevos. Volverá en un momento — reenvía tu mensaje en breve."
+    memory_waiting: "⏳ Este host tiene poca memoria, así que tu mensaje espera para empezar en lugar de arriesgar un fallo. Empezará solo en cuanto se libere memoria (espera de hasta {minutes} min)."
+    memory_gave_up: "⚠️ El host tuvo demasiada poca memoria durante {minutes} min para iniciar tu turno con seguridad, así que no se ejecutó nada. Vuelve a enviarlo cuando termine el resto del trabajo."
     another_turn_running: "⏳ Otro turno sigue en ejecución en esta sesión. Para proteger la transcripción, este mensaje no se procesó. Espera a que termine el turno activo y luego reenvíalo."
     behavior_queue_short: "se ponen en cola para el siguiente turno"
     behavior_queue_long: "Los mensajes se pondrán en cola para el siguiente turno mientras Hermes esté ocupado."

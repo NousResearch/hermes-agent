@@ -738,6 +738,8 @@ gateway:
     reject_goal: "代理正在运行——运行中可使用 /goal status / pause / clear / wait，或先 /stop 再设置新目标。"
     reject_loop: "代理正在运行——运行中可使用 /loop status / pause / stop，或先 /stop 再设置新循环。"
     draining_maintenance: "⏳ 此代理正在为维护操作排空任务，目前不接受新的回合。稍后即会恢复——请稍等片刻后重新发送。"
+    memory_waiting: "⏳ 这台主机内存不足，为避免崩溃，你的消息正在等待开始。内存一释放就会自动开始（最多等待 {minutes} 分钟）。"
+    memory_gave_up: "⚠️ 主机内存在 {minutes} 分钟内一直不足，无法安全开始你的回合，因此没有执行任何操作。请在其他工作完成后重新发送。"
     another_turn_running: "⏳ 此会话上还有另一回合仍在运行。为保护对话记录，这条消息未被处理。请等待当前回合结束后重新发送。"
     behavior_queue_short: "排队至下一回合"
     behavior_queue_long: "Hermes 忙碌时，消息将排队至下一回合处理。"

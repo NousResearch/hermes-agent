@@ -738,6 +738,8 @@ gateway:
     reject_goal: "Agent läuft — verwenden Sie währenddessen /goal status / pause / clear / wait, oder /stop, bevor Sie ein neues Ziel setzen."
     reject_loop: "Agent läuft — verwenden Sie währenddessen /loop status / pause / stop, oder /stop, bevor Sie eine neue Schleife setzen."
     draining_maintenance: "⏳ Dieser Agent wird für eine Wartungsaktion geleert und nimmt gerade keine neuen Züge an. Er ist gleich wieder da — bitte senden Sie in Kürze erneut."
+    memory_waiting: "⏳ Auf diesem Host wird der Arbeitsspeicher knapp, deshalb wartet deine Nachricht, statt einen Absturz zu riskieren. Sie startet automatisch, sobald Speicher frei wird (Wartezeit bis zu {minutes} Min.)."
+    memory_gave_up: "⚠️ Der Arbeitsspeicher des Hosts blieb {minutes} Min. lang zu knapp, um deinen Turn sicher zu starten; es wurde nichts ausgeführt. Bitte sende die Nachricht erneut, wenn andere Arbeit fertig ist."
     another_turn_running: "⏳ In dieser Sitzung läuft noch ein anderer Zug. Zum Schutz des Transkripts wurde diese Nachricht nicht verarbeitet. Warten Sie, bis der aktive Zug abgeschlossen ist, und senden Sie sie dann erneut."
     behavior_queue_short: "reiht für nächsten Zug ein"
     behavior_queue_long: "Nachrichten werden für den nächsten Zug eingereiht, während Hermes beschäftigt ist."

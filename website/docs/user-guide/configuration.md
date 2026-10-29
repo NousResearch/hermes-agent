@@ -1257,6 +1257,25 @@ Sessions that are mid-turn, the `protect_recent` most recently used ones, and an
 Agent cache pressure: anon RSS 6802MB over budget 6656MB — evicting 5 LRU session(s): ...
 ```
 
+## Gateway Memory Guard
+
+On a small VPS or container, concurrent turns and their children (browsers, terminal commands) can push the host past its memory ceiling. The kernel OOM killer then picks a victim, and without help that is often the gateway, which ends every session at once. Two defenses are on by default on Linux:
+
+- **Turns wait for memory.** Before a new turn starts, the gateway reads how much memory is left: the tighter of the cgroup limit it runs under (`memory.max`/`memory.high` minus current use, with reclaimable page cache credited back) and `MemAvailable`. Below `critical_mb` a person's turn waits; background work (cron runs, internal events, new kanban workers) already waits below `low_mb` and never goes ahead of a waiting person. The person gets one "waiting for memory" message, and the turn starts on its own once memory frees. If it can't start within `max_wait_seconds`, it is refused with a message asking to resend, and nothing has run. Running turns are never touched.
+- **Children die first.** Terminal commands and browsers Hermes spawns get an `oom_score_adj` 500 higher than Hermes itself, so if the ceiling is crossed anyway the kernel kills the command and the turn sees a killed process, while the gateway and every other session keep running.
+
+```yaml
+gateway:
+  memory_guard:
+    enabled: true
+    critical_mb: auto       # people wait below this; auto = 10% of the ceiling, max 256
+    low_mb: auto            # background waits below this; auto = 20% of the ceiling, max 512
+    reserve_mb: 128         # held for 30s per started turn so a released queue can't stampede
+    max_wait_seconds: 300
+```
+
+The `auto` floors are small on purpose: on a large host the guard only engages right before an OOM. `hermes status` shows the current level, the free memory the gateway sees and how many turns are waiting.
+
 ## Context Engine
 
 The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](../developer-guide/context-compression-and-caching.md)). Plugin engines can replace it with alternative strategies.

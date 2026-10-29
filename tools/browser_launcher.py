@@ -429,8 +429,11 @@ def _prepare_dir(user_data_dir: str, ephemeral: bool) -> None:
 def _spawn(argv: list[str], env: dict, user_data_dir: str) -> subprocess.Popen:
     log_path = os.path.join(user_data_dir, _LAUNCH_LOG)
     with open(log_path, "wb") as log:
-        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
                                 **_spawn_kwargs())
+    from hermes_platform.oom import prefer_as_oom_victim
+    prefer_as_oom_victim(proc.pid)
+    return proc
 
 
 def _attach_running(key: str, user_data_dir: str, home_key: str) -> Optional[LaunchedBrowser]:

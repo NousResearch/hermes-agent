@@ -450,6 +450,22 @@ def _launch_env_only_credentials(home, env):
     return {k: v for k, v in missing.items() if k not in plain}
 
 
+def _worker_cwd():
+    """Tree root the managed-worker child runs from.
+
+    The child is spawned as ``python -m agent.managed_worker``, so it must run from the
+    root that owns the ``agent`` package it imports. Derive that root from the package
+    itself rather than from this module's own location: the two agree only while
+    ``gateway`` and ``agent`` are imported from one tree, and they diverge as soon as the
+    checkout is reached through a different path than the package (an installed
+    ``site-packages`` copy next to a source tree, a moved checkout). A child whose cwd
+    holds no ``agent`` package dies with ``No module named 'agent'`` before its hello
+    frame, which the owner books as ``EOFError: managed_worker_pipe_closed``.
+    """
+    import agent
+    return Path(agent.__file__).resolve().parent.parent
+
+
 def _interrupted_before_bootstrap(authority, row, cause=None):
     authority.pending_results[row['admission_id']] = {
         'result': {'final_response': '', 'interrupted': True, **({'interrupt_message': cause} if cause else {})},
@@ -588,7 +604,18 @@ async def _spawn_registered_worker(authority, ref, row):
     generation = row.get('generation')
     try:
         env = await asyncio.to_thread(_worker_env, authority)
-        cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
+        cwd = await asyncio.to_thread(_worker_cwd)
+        # The owner spawns `python -m agent.managed_worker`, which resolves ``agent`` from the
+        # child's cwd (the implicit ``-m`` cwd entry) -- and from nothing else: a routed
+        # profile's child env has the Hermes-owned PYTHONPATH entries stripped on purpose
+        # (strip_launch_profile_env), and the cwd entry is gone entirely under
+        # PYTHONSAFEPATH. Same pin as cron's external worker: the installed tree goes on
+        # the child's PYTHONPATH so the child can import ``agent`` regardless of cwd.
+        # Skipped when _worker_env returned None (single-profile gateway inheriting the
+        # process env byte-for-byte -- there is no env to pin).
+        if env is not None:
+            from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+            env = pin_hermes_tree_on_pythonpath(env, cwd)
         from gateway.session_worker_spawn import acquire_process
         from gateway.session_managed_worker_log import worker_log_path
         log_path = worker_log_path(authority.profile_id)

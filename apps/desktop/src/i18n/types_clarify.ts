@@ -12,6 +12,7 @@ export interface ClarifyCopy {
   confirmAndContinueLabel: string
   singleSelectHint: string
   multiSelectHint: string
+  recommended: string
   oneQuestion: string
   questionProgress: (answered: number, total: number) => string
   notDelivered: string

@@ -13,6 +13,7 @@ export const enClarify: ClarifyCopy = {
   confirmAndContinueLabel: 'Confirm and continue',
   singleSelectHint: 'Pick one',
   multiSelectHint: 'Select all that apply',
+  recommended: '(Recommended)',
   oneQuestion: '1 question',
   questionProgress: (answered, total) => `${answered} of ${total} answered`,
   notDelivered:

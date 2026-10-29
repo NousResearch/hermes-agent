@@ -13,6 +13,7 @@ export const ruClarify: Partial<ClarifyCopy> = {
   confirmAndContinueLabel: 'Подтвердить и продолжить',
   singleSelectHint: 'Выберите один',
   multiSelectHint: 'Выберите все подходящие',
+  recommended: '(Рекомендуется)',
   oneQuestion: '1 вопрос',
   questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
   notDelivered:

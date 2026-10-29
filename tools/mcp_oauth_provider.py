@@ -93,6 +93,30 @@ class HermesProviderMixin:
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        # oauth.scope is the operator's least-privilege choice: before every authorization the SDK replaces
+        # client_metadata.scope with the challenge scope or the server's whole scopes_supported (and unions
+        # step-up challenges into it), so the configured value is kept here and re-applied (#93719, #101467).
+        self._hermes_configured_scope = getattr(self.context.client_metadata, "scope", None) or None
+        self._hermes_challenge_scope: str | None = None
+
+    def _hermes_pin_configured_scope(self) -> None:
+        """Request exactly ``oauth.scope`` when it is set. Scopes the SDK would add from ``scopes_supported``
+        are dropped (logged); scopes the server's 401/403 challenge *demands* beyond it fail closed, so a
+        step-up never opens a broader consent screen than the operator configured."""
+        pinned, challenge = self._hermes_configured_scope, self._hermes_challenge_scope
+        self._hermes_challenge_scope = None
+        if not pinned:
+            return
+        demanded = sorted(set((challenge or "").split()) - set(pinned.split()))
+        if demanded:
+            from mcp.client.auth.exceptions import OAuthFlowError
+            raise OAuthFlowError(f"MCP server demands scopes outside the configured oauth.scope ({' '.join(demanded)}); "
+                                 "not requesting them. Add them to oauth.scope if you mean to grant them.")
+        dropped = sorted(set((self.context.client_metadata.scope or "").split()) - set(pinned.split()))
+        if dropped:
+            self._hermes_logger.info("MCP OAuth: requesting the configured oauth.scope only; not requesting %s",
+                                     " ".join(dropped))
+        self.context.client_metadata.scope = pinned
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -103,6 +127,7 @@ class HermesProviderMixin:
             raise OAuthNonInteractiveError(
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
+        self._hermes_pin_configured_scope()
         self._tolerate_missing_iss_for_known_server()
         self._request_google_offline_access()
         return await super()._perform_authorization()
@@ -182,7 +207,8 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+        if not (metadata_issued_by_origin(metadata, self.context.auth_server_url, response)
+                or issuer_differs_only_by_root_slash(metadata.issuer, self.context.auth_server_url)):
             return response
         self._hermes_logger.info(
             "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
@@ -275,6 +301,9 @@ class HermesProviderMixin:
                     except BaseException as exc:
                         sent, thrown = None, exc
                     else:
+                        if getattr(sent, "status_code", None) in (401, 403):
+                            from mcp.client.auth.utils import extract_scope_from_www_auth
+                            self._hermes_challenge_scope = extract_scope_from_www_auth(sent)
                         failure = _asm_discovery_failure(sent)
                         if failure:
                             discovery_failures.append(failure)
@@ -549,6 +578,18 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def issuer_differs_only_by_root_slash(issuer: Any, advertised: str | None) -> bool:
+    """``https://host`` vs ``https://host/``: the same identifier (RFC 3986 §6.2.3), which the SDK's
+    exact-string check (RFC 8414 §3.3) rejects. Google's MCP servers advertise
+    ``https://accounts.google.com/`` while its metadata names ``https://accounts.google.com`` (#137289).
+    Origin-only identifiers; any path, query or other difference still goes through the exact check."""
+    a, b = str(issuer or ""), str(advertised or "")
+    if not a or not b or a == b or a.rstrip("/") != b.rstrip("/"):
+        return False
+    parts = urlsplit(a.rstrip("/"))
+    return parts.scheme == "https" and bool(parts.netloc) and not parts.path and not parts.query and not parts.fragment
 
 
 def google_offline_access_params(context: Any) -> dict[str, str]:

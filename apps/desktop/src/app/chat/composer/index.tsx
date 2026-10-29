@@ -445,8 +445,11 @@ export function ChatBar({
     inputDisabled,
     loadIntoComposer,
     // The submit engine's only cancel call is the Stop-button branch (busy +
-    // empty composer) — an explicit halt, so it parks the queue.
+    // empty composer) — an explicit halt, so it parks the queue. An interrupt
+    // that carries a draft is the opposite case: it exists to REACH the queue,
+    // so it takes the raw cancel and lets the settle drain run the draft.
     onCancel: haltRun,
+    onInterruptTurn: onCancel,
     onSteer,
     onSteerHidden,
     onSubmit,

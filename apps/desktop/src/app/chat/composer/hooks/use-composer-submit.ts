@@ -64,6 +64,8 @@ interface UseComposerSubmitArgs {
   inputDisabled: boolean
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
   onCancel: ChatBarProps['onCancel']
+  /** Ends the live turn WITHOUT parking the queue, so the settle drain runs the draft just queued. */
+  onInterruptTurn: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
@@ -105,6 +107,7 @@ export function useComposerSubmit({
   inputDisabled,
   loadIntoComposer,
   onCancel,
+  onInterruptTurn,
   onSteer,
   onSteerHidden,
   onSubmit,
@@ -357,11 +360,20 @@ export function useComposerSubmit({
       } else if (busyInputMode !== null) {
         steerDraft(busyInputMode)
       }
+    } else if (payloadPresent && !blockingPrompt && busyInputMode !== 'queue' && busyInputMode !== null) {
+      // A draft carrying attachments cannot ride a redirect (an image cannot be
+      // carried on a tool result), but an interrupt does not carry it either: it
+      // ends this turn, and the payload then runs as the next one through the
+      // ordinary attachment path. Queue it first so the settle drain owns
+      // delivery, then interrupt WITHOUT the halt wrapper — that one parks the
+      // queue, which would strand exactly the draft the user just sent.
+      queueCurrentDraft()
+      void Promise.resolve(onInterruptTurn())
     } else if (payloadPresent) {
-      // Attachments can't ride a redirect (no tool-result image carriage) —
-      // queue the whole payload for the next turn. Same for a turn parked on
-      // an approval/sudo/secret prompt: a steer can't reach the model while
-      // the tool batch is blocked, so the message runs as the next turn.
+      // A turn parked on an approval/sudo/secret prompt, an explicit queue
+      // policy, or an unloaded policy: a steer can't reach the model while the
+      // tool batch is blocked and the user may have asked to wait, so the
+      // message runs as the next turn.
       queueCurrentDraft()
     } else {
       // Stop button (the only way to reach here while busy with an empty

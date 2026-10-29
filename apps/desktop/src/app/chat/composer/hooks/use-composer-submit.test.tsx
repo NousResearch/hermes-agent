@@ -70,6 +70,7 @@ function renderSubmitHook({
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
   const onCancel = vi.fn()
+  const onInterruptTurn = vi.fn()
   const onSteer = vi.fn(async () => true)
   const onSteerHidden = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
@@ -127,6 +128,7 @@ function renderSubmitHook({
         inputDisabled,
         loadIntoComposer,
         onCancel,
+        onInterruptTurn,
         onSteer,
         onSteerHidden,
         onSubmit,
@@ -148,6 +150,7 @@ function renderSubmitHook({
     focusInput,
     hook,
     onCancel,
+    onInterruptTurn,
     onSteer,
     onSteerHidden,
     onSubmit,
@@ -478,13 +481,39 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onCancel).not.toHaveBeenCalled()
   })
 
-  it('queues an attachment-bearing follow-up while busy', () => {
-    const attachment: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.txt' }
+  it('interrupts the live turn for an attachment-bearing follow-up (#96759)', () => {
+    // An image cannot ride a redirect, but an interrupt carries no payload: it
+    // ends the turn and the draft runs next with its attachments. Queueing it
+    // silently cost the user the live turn's context for no reason.
+    const attachment: ComposerAttachment = { id: 'doc', kind: 'image', label: 'shot.png' }
 
-    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+    const { hook, onCancel, onInterruptTurn, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       attachments: [attachment],
       busy: true,
-      text: 'read this'
+      text: 'this is what I meant'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    // Queued first so the settle drain owns delivery...
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    // ...then interrupted WITHOUT the halt wrapper, which would park that queue.
+    expect(onInterruptTurn).toHaveBeenCalledTimes(1)
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('still queues an attachment-bearing follow-up in queue mode', () => {
+    const attachment: ComposerAttachment = { id: 'doc', kind: 'image', label: 'shot.png' }
+
+    const { hook, onCancel, onInterruptTurn, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      attachments: [attachment],
+      busy: true,
+      busyInputMode: 'queue',
+      text: 'this is what I meant'
     })
 
     act(() => {
@@ -492,6 +521,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onInterruptTurn).not.toHaveBeenCalled()
     expect(onSteer).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()

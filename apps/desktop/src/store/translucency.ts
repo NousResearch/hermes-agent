@@ -45,8 +45,9 @@ import {
 } from '@hermes/shared/translucency'
 import { atom, computed } from 'nanostores'
 
-import { isBrowserHostedDesktop, isMacPlatform, isWindowsPlatform } from '@/lib/platform'
-import { readJson, writeJson } from '@/lib/storage'
+import { hostHas } from '@/lib/host-capabilities'
+import { isMacPlatform, isWindowsPlatform } from '@/lib/platform'
+import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 
 export {
   defaultTranslucencyValues,
@@ -70,7 +71,7 @@ export type { Appearance }
  */
 /** Browser-hosted Desktop has no native window material or opacity surface. */
 export const GLASS_SUPPORTED =
-  !isBrowserHostedDesktop() &&
+  hostHas('windowMaterial') &&
   (typeof window !== 'undefined' && typeof window.hermesDesktop?.glassSupported === 'boolean'
     ? window.hermesDesktop.glassSupported
     : isMacPlatform() || isWindowsPlatform())
@@ -81,7 +82,7 @@ export const GLASS_SUPPORTED =
  * (see `$translucency`): a hidden lever must not move the window.
  */
 export const TRANSLUCENCY_SUPPORTED =
-  !isBrowserHostedDesktop() &&
+  hostHas('windowMaterial') &&
   (typeof window !== 'undefined' && typeof window.hermesDesktop?.translucencySupported === 'boolean'
     ? window.hermesDesktop.translucencySupported
     : isMacPlatform() || isWindowsPlatform())
@@ -95,6 +96,19 @@ export const GLASS_IS_WINDOWS = GLASS_SUPPORTED && !isMacPlatform()
 // inherit until one of them is edited.
 const KEY = 'hermes.desktop.translucency.v2'
 const LEGACY_KEY = 'hermes.desktop.translucency.v1'
+
+// An older build persisted the book at every load, so a stored default is no
+// choice: keep it provisional, or a browser upgraded from that build would
+// seed it into the machine's shared store over native's tuned glass (#145536).
+if (typeof window !== 'undefined') {
+  const stored = readKey(KEY)
+
+  const book = JSON.stringify(normalizeBook(readJson<unknown>(KEY), true))
+
+  if (stored !== null && [true, false].some(glass => book === JSON.stringify(normalizeBook(null, glass)))) {
+    writeKey(KEY, stored, { isDefault: true, provisional: true })
+  }
+}
 
 const read = (): TranslucencyBook =>
   normalizeBook(readJson<unknown>(KEY) ?? readJson<unknown>(LEGACY_KEY), GLASS_SUPPORTED)
@@ -366,9 +380,19 @@ if (typeof window !== 'undefined') {
   // setOpacity in clear mode and nothing at all under glass.
   let storageTimer: null | number = null
 
+  // Only an edit is written. The book this window loaded, or adopted from a
+  // sibling or the machine's shared preferences, already resolves from
+  // storage: writing it back would push this window's default or its
+  // normalisation (no glass in a browser) into the shared store over the
+  // value the user set in native Desktop (#145213). A v1 state still lands in
+  // v2 on first load, since v2 does not resolve to it yet.
   const persist = () => {
     storageTimer = null
-    writeJson(KEY, $translucencyBook.get())
+    const book = $translucencyBook.get()
+
+    if (JSON.stringify(book) !== JSON.stringify(normalizeBook(readJson<unknown>(KEY), GLASS_SUPPORTED))) {
+      writeJson(KEY, book)
+    }
   }
 
   // The RESOLVED state drives paint and IPC — main only ever cares about the

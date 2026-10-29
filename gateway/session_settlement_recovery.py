@@ -3,7 +3,9 @@ import asyncio
 import logging
 import sqlite3
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_steer_transfers
+from hermes_state_runtime import (
+    RuntimeStoreError, _admission, _epoch, get_session_admission, settle_steer_transfers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,13 @@ async def recover_failed_settlement(authority, row):
     # and its captured result until the storage fence can commit; never manufacture a reply.
     while True:
         try:
+            # A row an operator already resolved (``/discard``) or whose settlement committed
+            # before the failure was reported is not a failed write. Stamping it again would
+            # re-arm the pause the resolution just cleared, and retrying here would re-arm it on
+            # every attempt: report the resolved status and let the caller publish it instead.
+            current = get_session_admission(authority.db, admission_id=row['admission_id'])
+            if current is not None and current['status'] in {'terminal', 'unknown'}:
+                return current['status']
             from gateway.session_runtime_workers import track_mutation
             writer = track_mutation(authority, asyncio.to_thread(_mark_unknown, authority, row))
             return await asyncio.shield(writer)

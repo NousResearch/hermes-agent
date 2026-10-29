@@ -201,6 +201,9 @@ async def operation(authority, name, params, actor=None):
         from functools import partial
         from gateway.session_runtime_workers import tracked_write
         if isinstance(ref, dict):
+            terminal = await _prepare_submission(authority, ref, request_id)
+            if terminal is not None:
+                return terminal
             # The creation commit waits on the writer off the owner loop, like session.create (N50).
             from gateway.session_local_recovery import restore_local_session
             from hermes_state_local import commit_local_session
@@ -273,6 +276,41 @@ def _run_identified(run_job, job, execution_id, **kwargs):
         exit_cron_execution(token)
 
 
+def _prepare_identified(job, *, execution_id, extra_prompt, cancel_event):
+    from cron.scheduler import _prepare_job_prompt
+
+    job_id = job['id']
+    job_name = str(job.get('name') or job.get('prompt') or job_id or 'cron job')
+    return _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+
+
+async def _prepare_submission(authority, receipt, request_id):
+    """Run every pre-agent gate before the staged cron session is made durable."""
+    from gateway.run import _profile_runtime_scope
+
+    policy = receipt['policy']
+    data = json.loads(policy['request_json'])
+    execution_id = scheduler_execution_id(data['cron_job']['id'], request_id)
+    job = dict(data['cron_job'], execution_id=execution_id)
+    token = bind_execution(authority, receipt['session_id'], job['id'], execution_id)
+    try:
+        db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
+        with _profile_runtime_scope(db_path.parent):
+            early, prompt = await asyncio.to_thread(
+                _run_identified, _prepare_identified, job, execution_id,
+                extra_prompt=data['extra_prompt'], cancel_event=threading.Event(),
+            )
+    finally:
+        _execution.reset(token)
+
+    if early is not None:
+        flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}
+        return {'status': 'terminal', 'result': list(early), 'job_flags': flags}
+    data['prepared_prompt'] = prompt
+    policy['request_json'] = json.dumps(data)
+    return None
+
+
 async def execute(authority, ref, row, policy):
     from cron.scheduler import run_job
     from gateway.run import _profile_runtime_scope
@@ -298,8 +336,11 @@ async def execute(authority, ref, row, policy):
     try:
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):
-            result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
-                                             extra_prompt=data['extra_prompt'], cancel_event=cancel)
+            run_kwargs = {'extra_prompt': data['extra_prompt'], 'cancel_event': cancel}
+            if data.get('prepared_prompt') is not None:
+                run_kwargs['prepared_prompt'] = data['prepared_prompt']
+            result = await asyncio.to_thread(
+                _run_identified, run_job, job, execution_id, **run_kwargs)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
         # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.
         flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}

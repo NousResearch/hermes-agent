@@ -361,7 +361,7 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", my_memory_callback)
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
-    ctx.register_hook("on_session_end", my_cleanup_callback)
+    ctx.register_hook("on_session_end", my_turn_end_callback)
 ```
 
 **所有 hook 的通用规则：**
@@ -729,25 +729,24 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 
 **返回值：** 忽略。
 
-**使用场景：** 刷新缓冲区、关闭连接、持久化会话状态、记录会话时长、清理 `on_session_start` 中初始化的资源。
+**使用场景：** 逐轮工作：记录每一轮的结果、刷新本轮收集的数据。它不是会话生命周期钩子：`on_session_start` 中初始化的状态应在 [`on_session_finalize`](#on_session_finalize) 中释放；若在此处释放，第一轮结束后就丢了。
 
-**示例——刷新并清理：**
+**示例——记录每一轮的结果：**
 
 ```python
-_session_caches = {}
+_session_caches = {}  # filled by the on_session_start example above
 
-def cleanup_session(session_id, completed, interrupted, **kwargs):
-    cache = _session_caches.pop(session_id, None)
+def record_turn(session_id, completed, interrupted, **kwargs):
+    cache = _session_caches.get(session_id)  # .get, not .pop: the session continues
     if cache:
-        # Flush accumulated data to disk or external service
         status = "completed" if completed else ("interrupted" if interrupted else "failed")
-        print(f"Session {session_id} ended: {status}, {cache['tool_calls']} tool calls")
+        print(f"Turn in {session_id} ended: {status}")
 
 def register(ctx):
-    ctx.register_hook("on_session_end", cleanup_session)
+    ctx.register_hook("on_session_end", record_turn)
 ```
 
-**示例——会话时长追踪：**
+**示例——会话时长追踪。** 从 `on_session_start` 计到 `on_session_finalize`；若止于 `on_session_end`，只会测到第一轮。若设置 `compression.in_place: false`，压缩会在会话中途轮换 session id；`post_compaction` 以 `old_session_id` 报告旧 id。
 
 ```python
 import time, logging
@@ -756,18 +755,18 @@ logger = logging.getLogger(__name__)
 _start_times = {}
 
 def on_start(session_id, **kwargs):
-    _start_times[session_id] = time.time()
+    _start_times.setdefault(session_id, time.time())  # start can fire again for the same id
 
-def on_end(session_id, completed, interrupted, **kwargs):
+def on_finalize(session_id, platform, **kwargs):
     start = _start_times.pop(session_id, None)
     if start:
         duration = time.time() - start
-        logger.info("SESSION_DURATION session=%s seconds=%.1f completed=%s interrupted=%s",
-                     session_id, duration, completed, interrupted)
+        logger.info("SESSION_DURATION session=%s seconds=%.1f platform=%s",
+                     session_id, duration, platform)
 
 def register(ctx):
     ctx.register_hook("on_session_start", on_start)
-    ctx.register_hook("on_session_end", on_end)
+    ctx.register_hook("on_session_finalize", on_finalize)
 ```
 
 ---

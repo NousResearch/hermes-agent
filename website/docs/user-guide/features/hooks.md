@@ -382,7 +382,7 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", my_memory_callback)
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
-    ctx.register_hook("on_session_end", my_cleanup_callback)
+    ctx.register_hook("on_session_end", my_turn_end_callback)
     # Kanban board lifecycle (dependency-wait blocking may fire inside its transaction):
     ctx.register_hook("kanban_task_claimed", my_claim_callback)     # dispatcher process
     ctx.register_hook("kanban_task_completed", my_done_callback)    # worker process
@@ -971,25 +971,24 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 
 **Return value:** Ignored. Despite its name this hook fires after **every turn**, so it can't show the user anything. To show something when a session ends, return a message from [`on_session_finalize`](#on_session_finalize).
 
-**Use cases:** Flushing buffers, closing connections, persisting session state, logging session duration, cleanup of resources initialized in `on_session_start`.
+**Use cases:** Per-turn work: recording each turn's outcome, flushing data gathered during the turn. It is not a session-lifetime hook: release state initialized in `on_session_start` from [`on_session_finalize`](#on_session_finalize); releasing it here drops it after the first turn.
 
-**Example — flush and cleanup:**
+**Example — record each turn's outcome:**
 
 ```python
-_session_caches = {}
+_session_caches = {}  # filled by the on_session_start example above
 
-def cleanup_session(session_id, completed, interrupted, **kwargs):
-    cache = _session_caches.pop(session_id, None)
+def record_turn(session_id, completed, interrupted, **kwargs):
+    cache = _session_caches.get(session_id)  # .get, not .pop: the session continues
     if cache:
-        # Flush accumulated data to disk or external service
         status = "completed" if completed else ("interrupted" if interrupted else "failed")
-        print(f"Session {session_id} ended: {status}, {cache['tool_calls']} tool calls")
+        print(f"Turn in {session_id} ended: {status}")
 
 def register(ctx):
-    ctx.register_hook("on_session_end", cleanup_session)
+    ctx.register_hook("on_session_end", record_turn)
 ```
 
-**Example — session duration tracking:**
+**Example — session duration tracking.** Measure from `on_session_start` to `on_session_finalize`; ending at `on_session_end` would measure only the first turn. With `compression.in_place: false`, compaction rotates the session id mid-session; `post_compaction` reports the old id as `old_session_id`.
 
 ```python
 import time, logging
@@ -998,18 +997,18 @@ logger = logging.getLogger(__name__)
 _start_times = {}
 
 def on_start(session_id, **kwargs):
-    _start_times[session_id] = time.time()
+    _start_times.setdefault(session_id, time.time())  # start can fire again for the same id
 
-def on_end(session_id, completed, interrupted, **kwargs):
+def on_finalize(session_id, platform, **kwargs):
     start = _start_times.pop(session_id, None)
     if start:
         duration = time.time() - start
-        logger.info("SESSION_DURATION session=%s seconds=%.1f completed=%s interrupted=%s",
-                     session_id, duration, completed, interrupted)
+        logger.info("SESSION_DURATION session=%s seconds=%.1f platform=%s",
+                     session_id, duration, platform)
 
 def register(ctx):
     ctx.register_hook("on_session_start", on_start)
-    ctx.register_hook("on_session_end", on_end)
+    ctx.register_hook("on_session_finalize", on_finalize)
 ```
 
 ---

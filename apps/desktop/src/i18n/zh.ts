@@ -870,7 +870,8 @@ export const zhOverrides = {
       timezone: '时区',
       display: {
         personality: '人格',
-        showReasoning: '推理过程块'
+        showReasoning: '推理过程块',
+        busyInputMode: '运行中按 Enter 时'
       },
       desktop: {
         repoScanEnabled: '自动发现代码仓库',
@@ -1046,7 +1047,9 @@ export const zhOverrides = {
       fallbackProviders: '默认模型失败时尝试的备用 provider:model 条目。',
       display: {
         personality: '新会话的默认助手风格。',
-        showReasoning: '当后端提供推理内容时予以显示。'
+        showReasoning: '当后端提供推理内容时予以显示。',
+        busyInputMode:
+          '代理正在运行时发送消息的处理方式。Interrupt 会重定向当前轮次，Steer 在不停止当前轮次的情况下把内容加入下一个工具结果，Queue 将其作为下一轮执行。CLI、TUI 与各消息网关读取同一设置。'
       },
       desktop: {
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',

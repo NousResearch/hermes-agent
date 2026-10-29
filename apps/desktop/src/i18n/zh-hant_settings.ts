@@ -438,7 +438,8 @@ export const zhHantSettings = {
       timezone: '時區',
       display: {
         personality: '人格',
-        showReasoning: '推理區塊'
+        showReasoning: '推理區塊',
+        busyInputMode: '執行中按 Enter 時'
       },
       desktop: {
         repoScanEnabled: '自動探索程式碼儲存庫',
@@ -614,7 +615,9 @@ export const zhHantSettings = {
       fallbackProviders: '預設模型失敗時要嘗試的備用 provider:model 項目。',
       display: {
         personality: '新工作階段的預設助手風格。',
-        showReasoning: '後端提供推理內容時顯示該區塊。'
+        showReasoning: '後端提供推理內容時顯示該區塊。',
+        busyInputMode:
+          '代理正在執行時傳送訊息的處理方式。Interrupt 會重新導向目前回合，Steer 在不停止目前回合的情況下把內容加入下一個工具結果，Queue 將其作為下一回合執行。CLI、TUI 與各訊息閘道讀取同一設定。'
       },
       desktop: {
         repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',

@@ -1157,7 +1157,8 @@ export const frOverrides = {
       timezone: 'Fuseau horaire',
       display: {
         personality: 'Personnalité',
-        showReasoning: 'Blocs de raisonnement'
+        showReasoning: 'Blocs de raisonnement',
+        busyInputMode: "Entrée pendant l'exécution"
       },
       desktop: {
         repoScanEnabled: 'Découverte automatique de dépôts',
@@ -1332,7 +1333,9 @@ export const frOverrides = {
       fallbackProviders: 'Entrées fournisseur:modèle de secours à essayer si le modèle par défaut échoue.',
       display: {
         personality: "Style par défaut de l'assistant pour les nouvelles sessions.",
-        showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.'
+        showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.',
+        busyInputMode:
+          "Définit ce que fait un message envoyé pendant l'exécution de l'agent. Interrupt redirige le tour en cours, Steer l'ajoute au prochain résultat d'outil sans arrêter le tour, et Queue l'exécute comme tour suivant. La CLI, la TUI et les passerelles de messagerie lisent le même réglage."
       },
       desktop: {
         repoScanEnabled: 'Analyser les dossiers locaux à la recherche de dépôts Git à afficher dans Projets.',

@@ -661,7 +661,8 @@ export const jaOverrides = {
       timezone: 'タイムゾーン',
       display: {
         personality: '人格',
-        showReasoning: '推論ブロック'
+        showReasoning: '推論ブロック',
+        busyInputMode: '実行中の Enter'
       },
       desktop: {
         repoScanEnabled: 'リポジトリの自動検出',
@@ -826,7 +827,9 @@ export const jaOverrides = {
       fallbackProviders: 'デフォルトモデルが失敗したときに試す provider:model 形式のバックアップです。',
       display: {
         personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
-        showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
+        showReasoning: 'バックエンドが推論内容を提供したときに表示します。',
+        busyInputMode:
+          'エージェントの実行中に送信したメッセージの扱いを指定します。Interrupt は現在のターンをリダイレクトし、Steer はターンを止めずに次のツール結果へ追加し、Queue は次のターンとして実行します。CLI・TUI・各メッセージングゲートウェイが同じ設定を読み取ります。'
       },
       desktop: {
         repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',

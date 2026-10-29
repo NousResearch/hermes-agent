@@ -604,7 +604,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
         windows = res.get("windows") or []
         default_capture = res.get("pid") is not None and bool(windows) and windows[0].get("window_id") is not None
     elif action == "run_steps":
-        default_capture = getattr(backend, "_active_window_id", None) is not None
+        default_capture = args.get("pid") is not None and args.get("window_id") is not None
     return _maybe_follow_capture(
         backend, res, bool(args.get("capture_after", default_capture)),
         fence, session_id=session_id, driver_action=action in _DRIVER_ACTIONS)

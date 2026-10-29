@@ -130,7 +130,9 @@ def test_new_actions_use_existing_approval_classification(driver, monkeypatch, a
     ("focus_app", {"app": "Editor"}, 1),
     ("launch_app", {"name": "Editor"}, 0),
     ("clipboard_write", {"text": "hi"}, 0),
-    ("run_steps", {"steps": [{"tool": "press_key", "args": {"key": "tab"}}]}, 1),
+    ("run_steps", {"pid": 42, "window_id": 7,
+                   "steps": [{"tool": "press_key", "args": {"key": "tab"}}]}, 1),
+    ("run_steps", {"app": "Editor", "steps": [{"tool": "press_key", "args": {"key": "tab"}}]}, 0),
     ("capture", {}, 1),
     ("wait", {"seconds": 0}, 0),
     ("list_apps", {}, 0),
@@ -151,6 +153,7 @@ def test_capture_after_defaults(driver, monkeypatch, action, params, expected):
 @pytest.mark.parametrize("action,params,capture_after", [
     ("click", {"coordinate": [10, 20]}, False),
     ("launch_app", {"name": "Editor"}, False),
+    ("run_steps", {"app": "Editor", "steps": [{"tool": "press_key", "args": {"key": "tab"}}]}, True),
     ("clipboard_read", {}, True),
     ("clipboard_write", {"text": "hi"}, True),
     ("verify_state", {"pid": 42, "window_id": 7, "expect": [{}]}, True),

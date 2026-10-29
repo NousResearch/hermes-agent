@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 
 from plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, cached_sdk_client, document, keyless_extract, keyless_search,
-    keyless_variant_schema, page_error, provider_env, run_extract_async, run_search, search_ok, use_keyless, web_hit,
+    keyless_variant_schema, provider_env, run_extract_async, run_search, search_ok, use_keyless, vendor_error_entry, web_hit,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
             response = await _get_async_client().beta.extract(urls=urls, full_content=True)
             results = [document(r.url or "", r.title or "", r.full_content or "\n\n".join(r.excerpts or [])) for r in response.results or []]
             return results + [
-                {**page_error(e.url or "", e.content or e.error_type or "extraction failed"), "metadata": {"sourceURL": e.url or ""}}
+                vendor_error_entry(e.url or "", status=getattr(e, "http_status_code", None), reason=e.error_type, body=e.content)
                 for e in response.errors or []
             ]
 

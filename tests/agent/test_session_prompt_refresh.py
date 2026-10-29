@@ -262,10 +262,11 @@ def test_no_request_means_no_rebuild_and_no_prompt_source_reads(profile, monkeyp
 def test_refresh_rebuilds_the_skills_index_from_disk_even_when_its_cache_cannot_see_the_edit(profile, monkeypatch):
     """Coarse filesystem timestamps can leave an in-place, same-size SKILL.md edit with an unchanged
     stat signature (see ``utils.RACY_MTIME_WINDOW_NS``); the skills index cache, keyed on those
-    signatures, would then keep serving the old render. The refresh must rebuild from disk anyway."""
+    versions, would then keep serving the old render. The refresh must rebuild from disk anyway."""
     import agent.prompt_builder as pb
 
-    monkeypatch.setattr(pb, "file_signature", lambda st: (1, st.st_size, 1, 1))  # timestamps that never move
+    # A key that never moves on a same-size edit (timestamps and digest frozen).
+    monkeypatch.setattr(pb, "file_cache_version", lambda path, st, **_kw: (1, st.st_size, 1, 1))
     srv, home, _project = profile
     history, first = _turn(srv, home, "chat-a", "hello", [])
     assert "Description revision one." in first

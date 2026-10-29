@@ -288,8 +288,10 @@ model:
 # implicit non-stream stale detector is auto-disabled for local endpoints
 # and can scale upward for very large contexts.
 #
-# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
-# SDK paths) — those use boto3 with its own timeout configuration.
+# AWS Bedrock (providers.bedrock): the resolved value is the socket read
+# timeout of the boto3 Converse client and of the AnthropicBedrock SDK
+# client, chosen per request for the active model. Connect stays fixed
+# (botocore 60s / SDK 10s); unset keeps botocore's 60s read on Converse.
 #
 # providers:
 #   ollama-local:
@@ -581,6 +583,11 @@ terminal:
 # Security
 # =============================================================================
 # security:
+#   # Private/internal addresses (localhost, 192.168.x.x, CGNAT) for web_extract,
+#   # vision/media URL fetches and cloud/CDP browsers. The local Chromium and the
+#   # hybrid sidecar (browser.auto_local_for_private_urls) are not covered.
+#   # Cloud-metadata endpoints stay blocked even when true.
+#   allow_private_urls: false
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
@@ -621,6 +628,12 @@ browser:
   # executable_path: ""
   # user_data_dir: ""
   # chromium_args: ["--lang=de"]
+
+  # With a cloud provider (Browserbase, Browser Use, ...), LAN/localhost URLs
+  # open in a local Chromium sidecar on this host instead. The sidecar ignores
+  # security.allow_private_urls (like the plain local Chromium, it reaches what
+  # the terminal reaches); set false to refuse private URLs instead.
+  # auto_local_for_private_urls: true
 
 # =============================================================================
 # Tool Loop Guardrails
@@ -1048,6 +1061,22 @@ max_concurrent_sessions: null
 group_sessions_per_user: true
 
 # =============================================================================
+# Native Hosted-Room Discussion Limits
+# =============================================================================
+# Shared ceilings per discussion across all members, applied to all native hosted
+# rooms (not Desktop renderer/mirrored rooms). Positive integers only: no 0,
+# unlimited, null, booleans, strings, or floats; an invalid value is logged and
+# the defaults apply. Omitted keys keep these defaults.
+# Set in the root owner's config.yaml beside shared-state.db, not a member's
+# profile config. Read once at startup; refresh every server process sharing the
+# room database to apply (not just the service the client connects to).
+# For a larger discussion budget, use max_rounds: 6 and max_messages: 30.
+hosted_rooms:
+  discussion:
+    max_rounds: 3
+    max_messages: 10  # Total visible bot replies, not per member
+
+# =============================================================================
 # Session Storage Retention (state.db)
 # =============================================================================
 # ~/.hermes/state.db keeps every session, message, and tool call, plus the
@@ -1441,8 +1470,7 @@ platform_toolsets:
   signal: [hermes-signal]
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
-  teams: [hermes-teams]
-  google_chat: [hermes-google_chat]
+  # Plugin platforms (teams, google_chat, ...) need no row: they default to hermes-<platform> once loaded.
 
 # =============================================================================
 # Gateway Platform Settings

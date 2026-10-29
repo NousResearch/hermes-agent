@@ -1,13 +1,13 @@
 name: dynamic-memory
 title: "Dynamic Memory (keyword index)"
 repo: https://github.com/ockentap/hermes-dynamic-memory
-sha: 486a207e2c75d3735d771d954b65962b496911a6
+sha: dee301e7a76d110437dc0f02ab31715f39fa2497
 subdir: plugin/memory-shaper
-description: "Keyword-index memory for Hermes: a small resident index of 'keyword,keyword -> file.md' routing lines stays in the system prompt while verbose topic files stay on disk and are read only when the conversation touches their keywords. Retrieval is done by the model reading a literal index — no embeddings, no vector store, no retrieval service. Disclosure — a pre_tool_call hook and a tool_execution middleware refuse any other tool's write to the memory index (write_file, patch, shell redirects, tee, sed -i) and refuse malformed index lines with a fix message rather than fixing them silently, while read-only commands always pass so the agent can audit the file it maintains; a documented escape hatch lets a scripted rewrite proceed when the sentinel file $HERMES_HOME/state/.memory_shaper_rewrite_approved exists. The plugin touches only $HERMES_HOME/memories/MEMORY.md and its sibling topic files, makes no network calls, runs no subprocesses and spawns nothing in the background."
+description: "Keyword-index memory for Hermes: a small resident index of 'keyword,keyword -> file.md' routing lines stays in the system prompt while verbose topic files stay on disk and are read only when the conversation touches their keywords. Retrieval is done by the model reading a literal index — no embeddings, no vector store, no retrieval service. Disclosure — a pre_tool_call hook and a tool_execution middleware refuse a non-memory tool's write to the memory index across the recognised write vectors (write_file, patch, shell redirects, tee, sed -i; best-effort against arbitrary shell indirection) and refuse malformed index lines with a fix message rather than fixing them silently, while read-only commands always pass so the agent can audit the file it maintains; a documented escape hatch lets a scripted rewrite proceed when the sentinel file $HERMES_HOME/state/.memory_shaper_rewrite_approved exists. Beyond $HERMES_HOME/memories/, the guard reads one thing: when a shell command invokes python3 on a script file, it opens that script (and the execute_code payload is already in args) to check whether the code would write the index; no file content is retained or sent anywhere. No network calls, no subprocesses, nothing spawned in the background."
 maintainer: ockentap
 tier: community
 category: memory
-version: "1.4.5"
+version: "1.4.6"
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/ockentap/hermes-dynamic-memory#readme
 readme: true

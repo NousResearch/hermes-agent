@@ -397,15 +397,17 @@ def _post_provision(
         with _json_post(provision_url, access_token, body, timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        from gateway.relay.http_diagnostics import connector_reason, describe_http_error, read_error_body
+        from gateway.relay import http_diagnostics as diag
 
-        err_body = read_error_body(exc)
-        detail = connector_reason(err_body)
-        if detail and 400 <= exc.code < 500 and exc.code not in (408, 429):
+        err_body = diag.read_error_body(exc)
+        # Never log the identity token we sent, even if a hop echoes it back bare.
+        detail = diag.redact_excerpt(diag.connector_reason(err_body), (access_token,))
+        if detail and 400 <= exc.code < 500 and exc.code not in (408, 429) and not diag.answered_by_proxy(exc):
             # The connector itself refused, with a reason: retrying soon will not change it.
             raise ProvisionRefused(f"connector returned HTTP {exc.code}: {detail}") from exc
-        # No connector reason (a proxy's page) or a 5xx/408/429: name whoever answered.
-        raise RuntimeError(describe_http_error(exc, err_body) + (f": {detail}" if detail else "")) from exc
+        # No connector reason (a proxy's page, JSON or not) or a 5xx/408/429: name whoever answered.
+        described = diag.describe_http_error(exc, err_body, secrets=(access_token,))
+        raise RuntimeError(described + (f": {detail}" if detail else "")) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"could not reach connector: {exc.reason}") from exc
 

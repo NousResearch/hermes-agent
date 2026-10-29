@@ -381,7 +381,11 @@ def _devtools_endpoint_live(port: int, path: str) -> bool:
         import requests
         from agent.proxy_bypass import loopback_request_kwargs
         url = f"http://127.0.0.1:{port}/json/version"
-        ws = str(requests.get(url, timeout=2, **loopback_request_kwargs(url)).json().get("webSocketDebuggerUrl") or "")
+        response = requests.get(url, timeout=2, **loopback_request_kwargs(url))
+        try:
+            ws = str(response.json().get("webSocketDebuggerUrl") or "")
+        finally:
+            response.close()
     except Exception:  # health: allow BLE001 -- any probe failure means "not a live browser on this port"
         return False
     return ws.endswith(path)

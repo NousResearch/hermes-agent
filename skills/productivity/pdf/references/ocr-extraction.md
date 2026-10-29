@@ -3,8 +3,8 @@
 Scripts referenced below live in this skill's scripts/ directory.
 # PDF & Document Extraction
 
-For DOCX: see the `docx` skill (create/edit) or use `python-docx` for structured reads.
-For PPTX: see the `powerpoint` skill (full create/read/edit support).
+For DOCX: see the `microsoft-office` skill (create/edit) or use `python-docx` for structured reads.
+For PPTX: see the `microsoft-office` skill (full create/read/edit support).
 For PDF manipulation (merge, split, forms, watermarks, creation): see the `pdf` skill.
 This skill covers **text extraction from PDFs and scanned documents**.
 
@@ -51,23 +51,47 @@ If the user needs marker capabilities but the system lacks ~5GB free disk:
 
 ## pymupdf (lightweight)
 
+Give it a separate side environment (~110 MB with its deps; never
+`pip install` into Hermes's own interpreter): Hermes builds it when `hermes`
+is on PATH, otherwise (a Docker sandbox without Hermes) a venv in the sandbox
+home takes the same requirements. Then run the helper and the inline snippet
+below with `"$PY"` instead of `python`:
+
 ```bash
-pip install pymupdf pymupdf4llm
+if command -v hermes >/dev/null 2>&1; then
+  PY="$(hermes pm environment pdf-pymupdf --requirement 'pymupdf>=1.26,<3' --requirement 'pymupdf4llm>=0.2,<3')"
+else
+  PY="$HOME/.cache/hermes-pdf-pymupdf-venv/bin/python"
+  "$PY" -c "import pymupdf, pymupdf4llm" 2>/dev/null || (
+    # concurrency-safe build: see the documents block in SKILL.md
+    mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-pdf-pymupdf-venv.XXXXXX)" || exit 1
+    old="$(readlink hermes-pdf-pymupdf-venv)"  # an earlier build that no longer imports, if any
+    python3 -m venv "$stage" &&
+      "$stage/bin/python" -m pip install -q --disable-pip-version-check 'pymupdf>=1.26,<3' 'pymupdf4llm>=0.2,<3' &&
+      "$stage/bin/python" -c "import pymupdf, pymupdf4llm" &&
+      if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-pdf-pymupdf-venv
+      elif [ "$(readlink hermes-pdf-pymupdf-venv)" = "$old" ]; then
+        ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-pdf-pymupdf-venv &&
+          case "$old" in hermes-pdf-pymupdf-venv.??????) rm -rf "$old" ;; esac
+      fi 2>/dev/null
+    [ "$(readlink hermes-pdf-pymupdf-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
+  )
+fi
 ```
 
 **Via helper script**:
 ```bash
-python scripts/extract_pymupdf.py document.pdf              # Plain text
-python scripts/extract_pymupdf.py document.pdf --markdown    # Markdown
-python scripts/extract_pymupdf.py document.pdf --tables      # Tables
-python scripts/extract_pymupdf.py document.pdf --images out/ # Extract images
-python scripts/extract_pymupdf.py document.pdf --metadata    # Title, author, pages
-python scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
+"$PY" scripts/extract_pymupdf.py document.pdf              # Plain text
+"$PY" scripts/extract_pymupdf.py document.pdf --markdown    # Markdown
+"$PY" scripts/extract_pymupdf.py document.pdf --tables      # Tables
+"$PY" scripts/extract_pymupdf.py document.pdf --images out/ # Extract images
+"$PY" scripts/extract_pymupdf.py document.pdf --metadata    # Title, author, pages
+"$PY" scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
 ```
 
 **Inline**:
 ```bash
-python -c "
+"$PY" -c "
 import pymupdf
 doc = pymupdf.open('document.pdf')
 for page in doc:
@@ -83,22 +107,41 @@ for page in doc:
 # Check disk space first
 python scripts/extract_marker.py --check
 
-pip install marker-pdf
+# its own side environment (PyTorch + models); run the helper with "$PY"
+if command -v hermes >/dev/null 2>&1; then
+  PY="$(hermes pm environment pdf-marker --requirement 'marker-pdf>=1.8,<3')"
+else
+  PY="$HOME/.cache/hermes-pdf-marker-venv/bin/python"
+  "$PY" -c "import marker" 2>/dev/null || (
+    # concurrency-safe build: see the documents block in SKILL.md
+    mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-pdf-marker-venv.XXXXXX)" || exit 1
+    old="$(readlink hermes-pdf-marker-venv)"  # an earlier build that no longer imports, if any
+    python3 -m venv "$stage" &&
+      "$stage/bin/python" -m pip install -q --disable-pip-version-check 'marker-pdf>=1.8,<3' &&
+      "$stage/bin/python" -c "import marker" &&
+      if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-pdf-marker-venv
+      elif [ "$(readlink hermes-pdf-marker-venv)" = "$old" ]; then
+        ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-pdf-marker-venv &&
+          case "$old" in hermes-pdf-marker-venv.??????) rm -rf "$old" ;; esac
+      fi 2>/dev/null
+    [ "$(readlink hermes-pdf-marker-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
+  )
+fi
 ```
 
 **Via helper script**:
 ```bash
-python scripts/extract_marker.py document.pdf                # Markdown
-python scripts/extract_marker.py document.pdf --json         # JSON with metadata
-python scripts/extract_marker.py document.pdf --output_dir out/  # Save images
-python scripts/extract_marker.py scanned.pdf                 # Scanned PDF (OCR)
-python scripts/extract_marker.py document.pdf --use_llm      # LLM-boosted accuracy
+"$PY" scripts/extract_marker.py document.pdf                # Markdown
+"$PY" scripts/extract_marker.py document.pdf --json         # JSON with metadata
+"$PY" scripts/extract_marker.py document.pdf --output_dir out/  # Save images
+"$PY" scripts/extract_marker.py scanned.pdf                 # Scanned PDF (OCR)
+"$PY" scripts/extract_marker.py document.pdf --use_llm      # LLM-boosted accuracy
 ```
 
-**CLI** (installed with marker-pdf):
+**CLI** (installed with marker-pdf next to `"$PY"`, not on PATH):
 ```bash
-marker_single document.pdf --output_dir ./output
-marker /path/to/folder --workers 4    # Batch
+"$(dirname "$PY")/marker_single" document.pdf --output_dir ./output
+"$(dirname "$PY")/marker" /path/to/folder --workers 4    # Batch
 ```
 
 ---
@@ -161,5 +204,5 @@ No extra dependencies needed — pymupdf covers split, merge, search, and text e
 - marker-pdf is for OCR, scanned docs, equations, complex layouts — install only when needed
 - Both helper scripts accept `--help` for full usage
 - marker-pdf downloads ~2.5GB of models to `~/.cache/huggingface/` on first use
-- For Word docs: `pip install python-docx` (better than OCR — parses actual structure)
-- For PowerPoint: see the `powerpoint` skill (uses python-pptx)
+- For Word docs: python-docx via the microsoft-office skill's `"$PY"` setup block (better than OCR — parses actual structure)
+- For PowerPoint: see the `microsoft-office` skill (uses python-pptx)

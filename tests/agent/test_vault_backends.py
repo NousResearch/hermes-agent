@@ -170,6 +170,44 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.set_current_session_id(None)
 
 
+# bw 2026.9+ keeps a keep-alive TLS socket in Node's event loop after a network command and never exits on
+# success (#145121): the answer is on stdout, the process lingers. This stand-in reproduces that, and splits
+# the `list` JSON across a pause longer than the quiet window so a truncated document must not be accepted.
+_LINGERING_BW = r'''#!/usr/bin/env python3
+import os, sys, time
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pids"), "a").write(f"{os.getpid()}\n")
+argv = sys.argv[1:]
+if argv[:1] == ["unlock"]:
+    sys.stdout.write("A" * 86 + "==")
+elif argv[:2] == ["list", "items"]:
+    sys.stdout.write('[{"id": "abc", "type": 1, "name": "Example", '); sys.stdout.flush()
+    time.sleep(1.5)
+    sys.stdout.write('"login": {"username": "jane@example.com", "uris": [{"uri": "https://example.com/"}]}}]')
+sys.stdout.flush()
+time.sleep(3600)
+'''
+
+
+def test_bw_that_answers_but_never_exits_unlocks_and_lists_without_waiting_for_exit(tmp_path, monkeypatch):
+    exe = tmp_path / "bw"
+    exe.write_text(_LINGERING_BW, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    unlock_mod.lock()
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
+    try:
+        backend.unlock("correct horse")
+        assert backend.is_unlocked()
+        items = backend.list_items()
+    finally:
+        unlock_mod.lock()
+    # The whole document, not the prefix printed before the pause.
+    assert [(m.id, m.identifier, m.origin) for m in items] == [("bw:abc", "jane@example.com", "https://example.com")]
+    for pid in (tmp_path / "pids").read_text(encoding="utf-8").split():
+        with pytest.raises(ProcessLookupError):  # each lingering child was killed and reaped
+            os.kill(int(pid), 0)
+
+
 def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
     """A Bitwarden login with several URIs binds all of them (deduped, first stays
     primary); non-web URIs and URIs marked match=Never (5) never widen the fill set."""

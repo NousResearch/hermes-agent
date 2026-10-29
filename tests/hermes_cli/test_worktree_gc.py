@@ -52,6 +52,10 @@ def repo(tmp_path, monkeypatch):
 
     clone = tmp_path / "repo"
     _git(["clone", str(origin), str(clone)], tmp_path)
+    # Git for Windows installs core.autocrlf=true system-wide by default: the audit's status probe
+    # then reports the fixture's LF files as modified and every verdict becomes "keep". Pin the
+    # fixture repos to LF so the tests exercise the audit, not the host's line-ending policy.
+    _git(["config", "core.autocrlf", "false"], clone)
     (clone / "README.md").write_text("hello\n")
     _git(["add", "."], clone)
     _git(["commit", "-m", "init"], clone)
@@ -69,6 +73,7 @@ def local_repo(tmp_path, monkeypatch):
     (tmp_path / "home").mkdir()
     repo = tmp_path / "local-repo"
     _git(["init", "-b", "main", str(repo)], tmp_path)
+    _git(["config", "core.autocrlf", "false"], repo)   # see the ``repo`` fixture
     (repo / "README.md").write_text("hello\n")
     _git(["add", "."], repo)
     _git(["commit", "-m", "init"], repo)

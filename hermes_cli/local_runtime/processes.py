@@ -45,7 +45,7 @@ class _ExtendedLimits(ctypes.Structure):
 
 
 class _WindowsJob:
-    def __init__(self):
+    def __init__(self, *, kill_on_close: bool = True, memory_limit_bytes: int | None = None):
         self._lock = threading.Lock()
         self._api = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, args, result in (
@@ -53,6 +53,7 @@ class _WindowsJob:
             ("SetInformationJobObject", [wintypes.HANDLE, ctypes.c_int,
                                          ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
             ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+            ("TerminateJobObject", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
             ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
         ):
             fn = getattr(self._api, name)
@@ -65,7 +66,16 @@ class _WindowsJob:
         try:
             limits = _ExtendedLimits()
             # Neither BREAKAWAY_OK nor SILENT_BREAKAWAY_OK: descendants stay contained.
-            limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+            # kill_on_close=False is a membership-only job: pure containment for a
+            # caller that terminates explicitly (see terminate()) and must not couple
+            # the members' lifetime to this handle.
+            limits.BasicLimitInformation.LimitFlags = 0x2000 if kill_on_close else 0  # KILL_ON_JOB_CLOSE
+            if memory_limit_bytes:
+                # JOB_OBJECT_LIMIT_JOB_MEMORY: committed memory summed over every member is
+                # capped; an allocation past it fails in the offender instead of paging the
+                # host (a runaway grep has reached 5 GB on a 16 GB machine).
+                limits.BasicLimitInformation.LimitFlags |= 0x200
+                limits.JobMemoryLimit = int(memory_limit_bytes)
             if not self._api.SetInformationJobObject(
                     self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
                 raise ctypes.WinError(ctypes.get_last_error())
@@ -78,8 +88,21 @@ class _WindowsJob:
         if not self._api.AssignProcessToJobObject(self._handle, int(proc._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def terminate(self) -> None:
+        """Terminate every member regardless of Windows parentage. Never raises.
+
+        MSYS fork/exec lets an intermediate parent exit once the child image runs,
+        so the wrapper's Windows parent chain to such a grandchild is severed and
+        parent-pid walks (psutil children, ``taskkill /T``) cannot reach it. Job
+        membership has no ancestry component, which is why this reaches them.
+        Idempotent: terminating an already-dead job is a no-op.
+        """
+        with self._lock:
+            if self._handle is not None:
+                self._api.TerminateJobObject(self._handle, 1)
+
     def close(self) -> None:
-        """Terminate the contained tree; repeated closes are harmless."""
+        """Release the owner handle; a KILL_ON_JOB_CLOSE job also terminates."""
         with self._lock:
             if self._handle is not None:
                 if not self._api.CloseHandle(self._handle):
@@ -117,6 +140,46 @@ def spawn_server(cmd, **kwargs) -> tuple[subprocess.Popen, _WindowsJob | None]:
     if sys.platform != "win32":
         return subprocess.Popen(cmd, **kwargs), None
     job = _WindowsJob()
+    proc = None
+    try:
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x00000004  # CREATE_SUSPENDED
+        proc = subprocess.Popen(cmd, **kwargs)
+        job.assign(proc)
+        psutil.Process(proc.pid).resume()
+        return proc, job
+    except BaseException:
+        try:
+            if proc is not None:
+                # Assignment may have failed: closing an empty job is not enough.
+                proc.kill()
+                proc.wait(timeout=10)
+        finally:
+            try:
+                job.close()
+            finally:
+                if proc is not None:
+                    for stream in (proc.stdin, proc.stdout, proc.stderr):
+                        if stream is not None:
+                            stream.close()
+                    proc._handle.Close()
+        raise
+
+
+def spawn_contained(cmd, *, memory_limit_bytes: int | None = None,
+                    **kwargs) -> tuple[subprocess.Popen, "_WindowsJob | None"]:
+    """Start *cmd* inside a membership-only Windows job; ``(proc, None)`` elsewhere.
+
+    The job sets no limits — not even KILL_ON_JOB_CLOSE — unless the caller passes
+    ``memory_limit_bytes`` (a job-wide committed-memory cap, Windows only), so a
+    normally-exiting command leaves background children exactly as free as a bare ``Popen``. Its
+    only purpose: give the owner a handle that can later ``job.terminate()``
+    every member regardless of process ancestry, for the MSYS parent-handoff
+    class no parent-pid walk can reach. The caller releases the job with
+    ``close()`` once nothing needs terminate() anymore.
+    """
+    if sys.platform != "win32":
+        return subprocess.Popen(cmd, **kwargs), None
+    job = _WindowsJob(kill_on_close=False, memory_limit_bytes=memory_limit_bytes)
     proc = None
     try:
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x00000004  # CREATE_SUSPENDED

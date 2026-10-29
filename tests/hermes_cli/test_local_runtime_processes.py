@@ -233,3 +233,52 @@ def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatc
             proc._handle.Close()
         for job in jobs:
             job.close()
+
+
+@pytest.mark.platforms('windows')
+def test_spawn_contained_membership_only_and_terminate_reaches_detached_child(tmp_path):
+    """spawn_contained: no KILL_ON_JOB_CLOSE (closing frees members), and an
+    explicit terminate() reaches a grandchild even when its Windows parent
+    chain is severed (the MSYS-handoff class)."""
+    import ctypes
+    from ctypes import wintypes
+    from hermes_cli.local_runtime import processes
+
+    script = tmp_path / 'detached.py'
+    gpid_file = tmp_path / 'grandchild.json'
+    script.write_text(
+        "import json, subprocess, sys\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "open(r'%s', 'w').write(json.dumps({'pid': p.pid}))\n" % str(gpid_file),
+        encoding='utf-8')
+    proc, job = processes.spawn_contained(
+        [sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc.wait(timeout=15)
+        # The wrapper exited naturally; the grandchild must still be ALIVE:
+        # membership-only means the job does NOT kill on wrapper exit or handle release.
+        import psutil
+        deadline = time.time() + 5
+        while time.time() < deadline and not gpid_file.exists():
+            time.sleep(0.1)
+        assert gpid_file.exists(), 'grandchild never announced itself'
+        grandchild = psutil.Process(json.loads(gpid_file.read_text())['pid'])
+        assert grandchild.is_running(), 'grandchild died before terminate() (job is membership-only!)'
+        # query job limits: KILL_ON_JOB_CLOSE must NOT be set
+        limits = processes._ExtendedLimits()
+        query = job._api.QueryInformationJobObject
+        query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                          wintypes.DWORD, ctypes.c_void_p]
+        query.restype = ctypes.c_void_p
+        assert query(job._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits), None)
+        assert not limits.BasicLimitInformation.LimitFlags & 0x2000, 'KILL_ON_JOB_CLOSE wrongly set'
+        # Now the sweep: terminate() must reach the grandchild wherever it sits.
+        job.terminate()
+        gone, alive = psutil.wait_procs([grandchild], timeout=5)
+        assert not alive, f'terminate() missed detached member: {[p.pid for p in alive]}'
+    finally:
+        # Finalizer safety net: the membership job already swept every member;
+        # only the wrapper itself may remain.
+        if proc.poll() is None:
+            proc.kill()
+        job.close()

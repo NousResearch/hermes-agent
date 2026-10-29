@@ -326,9 +326,47 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
     # argv[0] is the hermes exe or (normally) the base Python, whose path varies by venv/uv
     # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
     # is anchored by the unforgeable creation-time + secret owner-nonce below.
-    is_python = os.path.basename(arg0).startswith("python")
+    import ntpath
+    is_python = ntpath.basename(arg0).lower().startswith("python")
     from gateway.status_inline_source import inline_bootstrap_argv
-    logical_argv = inline_bootstrap_argv(argv) or argv
+    from hermes_state_holders import (
+        _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
+        _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
+    )
+    logical_argv = inline_bootstrap_argv(argv)
+    if logical_argv is None:
+        # Skip interpreter flags (-I, -P, -B, -X utf8, ...) before `-m <module>`.
+        idx = 1
+        while idx < len(argv):
+            tok = argv[idx]
+            if tok == "-m":
+                logical_argv = [argv[0], *argv[idx:]]
+                break
+            if tok == "--" or not tok.startswith("-") or tok == "-":
+                break
+            if tok in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
+                idx += 2
+                continue
+            if tok.startswith("--"):
+                idx += 1
+                continue
+            cluster = tok[1:]
+            for pos, ch in enumerate(cluster):
+                if ch == "c":
+                    idx = len(argv)
+                    break
+                if ch == "m":
+                    if not cluster[pos + 1:]:
+                        logical_argv = [argv[0], "-m", *argv[idx + 1:]]
+                    idx = len(argv)
+                    break
+                if ch in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
+                    idx += 1 if cluster[pos + 1:] else 2
+                    break
+            else:
+                idx += 1
+        if logical_argv is None:
+            logical_argv = argv
     launches_module = logical_argv[1:3] == ["-m", "hermes_cli.main"]
     executable_match = arg0 == expected or (is_python and launches_module)
     try:

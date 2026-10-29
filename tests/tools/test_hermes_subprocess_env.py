@@ -37,6 +37,9 @@ _SAFE_SAMPLE = {
     "HOME": "/home/user",
     "USER": "testuser",
     "MY_APP_VAR": "keep-me",
+    # clear=True also drops the Windows location vars Path.home() resolves from (HOME is ignored
+    # there), so get_hermes_home() inside the strip raised RuntimeError. Not credentials.
+    **{k: os.environ[k] for k in ("USERPROFILE", "LOCALAPPDATA") if k in os.environ},
 }
 
 

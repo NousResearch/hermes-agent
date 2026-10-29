@@ -127,6 +127,10 @@ _BILLING_PATTERNS = (
 # ``google.rpc.ErrorInfo.reason`` detail separates them (omp#13092). The prose is no help on
 # the native route: "RESOURCE_EXHAUSTED" in the message is itself a rate-limit phrase.
 _GOOGLE_BILLING_REASONS = frozenset({"QUOTA_EXHAUSTED", "INSUFFICIENT_G1_CREDITS_BALANCE"})
+# The same ceiling often arrives with EMPTY ``details`` (no ErrorInfo to read), where the native
+# message "Gemini HTTP 429 (RESOURCE_EXHAUSTED): ...spending cap..." still reads as a throttle.
+# A word-bounded "spend(ing) cap" names an account limit; "spend capacity" stays a throttle.
+_SPEND_CAP_RE = re.compile(r"\bspend(?:ing)?\s+cap\b")
 _GOOGLE_THROTTLE_REASONS = frozenset({"RATE_LIMIT_EXCEEDED"})
 _GOOGLE_ERROR_INFO_TYPE = "/google.rpc.ErrorInfo"
 _GOOGLE_RETRY_INFO_TYPE = "/google.rpc.RetryInfo"
@@ -1125,7 +1129,7 @@ def _status_429(c: _Ctx) -> Verdict:
     # billing reasons must not burn the retry budget as a throttle, and a per-minute throttle
     # (whose "Quota exceeded ... per_minute" prose reads as a quota wall) must not bench the key.
     google_reason = _google_rpc_reason(c.body)
-    if google_reason in _GOOGLE_BILLING_REASONS:
+    if google_reason in _GOOGLE_BILLING_REASONS or (not google_reason and _SPEND_CAP_RE.search(c.msg)):
         return _V_BILLING
     if google_reason in _GOOGLE_THROTTLE_REASONS:
         reset = _google_retry_delay_seconds(c.body)

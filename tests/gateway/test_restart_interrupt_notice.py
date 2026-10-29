@@ -1,4 +1,4 @@
-"""#134889 F1: ``agent.restart_drain_timeout`` stays 0, and a turn a restart interrupts says so.
+﻿"""#134889 F1: ``agent.restart_drain_timeout`` stays 0, and a turn a restart interrupts says so.
 
 With the 0 s default a restart or stop interrupts in-flight turns at once. The admission settles
 ``interrupted`` (never replayed: ``tests/gateway/test_journey_new_session_queued_work.py`` restart
@@ -462,6 +462,40 @@ def test_an_earlier_turns_failed_boundary_is_kept_and_the_restart_notice_appende
     with db:
         commit_and_publish(authority, live, ref, row, '', 'interrupted', {'result': result}, {})
         assert _notices(db) == [FAILED_TURN_NOTICE, RESTART_INTERRUPT_NOTICE]
+
+
+def test_a_hard_crash_leaves_one_boundary_not_two(tmp_path, monkeypatch):
+    """#134889 GW-25: the claim's transcript mark lived only on the in-memory claim, so the next
+    owner that settled a turn lost to a hard crash could not tell the lost turn's own failed-turn
+    boundary from an earlier turn's: the agent's "Send it again" and the owner's notice stacked.
+    The mark is durable now, so the notice replaces that boundary instead of adding a second one."""
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_NOTICE
+    from gateway.session_unattended_unknown import settle_recovered_unattended
+    from hermes_state_runtime import begin_runtime_epoch, recover_session_inputs
+    db, _owner, *_rest = _core_closed_turn(tmp_path, monkeypatch, principal='cron-owner')
+    with db:
+        assert _notices(db) == [FAILED_TURN_NOTICE]  # the dead owner's own boundary
+        # The owner died with the turn in flight: the next owner fences the lost turn unknown...
+        epoch = begin_runtime_epoch(db, instance_id='next-owner')
+        assert recover_session_inputs(db, epoch=epoch) == 1
+        # ... and settles it as the unattended automation turn it is.
+        assert settle_recovered_unattended(db, epoch) == 1
+        assert _notices(db) == [AUTOMATION_INTERRUPTED_NOTICE]  # one boundary, not two
+
+
+def test_a_hard_crash_keeps_an_earlier_turns_boundary(tmp_path, monkeypatch):
+    """The same crash, with a boundary from an earlier turn: that one stays, the lost turn's own
+    boundary is the one replaced."""
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_NOTICE
+    from gateway.session_unattended_unknown import settle_recovered_unattended
+    from hermes_state_runtime import begin_runtime_epoch, recover_session_inputs
+    db, _owner, *_rest = _core_closed_turn(tmp_path, monkeypatch, principal='cron-owner',
+                                            earlier_failed=True)
+    with db:
+        epoch = begin_runtime_epoch(db, instance_id='next-owner')
+        assert recover_session_inputs(db, epoch=epoch) == 1
+        assert settle_recovered_unattended(db, epoch) == 1
+        assert _notices(db) == [FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE]  # the earlier one stays
 
 
 @pytest.mark.platforms("linux")

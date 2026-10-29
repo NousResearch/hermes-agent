@@ -64,6 +64,22 @@ def _exit_diag_records(home: Path) -> list:
     return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
 
 
+def _unclean_exit_record(home: Path) -> dict:
+    """The record for the unclean previous exit.
+
+    The log carries more than one record per unclean exit: the death-forensics
+    record (``gateway.unclean_death_forensics``) is appended by
+    ``gateway.unclean_death_forensics.append_forensics`` BEFORE the
+    ``gateway.previous_unclean_exit`` record that carries the integrity verdict.
+    Select by tag, not by position — a positional lookup picks the forensics
+    record and reads the verdict as missing.
+    """
+    records = _exit_diag_records(home)
+    matches = [r for r in records if r.get("tag") == "gateway.previous_unclean_exit"]
+    assert matches, f"no previous_unclean_exit record in {[r.get('tag') for r in records]}"
+    return matches[0]
+
+
 # ── the checker itself ──────────────────────────────────────────────────────
 
 
@@ -94,7 +110,7 @@ def test_unclean_exit_records_the_corruption_verdict(tmp_path: Path) -> None:
 
     assert evidence is not None
     assert evidence["state_db_integrity"] != "ok"
-    record = _exit_diag_records(tmp_path)[0]
+    record = _unclean_exit_record(tmp_path)
     assert record["state_db_integrity"] != "ok"
 
 

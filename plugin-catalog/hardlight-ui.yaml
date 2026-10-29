@@ -1,0 +1,34 @@
+name: hardlight-ui
+title: Hardlight UI
+repo: https://github.com/nosliwhtes/hardlight-ui
+sha: 2254efe3ba6df2fa5962cd8ed352b5fad80306d4
+description: "Frontend design guidance with sixteen original style grammars, twelve craft references, dated modern-web capability recipes, explicit direction context, and stateless tools for bounded source inspection, color contrast, and navigation task paths. Disclosure — the hardlight_inspect tool reads frontend source files (.html, .css, .js, .ts, .jsx, .tsx, .vue, .svelte and similar; at most 500 files and 8 MiB) under any local directory the model names, skipping hidden, symlinked, vendor/build and secret-named paths, and returns their design tokens and findings to the model; the plugin adds a short system-prompt section naming its tools to every session; the tools make no network calls, run no subprocesses and write no files; the optional hardlight browser command, run by hand from a shell, launches a locally installed Chromium against loopback or file:// pages only and writes its report to the output folder you give it."
+maintainer: nosliwhtes
+tier: community
+category: tools
+version: "0.2.0"
+docs_url: https://github.com/nosliwhtes/hardlight-ui/blob/2254efe3ba6df2fa5962cd8ed352b5fad80306d4/README.md
+image: https://raw.githubusercontent.com/nosliwhtes/hardlight-ui/2254efe3ba6df2fa5962cd8ed352b5fad80306d4/docs/assets/showcase.png
+screenshots:
+  - https://raw.githubusercontent.com/nosliwhtes/hardlight-ui/2254efe3ba6df2fa5962cd8ed352b5fad80306d4/docs/assets/showcase.png
+  - https://raw.githubusercontent.com/nosliwhtes/hardlight-ui/2254efe3ba6df2fa5962cd8ed352b5fad80306d4/docs/assets/workspace-wide.png
+  - https://raw.githubusercontent.com/nosliwhtes/hardlight-ui/2254efe3ba6df2fa5962cd8ed352b5fad80306d4/docs/assets/workspace-narrow.png
+readme: true
+platforms: []
+known_issues:
+  - "Requires native tool, command, and bundled-skill registration APIs; the plugin checks their presence at load time."
+  - "On Windows, bounded source inspection returns an explicit compatibility error; reference, direction, contrast, and navigation tools remain available."
+  - "Some canonical gateway/local command routers reject /hardlight; use natural-language requests and the bundled frontend-design skill instead."
+  - "Optional browser evidence requires separately installed Playwright and a compatible browser; it is not installed automatically."
+  - "Automated findings are bounded advisory evidence, not artistic, usability, or full WCAG certification."
+capabilities:
+  provides_tools:
+    - hardlight_reference
+    - hardlight_direction
+    - hardlight_inspect
+    - hardlight_contrast
+    - hardlight_navigation
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.0"

@@ -47,6 +47,12 @@ _HOMEBREW_CI_POLLER_HINT = (
     'loops.'
 )
 
+# A foreground call whose only backgrounding was a trailing `&` is spawned as background=true.
+_AUTO_BACKGROUND_NOTE = (
+    "Ran in the background (the trailing & was converted to background=true; Hermes tracks the "
+    "process). Do NOT re-run it. Use process_manage (poll/log/wait/kill, session_id above) to check it."
+)
+
 _ASYNC_UNSUPPORTED_NOTE = (
     'notify_on_complete / watch_patterns are not available in this session — it cannot receive '
     'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a cron '
@@ -93,7 +99,8 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
                   persist_on_release=persist_on_release)
     if env_type == "local":
         return process_registry.spawn_local(
-            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
+            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
+            restore_login_path=True, **common)
     return process_registry.spawn_via_env(env=env, **common)
 
 
@@ -148,8 +155,12 @@ def spawn_background_process(
     heartbeat_seconds: int = 0,
     persist_on_release: bool = False,
     mounted_host: Optional[str] = None,
+    auto_backgrounded: bool = False,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
+
+    ``auto_backgrounded`` marks a trailing-`&` conversion: the result carries the conversion note
+    and skips the silent-background hint, whose "re-launch" advice would start a second copy.
 
     Never inline-polls ``is_interrupted()``: the spawn detaches and returns
     exit_code 0 immediately, so the stale-interrupt kill cannot occur here.
@@ -178,7 +189,9 @@ def spawn_background_process(
             result_data["approval"] = approval_note
         if pty_disabled_reason:
             result_data["pty_note"] = pty_disabled_reason
-        if not notify_on_complete and not watch_patterns:
+        if auto_backgrounded:
+            result_data["auto_backgrounded"] = _AUTO_BACKGROUND_NOTE
+        elif not notify_on_complete and not watch_patterns:
             result_data["hint"] = _SILENT_BACKGROUND_HINT
         if command and _looks_like_homebrew_ci_poller(command):
             existing = result_data.get("hint", "")

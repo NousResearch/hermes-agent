@@ -19,6 +19,8 @@ from datetime import UTC
 
 from hermes_cli import gateway_service_owner
 
+from agent.deadline import poll_until
+
 
 def _gw():
     from hermes_cli import gateway  # late: the facade imports this module
@@ -212,7 +214,13 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 def _gateway_run_command() -> list[str]:
     from hermes_cli._launchers import runtime_command
-    return runtime_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run", "--replace"],
+    from hermes_constants import get_default_hermes_root
+    # Every caller spawns an UNSUPERVISED child, which follows the sticky active_profile unless a
+    # selector pins it (main._apply_profile_override): the root's replacement booted that profile.
+    selector = shlex.split(_gw()._profile_arg())
+    if not selector and _gw().get_hermes_home().resolve() == get_default_hermes_root().resolve():
+        selector = ["--profile", "default"]
+    return runtime_command(_gw().PROJECT_ROOT, [*selector, "gateway", "run", "--replace"],
                            python=_gw().get_python_path())
 
 
@@ -537,6 +545,25 @@ def _spawn_deferred_launchd_reload(
     return True
 
 
+def _bootout_drain_and_rebootstrap(domain, plist_path, label, old_pid, budget: float) -> bool:
+    """Boot the job out, wait out the old gateway's drain, then bootstrap until launchd registers it.
+
+    Bootstrap can fail silently under load during a drain, and KeepAlive can't revive an
+    unregistered job, so the retry runs to a deadline. Waiting for *old_pid* first keeps the
+    budget from burning on guaranteed EIO ("already loaded"). The bootout is best effort (the job
+    may already be unloaded) and captured to keep expected noise off the terminal.
+    """
+    target = f"{domain}/{label}"
+    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    if old_pid is not None and not _gw()._wait_for_pid_exit(old_pid, budget):
+        _gw()._append_launchd_reload_log(
+            f"old gateway pid {old_pid} still alive after "
+            f"{int(budget)}s drain wait — bootstrapping {target} anyway"
+        )
+    return _gw()._retry_launchctl_bootstrap_until_registered(
+        domain, plist_path, label, deadline=time.monotonic() + budget)
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
     re-reads it immediately."""
@@ -580,19 +607,9 @@ def refresh_launchd_plist_if_needed() -> bool:
         )
         return True
 
-    # Bootout/bootstrap so launchd reads the new definition; bootstrap can fail silently under load
-    # during a drain, and KeepAlive can't revive an unregistered job.
-    # Captured: best-effort (the job may already be unloaded), keep expected noise off the terminal.
-    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    # Bootout/bootstrap so launchd reads the new definition.
     _reload_budget = _launchd_reload_budget()
-    # Wait out the old gateway's drain first so the budget isn't burned on guaranteed EIO ("already loaded").
-    if gateway_pid is not None and not _gw()._wait_for_pid_exit(gateway_pid, _reload_budget):
-        _gw()._append_launchd_reload_log(
-            f"old gateway pid {gateway_pid} still alive after "
-            f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
-        )
-    _deadline = time.monotonic() + _reload_budget
-    if not _gw()._retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=_deadline):
+    if not _bootout_drain_and_rebootstrap(domain, plist_path, label, gateway_pid, _reload_budget):
         _gw()._append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
             f"retrying for {int(_reload_budget)}s (in-process fallback path)"
@@ -616,6 +633,11 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
     # loading it. A gateway that launchd already runs is still reloaded; this install did not start it.
     load = start_now or _gw()._launchctl_label_supervising_process(label)
+    # A forced reinstall over a live job must remember the incumbent before bootstrap starts.
+    # _launchctl_bootstrap() handles EIO by booting the stale label out and retrying once, but
+    # that immediate retry races the old gateway's drain (#120629). The install path can wait
+    # because it runs outside the supervised gateway process.
+    force_old_pid = _gw()._launchctl_supervised_pid(label) if force and load else None
 
     if plist_path.exists() and not (force or force_unit_path):
         if _gw().launchd_plist_is_current():
@@ -659,11 +681,26 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
         print("  hermes gateway status             # Check status")
         return
 
-    try:
-        _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
-    except subprocess.CalledProcessError as e:
-        _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
-        return
+    if force_old_pid is not None:
+        domain = _gw()._launchd_domain()
+        target = f"{domain}/{label}"
+        budget = _gw()._launchd_reload_budget()
+        if not _bootout_drain_and_rebootstrap(domain, plist_path, label, force_old_pid, budget):
+            _gw()._append_launchd_reload_log(
+                f"FAILED forced launchd install of {target} — service NOT registered after "
+                f"retrying for {int(budget)}s"
+            )
+            _gw().print_error(
+                f"launchctl bootstrap did not register {target} within {int(budget)}s; "
+                "the gateway service is NOT loaded."
+            )
+            sys.exit(1)
+    else:
+        try:
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
+        except subprocess.CalledProcessError as e:
+            _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
+            return
 
     print()
     print("✓ Service installed and loaded!")
@@ -676,6 +713,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
 
 
 def launchd_uninstall():
+    gateway_service_owner.refuse_foreign_launchd_plist("uninstall")
     plist_path = _gw().get_launchd_plist_path()
     # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
     subprocess.run(
@@ -688,6 +726,7 @@ def launchd_uninstall():
 
 
 def launchd_start():
+    gateway_service_owner.refuse_foreign_launchd_plist("start")
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
 
@@ -739,6 +778,7 @@ def _launchd_ok(message: str) -> None:
 
 
 def launchd_stop():
+    gateway_service_owner.refuse_foreign_launchd_plist("stop")
     target = f"{_launchd_domain()}/{get_launchd_label()}"
     _gw()._mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
@@ -766,17 +806,15 @@ def _wait_for_launchd_service_pid(
 ) -> bool:
     """Poll ``domain/label`` (0.5s) until it runs on a fresh PID or ``timeout`` passes — KeepAlive respawn
     isn't instantaneous. launchctl ``TimeoutExpired`` propagates; callers own failure accounting."""
-    deadline = time.monotonic() + max(timeout, 0.5)
-    while True:
-        _loaded, pid = _gw()._launchd_print_service_pid(domain, label)
-        if pid is not None and pid > 0 and pid != old_pid:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.5)
+    def _fresh_pid() -> bool:
+        pid = _gw()._launchd_print_service_pid(domain, label)[1]
+        return pid is not None and pid > 0 and pid != old_pid
+
+    return poll_until(_fresh_pid, max(timeout, 0.5), 0.5)
 
 
 def launchd_restart():
+    gateway_service_owner.refuse_foreign_launchd_plist("restart")
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -888,14 +926,11 @@ def wait_for_launchd_gateway_supervision(
         return True
 
     label = label or _gw().get_launchd_label()
-    deadline = time.monotonic() + max(timeout, 0.0)
-    while True:
+    def _supervised() -> bool:
         pid = _gw()._launchctl_supervised_pid(label)
-        if pid is not None and pid != old_pid:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(max(poll_interval, 0.01))
+        return pid is not None and pid != old_pid
+
+    return poll_until(_supervised, max(timeout, 0.0), max(poll_interval, 0.01))
 
 
 def launchd_status(deep: bool = False):

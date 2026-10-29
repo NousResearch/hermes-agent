@@ -32,6 +32,9 @@
   --plugin-catalog-official: var(--ifm-color-primary-darker);
   --plugin-catalog-official-bg: rgba(110, 79, 0, 0.1);
   --plugin-catalog-official-border: rgba(110, 79, 0, 0.4);
+  --plugin-catalog-verified: #0f766e;
+  --plugin-catalog-verified-bg: rgba(15, 118, 110, 0.1);
+  --plugin-catalog-verified-border: rgba(15, 118, 110, 0.4);
   --plugin-catalog-community: #475569;
   --plugin-catalog-community-bg: rgba(71, 85, 105, 0.1);
   --plugin-catalog-community-border: rgba(71, 85, 105, 0.35);
@@ -65,6 +68,9 @@
   --plugin-catalog-official: #ffd700;
   --plugin-catalog-official-bg: rgba(255, 215, 0, 0.08);
   --plugin-catalog-official-border: rgba(255, 215, 0, 0.25);
+  --plugin-catalog-verified: #5eead4;
+  --plugin-catalog-verified-bg: rgba(94, 234, 212, 0.08);
+  --plugin-catalog-verified-border: rgba(94, 234, 212, 0.25);
   --plugin-catalog-community: #94a3b8;
   --plugin-catalog-community-bg: rgba(148, 163, 184, 0.08);
   --plugin-catalog-community-border: rgba(148, 163, 184, 0.2);

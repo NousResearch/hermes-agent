@@ -16,6 +16,11 @@ from hermes_cli.platforms import PLATFORMS
 from tools.connectors.gateway.names import CONNECTOR_NAME_PREFIX
 from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
 
+from .shared_metrics_prepared_compaction import (
+    PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
+    PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
+)
+
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
 # recovered from a file that is deleted only then. Events persist on the Relay thread.
@@ -138,7 +143,7 @@ SKILL_POST_PATCH_STATES = frozenset({"no_new_patch", "not_applicable", "reused_a
 CLIENT_OS_FAMILIES = frozenset({"linux", "macos", "unknown", "windows"})
 CLIENT_ARCHITECTURES = frozenset({"arm", "arm64", "unknown", "x86", "x86_64"})
 CLIENT_INSTALL_METHODS = frozenset({
-    "apt", "docker", "git", "home-manager", "homebrew", "nixos", "pip", "unknown",
+    "apt", "docker", "git", "home-manager", "homebrew", "microsoft-store", "nixos", "pip", "unknown",
 })
 CLIENT_RESOURCE_KEYS = frozenset({"architecture", "hermes_version", "install_method", "os_family"})
 
@@ -156,7 +161,18 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 # The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
 BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
-TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
+# Deleted core tools: setup_choose/start_chat with the old setup flow; the built-in browser_* tools with
+# agent-browser (the camofox plugin's same-named tools record as ``plugin``). v4 only adds values, and rows
+# older releases saved with these names must still package; recording maps through the live sets
+# (tool_metric_name, toolset_metric_name).
+RETIRED_TOOL_NAMES = frozenset({
+    "setup_choose", "start_chat",
+    "browser_back", "browser_click", "browser_console", "browser_get_images", "browser_navigate",
+    "browser_press", "browser_scroll", "browser_snapshot", "browser_type", "browser_vision",
+})
+RETIRED_TOOLSET_NAMES = frozenset({"setup", "start_chat"})
+_LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
+TOOL_NAMES = _LIVE_TOOL_NAMES | RETIRED_TOOL_NAMES
 TOOL_ERROR_CLASSES = frozenset({
     "alias", "blocked", "connection_required", "connector_backend", "contract_violation", "exception",
     "interrupted", "invalid_arguments", "none", "not_allowed", "timeout", "tool_error", "unknown",
@@ -274,8 +290,9 @@ DELEGATION_OUTCOMES = frozenset({"cancelled", "failed", "partial", "success"})
 DELEGATION_DEPTHS = frozenset({"1", "2", "3", "gte_4"})
 DELEGATION_MODES = frozenset({"background", "foreground"})
 EXECUTION_KINDS = frozenset({"browser", "code", "terminal"})
-# Shipped browser backends: tools/browser_{camofox,lightpanda,tool_cdp,tool_cloud,extension_router}.py
-# plus the bundled cloud providers in plugins/browser/.
+# Browser backend labels: tools/browser_{lightpanda,session_cdp,session_cloud}.py plus the bundled cloud
+# providers in plugins/browser/. ``camofox`` (now the catalog plugin) and ``extension`` (the removed
+# browser-extension control) stay as legacy values: removing a shipped schema value breaks older relays.
 BROWSER_BACKENDS = frozenset({
     "browser-use", "browserbase", "camofox", "cdp", "extension", "firecrawl", "lightpanda", "local", "other",
 })
@@ -499,6 +516,7 @@ UPDATE_STOP_CLASSES = frozenset({
     "commit_point_refused",   # the commit point could not be armed durably; nothing moved
     "detached_head",          # a detached checkout stayed put, or its commits could not be backed up
     "disk_full",              # (see above)
+    "downgrade_refused",      # the target predates the gateway runtime a state.db already uses
     "download_failed",        # the ZIP fallback download failed
     "fetch_failed",           # git fetch failed
     "gateway_pause_failed",   # Windows: the gateways could not be paused safely before the venv moves
@@ -629,7 +647,7 @@ TOOL_SCHEMA_TOKEN_BUCKETS = frozenset({
     "0", "lt_2k", "2k_to_5k", "5k_to_10k", "10k_to_20k", "20k_to_40k", "gte_40k",
 })
 # Toolsets Hermes ships; MCP servers and plugin toolsets collapse to custom.
-TOOLSET_NAMES = BUILTIN_TOOLSET_NAMES | {"custom"}
+TOOLSET_NAMES = BUILTIN_TOOLSET_NAMES | RETIRED_TOOLSET_NAMES | {"custom"}
 # compression is the expected cause; the rest are Hermes invalidating a warm prefix (bugs or
 # user-driven), or the provider reporting a cold read Hermes did not cause.
 CACHE_BREAK_CAUSES = frozenset({
@@ -889,7 +907,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "memory_provider": MEMORY_PROVIDERS, "messaging_platform_count_bucket": SIZE_BUCKETS,
         "plugin_count_bucket": SIZE_BUCKETS, "profile_count_bucket": SIZE_BUCKETS,
         "skill_count_bucket": SIZE_BUCKETS, "terminal_backend": TERMINAL_BACKENDS,
-        **_INSTALL_V4_SNAPSHOT_DIMENSIONS,
+        **_INSTALL_V4_SNAPSHOT_DIMENSIONS, **PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
     },
     SESSION_METRIC: {
         "active_duration_bucket": SESSION_DURATION_BUCKETS, "entrypoint": TASK_ENTRYPOINTS,
@@ -1020,7 +1038,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     },
     # ---- end v5 desktop ----
     # ---- v5 signals ----
-    TOOL_UNAVAILABLE_METRIC: {"tool_name": BUILTIN_TOOL_NAMES},
+    TOOL_UNAVAILABLE_METRIC: {"tool_name": BUILTIN_TOOL_NAMES | RETIRED_TOOL_NAMES},
     PROVIDER_SETUP_METRIC: {
         "event": PROVIDER_SETUP_EVENTS, "failure_class": PROVIDER_SETUP_FAILURE_CLASSES,
         "surface": PROVIDER_SETUP_SURFACES,
@@ -1044,6 +1062,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "described_first": YES_NO, "outcome": TOOL_OUTCOMES, "searches_before_bucket": COUNT_BUCKETS,
     },
     # ---- end v4 connectors ----
+    PREPARED_COMPACTION_METRIC: {**PREPARED_COMPACTION_DIMENSIONS, "failure_class": COMPRESSION_FAILURE_CLASSES},
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -1123,10 +1142,11 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
     SKILL_LOAD_METRIC: (_METRIC_FIELDS[SKILL_LOAD_METRIC] - {"skill_name"},),
     INSTALL_SNAPSHOT_METRIC: (_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - {
         "display_language", "install_age_bucket", "main_provider", "messaging_platform_count_bucket",
-        "terminal_backend", *_INSTALL_V4_SNAPSHOT_DIMENSIONS,
+        "terminal_backend", *_INSTALL_V4_SNAPSHOT_DIMENSIONS, *PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
     },
         # ---- v4 install ----
-        _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(_INSTALL_V4_SNAPSHOT_DIMENSIONS),
+        _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - {*_INSTALL_V4_SNAPSHOT_DIMENSIONS, *PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS},
+        _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS),
     ),
 }
 # ---- v5 engagement ----
@@ -1194,7 +1214,7 @@ _DECISION_MARK_METRICS = {
     INSTALL_RUN_MARK: INSTALL_RUN_METRIC,
     # ---- end iuf c2 ----
     TOOL_SEARCH_MARK: TOOL_SEARCH_METRIC, TOOL_BATCH_MARK: TOOL_BATCH_METRIC,
-    CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC,
+    CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC, PREPARED_COMPACTION_MARK: PREPARED_COMPACTION_METRIC,
 }
 
 
@@ -1773,7 +1793,7 @@ def tool_terminal_fields(
         "outcome": outcome,
         "retry_count_bucket": tool_retry_bucket(kwargs.get("retry_count")),
         "tool_category": category if category in TOOL_CATEGORIES else tool_category(kwargs),
-        "tool_name": tool_name if tool_name is not None and tool_name in TOOL_NAMES
+        "tool_name": tool_name if tool_name is not None and tool_name in _LIVE_TOOL_NAMES
         else tool_metric_name(kwargs),
     }
 
@@ -1823,6 +1843,9 @@ _CONNECTOR_CODE_CLASSES = {
     "TOOL_NOT_ALLOWED": "not_allowed",
     **dict.fromkeys(("ALIAS_REQUIRED", "ALIAS_UNKNOWN"), "alias"),
     "INVALID_ARGUMENTS": "invalid_arguments",
+    # Agent-side file input refusals (``tools.connectors.gateway.wire.FILE_ERROR_FAMILIES``).
+    "FILE_NOT_ALLOWED": "not_allowed",
+    **dict.fromkeys(("FILE_NOT_FOUND", "FILE_TOO_LARGE"), "invalid_arguments"),
 }
 _CONNECTOR_FAMILY_CLASSES = {"backend": "connector_backend"}
 

@@ -26,7 +26,17 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $botMeta, $lastRoster, botMentionTag, cachedUnionRoster, primeRoster, ROSTER_KEY, useRoster } from './data'
+import {
+  $botMeta,
+  $lastRoster,
+  annotateBotSource,
+  botMentionTag,
+  botSourceStatus,
+  cachedUnionRoster,
+  primeRoster,
+  ROSTER_KEY,
+  useRoster
+} from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -60,6 +70,7 @@ interface UnionAgent {
   connectionLabel?: string
   handle: string
   profile: string
+  reachable?: boolean
 }
 
 interface Union {
@@ -697,6 +708,44 @@ describe('the roster only caches rows from the connection it is keyed under', ()
     expect(client.getQueryData(localKey)).toBeUndefined()
     expect(hostMock.request).not.toHaveBeenCalled()
     expect(hostMock.requestProfile.mock.calls.every(([route]) => route.connectionId === 'vps')).toBe(true)
+  })
+})
+
+describe('a profile this gateway does not serve', () => {
+  it('stays listed and unavailable, also to the first selection the pane seats', async () => {
+    const sources = [{ connectionId: 'local', kind: 'local', reachable: true }]
+
+    const rows = await mergedRoster(
+      { profiles: [{ name: 'default' }, { name: 'research' }, { name: 'solo' }] },
+      {
+        agents: [
+          { connectionId: 'local', connectionKind: 'local', handle: 'hermes', profile: 'default' },
+          { connectionId: 'local', connectionKind: 'local', handle: 'research', profile: 'research' },
+          {
+            connectionId: 'local',
+            connectionKind: 'local',
+            handle: 'solo',
+            profile: 'solo',
+            reachable: false
+          }
+        ],
+        primaryConnectionId: 'local',
+        sources
+      }
+    )
+
+    expect(rows.map(row => row.name)).toEqual(['default', 'research', 'solo'])
+    expect(rows.find(row => row.name === 'research')?.sourceReachable).toBe(true)
+    expect(rows.find(row => row.name === 'solo')?.sourceReachable).toBe(false)
+
+    // The roster pane annotates each row again with the source snapshot before it seats the first
+    // available bot (roster-pane.tsx, reconcileRosterSelection). The source being up must not make
+    // the unserved row selectable there.
+    const selectable = (rows as RosterRow[])
+      .filter(row => botSourceStatus(annotateBotSource(row, sources)).available)
+      .map(row => row.name)
+
+    expect(selectable).toEqual(['default', 'research'])
   })
 })
 

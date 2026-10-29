@@ -305,7 +305,7 @@ _GIT_CONFIG_OVERRIDES = {
 
 def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
     """Everything that decides which files ``git config --system/--global`` reads, plus the
-    global candidates' mtimes so an edit to ``~/.gitconfig`` is picked up without a restart."""
+    global candidates' ``file_cache_version`` so an edit to ``~/.gitconfig`` is picked up without a restart."""
     home = env.get("HOME", "")
     xdg = env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
     candidates = (
@@ -313,10 +313,11 @@ def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
         env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
         os.path.join(xdg, "git", "config"),
     )
+    from utils import file_cache_version
     stamps = []
     for path in candidates:
         try:
-            stamps.append(os.stat(path).st_mtime_ns)
+            stamps.append(file_cache_version(path))
         except OSError:
             stamps.append(None)
     return (
@@ -735,8 +736,12 @@ def pid_is_hermes(pid: int, *, expected_start_time: int | None = None) -> bool:
         return False
 
 
-def kill_process_tree(proc: subprocess.Popen) -> None:
+def kill_process_tree(proc: subprocess.Popen, *, grace: float = 0.0) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms; never raises.
+
+    ``grace`` > 0 (POSIX): SIGTERM the tree first and SIGKILL only if *proc* outlives ``grace``
+    seconds, so a git can delete its lock and tmp files on the way out (Windows always forces);
+    when *proc* exits in time, what is left of the group it leads is SIGKILLed.
 
     ``proc.kill()`` alone only terminates the direct child. This is cleanup on an already-failing
     path whose contract is to fail open, so every failure (access denied, already reaped) is
@@ -756,6 +761,27 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
     try:
         from agent.deadline import kill_process_tree as _deadline_kill_tree
 
+        if grace > 0 and not IS_WINDOWS:
+            import signal as _signal
+
+            try:
+                leads_group = os.getpgid(proc.pid) == proc.pid
+            except ProcessLookupError:
+                leads_group = False
+            _deadline_kill_tree(proc.pid, sig=_signal.SIGTERM)
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                # The leader went on TERM; a group member that ignores it would outlive us. The
+                # pgid stays reserved while any member lives, so this reaches only that group.
+                if leads_group:
+                    try:
+                        os.killpg(proc.pid, _signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch
+                    except ProcessLookupError:
+                        pass
+                return
         _deadline_kill_tree(proc.pid)
     except Exception:
         _legacy_kill_process_tree(proc)

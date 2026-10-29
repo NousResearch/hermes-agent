@@ -104,9 +104,9 @@ export function getMemoryProviderOAuthStatus(
 // Memory data + curator (parity with `hermes memory` / `hermes curator`).
 // ---------------------------------------------------------------------------
 
-export function getMemoryStatus(): Promise<MemoryStatusResponse> {
+export function getMemoryStatus(profile?: null | string): Promise<MemoryStatusResponse> {
   return hermesApi<MemoryStatusResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/memory'
   })
 }
@@ -264,16 +264,6 @@ export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabs
   return hermesApi<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
     ...profileScoped(profile)
-  })
-}
-
-/** `gh` CLI presence + auth state, for the composer's GitHub skill pill
- *  (GitHub is deliberately not an MCP — the github/* skills are the
- *  integration). Backend caches for 5 minutes; `refresh` bypasses. */
-export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; authenticated: boolean }> {
-  return hermesApi<{ available: boolean; authenticated: boolean }>({
-    ...profileScoped(),
-    path: `/api/git/gh-auth${refresh ? '?refresh=true' : ''}`
   })
 }
 

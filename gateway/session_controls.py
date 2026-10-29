@@ -52,16 +52,22 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
     A refusal that names the check that fired is a launch diagnostic (warning). A bare reason code is
     the client's own state: ``permission_denied`` on a submit, ``not_found``, ``session_busy`` are
     routine, and a retrying client must not be able to flood the gateway log, so those stay at debug
-    where they were silent before. The shape follows the gateway's own refusal log lines
-    (``gateway/run_notifications.py``): what was refused, for which profile, and why."""
+    where they were silent before. ``admission_conflict field=request_id`` is a client's explicit retry of
+    a send already admitted (the dedupe working), so it is info: expected, never in errors.log. Any other
+    reason tagged ``field=request_id`` (session.create's ``invalid_params``) is a real refusal: warning. The shape follows the
+    gateway's own refusal log lines (``gateway/run_notifications.py``): what was refused, for which
+    profile, and why."""
     line = '%s refused for profile=%s: %s%s%s'
     args = (method, _profile_label(profile), exc.reason,
             f' field={exc.field}' if getattr(exc, 'field', None) else '',
             f' detail={exc.detail}' if getattr(exc, 'detail', None) else '')
-    if exc.reason != 'session_busy' and (getattr(exc, 'field', None) or getattr(exc, 'detail', None)):
-        logger.warning(line, *args)
-    else:
+    field = getattr(exc, 'field', None)
+    if exc.reason == 'session_busy' or not (field or getattr(exc, 'detail', None)):
         logger.debug(line, *args)
+    elif field == 'request_id' and exc.reason == 'admission_conflict':
+        logger.info(line, *args)
+    else:
+        logger.warning(line, *args)
 
 
 # (method, error class) pairs whose traceback this process already logged.
@@ -110,6 +116,23 @@ def model_only(row):
     return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 
 
+async def _resume_transcript(authority, ref, snapshot, history, omit):
+    """A resume reply's transcript fields. *omit* (``omit_messages``): no rows and ``messages_omitted``, the
+    stored count and the todo plan of the physical target the attach resolved, as the stdio resume answers
+    it; the display-row lineage read is skipped (the todo lookup still walks the lineage's todo rows)."""
+    # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
+    from tui_gateway.tool_progress import _todo_state_from_history
+    if not omit:
+        # The newest todo result in the transcript, the snapshot the session's agent hydrates
+        # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
+        return {'messages': history, 'message_count': len(history), 'todo_state': _todo_state_from_history(history)}
+    from gateway.session_local_recovery import omitted_history_state
+    # A delete committed since the attach is ``not_found``, as one during the attach is.
+    todo_state, count = await asyncio.to_thread(authority.unless_deleted, ref, partial(
+        omitted_history_state, authority.db, snapshot.transcript_target))
+    return {'messages': [], 'messages_omitted': True, 'message_count': count, 'todo_state': todo_state}
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -127,14 +150,16 @@ class AuthorityConnection:
         if (not identity.get('user_id')
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
-        from gateway.session_identity import authenticated_subject
-        self.actor = Principal(authenticated_subject(identity),
+        from gateway.owner_identity import principal_subject
+        self.actor = Principal(principal_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
         from gateway.session_local_migration import bind_native_transport
         bind_native_transport(authority, self.actor, identity)
         self.native_owner = identity.get('native_bootstrap') is True
         self.subscriptions = {}
+        # session_id -> (epoch, sequence) the last reconnect replay answered; spent by the next resume.
+        self.replay_cursors = {}
         self.handed_back = set()  # sessions this live client detached without closing (the TUI's switcher)
         self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
@@ -294,6 +319,7 @@ class AuthorityConnection:
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
+            unknown_method_message,
         )
         contract = CANONICAL_METHODS.get(method)
         if contract is not None and (problems := canonical_param_problems(contract, params)):
@@ -328,7 +354,7 @@ class AuthorityConnection:
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
                     # An account-owned connector call (the Connectors page) keeps its legacy handler.
                     return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                        'code': -32601, 'message': f'unknown method: {method}',
+                        'code': -32601, 'message': unknown_method_message(method),
                         'data': {'reason': 'unknown_method'}}}
                 else:
                     result = await handlers[method](ref, params)
@@ -582,6 +608,8 @@ class AuthorityConnection:
 
     async def resume(self, ref, params):
         from gateway.session_local_inventory import snapshot_info
+        replay_from = self.replay_cursors.pop(ref.session_id, None)
+        requested = ref.session_id
         if 'latest' in params:
             # Bare `-c` / `--resume latest`: the most recent session of that surface family the
             # actor may read (workspace first), resolved by the owner like a title.
@@ -637,7 +665,11 @@ class AuthorityConnection:
             # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
             from gateway.session_policy_refresh import refresh_resumed_policy
             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
-        snapshot = await self.authority.attach(self.actor, ref)
+        # ``omit_messages``: the client pages the transcript itself (Desktop over REST), so the attach reads no
+        # compression lineage (a whole-lineage read here made every open of a long chat cost seconds).
+        omit = params.get('omit_messages') is True
+        snapshot = await self.authority.attach(
+            self.actor, ref, history=not omit, replay_from=replay_from if ref.session_id == requested else None)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self.handed_back.discard(ref.session_id)
         self._spawn_notice(ref)
@@ -651,15 +683,13 @@ class AuthorityConnection:
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
-        # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
-        from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
                 [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': history, **display, 'message_count': len(history),
+                **await _resume_transcript(self.authority, ref, snapshot, history, omit), **display,
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
@@ -670,10 +700,7 @@ class AuthorityConnection:
                 'pending_connection': pending_connection(self.authority, ref.session_id),
                 # Still-waiting server→client requests: the event ring cannot say "still open".
                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
-                                               snapshot.handle.ref.session_id),
-                # The newest todo result in the transcript, the snapshot the session's agent hydrates
-                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
-                'todo_state': _todo_state_from_history(history)}
+                                               snapshot.handle.ref.session_id)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
@@ -716,7 +743,11 @@ class AuthorityConnection:
             raise RuntimeStoreError('invalid_params')
         from gateway.session_server_requests import open_requests
         stream = self.authority.sessions[ref.session_id].event_stream
-        return {**stream.since(epoch, sequence), 'open_requests': open_requests(stream, ref.session_id)}
+        replay = stream.since(epoch, sequence)
+        if not replay['snapshot_required']:
+            self.replay_cursors[ref.session_id] = (
+                replay['replay_epoch'], max((frame['seq'] for frame in replay['events']), default=sequence))
+        return {**replay, 'open_requests': open_requests(stream, ref.session_id)}
 
     async def submit(self, ref, params):
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):

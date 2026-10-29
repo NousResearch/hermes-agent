@@ -67,7 +67,9 @@ def test_immediate_first_run_and_min_idle_gate(home):
 
 def test_registration_validates_and_floors_the_interval(home):
     manager, ctx = _ctx()
-    for bad in ({"name": "Bad Name"}, {"first_run": "now"}, {"fn": "not callable"}, {"interval_hours": "weekly"}):
+    for bad in ({"name": "Bad Name"}, {"first_run": "now"}, {"fn": "not callable"}, {"interval_hours": "weekly"},
+                {"interval_hours": float("inf")}, {"interval_hours": float("nan")},
+                {"min_idle_hours": float("inf")}, {"min_idle_hours": float("nan")}):
         kwargs = {"name": "ok", "fn": _recorder([]), "interval_hours": 24} | bad
         with pytest.raises(ValueError):
             ctx.register_idle_task(kwargs.pop("name"), kwargs.pop("fn"), **kwargs)

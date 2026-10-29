@@ -20,6 +20,7 @@ No capability gates this surface: it calls nothing privileged itself; model call
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 import weakref
@@ -89,7 +90,9 @@ def build_idle_task_spec(
         interval, idle = float(interval_hours), float(min_idle_hours)
     except (TypeError, ValueError):
         raise ValueError(f"Plugin '{me}' idle task {name!r}: interval_hours and min_idle_hours must be numbers") from None
-    if not interval >= MIN_INTERVAL_HOURS:  # also NaN
+    if not (math.isfinite(interval) and math.isfinite(idle)):  # inf would overflow timedelta; NaN never compares
+        raise ValueError(f"Plugin '{me}' idle task {name!r}: interval_hours and min_idle_hours must be finite")
+    if interval < MIN_INTERVAL_HOURS:
         logger.warning("Plugin '%s' idle task %r: interval_hours=%r floored to %s", me, name, interval_hours,
                        MIN_INTERVAL_HOURS)
         interval = MIN_INTERVAL_HOURS
@@ -150,7 +153,7 @@ def next_due(state: dict[str, Any]) -> Optional[str]:
     from agent.idle_schedule import parse_iso
 
     last, interval = parse_iso(state.get("last_run_at")), state.get("interval_hours")
-    if last is None or not isinstance(interval, (int, float)):
+    if last is None or not isinstance(interval, (int, float)) or not math.isfinite(interval):
         return None
     return (last + timedelta(hours=interval)).isoformat(timespec="seconds")
 

@@ -66,7 +66,14 @@ def chromium_executable(*, allow_override: bool = True) -> str | None:
     ``chromium`` / ``chromium-browser`` on PATH, only on targets pm builds no Chromium for (Termux).
     """
     if allow_override and (override := _configured_executable()):
-        return override
+        # A stale pin must not hide an already available managed/image browser.
+        # Retain an unresolved pin when no fallback exists so launchers still
+        # respect the operator's choice and never auto-download over it.
+        from hermes_platform.resolver import locate_command
+        if ((os.path.isfile(override) and (os.name == "nt" or os.access(override, os.X_OK)))
+                or locate_command(override).command):
+            return override
+        return _pm_executable() or _baked_executable() or override
     if found := _pm_executable() or _baked_executable():
         return found
     return _system_executable() if _pm_has_no_chromium() else None

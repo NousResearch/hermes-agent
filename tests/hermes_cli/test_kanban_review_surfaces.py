@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -176,7 +177,7 @@ def test_domain_and_cli_review_handoffs_redact_before_persistence(
         direct_id = kb.create_task(conn, title="direct redaction", assignee="builder")
         direct_run = kb.claim_task(conn, direct_id)
         assert direct_run is not None
-        assert kb.request_review(
+        assert kbr.request_review(
             conn,
             direct_id,
             summary=f"direct {secret}",
@@ -242,7 +243,7 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
     with kbc.connect() as conn:
         invalid_id = kb.create_task(conn, title="not review", assignee="builder")
         review_id = kb.create_task(conn, title="review", assignee="builder")
-        assert kb.request_review(conn, review_id, summary="ready")
+        assert kbr.request_review(conn, review_id, summary="ready")
 
     invalid_output = kc.run_slash(
         f'reopen-review {invalid_id} --reason "invalid {secret}"'

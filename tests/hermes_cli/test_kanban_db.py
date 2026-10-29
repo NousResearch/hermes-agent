@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import hermes_state_wal
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -401,7 +402,7 @@ def test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane(kanban_h
         tid = kb.create_task(conn, title="terminal", assignee="a", max_retries=5)
         claimed = kb.claim_task(conn, tid, claimer=f"{host}:w0")
         if lane == "review":
-            assert kb.request_review(conn, tid, summary="done", reviewer="r",
+            assert kbr.request_review(conn, tid, summary="done", reviewer="r",
                                      expected_run_id=claimed.current_run_id)
             assert kb.claim_review_task(conn, tid, claimer=f"{host}:r0") is not None
         pid = 71000
@@ -860,7 +861,7 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
         kb.claim_task(conn, t)
         run_id = kb.get_task(conn, t).current_run_id
         assert run_id is not None
-        assert kb.request_review(
+        assert kbr.request_review(
             conn, t, summary="ready for review",
             metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, t) if e.kind == "review_requested"][-1]
@@ -895,11 +896,11 @@ def test_request_review_rollback_discards_staged_copies(kanban_home):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(kb, "_end_or_synthesize_run", _boom)
             with pytest.raises(RuntimeError):
-                kb.request_review(conn, t, **kwargs)
+                kbr.request_review(conn, t, **kwargs)
         attachment_dir = kb.task_attachments_dir(t)
         assert kb.get_task(conn, t).status == "running"
         assert not attachment_dir.exists() or not any(attachment_dir.iterdir())
-        assert kb.request_review(conn, t, **kwargs)
+        assert kbr.request_review(conn, t, **kwargs)
         assert [a.filename for a in kb.list_attachments(conn, t)] == ["evidence.json"]
         assert sorted(p.name for p in attachment_dir.iterdir()) == ["evidence.json"]
 

@@ -565,7 +565,7 @@ hermes kanban block <id> "<reason>" [--ids <id>...]
 hermes kanban unblock <id>...
 hermes kanban archive <id>...
 
-hermes kanban request-review <id> [--summary "..."] [--metadata JSON] [--reviewer PROFILE]
+hermes kanban request-review <id> [--summary "..."] [--metadata JSON] [--reviewer PROFILE] [--from-done]
 hermes kanban request-changes <id> "<所需修改>"                       # reviewer -> implementer
 hermes kanban reopen-review  <id>... [--reason "..."]                 # 请求修改：'review' -> ready/todo
 
@@ -594,6 +594,12 @@ hermes kanban gc [--event-retention-days N]            # 工作区 + 旧事件 +
 ```
 
 所有命令也可以作为交互式 CLI 中的斜杠命令和消息 gateway 中使用（见下方[`/kanban` 斜杠命令](#kanban-slash-command)）。
+
+对于已完成的卡片，可使用 `hermes kanban request-review <id> --from-done --reviewer <profile>`
+显式将同一卡片送审。未指定的摘要和元数据沿用最近一次完成记录，原结果、持久化附件和完成运行历史均保留。
+卡片当前的完成时间会清空，原时间和完成运行编号记录在送审事件中。依赖该卡片完成状态的后续任务会退回
+`todo`，等待该卡片再次完成；相关运行中的 worker 在审计记录提交后停止。普通 `request-review`
+（包括 `--force`）仍会拒绝已完成卡片，避免意外重开。
 
 `--max-retries` 是调度器的每任务熔断器覆盖。`--max-retries 1` 在第一次不成功的尝试后阻塞任务，而 `--max-retries 3` 允许两次重试并在第三次失败时阻塞。省略它则使用 `config.yaml` 中的 `kanban.failure_limit`，然后是内置默认值。
 

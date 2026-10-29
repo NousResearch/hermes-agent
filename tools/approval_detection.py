@@ -300,6 +300,7 @@ DANGEROUS_PATTERNS = [
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
+    (r'\bsystemctl\s+(-[^\s]+\s+)*enable\b', "systemctl enable (persists service across boots)"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     # killall with SIGKILL (-9 / -KILL / -s KILL / -SIGKILL) and `killall -r <regex>` broad sweeps
@@ -389,6 +390,9 @@ DANGEROUS_PATTERNS = [
     # binary are allowed so a flag can't slip past.
     (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
     (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    # CR-2026-10-21-005: privileged container = host-equivalent root; exec -u root = root in running service.
+    (r'\bdocker\s+(?:exec|run)\b.*\s--privileged\b(?!=false)', "docker run/exec --privileged (host-equivalent root)"),
+    (r'\bdocker\s+exec\b.*(?:\s-u\s+|\s+--user[=\s]+)(?:0|root)\b', "docker exec as root (container privilege escalation)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
@@ -446,6 +450,8 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+-C\s+\S+\s+push\b', "git push via -C path (writes to a remote repository)"),
+    (r'\bgit\s+push\b', "git push (writes to a remote repository)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
@@ -488,6 +494,11 @@ DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGERO
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
+    "systemctl enable (persists service across boots)",
+    "docker run/exec --privileged (host-equivalent root)",
+    "docker exec as root (container privilege escalation)",
+    "git push via -C path (writes to a remote repository)",
+    "git push (writes to a remote repository)",
 })
 
 # Preserve approvals stored under the removed interpreter regex rules.

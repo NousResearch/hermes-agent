@@ -1838,6 +1838,7 @@ export {
   isForwardBindCollision,
   isLockfileSkew,
   listRemoteHermesProfiles,
+  lockServesConnect,
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,

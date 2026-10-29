@@ -1533,6 +1533,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Auto-mention: track the last inbound sender per group chat.
         # Only bot senders trigger auto-@ + text mode; human replies keep card formatting.
         self._last_inbound_sender: dict[str, dict[str, Any]] = {}  # chat_id → {open_id, name, is_bot}
+        self._auto_mentioned_chats: set[str] = set()  # chat_ids where @tag already injected this turn
         self._mention_name_map: dict[str, dict[str, str]] = {}  # chat_id → {lowercase_name → open_id}
         self._chat_members_cache: dict[str, tuple[float, dict[str, str]]] = {}  # chat_id → (ts, {lowercase_name → open_id})
         self._CHAT_MEMBERS_TTL = 300  # 5 min cache
@@ -1870,17 +1871,20 @@ class FeishuAdapter(BasePlatformAdapter):
         # Only when: (1) replying to a bot's message, (2) this send is part of a user-triggered
         # conversation (has reply_to_message_id), NOT a framework push (cronjob, status, etc.).
         # Force text mode because card content is unreadable to bots and card <at> doesn't
-        # produce real mention events. pop() = one inbound triggers at most one @, preventing loops.
+        # produce real mention events.
+        # The @tag is injected only on the FIRST send (tracked via _auto_mentioned_chats),
+        # but ALL sends for this bot-triggered turn stay in text mode.
         force_text_for_bot = False
         _has_reply_to = bool((metadata or {}).get("reply_to_message_id"))
-        _last_sender = self._last_inbound_sender.pop(chat_id, None) if _has_reply_to else None
+        _last_sender = self._last_inbound_sender.get(chat_id) if _has_reply_to else None
         if _last_sender and _last_sender.get("is_bot"):
+            force_text_for_bot = True
             sender_oid = _last_sender.get("open_id", "")
             sender_name = _last_sender.get("name") or "Bot"
-            if sender_oid:
+            if sender_oid and chat_id not in self._auto_mentioned_chats:
                 at_tag = f'<at user_id="{sender_oid}">{sender_name}</at> '
                 formatted = at_tag + formatted
-                force_text_for_bot = True
+                self._auto_mentioned_chats.add(chat_id)
                 logger.info("[Feishu] Auto-mention bot %s (%s) in group %s, forcing text mode",
                             sender_name, sender_oid, chat_id)
 
@@ -3087,6 +3091,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._last_inbound_sender[chat_id] = {
                 "open_id": sender_primary, "name": sender_name, "is_bot": is_bot,
             }
+            self._auto_mentioned_chats.discard(chat_id)  # reset for new inbound turn
             name_map = self._mention_name_map.setdefault(chat_id, {})
             if sender_name:
                 name_map[sender_name.lower()] = sender_primary

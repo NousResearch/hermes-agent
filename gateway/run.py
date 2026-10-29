@@ -1170,17 +1170,7 @@ def _build_replay_entry(
     return entry
 
 
-_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
-_CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
-
-
-def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
-
-    Observed rows must not replay as ordinary user turns, or a weak wake word makes old chatter look like work.
-    """
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+from gateway.run_observed_context import _observed_group_context_platform
 
 
 def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None) -> set[str]:
@@ -1259,7 +1249,7 @@ def _build_gateway_agent_history(
     _msg_tz = _get_msg_tz()
     agent_history: list[dict[str, Any]] = []
     observed_group_context: list[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+    separate_observed_context = _observed_group_context_platform(channel_prompt) is not None
 
     for msg in history or []:
         role = msg.get("role")
@@ -1342,27 +1332,6 @@ def _select_cached_agent_history(
         if has_unpersisted_row:
             return list(live_history)
     return persisted_history
-
-
-def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
-    """Prepend observed Telegram context to the API-only current user turn."""
-    if not observed_context:
-        return message
-
-    prefix = f"{_OBSERVED_GROUP_CONTEXT_HEADER}\n{observed_context}\n\n{_CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
-
-    if isinstance(message, str):
-        return f"{prefix}{message}"
-
-    if isinstance(message, list):
-        wrapped = [dict(part) if isinstance(part, dict) else part for part in message]
-        for part in wrapped:
-            if isinstance(part, dict) and part.get("type") == "text":
-                part["text"] = f"{prefix}{part.get('text', '')}"
-                return wrapped
-        return [{"type": "text", "text": prefix.rstrip()}] + wrapped
-
-    return message
 
 
 def _last_transcript_timestamp(history: Optional[list[dict[str, Any]]]) -> Any:

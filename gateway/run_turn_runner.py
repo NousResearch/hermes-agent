@@ -827,8 +827,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return history, None, _collect_history_media_paths(history)
         # Transcript rows ({role, content, timestamp}) lose timestamps; interrupt-path agent messages
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
-        # sequences. Telegram observed=True rows are withheld from replayable history and attached to
-        # the current addressed message as API-only context.
+        # sequences. Group observed=True rows are withheld from replayable history and attached to the
+        # current addressed message as API-only context.
         agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt, inject_timestamps=_message_timestamps_enabled(ctx.user_config),
         )
@@ -967,7 +967,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                                         persist_user_message_override, persist_user_timestamp_override):
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
-        from gateway.run import _wrap_current_message_with_observed_context
+        from gateway.run_observed_context import _wrap_current_message_with_observed_context
         from tools.approval import register_gateway_notify, unregister_gateway_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
@@ -975,7 +975,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
-            api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            api_message = _wrap_current_message_with_observed_context(
+                self._native_image_run_message(), observed_group_context, ctx.channel_prompt)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             from gateway.session_api_turn import api_execution
             api = api_execution.get()

@@ -1,6 +1,7 @@
 """Tests for the IRC platform adapter plugin."""
 
 import asyncio
+import contextlib
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -483,3 +484,58 @@ class TestMultiplexProfileScope:
         assert _env_enablement() is None
         assert is_connected(PlatformConfig(enabled=True, extra={})) is False
 
+
+
+class TestIRCAdapterSilentConnection:
+    """A dead network path never closes the socket; the adapter must notice the silence itself."""
+
+    async def _run(self, monkeypatch, answer_ping: bool):
+        import gateway.status as gateway_status
+        from gateway.config import PlatformConfig
+
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(gateway_status, "acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+        monkeypatch.setattr(gateway_status, "release_scoped_lock", lambda *a, **k: None)
+        monkeypatch.setattr(_irc_mod, "_LIVENESS_INTERVAL", 0.2)
+        pings = []
+
+        async def _serve(reader, writer):
+            writer.write(b":srv 001 testbot :Welcome\r\n")
+            await writer.drain()
+            # After registration the server goes silent and never closes the socket.
+            while line := await reader.readline():
+                if line.startswith(b"PING"):
+                    pings.append(line)
+                    if answer_ping:
+                        writer.write(b":srv PONG srv :hermes\r\n")
+                        await writer.drain()
+
+        server = await asyncio.start_server(_serve, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={
+            "server": "127.0.0.1", "port": port, "nickname": "testbot", "channel": "#test", "use_tls": False}))
+        fatal = asyncio.Event()
+        adapter.set_fatal_error_handler(lambda a: fatal.set())
+        try:
+            assert await adapter.connect() is True
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(fatal.wait(), timeout=1.5)
+            return adapter, fatal.is_set(), pings
+        finally:
+            await adapter.disconnect()
+            server.close()
+
+    @pytest.mark.asyncio
+    async def test_silent_server_is_pinged_then_reported_lost(self, monkeypatch):
+        adapter, fatal, pings = await self._run(monkeypatch, answer_ping=False)
+        assert pings, "the adapter should PING a silent server before giving up"
+        assert fatal is True
+        assert adapter._fatal_error_code == "connection_lost"
+        assert adapter._fatal_error_retryable is True
+
+    @pytest.mark.asyncio
+    async def test_server_answering_ping_keeps_connection(self, monkeypatch):
+        adapter, fatal, pings = await self._run(monkeypatch, answer_ping=True)
+        assert len(pings) >= 2
+        assert fatal is False

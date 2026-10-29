@@ -165,7 +165,9 @@ def _kanban_handler(tool_name: str) -> Callable:
                 _check(not unknown,
                        f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
                        f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
-                return fn(args, **kw)
+                from hermes_cli import kanban_db as _kb
+                with _kb.scoped_kanban_event_origin("tool"):
+                    return fn(args, **kw)
             except _Reject as e:
                 return e.args[0]
             except Exception as e:

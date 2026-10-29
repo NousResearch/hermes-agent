@@ -1,8 +1,8 @@
 name: provider-balances
 repo: https://github.com/eosphor/provider-balances
-sha: "6fdbc51f35a4ce4ab385d899d1e7c44f3608f519"
+sha: "5aca46365c9fa9776ff791ee5b46693b26b7c486"
 description: "Shows the focused session provider's remaining session quota or credit amount in the desktop status bar, with a red warning below 5%. Disclosure: polls provider APIs; DeepSeek and OpenRouter keys use profile-scoped secrets and fixed HTTPS endpoints; delegates Codex and Anthropic usage to Hermes account-usage helpers, which can refresh Codex credentials and may resolve Claude Code credentials and identify as Claude Code. No analytics or subprocesses. Multi-connection routing is not fully validated."
-maintainer: Monviso
+maintainer: Dmitry Melikhov
 tier: community
 category: desktop
 requires_hermes: ">=0.22.5"

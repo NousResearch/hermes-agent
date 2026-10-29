@@ -400,9 +400,20 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
         # failed and surface the delivery error, which lives in last_delivery_error (last_error is None for
         # these runs, and a bare success=False with error=None reads as an unexplained failure). See #83993.
         ok = last_status in {"ok", "delivery_queued"}
-        if execution is not None and execution.get("status") != "completed":
-            ok = False
-            run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"
+        if execution is not None:
+            # A later run may finish after we release the in-flight registration but before
+            # get_job returns. Neither its success nor its delivery error belongs to this run.
+            status = execution.get("status")
+            delivery_failed = execution.get("delivery_outcome") == "failed"
+            ok = status == "completed" and not delivery_failed
+            run_error = execution.get("error")
+            if status != "completed":
+                run_error = run_error or f"execution ended in {status or 'unknown'} state"
+            elif delivery_failed:
+                from cron.delivery_queue import get_status
+
+                delivery = get_status(str(execution_id)) or {}
+                run_error = delivery.get("error") or "Execution delivery failed."
         return {"claimed": True, "success": bool(processed and ok), "error": run_error}
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)

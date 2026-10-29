@@ -249,12 +249,10 @@ class Platform(Enum):
         value = value.strip().lower()
         if value in cls._value2member_map_:
             return cls._value2member_map_[value]
-        global _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
-        if _Platform__bundled_plugin_names is None:
-            _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases = cls._scan_bundled_plugin_platforms()
-        registered = value in _Platform__bundled_plugin_names
+        bundled_names, bundled_aliases = cls._cached_bundled_plugin_platforms()
+        registered = value in bundled_names
         if not registered:
-            alias = _Platform__bundled_plugin_aliases.get(value)
+            alias = bundled_aliases.get(value)
             if alias is not None:
                 # A bundled platform whose plugin.yaml ``name:`` differs from its directory (e.g. dir
                 # "a2a", name "a2a-platform") is configured under the manifest name — ``plugins
@@ -274,6 +272,24 @@ class Platform(Enum):
         cls._value2member_map_[value] = pseudo
         cls._member_map_[pseudo._name_] = pseudo
         return pseudo
+
+    @classmethod
+    def _cached_bundled_plugin_platforms(cls) -> tuple[set, dict]:
+        """``_scan_bundled_plugin_platforms()``, scanned at most once per process.
+
+        The scan lists ``plugins/platforms/*`` and reads every ``plugin.yaml`` to learn each plugin's
+        manifest ``name:`` — ~28 directory probes plus 27 file reads. ``_missing_`` always cached the
+        result, but ``gateway.config_env._bundled_env_fallbacks`` called the raw scan and so re-read
+        the whole tree on **every** ``load_gateway_config()``. Measured at 0.77 s, and that load runs
+        synchronously wherever config is reloaded — including inside a platform adapter rebuild, which
+        is how three quarters of a second of disk I/O reached the gateway event loop on every
+        reconnect. Bundled platforms ship with the code, so the set cannot change under a running
+        process; caching is the semantics ``_missing_`` already encoded.
+        """
+        global _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
+        if _Platform__bundled_plugin_names is None:
+            _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases = cls._scan_bundled_plugin_platforms()
+        return _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
 
     @classmethod
     def _scan_bundled_plugin_platforms(cls) -> tuple[set, dict]:

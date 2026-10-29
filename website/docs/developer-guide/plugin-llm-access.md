@@ -719,7 +719,11 @@ when nothing was started.
   is written to the transcript or the session database.
 * The fork is cancelled as soon as the session starts its next turn,
   whether it is running, starting or still deferred; a deferred fork
-  then never launches. `timeout` (seconds, at most 1800) adds a wall clock.
+  then never launches. `timeout` (seconds, at most 1800) adds a wall
+  clock. Both are cooperative: they interrupt the fork, which stops at
+  its next interrupt check, and the handle settles when the fork's
+  worker exits. A provider call that ignores the interrupt holds the
+  handle open until it returns, so wait with a bound (`handle.wait(t)`).
 * `task` names one of this plugin's own
   [`register_auxiliary_task`](#task-routed-auxiliary-calls) lanes: the
   fork then runs on that lane's model, resolved like
@@ -741,8 +745,11 @@ fork's final text, or `None`), `handle.actions` (the whitelisted tool
 names it called, in order), `handle.wait(timeout)` and `handle.cancel()`.
 `outcome` is one of `deferred`, `running`, `ok`, `cancelled`,
 `superseded`, `timeout`, `budget_exhausted`, `error` or
-`refused:<reason>` (`moa`, `agent_provider`, `runtime_changed`, as for
-side questions). The handle never exposes the fork agent itself.
+`refused:<reason>`: `parent_gone` (the session agent was released before
+the fork started), `moa` (a Mixture-of-Agents runtime), `agent_provider`
+(an agent-as-provider runtime that runs its own tools) or
+`runtime_changed` (the session switched model or provider since the
+turn). The handle never exposes the fork agent itself.
 
 ### Telling a fork from the live agent
 

@@ -115,6 +115,54 @@ def test_review_tools_are_gated_and_visible_to_kanban_workers(
     assert "kanban_request_changes" in resolve_toolset("kanban")
 
 
+def test_worker_can_hand_off_its_running_task_to_another_profile(
+    review_worker: str,
+) -> None:
+    """A worker closes only its own run before routing the card to a peer."""
+    from tools import kanban_tools as tools
+
+    handed_off = json.loads(tools._handle_handoff({
+        "profile": "reviewer",
+        "reason": "This needs the review profile's environment.",
+    }))
+    assert handed_off == {
+        "ok": True,
+        "task_id": review_worker,
+        "profile": "reviewer",
+        "status": "ready",
+    }
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, review_worker)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.assignee == "reviewer"
+        assert task.current_run_id is None
+        assert task.claim_lock is None
+        run = kb.latest_run(conn, review_worker)
+        assert run is not None
+        assert run.outcome == "handed_off"
+        event = [e for e in kb.list_events(conn, review_worker) if e.kind == "handed_off"][-1]
+        assert event.payload == {
+            "from": "builder",
+            "profile": "reviewer",
+            "reason": "This needs the review profile's environment.",
+            "status": "ready",
+        }
+
+
+def test_handoff_requires_the_running_worker_identity(review_worker: str) -> None:
+    with kbc.connect() as conn:
+        ok, reason = kb.handoff_task(
+            conn, review_worker, "reviewer", reason="unowned caller", expected_run_id=None,
+        )
+        task = kb.get_task(conn, review_worker)
+
+    assert (ok, reason) == (False, "run_id is required to hand off a running task")
+    assert task is not None
+    assert task.status == "running"
+
+
 
 
 def test_review_cli_round_trip_preserves_handoff(

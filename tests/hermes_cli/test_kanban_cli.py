@@ -281,6 +281,32 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
+def test_assign_running_task_returns_an_actionable_error(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="claimed", assignee="builder")
+        assert kb.claim_task(conn, task_id, claimer="builder:1") is not None
+
+    output = kc.run_slash(f"assign {task_id} reviewer")
+
+    assert "currently running (claimed)" in output
+    assert "Traceback" not in output
+
+
+def test_reassign_reclaim_refuses_to_signal_the_calling_worker(kanban_home, monkeypatch):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="self-owned", assignee="builder")
+        assert kb.claim_task(conn, task_id, claimer="builder:1") is not None
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (4242, task_id))
+        conn.commit()
+        monkeypatch.setattr(kb.os, "getpid", lambda: 4242)
+        assert kb.reassign_task(conn, task_id, "reviewer", reclaim_first=True) is False
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    assert task.status == "running"
+    assert task.assignee == "builder"
+
+
 
 
 # ---------------------------------------------------------------------------

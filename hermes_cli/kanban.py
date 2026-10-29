@@ -918,10 +918,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            operator_force = bool(getattr(args, "force", False))
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=operator_force,
+                                        _triage_capability=(
+                                            kb._TRIAGE_RESOLUTION_CAPABILITY if operator_force else None
+                                        ))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -939,6 +943,26 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                else:
+                    task = kb.get_task(conn, tid)
+                    if task is not None and task.status == "triage":
+                        if operator_force:
+                            if not kb._triage_resolution_allowed(conn, tid):
+                                fail_msg[tid] = (
+                                    f"cannot resolve {tid}: this is not a loop-breaker Triage task. "
+                                    "Specify or promote it through the normal workflow."
+                                )
+                            else:
+                                fail_msg[tid] = (
+                                    f"cannot resolve {tid}: completion-contract acceptance checks did not pass "
+                                    "or task state changed. Inspect the task events before retrying."
+                                )
+                        else:
+                            fail_msg[tid] = (
+                                f"cannot complete {tid}: triage is a loop-breaker state. "
+                                "After independently verifying the handoff, re-run with --force and "
+                                "include --result/--summary evidence."
+                            )
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)

@@ -6,18 +6,25 @@ from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
 
 
 def _snapshot(conn, task_id):
-    row = conn.execute("SELECT current_run_id, status, completion_contract FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = conn.execute(
+        "SELECT t.current_run_id, t.status, t.completion_contract, "
+        "COALESCE((SELECT MAX(e.id) FROM task_events e WHERE e.task_id=t.id), 0) "
+        "FROM tasks t WHERE t.id=?", (task_id,),
+    ).fetchone()
     return tuple(row) if row else None
 
 
-def prepare_acceptance(conn, task_id, expected_run_id, metadata):
+def prepare_acceptance(conn, task_id, expected_run_id, metadata, *, resolve_triage=False):
     snapshot = _snapshot(conn, task_id)
     if snapshot is None:
         return False
-    run_id, status, contract = snapshot
+    run_id, status, contract, event_sequence = snapshot
     if not contract or contract == "local-only":
         return None
-    if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
+    eligible_statuses = {"running", "ready", "blocked", "review"}
+    if resolve_triage:
+        eligible_statuses.add("triage")
+    if status not in eligible_statuses or (expected_run_id is not None and run_id != expected_run_id):
         return False
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
     match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None
@@ -27,7 +34,7 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
             if _snapshot(conn, task_id) != snapshot:
                 return False
             conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (published_pr, task_id))
-        snapshot = (run_id, status, published_pr)
+        snapshot = (run_id, status, published_pr, event_sequence)
         contract = published_pr
     # The assignee profile's gh login owns the repo: acceptance must not run as
     # the ambient login of whichever process completes the card (#122689).

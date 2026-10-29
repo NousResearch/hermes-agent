@@ -3,6 +3,7 @@ per-model usage rows, and billing-route columns. Writer thread state lives on th
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import contextlib
 import logging
@@ -143,6 +144,17 @@ class SessionUsageMixin:
             with self._token_queue_cond:
                 self._token_writer_busy = False
                 self._token_queue_cond.notify_all()
+
+    def flush_for_read(self) -> bool:
+        """Read-side token barrier. On a thread running an asyncio loop it never waits: the writer can sit
+        behind another connection's write lock, and a gateway handler reading a session there froze every
+        socket for up to the 5 s flush budget (#141966). That read sees totals stale by the queued deltas,
+        which the next read picks up; write barriers keep calling ``flush_token_counts`` and still wait."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self.flush_token_counts()
+        return self.flush_token_counts(timeout=0.0)
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
         """Block until every queued token delta has been applied. False on timeout (callers

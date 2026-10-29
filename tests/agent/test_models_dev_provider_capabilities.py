@@ -9,8 +9,22 @@ from agent import models_dev
 
 
 def _isolated_registry(monkeypatch, catalog=None):
+    # A post-discovery registration mirrors the profile into the picker catalog; keep that scoped too.
+    # Both imported before any patch: the catalog's import-time sync must see the real registry, and
+    # hermes_cli.models must bind the real list so the undo restores it.
+    import hermes_cli.models as hm
+    import hermes_cli.models_catalog_static as static
+    monkeypatch.setattr(static, "CANONICAL_PROVIDERS", list(static.CANONICAL_PROVIDERS))
+    monkeypatch.setattr(static, "_canonical_slugs", set(static._canonical_slugs))
+    monkeypatch.setattr(static, "_PROVIDER_LABELS", dict(static._PROVIDER_LABELS))
+    monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", static.CANONICAL_PROVIDERS)
+    monkeypatch.setattr(hm, "_PROVIDER_LABELS", static._PROVIDER_LABELS)
     monkeypatch.setattr(providers, "_REGISTRY", {})
     monkeypatch.setattr(providers, "_ALIASES", {})
+    # The list cache is filled from the swapped-in registry; without its own patch it outlives the
+    # test and later list_providers() calls see only the fixture profile (hidden ones go unfiltered).
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(providers, "_SOURCES", {})
     monkeypatch.setattr(providers, "_discovered", True)
     monkeypatch.setattr(models_dev, "_registry_models", lambda *a, **k: catalog)
 

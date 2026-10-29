@@ -25,11 +25,14 @@ from docx import Document
 
 
 def cell_text(cell) -> str:
-    """Flatten a cell's own paragraphs and any nested table text."""
-    parts = [p.text for p in cell.paragraphs if p.text]
-    for nested in cell.tables:
-        for row in table_to_rows(nested):
-            parts.extend(text for text in row if text)
+    """Flatten a cell's paragraphs and nested tables in document order."""
+    parts = []
+    for block in cell.iter_inner_content():
+        if hasattr(block, "rows"):
+            for row in table_to_rows(block):
+                parts.extend(text for text in row if text)
+        elif block.text:
+            parts.append(block.text)
     return "\n".join(parts)
 
 

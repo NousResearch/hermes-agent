@@ -60,7 +60,9 @@ WHOLE_ROW_RE = re.compile(
     rf"(?P<sheet>{SHEET_PATTERN})?"
     r"(?P<start>\$?[0-9]{1,7}):(?P<end>\$?[0-9]{1,7})"
     r"(?![\w(])")
-STRING_RE = re.compile(r'"(?:[^"]|"")*"')
+# String literals and innermost [...] groups (table column names in structured
+# references such as Table1[[A:B]]) are copied through unrewritten.
+LITERAL_RE = re.compile(r'"(?:[^"]|"")*"|\[[^\[\]]*\]')
 COORD_RE = re.compile(r"^(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)$")
 
 
@@ -202,7 +204,7 @@ class RefRewriter:
     def rewrite(self, text, home_sheet):
         """Rewrite refs outside quoted string literals. Returns new text."""
         out, pos = [], 0
-        for lit in STRING_RE.finditer(text):
+        for lit in LITERAL_RE.finditer(text):
             out.append(self._rewrite_segment(text[pos:lit.start()], home_sheet))
             out.append(lit.group(0))
             pos = lit.end()

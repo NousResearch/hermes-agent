@@ -398,6 +398,7 @@ def test_restructure_whole_axis_refs(restructure_book):
     wb = load_workbook(restructure_book)
     wb["Summary"]["C1"] = "=SUM(Data!B:B)"
     wb["Summary"]["C2"] = "=SUM(Data!2:2)"
+    wb["Data"]["A20"] = "=SUM(Table1[[B:C]])"  # table column names, not columns
     wb.save(restructure_book)
 
     report = json.loads(run(
@@ -406,6 +407,7 @@ def test_restructure_whole_axis_refs(restructure_book):
     wb = load_workbook(restructure_book)
     assert wb["Summary"]["C1"].value == "=SUM(Data!C:C)"
     assert wb["Summary"]["C2"].value == "=SUM(Data!2:2)"
+    assert wb["Data"]["A20"].value == "=SUM(Table1[[B:C]])"
     assert any(item["cell"] == "C1" for item in report["formulas"])
 
     run("xlsx_restructure.py", restructure_book, "--sheet", "Data",

@@ -103,6 +103,8 @@ GITHUB_TAP_LABELS = {
     "VoltAgent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "MiniMax-AI/cli": "MiniMax",
+    "ericgonzalez/HermesAgent-Callprep": "ericgonzalez",
+    "ericgonzalez/Hermesagent-Hubspot-Updater": "ericgonzalez",
 }
 
 # Legacy filename -> label mapping for the deprecated skills/index-cache/

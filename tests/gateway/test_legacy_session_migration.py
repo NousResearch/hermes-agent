@@ -491,3 +491,82 @@ async def test_adopted_served_login_row_survives_a_full_authority_cold_start(tmp
             for overlay in list(_registry._scoped_providers.values()):
                 overlay.pop('basic', None)
         assert get_provider('basic', scope=str(tmp_path)) is None
+
+
+@pytest.mark.asyncio
+async def test_native_host_adopts_an_ios_served_login_row_only_when_attested(tmp_path, monkeypatch):
+    """#139818 (source='ios'): the iOS/mobile client drives the same local serve through a dashboard
+    login and writes an unrouted row with a free-form ``source='ios'`` label. The host's own native
+    viewer adopts it ONLY because the live per-home provider positively attests that exact login —
+    the source label alone is never authority. An ``ios`` row whose login is not attested, or any
+    other free-form source, stays refused and untouched.
+    """
+    import secrets
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli.dashboard_auth.registry import register_provider, get_provider
+    import plugins.dashboard_auth.basic as basic_plugin
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+
+    rows = (
+        ('ios-served', 'ios', 'basic:hermes'),     # iOS client, login this backend serves
+        ('ios-stranger', 'ios', 'basic:someone'),  # iOS client, a login that is NOT configured
+        ('weird-label', 'totally-unknown', 'basic:hermes'),  # attested login but not a local surface
+    )
+    for sid, source, uid in rows:
+        db.create_session(sid, source=source, model='old-model', cwd=str(tmp_path), user_id=uid)
+        db.append_message(sid, role='user', content=sid.upper())
+        db.end_session(sid, 'session_switch')
+
+    provider = basic_plugin.BasicAuthProvider(
+        username='hermes', password_hash=basic_plugin.hash_password('pw'),
+        secret=secrets.token_bytes(32))
+    register_provider(provider, scope=str(tmp_path))
+    try:
+        runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                                 _cached_agent_for=lambda route: None)
+        runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+        authority = await initialize_session_authority(runner, profile_id=str(tmp_path),
+                                                       instance_id='first')
+        native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+            'profile_id': str(tmp_path), 'instance_id': 'first'})
+
+        adopted = await native.dispatch({'id': 1, 'method': 'session.resume',
+                                         'params': {'session_id': 'ios-served'}})
+        assert adopted.get('result', {}).get('session_id') == 'ios-served', adopted
+        bound = db.get_session('ios-served')
+        assert bound['session_key'] == 'agent:main:local:dm:ios-served', bound
+        assert bound['user_id'] == native.actor.subject == 'auth:v1:["local","","native"]', bound
+        assert bound['chat_id'] == 'ios-served' and bound['origin_json'], bound
+
+        # The same free-form ios label with an unattested login is refused and left unrouted.
+        refused = await native.dispatch({'id': 2, 'method': 'session.resume',
+                                         'params': {'session_id': 'ios-stranger'}})
+        assert refused.get('error', {}).get('message') == 'not_found', refused
+        stranger = db.get_session('ios-stranger')
+        assert stranger['session_key'] is None and stranger['user_id'] == 'basic:someone', stranger
+
+        # An attested login does NOT make an arbitrary non-local source adoptable: the source label
+        # is only a scope filter; a label outside the local-tethered set is never locally claimed.
+        # ('weird-label' takes the generic non-messaging mount path, but it must not be locally routed.)
+        weird = db.get_session('weird-label')
+        from hermes_state_local_migration import validate_legacy_row
+        with pytest.raises(Exception):
+            validate_legacy_row(db, dict(weird), subject=native.actor.subject,
+                                host_login_attestor=lambda _label: True)
+        assert weird['session_key'] is None and weird['user_id'] == 'basic:hermes', weird
+    finally:
+        from hermes_cli.dashboard_auth import registry as _registry
+        with _registry._lock:
+            _registry._providers.pop('basic', None)
+            for overlay in list(_registry._scoped_providers.values()):
+                overlay.pop('basic', None)
+        assert get_provider('basic', scope=str(tmp_path)) is None

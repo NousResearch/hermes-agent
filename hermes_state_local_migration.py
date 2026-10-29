@@ -14,7 +14,16 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # ``acp`` is main's in-process editor server (Zed, VS Code, JetBrains): adopted under its own source.
 LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
-LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+# ``desktop`` (Electron/TUI) and ``ios`` (the iOS/mobile client driving a local serve through a
+# dashboard login, #139818) are both local GUI surfaces: they adopt and run as ``gui``/desktop,
+# keeping the canonical policy surface while their provenance is recorded by the local receipt.
+LEGACY_CREATION_SOURCES = {'desktop': 'gui', 'ios': 'gui'}
+# Local-tethered surfaces whose rows a served dashboard login can write unrouted and the host's OWN
+# native peer may adopt once the live per-home provider positively attests that login (#139818).
+# ``desktop`` is the Electron/TUI surface; ``ios`` is the iOS/mobile client driving the same local
+# serve through a dashboard login (it passes its own free-form ``source`` label, which is why this
+# set is only a scope filter — the security gate stays the attested ``user_id``, never the label).
+SERVED_LOGIN_SOURCES = frozenset({'desktop', 'ios'})
 
 
 def legacy_account_label(row):
@@ -56,12 +65,17 @@ def validate_legacy_row(db, row, *, subject=None, host_login_attestor=None):
     # reached this through the native-peer adoption path (it never passes one for a dashboard
     # login — those take the exact-subject ``login_owned_by`` branch). The data layer therefore
     # does not re-derive provenance from the subject string: presence of the attestor is the gate.
-    # It applies solely to a Desktop creation stamp naming a login the host's LIVE provider
-    # registry positively attests; a messaging prefix / a login no longer served fails closed.
+    # It applies solely to a local-tethered Desktop/mobile creation stamp naming a login the host's
+    # LIVE provider registry positively attests; a messaging prefix / a login no longer served,
+    # or any other source label, fails closed.
+    source = row.get('source')
     if (host_login_attestor is not None and isinstance(user_id, str)
-            and row['source'] == 'desktop' and not user_id.startswith('nous:')):
+            and source in SERVED_LOGIN_SOURCES and not user_id.startswith('nous:')):
         attested_login = bool(host_login_attestor(user_id))
-    if (row['source'] not in LEGACY_LOCAL_SOURCES
+    # A served-login row (e.g. the iOS/mobile client, source='ios') is adoptable only when its login
+    # was positively attested above; the classic local labels additionally allow ordinary adoption.
+    is_local_label = source in LEGACY_LOCAL_SOURCES
+    if ((not is_local_label and not attested_login)
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
             or (user_id and not legacy_account_label(row) and not login_owned_by(row, subject)
                 and not attested_login)

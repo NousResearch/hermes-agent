@@ -643,7 +643,7 @@ class TestReconnectFastPath:
             events.append("lock")
             return True, None
         monkeypatch.setattr("gateway.status.acquire_scoped_lock", acquire)
-        monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: events.append("unlock"))
+        monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: events.append("unlock"))
         monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda directory: events.append("npm") or False)
         app = web.Application()
         async def health(request):

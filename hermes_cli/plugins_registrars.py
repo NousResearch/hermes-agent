@@ -88,6 +88,14 @@ _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str,
      "``delegation.backend``. It decides each ``delegate_task`` task's route (model/provider or a Hermes "
      "profile) and may add per-task schema parameters; core keeps the subagent lifecycle.",
      {"normalize": "lower"}),
+    ("register_kanban_worker_lane", "kanban_worker_lane", "hermes_cli.kanban_worker_lane_registry",
+     "hermes_cli.kanban_worker_lanes:KanbanWorkerLane", "Kanban worker lane",
+     "Register a :class:`hermes_cli.kanban_worker_lanes.KanbanWorkerLane`: the Kanban dispatcher hands "
+     "claimed tasks whose assignee and board match the lane (and that ``lane.accepts`` takes) to "
+     "``lane.spawn`` instead of the native ``hermes -p`` worker; unmatched tasks keep the native spawn. "
+     "Profile-scoped, removed on plugin unload; the gateway's dispatcher sees the lanes of every "
+     "profile it serves.",
+     {"reject_message": "Plugin '%s' Kanban worker lane rejected: %s", "identity": "check_lane"}),
 )
 
 _NAME_NORMALIZERS: dict[Optional[str], Optional[Callable[[str], str]]] = {

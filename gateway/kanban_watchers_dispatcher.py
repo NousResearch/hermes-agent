@@ -234,7 +234,8 @@ class _KanbanDispatcher:
                 conn = None
                 try:
                     conn = _kbc().connect(board=slug)
-                    if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
+                    if (kbd.has_spawnable_ready(conn, board=slug)
+                            or (_review_probe and kbd.has_spawnable_review(conn, board=slug))):
                         return True
                 except Exception:
                     continue

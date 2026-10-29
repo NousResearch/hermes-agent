@@ -260,10 +260,14 @@ def test_openai_tts_accepts_openai_api_key_as_direct_fallback(monkeypatch, tmp_p
     assert captured["close_calls"] == 1
 
 
-def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_path):
+def test_transcription_asks_every_model_for_json(monkeypatch, tmp_path):
+    """whisper-1 included: only json carries the usage a metering proxy bills by."""
     whisper_capture = {}
     _install_fake_tools_package()
-    _install_fake_openai_module(whisper_capture, transcription_response="hello from whisper")
+    _install_fake_openai_module(
+        whisper_capture,
+        transcription_response=types.SimpleNamespace(text="hello from whisper"),
+    )
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # The managed audio route is the stored "nous" selection (strict model);
     # a stored "openai" selection now means direct credentials only.
@@ -283,8 +287,9 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
 
     whisper_result = transcription_tools.transcribe_audio(str(audio_path), model="whisper-1")
     assert whisper_result["success"] is True
+    assert whisper_result["transcript"] == "hello from whisper"
     assert whisper_capture["base_url"] == "https://openai-audio-gateway.nousresearch.com/v1"
-    assert whisper_capture["transcription_kwargs"]["response_format"] == "text"
+    assert whisper_capture["transcription_kwargs"]["response_format"] == "json"
     assert whisper_capture["close_calls"] == 1
 
     json_capture = {}

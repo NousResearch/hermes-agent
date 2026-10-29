@@ -1,6 +1,7 @@
 import { JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { wasResentAfterPossibleDelivery } from '@/api/gateway-delivery'
 import { notifyError } from '@/store/notifications'
 
 /**
@@ -258,6 +259,15 @@ export interface AgentPluginInstallResult {
    *  there cannot be held to the reviewed commit. Only the user may choose to install without it. */
   inspectedShaUnsupported?: boolean
   pluginName?: string
+  /** The backend refused the only attempt that may have reached it before placing anything: a JSON-RPC error
+   *  whose data carries `placed: false`, which the backend sends only for a refusal raised before the tree
+   *  went to its package manager. Any other error may follow a published tree (a failure enabling it, an
+   *  older backend sending no `placed`), and so may a dropped or missing connection or a refusal of a resend
+   *  after a dropped connection (`wasResentAfterPossibleDelivery`): the earlier attempt may have finished the
+   *  install without its answer arriving. None of those is `refused`. */
+  refused?: boolean
+  /** Refused, but its tree landed anyway: only its enable was refused. */
+  landed?: boolean
   warnings?: string[]
   missingEnv?: string[]
   /** Whether the install turned the plugin on (`enabled` in the backend result). */
@@ -333,6 +343,24 @@ export function isSourceMovedRefusal(error: unknown): boolean {
   return data?.reason === 'source_moved'
 }
 
+/** The plugin whose tree landed although its install was refused (its enable was), from the same error data. */
+function landedPluginName(error: unknown): string | undefined {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { plugin_name?: unknown } | undefined) : undefined
+
+  return typeof data?.plugin_name === 'string' ? data.plugin_name : undefined
+}
+
+/** The backend refused before placing anything (`data.placed === false`), from the same error data. */
+function refusedBeforePlacing(error: unknown): boolean {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { placed?: unknown } | undefined) : undefined
+
+  return data?.placed === false && !wasResentAfterPossibleDelivery(error)
+}
+
+/** The backend's own prefix for a refusal after the tree landed (`hermes_cli/plugins_cmd_install.py`). Backends
+ *  older than `data.plugin_name` send only this, so it alone also means the tree landed. */
+const ENABLE_REFUSAL = /^enable refused: /
+
 export async function installAgentPlugin(
   request: GatewayRequest,
   opts: {
@@ -395,6 +423,8 @@ export async function installAgentPlugin(
       timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
       sourceMoved: isSourceMovedRefusal(e),
       inspectedShaUnsupported: backendPredatesInspectedSha(params, e),
+      refused: refusedBeforePlacing(e),
+      landed: Boolean(landedPluginName(e)) || ENABLE_REFUSAL.test(message),
       error: message,
       live: NO_LIVE,
       nextChat: false

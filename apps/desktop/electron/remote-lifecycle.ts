@@ -1515,6 +1515,22 @@ async function waitForRemoteSpawnCompletion(ssh, ownershipId, timeoutMs) {
   throw error
 }
 
+// Whether a published backend record serves this connect as-is. The backend trusts a dev
+// renderer's origin only from the HERMES_DESKTOP_DEV_SERVER it was spawned with; one spawned for
+// another renderer (or none, as older records and packaged builds are) would refuse every renderer
+// socket, so it is replaced rather than reused.
+function lockServesConnect(lock, { profile, reuseToken, hermesPath, hermesHome, devServer }) {
+  return (
+    lock.port > 0 &&
+    lock.profile === profile &&
+    Boolean(reuseToken) &&
+    lock.tokenFingerprint === fingerprintToken(reuseToken) &&
+    lock.hermesPath === hermesPath &&
+    lock.hermesHome === hermesHome &&
+    (lock.devServer ?? '') === devServer
+  )
+}
+
 async function connect(deps) {
   const {
     ssh,
@@ -1593,18 +1609,7 @@ async function connect(deps) {
       ))
 
     const reusable =
-      pidAlive &&
-      owned &&
-      lock.port > 0 &&
-      lock.profile === profile &&
-      Boolean(reuseToken) &&
-      lock.tokenFingerprint === fingerprintToken(reuseToken) &&
-      lock.hermesPath === hermesPath &&
-      lock.hermesHome === hermesHome &&
-      // The backend trusts a dev renderer's origin only from the HERMES_DESKTOP_DEV_SERVER it was
-      // spawned with; one spawned for another renderer (or none, as older records and packaged builds
-      // are) would refuse every renderer socket, so it is replaced rather than reused.
-      (lock.devServer ?? '') === devServer
+      pidAlive && owned && lockServesConnect(lock, { profile, reuseToken, hermesPath, hermesHome, devServer })
 
     if (reusable) {
       const creationTime = lock.creationTime || (await remoteProcessCreationTime(ssh, lock.pid))

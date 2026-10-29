@@ -54,7 +54,7 @@ mcp_servers:
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
 | `client_key` | string | HTTP | Path to the client private key, when `client_cert` is a string and the key is in a separate file |
 | `enabled` | bool | both | Skip the server entirely when false |
-| `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
+| `timeout` | number | both | Tool call idle timeout in seconds (default: `300`). Progress notifications refresh the idle deadline; total execution is capped at 4x this value. |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
@@ -73,6 +73,8 @@ mcp_servers:
 | `tool_costs` | mapping | both | What each tool spends, keyed by the MCP tool name: a non-negative number, a `[min, max]` range, or `{credits: <number or range>, note: "per animation"}`. The approval prompt names the cost and the chat's running total. Undeclared and zero-cost tools are unaffected. See [Tool costs and spend limits](../user-guide/features/mcp.md#tool-costs-and-spend-limits) |
 | `spend_limit` | number | both | Per-chat budget for this server's costed tools (`0`/absent = no limit). A costed call that would take the chat past it asks first, even on a `trust: full` server, and is refused where nobody can answer (cron, `chat -q`) |
 | `cost_unit` | string | both | Label shown with costs and totals (default: `credits`) |
+
+When a server does not set `timeout`, `timeouts.mcp.tool_call` supplies the same idle timeout globally. It has the same progress-refresh and 4x absolute-cap semantics.
 
 ## Environment variable references
 

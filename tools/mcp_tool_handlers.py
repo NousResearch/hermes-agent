@@ -26,6 +26,7 @@ from tools.mcp_tool_errors import (
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
+_MCP_PROGRESS_MAX_TIMEOUT_FACTOR = 4
 
 declaration.on_change = invalidate_check_fn_cache
 
@@ -448,15 +449,26 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
 
 
 def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float, recoverers,
-              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False) -> str:
+              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False,
+              progress_state: Optional[Any] = None, absolute_timeout: Optional[float] = None) -> str:
     """Mark the call started on *server* (doubles may lack ``mark_tool_call``), run coroutine function *call*
     on the MCP loop and, on failure, walk ``recoverers`` (``(server_name, exc, retry_call, op) -> Optional[str]``,
     None = not its kind; order matters). Unrecovered exceptions go through ``on_final_failure`` and become the
-    generic call-failed error. ``record_outcome`` applies breaker bookkeeping to the FIRST attempt only."""
+    generic call-failed error. ``record_outcome`` applies breaker bookkeeping to the FIRST attempt only.
+
+    When ``progress_state`` is provided, its ``deadline()`` refreshes the idle timeout and
+    ``absolute_timeout`` caps total execution at a fixed multiple of the idle budget."""
     if callable(getattr(server, "mark_tool_call", None)):
         server.mark_tool_call()
 
     def call_once():
+        if progress_state is not None:
+            return _loop._run_on_mcp_loop(
+                call,
+                timeout=tool_timeout,
+                deadline_provider=progress_state.deadline,
+                absolute_timeout=absolute_timeout,
+            )
         return _loop._run_on_mcp_loop(call, timeout=tool_timeout)
 
     try:
@@ -717,7 +729,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         from agent.tool_progress_relay import current_tool_progress
         report = current_tool_progress()
 
+        # Per-attempt idle deadline state. ``_dispatch`` will pass this same object to
+        # ``_run_on_mcp_loop`` so progress refreshes the idle deadline, capped at 4x.
+        absolute_timeout = tool_timeout * _MCP_PROGRESS_MAX_TIMEOUT_FACTOR
+        progress_state = _loop._McpProgressState(tool_timeout, absolute_timeout)
+
         async def _on_progress(progress, total, message):
+            # Refresh this call's idle deadline whether or not a UI sink is subscribed —
+            # a silent relay must not reintroduce the fixed-timeout failure.
+            progress_state.touch()
             if report is not None:
                 report(progress, total, message)
 
@@ -726,7 +746,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
                     result = await _call_tool_racing_stdio_death(
-                        server, server_name, tool_name, args, _on_progress if report is not None else None)
+                        server, server_name, tool_name, args, _on_progress)
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
@@ -741,7 +761,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         text = _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
-            _on_failure, record_outcome=True)
+            _on_failure, record_outcome=True, progress_state=progress_state, absolute_timeout=absolute_timeout)
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text
     return _handler

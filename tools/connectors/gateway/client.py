@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
+from urllib.parse import urlencode
 
 import requests
 from pydantic import ValidationError
@@ -170,9 +171,10 @@ class ConnectorClient:
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(20):
-            path = f"{wire.CONNECTORS_PATH}?limit=50"
+            query: dict[str, Any] = {"limit": 50}
             if cursor:
-                path += f"&cursor={cursor}"
+                query["cursor"] = cursor
+            path = f"{wire.CONNECTORS_PATH}?{urlencode(query)}"
             page = self._checked(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout),
                                  "connector list page")
             items.extend(item.model_dump(by_alias=True) for item in page.items)

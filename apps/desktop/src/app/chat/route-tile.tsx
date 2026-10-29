@@ -1,23 +1,26 @@
 /**
  * ROUTE (PAGE) TILES — a full-page view rendered as a layout-tree pane BESIDE
  * the main thread, the page analog of session tiles. Built-in pages
- * (Capabilities / Messaging / Artifacts) render their view; plugin pages render
+ * (Capabilities / Messaging / Artifacts / Scheduled jobs) render their view; plugin pages render
  * their `ROUTES_AREA` contribution. Lifecycle mirrors session tiles:
  * `openRouteTile(path)` -> `watchRouteTiles` registers a pane docked beside
  * main -> tree adoption lands it on the chosen edge; closing removes it.
  */
 
 import { lazy, type ReactNode, Suspense } from 'react'
+import { useNavigate } from 'react-router'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
+import { openStoredSession } from '../open-session'
 import {
   $routesVersion,
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
   contributedRoutes,
+  CRON_ROUTE,
   MESSAGING_ROUTE,
   ROUTES_AREA
 } from '../routes'
@@ -27,12 +30,21 @@ import { paneMirror } from './pane-mirror'
 const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
+const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
+
+// Run rows open through the same owner-aware door the workspace page uses.
+function CronPage() {
+  const navigate = useNavigate()
+
+  return <CronView onOpenSession={(sessionId, session) => openStoredSession(sessionId, navigate, session)} />
+}
 
 // Built-in page views + their pane titles, keyed by route.
 const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: string }> = {
   [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts' },
   [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging' },
-  [CAPABILITIES_ROUTE]: { render: () => <CapabilitiesView />, title: 'Capabilities' }
+  [CAPABILITIES_ROUTE]: { render: () => <CapabilitiesView />, title: 'Capabilities' },
+  [CRON_ROUTE]: { render: () => <CronPage />, title: 'Scheduled jobs' }
 }
 
 /** Humanize a route path into a tab title: `/my-atlas` → `My Atlas`. */

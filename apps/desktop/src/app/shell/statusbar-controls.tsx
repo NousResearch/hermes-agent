@@ -25,6 +25,8 @@ import {
   toggleStatusbarVisible
 } from '@/store/statusbar-prefs'
 
+import { navigateToWorkspacePage } from '../routes'
+
 // Shared chrome styling for interactive statusbar items (button / link / menu
 // trigger). The 'text' variant intentionally omits hover/transition/disabled.
 const STATUSBAR_ACTION_CLASS =
@@ -286,7 +288,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
                     key={menuItem.id}
                     onSelect={() => {
                       if (menuItem.to) {
-                        navigate(menuItem.to)
+                        navigateToWorkspacePage(navigate, menuItem.to)
                       }
 
                       menuItem.onSelect?.()
@@ -346,8 +348,10 @@ const StatusbarItemView = memo(function StatusbarItemView({
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}
         onClick={event => {
+          // A page target (Scheduled jobs) must still front the workspace pane
+          // when the route is already current.
           if (item.to) {
-            navigate(item.to)
+            navigateToWorkspacePage(navigate, item.to)
           }
 
           item.onSelect?.({ shiftKey: event.shiftKey })

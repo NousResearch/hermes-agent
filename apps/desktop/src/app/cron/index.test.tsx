@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
@@ -49,7 +49,7 @@ async function renderCron() {
   await act(async () => {
     result = render(
       <QueryClientProvider client={queryClient}>
-        <CronView onClose={vi.fn()} />
+        <CronView />
       </QueryClientProvider>
     )
   })
@@ -274,6 +274,42 @@ describe('CronView trigger duplicate-click guard (regression for f9d64b9 contrac
     await act(async () => {
       releaseTrigger(job)
     })
+  })
+})
+
+describe('CronView as a workspace page', () => {
+  const second = { ...job, id: 'job-2', name: 'Inbox sweep', prompt: 'Sweep the inbox' } as CronJob
+
+  it('renders in the page frame, with no overlay backdrop or close button', async () => {
+    await renderLoadedCron()
+
+    expect(window.document.querySelector('[data-overlay-surface]')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Close cron' })).toBeNull()
+    expect(screen.getByText('Scheduled jobs')).toBeTruthy()
+  })
+
+  it('still filters the job list from the search field', async () => {
+    setCronJobs([job, second])
+    getCronJobs.mockResolvedValue([job, second])
+    const { container } = await renderLoadedCron()
+
+    expect(container.querySelector('[data-panel-row="job-2"]')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search cron jobs...' }), { target: { value: 'status' } })
+
+    expect(container.querySelector('[data-panel-row="job-1"]')).toBeTruthy()
+    expect(container.querySelector('[data-panel-row="job-2"]')).toBeNull()
+  })
+
+  it('selects the job named by the cron focus id', async () => {
+    setCronJobs([job, second])
+    getCronJobs.mockResolvedValue([job, second])
+    // Sorted by title, so without the focus id "Inbox sweep" would be selected.
+    setCronFocusJobId('job-1')
+    await renderLoadedCron()
+
+    expect(screen.getByRole('heading', { name: 'Status report' })).toBeTruthy()
+    expect($cronFocusJobId.get()).toBeNull()
   })
 })
 

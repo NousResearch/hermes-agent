@@ -12,10 +12,11 @@ import { cn } from '@/lib/utils'
 import { OVERLAY_TOP_CLEARANCE, OverlayView } from './overlay-view'
 
 // Overlay "panel" primitive — the centered, capped card + framed chrome lifted
-// straight from the trace / agents overlay so every non-settings overlay (cron,
-// profiles, …) speaks the same visual language: tight type scale, muted
+// straight from the trace / agents overlay so every non-settings overlay
+// (profiles, …) speaks the same visual language: tight type scale, muted
 // opacities, NO container borders (rows separate via the row-hover/active bg
-// vars + gaps, exactly like the trace waterfall labels).
+// vars + gaps, exactly like the trace waterfall labels). The sub-components are
+// plain layout and also compose inside a workspace page (the Cron page).
 //
 // Compose it as:
 //   <Panel onClose>

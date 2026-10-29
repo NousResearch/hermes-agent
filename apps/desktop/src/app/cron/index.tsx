@@ -55,7 +55,6 @@ import { $profileScope, ALL_PROFILES } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
-  Panel,
   PanelAction,
   PanelAddButton,
   PanelBlock,
@@ -71,6 +70,7 @@ import {
   type PanelPillTone,
   PanelSectionLabel
 } from '../overlays/panel'
+import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
@@ -302,16 +302,15 @@ function matchesQuery(job: CronJob, q: string): boolean {
 }
 
 interface CronViewProps extends React.ComponentProps<'section'> {
-  onClose: () => void
   onOpenSession?: (sessionId: string, session?: SessionInfo) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setStatusbarItemGroup }: CronViewProps) {
+export function CronView({ onOpenSession, setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
   const { t } = useI18n()
   const c = t.cron
   // Source of truth is the shared atom (also fed by the controller poll), so the
-  // sidebar and this overlay never drift — a delete here clears the sidebar row
+  // sidebar and this page never drift — a delete here clears the sidebar row
   // immediately. `loading` only gates the first paint before the atom is filled.
   const jobs = useStore($cronJobs)
   const [loading, setLoading] = useState(jobs.length === 0)
@@ -363,7 +362,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
 
   // Jobs live per-profile on disk and the list endpoint aggregates 'all' by
-  // default — scope the fetch to the sidebar's profile scope so this overlay
+  // default — scope the fetch to the sidebar's profile scope so this page
   // and the sidebar (which share the $cronJobs atom) agree on what's shown.
   const profileScope = useStore($profileScope)
   const profile = cronProfileForScope(profileScope)
@@ -387,7 +386,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   useEffect(() => {
     void refresh()
     // Fence the previous profile's request before the next profile effect, and
-    // fence every pending completion when the overlay unmounts.
+    // fence every pending completion when the page unmounts.
 
     return () => invalidateCronJobsRequests()
   }, [refresh])
@@ -679,106 +678,110 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   }
 
   return (
-    <Panel closeLabel={c.close} onClose={onClose}>
-      <PanelHeader subtitle={c.count(totalCount)} title={c.title} />
+    <PageSearchShell
+      {...props}
+      onSearchChange={setQuery}
+      // Unfiltered counts, so a search that matches nothing can still be cleared.
+      searchHidden={totalCount === 0 && (blueprintsQuery.data?.length ?? 0) === 0}
+      searchHints={jobs
+        .map(jobTitle)
+        .filter(Boolean)
+        .slice(0, 5)
+        .map(title => t.common.tryHint(title))}
+      searchPlaceholder={c.search}
+      searchValue={query}
+    >
+      <div className="flex h-full min-h-0 flex-col px-3 pb-3">
+        <PanelHeader subtitle={c.count(totalCount)} title={c.title} />
 
-      {loading && jobs.length === 0 ? (
-        <PageLoader label={c.loading} />
-      ) : totalCount === 0 && visibleBlueprints.length === 0 ? (
-        <PanelEmpty
-          action={
-            <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
-              {c.newCron}
-            </Button>
-          }
-          description={c.emptyDescNew}
-          icon="watch"
-          title={c.emptyTitleNew}
-        />
-      ) : (
-        <PanelBody>
-          <PanelList
-            onSearchChange={setQuery}
-            searchHints={jobs
-              .map(jobTitle)
-              .filter(Boolean)
-              .slice(0, 5)
-              .map(title => t.common.tryHint(title))}
-            searchLabel={c.search}
-            searchPlaceholder={c.search}
-            searchValue={query}
-          >
-            {visibleJobs.map(job => (
-              <CronJobListRow
-                active={selectedJob?.id === job.id}
-                job={job}
-                key={job.id}
-                menuItems={[
-                  { icon: 'edit', label: c.edit, onSelect: () => setEditor({ mode: 'edit', job }) },
-                  { icon: 'trash', label: t.common.delete, onSelect: () => setPendingDelete(job), tone: 'danger' }
-                ]}
-                menuLabel={c.manage}
-                onSelect={() => setSelectedJobId(job.id)}
+        {loading && jobs.length === 0 ? (
+          <PageLoader label={c.loading} />
+        ) : totalCount === 0 && visibleBlueprints.length === 0 ? (
+          <PanelEmpty
+            action={
+              <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                {c.newCron}
+              </Button>
+            }
+            description={c.emptyDescNew}
+            icon="watch"
+            title={c.emptyTitleNew}
+          />
+        ) : (
+          <PanelBody>
+            <PanelList>
+              {visibleJobs.map(job => (
+                <CronJobListRow
+                  active={selectedJob?.id === job.id}
+                  job={job}
+                  key={job.id}
+                  menuItems={[
+                    { icon: 'edit', label: c.edit, onSelect: () => setEditor({ mode: 'edit', job }) },
+                    { icon: 'trash', label: t.common.delete, onSelect: () => setPendingDelete(job), tone: 'danger' }
+                  ]}
+                  menuLabel={c.manage}
+                  onSelect={() => setSelectedJobId(job.id)}
+                />
+              ))}
+              {visibleJobs.length === 0 && (
+                <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+                  {query.trim() ? c.emptyTitleSearch : c.emptyTitleNew}
+                </p>
+              )}
+              <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
+              {visibleBlueprints.length > 0 && (
+                <>
+                  <PanelSectionLabel className="mt-3 px-2">{c.blueprints.tab}</PanelSectionLabel>
+                  {visibleBlueprints.map(item => (
+                    <PanelListRow
+                      active={false}
+                      icon="rocket"
+                      key={item.key}
+                      meta={item.plugin || undefined}
+                      onSelect={() => setEditor({ blueprintKey: item.key, mode: 'create' })}
+                      rowKey={`blueprint-${item.key}`}
+                      title={item.title}
+                    />
+                  ))}
+                </>
+              )}
+            </PanelList>
+
+            {selectedJob ? (
+              <CronJobDetail
+                busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
+                c={c}
+                job={selectedJob}
+                onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
+                onOpenSession={onOpenSession}
+                onPauseResume={() => void handlePauseResume(selectedJob)}
+                onPendingRunSettled={settlePendingTrigger}
+                onTrigger={() => void handleTrigger(selectedJob)}
+                pendingJobKey={`${profile}:${selectedJob.id}`}
+                pendingRunAt={pendingTriggers.get(`${profile}:${selectedJob.id}`)}
               />
-            ))}
-            {visibleJobs.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
-                {query.trim() ? c.emptyTitleSearch : c.emptyTitleNew}
-              </p>
+            ) : query.trim() ? (
+              // A search with no selected job: search-flavored copy is right.
+              <PanelEmpty description={c.emptyDescSearch} icon="search" />
+            ) : (
+              // No selection and no search — "Try a broader search query" here
+              // just confused people staring at an empty panel with zero jobs.
+              <PanelEmpty
+                action={
+                  jobs.length === 0 ? (
+                    <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                      {c.newCron}
+                    </Button>
+                  ) : undefined
+                }
+                description={c.emptyDescNew}
+                icon="watch"
+                title={jobs.length === 0 ? c.emptyTitleNew : undefined}
+              />
             )}
-            <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
-            {visibleBlueprints.length > 0 && (
-              <>
-                <PanelSectionLabel className="mt-3 px-2">{c.blueprints.tab}</PanelSectionLabel>
-                {visibleBlueprints.map(item => (
-                  <PanelListRow
-                    active={false}
-                    icon="rocket"
-                    key={item.key}
-                    meta={item.plugin || undefined}
-                    onSelect={() => setEditor({ blueprintKey: item.key, mode: 'create' })}
-                    rowKey={`blueprint-${item.key}`}
-                    title={item.title}
-                  />
-                ))}
-              </>
-            )}
-          </PanelList>
-
-          {selectedJob ? (
-            <CronJobDetail
-              busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
-              c={c}
-              job={selectedJob}
-              onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
-              onOpenSession={onOpenSession}
-              onPauseResume={() => void handlePauseResume(selectedJob)}
-              onPendingRunSettled={settlePendingTrigger}
-              onTrigger={() => void handleTrigger(selectedJob)}
-              pendingJobKey={`${profile}:${selectedJob.id}`}
-              pendingRunAt={pendingTriggers.get(`${profile}:${selectedJob.id}`)}
-            />
-          ) : query.trim() ? (
-            // A search with no selected job: search-flavored copy is right.
-            <PanelEmpty description={c.emptyDescSearch} icon="search" />
-          ) : (
-            // No selection and no search — "Try a broader search query" here
-            // just confused people staring at an empty panel with zero jobs.
-            <PanelEmpty
-              action={
-                jobs.length === 0 ? (
-                  <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
-                    {c.newCron}
-                  </Button>
-                ) : undefined
-              }
-              description={c.emptyDescNew}
-              icon="watch"
-              title={jobs.length === 0 ? c.emptyTitleNew : undefined}
-            />
-          )}
-        </PanelBody>
-      )}
+          </PanelBody>
+        )}
+      </div>
 
       <CronEditorDialog
         blueprintProfile={blueprintProfile}
@@ -806,7 +809,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         open={pendingDelete !== null}
         title={c.deleteTitle}
       />
-    </Panel>
+    </PageSearchShell>
   )
 }
 

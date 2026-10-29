@@ -164,7 +164,6 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'session-import',
   'agents',
   'command-center',
-  'cron',
   'profiles',
   'settings',
   'starmap',
@@ -180,7 +179,7 @@ export function isOverlayView(view: AppView): boolean {
  *  Contributed full pages (`extension`) hide the app clusters only while the
  *  page actually mounts `titleBar.*` chrome — those slots are mount-scoped, so
  *  a plugin page with no titlebar contribution keeps the app controls.
- *  First-party workspace pages (capabilities/messaging/artifacts) keep the clusters. */
+ *  First-party workspace pages (capabilities/messaging/artifacts/cron) keep the clusters. */
 export function hidesFixedTitlebarClusters(view: AppView): boolean {
   return isOverlayView(view) || view === 'extension'
 }
@@ -249,7 +248,7 @@ export function appViewForPath(pathname: string): AppView {
 }
 
 /** Does `to` land on a full page rendered INSIDE the workspace pane
- *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
+ *  (skills/messaging/artifacts/cron/contributed routes)? Overlays don't count —
  *  they float over whatever the workspace is already showing. */
 export function isWorkspacePageRoute(to: string): boolean {
   const view = appViewForPath(to)

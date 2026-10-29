@@ -19,6 +19,9 @@ import {
   appViewForPath,
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
+  CRON_ROUTE,
+  isOverlayView,
+  isWorkspacePageRoute,
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
@@ -143,6 +146,28 @@ describe('syncWorkspaceRoute', () => {
 
     expect($workspaceIsPage.get()).toBe(false)
     expect(revealTreePane).not.toHaveBeenCalled()
+  })
+})
+
+// Scheduled jobs used to be an overlay card: the sidebar row, ⌘K and the
+// keybind opened it over the chat and "Open in split" had no page to show.
+describe('Scheduled jobs is a workspace page', () => {
+  it('classifies /cron as a page, not an overlay', () => {
+    expect(isOverlayView('cron')).toBe(false)
+    expect(isWorkspacePageRoute(CRON_ROUTE)).toBe(true)
+  })
+
+  it('publishes and fronts the workspace pane on /cron', () => {
+    syncWorkspaceRoute(CRON_ROUTE)
+
+    expect($workspaceIsPage.get()).toBe(true)
+    expect(fronted()).toBe(true)
+  })
+
+  it('fronts on a re-click while already on /cron', () => {
+    navigateToWorkspacePage(vi.fn(), CRON_ROUTE)
+
+    expect(fronted()).toBe(true)
   })
 })
 

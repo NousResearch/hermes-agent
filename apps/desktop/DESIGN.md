@@ -47,10 +47,10 @@ one-off at the call site.
 
 - **Chat is the home surface.** The transcript and composer stay primary; tools,
   previews, files, review, and terminal complement the conversation.
-- **Pages are durable destinations.** Chat, Skills, Messaging, and Artifacts
-  remain in shell chrome. Do not hide a distinct product noun inside an
-  unrelated page.
-- **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
+- **Pages are durable destinations.** Chat, Skills, Messaging, Artifacts, and
+  Scheduled jobs (Cron) remain in shell chrome. Do not hide a distinct product
+  noun inside an unrelated page.
+- **Route overlays are short tasks.** Settings, Command Center, Profiles,
   Agents, and Starmap render as `OverlayView` cards and return to the previous
   route on close. Model/session pickers and dialogs layer above the current
   surface; they are not navigation stacks.
@@ -288,7 +288,7 @@ focusing its composer.
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode
   `px-6`/`px-8` on pages.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
-  `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
+  `OverlayMain`. Profiles, etc. ride this — don't rebuild a titlebar
   shell.
 - **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
   labels navigate; the shared `DisclosureCaret` button opens a branch without

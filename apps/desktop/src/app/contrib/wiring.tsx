@@ -79,10 +79,7 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
-  forgetSessionOwnerHintsForSession,
-  requestSessionResume,
   sessionMatchesStoredId,
-  sessionOwnerRouteFromRow,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -109,7 +106,7 @@ import { useKeybinds } from '../hooks/use-keybinds'
 import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
-import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
+import { mainChatOccupied, openSession, openSessionFromPicker, openStoredSession } from '../open-session'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
@@ -185,11 +182,10 @@ import {
 } from './wiring-effects'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
-// The workspace-route full-page views (skills/messaging/artifacts) are the
+// The workspace-route full-page views (skills/messaging/artifacts/cron) are the
 // ChatRoutesSurface's and live in ./surfaces.
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
-const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
 const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
 const ProfilesView = lazy(async () => ({ default: (await import('../profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('../settings')).SettingsView }))
@@ -296,7 +292,7 @@ function useRecoveryRequestToasts(): void {
     cronReviewSeenRef.current = cronReviewRequest
 
     if (cronReviewRequest > 0) {
-      navigate(CRON_ROUTE)
+      navigateToWorkspacePage(navigate, CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
 }
@@ -379,7 +375,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
-    cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
@@ -1031,31 +1026,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     return () => registerPaneCloser('workspace')
   }, [navigate])
 
-  // One owner-aware door for "open a stored session from a list row" — the
-  // sessions sidebar, the Cron page's run history and the command center all
-  // funnel here. The clicked ROW is the identity, not its bare id: two
-  // profiles can hold twins with the same stored id (#92454), and an id-only
-  // resume resolves against whichever cached row is found first — the user
-  // clicks a row previewing profile A (or a cron run served by an SSH backend)
-  // and the resume dials the ambient backend instead, so the transcript never
-  // loads (#82527). Pin the row's own (connection, profile) as the resume owner
-  // before navigating; untagged rows (single-profile installs and the legacy
-  // primary-SSH path) keep the ambient/id-only path. Clear any stale explicit
-  // hint first: older builds incorrectly persisted those rows as `local`,
-  // which made a remote session click switch to the Mac backend and fail with
-  // "session not found".
-  const openStoredSession = (sessionId: string, session?: SessionInfo) => {
-    const ownerRoute = sessionOwnerRouteFromRow(session)
-
-    if (ownerRoute) {
-      requestSessionResume(sessionId, ownerRoute)
-    } else {
-      forgetSessionOwnerHintsForSession(sessionId)
-      requestSessionResume(sessionId)
-    }
-
-    openSession(sessionId, navigate)
-  }
+  // The owner-aware "open a stored session from a list row" door (see
+  // openStoredSession), bound to this window's router.
+  const openStoredRow = (sessionId: string, session?: SessionInfo) => openStoredSession(sessionId, navigate, session)
 
   // The controller's entire callback surface, gathered into the stable
   // `actions` bag. `nextActions` is TS-checked against WiringActions each
@@ -1097,7 +1070,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRetrySessions: () => refreshSessions().catch(() => undefined),
     onManageCronJob: jobId => {
       setCronFocusJobId(jobId)
-      navigate(CRON_ROUTE)
+      navigateToWorkspacePage(navigate, CRON_ROUTE)
     },
     onNavigate: selectSidebarItem,
     onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
@@ -1120,7 +1093,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // Already on screen (open tile, or the main session)? Jump to its tab;
     // otherwise load it into main. Same owner-aware door every other session
     // link uses (openStoredSession).
-    onResumeSession: openStoredSession,
+    onResumeSession: openStoredRow,
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSteerHidden: injectHiddenPrompt,
@@ -1360,7 +1333,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onDeleteSession={removeSession}
             onLoadMoreSessions={loadMoreSessions}
             onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
-            onOpenSession={openStoredSession}
+            onOpenSession={openStoredRow}
           />
         </Suspense>
       )}
@@ -1368,12 +1341,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {agentsOpen && (
         <Suspense fallback={null}>
           <AgentsView onClose={closeOverlayToPreviousRoute} />
-        </Suspense>
-      )}
-
-      {cronOpen && (
-        <Suspense fallback={null}>
-          <CronView onClose={closeOverlayToPreviousRoute} onOpenSession={openStoredSession} />
         </Suspense>
       )}
 

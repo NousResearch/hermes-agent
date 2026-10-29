@@ -71,6 +71,8 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -9292,6 +9294,22 @@ def _resolve_assignee_home(assignee: str) -> Path:
     return _get_profiles_root() / normalized
 
 
+def _jwt_expired_for_meter(token: object) -> bool:
+    """Return True only when a JWT has a definitely expired ``exp`` claim."""
+    if not isinstance(token, str):
+        return False
+    parts = token.strip().split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        claims = json.loads(payload.decode("utf-8"))
+        exp = claims.get("exp")
+        return isinstance(exp, (int, float)) and exp <= time.time()
+    except (binascii.Error, ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+
 def _read_assignee_credentials(
     hermes_home: Path,
 ) -> dict[str, tuple[Optional[str], Optional[str]]]:
@@ -9388,6 +9406,49 @@ def _read_assignee_credentials(
             except Exception:
                 pass
 
+        # 2b-fallback. The pool entry may be *temporarily* exhausted due to a
+        # non-quota worker error (HTTP 400 billing notice, 403, 5xx, network).
+        # _resolve_anthropic_pool_token skips exhausted entries, so a 400 that
+        # just happened would block the meter query for the whole exhaustion TTL.
+        # Fix: read pool entries directly, skipping only genuine quota exhaustion
+        # (429, 402) and permanently-dead entries.  The token itself is still
+        # valid for authenticating meter queries.
+        if "anthropic" not in result:
+            try:
+                from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
+                _ant_pool = load_pool("anthropic")
+                for _entry in _ant_pool._entries:
+                    _tok = (
+                        getattr(_entry, "runtime_api_key", None)
+                        or getattr(_entry, "access_token", None)
+                        or ""
+                    ).strip()
+                    if not _tok:
+                        _source = str(getattr(_entry, "source", "") or "")
+                        _env_name = _source.rsplit(":", 1)[-1].strip().upper()
+                        if _env_name in {
+                            "ANTHROPIC_TOKEN",
+                            "CLAUDE_CODE_OAUTH_TOKEN",
+                            "ANTHROPIC_API_KEY",
+                        }:
+                            _tok = (env_vars.get(_env_name) or "").strip()
+                    if not _tok:
+                        continue
+                    if _entry.last_status == STATUS_DEAD:
+                        continue
+                    # Only skip quota-exhausted entries; 400/401/403/5xx exhaustion
+                    # is a worker runtime error, NOT a meter signal.
+                    if (
+                        _entry.last_status == STATUS_EXHAUSTED
+                        and _entry.last_error_code in (429, 402)
+                    ):
+                        continue
+                    result["anthropic"] = (_tok, None)
+                    break
+            except Exception:
+                # Pool validation impossible → fail-closed: exclude any partially-set entry.
+                result.pop("anthropic", None)
+
         # 2c. openai-codex — runtime resolver handles singleton + pool fallback
         #     under the hermes_home-scoped HERMES_HOME override.
         try:
@@ -9401,8 +9462,62 @@ def _read_assignee_credentials(
         except Exception:
             pass
 
+        # 2c-validate. resolve_codex_runtime_credentials returns tokens even when
+        # the pool entry is STATUS_DEAD or STATUS_EXHAUSTED (device_code exhausted,
+        # 401, etc.) — it only checks last_error_reset_at, not last_status.
+        # Cross-check: if the pool has entries but _available_entries returns nothing,
+        # no usable credential exists and codex must be excluded from candidates.
+        #
+        # _codex_fail_closed: set True when 2c-validate explicitly rejects the pool-backed
+        # credential (exhausted/dead entries, or load_pool raises). This prevents the
+        # 2d OPENAI_API_KEY env-var fallback from re-inserting a provider that has
+        # deliberately been excluded by the validation gate.
+        _codex_fail_closed = False
+        if "openai-codex" in result:
+            try:
+                from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
+                _codex_pool = load_pool("openai-codex")
+                _raw_codex_entries = getattr(_codex_pool, "_entries", ())
+                if not isinstance(_raw_codex_entries, (list, tuple)):
+                    # Preserve fail-closed behavior for pool implementations
+                    # that cannot expose their entries for inspection.
+                    _codex_pool._available_entries(clear_expired=False, refresh=False)
+                    raise RuntimeError("codex pool entries unavailable for validation")
+                _codex_entries = list(_raw_codex_entries)
+                _codex_invalid = False
+                if _codex_entries:
+                    _codex_invalid = not any(
+                        (
+                            getattr(_entry, "last_status", None) != STATUS_DEAD
+                            and not (
+                                getattr(_entry, "last_status", None) == STATUS_EXHAUSTED
+                                and getattr(_entry, "last_error_code", None) in (401, 403)
+                            )
+                            and not _jwt_expired_for_meter(
+                                getattr(_entry, "runtime_api_key", None)
+                                or getattr(_entry, "access_token", None)
+                            )
+                        )
+                        for _entry in _codex_entries
+                    )
+                if _codex_invalid:
+                    del result["openai-codex"]
+                    _codex_fail_closed = True
+            except Exception:
+                # Pool validation impossible → fail-closed: exclude stale credential.
+                result.pop("openai-codex", None)
+                _codex_fail_closed = True
+
         # 2d. Codex API-key env var fallback.
-        if "openai-codex" not in result:
+        # Guard: skip when 2c-validate already rejected the pool-backed credential
+        # (fail-closed). An OPENAI_API_KEY in the profile .env cannot override a pool
+        # that has been proven exhausted or unreadable — that would silently resurrect
+        # a provider the validation gate deliberately excluded.
+        # The guard does NOT fire when 2c itself failed (resolve_codex_runtime_credentials
+        # raised): in that case "openai-codex" was never added to result, 2c-validate's
+        # inner block never ran, and _codex_fail_closed stays False so the env fallback
+        # works as the legitimate last resort.
+        if "openai-codex" not in result and not _codex_fail_closed:
             api_key = (env_vars.get("OPENAI_API_KEY") or "").strip()
             if api_key:
                 result["openai-codex"] = (api_key, None)
@@ -9414,6 +9529,24 @@ def _read_assignee_credentials(
                 pass
 
     return result
+
+
+def _serialize_meter_readings(readings: dict) -> dict:
+    """Serialize AccountUsageSnapshot readings to a JSON-safe dict for event payloads."""
+    out: dict = {}
+    for provider, snap in readings.items():
+        if snap is None:
+            out[provider] = None
+        else:
+            out[provider] = {
+                "available": snap.available,
+                "unavailable_reason": snap.unavailable_reason,
+                "windows": [
+                    {"label": w.label, "used_percent": w.used_percent}
+                    for w in snap.windows
+                ],
+            }
+    return out
 
 
 def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = None) -> Task:
@@ -9504,6 +9637,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
             candidates,
             minimum_remaining_percent=int(settings.get("minimum_remaining_percent", 10)),
             _credentials=creds,
+            _out_readings=(out_readings := {}),
         )
 
         if selected is None:
@@ -9513,6 +9647,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
                         _append_event(conn, task.id, "provider_meter_remediation", {
                             "from": task.provider_override,
                             "to": None,
+                            "outcome": "deferred",
                             "reason": "no_headroom",
                             "checked_providers": list(creds.keys()),
                         })
@@ -9539,6 +9674,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
                         "from_model": task.model_override,
                         "to_model": selected.model,
                         "reason": "switched",
+                        "readings": _serialize_meter_readings(out_readings),
                     })
             except Exception:
                 pass

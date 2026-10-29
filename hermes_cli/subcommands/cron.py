@@ -143,7 +143,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     _pin.add_argument("--unpin", dest="pinned", action="store_false",
         help="Release the job's model pin so it follows the main agent model again.")
     cron_edit.add_argument("--provider", dest="model_provider",
-        help="Inference provider paired with --model. Pass empty string to clear.")
+        help="Inference provider paired with --model. Changing it on a job with a model pin "
+            "requires --model too (or --unpin). Pass empty string to clear.")
     cron_edit.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "

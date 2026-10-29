@@ -2091,6 +2091,15 @@ catalog: CatalogTranslations
     tokens: (value: number | string) => string
   }
 
+  penLibrary: {
+    title: string
+    searchPlaceholder: string
+    empty: string
+    delete: string
+    confirmDelete: string
+    cancelDelete: string
+  }
+
   commandCenter: {
     close: string
     paletteTitle: string
@@ -2717,6 +2726,9 @@ catalog: CatalogTranslations
     kindImage: string
     kindFile: string
     kindLink: string
+    kindCanvas: string
+    tabCanvases: string
+    openCanvas: string
     chat: string
     copyUrl: string
     copyPath: string
@@ -3663,6 +3675,27 @@ catalog: CatalogTranslations
   }
 
   rightSidebar: RightSidebarTranslations
+
+  pen: {
+    openFailed: string
+    /** Import from the web — the preview strip's control and its status. */
+    import: string
+    importFromWeb: string
+    importPickElement: string
+    importPicking: string
+    importPickHint: string
+    importPage: string
+    importSelection: string
+    importCancel: string
+    importing: string
+    importProgress: (percent: number) => string
+    imported: string
+    importedElement: (label: string) => string
+    importFailed: string
+    importUndo: string
+    importUndoFailed: string
+    showCanvas: string
+  }
 
   preview: {
     tab: string

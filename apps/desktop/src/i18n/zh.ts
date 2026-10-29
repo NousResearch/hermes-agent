@@ -2238,6 +2238,15 @@ export const zhOverrides = {
     tokens: value => `${value} 词元`
   },
 
+  penLibrary: {
+    title: '画布',
+    searchPlaceholder: '搜索画布…',
+    empty: '还没有画布',
+    delete: '删除画布',
+    confirmDelete: '删除',
+    cancelDelete: '保留'
+  },
+
   commandCenter: {
     close: '关闭命令中心',
     paletteTitle: '命令面板',
@@ -3004,6 +3013,9 @@ export const zhOverrides = {
     kindImage: '图片',
     kindFile: '文件',
     kindLink: '链接',
+    kindCanvas: 'Pen',
+    tabCanvases: 'Pen 文件',
+    openCanvas: '打开画布',
     chat: '对话',
     copyUrl: '复制 URL',
     copyPath: '复制路径'
@@ -4088,6 +4100,10 @@ export const zhOverrides = {
     terminalCloseOthers: '关闭其他',
     terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
+  },
+
+  pen: {
+    openFailed: '无法打开画布'
   },
 
   preview: {

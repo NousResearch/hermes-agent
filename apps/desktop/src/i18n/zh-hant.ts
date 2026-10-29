@@ -151,8 +151,7 @@ export const zhHantOverrides = {
   agents: zhHantCapabilities.agents,
   commandCenter: zhHantCommandCenter.commandCenter,
   messaging: zhHantCommandCenter.messaging,
-  profiles: zhHantCommandCenter.profiles,
-  modelAssignment: {
+  profiles: zhHantCommandCenter.profiles,  modelAssignment: {
     saveFailed: 'Hermes 未儲存該模型變更。',
     confirmTitle: '模型選擇警告',
     confirmDetail: '僅在你接受此權衡時確認。',
@@ -181,8 +180,10 @@ export const zhHantOverrides = {
   modelVisibility: zhHantSettings.modelVisibility,
   shell: zhHantChrome.shell,
   rightSidebar: zhHantChrome.rightSidebar,
-  preview: zhHantArtifacts.preview,
-  interfaceMode: {
+  pen: {
+    openFailed: '無法開啟畫布'
+  },
+  preview: zhHantArtifacts.preview,  interfaceMode: {
     title: '介面模式',
     hint: '只改變顯示的內容，不改變 Hermes 的能力。',
     sessionNote: '由簡潔模式設定。此處的變更僅在本次工作階段內生效；切換到進階模式即可保留為你的設定。',

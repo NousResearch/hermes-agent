@@ -358,6 +358,17 @@ server_request("theme.pick", params=ThemePickRequestParams, result=ThemePickResu
                doc="Show an accent or layout picker card in the chat and wait for the pick.")
 
 
+class PenToolRequestParams(ServerRequestParams):
+    """``tools/pen_canvas_tool.py`` field set: ``args`` is the editor's own MCP tool payload."""
+
+    action: str
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+server_request("pen.tool", params=PenToolRequestParams, result=ValueResult,
+               doc="Run one pen.dev canvas operation in the desktop renderer (JSON text answer).")
+
+
 # ── withdrawal ────────────────────────────────────────────────────────────────────────────────
 
 

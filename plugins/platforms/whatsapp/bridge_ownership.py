@@ -16,8 +16,9 @@ def port_is_free(port: int) -> bool:
     Contract: this answers for the bridge's own bind semantics, not for an arbitrary binder. On
     POSIX the bridge (Express/libuv) sets SO_REUSEADDR, so a port holding only TIME-WAIT entries
     reads as free here even though a binder without SO_REUSEADDR would get EADDRINUSE; a live
-    listener still reads as busy. Its only callers are this module's bridge-port allocation and
-    ownership checks. Do not reuse it to gate a process that binds without SO_REUSEADDR.
+    listener still reads as busy. Its callers are this module's bridge-port allocation and
+    ownership checks and the adapter's pre-spawn wait for the old bridge to release its port.
+    Do not reuse it to gate a process that binds without SO_REUSEADDR.
     """
     with socket.socket() as sock:
         # A just-stopped bridge can leave its accepted TCP connections in TIME-WAIT. The Node
@@ -25,20 +26,6 @@ def port_is_free(port: int) -> bool:
         # POSIX only, like libuv: on Windows SO_REUSEADDR lets a bind share a live listener's port,
         # which would read a foreign bridge as free (Windows binds past TIME-WAIT without it).
         if os.name != "nt":
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
-
-
-def port_accepts_listen(port: int) -> bool:
-    """Whether the bridge's own ``listen`` would succeed now. libuv sets SO_REUSEADDR on POSIX, so
-    a TIME_WAIT left by the old bridge's closed connections does not block it — only a live
-    listener does. A plain bind (``port_is_free``) refuses for up to the 60s TIME_WAIT window."""
-    with socket.socket() as sock:
-        if os.name != "nt":  # on Windows SO_REUSEADDR allows binding over a live listener
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))

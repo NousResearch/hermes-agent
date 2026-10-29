@@ -783,13 +783,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_log_fh = None
 
     async def _wait_bridge_port_free(self) -> bool:
-        """Bounded wait for the just-stopped bridge to release its port (a real bind probe, like the
-        bridge's own ``listen``); False with a named fatal when something still holds it — spawning
-        onto a busy port only bought an EADDRINUSE crash-loop."""
+        """Bounded wait for the just-stopped bridge to release its port (``port_is_free`` probes with the
+        bridge's own SO_REUSEADDR bind semantics, so TIME-WAIT alone never blocks); False with a named fatal
+        when a live listener still holds it — spawning onto a busy port only bought an EADDRINUSE crash-loop."""
         import time
-        from .bridge_ownership import port_accepts_listen
+        from .bridge_ownership import port_is_free
         deadline = time.monotonic() + _BRIDGE_PORT_FREE_TIMEOUT_S
-        while not port_accepts_listen(self._bridge_port):
+        while not port_is_free(self._bridge_port):
             if time.monotonic() >= deadline:
                 holders: list = []
                 with suppress(Exception):

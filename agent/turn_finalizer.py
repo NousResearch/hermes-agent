@@ -6,6 +6,7 @@ imported lazily from ``agent.conversation_loop`` (no cycle, same logger name).""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -467,6 +468,89 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
     return None
 
 
+def _hook_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """History as the ``post_llm_call`` payload: text masked, live list untouched.
+
+    Context-engine plugins persist from this payload — hermes-lcm's ``ingest`` writes its
+    own store from it — so it is a second write path that no transcript redaction reaches.
+    Both text leaves are masked: ``content``, and the ``api_content`` sidecar, which holds
+    the exact bytes the wire sent including injected context, so masking only ``content``
+    leaves the credential readable one key over. Tool-call arguments are the third carrier —
+    a shell command with an exported token, a header set inline — and they are masked here
+    too: this payload is a copy handed to plugins and never replayed to the model, so the
+    objection that keeps the TRANSCRIPT's arguments raw (#43083: the model reads its own
+    masked command back and copies the placeholder into the next call) does not apply.
+    The masking is ``agent.redact``'s — the same helper the transcript writer calls — so a
+    plugin store and state.db cannot drift.
+    Copies are shallow (role, ids and timestamps are the same objects) and only text leaves
+    change. Nothing is masked when no hook is registered, so sessions with no plugin pay no
+    cost.
+    """
+    try:
+        from agent.redact import redact_message_content, redact_message_text
+        from hermes_cli.lifecycle import has_hook
+    except ImportError:
+        return list(messages)
+    if not has_hook("post_llm_call"):
+        return list(messages)
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        if "content" in msg:
+            msg = {**msg, "content": redact_message_content(msg.get("content"))}
+        sidecar = msg.get("api_content")
+        if isinstance(sidecar, str) and sidecar:
+            msg = {**msg, "api_content": redact_message_text(sidecar)}
+        calls = msg.get("tool_calls")
+        if isinstance(calls, list) and calls:
+            msg = {**msg, "tool_calls": _masked_tool_calls(calls, redact_message_text)}
+        out.append(msg)
+    return out
+
+
+def _mask_json_leaves(node: Any, mask: Any) -> Any:
+    """Mask every string leaf, leaving the JSON envelope alone.
+
+    Redacting the serialized arguments as one string lets a value pattern run past the end
+    of the value and eat the closing quote, so ``{"k": "TOKEN=x"}`` becomes unparseable and a
+    plugin that loads the arguments breaks (#137028 is that failure on the request path).
+    Masking leaf by leaf keeps the braces, commas and quotes that came from the encoder.
+    """
+    if isinstance(node, str):
+        return mask(node)
+    if isinstance(node, dict):
+        return {k: _mask_json_leaves(v, mask) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_mask_json_leaves(v, mask) for v in node]
+    return node
+
+
+def _masked_tool_calls(calls: list[Any], mask: Any) -> list[Any]:
+    """Tool-call arguments with credential-shaped values masked, structure kept.
+
+    Only ``function.arguments`` carries model-supplied payload; id, type and function name
+    stay as they were so a plugin can still key a call by id. A dict outside the OpenAI shape
+    is copied through untouched rather than reshaped. Arguments that do not parse as JSON are
+    masked as one string: valid JSON stays valid, anything else is best effort.
+    """
+    out: list[Any] = []
+    for call in calls:
+        fn = call.get("function") if isinstance(call, dict) else None
+        args = fn.get("arguments") if isinstance(fn, dict) else None
+        if isinstance(args, str) and args:
+            try:
+                parsed = json.loads(args)
+            except (ValueError, TypeError):
+                masked_args = mask(args)
+            else:
+                masked_args = json.dumps(_mask_json_leaves(parsed, mask))
+            call = {**call, "function": {**fn, "arguments": masked_args}}
+        out.append(call)
+    return out
+
+
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
     messages,
@@ -498,7 +582,7 @@ def _apply_output_hooks(
             turn_id=turn_id,
             user_message=original_user_message,
             assistant_response=final_response,
-            conversation_history=list(messages),
+            conversation_history=_hook_history(messages),
             model=agent.model,
             platform=platform,
             side_question_token=side_question_token,

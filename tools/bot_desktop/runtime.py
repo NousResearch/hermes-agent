@@ -491,16 +491,38 @@ def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
 def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
     """Stop this profile's screen when it has been idle past the limit and no human holds it (a human lease
     with no use for ``HUMAN_LEASE_ABANDONED_WINDOWS`` windows, and at least ``HUMAN_LEASE_ABANDONED_MIN_S``,
-    counts as abandoned). True when
-    it was stopped. ``launcher`` names the screen the caller judges (the launcher's own check passes it).
+    counts as abandoned). True when it was stopped. ``launcher`` names the screen the caller judges (the
+    launcher's own check passes it). Stopping a screen for an abandoned human lease also hands that lease back
+    to the agent.
 
     The decision is taken again under ``start.lock`` before anything is killed: a check that waited on the
     lock while the screen was stopped and started again (or used) must not kill the screen it finds then."""
     idle = _idle_due(launcher)
     if idle is None:
         return False
+    from tools.bot_desktop import lease as _bd_lease
+    held: Optional[_bd_lease.Lease] = None  # the lease the final decision saw
+
+    def still_due() -> bool:
+        nonlocal held
+        # Read before _idle_due reads it: a takeover landing between the two reads then carries a newer
+        # epoch than the one released below, so it is kept instead of being handed back.
+        held = _bd_lease.get()
+        return _idle_due(launcher) is not None
+
     logger.info("Bot Desktop for profile %s idle for %.0f min; stopping", _profile_name(), idle / 60)
-    return stop(still_due=lambda: _idle_due(launcher) is not None)
+    if not stop(still_due=still_due):
+        return False
+    if held is not None and held.holder == _bd_lease.HUMAN:
+        # An abandoned human lease stopped the screen. Left in place it would fence the agent out of the next
+        # screen ("a human has control"); only the lease generation judged abandoned goes, so any takeover
+        # since (another viewer, or the same one handing back and taking over again) is kept.
+        try:
+            _bd_lease.release(held.viewer_id, epoch=held.epoch)
+        except OSError as exc:  # the screen is already stopped: a full or read-only home must not undo that
+            logger.warning("Bot Desktop for profile %s stopped, but its abandoned lease was not released: %s",
+                           _profile_name(), exc)
+    return True
 
 
 def published_env() -> dict[str, str]:

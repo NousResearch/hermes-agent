@@ -208,3 +208,6 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     old = time.time() - 3600
     os.utime(sd / "activity", (old, old))
     wait_until(lambda: not _alive(launcher), timeout=30, what="the screen to stop once its human lease is abandoned")
+    # ...and the check that stopped it hands the abandoned lease back, so the next use is not fenced out.
+    wait_until(lambda: json.loads((sd / "lease.json").read_text(encoding="utf-8"))["holder"] == "agent", timeout=10,
+               what="the abandoned human lease to be handed back to the agent")

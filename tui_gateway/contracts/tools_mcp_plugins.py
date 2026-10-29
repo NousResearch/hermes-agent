@@ -616,6 +616,9 @@ class PluginsAction(WireEnum):
     list = "list"
     toggle = "toggle"
     install = "install"
+    inspect = "inspect"
+    install_desktop = "install_desktop"
+    remove_desktop = "remove_desktop"
     update = "update"
     remove = "remove"
     settings = "settings"
@@ -625,7 +628,12 @@ class PluginsAction(WireEnum):
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
-    (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
+    (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no
+    ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;
+    ``install_desktop``: ``identifier``/``repo`` (https only) or ``catalog_name`` + ``ref`` (the commit
+    ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto
+    the host that serves this client; ``remove_desktop``: ``name``
+    (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose
     security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
@@ -640,6 +648,7 @@ class PluginsManageParams(ProfileParams):
     catalog_name: str | None = None
     force: bool | None = None
     ref: str | None = None
+    inspected_sha: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
     names: list[str] | None = None
@@ -805,7 +814,8 @@ class PluginScanFinding(Result):
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
-    ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
+    ok payload; ``inspect`` → ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit
+    read)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
     running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
     live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running
     gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
@@ -849,6 +859,21 @@ class PluginsManageResult(Result):
     onboarding: list[OnboardingCatalogPlugin] | None = None
     # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.
     presence: list[CatalogPluginPresence] | None = None
+    # ``inspect`` → which halves the source ships (``ok`` + ``warnings``, or ``ok=false`` + ``error``),
+    # the commit it read (``sha``) and whether its URL scheme is insecure; nothing was installed
+    # (``hermes_cli.plugins_cmd_inspect``).
+    agent: bool | None = None
+    desktop: bool | None = None
+    agent_name: str | None = None
+    desktop_name: str | None = None
+    insecure: bool | None = None
+    # ``install_desktop`` → the folder it published on the host that serves this client (``plugin_name``,
+    # ``path``, the cloned ``sha``) and whether that folder is the desktop half of a package
+    # (``paired_with_agent``); ``remove_desktop`` → the same ``plugin_name``/``path`` gone, with
+    # ``unpaired_from`` naming the package whose half it was.
+    path: str | None = None
+    paired_with_agent: bool | None = None
+    unpaired_from: str | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

@@ -1005,6 +1005,8 @@ platform:
       confirm_title: "確認"
       already_resolved: "この承認はすでに処理済みです~"
       expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（タイムアウト済み、または別の場所で処理済み）"
+      no_longer_pending: "⌛ この承認はもう保留中ではありません（期限切れ、または別の場所で回答済み）"
+      click_failed: "⚠️ 選択を記録できませんでした。もう一度クリックするか、/approve または /deny で回答してください。"
       by_user: "{user} が{label}"
       resolved_once: "一度だけ承認"
       resolved_session: "セッション中は承認"

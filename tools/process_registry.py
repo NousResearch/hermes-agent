@@ -1616,18 +1616,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         }
 
     def _release_finished_handles(self, session: ProcessSession):
-        """Close a finished session's OS handles (Popen pipes / PTY master).
-
-        Best-effort and idempotent: the session may have no local Popen (env
-        backends, detached recovery), or the handles may already be closed by
-        the reader loop / kill path. Closing a Popen's stream objects does not
-        kill anything — the child has already exited — it only releases the
-        parent's pipe FDs, which is exactly the retained-resource leak.
+        """Close a finished session's OS handles (Popen pipes / PTY master). Best-effort and idempotent:
+        no local Popen or handles already closed by the reader/kill path are fine; the close releases the
+        parent's pipe FD, the retained-resource leak. On Windows a reader blocked in ``read()`` holds that
+        stream's buffer lock, so another thread's close waits on it instead of raising into the read, and the
+        reconcile publishing a finished session would hang the exiting one-shot (#142193). That reader
+        releases the pipe itself when its read ends (as the PTY path below accepts); stdin closes here.
         """
-        proc = session.process
+        proc, reader = session.process, session._reader_thread
+        owned = _IS_WINDOWS and reader is not None and reader.is_alive() and reader is not threading.current_thread()
         if proc is not None:
             for stream in (proc.stdout, proc.stderr, proc.stdin):
-                if stream is not None:
+                if stream is not None and not (owned and stream is not proc.stdin):
                     with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
                         stream.close()
         if session._pty is not None:

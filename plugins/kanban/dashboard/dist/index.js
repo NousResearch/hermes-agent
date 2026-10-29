@@ -12,6 +12,43 @@
 (function () {
   "use strict";
 
+  // -------------------------------------------------------------------------
+  // Task deep-link helpers — defined before the SDK guard so they are
+  // available even when SDK is absent (unit-test path).  Exposed on
+  // window.__HERMES_KANBAN_TEST__ for vitest.
+  // -------------------------------------------------------------------------
+  const LS_TASK_KEY = "hermes.kanban.selectedTask";
+
+  function readSelectedTask() {
+    try {
+      const v = window.localStorage.getItem(LS_TASK_KEY);
+      return (v || "").trim() || null;
+    } catch (_e) { return null; }
+  }
+
+  function clearSelectedTask() {
+    try {
+      window.localStorage.removeItem(LS_TASK_KEY);
+    } catch (_e) { /* ignore quota / private mode */ }
+  }
+
+  // Pure: URL ?task= wins over localStorage value.  Accepts raw search string
+  // and pre-read LS value so tests call it without a real DOM.
+  function _getInitialTaskId(search, lsValue) {
+    var qs = new URLSearchParams(search || "");
+    var urlTask = qs.get("task");
+    if (urlTask && urlTask.trim()) return urlTask.trim();
+    return (lsValue || "").trim() || null;
+  }
+
+  // Expose for unit tests.  Harmless in production.
+  if (typeof window !== "undefined") {
+    window.__HERMES_KANBAN_TEST__ = window.__HERMES_KANBAN_TEST__ || {};
+    window.__HERMES_KANBAN_TEST__.getInitialTaskId = _getInitialTaskId;
+    window.__HERMES_KANBAN_TEST__.readSelectedTask = readSelectedTask;
+    window.__HERMES_KANBAN_TEST__.clearSelectedTask = clearSelectedTask;
+  }
+
   const SDK = window.__HERMES_PLUGIN_SDK__;
   if (!SDK) return;
 
@@ -531,7 +568,24 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
-    const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const [selectedTaskId, setSelectedTaskId] = useState(function () {
+      return _getInitialTaskId(window.location.search, readSelectedTask());
+    });
+
+    // One-shot cleanup: clear LS key and strip ?task= from the URL so that
+    // a page refresh does not re-open the same drawer.  Board param is kept.
+    useEffect(function () {
+      clearSelectedTask();
+      try {
+        var _u = new URL(window.location.href);
+        if (_u.searchParams.has("task")) {
+          _u.searchParams.delete("task");
+          var _newUrl = _u.pathname + (_u.searchParams.toString() ? "?" + _u.searchParams.toString() : "") + _u.hash;
+          history.replaceState(null, "", _newUrl);
+        }
+      } catch (_e) { /* ignore */ }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());

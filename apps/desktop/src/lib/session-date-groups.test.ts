@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
+import type { SessionDotState } from '@/store/session-dot-state'
 import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../test/session-info'
 
 import type { SidebarSessionEntry } from './session-branch-tree'
-import { groupEntriesByRecency, hideCollapsedGroupRows, toSessionRows } from './session-date-groups'
+import {
+  groupEntriesByRecency,
+  groupEntriesByStatus,
+  hideCollapsedGroupRows,
+  toSessionRows
+} from './session-date-groups'
 
 const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo =>
   makeSessionInfo({ id, message_count: 1, source: 'cli', title: id, ...overrides })
@@ -265,5 +271,83 @@ describe('toSessionRows', () => {
       { entry: entries[0], kind: 'session' },
       { entry: entries[1], kind: 'session' }
     ])
+  })
+})
+
+describe('groupEntriesByStatus', () => {
+  const LABELS = { attention: 'Needs attention', idle: 'Idle', working: 'Working' }
+
+  const byStatus = (entries: SidebarSessionEntry[], states: Record<string, SessionDotState>) =>
+    groupEntriesByStatus(entries, e => states[e.session.id] ?? 'idle', LABELS)
+
+  const layout = (rows: ReturnType<typeof byStatus>) =>
+    rows.map(row => (row.kind === 'divider' ? row.key : row.entry.session.id))
+
+  it('splits on whose move it is: needs-input and unread need attention, drafts are idle', () => {
+    const states: Record<string, SessionDotState> = {
+      bg: 'background',
+      draft: 'draft',
+      idle: 'idle',
+      input: 'needs-input',
+      quiet: 'stalled',
+      run: 'working',
+      unread: 'unread'
+    }
+
+    const rows = byStatus(
+      Object.keys(states).map(id => entry(session(id))),
+      states
+    )
+
+    expect(layout(rows)).toEqual([
+      'status:attention',
+      'input',
+      'unread',
+      'status:working',
+      'bg',
+      'quiet',
+      'run',
+      'status:idle',
+      'draft',
+      'idle'
+    ])
+    expect(rows[0]).toMatchObject({ label: 'Needs attention' })
+  })
+
+  it('leads each lane with the louder state but otherwise keeps the incoming order', () => {
+    const states: Record<string, SessionDotState> = {
+      'idle-a': 'idle',
+      'draft-a': 'draft',
+      'unread-a': 'unread',
+      'input-a': 'needs-input',
+      'unread-b': 'unread',
+      'input-b': 'needs-input'
+    }
+
+    const rows = byStatus(
+      Object.keys(states).map(id => entry(session(id))),
+      states
+    )
+
+    expect(layout(rows)).toEqual([
+      'status:attention',
+      'input-a',
+      'input-b',
+      'unread-a',
+      'unread-b',
+      'status:idle',
+      'draft-a',
+      'idle-a'
+    ])
+  })
+
+  it('keeps branch children with their parent and drops empty lanes', () => {
+    const rows = byStatus([entry(session('parent')), entry(session('child'), '└'), entry(session('other'))], {
+      child: 'working',
+      parent: 'unread'
+    })
+
+    expect(layout(rows)).toEqual(['status:attention', 'parent', 'child', 'status:idle', 'other'])
+    expect(byStatus([], {})).toEqual([])
   })
 })

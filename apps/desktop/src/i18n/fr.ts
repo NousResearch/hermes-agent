@@ -3716,8 +3716,9 @@ export const frOverrides = {
       thisMonth: 'Plus tôt ce mois'
     },
     statusDivider: {
+      attention: 'Attention requise',
       working: 'En cours',
-      done: 'Terminées'
+      idle: 'Inactives'
     },
     markAllRead: 'Tout marquer comme lu'
   },

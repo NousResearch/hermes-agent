@@ -1,5 +1,12 @@
 import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
 import { calendarBucket, HOUR, localeWeekStartDay, MINUTE, SECOND, type SessionBucket } from '@/lib/time'
+import {
+  SESSION_ATTENTION_GROUP_ORDER,
+  type SessionAttentionGroup,
+  sessionAttentionGroup,
+  type SessionDotState,
+  sessionStatusRank
+} from '@/store/session-dot-state'
 
 // A flat list row is either a divider or a session entry. Interleaving these
 // lets the flat list (and the virtualizer) render separators inline without a
@@ -153,32 +160,44 @@ export function groupEntriesByRecency(
   return rows
 }
 
-// Split into two runs — still busy, and everything else — under the same
-// dividers the date grouping uses. Branch children ride with their parent, as
-// they do there. Entries arrive already ordered, so each run is contiguous.
+// Lanes by whose move it is — Needs attention, Working, Idle — under the same
+// dividers the date grouping uses. Inside a lane the louder state leads
+// (blocked prompt before unread, draft before idle); otherwise the incoming
+// order (the active sort key) is kept. Branch children ride with their parent,
+// as they do there, so a cluster moves as one unit.
 export function groupEntriesByStatus(
   entries: readonly SidebarSessionEntry[],
-  isWorking: (entry: SidebarSessionEntry) => boolean,
-  labels: { done: string; working: string }
+  stateOf: (entry: SidebarSessionEntry) => SessionDotState,
+  labels: Record<SessionAttentionGroup, string>
 ): SidebarListRow[] {
-  const working: SidebarSessionEntry[] = []
-  const done: SidebarSessionEntry[] = []
-  let cluster = done
+  const lanes = new Map<SessionAttentionGroup, { rank: number; entries: SidebarSessionEntry[] }[]>(
+    SESSION_ATTENTION_GROUP_ORDER.map(group => [group, []])
+  )
+
+  let cluster: SidebarSessionEntry[] | null = null
 
   for (const entry of entries) {
-    if (!entry.branchStem) {
-      cluster = isWorking(entry) ? working : done
+    if (!entry.branchStem || !cluster) {
+      const state = stateOf(entry)
+
+      cluster = []
+      lanes.get(sessionAttentionGroup(state))!.push({ entries: cluster, rank: sessionStatusRank(state) })
     }
 
     cluster.push(entry)
   }
 
-  return [
-    ...(working.length ? [{ key: 'status:working', kind: 'divider' as const, label: labels.working }] : []),
-    ...toSessionRows(working),
-    ...(done.length ? [{ key: 'status:done', kind: 'divider' as const, label: labels.done }] : []),
-    ...toSessionRows(done)
-  ]
+  return SESSION_ATTENTION_GROUP_ORDER.flatMap(group => {
+    // Array.prototype.sort is stable, so equal ranks keep the sort key's order.
+    const lane = lanes
+      .get(group)!
+      .sort((a, b) => a.rank - b.rank)
+      .flatMap(c => c.entries)
+
+    return lane.length
+      ? [{ key: `status:${group}`, kind: 'divider' as const, label: labels[group] }, ...toSessionRows(lane)]
+      : []
+  })
 }
 
 // Wrap entries as plain session rows (no dividers) so the ungrouped path shares

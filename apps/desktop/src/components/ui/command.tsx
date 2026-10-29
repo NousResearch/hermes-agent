@@ -51,7 +51,7 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
       >
         <CommandPrimitive.Input
           className={cn(
-            'h-4 w-full bg-transparent text-xs leading-none text-foreground focus:outline-hidden placeholder:text-(--ui-text-tertiary) disabled:cursor-not-allowed disabled:opacity-50',
+            'h-4 w-full bg-transparent text-xs leading-none text-foreground focus:outline-hidden forced-colors:focus:-outline-offset-2 placeholder:text-(--ui-text-tertiary) disabled:cursor-not-allowed disabled:opacity-50',
             className
           )}
           data-slot="command-input"
@@ -71,7 +71,7 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
       <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
       <CommandPrimitive.Input
         className={cn(
-          'flex h-10 w-full rounded-md bg-transparent py-3 text-sm focus:outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+          'flex h-10 w-full rounded-md bg-transparent py-3 text-sm focus:outline-hidden forced-colors:focus:-outline-offset-2 placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
           className
         )}
         data-slot="command-input"
@@ -164,7 +164,7 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
               'cursor-pointer data-[selected=true]:bg-(--ui-control-active-background) data-[selected=true]:text-foreground'
             )
           : 'relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground',
-        'data-[selected=true]:outline-hidden data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50',
+        'data-[selected=true]:outline-hidden forced-colors:data-[selected=true]:-outline-offset-2 data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50',
         className
       )}
       data-slot="command-item"

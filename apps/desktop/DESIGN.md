@@ -530,6 +530,8 @@ long transcript or a busy terminal.
   inner tab list owns vertical keyboard navigation.
 - Tab-header focus belongs to navigation: session activation and queued composer
   focus retries must not redirect it. Explicit composer focus still works.
+  Entering a split's tab strip selects its visible chat as the typing recipient
+  without moving focus into the editor; hidden tabs must not receive that input.
 - Sidebar keyboard stops are real controls: session title, reorder handle and
   actions, not timestamps. Focus uses existing theme tokens, stays distinct from
   selection, and reveals hover-only controls. Focused/open actions replace their
@@ -588,6 +590,8 @@ The detailed state contract lives in the scoped
   border. Suppress the native outline only when that replacement is visible.
   In forced-colors mode, use one system-color outline on the focused control
   (or its field wrapper); don't outline unfocused menu rows or containers.
+  Keep command-picker input and selected-row fallback outlines inset so scroll
+  and group clipping cannot cut off their edges.
 - Keyboard users can activate image viewers and return to their available
   opener when the viewer closes.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);

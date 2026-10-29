@@ -1,6 +1,6 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync } from '@hermes/ink'
+import { Box, stringWidth as inkStringWidth, renderSync } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import chalk from 'chalk'
 import React from 'react'
@@ -382,6 +382,31 @@ describe('renderTable CJK width alignment', () => {
     // The CJK row is the one that drifted before the fix.  It must
     // align with the rest now.
     expect(qwenCol2).toBe(headerCol2)
+  })
+})
+
+describe('renderTable CJK wrapping', () => {
+  it('keeps a CJK table tabular at a narrow width instead of stacking it vertically', () => {
+    const md = [
+      '| 检查项 | 结果 |',
+      '|---|---|',
+      '| `dpkg -C` 对半配置包的检查 | 干净，没有半配置包 |',
+      '| 配置文件冲突 | 本次没有新增；遗留的 `.dpkg-new`/`.dpkg-old` 都是旧日期的版本 |',
+      '| 需要重启 | **不需要**（内核未变，仍是 7.1.5+kali） |',
+      '| 那 5 个自制 CA（portswigger、reqable、yak、arl、cyberstrikeai） | 用 SHA256 指纹逐一比对，**全部仍在系统信任库** 中 |'
+    ].join('\n')
+
+    // 84 columns is narrow enough that the old cell wrapper — which treated a
+    // space-less CJK clause as one unbreakable word — gave every CJK column its
+    // full width and fell back to the vertical "label: value" layout (it only
+    // stayed tabular from 92 columns up; this table fits from 80 with the fix).
+    const lines = renderPlain(
+      React.createElement(Box, { width: 84 }, React.createElement(Md, { cols: 84, t: DEFAULT_THEME, text: md }))
+    ).filter(line => line.trim().length > 0)
+
+    expect(lines.some(line => line.includes('检查项:'))).toBe(false)
+    expect(lines.some(line => line.includes('检查项') && line.includes('结果'))).toBe(true)
+    expect(Math.max(...lines.map(line => inkStringWidth(line)))).toBeLessThanOrEqual(84)
   })
 })
 

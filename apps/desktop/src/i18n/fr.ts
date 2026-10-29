@@ -11,6 +11,7 @@ import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
+import { frMemoryLayers } from './fr_memory_layers'
 import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
@@ -681,6 +682,7 @@ export const frOverrides = {
     noResults: 'Aucune langue trouvée'
   },
   settings: {
+    memoryLayers: frMemoryLayers,
     subpages: {
       appearanceTheme: 'Thème',
       appearanceTypography: 'Typographie',
@@ -842,6 +844,17 @@ export const frOverrides = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Pin examiné ${sha}` : 'Pin examiné'),
         latestCommit: 'Dernier commit',
+        sourceMoved: sha =>
+          sha
+            ? `Le dépôt a changé depuis votre examen. Examinez la nouvelle version (commit ${sha}) avant de l'installer.`
+            : 'Le dépôt a changé depuis votre examen. Lecture de la nouvelle version…',
+        legacyBackendConfirm:
+          'Ce backend est plus ancien que cette application : il ne peut pas garantir que la version examinée est celle qui sera installée. Si le dépôt a changé depuis, c\'est la version plus récente qui s\'installe. Mettez à jour le backend pour obtenir cette garantie.',
+        installAnyway: 'Installer quand même',
+        partialInstall: sha =>
+          sha
+            ? `Le plugin n'est installé qu'en partie : la partie agent est installée au commit ${sha}, mais la partie bureau n'a pas pu suivre car le dépôt a changé depuis votre examen. Activez Forcer la réinstallation dans Avancé pour remplacer les deux parties par la version affichée, ou annulez pour ne garder que la partie agent.`
+            : 'Le plugin n\'est installé qu\'en partie : la partie agent est installée, mais la partie bureau n\'a pas pu suivre car le dépôt a changé depuis votre examen. Activez Forcer la réinstallation dans Avancé pour remplacer les deux parties par la version affichée, ou annulez pour ne garder que la partie agent.',
         nothingToInstall: 'Ce paquet n’a rien à installer ici.'
       }
     },
@@ -2866,9 +2879,6 @@ export const frOverrides = {
       resume: 'Reprendre',
       runNow: 'Exécuter maintenant',
       memoryData: 'Données de mémoire',
-      memoryDataDesc: 'Fichiers de mémoire intégrés injectés dans chaque session',
-      memoryProvider: name => `Fournisseur actif : ${name}`,
-      builtinMemory: 'intégré',
       memoryFile: "Mémoire de l'agent (MEMORY.md)",
       userFile: 'Profil utilisateur (USER.md)',
       bytes: size => size,

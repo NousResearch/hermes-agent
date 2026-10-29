@@ -16,6 +16,7 @@ import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
+import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
@@ -794,6 +795,17 @@ export const en: Translations = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Reviewed pin ${sha}` : 'Reviewed pin'),
         latestCommit: 'Latest commit',
+        sourceMoved: sha =>
+          sha
+            ? `The repository changed since you reviewed it. Review the new version (commit ${sha}) before installing it.`
+            : 'The repository changed since you reviewed it. Reading the new version…',
+        legacyBackendConfirm:
+          'This backend is older than this app, so it cannot guarantee that the version you reviewed is the one that gets installed: if the repository changed since, the newer version installs instead. Update the backend to get that guarantee.',
+        installAnyway: 'Install anyway',
+        partialInstall: sha =>
+          sha
+            ? `Only part of this plugin is installed: the agent half is in at commit ${sha}, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.`
+            : 'Only part of this plugin is installed: the agent half is in, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.',
         nothingToInstall: 'This package has nothing to install here.',
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
@@ -1103,6 +1115,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -2471,9 +2484,6 @@ export const en: Translations = {
       resume: 'Resume',
       runNow: 'Run now',
       memoryData: 'Memory data',
-      memoryDataDesc: 'Built-in memory files injected into every session',
-      memoryProvider: name => `Active provider: ${name}`,
-      builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
       bytes: size => size,

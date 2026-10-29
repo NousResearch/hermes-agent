@@ -94,6 +94,24 @@ describe('detectPluginComponents', () => {
     }
   })
 
+  it('detects a manifest-only package — dashboard backend, no __init__.py', async () => {
+    const root = mkdtemp('hermes-plugin-manifest-only-')
+    roots.push(root)
+    fs.writeFileSync(path.join(root, 'plugin.yaml'), 'name: bulletin\n')
+    fs.mkdirSync(path.join(root, 'dashboard'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'dashboard', 'manifest.json'), '{"name":"bulletin","api":"plugin_api.py"}\n')
+    fs.mkdirSync(path.join(root, 'desktop'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'desktop', 'plugin.js'), 'export default { id: "bulletin" }')
+
+    // Catalog plugins that ship a dashboard API but no register(ctx) are still packages: the
+    // install plan must run the agent half, or the desktop half lands alone and ctx.rest 404s.
+    await expect(detectPluginComponents(root)).resolves.toMatchObject({
+      agent: true,
+      desktop: true,
+      agentName: 'bulletin'
+    })
+  })
+
   it('detects agent-only layout', async () => {
     const root = mkdtemp('hermes-plugin-agent-')
     roots.push(root)
@@ -134,7 +152,10 @@ interface DetectionCase {
 // Shared with the gateway's detector (tests/hermes_cli/test_plugins_cmd_inspect.py).
 const DETECTION_CASES = (
   JSON.parse(
-    fs.readFileSync(path.resolve(here, '..', '..', '..', 'tests', 'fixtures', 'plugin_component_detection.json'), 'utf8')
+    fs.readFileSync(
+      path.resolve(here, '..', '..', '..', 'tests', 'fixtures', 'plugin_component_detection.json'),
+      'utf8'
+    )
   ) as { cases: DetectionCase[] }
 ).cases
 
@@ -227,6 +248,45 @@ describe('installDesktopPluginFromGit', () => {
 
     return repo
   }
+
+  it('installs the commit the dialog reviewed after the branch moved, and refuses one the source lacks', async () => {
+    const repo = pluginRepo(null, { 'panel.js': 'reviewed\n' })
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' }).toString().trim()
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+    const probe = await probePluginRepo('git', pathToFileURL(repo).href)
+    expect(probe.sha).toBe(git('rev-parse', 'HEAD'))
+    fs.writeFileSync(path.join(repo, 'desktop', 'panel.js'), 'moved\n')
+    git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qam', 'moved')
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, probe.sha)
+
+    expect(result).toMatchObject({ ok: true })
+    expect(fs.readFileSync(path.join(appRoot, result.pluginName!, 'panel.js'), 'utf8')).toBe('reviewed\n')
+
+    const refused = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true, 'f'.repeat(40))
+    expect(refused).toMatchObject({ ok: false, sourceMoved: true })
+    expect(refused.error).toContain('the source may have changed since you reviewed it')
+    expect(fs.readFileSync(path.join(appRoot, result.pluginName!, 'panel.js'), 'utf8')).toBe('reviewed\n')
+  })
+
+  it('installs a reviewed catalog pin that names an annotated tag at the commit it points at', async () => {
+    const repo = pluginRepo(null, { 'panel.js': 'reviewed\n' })
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' }).toString().trim()
+    const ident = ['-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture']
+    git(...ident, 'tag', '-a', 'v1.0', '-m', 'v1.0')
+    fs.writeFileSync(path.join(repo, 'desktop', 'panel.js'), 'moved\n')
+    git(...ident, 'commit', '-qam', 'moved')
+    const tagObject = git('rev-parse', 'v1.0')
+    expect(tagObject).not.toBe(git('rev-parse', 'v1.0^{commit}'))
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, tagObject)
+
+    expect(result).toMatchObject({ ok: true })
+    expect(fs.readFileSync(path.join(appRoot, result.pluginName!, 'panel.js'), 'utf8')).toBe('reviewed\n')
+  })
 
   it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {
     // Without the marker the Plugins page has no evidence that this copy is the

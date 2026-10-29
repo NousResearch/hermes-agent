@@ -469,6 +469,25 @@ class SessionManager:
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
 
+        # A row persisted with the RESOLVED provider "custom" (the shared billing class of every named
+        # ``providers:`` / ``custom_providers:`` entry) is not a routable identity: feeding bare
+        # "custom" into resolve_runtime_provider falls through to the OpenRouter default with no key
+        # and the rebuild dies "No LLM provider configured" — the resume silently drops the
+        # conversation. Recover the durable ``custom:<name>`` identity from the persisted base_url /
+        # model, exactly like the TUI/desktop restore path
+        # (tui_gateway/agent_factory.py::_resolve_agent_model_runtime).
+        requested_provider = meta.get("provider") or row.get("billing_provider")
+        base_url = meta.get("base_url") or row.get("billing_base_url")
+        if str(requested_provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+                healed = canonical_custom_identity(base_url=base_url or None, model=model or None)
+                if healed:
+                    logger.info("ACP restore healed stale custom provider %r to %r", requested_provider, healed)
+                    requested_provider = healed
+            except Exception:
+                logger.debug("ACP custom provider identity recovery failed", exc_info=True)
+
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
         try:
@@ -480,8 +499,7 @@ class SessionManager:
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                requested_provider=requested_provider, base_url=base_url)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
@@ -536,9 +554,15 @@ class SessionManager:
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
+        resolve_kwargs: dict = {"requested": requested_provider or config_provider,
+                                "target_model": (model or default_model) or None}
+        if base_url:
+            # A persisted endpoint that identity recovery could not match to a named entry still
+            # reaches the direct-alias branch so credential pool / env keys for that URL resolve
+            # (same fallback the TUI path uses: tui_gateway/agent_factory.py).
+            resolve_kwargs["explicit_base_url"] = base_url
         try:
-            runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+            runtime = resolve_runtime_provider(**resolve_kwargs)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

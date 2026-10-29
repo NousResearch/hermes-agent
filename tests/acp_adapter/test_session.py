@@ -597,3 +597,136 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+
+class TestRestoreCustomProviderIdentity:
+    """ACP restore heals a persisted bare "custom" provider into its named identity.
+
+    ``_persist`` stores the agent's RESOLVED provider in the row's model_config; for
+    every named ``providers:`` / ``custom_providers:`` entry that is the literal string
+    "custom" (the api_key is deliberately never persisted). Feeding bare "custom" back
+    into ``resolve_runtime_provider`` on restore falls through to the OpenRouter default
+    with no key — the rebuild dies "No LLM provider configured" and the resume silently
+    drops the conversation. ``_restore`` must recover ``custom:<name>`` from the
+    persisted base_url/model — the same healing the TUI/desktop path performs
+    (tui_gateway/agent_factory.py::_resolve_agent_model_runtime) — and hand the
+    persisted endpoint to the direct-alias branch (``explicit_base_url``) when no
+    entry matches.
+    """
+
+    BIFROST_URL = "http://host.containers.internal:5002/v1"
+    BIFROST_KEY = "bifrost-test-key-9f41"
+    MODEL = "deepseek-v3"
+
+    def _seed_bare_custom_session(self, tmp_path, *, provider="custom",
+                                  base_url=BIFROST_URL, model=MODEL):
+        """A row as the adapter's own ``_persist`` writes it: the agent's RESOLVED
+        provider class ("custom" for a named entry), its endpoint, never the key."""
+        agent = SimpleNamespace(model=model, provider=provider, base_url=base_url,
+                                api_mode="chat_completions")
+        db = SessionDB(tmp_path / "state.db")
+        first = SessionManager(agent_factory=lambda: agent, db=db)
+        state = first.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        first.save_session(state.session_id)
+        return db, state.session_id
+
+    def _restore_with(self, db, session_id, monkeypatch, config):
+        """Rebuild the row through the real restore path with faked provider
+        resolution; returns (resolve_kwargs, agent_kwargs, restored)."""
+        captured = {}
+
+        def fake_resolve_runtime_provider(**kwargs):
+            captured["resolve_kwargs"] = kwargs
+            return {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": self.BIFROST_URL,
+                "api_key": self.BIFROST_KEY,
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            captured["agent_kwargs"] = kwargs
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            restored = manager.get_session(session_id)
+        assert restored is not None
+        captured["restored"] = restored
+        return captured
+
+    def test_restore_heals_bare_custom_to_named_identity(self, tmp_path, monkeypatch):
+        """A session persisted with provider="custom" restores with the named entry
+        resolved (custom:<name>), the correct endpoint/key, and full history."""
+        db, sid = self._seed_bare_custom_session(tmp_path)
+        captured = self._restore_with(db, sid, monkeypatch, config={
+            "model": {"default": self.MODEL},
+            "providers": {
+                "deepcustom": {"api": self.BIFROST_URL, "api_key": self.BIFROST_KEY},
+            },
+        })
+
+        # Identity recovery upgraded the persisted bare "custom" to the entry key
+        # before resolution, and the persisted endpoint rode along as
+        # explicit_base_url for the direct-alias branch.
+        assert captured["resolve_kwargs"]["requested"] == "custom:deepcustom"
+        assert captured["resolve_kwargs"]["explicit_base_url"] == self.BIFROST_URL
+        assert captured["resolve_kwargs"]["target_model"] == self.MODEL
+
+        # The rebuilt agent runs the named entry's runtime: billing class "custom",
+        # the endpoint, and the key resolution supplied.
+        agent_kwargs = captured["agent_kwargs"]
+        assert agent_kwargs["provider"] == "custom"
+        assert agent_kwargs["base_url"] == self.BIFROST_URL
+        assert agent_kwargs["api_key"] == self.BIFROST_KEY
+        # Full message history survived the restore.
+        assert [m["content"] for m in captured["restored"].history] == ["hello"]
+
+    def test_restore_passes_base_url_to_direct_alias_when_no_entry_matches(
+        self, tmp_path, monkeypatch,
+    ):
+        """When identity recovery finds no entry for the persisted endpoint, the
+        requested provider stays bare "custom" but the endpoint still reaches the
+        direct-alias branch so pool/env credentials for that URL can resolve."""
+        db, sid = self._seed_bare_custom_session(tmp_path)
+        captured = self._restore_with(db, sid, monkeypatch, config={
+            "model": {"default": self.MODEL},
+            "providers": {},
+        })
+
+        assert captured["resolve_kwargs"]["requested"] == "custom"
+        assert captured["resolve_kwargs"]["explicit_base_url"] == self.BIFROST_URL
+        assert captured["resolve_kwargs"]["target_model"] == self.MODEL
+        assert [m["content"] for m in captured["restored"].history] == ["hello"]
+
+    def test_restore_leaves_non_custom_provider_untouched(self, tmp_path, monkeypatch):
+        """Regression: a built-in provider's identity is never rewritten — identity
+        recovery runs only for the bare "custom" billing class."""
+        db, sid = self._seed_bare_custom_session(
+            tmp_path, provider="anthropic", base_url="https://api.anthropic.com",
+        )
+        import hermes_cli.runtime_provider as rp
+
+        calls = []
+        real = rp.canonical_custom_identity
+
+        def spy(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(rp, "canonical_custom_identity", spy)
+        captured = self._restore_with(db, sid, monkeypatch, config={
+            "model": {"default": self.MODEL, "provider": "anthropic"},
+        })
+
+        assert calls == []
+        assert captured["resolve_kwargs"]["requested"] == "anthropic"
+        assert [m["content"] for m in captured["restored"].history] == ["hello"]

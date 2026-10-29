@@ -87,7 +87,7 @@ import {
   validateCronEditor
 } from './cron-job-model'
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT, truncateText } from './job-state'
-import { openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
+import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -958,13 +958,6 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString()
 }
 
-// Script-only (no_agent) jobs have no agent sessions; the runs endpoint
-// surfaces their per-fire output docs as rows with source='cron_output'
-// (see _list_cron_output_runs in hermes_cli/web_routers/cron.py).
-function isSyntheticCronOutputRun(run: SessionInfo): boolean {
-  return run.source === 'cron_output'
-}
-
 // Runs are produced by the background scheduler tick. cron.changed /
 // sessions.changed broadcasts re-load immediately on event-capable backends
 // (the tick dep below), so the poll drops to a slow backstop there; older
@@ -1045,7 +1038,11 @@ function CronJobRuns({
           void load()
         }
       },
-      pending ? PENDING_RUNS_POLL_INTERVAL_MS : changeEventsAvailable ? RUNS_BACKSTOP_INTERVAL_MS : RUNS_POLL_INTERVAL_MS
+      pending
+        ? PENDING_RUNS_POLL_INTERVAL_MS
+        : changeEventsAvailable
+          ? RUNS_BACKSTOP_INTERVAL_MS
+          : RUNS_POLL_INTERVAL_MS
     )
 
     const onVisible = () => {
@@ -1112,7 +1109,7 @@ function CronJobRuns({
             </div>
           )}
           {(runs ?? []).map(run =>
-            isSyntheticCronOutputRun(run) ? (
+            !isCronRunRow(run) ? (
               // Output-doc rows have no backing session to open; show the
               // recorded output preview without a chat-navigation affordance.
               <div className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-xs" key={run.id}>

@@ -31,6 +31,7 @@ import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
+import { stopSandboxGatewayDaemons } from './run-tmp-reaper'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -111,7 +112,9 @@ export interface Sandbox {
 }
 
 export function createSandbox(prefix: string): Sandbox {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-e2e-${prefix}-${Math.random()}`))
+  // Canonical path: the backend resolves HERMES_HOME, so a symlinked tmpdir (macOS /var, a
+  // symlinked scratch dir) would otherwise make every HERMES_HOME match against the sandbox miss.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `hermes-e2e-${prefix}-${Math.random()}`)))
   const hermesHome = path.join(root, 'hermes-home')
   const userDataDir = path.join(root, 'electron-user-data')
 
@@ -133,11 +136,10 @@ export function createSandbox(prefix: string): Sandbox {
     'utf8',
   )
 
-  // Pin Chromium actual-size zoom (level 0) for the suite. Fresh installs
-  // ship DEFAULT_ZOOM_LEVEL at the Appearance 90% preset, but Playwright
-  // click hit-testing and the committed visual baselines were calibrated at
-  // 100%. Without this file every sandbox would inherit the product default
-  // and fail pointer interception + snapshot diffs.
+  // Pin Chromium actual-size zoom (level 0) for the suite. Playwright click
+  // hit-testing and the committed visual baselines were calibrated at 100%,
+  // so the suite must not drift if the product default (DEFAULT_ZOOM_LEVEL)
+  // ever moves off 100% again.
   fs.writeFileSync(
     path.join(userDataDir, 'zoom-state.json'),
     JSON.stringify({ zoomLevel: 0 }, null, 2),
@@ -149,6 +151,10 @@ export function createSandbox(prefix: string): Sandbox {
     hermesHome,
     userDataDir,
     cleanup: () => {
+      // `app.close()` leaves the detached gateway the app dialled; alive, it
+      // would also rewrite this home right after the rmSync below.
+      stopSandboxGatewayDaemons(root, hermesHome)
+
       try {
         fs.rmSync(root, { recursive: true, force: true })
       } catch {
@@ -217,6 +223,8 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     // mid-flight — otherwise the quit confirmation waits on a click that no
     // one is there to make, and the worker dies on a teardown timeout.
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
+    // Never repoint the user's OS hermes:// handler (HKCU on Windows) at a test checkout.
+    HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION: '1',
     // Clear dev-server override — we want the built dist/, not a vite server.
     // The dev-server check in main.ts looks for this env var; if it's set,
     // it loads from the vite URL instead of the local file.

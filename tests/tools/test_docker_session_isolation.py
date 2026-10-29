@@ -354,7 +354,7 @@ class TestSessionScopedContainerLifecycle:
             task_id="tui:sess-1",
         )
         assert captured["persist_across_processes"] is False
-        assert getattr(env, "_session_scoped") is True
+        assert env._session_scoped is True
 
     def test_create_environment_default_task_not_session_scoped(self, monkeypatch):
         _enable_isolation(monkeypatch)

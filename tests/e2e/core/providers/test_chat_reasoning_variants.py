@@ -9,9 +9,8 @@
   the whole request), while state.db keeps it for a later switch back.
 * DeepSeek-style ``reasoning_content`` is echoed on the assistant tool-call message,
   within the turn and after ``--resume``.
-* A long session on a route that accepts replayed reasoning only up to a cumulative
-  budget must keep answering instead of wedging on a non-retryable 400 (#118182),
-  driven through one long-lived ``tui_gateway`` backend.
+* A long Nous Portal session replays every earlier turn's ``reasoning_details`` verbatim
+  and keeps answering, driven through one long-lived ``tui_gateway`` backend.
 """
 
 from __future__ import annotations
@@ -75,7 +74,7 @@ def test_openrouter_reasoning_details_replayed_verbatim(tmp_path) -> None:
     h = Home(tmp_path)
     with FakeChatVariantServer(_reasoning_script("reasoning_details")) as srv:
         h.write(_impersonated_config("openrouter.ai"), dotenv={"OPENAI_API_KEY": "sk-or-fake"})
-        first, _ = _two_turn_reasoning_session(h, _proxy_env(srv))
+        _first, _ = _two_turn_reasoning_session(h, _proxy_env(srv))
         records = srv.main_records()
         invalid = srv.invalid_requests()
 
@@ -117,16 +116,15 @@ def test_reasoning_content_echoed_on_tool_call_messages(tmp_path) -> None:
     assert _assistant_field(mains[2], "reasoning_content") == ["ds-1", "ds-2"], chat_messages(mains[2], "assistant")
 
 
-def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path) -> None:
-    """Each turn mints ~1 KB of reasoning; the route 400s ("Provider returned error", not
-    retryable) once the replayed total passes 4 KB. The Portal never sees replayed
-    reasoning_details on the wire (#118182), so every turn is answered and the budget is
-    never crossed, while state.db keeps the blocks for a later switch to a replaying route."""
+def test_long_session_replays_every_turns_reasoning_to_the_portal(tmp_path) -> None:
+    """Each turn mints ~1 KB of reasoning. The Portal reads reasoning_details (the #118182
+    "replay budget" does not exist live), so every later request replays every earlier
+    turn's blocks verbatim, every turn is answered, and state.db keeps the blocks."""
     turns = 8
     script = [CText(f"ANSWER-{i}", reasoning_details=_rd(str(i), "r" * 1000)) for i in range(turns)]
     h = Home(tmp_path)
     answers: list[str] = []
-    with FakeChatVariantServer(script, reasoning_budget_chars=4000) as srv:
+    with FakeChatVariantServer(script) as srv:
         h.write(_impersonated_config("inference-api.nousresearch.com"), dotenv={"OPENAI_API_KEY": "sk-fake"})
         gw = TuiGateway(h, _proxy_env(srv))
         try:
@@ -138,11 +136,9 @@ def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path) -> N
             gw.close()
         records = srv.main_records()
     assert records and {r["host"] for r in records} == {"inference-api.nousresearch.com"}, "precondition: impersonated"
-    rejected = [i for i, r in enumerate(records) if r.get("response") == "route_rejection"]
-    assert rejected == [], f"route budget crossed at requests {rejected}: replayed reasoning_details reached the wire"
-    leaked = [(i, m) for i, r in enumerate(records) for m in chat_messages(r["body"], "assistant")
-              if "reasoning_details" in m]
-    assert leaked == [], f"reasoning_details sent to the Portal wire: {leaked}"
+    replayed = [_assistant_field(r["body"], "reasoning_details") for r in records]
+    assert replayed == [[_rd(str(i), "r" * 1000) for i in range(n)] for n in range(turns)], (
+        f"Portal requests did not replay every earlier turn's reasoning_details: {replayed}")
     missing = [i for i in range(turns) if f"ANSWER-{i}" not in answers[i]]
     assert not missing, f"turns {missing} were not answered: {answers}"
     # Rows persist under the STORED session key (the runtime id only routes RPCs).

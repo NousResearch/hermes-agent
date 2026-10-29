@@ -29,6 +29,7 @@ import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $newChatProfile,
   $profiles,
   $profileScope,
   ALL_PROFILES,
@@ -161,7 +162,7 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 // you were looking at: after a restart that's the just-resumed session, whose
 // stored cwd is often a home-dir fallback, so every new chat landed there
 // instead of the configured default (#71873, #80213, #77496).
-export function resolveNewSessionCwd(): string {
+export function resolveNewSessionCwd(profile?: string): string {
   const scope = $projectScope.get()
 
   // Inside Home, "no folder" is the point: a new chat must stay detached rather
@@ -178,7 +179,11 @@ export function resolveNewSessionCwd(): string {
     }
   }
 
-  return workspaceCwdForNewSession()
+  // A tile names its profile before $newChatProfile catches up. The folder
+  // belongs to that profile, which on a browser host is its own stored default.
+  const owner = (profile?.trim() || $newChatProfile.get() || $activeGatewayProfile.get()).trim()
+
+  return workspaceCwdForNewSession(owner)
 }
 
 // Entering a project moves the live workspace only when main holds a fresh
@@ -799,10 +804,15 @@ export async function moveSessionToProject(
     throw new Error(translateNow('sidebar.projects.moveNoFolder'))
   }
 
+  // The shared owner refuses a move while a turn runs (its frozen policy would change under it).
   const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
     cwd,
     session_key: sessionId,
     ...(profile ? { profile } : {})
+  }).catch((err: unknown) => {
+    throw (err as { data?: { reason?: string } })?.data?.reason === 'session_busy'
+      ? new Error(translateNow('sidebar.projects.moveBusy'))
+      : err
   })
 
   const moved = res.cwd || cwd
@@ -1655,7 +1665,12 @@ export async function pickProjectFolders(): Promise<string[]> {
 // project already has — or repeats within the pick itself — are skipped, so
 // a multi-select never writes duplicate rows (#68741).
 export async function addProjectFolders(id: string, paths: string[]): Promise<void> {
-  const existing = new Set($projects.get().find(proj => proj.id === id)?.folders?.map(folder => folder.path) ?? [])
+  const existing = new Set(
+    $projects
+      .get()
+      .find(proj => proj.id === id)
+      ?.folders?.map(folder => folder.path) ?? []
+  )
 
   for (const path of new Set(paths.map(path => path.trim()).filter(Boolean))) {
     if (existing.has(path)) {

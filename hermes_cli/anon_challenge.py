@@ -78,7 +78,7 @@ class BrowserChallenge:
     message: str
     attempt: int = 0
 
-    def as_payload(self) -> Dict[str, Any]:
+    def as_payload(self) -> dict[str, Any]:
         return {"type": "browser", "url": self.url, "required": self.required,
                 "expires_in": int(self.expires_in), "message": self.message, "attempt": self.attempt}
 
@@ -88,7 +88,7 @@ class AnonChallengeRequired(AuthError):
     to work it: the challenge, and the portal, credential and auth state (its ``tls`` block) to poll with."""
 
     def __init__(self, challenge: BrowserChallenge, *, portal_base_url: str, anon_token: str,
-                 auth_state: Dict[str, Any]) -> None:
+                 auth_state: dict[str, Any]) -> None:
         super().__init__(challenge.message, provider="nous", code=ANON_CHALLENGE_REQUIRED, retryable=True)
         self.challenge = challenge
         self.portal_base_url = portal_base_url
@@ -118,16 +118,19 @@ def server_message(value: Any) -> str:
 
 def client_surface() -> str:
     """``gateway`` in the process that holds the messaging gateway's runtime lock (nobody is at its
-    console), ``desktop`` for the backend the desktop app spawned, else ``cli``. ``HERMES_DESKTOP``
+    console) unless it is serving the local Desktop app, ``desktop`` for that and for the backend the
+    desktop app spawned, else ``cli``. ``HERMES_DESKTOP``
     alone is inherited by every terminal-pane shell, so desktop ownership needs the spawn credential."""
+    from hermes_cli.process_identity import is_desktop_owned_backend, serves_local_desktop_now
+    if serves_local_desktop_now():
+        return "desktop"
     status = sys.modules.get("gateway.status")
     if status is not None and status.owns_gateway_runtime_lock():
         return "gateway"
-    from hermes_cli.process_identity import is_desktop_owned_backend
     return "desktop" if is_desktop_owned_backend() else "cli"
 
 
-def client_info() -> Dict[str, Any]:
+def client_info() -> dict[str, Any]:
     """The self-reported ``client`` block on a token exchange. It sorts honest clients (which
     surface, which challenge primitives) for the service's rules; it proves nothing, by design."""
     from hermes_cli.version_info import get_version_info
@@ -161,7 +164,7 @@ def _number(value: Any, default: float) -> float:
     return float(value)
 
 
-def parse_browser_challenge(payload: Dict[str, Any], portal_base_url: str) -> Optional[BrowserChallenge]:
+def parse_browser_challenge(payload: dict[str, Any], portal_base_url: str) -> Optional[BrowserChallenge]:
     """The first challenge in ``payload["challenges"]`` this client can run, or None."""
     entries = payload.get("challenges")
     if not isinstance(entries, list):
@@ -183,8 +186,8 @@ def parse_browser_challenge(payload: Dict[str, Any], portal_base_url: str) -> Op
     return None
 
 
-def challenge_error(payload: Dict[str, Any], *, portal_base_url: str, anon_token: str,
-                    auth_state: Dict[str, Any]) -> AuthError:
+def challenge_error(payload: dict[str, Any], *, portal_base_url: str, anon_token: str,
+                    auth_state: dict[str, Any]) -> AuthError:
     """The error for a 428 ``challenge_required``: a challenge to work, or (nothing offered that
     this version can run) the sign-in fallback."""
     challenge = parse_browser_challenge(payload, portal_base_url)
@@ -210,7 +213,7 @@ class _ProfileChallenge:
 
 
 _state_lock = threading.Lock()
-_profiles: Dict[str, _ProfileChallenge] = {}
+_profiles: dict[str, _ProfileChallenge] = {}
 _opened_urls: set[str] = set()      # challenge URLs whose browser tab was opened (one per ticket)
 
 # Set by :func:`background_caller`: this caller has nobody waiting on it.
@@ -240,7 +243,7 @@ def _live(record: _ProfileChallenge) -> Optional[BrowserChallenge]:
     return record.pending
 
 
-def pending_challenge() -> Optional[Dict[str, Any]]:
+def pending_challenge() -> Optional[dict[str, Any]]:
     """The challenge this profile is waiting on, for ``free_tier.status`` (a client that connected
     after the event fired still learns it has a window to open). None once cleared or expired, or
     once the host said how its window ended (a window the user closed must not come back)."""
@@ -480,7 +483,7 @@ def run_with_challenge(exchange: Callable[[], T]) -> T:
         raise
 
 
-def note_optional_challenges(payload: Dict[str, Any], portal_base_url: str) -> None:
+def note_optional_challenges(payload: dict[str, Any], portal_base_url: str) -> None:
     """A successful exchange may advertise a challenge nobody has to pass (the service is measuring
     before it enforces). Only a desktop client runs it, hidden; a terminal never opens a browser
     for something optional. Fire and forget."""

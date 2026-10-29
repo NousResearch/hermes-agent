@@ -413,6 +413,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
+        # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
+        session["_turn_user_input"] = True
         image_paths = list(session.get("attached_images", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields

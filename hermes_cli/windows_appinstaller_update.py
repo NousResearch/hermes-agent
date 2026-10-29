@@ -56,7 +56,7 @@ def main() -> int:
             return 0
         print(json.dumps({"available": None, "error": f"package identity failed: {exc}"}))
         return 1
-    except Exception as exc:  # noqa: BLE001 — projection shape surprises are unknowns
+    except Exception as exc:
         print(json.dumps({"available": None, "error": f"package identity failed: {exc}"}))
         return 1
 
@@ -72,7 +72,7 @@ def main() -> int:
         source_uri = source.uri.absolute_uri
         result = package.check_update_availability_async().get()
         availability = PackageUpdateAvailability(result.availability)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(json.dumps({"available": None, "error": f"check failed: {exc}"}))
         return 1
 

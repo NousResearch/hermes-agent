@@ -8,12 +8,41 @@ import re
 import threading
 from typing import Any, Dict, List
 
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 from agent.message_content import flatten_message_text
-from agent.history_commentary import visible_commentary
+from agent.history_commentary import COMMENTARY_WITHHELD, commentary_items, visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+
+
+def withhold_held_row(agent: Any, assistant_msg: dict[str, Any]) -> dict[str, Any]:
+    """Type a held turn's model row ``display_kind="hidden"`` when it has visible text; returns it.
+
+    Every row ``_build_assistant_message`` makes passes here before its first flush, so commentary,
+    continuation fragments, codex incomplete partials and an answer a stop gate sent back never reach
+    a history load; ``finish_text_response`` publishes the one row the user gets
+    (``publish_held_final_row``). The key never reaches the wire: the model's context and its cached
+    prefix are unchanged."""
+    if (getattr(agent, "_hold_stream", False) is True and not assistant_msg.get("display_kind")
+            and agent._interim_assistant_visible_text(assistant_msg)):
+        assistant_msg["display_kind"] = "hidden"
+    return assistant_msg
+
+
+def publish_held_final_row(agent: Any, final_msg: dict[str, Any], final_response: Any, joined: bool) -> None:
+    """The held turn's final row shows what the user got: visible again, without the Codex
+    commentary the transform never saw, and carrying the whole stitched reply when
+    length-continuation fragments (hidden above) were joined into it."""
+    if getattr(agent, "_hold_stream", False) is not True:
+        return
+    if final_msg.get("display_kind") == "hidden":
+        del final_msg["display_kind"]
+    if commentary_items(final_msg):  # Codex commentary rides the row's items, for replay only
+        final_msg["display_metadata"] = {**(final_msg.get("display_metadata") or {}), COMMENTARY_WITHHELD: True}
+    if joined and final_msg.get("content") and final_msg["content"] != final_response:
+        final_msg.setdefault("api_content", final_msg["content"])  # the model keeps the piece it wrote
+        final_msg["content"] = final_response
 
 
 class StreamDeliveryMixin:
@@ -31,7 +60,10 @@ class StreamDeliveryMixin:
             return False
 
     def _deliver_to_stream_callbacks(self, text: str) -> bool:
-        """Send ``text`` to the display + TTS delta callbacks; True if at least one accepted it."""
+        """Send ``text`` to the display + TTS delta callbacks; True if at least one accepted it.
+        Nothing leaves while a ``hold_stream`` plugin holds this turn's reply (``_hold_stream``)."""
+        if getattr(self, "_hold_stream", False):
+            return False
         results = [self._call_quietly(cb, text) for cb in (self.stream_delta_callback, self._stream_callback)]
         return any(results)
 
@@ -59,8 +91,9 @@ class StreamDeliveryMixin:
         self._stream_reasoning_hooks_enabled = None
 
         def deliver(tail: str) -> None:
-            if tail:
-                self._deliver_to_stream_callbacks(tail)
+            # Recorded only once shown (as ``_fire_stream_delta``): a held tail must not become an
+            # interrupted turn's untransformed partial final.
+            if tail and self._deliver_to_stream_callbacks(tail):
                 self._record_streamed_assistant_text(tail)
 
         # Flush any benign partial-tag tail held by the think scrubber first (#17924): an innocent '<' at
@@ -121,14 +154,14 @@ class StreamDeliveryMixin:
         visible, streamed = self._interim_visible_and_streamed(content)
         return bool(visible) and visible == streamed
 
-    def _extract_codex_interim_visible_parts(self, assistant_msg: Dict[str, Any]) -> List[str]:
+    def _extract_codex_interim_visible_parts(self, assistant_msg: dict[str, Any]) -> list[str]:
         """Visible Codex commentary (``phase=commentary`` items), one string per message item.
 
         ``phase=analysis`` stays hidden (scratchpad); with ``display.show_commentary=false``
         commentary stays on the reasoning channel.
         """
         items = assistant_msg.get("codex_message_items") if getattr(self, "show_commentary", True) else None
-        messages: List[str] = []
+        messages: list[str] = []
         for item in items if isinstance(items, list) else ():
             if not isinstance(item, dict) or item.get("type") != "message":
                 continue
@@ -147,13 +180,13 @@ class StreamDeliveryMixin:
 
     def _visible_commentary(self, text: str) -> str:
         """Think-stripped, redacted commentary text ("" when nothing visible remains)."""
-        return visible_commentary(text, strip_thinking=getattr(self, "_strip_think_blocks"))
+        return visible_commentary(text, strip_thinking=self._strip_think_blocks)
 
-    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+    def _extract_codex_interim_visible_text(self, assistant_msg: dict[str, Any]) -> str:
         """All visible Codex commentary joined, for comparison/fallback."""
         return "\n\n".join(self._extract_codex_interim_visible_parts(assistant_msg)).strip()
 
-    def _interim_assistant_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+    def _interim_assistant_visible_text(self, assistant_msg: dict[str, Any]) -> str:
         """Assistant text eligible for interim delivery: structured Codex commentary first — a response can
         hold commentary AND a partial final answer while tools are pending, and treating content as
         progress leaks the answer early — else top-level content (may be a parts list)."""
@@ -173,9 +206,10 @@ class StreamDeliveryMixin:
                 self._delivered_interim_texts = set()
             self._delivered_interim_texts.add(normalized)
 
-    def _deliver_interim(self, visible: str, *, already_streamed: bool, record: List[str]) -> None:
-        """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors."""
-        cb = getattr(self, "interim_assistant_callback", None)
+    def _deliver_interim(self, visible: str, *, already_streamed: bool, record: list[str]) -> None:
+        """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors.
+        Commentary is model text ``transform_llm_output`` never sees, so a held turn drops it."""
+        cb = None if getattr(self, "_hold_stream", False) else getattr(self, "interim_assistant_callback", None)
         if cb is None:
             return
         try:
@@ -194,7 +228,7 @@ class StreamDeliveryMixin:
             return
         self._deliver_interim(visible, already_streamed=False, record=[visible])
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
+    def _emit_interim_assistant_message(self, assistant_msg: dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
         ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
         different final summary."""
@@ -279,7 +313,7 @@ class StreamDeliveryMixin:
                 where, _n,
             )
 
-    def _stream_hook_base_payload(self) -> Dict[str, Any]:
+    def _stream_hook_base_payload(self) -> dict[str, Any]:
         return {
             "turn_id": getattr(self, "_current_turn_id", "") or "",
             "iteration": int(getattr(self, "_api_call_count", 0) or 0),

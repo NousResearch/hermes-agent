@@ -19,7 +19,11 @@ from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_
 # stored-row CAS digest and the durable row adopted onto the live dict. Never transcript payload.
 DB_ROW_SNAPSHOT = "_db_row_snapshot"
 CANONICAL_ROW = "_canonical_row"
-REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW})
+# Set by the agent flush on a batch row (never a live dict) whose ``message_uid`` the agent itself saw durable in
+# this session (written by an earlier flush, or loaded from the store with its marker). Only such a row, with no
+# row address or snapshot, may be skipped as a re-insert of an ACTIVE uid; a bare copied uid proves nothing.
+RESTORED_FROM_STORE = "_restored_from_store"
+REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW, RESTORED_FROM_STORE})
 # Unanswered text a merged user row held before the current turn was absorbed
 # (agent_runtime_helpers._merge_consecutive_users); the persist override keeps it.
 # It repeats the row's own content, so pricing it would double the estimate.
@@ -50,6 +54,47 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
+# Connector data-use requirement on a tool message; persisted inside ``display_metadata``, never sent to a model.
+DATA_USE = "data_use"
+
+
+def data_use_requirement(messages: Any) -> frozenset[str]:
+    """The union of ``data_use`` over *messages*: what the model receiving them must guarantee."""
+    return frozenset(r for m in messages or () if isinstance(m, Mapping) for r in m.get(DATA_USE) or ())
+
+
+def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> None:
+    """Mark a tool message with its requirement. The ``display_metadata`` copy is the durable one: that
+    column already rides every writer, branch and compaction copy, and replay lifts it back (SessionDB)."""
+    if not requires:
+        return
+    message[DATA_USE] = list(requires)
+    metadata = message.get("display_metadata")
+    message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), DATA_USE: list(requires)}
+
+
+def lift_data_use(message: MutableMapping[str, Any]) -> None:
+    """Restore a replayed row's ``data_use`` key from its durable ``display_metadata`` copy."""
+    metadata = message.get("display_metadata")
+    if isinstance(metadata, dict) and metadata.get(DATA_USE):
+        message[DATA_USE] = list(metadata[DATA_USE])
+
+
+# Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
+# duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
+_UNPRICED_CORE_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
+                                   "bedrock_content_blocks", DATA_USE})
+
+
+def unpriced_replay_fields() -> frozenset[str]:
+    """The core unpriced carriers plus every message carrier key a registered profile declares
+    (``ProviderProfile.message_carrier_*``). Resolve once per message, never per key."""
+    from agent.reasoning_carriers import declared_carrier_keys
+
+    opaque, text = declared_carrier_keys()
+    return _UNPRICED_CORE_FIELDS.union(opaque, text)
+
+
 def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:
     """*msg* itself when it carries no persistence-only field, else a shallow copy without them."""
     if PERSISTENCE_ONLY_MESSAGE_FIELDS.isdisjoint(msg):
@@ -62,7 +107,7 @@ def mint_uid() -> str:
     return uuid4().hex
 
 
-def uid_list(value: Any) -> List[str]:
+def uid_list(value: Any) -> list[str]:
     """The unique non-empty string uids of a live list, in order; anything else is ``[]``."""
     return list(dict.fromkeys(u for u in (value if isinstance(value, list) else ()) if isinstance(u, str) and u))
 
@@ -85,6 +130,32 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
     if uid is None:
         uid = msg[MESSAGE_UID] = mint_uid()
     return uid
+
+
+# Producer-owned provenance for the compressor's standalone in-flight-task restatement. It rides in
+# display_metadata (persisted by SessionDB, popped from every wire copy) so gateway replay can send the
+# row unstamped, as the compaction turn did; a human pasting the header text carries no flag.
+INFLIGHT_TASK_RESTATEMENT = "compaction_inflight_task_restatement"
+
+
+def mark_inflight_restatement(msg: MutableMapping[str, Any]) -> None:
+    metadata = msg.get("display_metadata")
+    msg["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), INFLIGHT_TASK_RESTATEMENT: True}
+
+
+def scaffolding_replay_fields(msg: Mapping[str, Any]) -> dict:
+    """The compaction-provenance fields replay keeps (summary flag, restatement flag), else ``{}``. A proactive
+    prune re-persists the replayed view, so a dropped flag would get the row stamped on the next replay."""
+    metadata = msg.get("display_metadata")
+    fields: dict = {"_compressed_summary": True} if msg.get("_compressed_summary") else {}
+    if isinstance(metadata, dict) and metadata.get(INFLIGHT_TASK_RESTATEMENT):
+        fields["display_metadata"] = {INFLIGHT_TASK_RESTATEMENT: True}
+    return fields
+
+
+def is_compaction_scaffolding(msg: Mapping[str, Any]) -> bool:
+    """Compaction sent its summary and restatement rows unstamped; a replay stamp would break the cached prefix."""
+    return bool(scaffolding_replay_fields(msg))
 
 
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
@@ -152,7 +223,7 @@ def _uid_occurrences(value: Any) -> list:
     return list(value) if isinstance(value, list) else [value]
 
 
-def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: List[Mapping[str, Any]]) -> dict:
+def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: list[Mapping[str, Any]]) -> dict:
     """*uids* with every provider id this row names more than once spelled out as one uid per occurrence. A
     single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
     before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
@@ -209,7 +280,7 @@ def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) ->
     return None
 
 
-def tool_call_uid_from_history(messages: List[dict], tool_index: int, owners: dict) -> Optional[str]:
+def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: dict) -> Optional[str]:
     """Resolve a tool-result dict's uid from the nearest preceding assistant dict in ``messages`` that
     named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch).
     ``owners`` memoizes each assistant's (named variants, uid index) across one flush's results, so K

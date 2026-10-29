@@ -13,7 +13,10 @@ import type { FreeTierChallengePayload, FreeTierChallengeResultParams } from '@h
 export type FreeTierChallengeOutcome = FreeTierChallengeResultParams['outcome']
 
 /** Sends ``free_tier.challenge_result`` to the backend that announced the challenge. */
-export type ChallengeRequester = (method: 'free_tier.challenge_result', params: Record<string, unknown>) => Promise<unknown>
+export type ChallengeRequester = (
+  method: 'free_tier.challenge_result',
+  params: Record<string, unknown>
+) => Promise<unknown>
 
 const inFlight = new Map<string, Promise<FreeTierChallengeOutcome>>()
 

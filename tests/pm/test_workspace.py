@@ -19,7 +19,7 @@ import pytest
 
 import pm.workspace as ws
 from pm.environment import managed_environment
-from tests.pm.test_environment_build import locked_project  # noqa: F401
+from tests.pm.test_environment_build import locked_project
 
 
 
@@ -60,37 +60,63 @@ def test_missing_explicit_seed_cannot_silently_resolve_new_versions(layout):
     assert not (tmp / "env").exists()
 
 
-def test_core_quarantine_covers_core_packages_and_not_plugin_ones(layout, locked_project):
-    """Regression for #120076: Hermes's 14-day cutoff must not filter a plugin's own deps.
+def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(layout, locked_project):  # health: allow F811 -- pytest injects the imported locked_project fixture by parameter name
+    """Release age is checked when Hermes locks, never on the user's machine (#135589).
 
-    A global ``exclude-newer`` in the generated root made a catalog pin floored on a fresh
-    release unresolvable. The cutoff now travels per package: every registry package in
-    core's lock keeps it (or core's explicit exemption), plugin-only packages follow the
-    plugin's policy, and the rewritten root still locks and syncs.
+    The generated root carries no ``exclude-newer`` (a mirror without upload times makes
+    uv reject every file it cannot date) and adds no constraints of its own: core's ranges
+    still bound what a plugin may move, and plugin-only packages stay free (#120076).
     """
     import tomllib
 
     tmp, core, plug_a, _ = layout
     _, uv, env = locked_project
     manifest = core / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer="14 days"\n', 1)
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer="3 days"\n', 1)
                         + '[tool.uv.exclude-newer-package]\nBase_Dep = false\n')
     subprocess.run([str(uv), "lock", "--python", sys.executable], cwd=core, env=env, check=True,
                    capture_output=True)
-    core_packages = {p["name"] for p in tomllib.loads((core / "uv.lock").read_text())["package"]
-                     if "registry" in p.get("source", {})}
-    assert {"base-dep", "chosen-dep"} <= core_packages and "member-dep" not in core_packages
+    core_lock = tomllib.loads((core / "uv.lock").read_text())["package"]
+    core_packages = {p["name"]: p["version"] for p in core_lock if "registry" in p.get("source", {})}
+    assert {"base-dep", "chosen-dep"} <= set(core_packages) and "member-dep" not in core_packages
 
     root = tmp / "workspace"
     ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=core / "uv.lock",
                      environment=managed_environment(tmp / "env"))
 
     policy = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]
-    assert "exclude-newer" not in policy
-    per_package = policy["exclude-newer-package"]
-    assert per_package == {name: False if name == "base-dep" else "14 days" for name in core_packages}
+    assert "exclude-newer" not in policy and "exclude-newer-package" not in policy
+    assert "constraint-dependencies" not in policy
     locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
-    assert "member-dep" in locked and "member-dep" not in per_package
+    assert "member-dep" in locked
+
+
+def test_plugin_workspace_solves_only_for_the_installing_interpreter(layout):
+    """A platform the install never runs on must not fail its solve.
+
+    uv fails the whole lock when one fork lacks wheels (onnxruntime and torch ship none for
+    Android), so a desktop update evicted mnemosyne over Android (#143254, #143305, #144003).
+    Core's own environment bounds still apply on top.
+    """
+    import tomllib
+
+    from packaging.markers import Marker, default_environment
+
+    tmp, core, plug_a, _ = layout
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", "[tool.uv]\nenvironments=[\"python_version >= '3.11'\"]\n", 1))
+    root = tmp / "workspace"
+    ws.lock_and_sync([plug_a], [], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+
+    [solved] = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["environments"]
+    host = default_environment()
+    platforms = [p for p in ("android", "win32", "linux") if p != host["sys_platform"]]
+    machine = next(m for m in ("riscv64", "s390x") if m != host["platform_machine"])
+    for environment, expected in ((host, True), *(({**host, "sys_platform": p}, False) for p in platforms),
+                                  ({**host, "platform_machine": machine}, False),
+                                  ({**host, "python_version": "3.10"}, False)):
+        assert Marker(solved).evaluate(environment) is expected, environment
 
 
 
@@ -105,6 +131,39 @@ def test_classify_network_failure_stays_generic():
 
     err = classify_uv_failure("lock", 1, "error: Failed to fetch https://pypi.org (timed out)")
     assert not isinstance(err, ResolutionConflict)
+
+
+def test_core_only_generation_carries_no_release_age_cutoff(layout):
+    """A core-only install (hermes update) is a frozen sync: the cutoff there only gates the build
+    tools uv fetches, and a mirror without upload times rejects every one of them (#135589)."""
+    tmp, core, _, _ = layout
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer = "3 days"\n', 1))
+    root = tmp / "workspace"
+    ws._generate_pyproject([], root, source=core, python=Path(sys.executable))
+    generated = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "exclude-newer" not in generated and "[tool.uv]" in generated
+
+
+def test_undated_index_failure_names_the_index_not_a_conflict():
+    """uv's "has no publish time" is the index omitting upload times (#135589), not a conflict."""
+    from pm.workspace import ResolutionConflict, classify_uv_failure
+
+    seeded = ("  x No solution found when resolving dependencies:\n"
+              "  Because resvg-py==0.4.0 has no publish time and hermes-agent depends on resvg-py==0.4.0, "
+              "we can conclude that hermes-agent's requirements are unsatisfiable.")
+    cold = ("warning: cffi-2.0.0.tar.gz is missing an upload date, but user provided: 2026-09-25T00:00:00Z\n"
+            "  x No solution found when resolving dependencies:\n"
+            "  Because there are no versions of cffi and you require cffi>=2.0.0, we can conclude that "
+            "your requirements are unsatisfiable.\n"
+            "hint: `cffi` was filtered by `exclude-newer` to only include packages uploaded before 2026-09-25")
+    for output in (seeded, cold):
+        err = classify_uv_failure("lock", 1, output)
+        assert not isinstance(err, ResolutionConflict)
+        assert "upload times" in err.remedy and "pypi.org" in err.remedy
+    # A real conflict on a partly undated mirror still reads as a conflict.
+    conflict = cold.splitlines()[0] + "\n  x No solution found: Because a==1 depends on b<2 and c==1 depends on b>=2"
+    assert isinstance(classify_uv_failure("lock", 1, conflict), ResolutionConflict)
 
 
 def test_sync_failure_is_never_a_conflict(layout, monkeypatch):

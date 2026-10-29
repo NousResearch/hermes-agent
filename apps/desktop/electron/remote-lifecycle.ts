@@ -379,7 +379,13 @@ async function assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath = '') 
   throw error
 }
 
-async function listRemoteHermesProfiles(ssh) {
+async function listRemoteHermesProfiles(ssh, platform: any = null) {
+  if (platform?.os === 'Windows') {
+    const { listWindowsRemoteProfiles } = await import('./windows-remote-inventory')
+
+    return listWindowsRemoteProfiles(ssh, platform)
+  }
+
   const home = assertSafeRemoteHome(await probeRemoteHermesHome(ssh))
   const dir = expandRemotePath(`${home}/profiles`)
   let listing = ''
@@ -396,7 +402,13 @@ async function listRemoteHermesProfiles(ssh) {
   return parseRemoteProfileListing(listing)
 }
 
-async function readRemoteInstallId(ssh) {
+async function readRemoteInstallId(ssh, platform: any = null) {
+  if (platform?.os === 'Windows') {
+    const { readWindowsRemoteInstallId } = await import('./windows-remote-inventory')
+
+    return readWindowsRemoteInstallId(ssh, platform)
+  }
+
   // The stable backend identity the roster collapses on (`hermes_cli/install_identity.py`:
   // `<install root>/install_id`, opaque hex). Read from the INSTALL root, so an ssh connection
   // pinned to `<root>/profiles/<name>` reports the same id as one pointed at the root — they are
@@ -1141,7 +1153,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell: string = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   // The inner shell backgrounds Hermes and reports its PID; backgrounding the
@@ -1217,6 +1229,29 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
     .endsWith('YES')
 }
 
+function remoteProfileMissingError(output) {
+  const match = String(output || '').match(
+    /Error: Profile ['"]([^'"]+)['"] does not exist\.?(?: Create it with: ([^\n]+))?/i
+  )
+
+  if (!match) {
+    return null
+  }
+
+  const profile = match[1]
+  const createCommand = match[2]?.trim()
+
+  const err: any = new Error(
+    `The remote Hermes profile '${profile}' does not exist. ` +
+      `Select an existing remote profile${createCommand ? ` or create it with: ${createCommand}` : '.'}`
+  )
+
+  err.kind = 'remote-profile-missing'
+  err.profile = profile
+
+  return err
+}
+
 async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs(), isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
   const remoteLog = expandRemotePath(logPath)
@@ -1224,18 +1259,24 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs
   while (Date.now() < deadline) {
     assertBootstrapNotSuperseded(signal)
 
-    if (isAlive && !(await isAlive())) {
-      const err: any = new Error('Remote dashboard process exited before announcing its port.')
-      err.kind = 'spawn-failed'
-      throw err
-    }
-
     let tail
 
     try {
       tail = await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
     } catch {
       tail = ''
+    }
+
+    if (isAlive && !(await isAlive())) {
+      const cause = remoteProfileMissingError(tail)
+
+      if (cause) {
+        throw cause
+      }
+
+      const err: any = new Error('Remote dashboard process exited before announcing its port.')
+      err.kind = 'spawn-failed'
+      throw err
     }
 
     const m = READY_RE.exec(String(tail || ''))
@@ -1254,15 +1295,7 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs
 
 async function spawnRemoteDashboard(
   ssh,
-  {
-    hermesPath,
-    profile,
-    token,
-    ownershipId,
-    hermesHome = '~/.hermes',
-    guestOnboarding = false,
-    assertInstallClear = async () => {}
-  }
+  { hermesPath, profile, token, ownershipId, hermesHome = '~/.hermes', assertInstallClear = async () => {} }
 ) {
   if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
     const err: any = new Error(
@@ -1332,7 +1365,6 @@ async function spawnRemoteDashboard(
         tokenFilePath,
         logPath,
         hermesHome,
-        guestOnboarding,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1482,7 +1514,6 @@ async function connect(deps) {
     adoptServedToken,
     rememberLog = () => {},
     readyTimeoutMs = resolveReadyTimeoutMs(),
-    guestOnboarding = false,
     signal
   } = deps
 
@@ -1643,7 +1674,6 @@ async function connect(deps) {
     token: spawnToken,
     ownershipId,
     hermesHome,
-    guestOnboarding,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   })
 

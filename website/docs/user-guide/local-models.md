@@ -16,10 +16,11 @@ after a model is downloaded.
 
 ## Desktop availability and downloads
 
-The desktop Local Models interface is enabled for canary builds. Other desktop
-builds require the `--local` launch flag. A runtime can already be bundled;
-its absence triggers the managed-tool install path, not an arbitrary latest
-llama.cpp download.
+Local Models is on by default in the desktop app on macOS, Windows, and Linux
+(x64 and arm64), on every release channel. On other platforms, launch the app
+with `--local` to show it. A runtime can already be bundled; its absence
+triggers the managed-tool install path, not an arbitrary latest llama.cpp
+download.
 
 Use **Pause** and **Resume** on engine installs, engine updates, catalog models,
 Hugging Face downloads, and quickstart. Paused jobs remain visible when you
@@ -77,6 +78,12 @@ build spilled to system RAM simply can't run that model.
 
 Models that don't fit stay visible with the reason, so you always know
 what a hardware upgrade would unlock.
+
+Hermes recommends the highest-quality model that runs entirely in GPU or
+unified memory at a predicted 20 tokens per second or more. A machine's
+maker can set a different default, and Hermes recommends that model
+whenever it fits. When no model reaches the floor, Hermes recommends none,
+and you can still choose any model that fits.
 
 ## How memory management works
 

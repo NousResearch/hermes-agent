@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { getStatus } from '@/hermes'
 import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { $freeTierStatus, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
 import { dismissNotification, notify } from '@/store/notifications'
@@ -96,10 +97,13 @@ export function useStatusSnapshot(
 
       // The free-tier verdict is a local, zero-network read that writes
       // straight to its own store and swallows its failures — nothing here
-      // waits on it or reads the result.
+      // waits on it or reads the result. Unlike the readiness publish below,
+      // its write happens inside the store, so hand it this run's liveness: a
+      // reply that lands after a source/profile switch must not repaint the
+      // shared atom the new run already answered.
       const [inferenceResult] = await Promise.allSettled([
         evaluateRuntimeReadiness(requestGateway),
-        refreshFreeTierStatus(requestGateway)
+        refreshFreeTierStatus(requestGateway, () => !cancelled)
       ])
 
       if (cancelled || inferenceResult.status !== 'fulfilled') {
@@ -140,7 +144,9 @@ export function useStatusSnapshot(
           return
         }
 
-        if (statusResult.status === 'fulfilled') {
+        // A Webapp tab whose access token expired since its last gated request reads the
+        // signed-out body, which omits most of the snapshot and the warning: keep the last one.
+        if (statusResult.status === 'fulfilled' && !isSignedOutStatus(statusResult.value)) {
           const next = statusResult.value
           // Preserve reference identity on a no-op: the 60s tick re-reads a
           // usually-unchanged snapshot, and a fresh object for the same content

@@ -89,6 +89,8 @@ export interface ApprovalRequest extends KeyedPrompt {
   description: string
   requestId?: string
   serverRequestId?: string
+  // Guardian-LLM explanation of why the command escalated ('' / absent = none).
+  smartReason?: string
   smartDenied?: boolean
 }
 
@@ -102,6 +104,7 @@ interface PendingApprovalPayload {
   command?: unknown
   description?: unknown
   request_id?: unknown
+  smart_reason?: unknown
   smart_denied?: boolean
 }
 
@@ -331,6 +334,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
         requestId: pending.request_id,
         sessionId,
+        smartReason: typeof pending.smart_reason === 'string' ? pending.smart_reason : undefined,
         smartDenied: pending.smart_denied === true
       })
     })

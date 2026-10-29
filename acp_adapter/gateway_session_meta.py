@@ -2,7 +2,8 @@
 
 Main's in-process server read these off its live agent (``server.py`` ``_session_response_fields``,
 ``_build_usage_update``, ``_send_session_info_update``); here every figure comes from a snapshot's
-``info`` (``session.info``), ``session.stats``, a ``message.complete`` ``usage`` or ``state.db``.
+``info`` (``session.info``), ``session.stats``, a ``message.complete`` ``usage`` or ``state.db``;
+``PromptResponse.usage`` is computed in ``prompt_usage.py``.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import sqlite3
 
 from acp.schema import (
     AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionConfigOptionSelect, SessionConfigSelectOption,
-    SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
+    SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, UsageUpdate,
 )
 
 from acp_adapter.modes import (
@@ -143,16 +144,6 @@ def usage_update(stats: dict) -> UsageUpdate | None:
     if type(size) is not int or size <= 0:
         return None
     return UsageUpdate(session_update="usage_update", size=size, used=max(int(stats.get("context_tokens") or 0), 0))
-
-
-def turn_usage(stats) -> Usage | None:
-    """``PromptResponse.usage``: the agent's session counters, the figures main's turn result carried."""
-    if not isinstance(stats, dict):
-        return None
-    return Usage(input_tokens=int(stats.get("input_tokens") or 0), output_tokens=int(stats.get("output_tokens") or 0),
-                 total_tokens=int(stats.get("total_tokens") or 0),
-                 thought_tokens=stats.get("reasoning_tokens") or None,
-                 cached_read_tokens=stats.get("cache_read_tokens") or None)
 
 
 def title_update(title: str) -> SessionInfoUpdate:

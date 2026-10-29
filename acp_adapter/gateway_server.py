@@ -121,6 +121,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._configs = {}
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
+        # Session -> its attach's ``session.stats`` read, the base of the first turn's usage.
+        self._attach_reads = {}
         self._background = set()
 
     def on_connect(self, conn):
@@ -310,6 +312,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
+            self._attach_reads[session_id] = task
         # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
         modes = session_modes({"edit_approval_policy": MODE_TO_EDIT_APPROVAL_POLICY[self._modes.setdefault(
             session_id, session_modes(info).current_mode_id)]})
@@ -667,6 +670,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
+        turn_counters = await self._turn_counters(session_id)
         self._submitting.add(session_id)
         try:
             # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
@@ -721,10 +725,21 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
-        from acp_adapter.gateway_session_meta import turn_usage
+        from acp_adapter.prompt_usage import counters_of, prompt_usage
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
-                              usage=turn_usage(self._usage.get(session_id)))
+                              usage=prompt_usage(turn_counters, counters_of(self._usage.get(session_id))))
+
+    async def _turn_counters(self, session_id):
+        """The owner's cumulative counters as a turn starts, the base ``PromptResponse.usage``
+        subtracts. A prompt sent right after attach can beat the attach's ``session.stats`` read
+        (``_after_attach``), so it waits for that read instead of taking no base."""
+        from acp_adapter.prompt_usage import counters_of
+        attach = self._attach_reads.get(session_id)
+        if session_id not in self._usage and attach is not None and not attach.done():
+            # The attach task logs its own failure; without a base the turn reports its end counters.
+            await asyncio.wait({attach}, timeout=10)
+        return counters_of(self._usage.get(session_id))
 
     async def _admission_from_receipt(self, client, held_id, session_id, receipt):
         """The admission a ``prompt.submit`` receipt names, or None when the owner admitted nothing."""

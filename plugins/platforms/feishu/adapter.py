@@ -1531,13 +1531,13 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._chat_info_cache: dict[str, dict[str, Any]] = {}
         # Auto-mention: track inbound sender by message_id (precise, no cross-talk).
-        # On send(), reply_to_message_id → look up who sent the triggering message → inject @tag.
-        # Bot senders → force text mode (card <at> is invisible to bots).
+        # On send(), the final reply's reply_to (= triggering message_id) → _inbound_sender_by_msg
+        # → inject @tag. Bot senders → force text mode (card <at> is invisible to bots).
         # Human senders → keep card mode (card <at> has visual effect for humans).
-        # Framework pushes have no reply_to_message_id → never trigger auto-mention.
+        # Progress bubbles / status notices / cronjob pushes carry no reply_to → never auto-mention.
         self._inbound_sender_by_msg: OrderedDict[str, dict[str, Any]] = OrderedDict()  # msg_id → {open_id, name, is_bot}
         self._INBOUND_SENDER_CACHE_SIZE = 500
-        self._auto_mentioned_msgs: set[str] = set()  # msg_ids where @tag already injected
+        self._auto_mentioned_turns: set[str] = set()  # msg_ids where @tag already injected
         self._mention_name_map: dict[str, dict[str, str]] = {}  # chat_id → {lowercase_name → open_id}
         self._chat_members_cache: dict[str, tuple[float, dict[str, str]]] = {}  # chat_id → (ts, {lowercase_name → open_id})
         self._CHAT_MEMBERS_TTL = 300  # 5 min cache
@@ -1872,23 +1872,25 @@ class FeishuAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
 
         # --- Auto-mention sender in group chat replies ---
-        # Look up who sent the message we're replying to (by message_id).
+        # The final agent reply is sent with reply_to=<triggering message_id> (see
+        # base._send_final_text). Progress bubbles / status notices / cronjob pushes pass
+        # reply_to=None on Feishu, so they never trigger auto-mention (no bot loops).
+        # Look up the triggering message's sender by that id.
         # Bot sender → inject @tag + force text mode (card <at> invisible to bots).
         # Human sender → inject @tag + keep card mode (card <at> works for humans).
-        # No reply_to_message_id (framework push) → skip entirely.
         force_text_for_bot = False
-        _reply_to_id = (metadata or {}).get("reply_to_message_id")
-        _trigger_sender = self._inbound_sender_by_msg.get(_reply_to_id) if _reply_to_id else None
+        _trigger_msg_id = reply_to or (metadata or {}).get("reply_to_message_id")
+        _trigger_sender = self._inbound_sender_by_msg.get(_trigger_msg_id) if _trigger_msg_id else None
         if _trigger_sender:
             sender_oid = _trigger_sender.get("open_id", "")
             sender_name = _trigger_sender.get("name") or "User"
             sender_is_bot = _trigger_sender.get("is_bot", False)
             if sender_is_bot:
                 force_text_for_bot = True
-            if sender_oid and _reply_to_id not in self._auto_mentioned_msgs:
+            if sender_oid and _trigger_msg_id not in self._auto_mentioned_turns:
                 at_tag = f'<at user_id="{sender_oid}">{sender_name}</at> '
                 formatted = at_tag + formatted
-                self._auto_mentioned_msgs.add(str(_reply_to_id))
+                self._auto_mentioned_turns.add(str(_trigger_msg_id))
                 logger.info("[Feishu] Auto-mention %s %s (%s) in group %s%s",
                             "bot" if sender_is_bot else "user", sender_name, sender_oid,
                             chat_id, ", forcing text mode" if sender_is_bot else "")

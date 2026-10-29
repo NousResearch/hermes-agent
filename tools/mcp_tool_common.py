@@ -83,8 +83,13 @@ def _env_ref_name(ref: str) -> str:
 
 
 def _sanitize_error(text: str) -> str:
-    """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    """Error text bound for the LLM: the profile's own configured secret values (MCP env/headers/URL
+    query included, even from a since-edited config), the credential patterns below, then the shared
+    redactor's full rule set."""
+    from agent.redact import redact_sensitive_text
+    from agent.redact_known_values import redact_known_secret_values
+
+    return redact_sensitive_text(_CREDENTIAL_PATTERN.sub("[REDACTED]", redact_known_secret_values(text)), force=True)
 
 
 def _exc_str(exc: BaseException) -> str:

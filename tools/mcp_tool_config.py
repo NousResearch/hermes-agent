@@ -3,6 +3,7 @@ interpolation, hidden-whitespace and suspicious-entry filtering, the filtered
 subprocess env, command resolution, the cached-npx binary shortcut and the shared stderr log."""
 
 import codecs
+import contextvars
 import hashlib
 import json
 import logging
@@ -16,17 +17,107 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
+from tools.mcp_tool_stderr import StderrRecords, redact_record
 
 logger = logging.getLogger("tools.mcp_tool")
 
 _mcp_stderr_log_fh: dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
+_MCP_STDERR_MAX_BYTES = 1024 * 1024
+_MCP_STDERR_BACKUP_COUNT = 2
+
+
+try:  # inter-process rotation lock (profile logs are shared by gateway / Desktop backend / CLI)
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+try:
+    import msvcrt as _msvcrt
+except ImportError:
+    _msvcrt = None
+
+
+class _McpStderrLog:
+    """Size-bounded MCP stderr log owned by one profile (``_StderrTee`` redacts what it writes).
+
+    ``logs/mcp-stderr.log`` is shared by every Hermes process on one ``HERMES_HOME``, so the
+    size check, rotation and write run under an exclusive lock on ``mcp-stderr.log.lock``
+    (``flock`` / ``msvcrt.locking``), not just this instance's thread lock. Rotation is
+    copy-then-truncate: the live file keeps its inode, so another process's append-mode handle
+    never ends up writing into a rotated backup (which would grow it past the bound), and no
+    file another process holds open is ever renamed (which Windows refuses)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.name = str(path)  # file-object parity for callers that read ``.name``
+        self.closed = False
+        self._lock = threading.Lock()
+        # newline="": no ``\n`` -> ``\r\n`` on Windows, so the size check counts what reaches disk.
+        self._fh = open(path, "a", encoding="utf-8", errors="replace", buffering=1, newline="")
+        try:
+            self._lock_fh = open(f"{path}.lock", "a+b")
+        except OSError:  # pragma: no cover - best effort: keep the in-process lock only
+            self._lock_fh = None
+
+    def _interprocess(self, unlock: bool = False) -> None:
+        fh = self._lock_fh
+        if fh is None:
+            return
+        try:
+            if _fcntl is not None:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN if unlock else _fcntl.LOCK_EX)
+            elif _msvcrt is not None:  # pragma: no cover - Windows
+                fh.seek(0)
+                _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK if unlock else _msvcrt.LK_LOCK, 1)
+        except OSError:  # pragma: no cover - a lock we cannot take must not drop the line
+            logger.debug("MCP stderr log lock unavailable", exc_info=True)
+
+    def _rotate(self) -> None:
+        """Shift backups, copy the live file to ``.1`` and truncate it in place (caller holds both locks)."""
+        Path(f"{self.path}.{_MCP_STDERR_BACKUP_COUNT}").unlink(missing_ok=True)
+        for generation in range(_MCP_STDERR_BACKUP_COUNT - 1, 0, -1):
+            source = Path(f"{self.path}.{generation}")
+            if source.exists():
+                source.replace(Path(f"{self.path}.{generation + 1}"))
+        shutil.copyfile(self.path, f"{self.path}.1")
+        os.ftruncate(self._fh.fileno(), 0)
+
+    def write(self, text: str) -> int:
+        # Child output arrives already redacted per whole record (``_StderrTee``); a single
+        # line-level pass here would miss secrets split across lines.
+        encoded = str(text).encode("utf-8", errors="replace")[:_MCP_STDERR_MAX_BYTES]
+        redacted = encoded.decode("utf-8", errors="ignore")
+        with self._lock:
+            self._interprocess()
+            try:
+                # Size of the shared live file as every process sees it (our handle is O_APPEND).
+                size = os.fstat(self._fh.fileno()).st_size
+                if size and size + len(encoded) > _MCP_STDERR_MAX_BYTES:
+                    self._rotate()
+                written = self._fh.write(redacted)
+                self._fh.flush()  # land on disk before another process may rotate
+                return written
+            finally:
+                self._interprocess(unlock=True)
+
+    def flush(self) -> None:
+        with self._lock:
+            self._fh.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self.closed:
+                self.closed = True
+                self._fh.close()
+                if self._lock_fh is not None:
+                    self._lock_fh.close()
 
 
 def _get_mcp_stderr_log() -> Any:
     """Shared append-mode handle for MCP subprocess stderr, cached until shutdown PER PROFILE HOME (a
-    multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
-    expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
+    multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's).
+    The returned writer rotates before every disk write; opening failures fall back to
+    ``/dev/null``, then real stderr."""
     from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
     home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
@@ -35,9 +126,8 @@ def _get_mcp_stderr_log() -> Any:
             try:
                 log_dir = get_hermes_home() / "logs"
                 mkdir_under_hermes_home(log_dir)
-                # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
-                fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
-                fh.fileno()  # confirm a real fd before committing
+                # All writes pass through the bounded rotator.
+                fh = _McpStderrLog(log_dir / "mcp-stderr.log")
             except Exception as exc:  # pragma: no cover — best-effort fallback
                 logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
                 try:
@@ -64,9 +154,18 @@ def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
 
 
 class _StderrTee:
-    """A stdio child's stderr, copied into the shared log one stamped line at a time while the last few KB
-    stay readable (raw), so a server that dies at startup can say why on the MCP status surfaces instead of
-    only in the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail."""
+    """A stdio child's stderr, copied into the shared log as stamped lines while the last few KB stay
+    readable (raw), so a server that dies at startup can say why on the MCP status surfaces instead of
+    only in the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail.
+
+    Lines are grouped into whole records and each record is redacted as one text (secrets split
+    across a pretty-printed dump stay masked). The reader thread runs in a copy of the spawning
+    context, so redaction uses the owning profile's configured secret values, not the launch
+    profile's (a plain thread starts with no profile binding).
+
+    The tail is deliberately kept raw, in memory only: it is never written to disk and its only consumer
+    (``node_abi_error``) matches fixed ``_ABI_MARKERS`` and extracts a module path to build the remedy.
+    Anything that starts surfacing the tail text itself must pass it through ``redact_sensitive_text``."""
 
     _TAIL_BYTES = 16384
 
@@ -74,7 +173,9 @@ class _StderrTee:
         read_fd, write_fd = os.pipe()
         self.sink = os.fdopen(write_fd, "wb", buffering=0)
         self._log, self._tail = log_fh, bytearray()
-        self._reader = threading.Thread(target=self._pump, args=(read_fd,), name="mcp-stderr", daemon=True)
+        self._records = StderrRecords()
+        self._reader = threading.Thread(target=contextvars.copy_context().run, args=(self._pump, read_fd),
+                                        name="mcp-stderr", daemon=True)
         self._reader.start()
 
     def _pump(self, read_fd: int) -> None:
@@ -86,14 +187,15 @@ class _StderrTee:
                 # Stamp whole lines only; a partial line waits for its newline (or EOF).
                 *lines, pending = (pending + decoder.decode(chunk)).split("\n")
                 self._write_lines(lines)
-        if rest := pending + decoder.decode(b"", final=True):
-            self._write_lines([rest])
+        rest = pending + decoder.decode(b"", final=True)
+        self._write_lines([rest] if rest else [], final=True)
 
-    def _write_lines(self, lines: list[str]) -> None:
-        if not lines:
+    def _write_lines(self, lines: list[str], final: bool = False) -> None:
+        records = self._records.feed(lines) + (self._records.flush() if final else [])
+        if not records:
             return
         try:
-            self._log.write("".join(stamp_line(line) for line in lines))
+            self._log.write("".join(stamp_line(line) for record in records for line in redact_record(record)))
             self._log.flush()
         except (OSError, ValueError):  # log closed at shutdown: keep draining the child
             pass

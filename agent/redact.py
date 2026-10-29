@@ -14,6 +14,7 @@ from urllib.parse import unquote_plus
 # Shared with agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from agent.redact_known_values import redact_known_secret_values
 
 logger = logging.getLogger(__name__)
 
@@ -950,6 +951,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = redact_registered_vault_values(text)
     if not (force or _redact_enabled()):
         return text
+    # The profile's own configured values first, before a pattern rule masks part of one and
+    # leaves the rest unrecognisable.
+    text = redact_known_secret_values(text)
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file
@@ -972,7 +976,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+        # The marker an upstream scrub left (``Authorization: [REDACTED]``) stays as it is.
+        text = _AUTH_HEADER_RE.sub(lambda m: m.group(0) if m.group(3) == "[REDACTED]"
+                                   else m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)

@@ -498,7 +498,7 @@ def _adopter_identity_digest(server_name: str, config: dict) -> str | None:
     if "url" not in config and not config.get("command"):  # the transport refuses it before resolving
         return None
     try:
-        inputs, _ = _connect_inputs(server_name, config)
+        inputs, _, _ = _connect_inputs(server_name, config)
     except LiveEndpointUnavailable:  # the transport cannot connect either; never equal to a live one
         return None
     except Exception as exc:  # fail closed for this server; the others still adopt

@@ -137,17 +137,24 @@ def _stdio_launch(config: dict) -> tuple:
     return command, env, cwd
 
 
-def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
+def _connect_inputs(server_name: str, config: dict):
     """What a connection is opened with, resolved in the current profile's scope: stdio
     ``[command, env, cwd]``; HTTP ``[url, headers]`` after the live endpoint and the identity
     header. The owner hashes this very list and an adopter recomputes it, so both digests are
     built from one code path. Also returns the configured header names (HTTP only), captured
-    before the identity header is merged in, for the strict-redirect boundary."""
+    before the identity header is merged in, for the strict-redirect boundary, and the pin of the
+    resolved secret values (env, headers, URL query) registered for exact-value redaction: the
+    connection holds the pin for its lifetime, so the child's stderr and error text cannot echo
+    them even after the config is edited."""
+    from agent.redact_known_values import mcp_server_secret_values, register_secret_values
+
     if "url" in config:
         url, headers = _http_endpoint(server_name, config)
         configured_header_names = {key.lower() for key in headers}
-        return [url, _apply_identity_header(server_name, config, headers)], configured_header_names
-    return list(_stdio_launch(config)), set()
+        pin = register_secret_values(mcp_server_secret_values(headers=headers, url=url))
+        return [url, _apply_identity_header(server_name, config, headers)], configured_header_names, pin
+    inputs = list(_stdio_launch(config))
+    return inputs, set(), register_secret_values(mcp_server_secret_values(env=inputs[1]))
 
 
 class MCPServerTransportMixin:
@@ -373,7 +380,8 @@ class MCPServerTransportMixin:
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
-        inputs, _ = _connect_inputs(self.name, config)
+        # ``_secret_pin`` lives in this frame for the whole connection: its credentials stay masked.
+        inputs, _, _secret_pin = _connect_inputs(self.name, config)
         # Hash the inputs this attempt spawns with, never a second resolution of them.
         self._resolved_identity = _registration._identity_digest(inputs)
         command, safe_env, stdio_cwd = inputs
@@ -606,7 +614,8 @@ class MCPServerTransportMixin:
                               "Upgrade the mcp package to get HTTP support.")
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — their names are captured BEFORE client-generated headers are merged in.
-        inputs, configured_header_names = _connect_inputs(self.name, config)
+        # ``_secret_pin`` lives in this frame for the whole connection: its credentials stay masked.
+        inputs, configured_header_names, _secret_pin = _connect_inputs(self.name, config)
         # Hash the endpoint this attempt connects to: a second read of the runtime file could
         # publish another endpoint's identity alongside this session.
         self._resolved_identity = _registration._identity_digest(inputs)

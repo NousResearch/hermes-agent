@@ -745,6 +745,9 @@ Error messages from MCP tools are sanitized before being returned to the LLM. Th
 - OpenAI-style keys (`sk-...`)
 - Bearer tokens
 - `token=`, `key=`, `API_KEY=`, `password=`, `secret=` parameters
+- the exact values of the profile's own secrets, including the rendered `env`, `headers` and URL query values each MCP server was started with (they stay masked after you edit the config, until Hermes restarts)
+
+MCP subprocess stderr (`logs/mcp-stderr.log`) is redacted the same way before it is written, one whole record at a time, so a pretty-printed config dump whose key and value sit on separate lines is still masked. Terminal colour codes are stripped first.
 
 ### Website Access Policy
 

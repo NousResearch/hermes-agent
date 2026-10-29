@@ -256,3 +256,201 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+# The 19 Oct 2026 incident entry (docs/backlog.md §"Gelé — dépend d'une
+# décision produit non prise"): the entry records its own undecided premise.
+_INCIDENT_ENTRY = (
+    "Escrow / protection acheteur / checkout expédié → dépend du choix d'un "
+    "prestataire de paiement (Stripe Connect, §5). Prestataire de paiement "
+    "(escrow/checkout réels) : aucune décision enregistrée au-delà de "
+    "« Stripe Connect (V2) » au §5 du plan."
+)
+
+# The incident's decided sibling entry: a concrete, decided goal — no marker.
+_DECIDED_ENTRY = (
+    "Fiche de confiance vendeur sur les annonces marketplace. Cadre de la "
+    "décision 8.5 : ne noter qu'un échange réel, jamais une note libre entre "
+    "voisins. Le DTO marketplace transporte la note moyenne et le nombre "
+    "d'avis du vendeur, la fiche affiche l'encart vendeur. Lots disjoints : "
+    "API · web · packages/shared. Acceptation : encart visible sur la fiche."
+)
+
+
+def test_open_question_marker_matches_incident_phrases_only():
+    """The marker check is deliberately narrow: the incident's decision
+    phrases (accented French or English) match; a technical "depends on" and
+    a bare "open" never do."""
+    from types import SimpleNamespace
+
+    def _marker(title, body):
+        return decomp._open_question_marker(SimpleNamespace(title=title, body=body))
+
+    assert _marker("Escrow", _INCIDENT_ENTRY) == "depend du choix"
+    assert _marker("Prestataire de paiement", "aucune décision enregistrée") == "aucune decision"
+    assert _marker("Source", "le choix du fournisseur reste à arbitrer") == "a arbitrer"
+    assert _marker("Scope", "the marketplace cut is still to be decided") == "to be decided"
+    assert _marker("Scope", "no decision recorded yet — pick a provider first") == "no decision recorded"
+    assert _marker("Idea", "question ouverte : quel prestataire ?") == "question ouverte"
+    assert _marker("Idea", "provider choice is TBD") == "tbd"
+    # Technical dependencies and plain "open" are NOT undecided premises.
+    assert _marker(
+        "Open the port",
+        "The feed depends on the provider's API. Open source contributions welcome.",
+    ) is None
+    # The decided incident entry carries no marker.
+    assert _marker("Fiche de confiance vendeur", _DECIDED_ENTRY) is None
+
+
+def test_decompose_open_question_returns_question_card(kanban_home):
+    """LLM answers ``question=true``: the triage card itself parks as a single
+    question card — blocked/needs_input, no assignee, no children."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="Shipping + escrow : checkout expédiable", body=_INCIDENT_ENTRY, triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "question": True,
+        "rationale": "the payment-provider premise is not decided",
+        "title": "Quel prestataire de paiement pour l'escrow ?",
+        "body": ("**Question**\nQuel prestataire de paiement pour l'escrow/checkout ?\n"
+                 "**Options**\n- Stripe Connect (V2) — la seule direction enregistrée\n"
+                 "**Impact**\n- tout chantier escrow/checkout\n"
+                 "**Source**\n« dépend du choix d'un prestataire de paiement »"),
+    })
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.question is True
+    assert outcome.fanout is False
+    assert outcome.child_ids is None
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        assert task.assignee is None
+        assert task.title == "Quel prestataire de paiement pour l'escrow ?"
+        assert "**Options**" in (task.body or "")
+        # No child was ever created — the card count stays at one.
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+
+
+def test_decompose_open_question_marker_overrides_work_answer(kanban_home):
+    """The incident itself: the entry records its own undecided premise, the
+    LLM answers a full implementation graph anyway. The deterministic
+    backstop parks the card as a question — no child ever lands on the
+    board."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="Shipping + escrow : checkout expédiable", body=_INCIDENT_ENTRY, triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "split into disjoint lots",
+        "tasks": [
+            {"title": "Contrat shared shipment", "body": "types", "assignee": "engineer", "parents": []},
+            {"title": "API entité shipment", "body": "routes", "assignee": "engineer", "parents": [0]},
+            {"title": "Web flux checkout", "body": "i18n", "assignee": "engineer", "parents": [0]},
+            {"title": "Revue e2e escrow", "body": "check", "assignee": "reviewer", "parents": [1, 2]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer", "reviewer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.question is True
+    assert outcome.child_ids is None
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        assert task.assignee is None
+        # The entry stays on the card verbatim — the options it records ARE
+        # the question — under a header naming the marker.
+        assert (task.body or "").startswith("Open question —")
+        assert "dépend du choix" in (task.body or "")
+        assert (task.title or "").startswith("Open question: ")
+        # No child was ever created.
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+
+
+def test_decompose_decided_entry_still_fans_out(kanban_home):
+    """Non-regression: the incident's decided sibling entry (a concrete goal,
+    no open-premise marker) still fans out into a work graph — the backstop
+    never fires on decided work."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="Fiche de confiance vendeur marketplace", body=_DECIDED_ENTRY, triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "disjoint lots",
+        "tasks": [
+            {"title": "API agrégat vendeur + DTO", "body": "avg", "assignee": "engineer", "parents": []},
+            {"title": "Web encart vendeur + i18n", "body": "card", "assignee": "engineer", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.question is False
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "todo"
+
+
+def test_decompose_question_true_without_body_fails_cleanly(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="q", body="entry", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False, "question": True, "rationale": "open premise", "title": "Which provider?",
+    })
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "no body" in outcome.reason
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+
+

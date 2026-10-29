@@ -8,6 +8,7 @@ private-host literal is refused before anything reaches the browser.
 Sibling fix for the eval return-value path of issue #44731.
 """
 
+import functools
 import json
 
 import pytest
@@ -103,26 +104,46 @@ def test_raw_cdp_keeps_the_metadata_floor_when_the_private_guard_is_off(monkeypa
         assert guard(method="Runtime.evaluate", params=lan) is None
 
 
-@pytest.mark.parametrize("local_backend", [False, True])
-def test_raw_cdp_url_params_are_screened_even_when_the_open_page_is_public(monkeypatch, local_backend):
-    """A public page does not vouch for a call's own URLs: unlisted resource-loading methods keep the metadata
-    floor with the private guard on or off, and the private-address check whenever the guard is on."""
-    from tools import browser_cdp_tool, browser_session_cloud
+@pytest.fixture
+def cdp_guard(monkeypatch, local_backend):
+    """The raw CDP guard with a public page open: private guard on for a remote backend, off for a local one."""
+    from tools import browser_cdp_tool
     monkeypatch.setattr(browser_session_cloud, "is_local_backend", lambda: local_backend)
     monkeypatch.setattr(browser_session_cloud, "allow_private_urls", lambda: False)
     monkeypatch.setattr(browser_cdp_tool, "_current_page_private_url", lambda endpoint, target_id: None)
-    guard = browser_cdp_tool._browser_cdp_private_guard
+    return functools.partial(browser_cdp_tool._browser_cdp_private_guard, endpoint="ws://x", target_id="T")
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
+def test_raw_cdp_url_params_are_screened_even_when_the_open_page_is_public(cdp_guard, local_backend):
+    """A public page does not vouch for a call's own URLs: unlisted resource-loading methods keep the metadata
+    floor with the private guard on or off, and the private-address check whenever the guard is on."""
     metadata = "http://metadata.google.internal/computeMetadata/v1/"
     calls = (("Network.loadNetworkResource", {"frameId": "F", "url": metadata, "options": {}}),
              ("Runtime.callFunctionOn", {"functionDeclaration": f"() => fetch('{metadata}')"}),
              ("Page.addScriptToEvaluateOnNewDocument", {"source": f"fetch(`{metadata}`)"}))
     for method, params in calls:
-        assert "cloud metadata" in guard(method=method, params=params, endpoint="ws://x", target_id="T")
+        assert "cloud metadata" in cdp_guard(method=method, params=params)
     loopback = {"frameId": "F", "url": "http://127.0.0.1:8080/", "options": {}}
-    verdict = guard(method="Network.loadNetworkResource", params=loopback, endpoint="ws://x", target_id="T")
-    assert (verdict is None) == local_backend
+    assert (cdp_guard(method="Network.loadNetworkResource", params=loopback) is None) == local_backend
     public = {"frameId": "F", "url": "https://93.184.216.34/", "options": {}}
-    assert guard(method="Network.loadNetworkResource", params=public, endpoint="ws://x", target_id="T") is None
+    assert cdp_guard(method="Network.loadNetworkResource", params=public) is None
     # Typing a URL fetches nothing: text input stays allowed, metadata and LAN addresses alike.
     for typed in (metadata, "http://192.168.1.10/"):
-        assert guard(method="Input.insertText", params={"text": typed}, endpoint="ws://x", target_id="T") is None
+        assert cdp_guard(method="Input.insertText", params={"text": typed}) is None
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
+def test_raw_cdp_params_the_call_never_fetches_are_not_screened(cdp_guard):
+    """Blocklist and interception patterns, dialog text and cookie scope URLs name hosts without fetching
+    them: wildcard and loopback patterns pass, and so does blocking the metadata address itself."""
+    calls = (("Network.setBlockedURLs", {"urls": ["https://*.doubleclick.net/*", "http://127.0.0.1/*",
+                                                   "http://169.254.169.254/*"]}),
+             ("Fetch.enable", {"patterns": [{"urlPattern": "https://*.example.invalid/*"}]}),
+             ("Page.handleJavaScriptDialog", {"accept": True, "promptText": "http://127.0.0.1:8080/"}),
+             ("Network.setCookie", {"name": "a", "value": "b", "url": "http://localhost:3000/"}))
+    for method, params in calls:
+        assert cdp_guard(method=method, params=params) is None, method
+    # An attribute the page then loads is still a fetch.
+    src = {"nodeId": 1, "name": "src", "value": "http://169.254.169.254/latest/meta-data/"}
+    assert "cloud metadata" in cdp_guard(method="DOM.setAttributeValue", params=src)

@@ -11,6 +11,7 @@ import { CLARIFY_TEXTAREA_CLASS } from './shell'
 interface QuestionBlockProps {
   cursor: null | number
   disabled: boolean
+  highlightCursor: boolean
   onActivate: () => void
   onDraft: (value: string) => void
   onOtherFocus: () => void
@@ -23,6 +24,7 @@ interface QuestionBlockProps {
 export function QuestionBlock({
   cursor,
   disabled,
+  highlightCursor,
   onActivate,
   onDraft,
   onOtherFocus,
@@ -33,7 +35,7 @@ export function QuestionBlock({
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const choices = question.choices ?? []
-  const otherActive = cursor === choices.length
+  const otherActive = highlightCursor && cursor === choices.length
 
   return (
     <div
@@ -60,7 +62,7 @@ export function QuestionBlock({
         <div className="grid gap-px" role="group">
           {choices.map((choice, index) => (
             <ChoiceButton
-              active={cursor === index}
+              active={highlightCursor && cursor === index}
               char={letterFor(index)}
               choice={choice}
               disabled={disabled}

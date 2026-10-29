@@ -362,7 +362,27 @@ class LSPClient:
                     fut.set_exception(LSPProtocolError("server connection closed"))
             self._pending.clear()
             if unexpected_close:
-                await self._cleanup_process()
+                await self._cleanup_after_unexpected_close()
+
+    async def _cleanup_after_unexpected_close(self) -> None:
+        """Reap the server behind a reader that ended on its own -- but only while a loop exists.
+
+        If our event loop was stopped and closed without cancelling us (interpreter exit, a
+        shutdown coroutine that hit its caller's timeout), the GC finalises this coroutine with
+        no running loop: ``_cleanup_process`` then dies in ``asyncio.current_task()`` with
+        ``RuntimeError: no running event loop``, which CPython prints as an ignored exception at
+        exit.  Nothing can be awaited there anyway; the manager's teardown reaps the process
+        tree, and the server is stateless if it is ever orphaned.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("[%s] no event loop left to reap the server; leaving it to teardown", self.server_id)
+            return
+        try:
+            await self._cleanup_process()
+        except RuntimeError as e:  # the loop started closing mid-cleanup
+            logger.debug("[%s] process cleanup skipped: %s", self.server_id, e)
 
     def _workspace_folders(self) -> list[dict[str, str]]:
         return [_folder(r) for r in self.workspace_folders]

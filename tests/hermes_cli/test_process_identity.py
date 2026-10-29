@@ -521,3 +521,123 @@ def test_a_stalled_ledger_lock_holder_never_blocks_register_child(tmp_path, monk
     assert len(warnings) == 1, f"{len(warnings)} warnings for two writes past a stalled lock"
     rows = json.loads(ledger.read_text(encoding="utf-8"))
     assert any(r.get("purpose") == "stalled-again" for r in rows), "the row was not written past the timeout"
+
+# ---------------------------------------------------------------------------
+# Windows job-object self-attach (Layer 3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.platforms("windows")
+def test_attach_self_to_kill_on_close_job_joins_a_real_job(monkeypatch):
+    """The self-attach must actually assign this process to the job, the job
+    must carry KILL_ON_JOB_CLOSE without SILENT_BREAKAWAY_OK, and a spawned
+    child must land inside it.
+
+    Two kernel-verified regressions this pins down (#132069): without explicit
+    argtypes, ctypes marshals the 64-bit current-process pseudo-handle as a
+    truncated 32-bit int, AssignProcessToJobObject fails with
+    ERROR_INVALID_HANDLE and the attach silently no-ops; and with
+    SILENT_BREAKAWAY_OK set, every child of an attached process starts
+    OUTSIDE the job, so the net could never catch the stdio MCP trees it
+    was built for (#61059). Assert the kernel truth, not just return values.
+    """
+    import ctypes
+    import subprocess
+    import time
+    from ctypes import wintypes
+
+    monkeypatch.setattr(pi, "_JOB_HANDLE", None)  # force a fresh attach attempt
+    assert pi.attach_self_to_kill_on_close_job() is True
+
+    k = ctypes.WinDLL("kernel32")
+    k.GetCurrentProcess.restype = ctypes.c_void_p
+    k.IsProcessInJob.restype = wintypes.BOOL
+    k.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL)]
+    k.OpenProcess.restype = ctypes.c_void_p
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    injob = wintypes.BOOL()
+    assert k.IsProcessInJob(k.GetCurrentProcess(), pi._JOB_HANDLE, ctypes.byref(injob))
+    assert bool(injob.value), "attach() returned True but this process is not in the job"
+
+    class _BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                    ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.POINTER(wintypes.ULONG)),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _IO(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_ulonglong) for n in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _EXT(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    k.QueryInformationJobObject.restype = wintypes.BOOL
+    # Five parameters: with lpReturnLength undeclared, ctypes marshals only four and the call
+    # writes its return-length through whatever the fifth stack slot holds — the interpreter
+    # dies with STATUS_STACK_BUFFER_OVERRUN and pytest reports "no tests ran".
+    k.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+                                            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    info = _EXT()
+    assert k.QueryInformationJobObject(pi._JOB_HANDLE, 9, ctypes.byref(info), ctypes.sizeof(info), None)
+    flags = info.BasicLimitInformation.LimitFlags
+    assert flags & 0x2000, "KILL_ON_JOB_CLOSE not set on the created job"
+    assert not flags & 0x1000, "SILENT_BREAKAWAY_OK set: children would silently escape the job"
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    try:
+        time.sleep(0.5)
+        h = k.OpenProcess(0x1000, False, child.pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        assert h, f"OpenProcess({child.pid}) failed"
+        child_in = wintypes.BOOL()
+        assert k.IsProcessInJob(h, pi._JOB_HANDLE, ctypes.byref(child_in))
+        assert bool(child_in.value), "spawned child did not join the kill-on-close job"
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+    # The same net must NOT catch a not-owned registry job: those must outlive the holder
+    # (#41225 persist_on_release, gateway checkpoint re-adoption), so _spawn_job breaks them
+    # out at spawn. Probed first: an outer job that forbids breakaway (some CI shells) would
+    # silently fall back to no-breakaway flags and the kernel assertion below would misfire.
+    from tools.process_registry_ownership import ProcessOwnershipMixin
+
+    class _NotOwnedRegistry(ProcessOwnershipMixin):
+        def _owns_job(self, persist_on_release: bool) -> bool:
+            return False  # the Windows truth: the layer-3 job covers ownership
+
+    breakaway_probe = None
+    try:
+        breakaway_probe = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.CREATE_NO_WINDOW)
+    except OSError:
+        pass  # flags logic stays covered cross-platform by test_process_registry_job_breakaway.py
+    if breakaway_probe is not None:
+        detached = None
+        try:
+            detached = _NotOwnedRegistry()._spawn_job(
+                types.SimpleNamespace(id="job-breakaway-probe"),
+                [sys.executable, "-c", "import time; time.sleep(10)"],
+                persist_on_release=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            time.sleep(0.5)
+            h2 = k.OpenProcess(0x1000, False, detached.pid)
+            assert h2, f"OpenProcess({detached.pid}) failed"
+            detached_in = wintypes.BOOL()
+            assert k.IsProcessInJob(h2, pi._JOB_HANDLE, ctypes.byref(detached_in))
+            assert not bool(detached_in.value), \
+                "a not-owned spawn joined the kill-on-close job: it would die with the holder"
+        finally:
+            breakaway_probe.kill()
+            breakaway_probe.wait(timeout=10)
+            if detached is not None:
+                detached.kill()
+                detached.wait(timeout=10)

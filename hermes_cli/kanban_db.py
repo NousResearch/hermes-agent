@@ -9436,6 +9436,12 @@ def _read_assignee_credentials(
         # 401, etc.) — it only checks last_error_reset_at, not last_status.
         # Cross-check: if the pool has entries but _available_entries returns nothing,
         # no usable credential exists and codex must be excluded from candidates.
+        #
+        # _codex_fail_closed: set True when 2c-validate explicitly rejects the pool-backed
+        # credential (exhausted/dead entries, or load_pool raises). This prevents the
+        # 2d OPENAI_API_KEY env-var fallback from re-inserting a provider that has
+        # deliberately been excluded by the validation gate.
+        _codex_fail_closed = False
         if "openai-codex" in result:
             try:
                 from agent.credential_pool import load_pool
@@ -9444,12 +9450,22 @@ def _read_assignee_credentials(
                     clear_expired=False, refresh=False
                 ):
                     del result["openai-codex"]
+                    _codex_fail_closed = True
             except Exception:
                 # Pool validation impossible → fail-closed: exclude stale credential.
                 result.pop("openai-codex", None)
+                _codex_fail_closed = True
 
         # 2d. Codex API-key env var fallback.
-        if "openai-codex" not in result:
+        # Guard: skip when 2c-validate already rejected the pool-backed credential
+        # (fail-closed). An OPENAI_API_KEY in the profile .env cannot override a pool
+        # that has been proven exhausted or unreadable — that would silently resurrect
+        # a provider the validation gate deliberately excluded.
+        # The guard does NOT fire when 2c itself failed (resolve_codex_runtime_credentials
+        # raised): in that case "openai-codex" was never added to result, 2c-validate's
+        # inner block never ran, and _codex_fail_closed stays False so the env fallback
+        # works as the legitimate last resort.
+        if "openai-codex" not in result and not _codex_fail_closed:
             api_key = (env_vars.get("OPENAI_API_KEY") or "").strip()
             if api_key:
                 result["openai-codex"] = (api_key, None)

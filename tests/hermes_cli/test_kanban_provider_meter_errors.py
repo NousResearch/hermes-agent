@@ -728,3 +728,123 @@ class TestCredentialValidationFailClosed:
             "anthropic must not be in creds when load_pool raises during 2b-fallback; "
             "validation impossible → fail-closed"
         )
+
+    # ------------------------------------------------------------------
+    # Regression: 2c-validate fail-closed must survive OPENAI_API_KEY
+    # present in the profile .env (the re-insertion bug, t_9894ca23).
+    # ------------------------------------------------------------------
+
+    def test_load_pool_raises_codex_validation_profile_env_key_not_inserted(self, tmp_path):
+        """2c-validate fail-closed: load_pool raises, but profile .env has OPENAI_API_KEY.
+
+        Reproduction of t_9894ca23: after result.pop("openai-codex") in the
+        except branch, the 2d OPENAI_API_KEY env-var fallback was checking
+        ``if "openai-codex" not in result`` (True) and re-inserting the
+        provider.  Expected result: ``{'openai-codex': ('env-api-key', None)}``.
+
+        After fix: _codex_fail_closed=True blocks the 2d re-insertion.
+        """
+        judo_home = tmp_path / "judo"
+        judo_home.mkdir()
+        # Write OPENAI_API_KEY to the profile .env file — the code reads it from
+        # disk, NOT from os.environ.  Existing tests missed this because they only
+        # patched os.environ while the code reads hermes_home/.env.
+        (judo_home / ".env").write_text("OPENAI_API_KEY=env-api-key\n", encoding="utf-8")
+
+        def _pool_side_effect(provider):
+            if provider == "openai-codex":
+                raise RuntimeError("auth.json unreadable — simulated I/O error")
+            return _pool_from_entries(provider, [])
+
+        with (
+            patch("agent.credential_pool.load_pool", side_effect=_pool_side_effect),
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  return_value={"api_key": "stale-codex-token", "base_url": None}),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+        ):
+            creds = _read_assignee_credentials(judo_home)
+
+        assert "openai-codex" not in creds, (
+            "codex must remain excluded even when profile .env has OPENAI_API_KEY; "
+            "2c-validate fail-closed (load_pool raised) must not be overridden by 2d fallback. "
+            f"Actual creds: {creds}"
+        )
+
+    def test_exhausted_codex_pool_profile_env_key_not_inserted(self, tmp_path):
+        """2c-validate fail-closed: pool exhausted, but profile .env has OPENAI_API_KEY.
+
+        Same re-insertion bug as above but triggered via the _available_entries
+        branch: pool.has_credentials() True, _available_entries returns [].
+        The 2d fallback must NOT re-insert openai-codex via the env key.
+        """
+        judo_home = tmp_path / "judo"
+        judo_home.mkdir()
+        (judo_home / ".env").write_text("OPENAI_API_KEY=env-api-key\n", encoding="utf-8")
+
+        codex_exhausted = _make_pool_entry_obj(
+            "openai-codex", "stale-codex-token",
+            last_status=STATUS_EXHAUSTED,
+            last_error_code=401,
+        )
+        codex_pool = _pool_from_entries("openai-codex", [codex_exhausted])
+
+        with (
+            patch("agent.credential_pool.load_pool",
+                  side_effect=lambda p: codex_pool if p == "openai-codex" else _pool_from_entries(p, [])),
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  return_value={"api_key": "stale-codex-token", "base_url": None}),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+        ):
+            creds = _read_assignee_credentials(judo_home)
+
+        assert "openai-codex" not in creds, (
+            "codex must remain excluded even when profile .env has OPENAI_API_KEY; "
+            "2c-validate (exhausted pool) must not be overridden by 2d env fallback. "
+            f"Actual creds: {creds}"
+        )
+
+    def test_2c_resolver_raises_profile_env_key_is_valid_fallback(self, tmp_path):
+        """2c resolver itself raises (not 2c-validate): OPENAI_API_KEY env fallback must work.
+
+        When resolve_codex_runtime_credentials raises entirely, openai-codex is never
+        added to result — 2c-validate's inner block never runs — and _codex_fail_closed
+        stays False.  The 2d env-key fallback is the intended last resort and must fire.
+
+        This test guards against over-restricting the fix: the _codex_fail_closed flag
+        must NOT block 2d when 2c simply failed to resolve anything.
+        """
+        judo_home = tmp_path / "judo"
+        judo_home.mkdir()
+        (judo_home / ".env").write_text("OPENAI_API_KEY=env-api-key\n", encoding="utf-8")
+
+        with (
+            patch("agent.credential_pool.load_pool",
+                  side_effect=lambda p: _pool_from_entries(p, [])),
+            # 2c raises entirely → openai-codex never enters result
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials",
+                  side_effect=RuntimeError("no singleton configured")),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
+            patch.dict("os.environ", {
+                "ANTHROPIC_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "",
+            }),
+        ):
+            creds = _read_assignee_credentials(judo_home)
+
+        assert "openai-codex" in creds, (
+            "OPENAI_API_KEY in profile .env must be used as fallback when "
+            "resolve_codex_runtime_credentials raises entirely (2c-validate never ran); "
+            "_codex_fail_closed must NOT block 2d in this path. "
+            f"Actual creds: {creds}"
+        )
+        assert creds["openai-codex"] == ("env-api-key", None), (
+            f"Expected ('env-api-key', None), got {creds['openai-codex']!r}"
+        )

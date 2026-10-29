@@ -1532,7 +1532,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
 | [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
-| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str, side_question_token: str \| None, review_signals: dict` | ignored |
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
@@ -1911,6 +1911,23 @@ def register(ctx):
 ```
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
+
+### Follow the user's self-learning cadence (`review_signals`)
+
+After every successful turn, `post_llm_call` carries `review_signals`: the counters behind Hermes' own background memory/skill review (`skills.creation_nudge_interval`, `memory.nudge_interval`) and whether that review is due and enabled this turn. A plugin with after-turn work of its own (judging the skills a turn touched, say) can run on the same cadence the user already tuned instead of counting tool calls itself:
+
+```python
+def register(ctx):
+    def on_post_llm_call(review_signals=None, **kwargs):
+        if not review_signals or not review_signals["background_review_enabled"]:
+            return  # cron run, subagent, or the user turned background review off
+        if review_signals["skill_review_due"]:
+            ...  # the same turn Hermes reviews skills on
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+The hook fires before Hermes decides, and the due flags are the values that decision uses. Keys and semantics: [`post_llm_call`](../../user-guide/features/hooks.md#review_signals).
 
 ### Send raw CDP commands to the agent's browser
 

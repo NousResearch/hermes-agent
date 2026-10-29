@@ -1130,10 +1130,12 @@ class GatewayStartupMixin:
 
     def _on_relay_provisioned(self) -> None:
         """Credentials arrived after boot: the reconnect watcher builds every relay adapter from
-        the live env, so pull its queued retry forward instead of waiting out the backoff."""
+        the live env, so pull its queued retry forward instead of waiting out the backoff.
+        ``retry_now`` keeps it forward if a pass that began without them is still dialing."""
         info = getattr(self, "_failed_platforms", {}).get(Platform.RELAY)
         if info is not None:
             info["next_retry"] = 0.0
+            info["retry_now"] = True
 
     @staticmethod
     def _register_launch_profile_config_hooks() -> None:

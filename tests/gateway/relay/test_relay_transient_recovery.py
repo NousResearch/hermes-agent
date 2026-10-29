@@ -31,6 +31,8 @@ from gateway.platform_registry import platform_registry
 from gateway.run_startup import GatewayStartupMixin
 from tests.gateway.relay.fake_connector import (
     FakeConnector,
+    echoing,
+    json_proxy_403,
     proxy_403,
     relay_refusal,
     store_unavailable,
@@ -253,3 +255,144 @@ async def test_turn_dispatch_posts_one_notice_for_a_dropped_attachment(connector
         await adapter.disconnect()
     assert [r.success for r in recorded] == [False]
     assert len(connector.ops("send")) == 1
+
+
+# ─────────────────────────── review follow-ups ───────────────────────────
+
+# An opaque base64url identity token: a shape the generic redactor has no pattern for.
+OPAQUE_IDENTITY_TOKEN = "Zq8vXw3LmN0pR5tUyB2cD7eF9gH1jK4sA6-_oQ"
+
+
+@pytest.mark.parametrize("spec", [
+    echoing(401, '{"error":"token {token} rejected"}'),      # connector-shaped refusal
+    echoing(403, '{"message":"token {token} rejected"}'),    # a hop's JSON page
+    echoing(502, 'bad gateway for token {token} rejected'),  # a hop's plain page
+], ids=["refusal-reason", "proxy-json", "proxy-text"])
+def test_provision_failure_log_never_carries_the_identity_token_a_hop_echoed(connector, caplog, monkeypatch, spec):
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: OPAQUE_IDENTITY_TOKEN)
+    connector.provision_script = [spec]
+    caplog.set_level(logging.INFO)
+    assert relay.self_provision_relay() is False
+    assert connector.bearers_seen == [f"Bearer {OPAQUE_IDENTITY_TOKEN}"]
+    assert "rejected" in caplog.text  # the excerpt / reason is still logged
+    assert OPAQUE_IDENTITY_TOKEN not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_upload_failure_never_carries_the_bearer_a_hop_echoed(connector, tmp_path, caplog):
+    adapter = await _provisioned_adapter(connector)
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-1.4 report")
+    connector.media_script = [echoing(400, '{"message":"token {token} rejected"}')]
+    caplog.set_level(logging.INFO)
+    try:
+        result = await adapter.send_document("C0REPORTS", str(pdf))
+    finally:
+        await adapter.disconnect()
+    bearer = connector.bearers_seen[-1].removeprefix("Bearer ")
+    assert connector.media_calls == 1 and result.success is False
+    assert "rejected" in caplog.text
+    assert bearer not in caplog.text and bearer not in (result.error or "")
+
+
+def test_diagnostics_scrub_the_exact_bearer_the_caller_sent():
+    """Salt's probe shape: a bare (prefix-less) HMAC upgrade token echoed in a JSON body."""
+    import http.client
+    import io
+    import urllib.error
+
+    from gateway.relay.auth import make_upgrade_token
+    from gateway.relay.http_diagnostics import describe_http_error, read_error_body
+
+    bearer = make_upgrade_token("gw-x", "s" * 64)
+    hdrs = http.client.parse_headers(io.BytesIO(b"\r\n"))
+    exc = urllib.error.HTTPError("http://c/relay/media", 403, "err", hdrs,
+                                 io.BytesIO(f'{{"message":"token {bearer} rejected"}}'.encode()))
+    text = describe_http_error(exc, read_error_body(exc), secrets=(bearer, ""))
+    assert bearer not in text and "rejected" in text
+
+
+@pytest.mark.parametrize("headers", [
+    {"Proxy-Status": "egress; error=dns_timeout", "Server": "envoy"},
+    {"Via": "1.1 edge-proxy"},
+    {"X-Squid-Error": "ERR_ACCESS_DENIED 0"},
+    {"Server": "cloudflare"},
+], ids=["proxy-status", "via", "x-squid-error", "server-cloudflare"])
+@pytest.mark.asyncio
+async def test_json_403_from_a_named_proxy_gets_the_fast_schedule_not_refusal_pacing(connector, headers):
+    connector.provision_script = [
+        json_proxy_403(**headers),                                              # another hop, JSON body
+        relay_refusal(403, "enterprise identity lifecycle is not confirmed"),   # the connector's own refusal
+    ]
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    assert await relay.retry_self_provision(sleep=fake_sleep) is True
+    delays, refusal = relay._PROVISION_RETRY_DELAYS_S, relay._PROVISION_REFUSAL_RETRY_S
+    # before #1, after the proxy's JSON 403 (fast), after the connector's refusal (throttled)
+    assert slept == [delays[0], delays[1], refusal]
+
+
+def test_connector_refusal_behind_a_non_proxy_edge_is_still_a_refusal(connector):
+    """The connector sets no Server header; a hosting edge (Railway) adds its own name. That
+    is not a proxy-origin signal, so the connector's reasoned refusal keeps its 600s pacing."""
+    spec = relay_refusal(403, "binding owned elsewhere")
+    spec["headers"]["Server"] = "railway-edge"
+    connector.provision_script = [spec]
+    assert relay._self_provision() == relay._REFUSED
+
+
+@pytest.mark.asyncio
+async def test_credentials_landing_mid_dial_are_not_pushed_back_to_the_backoff_cap(connector, monkeypatch):
+    """The reconnect watcher's pass began without credentials; the background provision retry
+    obtains them while that dial is still in flight. The dial's failure must not re-bump the
+    pulled-forward retry to the 300s cap: the very next pass dials with the new credentials."""
+    from unittest.mock import MagicMock
+
+    from tests.gateway.test_platform_reconnect import _make_runner
+
+    monkeypatch.setattr(relay, "_PROVISION_RETRY_DELAYS_S", (0.01,), raising=False)
+    connector.provision_script = [proxy_403()]
+    assert relay.self_provision_relay() is False
+    assert relay.register_relay_adapter()
+
+    runner = _make_runner()
+    runner._update_platform_runtime_status = MagicMock()
+    runner._sync_voice_mode_state_to_adapter = MagicMock()
+    runner._background_tasks = set()
+    runner._retain_background_task = lambda task: (runner._background_tasks.add(task), task)[1]
+    runner._failed_platforms[Platform.RELAY] = {
+        "config": PlatformConfig(enabled=True), "attempts": 4, "next_retry": 0.0,
+    }
+    info = runner._failed_platforms[Platform.RELAY]
+
+    async def refused_dial(adapter, platform, **_kw):
+        return False  # a no-credential dial is closed 4401
+
+    # Control: an ordinary failed pass backs off to the cap.
+    runner._connect_adapter_with_timeout = refused_dial
+    await runner._reconnect_failed_platform(Platform.RELAY, time.monotonic())
+    assert info["next_retry"] > time.monotonic() + 200
+
+    async def provisioning_lands_mid_dial(adapter, platform, **kw):
+        GatewayStartupMixin._start_relay_provision_retry(runner)
+        await asyncio.wait_for(asyncio.gather(*runner._background_tasks), timeout=10)
+        assert relay.relay_connection_auth() == (connector.gateway_id, connector.secret)
+        return await refused_dial(adapter, platform, **kw)  # this dial was built before them
+
+    info["next_retry"] = 0.0  # the watcher's time arrives
+    runner._connect_adapter_with_timeout = provisioning_lands_mid_dial
+    await runner._reconnect_failed_platform(Platform.RELAY, time.monotonic())
+    assert info["next_retry"] <= time.monotonic(), "credentials obtained mid-dial were pushed back"
+
+    # The next pass (the watcher re-checks every 10s) builds the adapter from the live env and connects.
+    del runner._connect_adapter_with_timeout  # the real bounded connect
+    try:
+        await runner._reconnect_failed_platform(Platform.RELAY, time.monotonic())
+        assert Platform.RELAY not in runner._failed_platforms
+        assert connector.ws_auth[-1] == "ok"
+    finally:
+        if Platform.RELAY in runner.adapters:
+            await runner.adapters[Platform.RELAY].disconnect()

@@ -350,7 +350,7 @@ def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
     return [Diagnostic(
         kind="prose_phantom_refs", severity="warning",
         title="Completion summary references unknown task ids",
-        detail="The completion summary mentions task ids that don't resolve in this board's database. "
+        detail="The completion summary mentions task ids that don't resolve on any configured board. "
                "The completion itself succeeded, but downstream consumers parsing the summary may be "
                "pointed at cards that never existed.",
         actions=_generic_recovery_actions(task, running=_is_running(task)),

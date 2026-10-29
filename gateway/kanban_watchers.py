@@ -24,7 +24,7 @@ from gateway.kanban_watchers_common import (
     _to_thread_process_service,
     logger,
 )
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from gateway.kanban_watchers_notifier import _KanbanNotification, _NotifierSubscriptionProbe, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
     _log_spawn_results,
@@ -100,25 +100,29 @@ class GatewayKanbanWatchersMixin:
         # board, at startup (0 → first tick) and at most hourly.
         _gc_next_at = 0.0
 
-        while self._running:
-            try:
-                _gc_due = time.monotonic() >= _gc_next_at
-                _retention = 30
-                if _gc_due:
-                    _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
-                    _retention = _gc_retention_days()
+        probe = _NotifierSubscriptionProbe()
+        try:
+            while self._running:
+                try:
+                    _gc_due = time.monotonic() >= _gc_next_at
+                    _retention = 30
+                    if _gc_due:
+                        _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
+                        _retention = _gc_retention_days()
 
-                deliveries = await asyncio.to_thread(
-                    _notifier_collect, self, _kb,
-                    notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
-                )
-                for d in deliveries:
-                    await _KanbanNotification(
-                        self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
-                    ).deliver()
-            except Exception as exc:
-                logger.warning("kanban notifier tick failed: %s", exc)
-            await self._sleep_between_ticks(interval)
+                    deliveries = await asyncio.to_thread(
+                        _notifier_collect, self, _kb, notifier_profile=notifier_profile,
+                        gc_due=_gc_due, gc_retention_days=_retention, probe=probe,
+                    )
+                    for d in deliveries:
+                        await _KanbanNotification(
+                            self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
+                        ).deliver()
+                except Exception as exc:
+                    logger.warning("kanban notifier tick failed: %s", exc)
+                await self._sleep_between_ticks(interval)
+        finally:
+            probe.close()
 
     def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
         """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""

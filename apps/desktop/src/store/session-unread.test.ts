@@ -21,7 +21,8 @@ import {
   $unreadFinishedMarkers,
   ackStoredSessionId,
   forgetSessionUnread,
-  markSessionUnreadFinished
+  markSessionUnreadFinished,
+  unreadOwnerKey
 } from './session-unread'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
@@ -228,6 +229,23 @@ describe('persisted unread (session-unread)', () => {
     setSelectedStoredSessionId('tip')
 
     expect($sessionSeenCounts.get().default).toMatchObject({ [alphaKey]: 5, [betaKey]: 3 })
+    expect($unreadFinishedMarkers.get()).toEqual({ default: [betaKey] })
+    expect($unreadFinishedSessionIds.get()).toEqual([betaKey])
+  })
+
+  it('forgets only the requested owner when gateways share a session id', () => {
+    const alpha = session({ connection_id: 'gateway-a', id: 's1', message_count: 5 })
+    const beta = session({ connection_id: 'gateway-b', id: 's1', message_count: 5 })
+    const alphaKey = unreadOwnerKey(alpha)
+    const betaKey = unreadOwnerKey(beta)
+
+    $sessionSeenCounts.set({ default: { [alphaKey]: 3, [betaKey]: 4 } })
+    $unreadFinishedMarkers.set({ default: [alphaKey, betaKey] })
+    $unreadFinishedSessionIds.set([alphaKey, betaKey])
+
+    forgetSessionUnread([alphaKey], 'default')
+
+    expect($sessionSeenCounts.get()).toEqual({ default: { [betaKey]: 4 } })
     expect($unreadFinishedMarkers.get()).toEqual({ default: [betaKey] })
     expect($unreadFinishedSessionIds.get()).toEqual([betaKey])
   })

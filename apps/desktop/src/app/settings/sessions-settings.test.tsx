@@ -6,6 +6,7 @@ import { deleteSession, getHermesConfigRecord, saveHermesConfig, setSessionArchi
 import { en } from '@/i18n/en'
 import { confirm } from '@/store/confirm'
 import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from '@/store/session'
+import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
@@ -65,6 +66,8 @@ beforeEach(() => {
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
   setSessions([])
   setMessagingSessions([])
+  $sessionSeenCounts.set({})
+  $unreadFinishedMarkers.set({})
   listEveryArchivedSession.mockReset().mockResolvedValue([archivedMatrixSession])
   vi.mocked(confirm).mockResolvedValue(true)
 })
@@ -166,9 +169,22 @@ describe('SessionsSettings unarchive', () => {
 
   it('deletes only the clicked owner when same-id rows coexist', async () => {
     listEveryArchivedSession.mockResolvedValue([
-      { ...archivedMatrixSession, connection_id: 'gateway-a', profile: 'default' },
-      { ...archivedMatrixSession, connection_id: 'gateway-b', profile: 'default' }
+      {
+        ...archivedMatrixSession,
+        _lineage_root_id: 'root-a',
+        connection_id: 'gateway-a',
+        profile: 'default'
+      },
+      {
+        ...archivedMatrixSession,
+        _lineage_root_id: 'root-b',
+        connection_id: 'gateway-b',
+        profile: 'default'
+      }
     ])
+
+    $sessionSeenCounts.set({ default: { 'root-a': 1, 'root-b': 2 } })
+    $unreadFinishedMarkers.set({ default: ['root-a', 'root-b'] })
 
     render(<SessionsSettings />)
     const buttons = await screen.findAllByRole('button', { name: en.settings.sessions.deletePermanently })
@@ -182,6 +198,8 @@ describe('SessionsSettings unarchive', () => {
       connectionId: 'gateway-a',
       profile: 'default'
     })
+    expect($sessionSeenCounts.get()).toEqual({ default: { 'root-b': 2 } })
+    expect($unreadFinishedMarkers.get()).toEqual({ default: ['root-b'] })
   })
 
   it('pins the archived list and unarchive mutation to the immutable settings owner', async () => {

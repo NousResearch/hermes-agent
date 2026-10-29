@@ -160,10 +160,37 @@ let selectedOwnerKey: null | string = null
 /** Stable owner + lineage identity for unread persistence. Registry rows reuse
  * the pin owner key; legacy rows need profile scope without an ephemeral route
  * binding. */
-const unreadOwnerKey = (row: SessionInfo): string =>
+export const unreadOwnerKey = (row: SessionInfo): string =>
   row.connection_id?.trim()
     ? sessionOwnerPinId(row)
     : JSON.stringify(['owner-unread', profileKeyForRow(row), sessionPinId(row)])
+
+/** Cleanup keys for one exact row. Bare legacy ids are safe only when another
+ * owner in the same profile cannot claim them. */
+export function sessionUnreadCleanupIds(
+  row: SessionInfo,
+  candidateIds: readonly (null | string | undefined)[],
+  rows: readonly SessionInfo[]
+): string[] {
+  const ownerKey = unreadOwnerKey(row)
+  const profile = profileKeyForRow(row)
+  const bareIds = candidateIds.filter((id): id is string => Boolean(id))
+
+  return [
+    ...new Set([
+      ownerKey,
+      ...bareIds.filter(
+        id =>
+          !rows.some(
+            candidate =>
+              profileKeyForRow(candidate) === profile &&
+              unreadOwnerKey(candidate) !== ownerKey &&
+              sessionMatchesStoredId(candidate, id)
+          )
+      )
+    ])
+  ]
+}
 
 /** Preserve the legacy lineage key while it is unambiguous; duplicate durable
  * ids need the immutable owner-lineage key or one backend advances another's cursor. */

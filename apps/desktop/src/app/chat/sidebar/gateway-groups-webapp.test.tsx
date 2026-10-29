@@ -5,9 +5,9 @@ import { afterEach, expect, it } from 'vitest'
 
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { setSidebarGrouping } from '@/store/layout'
+import { $sidebarRowMeta, setSidebarGrouping } from '@/store/layout'
 import { $profiles, $showAllProfiles } from '@/store/profile'
-import { $sessions } from '@/store/session'
+import { $sessionProfilesUsage, $sessions } from '@/store/session'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { ChatSidebar } from './index'
@@ -40,12 +40,16 @@ const mount = () =>
 
 afterEach(() => {
   cleanup()
+  delete window.document.documentElement.dataset.hermesDesktopHost
   $showAllProfiles.set(false)
+  $sidebarRowMeta.set([])
+  $sessionProfilesUsage.set({})
   $sessions.set([])
 })
 
 // The Webapp publishes no connection registry: its one gateway is the `local` source.
 it('names the Webapp gateway section after the host instead of its raw `local` id', () => {
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
   mount()
   act(() => {
     $connectionsRegistry.set(null)
@@ -55,6 +59,8 @@ it('names the Webapp gateway section after the host instead of its raw `local` i
     ] as typeof $profiles.value)
     $showAllProfiles.set(true)
     setSidebarGrouping('profile')
+    $sidebarRowMeta.set(['cost', 'tokens'])
+    $sessionProfilesUsage.set({ default: { cost_usd: 3, tokens: 100 }, work: { cost_usd: 1.25, tokens: 40 } })
     $sessions.set(
       [
         ['listed', 'default'],
@@ -66,7 +72,7 @@ it('names the Webapp gateway section after the host instead of its raw `local` i
     )
   })
 
-  const sections = document.querySelectorAll('[data-gateway-section]')
+  const sections = window.document.querySelectorAll('[data-gateway-section]')
   expect(sections).toHaveLength(1)
   const gateway = sections[0] as HTMLElement
   expect(within(gateway).getByText('Hermes host')).toBeTruthy()
@@ -75,4 +81,11 @@ it('names the Webapp gateway section after the host instead of its raw `local` i
   expect(within(gateway).getByText('listed title')).toBeTruthy()
   expect(within(gateway).getByText('new-chat title')).toBeTruthy()
   expect(within(gateway).getByText('work-chat title')).toBeTruthy()
+
+  // The serving host's per-profile totals belong to its `local` profile groups.
+  const groupOf = (text: RegExp) =>
+    screen.getByText(text).closest('[data-gateway-group]')?.getAttribute('data-gateway-group')
+
+  expect(groupOf(/\$3\.00/)).toBe(JSON.stringify(['local', 'default']))
+  expect(groupOf(/\$1\.25/)).toBe(JSON.stringify(['local', 'work']))
 })

@@ -1,5 +1,6 @@
 import type { useSensors } from '@dnd-kit/core'
 import { arrayMove } from '@dnd-kit/sortable'
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 import { useMemo, useState } from 'react'
@@ -23,6 +24,7 @@ import { useContributions } from '@/contrib'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -166,9 +168,13 @@ function GatewayProfileGroup({
 
   // Legacy totals are keyed only by profile. Never attribute those figures to
   // a registry gateway that happens to expose the same profile name, or to
-  // one messaging platform.
+  // one messaging platform. A Webapp tab's `local` rows are the serving host's
+  // own, the gateway those totals were read from.
+  const ownsProfileTotals =
+    !group.connectionId || (isBrowserHostedDesktop() && group.connectionId === LOCAL_CONNECTION_ID)
+
   const usage = useStoreSelector($sessionProfilesUsage, all =>
-    group.connectionId || embedded ? undefined : all[group.profile!]
+    ownsProfileTotals && !embedded ? all[group.profile!] : undefined
   )
 
   const [renaming, setRenaming] = useState(false)

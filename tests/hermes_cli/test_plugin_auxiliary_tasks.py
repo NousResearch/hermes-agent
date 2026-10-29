@@ -155,6 +155,18 @@ def test_inheriting_task_follows_base_until_pinned(aux_home, patched_manager):
     assert not got.get("base_url") and not got.get("api_key")
 
 
+def test_inherit_from_a_core_block_outside_the_picker(aux_home, patched_manager):
+    """``background_review`` is a core ``auxiliary.*`` block but not a picker task; it is still a base."""
+    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+
+    _register(patched_manager, "plug_aux", inherit_from="background_review")
+    assert patched_manager._aux_tasks["plug_aux"]["inherit_from"] == "background_review"
+    _set_aux(background_review={"provider": "openrouter", "model": "vendor/review"})
+    got = resolve("plug_aux")
+    assert (got["provider"], got["model"]) == ("openrouter", "vendor/review")
+    assert got["timeout"] == 120  # the base's shape, not the fixed non-inheriting one
+
+
 @pytest.mark.parametrize("bad", ["no_such_task", "plug_aux", ""])
 def test_bad_inherit_from_warns_and_registers_without_inheritance(aux_home, patched_manager, caplog, bad):
     import logging

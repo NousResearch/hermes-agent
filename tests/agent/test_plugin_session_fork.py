@@ -209,6 +209,27 @@ def test_task_must_be_the_plugins_own(forks, consented):
     assert forks.built == []
 
 
+def test_own_task_inheriting_background_review_routes_the_fork(forks):
+    """``inherit_from="background_review"`` (a core block outside the picker) is kept, and the
+    fork's ``task=`` lane follows ``auxiliary.background_review`` at read time."""
+    _install_plugin(PLUGIN, declares=True, body=(
+        "def register(ctx):\n"
+        "    ctx.register_auxiliary_task('wisdom_suggest', display_name='Suggest', description='d',\n"
+        "                                inherit_from='background_review')\n"))
+    manager = _load([PLUGIN], granted=[PLUGIN])
+    assert manager._aux_tasks["wisdom_suggest"]["inherit_from"] == "background_review"
+    cfg_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    cfg["auxiliary"] = {"background_review": {"provider": "openrouter", "model": "vendor/review"}}
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    parent = _agent()
+    token = issue_side_question_token(parent, [], "turn-1")
+    assert _settled(_ctx(manager).fork_session(token, "q", task="wisdom_suggest")).outcome == "ok"
+    task_cfg = forks.built[0]["task_cfg"]
+    assert (task_cfg["provider"], task_cfg["model"]) == ("openrouter", "vendor/review")
+
+
 def test_fork_shape_origin_approvals_budget_and_usage(forks, consented):
     parent = _agent()
     token = issue_side_question_token(parent, [{"role": "user", "content": "hi"}], "turn-1")

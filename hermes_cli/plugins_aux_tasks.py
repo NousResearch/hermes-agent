@@ -8,6 +8,13 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("hermes_cli.plugins")
 
 
+def _core_aux_blocks() -> set[str]:
+    """Keys of the core ``auxiliary.<task>`` config blocks (``DEFAULT_CONFIG``)."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    aux = DEFAULT_CONFIG.get("auxiliary")
+    return {k for k, v in aux.items() if isinstance(v, dict)} if isinstance(aux, dict) else set()
+
+
 def build_auxiliary_task_entry(
     me: str, owner_id: str, key: str, *, display_name: str, description: str,
     defaults: Optional[dict[str, Any]], inherit_from: Optional[str], registered: dict[str, dict[str, Any]],
@@ -32,11 +39,13 @@ def build_auxiliary_task_entry(
     if existing is not None and existing.get("plugin") != owner_id:
         raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — already registered "
                          f"by plugin '{existing.get('plugin')}'")
-    # A bad base degrades to "no inheritance" rather than failing the whole plugin load; a
-    # self-reference would otherwise only surface at read time, as a cycle.
+    # A base is any built-in auxiliary.<block>: the picker's tasks plus core blocks the picker does
+    # not list (background_review, goal_judge, ...). A bad base degrades to "no inheritance" rather
+    # than failing the whole plugin load; a self-reference would otherwise only surface at read
+    # time, as a cycle.
     if inherit_from is not None and (
             not isinstance(inherit_from, str) or inherit_from == key
-            or (inherit_from not in builtin_aux_keys and inherit_from not in registered)):
+            or inherit_from not in (builtin_aux_keys | _core_aux_blocks() | registered.keys())):
         logger.warning("Plugin '%s' auxiliary task %r: ignoring inherit_from=%r — not a built-in "
                        "auxiliary task or one already registered by a plugin", me, key, inherit_from)
         inherit_from = None

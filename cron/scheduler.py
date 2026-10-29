@@ -1757,6 +1757,43 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
     return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
 
+def _cron_alias_route(model: str, cfg: dict, *, provider: str = "", base_url: str = ""):
+    """Resolve only declared aliases, keeping an endpoint and its credential inseparable."""
+    from hermes_cli.model_switch import resolve_startup_model_route
+    aliases = (cfg.get("model_aliases") or {})
+    simple = (cfg.get("model") or {}).get("aliases") or {}
+    if model.lower() not in {str(k).lower() for k in (*aliases, *simple)}:
+        return None
+    route = resolve_startup_model_route(model, alias_config=cfg)
+    if route is None or not route.model or not route.provider:
+        raise ValueError(f"Incomplete cron model alias {model!r}")
+    if base_url and base_url.rstrip("/") != (route.base_url or "").rstrip("/"):
+        raise ValueError(f"Cron model alias {model!r} conflicts with an explicit endpoint")
+    if provider and provider != route.provider:
+        raise ValueError(f"Cron model alias {model!r} conflicts with an explicit provider")
+    return route
+
+
+def _cron_alias_fallbacks(entries: Optional[list], cfg: dict) -> Optional[list]:
+    """Expand only the fallback rungs this job is authorized to use."""
+    if not entries:
+        return entries
+    result = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            result.append(entry)
+            continue
+        route = _cron_alias_route(str(entry.get("model") or ""), cfg,
+                                  provider=str(entry.get("provider") or ""),
+                                  base_url=str(entry.get("base_url") or ""))
+        if route is None:
+            result.append(entry)
+            continue
+        result.append({**entry, "model": route.model, "provider": route.provider,
+                       "base_url": route.base_url, "api_key": route.api_key})
+    return result
+
+
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
@@ -1769,6 +1806,10 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
+    alias = _cron_alias_route(model, jc.cfg, provider=str(job.get("provider") or ""),
+                              base_url=str(job.get("base_url") or ""))
+    if alias is not None:
+        model, requested = alias.model, alias.provider
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.
@@ -1777,7 +1818,10 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             # api_mode must derive from the model actually run, not the stale persisted default.
             "target_model": model,
         }
-        if job.get("base_url"):
+        if alias is not None:
+            runtime_kwargs["explicit_base_url"] = alias.base_url or None
+            runtime_kwargs["explicit_api_key"] = alias.api_key or None
+        elif job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
@@ -1804,12 +1848,20 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             try:
                 from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
 
+                alias_fb = _cron_alias_route(fb_model, jc.cfg, provider=fb_provider,
+                                             base_url=str(entry.get("base_url") or ""))
+                if alias_fb is not None:
+                    fb_model, fb_provider = alias_fb.model, alias_fb.provider
                 fb_kwargs = {"requested": fb_provider, "target_model": fb_model}
-                if entry.get("base_url"):
-                    fb_kwargs["explicit_base_url"] = entry["base_url"]
-                fb_api_key = resolve_entry_api_key(entry)
-                if fb_api_key:
-                    fb_kwargs["explicit_api_key"] = fb_api_key
+                if alias_fb is not None:
+                    fb_kwargs["explicit_base_url"] = alias_fb.base_url or None
+                    fb_kwargs["explicit_api_key"] = alias_fb.api_key or None
+                else:
+                    if entry.get("base_url"):
+                        fb_kwargs["explicit_base_url"] = entry["base_url"]
+                    fb_api_key = resolve_entry_api_key(entry)
+                    if fb_api_key:
+                        fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so job sessions record the provider name (#98739).
@@ -2484,8 +2536,9 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     )
     # Mid-run provider ladder: same rule as resolution above, so a pinned job cannot be swapped
     # onto the global chain by a 5xx/429 either.
-    setup.fallback_model = _job_fallback_chain(job, _cfg)
-    setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
+    setup.fallback_model = _cron_alias_fallbacks(_job_fallback_chain(job, _cfg), _cfg)
+    setup.credential_pool = (None if _cron_alias_route(jc.model, _cfg) is not None
+                             else _load_credential_pool(setup.runtime, job_id))
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)
     # Only now can a requested MCP toolset be judged: its alias is process-global but its tools live
@@ -2508,6 +2561,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         requested_provider=runtime.get("requested_provider"),
         api_mode=runtime.get("api_mode"),
         request_overrides=runtime.get("request_overrides"),
+        capabilities=runtime.get("capabilities"),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         max_iterations=setup.max_iterations,

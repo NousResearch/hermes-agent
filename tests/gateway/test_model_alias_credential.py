@@ -52,3 +52,38 @@ async def test_model_switch_to_a_keyed_direct_alias_runs_the_next_turn_with_its_
             runtime = _resolve_policy_agent_runtime(runner, switched)[1]
             assert runtime['base_url'].rstrip('/') == far_url
             assert runtime['api_key'] == expected, f'{alias}: the next turn ran without the alias key'
+
+
+def test_routed_profile_direct_alias_resolves_to_wire_model_and_runtime(tmp_path, monkeypatch):
+    """A multiplexed platform turn scopes to its routed profile, so its configured alias must be
+    expanded before the explicit AIAgent model bypasses CLI startup routing."""
+    from pathlib import Path
+    from types import SimpleNamespace
+    from gateway.run import _profile_runtime_scope
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_cli.config import load_config
+    from hermes_cli import model_switch
+
+    (tmp_path / 'config.yaml').write_text(
+        'model:\n  default: family-fast\n'
+        'model_aliases:\n'
+        '  family-fast:\n'
+        '    model: provider/wire-model\n'
+        '    provider: openrouter\n'
+        '    base_url: https://openrouter.ai/api/v1\n'
+        '    api_key: test-routed-alias-key\n'
+    )
+    runner = SimpleNamespace(
+        _pre_agent_fallback_notice=None,
+        _resolve_session_key_or_none=lambda source, session_key: None,
+        _peek_session_state=lambda key: None,
+        _session_state=lambda key: SimpleNamespace(conversation=SimpleNamespace(last_resolved_model=None)),
+        _rehydrate_session_model_override=lambda key: None,
+    )
+    with _profile_runtime_scope(Path(tmp_path)):
+        cfg = load_config()
+        model, runtime = GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, user_config=cfg)
+    assert model == 'provider/wire-model'
+    assert runtime['provider'] == 'openrouter'
+    assert runtime['base_url'].rstrip('/') == 'https://openrouter.ai/api/v1'
+    assert runtime['api_key'] == 'test-routed-alias-key'

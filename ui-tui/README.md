@@ -156,7 +156,7 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | `Shift+Enter` / `Alt+Enter`     | Insert a newline in the current draft                                                                                                                   |
 | `\` + `Enter`                   | Append the line to the multiline buffer (fallback for terminals without modifier support)                                                               |
 | `Ctrl+C`                        | Interrupt active run, or clear the current draft, or exit if nothing is pending                                                                         |
-| `Ctrl+D`                        | Exit                                                                                                                                                    |
+| `Ctrl+D`                        | Exit from an empty draft; with text, delete the character under the cursor (or the selection)                                                           |
 | `Cmd/Ctrl+G` / `Alt+G`          | Open `$EDITOR` with the current draft (use `Alt+G` in VSCode/Cursor — they bind the primary keystroke to Find Next)                                     |
 | `Ctrl+L`                        | New session (same as `/clear`)                                                                                                                          |
 | `Ctrl+V` / `Alt+V`              | Paste text first, then fall back to image/path attachment when applicable                                                                               |

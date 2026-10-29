@@ -502,6 +502,17 @@ export function isLineKillModifier(key: { ctrl: boolean; meta: boolean; super?: 
 }
 
 /**
+ * Word and forward-delete modifiers for one key. Off macOS Ctrl is the word
+ * modifier, but a bare Ctrl+D is readline delete-char there too, so it forward-
+ * deletes one grapheme instead of the next word (meta+d stays delete-word).
+ */
+function deletionMods(k: Key, inp: string, mod: boolean, fwdDelete: boolean) {
+  const ctrlD = k.ctrl && !k.meta && k.super !== true && inp.toLowerCase() === 'd'
+
+  return { delFwd: k.delete || fwdDelete || ctrlD, wordMod: (mod || k.meta) && !ctrlD }
+}
+
+/**
  * Pure computation for the fast-echo backspace bypass: given the
  * current value/cursor (already validated by `canFastBackspaceShape`),
  * returns what the new value/cursor should be, the exact stdout write
@@ -1495,14 +1506,13 @@ export function TextInput({
       let c = curRef.current
       let v = vRef.current
       const mod = isActionMod(k)
-      const wordMod = mod || k.meta
+      const { delFwd, wordMod } = deletionMods(k, inp, mod, fwdDel.current)
       const actionHome = k.home || (!isMac && mod && inp === 'a') || isMacActionFallback(k, inp, 'a')
       const actionEnd = k.end || (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
       const actionDeleteToStart = (mod && inp === 'u') || isMacActionFallback(k, inp, 'u')
       const actionKillToEnd = (mod && inp === 'k') || isMacActionFallback(k, inp, 'k')
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
-      const delFwd = k.delete || fwdDel.current
 
       const isPrintableInput =
         !event.isControlChord &&
@@ -1612,7 +1622,7 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
         }
-      } else if (delFwd && c < v.length) {
+      } else if (delFwd) {
         if (isLineKillModifier(k)) {
           // Cmd+ForwardDelete — kill to end of line, matching Ctrl+K.
           ;({ cursor: c, value: v } = killToLineEnd(v, c))

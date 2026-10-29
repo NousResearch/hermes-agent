@@ -6,7 +6,7 @@ import { relativeLuminance } from '@hermes/shared/color'
 import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 import type { UsageLimit } from '@hermes/shared/plan-usage'
 
-import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
+import { STARTUP_IMAGE, STARTUP_OPEN_SESSIONS, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import { usageFromTick } from '../domain/usage.js'
@@ -1098,6 +1098,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       // so override it here to keep the distinct "recovering" label visible for
       // the duration of the resume RPC (which later flips status to 'ready').
       patchUiState({ status: t('gatewayMsg.status.recoveringSession') })
+
+      return
+    }
+
+    if (STARTUP_OPEN_SESSIONS) {
+      patchUiState({ status: t('gatewayMsg.status.forgingSession') })
+      newSession()
+      patchOverlayState({ sessions: true })
 
       return
     }

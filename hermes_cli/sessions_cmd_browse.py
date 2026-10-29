@@ -67,14 +67,14 @@ def _format_row(s: dict, max_x: int) -> str:
 class _CursesBrowser:
     """State + render loop for the curses picker. ``run`` is the wrapper target."""
 
-    def __init__(self, curses, sessions, delete_fn):
+    def __init__(self, curses, sessions, delete_fn, initial_search: str = ""):
         self.curses, self.sessions, self.delete_fn = curses, sessions, delete_fn  # delete_fn None => no delete
         self.result = None
         self.cursor = self.scroll = 0
-        self.search = ""
+        self.search = initial_search or ""
         self.confirm_delete = None  # session dict pending y/n confirmation
         self.flash = ""  # one-frame notice (e.g. "Deleted.")
-        self.filtered = list(sessions)
+        self.filtered = [s for s in sessions if _match(s, self.search)] if self.search else list(sessions)
 
     def _pair(self, n, fallback=0):
         return self.curses.color_pair(n) if self.curses.has_colors() else fallback
@@ -218,8 +218,13 @@ class _CursesBrowser:
                 return
 
 
-def _fallback_picker(sessions: list) -> Optional[str]:
+def _fallback_picker(sessions: list, initial_search: str = "") -> Optional[str]:
     """Numbered list (Windows without curses, etc.). Same columns, no delete."""
+    if initial_search:
+        sessions = [s for s in sessions if _match(s, initial_search)]
+        if not sessions:
+            print(f"No sessions match '{initial_search}'.")
+            return None
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
         print(
@@ -242,7 +247,7 @@ def _fallback_picker(sessions: list) -> Optional[str]:
             return None
 
 
-def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
+def _session_browse_picker(sessions: list, session_db=None, initial_search: str = "") -> Optional[str]:
     """Curses session browser with live search; returns the selected session ID, or None if cancelled.
 
     With *session_db*: shows lifecycle status / message count per row, and ``d`` (while the filter is
@@ -267,8 +272,21 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
             return False
     try:  # curses first; any failure (no curses module, odd terminal) falls back
         import curses
-        browser = _CursesBrowser(curses, sessions, _delete_session if session_db is not None else None)
+        browser = _CursesBrowser(curses, sessions, _delete_session if session_db is not None else None, initial_search=initial_search)
         curses.wrapper(browser.run)
         return browser.result
     except Exception:
-        return _fallback_picker(sessions)
+        return _fallback_picker(sessions, initial_search=initial_search)
+
+
+def pick_interactive_session(session_db, exclude_sources=None, initial_search: str = "", limit: int = 500) -> Optional[str]:
+    """Fetch recent sessions and run interactive picker (curses or numbered fallback)."""
+    if not session_db:
+        return None
+    from hermes_cli.sessions_cmd import _surface_reader
+    sessions = _surface_reader(session_db).list_sessions_rich(
+        exclude_sources=exclude_sources, limit=limit
+    )
+    if not sessions:
+        return None
+    return _session_browse_picker(sessions, session_db=session_db, initial_search=initial_search)

@@ -234,7 +234,7 @@ def test_a_package_named_like_a_windows_drive_path_is_refused(home, repo):
 
 def _catalog(monkeypatch, sha: str) -> None:
     from hermes_cli import plugins_cmd_catalog
-    entry = SimpleNamespace(install_identifier=URL, sha=sha)
+    entry = SimpleNamespace(name="gizmo", install_identifier=URL, sha=sha)
     monkeypatch.setattr(plugins_cmd_catalog, "get_live_catalog_entry", lambda name: entry if name == "gizmo" else None)
 
 
@@ -262,6 +262,19 @@ def test_a_catalog_pin_that_moved_since_the_review_is_refused(home, repo, monkey
     assert result["ok"] is False and "inspect it again" in result["error"], result
     assert result.get("source_moved") is True  # the client re-reads the source instead of resending
     assert not (_root(home) / "gizmo").exists()
+
+
+def test_a_refused_install_drops_the_kept_inspection_so_the_dialog_reads_the_new_pin(home, repo, monkeypatch):
+    from hermes_cli.plugins_cmd_inspect import inspect_plugin_source
+    reviewed = _commit(repo, {"plugin.js": "export default { v: 1 }\n"})
+    _catalog(monkeypatch, reviewed)
+    assert inspect_plugin_source(URL, catalog_name="gizmo")["sha"] == reviewed
+    repinned = _commit(repo, {"plugin.js": "export default { v: 2 }\n"})
+    _catalog(monkeypatch, repinned)  # the catalog re-pins while the dialog is open
+
+    assert install.install_desktop_plugin(URL, ref=reviewed, catalog_name="gizmo").get("source_moved") is True
+
+    assert inspect_plugin_source(URL, catalog_name="gizmo")["sha"] == repinned
 
 
 def test_the_published_plugin_carries_no_git_metadata(home, repo):

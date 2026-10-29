@@ -98,9 +98,11 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
     name with the package marker Electron writes, so the Plugins page pairs the two rows; a desktop-only
     repository keeps its Git-derived folder name and carries no marker.
     """
-    from hermes_cli.plugins_cmd_inspect import _desktop_folder_name, detect_components
+    from hermes_cli.plugins_cmd_inspect import _desktop_folder_name, detect_components, forget_inspection
 
     pc = _pc()
+    # The dialog's inspection is spent either way; re-opening it must read the source again.
+    forget_inspection(identifier, catalog_name=catalog_name)
     sha = (ref or "").strip().lower()
     try:
         if not _COMMIT.fullmatch(sha):

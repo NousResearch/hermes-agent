@@ -50,7 +50,7 @@ function contents(type: 'window' | 'webview', owner?: WebContents, session = {} 
 function ownerFixture() {
   const owner = contents('window')
   const throttle = createStreamThrottle()
-  const win = { isDestroyed: owner.isDestroyed, webContents: owner }
+  const win = { isDestroyed: owner.isDestroyed, isVisible: () => true, isMinimized: () => false, webContents: owner }
   throttle.register(win)
 
   return { owner, hold: () => throttle.holdWindow(win) }

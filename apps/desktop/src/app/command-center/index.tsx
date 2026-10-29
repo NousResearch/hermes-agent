@@ -711,7 +711,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
-            value: `${compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
+            value: `${cc.statApiCalls}: ${entry.api_calls == null ? '—' : entry.api_calls.toLocaleString()} · ${compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
           }))}
           title={cc.topModels}
         />

@@ -9199,10 +9199,10 @@ def _default_spawn(
     # own branch — destructive ops there are scoped to that branch only).
     _pg_roots: list = []
     try:
+        import subprocess as _subprocess
         _bd_meta = read_board_metadata(board=board)
         _bd_workdir = (_bd_meta.get("default_workdir") or "").strip()
         if _bd_workdir and os.path.isdir(_bd_workdir):
-            import subprocess as _subprocess
             _r = _subprocess.run(
                 ["git", "-C", _bd_workdir, "rev-parse", "--show-toplevel"],
                 capture_output=True, text=True, timeout=5,
@@ -9214,9 +9214,9 @@ def _default_spawn(
         # Project primary path (if this task belongs to a project).
         if task.project_id:
             try:
-                from hermes_cli.projects import open_projects_db as _open_pdb, get_project as _get_proj
-                with _open_pdb() as _pconn:
-                    _proj = _get_proj(_pconn, task.project_id)
+                from hermes_cli import projects_db as _pdb
+                with _pdb.connect_closing() as _pconn:
+                    _proj = _pdb.get_project(_pconn, task.project_id)
                 if _proj and _proj.primary_path:
                     _pp = str(_proj.primary_path).strip()
                     if os.path.isdir(_pp):

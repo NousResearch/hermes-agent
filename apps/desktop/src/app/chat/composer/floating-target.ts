@@ -200,9 +200,7 @@ function trackKey(event: KeyboardEvent) {
 function trackFocus(event: FocusEvent) {
   const target = event.target instanceof Element ? event.target : null
 
-  // Tab headers own roving focus even when the zone below them is a chat.
-  // Arrow-key focus is navigation, not a delayed request to enter its composer.
-  if (!target || target.closest('[role="tab"]')) {
+  if (!target) {
     return
   }
 
@@ -218,10 +216,15 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
-  // A delayed focus/restore isn't a navigation gesture. A clicked control,
-  // keyboard Tab, or the inline edit opened by a bubble click still keeps its
-  // normal focus, without redirecting to the input.
-  if (isTouchInteraction() || keyboardNavigation || keepsOwnFocus(target) || (pointerDownTarget && target.contains(pointerDownTarget))) {
+  // Navigation selects the recipient without moving the caret. Tab headers
+  // must update the owning split too, while retaining their roving focus.
+  if (
+    target.closest('[role="tab"]') ||
+    isTouchInteraction() ||
+    keyboardNavigation ||
+    keepsOwnFocus(target) ||
+    (pointerDownTarget && target.contains(pointerDownTarget))
+  ) {
     flushSync(() => selectSurface(id))
   } else {
     // A refused redirect leaves focus where it landed: that element's focusin

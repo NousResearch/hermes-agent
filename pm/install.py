@@ -756,8 +756,15 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
 
 
 def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stamp: str, inputs: dict,
-                      current: bool, repair: bool, explicit: bool, skip_invalid_secondary: bool = False) -> None:
-    """Build (unless current), publish the plugin change, then record the selection."""
+                      current: bool, repair: bool, explicit: bool, skip_invalid_secondary: bool = True) -> None:
+    """Build (unless current), publish the plugin change, then record the selection.
+
+    ``skip_invalid_secondary`` defaults to True: the shared venv is a UNION across every
+    profile home, so a broken SIBLING profile's config must not refuse the graph for all
+    of them. That is exactly what happened on 2026-10-28 — one duplicate YAML key in
+    ``profiles/ultron/config.yaml`` made the whole plugin union unresolvable. The default
+    home still fails closed.
+    """
     from pm import receipt
     from hermes_cli.runtime_state import finish_publication, recover_publication
 

@@ -1969,7 +1969,15 @@ class GatewayTurnMixin:
 
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
         """``except Exception`` body of the agent turn: stop typing, log, persist the inbound user
-        turn once and close it, and build the sanitized user-facing error reply."""
+        turn once and close it, and build the sanitized user-facing error reply.
+
+        A DETERMINISTIC failure (an unparseable profile config, a missing skill, a bad
+        credential reference) repeats identically on every turn, and notifying once per
+        event turned that into a notification hammer — 85 identical DMs to the user on
+        2026-10-28. The error-notice ledger sends ONE notice per (session, error class)
+        within a cooldown window; the transcript boundary is still written every time, so
+        the session history stays honest even when the notice is suppressed.
+        """
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
@@ -2018,9 +2026,32 @@ class GatewayTurnMixin:
                 status_hint = t("gateway.errors.hint_usage_limit")
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
+        # One notice per (session, error class) per cooldown window. A suppressed notice
+        # returns an empty reply, which the adapter drops without sending a message.
+        _send_notice, _error_class = self._hmwa_should_notify_agent_error(session_key, e)
+        if not _send_notice:
+            return ""
         return self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
         )
+
+    def _hmwa_should_notify_agent_error(self, session_key: str, exc: BaseException) -> tuple[bool, str]:
+        """Whether an agent-error notice may go out for *exc* in *session_key*.
+
+        Returns ``(send, error_class)``. Transient failures always notify; deterministic
+        ones are notified once per cooldown window per session, so a crash loop cannot
+        become an unbounded DM stream.
+        """
+        ledger = getattr(self, "_agent_error_notice_ledger", None)
+        if ledger is None:
+            # A partially constructed runner (some tests build the object without the
+            # full init): never suppress on a missing ledger.
+            return True, ""
+        try:
+            return ledger.notify(session_key, exc)
+        except Exception:
+            logger.debug("agent-error notice dedup failed", exc_info=True)
+            return True, ""
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""

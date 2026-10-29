@@ -2096,7 +2096,13 @@ def _write_config_state(
                 "Pass the complete current config, or use atomic_config_replace() only when "
                 "deletion by omission is deliberate.",
             ) from exc
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    # The write is proven loadable before it counts as written: a duplicate key makes the
+    # config unusable for every reader of this profile (one duplicate key took down a
+    # profile, the multiplexer and produced an 85-message DM storm).
+    atomic_roundtrip_yaml_save(
+        config_path, data,
+        extra_content_on_create=extra_content_on_create,
+    )
 
 
 def atomic_config_write(

@@ -202,3 +202,79 @@ def test_read_parses_config_once_per_home(homes, monkeypatch):
     monkeypatch.setattr(utils, "fast_safe_load", counting)
     pstate.enabled_plugins_ordered()
     assert len(calls) == 2  # one per home, not one per query
+
+
+# --- 2026-10-28 incident: a duplicate key in ONE profile must not break the others ------
+#
+# The plugin union is computed across every profile home. A single duplicate YAML key in
+# ``profiles/ultron/config.yaml`` made that home unparseable, and because the union is
+# GLOBAL, one broken home degraded plugin resolution for the WHOLE multiplexer: the
+# gateway logged "Skipping broken secondary profile ... during dependency verification"
+# on every tick and the shared venv drifted out of sync for everybody.
+
+#: The exact duplicate from profiles/ultron/config.yaml, 2026-10-28.
+DUPLICATE_KEY_CONFIG = """\
+platform_toolsets:
+  telegram:
+    - hermes-telegram
+    - messaging
+  telegram:
+    - hermes-telegram
+    - messaging
+"""
+
+
+def test_duplicate_key_in_one_profile_does_not_break_its_siblings(homes, caplog):
+    """A broken sibling profile is skipped BY ITSELF; the others stay intact."""
+    default_home, profile_home = homes
+    _write_config(default_home, ["default-plug"])
+    (profile_home / "config.yaml").write_text(DUPLICATE_KEY_CONFIG, encoding="utf-8")
+
+    by_root = pstate.enabled_plugins_ordered(skip_invalid_secondary=True)
+
+    # The healthy home keeps its selection...
+    assert by_root.get(default_home / "plugins") == ["default-plug"]
+    # ...and the broken one contributes nothing, but did not raise.
+    assert profile_home / "plugins" not in by_root
+    assert str(profile_home) in caplog.text
+
+
+def test_duplicate_key_in_the_default_home_still_fails_closed(homes):
+    """The default home drives the whole install — its breakage must NOT be skipped."""
+    default_home, profile_home = homes
+    (default_home / "config.yaml").write_text(DUPLICATE_KEY_CONFIG, encoding="utf-8")
+    _write_config(profile_home, ["sibling-plug"])
+
+    with pytest.raises(ValueError, match=re.escape(str(default_home / "config.yaml"))):
+        pstate.enabled_plugins_ordered(skip_invalid_secondary=True)
+
+
+def test_publishing_the_shared_graph_tolerates_a_broken_sibling(homes, monkeypatch):
+    """The publication path must not refuse the graph because of a sibling's config.
+
+    ``Venv.apply`` used to call ``enabled_plugins_ordered`` with the strict default, so a
+    broken secondary profile raised out of the shared-venv computation and took every
+    profile's dependencies with it.
+    """
+    import inspect
+
+    from pm.packages import Venv
+
+    default = inspect.signature(Venv.apply).parameters["skip_invalid_secondary"].default
+    assert default is True, (
+        "the shared venv is a union across profiles: a broken sibling must not refuse "
+        "the graph for all of them"
+    )
+
+
+def test_sync_commit_tolerates_a_broken_sibling(homes):
+    """``_commit_selection`` is the publication entry point; it must default to tolerant."""
+    import inspect
+
+    from pm.install import _commit_selection
+
+    default = inspect.signature(_commit_selection).parameters["skip_invalid_secondary"].default
+    assert default is True, (
+        "a broken sibling profile's config must not refuse the shared-venv publication "
+        "for every profile"
+    )

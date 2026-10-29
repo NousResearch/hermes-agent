@@ -3671,6 +3671,13 @@ class GatewayRunner(
         # without a runner backref; local counter keeps confirm_ids compact (64-byte callback_data caps).
         import itertools
         self._slash_confirm_counter = itertools.count(1)
+        # Per-(session, error-class) notice ledger: a deterministic failure (an unparseable
+        # config, a missing skill) repeats identically on every turn, so notifying once per
+        # EVENT produced an 85-message DM hammer on 2026-10-28. Deterministic classes are
+        # notified once per cooldown window; transient ones (rate limit, timeout) always are.
+        from gateway.error_notice_dedup import AgentErrorNoticeLedger
+
+        self._agent_error_notice_ledger = AgentErrorNoticeLedger()
 
     def _init_startup_checks(self) -> None:
         """Ensure tirith is installed and warn when manual approvals have no automated assessor."""

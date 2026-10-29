@@ -458,6 +458,30 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
+def _config_write_guard_snapshot(path: Path) -> tuple:
+    """(bytes, top-level keys) of *path* before a guarded write; (None, None) when absent."""
+    from hermes_cli.config_write_guard import guard_enabled, snapshot_config
+
+    if not guard_enabled():
+        return None, None
+    return snapshot_config(path)
+
+
+def _config_write_guard_verify(path: Path, snapshot: tuple, *, allow_key_deletion: bool = False) -> None:
+    """Validate the config just written to *path*; restore the previous file on failure."""
+    from hermes_cli.config_write_guard import guard_enabled, verify_written_config
+
+    if not guard_enabled():
+        return
+    previous_bytes, previous_keys = snapshot
+    verify_written_config(
+        path,
+        previous_bytes=previous_bytes,
+        previous_keys=previous_keys,
+        allow_key_deletion=allow_key_deletion,
+    )
+
+
 def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
     """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
 
@@ -477,6 +501,7 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     from hermes_constants import mkdir_under_hermes_home
 
     mkdir_under_hermes_home(path.parent)
+    guard_snapshot = _config_write_guard_snapshot(path)
     yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
@@ -499,6 +524,9 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
         current = next_value
         i += consumed
     _roundtrip_dump(path, yaml_rt, config)
+    # A single-key update can still drop a top-level key (the key it names), so the
+    # deletion check is disabled here: the caller named the key it changed.
+    _config_write_guard_verify(path, guard_snapshot, allow_key_deletion=True)
 
 
 # ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are
@@ -527,7 +555,8 @@ def _rt_value(value: Any) -> Any:
 
 
 def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
-                               extra_content_on_create: "str | None" = None) -> None:
+                               extra_content_on_create: "str | None" = None,
+                               allow_key_deletion: bool = True) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
     THE on-disk primitive for ``config.yaml`` (production callers reach it through
@@ -539,6 +568,15 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
     ``extra_content_on_create`` (commented example blocks) is appended only when the file is
     being created — re-appending it on every rewrite is how the stock boilerplate replaced
     users' own comments (#92554).
+
+    The file is PROVEN loadable before this returns: a duplicate key makes the config
+    unusable (one duplicate key took down a profile, the multiplexer and produced an
+    85-message DM storm), so the previous good file is restored and the write is refused.
+
+    Deletion is NOT checked here: absent keys are this primitive's documented contract
+    ("explicit absence"). The dropped-key check lives at the policy seam
+    (``hermes_cli.config._write_config_state`` → ``_omitted_config_paths``), which knows
+    whether the caller meant to drop a key.
     """
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from hermes_cli.config import require_readable_config_before_write
@@ -548,6 +586,7 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
 
     mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
+    guard_snapshot = _config_write_guard_snapshot(path)
     creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
     yaml_rt, existing = _roundtrip_load(path)
 
@@ -585,6 +624,7 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
 
     _merge(existing, new_state)
     _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
+    _config_write_guard_verify(path, guard_snapshot, allow_key_deletion=allow_key_deletion)
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:

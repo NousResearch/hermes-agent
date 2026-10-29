@@ -391,11 +391,15 @@ class Venv(StatePackage):
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
-              skip_invalid_secondary: bool = False) -> dict:
+              skip_invalid_secondary: bool = True) -> dict:
         """Prepare one complete environment; the caller commits its selection.
 
         ``skip_invalid_secondary`` is the update's contract: an unreadable secondary profile
-        is left out (the caller reports it) instead of refusing the whole graph.
+        is left out (the caller reports it) instead of refusing the whole graph. It defaults
+        to True because the shared venv is a UNION across every profile home: one broken
+        sibling config must not refuse the graph for all of them. The DEFAULT home still
+        fails closed — it drives the whole install — and the caller can pass False to opt
+        into strict behaviour.
         """
         import uuid
         from pm.environments import install_state_dir, runtime_facts_path
@@ -413,6 +417,14 @@ class Venv(StatePackage):
             # Inspection may skip a broken secondary profile, but publishing a replacement
             # graph must not silently evict its recorded members (including passed candidates).
             # An update does evict them, loudly: it must not fail on another profile's config.
+            #
+            # A SIBLING profile's broken config must not refuse the whole graph. The plugin
+            # union is computed across every profile home, so raising on one broken home
+            # took down the shared venv for ALL of them — that is how a single duplicate
+            # YAML key in one profile's config.yaml degraded plugin resolution for the
+            # entire multiplexer (2026-10-28). The default home still fails closed: its
+            # config drives the whole install, and ``enabled_plugins_ordered`` keeps that
+            # distinction (homes[0] always raises).
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)

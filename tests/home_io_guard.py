@@ -23,6 +23,32 @@ def _pm_generation_dirs(prefixes) -> set[Path]:
     return found
 
 
+def _linked_worktree_git_dirs(checkout: Path) -> set[Path]:
+    """When ``checkout`` is a linked git worktree of a default ``$HERMES_HOME/hermes-agent`` install,
+    its ``.git`` file points into ``<main>/.git/worktrees/<name>`` under the guarded home.
+    ``hermes_bootstrap`` stats ``<gitdir>/hermes-update-pull`` on import; exempt the worktree's
+    gitdir and commondir just like the checkout itself."""
+    dot_git = checkout / ".git"
+    try:
+        if not dot_git.is_file():
+            return set()
+        text = dot_git.read_text(encoding="utf-8-sig").strip()
+        if not text.startswith("gitdir:"):
+            return set()
+        gitdir = (checkout / text[len("gitdir:"):].strip()).resolve()
+        found = {gitdir}
+        commondir = gitdir / "commondir"
+        if commondir.is_file():
+            rel = commondir.read_text(encoding="utf-8-sig").strip()
+            if rel:
+                found.add((gitdir / rel).resolve())
+        return found
+    except OSError:
+        return set()
+
+
+_CHECKOUT_ROOT = Path(__file__).resolve().parent.parent
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -41,7 +67,8 @@ _INTERPRETER_PREFIXES = tuple({
     # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
-    Path(__file__).resolve().parent.parent,
+    _CHECKOUT_ROOT,
+    *_linked_worktree_git_dirs(_CHECKOUT_ROOT),
 })
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes

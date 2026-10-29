@@ -339,7 +339,14 @@ describe('Unified package desktop half on a local backend', () => {
   it('holds both halves to the commit Electron inspected', async () => {
     const reviewed = '0123456789abcdef0123456789abcdef01234567'
     $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
-    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, sha: reviewed, warnings: [] })
+    probePluginRepo.mockResolvedValue({
+      ok: true,
+      agent: true,
+      agentName: 'pkg',
+      desktop: true,
+      sha: reviewed,
+      warnings: []
+    })
     requestGateway.mockImplementation(async (method, params) =>
       method === 'plugins.manage' && params?.action === 'install' ? { ok: true, plugin_name: 'pkg' } : { plugins: [] }
     )
@@ -353,7 +360,11 @@ describe('Unified package desktop half on a local backend', () => {
 
     await waitFor(() => expect(installDesktopPlugin).toHaveBeenCalled())
     expect(installCalls()[0]?.[1]).toMatchObject({ action: 'install', inspected_sha: reviewed })
-    expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false, sha: reviewed })
+    expect(installDesktopPlugin).toHaveBeenCalledWith({
+      identifier: 'https://github.com/example/pkg',
+      force: false,
+      sha: reviewed
+    })
   })
 
   it('still clones the desktop half for a remote backend', async () => {
@@ -406,7 +417,13 @@ describe('Unified package desktop half on a local backend', () => {
     reconcileDesktopPlugins.mockImplementation(async () => ['/app/desktop-plugins/pkg'])
     const desktopPluginsRoot = vi.fn(async () => '/app/desktop-plugins')
     const readDir = vi.fn(async () => ({ entries: [] }))
-    vi.stubGlobal('hermesDesktop', { desktopPluginsRoot, installDesktopPlugin, probePluginRepo, readDir, reconcileDesktopPlugins })
+    vi.stubGlobal('hermesDesktop', {
+      desktopPluginsRoot,
+      installDesktopPlugin,
+      probePluginRepo,
+      readDir,
+      reconcileDesktopPlugins
+    })
     renderFlow()
     act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
     expect(await screen.findByText('This package includes')).toBeTruthy()

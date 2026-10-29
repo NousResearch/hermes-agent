@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -65,7 +65,7 @@ _LARK_SDK_IMPORTS = (
     ("lark_oapi.api.application.v6", ("GetApplicationRequest",)),
     ("lark_oapi.api.im.v1", (
         "CreateFileRequest", "CreateFileRequestBody", "CreateImageRequest", "CreateImageRequestBody",
-        "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
+        "CreateMessageRequest", "CreateMessageRequestBody", "GetChatMembersRequest", "GetChatRequest", "GetMessageRequest",
         "DeleteMessageRequest", "GetMessageResourceRequest", "P2ImMessageMessageReadV1",
         "ReplyMessageRequest", "ReplyMessageRequestBody",
         "UpdateMessageRequest", "UpdateMessageRequestBody",
@@ -456,7 +456,7 @@ def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
     if not content:
         return [[{"tag": "md", "text": ""}]]
     if "```" not in content:
-        return [[{"tag": "md", "text": content}]]
+        return [_md_elements_with_ats(content)]
 
     rows: list[list[dict[str, str]]] = []
     current: list[str] = []
@@ -466,7 +466,7 @@ def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
         nonlocal current
         segment = "\n".join(current)
         if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
+            rows.append(_md_elements_with_ats(segment))
         current = []
 
     for raw_line in content.splitlines():
@@ -481,6 +481,61 @@ def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
                 _flush_current()
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+# Outbound @mention resolution: Feishu text payloads natively expand ``<at user_id="...">名字</at>``
+# markup, while post payloads need dedicated ``{"tag": "at"}`` elements. Outbound content resolves
+# "@名字" against the chat member list (cached per chat) plus names learned from inbound mentions,
+# so plain-text "@名字" from the model becomes a real mention on the wire.
+_MENTION_AT_RE = re.compile(r'<at user_id="([^"]+)"[^>]*>([^<]*)</at>')
+# "@名字" candidate: anything after '@' up to whitespace/punctuation, excluding characters
+# that mark existing markup or email addresses. Unknown names stay untouched.
+_AT_CANDIDATE_RE = re.compile(
+    r"@([^\s@<>,，。．!！?？;；:：\"'“”‘’（）()\[\]【】{}<>《》/\\|]+)"
+)
+
+
+def _resolve_mention_candidates(content: str, members: Mapping[str, tuple[str, str]]) -> str:
+    """Replace ``@名字`` with Feishu ``<at>`` markup for known chat members.
+
+    ``members`` maps a lowercased display name to ``(display_name, open_id)``. Names not in
+    the map (and any pre-existing markup) are left untouched, so unknown references and
+    email addresses pass through as plain text.
+    """
+    if not members or "@" not in content:
+        return content
+
+    def _sub(match: "re.Match[str]") -> str:
+        hit = members.get(match.group(1).strip().lower())
+        if not hit:
+            return match.group(0)
+        display, open_id = hit
+        return f'<at user_id="{open_id}">{display}</at>'
+
+    return _AT_CANDIDATE_RE.sub(_sub, content)
+
+
+def _md_elements_with_ats(segment: str) -> list[dict[str, str]]:
+    """Split an ``md`` segment around ``<at user_id=...>`` markup into md + at elements.
+
+    Feishu's post ``md`` renderer does not expand inline at-tags; real mentions need
+    dedicated ``at`` elements adjacent to the ``md`` elements.
+    """
+    if "<at " not in segment:
+        return [{"tag": "md", "text": segment}]
+    elements: list[dict[str, str]] = []
+    pos = 0
+    for match in _MENTION_AT_RE.finditer(segment):
+        if match.start() > pos:
+            elements.append({"tag": "md", "text": segment[pos:match.start()]})
+        element: dict[str, str] = {"tag": "at", "user_id": match.group(1)}
+        if match.group(2):
+            element["user_name"] = match.group(2)
+        elements.append(element)
+        pos = match.end()
+    if pos < len(segment):
+        elements.append({"tag": "md", "text": segment[pos:]})
+    return elements or [{"tag": "md", "text": segment}]
 
 
 def parse_feishu_post_payload(
@@ -1295,6 +1350,8 @@ class FeishuAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 8000
     CHAT_LOCK_MAX_SIZE: int = 1000  # distinct chat IDs kept in _chat_locks before LRU eviction
     _SPLIT_THRESHOLD = 4000  # chunk near Feishu's ~4096-char client split → continuation almost certain
+    _MENTION_CACHE_TTL_SECONDS = 600.0  # chat member list freshness for outbound @mention resolution
+    _MENTION_RETRY_TTL_SECONDS = 60.0  # refetch backoff when the members API fails (e.g. missing scope)
 
     # --- Lifecycle — init / settings / connect / disconnect ---
     def __init__(self, config: PlatformConfig):
@@ -1320,6 +1377,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # inbound messages cannot land their writes out of order.
         self._dedup_persist_lock = asyncio.Lock()
         self._sender_name_cache: dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
+        # Outbound @mention resolution: chat_id → (expire_monotonic, {lower_name: (display, open_id)})
+        self._mention_members_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]]]] = {}
+        self._mention_members_locks: Dict[str, asyncio.Lock] = {}  # per-chat fetch dedup
+        self._inbound_mention_names: Dict[str, Tuple[str, str]] = {}  # learned from inbound mentions
         self._webhook_rate_counts: dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: dict[str, float] = {}  # token → first_seen_time
@@ -1679,6 +1740,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
+                chunk = await self._resolve_outbound_mentions(chunk, chat_id)
                 msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
                 try:
                     response = await self._feishu_send_with_retry(
@@ -1709,6 +1771,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+        content = await self._resolve_outbound_mentions(content, chat_id)
 
         async def _update(msg_type: str, payload: str) -> SendResult:
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -2648,6 +2711,18 @@ class FeishuAdapter(BasePlatformAdapter):
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
         text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
+        # Learn name → open_id mappings from inbound mentions: chat_members.get does not
+        # return bot members, so outbound "@钢蛋" can only resolve after someone has
+        # mentioned them (or the members API knows them). ``getattr`` because tests build
+        # bare adapters via ``__new__`` without running ``__init__``.
+        names = getattr(self, "_inbound_mention_names", None)
+        if names is None:
+            names = self._inbound_mention_names = {}
+        for mention in mentions or []:
+            name = (mention.name or "").strip()
+            open_id = (mention.open_id or "").strip()
+            if name and open_id and not mention.is_all:
+                names.setdefault(name.lower(), (name, open_id))
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
@@ -3774,6 +3849,82 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
         return None
+
+    # --- Outbound @mention resolution ---
+    async def _resolve_outbound_mentions(self, content: str, chat_id: str) -> str:
+        """Resolve ``@名字`` to Feishu ``<at>`` markup using the chat's member list.
+
+        Best-effort by design: any API failure leaves the content untouched so mention
+        resolution can never break message delivery.
+        """
+        if not content or "@" not in content or not self._client:
+            return content
+        members = await self._get_mention_members(chat_id)
+        combined: Dict[str, Tuple[str, str]] = dict(getattr(self, "_inbound_mention_names", {}) or {})
+        combined.update(members)  # members-API result wins over learned inbound mentions
+        resolved = _resolve_mention_candidates(content, combined) if combined else content
+        logger.info(
+            "[Feishu] mention resolution: chat=%s api_members=%d known=%d changed=%s",
+            chat_id, len(members), len(combined), resolved != content,
+        )
+        return resolved
+
+    async def _get_mention_members(self, chat_id: str) -> Dict[str, Tuple[str, str]]:
+        """Cached chat member map ``{lower_name: (display_name, open_id)}`` with per-chat dedup."""
+        now = time.monotonic()
+        cached = self._mention_members_cache.get(chat_id)
+        if cached and cached[0] > now:
+            return cached[1]
+        lock = self._mention_members_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            cached = self._mention_members_cache.get(chat_id)
+            if cached and cached[0] > time.monotonic():
+                return cached[1]
+            ttl = self._MENTION_CACHE_TTL_SECONDS
+            try:
+                members = await self._fetch_mention_members(chat_id)
+            except Exception as exc:
+                logger.warning("[Feishu] Mention resolution unavailable for chat %s: %s", chat_id, exc)
+                members = {}
+                ttl = self._MENTION_RETRY_TTL_SECONDS
+            self._mention_members_cache[chat_id] = (time.monotonic() + ttl, members)
+            return members
+
+    async def _fetch_mention_members(self, chat_id: str) -> Dict[str, Tuple[str, str]]:
+        """Paged ``im.v1.chat_members.get`` → ``{lower_name: (display_name, open_id)}``.
+
+        Requires the ``im:chat:member:readonly`` app scope; ``@所有人``/``@all`` are injected
+        as virtual members (open_id ``all``).
+        """
+        members: Dict[str, Tuple[str, str]] = {}
+        page_token: Optional[str] = None
+        while True:
+            request = self._build_get_chat_members_request(chat_id=chat_id, page_token=page_token)
+            response = await self._run_blocking(self._client.im.v1.chat_members.get, request)
+            if not self._response_succeeded(response):
+                code = getattr(response, "code", None)
+                raise RuntimeError(f"chat_members.get failed (code {code}); is im:chat:member:readonly granted?")
+            data = getattr(response, "data", None)
+            for item in getattr(data, "items", None) or []:
+                name = str(getattr(item, "name", "") or "").strip()
+                open_id = str(getattr(getattr(item, "member_id", None), "open_id", "") or "").strip()
+                if name and open_id:
+                    members.setdefault(name.lower(), (name, open_id))
+            if not getattr(data, "has_more", False):
+                break
+            page_token = str(getattr(data, "page_token", "") or "")
+            if not page_token:
+                break
+        members.setdefault("所有人", ("所有人", "all"))
+        members.setdefault("all", ("all", "all"))
+        return members
+
+    @staticmethod
+    def _build_get_chat_members_request(*, chat_id: str, page_token: Optional[str]) -> Any:
+        fields: Dict[str, Any] = {"chat_id": chat_id, "member_id_type": "open_id"}
+        if page_token:
+            fields["page_token"] = page_token
+        return _sdk_build(GetChatMembersRequest, **fields)
 
     async def _send_raw_message(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],

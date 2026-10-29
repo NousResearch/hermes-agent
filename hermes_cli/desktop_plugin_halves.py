@@ -243,10 +243,13 @@ def materialize_desktop_half(package_dir: Path, app_root: Path, name: str) -> Pa
             return None
 
     ignore = root_layout_ignore(source_dir, package_dir)
-    if ignore is not None:
-        # The whole package root is published, agent payload included: hold it to the installer's
-        # plain-tree rule rather than copy a link to anywhere on the host into the served folder.
-        refused = check_desktop_tree(source_dir, package_dir, linked_root=linked, skip=ROOT_LAYOUT_SKIP)
+    if ignore is not None or not linked:
+        # An installed package's ``desktop/`` folder and any root-layout half (the whole package root,
+        # agent payload included) are held to the installer's plain-tree rule rather than copy a link to
+        # anywhere on the host into the served folder. Only a dev checkout linked into ``plugins/``
+        # publishes its ``desktop/`` folder as it stands, as Electron's reconcile does.
+        refused = check_desktop_tree(source_dir, package_dir, linked_root=linked,
+                                     skip=ROOT_LAYOUT_SKIP if ignore is not None else ())
         if refused:
             raise OSError(refused)
     publish_desktop_tree(source_dir, target, marker, ignore=ignore)

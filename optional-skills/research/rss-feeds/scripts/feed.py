@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 USER_AGENT = "hermes-agent/1.0 (rss-feeds skill; +https://github.com/NousResearch/hermes-agent)"
@@ -62,8 +62,8 @@ def parse_date(value: str | None) -> str | None:
         except ValueError:
             return value
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).isoformat()
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 def _text(el, *paths) -> str | None:
@@ -193,9 +193,9 @@ def read(url: str) -> dict:
 
 def filter_entries(entries: list[dict], limit: int, since: str | None) -> list[dict]:
     if since:
-        cutoff = datetime.fromisoformat(since).replace(tzinfo=UTC) if "T" not in since else datetime.fromisoformat(since)
+        cutoff = datetime.fromisoformat(since).replace(tzinfo=timezone.utc) if "T" not in since else datetime.fromisoformat(since)
         if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=UTC)
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
         entries = [e for e in entries if e["published"] and datetime.fromisoformat(e["published"]) >= cutoff]
     entries.sort(key=lambda e: e["published"] or "", reverse=True)
     return entries[:limit]

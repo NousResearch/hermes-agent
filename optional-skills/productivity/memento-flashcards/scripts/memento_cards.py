@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timedelta, timezone, UTC
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
@@ -23,7 +23,7 @@ RETIRED_SENTINEL = "9999-12-31T23:59:59+00:00"
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _iso(dt: datetime) -> str:

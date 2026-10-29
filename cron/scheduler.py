@@ -1606,6 +1606,13 @@ def _apply_monitor_gate(
         return (
             True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
         ), extra_prompt, None
+    if not _mon.wake_agent:
+        # Changed, but the source itself declared there is nothing for the agent to do (same
+        # ``{"wakeAgent": false}`` contract as a pre-run script). The new hash is already stored.
+        logger.info("Job '%s': monitor output changed with wakeAgent=false — suppressing agent run", job_id)
+        return (
+            True, f"{header}**Status:** changed, wakeAgent=false (agent run suppressed)\n", SILENT_MARKER, None,
+        ), extra_prompt, None
     # Changed (or first run): pass monitor output through the runtime-data seam. Keep any manual
     # per-run prompt separate: it remains user input and is therefore still strict-scanned.
     return None, extra_prompt, _mon.context_block

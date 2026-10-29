@@ -485,6 +485,7 @@ import {
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
+import { createQuitConfirmation } from './quit-confirmation'
 import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
@@ -3738,12 +3739,6 @@ async function restoreBundledBackend(): Promise<void> {
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
-
-// Quit-guard latches: one while the confirmation is on screen (a second
-// Cmd-Q must not stack dialogs), one after the user has said "quit anyway"
-// (the app.quit() that follows re-enters before-quit and must pass through).
-let quitPromptOpen = false
-let quitConfirmedWithActiveWork = false
 
 // Resolve the staged updater binary the desktop may hand an update to. On
 // Windows that binary owns ALL repo mutation — running `hermes update` +
@@ -17992,45 +17987,32 @@ function quitStopsBackendWork(): boolean {
   return backendOwnedByApp({ ownedBackendCount, primaryRouteKind })
 }
 
-// Ask before a quit kills a turn in flight. True when the quit was intercepted
-// and the confirmation is on screen; the confirm button re-enters before-quit with
-// the latch set and falls straight through to the teardown below.
-function heldQuitForActiveWork(event: Electron.Event): boolean {
-  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || isQuittingForHandoff) {
-    return false
-  }
+// Confirmation must stay admitted through asynchronous teardown and its final
+// app.quit(): late renderer work reports cannot revive a half-shut-down app.
+const heldQuitForActiveWork = createQuitConfirmation({
+  shouldSkip: () => SKIP_QUIT_CONFIRM || isQuittingForHandoff,
+  requestQuit: () => app.quit(),
+  showPrompt: () => {
+    // Retain the last summary across a mid-turn webContents reload.
+    const work = mergeActiveWork([...activeWorkByWebContents.values(), lastActiveWorkSeen])
+    const prompt = quitPromptFor(work, isQuittingForHandoff, quitStopsBackendWork())
 
-  if (quitPromptOpen) {
-    event.preventDefault()
+    if (!prompt) {
+      return null
+    }
 
-    return true
-  }
+    if (minimizeToTray.status().available) {
+      minimizeToTray.restore()
+    }
 
-  // The per-webContents map can read empty at quit time even though a turn
-  // is live (a stream can reload its webContents mid-turn, dropping the entry
-  // before the guard runs), so merge in the last summary any renderer sent.
-  const work = mergeActiveWork([...activeWorkByWebContents.values(), lastActiveWorkSeen])
+    // Hidden auxiliary windows must not own an invisible confirmation.
+    const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
 
-  const prompt = quitPromptFor(work, isQuittingForHandoff, quitStopsBackendWork())
+    if (!parent || parent.isDestroyed()) {
+      return null
+    }
 
-  // A tray quit with live work still needs the ordinary visible confirmation.
-  if (prompt && minimizeToTray.status().available) {
-    minimizeToTray.restore()
-  }
-
-  // A hidden aux window must never parent the quit prompt: the dialog would
-  // be invisible and the held quit unanswerable (#116376 §E).
-  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
-
-  if (!prompt || !parent || parent.isDestroyed()) {
-    return false
-  }
-
-  event.preventDefault()
-  quitPromptOpen = true
-
-  void dialog
-    .showMessageBox(parent, {
+    return dialog.showMessageBox(parent, {
       buttons: [...prompt.buttons],
       cancelId: 0,
       defaultId: 0,
@@ -18038,23 +18020,8 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
       message: prompt.message,
       type: 'question'
     })
-    .then(({ response }) => {
-      quitPromptOpen = false
-
-      if (response === 1) {
-        quitConfirmedWithActiveWork = true
-        app.quit()
-      }
-    })
-    .catch(() => {
-      // A dialog we can't show must not become a quit we can't perform.
-      quitPromptOpen = false
-      quitConfirmedWithActiveWork = true
-      app.quit()
-    })
-
-  return true
-}
+  }
+})
 
 // Intercept the close of the LAST chat window while the window and its
 // active-work report are still alive. On Windows/Linux the primary quit

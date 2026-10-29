@@ -62,7 +62,7 @@ async def test_serve_timer_runs_due_curator_once_and_honors_pause(tmp_path, monk
         "curator:\n  enabled: true\n  consolidate: false\n  interval_hours: 168\n"
         "  min_idle_hours: 0\n  prune_builtins: false\n", encoding="utf-8")
     from agent.curator import load_state, save_state, set_paused
-    import hermes_cli.web_server_sessions as web_server_sessions
+    from hermes_cli import web_server_sessions
 
     ticks = Queue()
     original_maintenance = web_server_sessions._maybe_run_skill_maintenance

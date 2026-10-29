@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
@@ -76,7 +77,7 @@ class HeartbeatState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "HeartbeatState":
+    def from_json(cls, raw: str) -> HeartbeatState:
         data = json.loads(raw)
         return cls(**{name: coerce(data.get(name) or default) for name, (coerce, default) in _STATE_FIELDS.items()})
 
@@ -100,6 +101,7 @@ def _get_session_db() -> Optional[Any]:
 
 
 _META_PREFIX = "heartbeat:"
+_CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
 
 
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
@@ -195,10 +197,11 @@ class HeartbeatManager:
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
         if not self._state:
             return None
-        self._state.status = status
-        if reanchor:
-            self._state.last_fired_at = time.time()
-        save_heartbeat(self.session_id, self._state)
+        with _CLAIM_LOCK:  # a stop landing inside a claim's reread-then-write would be overwritten by it
+            self._state.status = status
+            if reanchor:
+                self._state.last_fired_at = time.time()
+            save_heartbeat(self.session_id, self._state)
         return self._state
 
     def pause(self) -> Optional[HeartbeatState]:
@@ -220,14 +223,22 @@ class HeartbeatManager:
         double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
         schedule.
         """
-        s = self._state
-        if s is None or not s.is_due(now):
-            return None
-        self._last_claim = (s.last_fired_at, s.fire_count)
-        s.last_fired_at = now if now is not None else time.time()
-        s.fire_count += 1
-        save_heartbeat(self.session_id, s)
-        return s.render_prompt()
+        with _CLAIM_LOCK:
+            s = self._state
+            if s is None or not s.is_due(now):
+                return None
+            # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
+            # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
+            stored = load_heartbeat(self.session_id)
+            if stored is None or stored.status != "active" or (
+                    stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
+                self._state = stored
+                return None
+            self._last_claim = (s.last_fired_at, s.fire_count)
+            s.last_fired_at = now if now is not None else time.time()
+            s.fire_count += 1
+            save_heartbeat(self.session_id, s)
+            return s.render_prompt()
 
     def abandon_fire(self) -> bool:
         """Rewind the fire recorded by the last :meth:`due_prompt` whose turn never started, so the tick stays
@@ -267,6 +278,14 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 
 __all__ = [
-    "HeartbeatState", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
-    "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
+    "HEARTBEAT_PROMPT_TEMPLATE",
+    "MIN_INTERVAL_SECONDS",
+    "POLL_SECONDS",
+    "HeartbeatManager",
+    "HeartbeatState",
+    "format_interval",
+    "load_heartbeat",
+    "migrate_heartbeat_to_session",
+    "parse_interval",
+    "save_heartbeat",
 ]

@@ -114,7 +114,7 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released
     beside the live process); once the PID is gone the claim is reclaimed normally."""
-    import gateway.status as status
+    from gateway import status
 
     conn = board
     killed = []
@@ -131,7 +131,7 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
         conn.execute("UPDATE task_runs SET started_at = ? WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
                      (old, tid))
 
-    sig = lambda pid, s: killed.append((pid, s))  # noqa: E731
+    sig = lambda pid, s: killed.append((pid, s))
     assert kbd.enforce_max_runtime(conn, signal_fn=sig) == []
     assert kb.release_stale_claims(conn, signal_fn=sig) == 0
     assert killed == []

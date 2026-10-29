@@ -171,8 +171,7 @@ def _env_flag_value(arg: str) -> tuple[str, str | None] | None:
             continue
         if ch == "e":
             rest = arg[pos + 2:]
-            if rest.startswith("="):
-                rest = rest[1:]
+            rest = rest.removeprefix("=")
             return "env", rest or None
         return None
     return None

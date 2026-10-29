@@ -1,0 +1,22 @@
+name: kokoro-tts
+title: Kokoro TTS (local, Apple Silicon)
+repo: https://github.com/brunosouzas/hermes-kokoro-tts
+sha: 9b682a84ff5b59c1b4d0b340b07b2c188b409e0b
+description: "Local Kokoro-82M text-to-speech on Apple Silicon: adds the kokoro-mlx speech provider (tts.provider: kokoro-mlx) with sentence-by-sentence PCM streaming for voice mode, read-aloud and text_to_speech, 54 voices in nine languages, an optional voice per language that switches per sentence between Portuguese and English, and an optional dictionary of English words a non-English voice pronounces in English without changing voice; plus hermes kokoro install, status, restart, voices, say, words and uninstall. Disclosure — hermes kokoro install creates a separate Python 3.11 environment with uv (about 1.1 GB from PyPI, plus spaCy's en_core_web_sm wheel from its GitHub release, pinned by SHA-256), downloads mlx-community/Kokoro-82M-bf16 at a pinned revision from Hugging Face (about 340 MB), and installs a launchd agent (dev.hermes.kokoro-tts) that keeps a local server running in the background. The server listens only on 127.0.0.1 (it refuses other addresses), runs offline, and does not log the text; the text to speak goes only to that local server, bypassing any proxy settings. Writes the environment, model cache and log under ~/Library/Application Support/hermes-kokoro-tts, the requested audio files, and the profile's config.yaml only when you run hermes kokoro words add or remove. No API keys, no telemetry."
+maintainer: brunosouzas
+tier: community
+category: voice
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/brunosouzas/hermes-kokoro-tts#readme
+version: "0.3.0"
+readme: true
+platforms: [macos]
+known_issues:
+  - "macOS on Apple Silicon only (MLX)."
+  - "Under plugins.isolation: host the hermes kokoro terminal command is not available (Hermes skips plugin CLI commands in the host); the speech provider still registers."
+  - "Only Brazilian Portuguese and English are tested; Japanese and Mandarin may need extra G2P packages this release does not install. Per-sentence language detection covers Portuguese and English."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -92,9 +92,18 @@ export const hu: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktív memóriaszolgáltató",
+    noProvider: "nincs — csak beépített",
+    builtinLayer: "Beépített réteg",
+    builtinNote: "A MEMORY.md és a USER.md a Hermes saját memóriája, független minden külső szolgáltatótól. Alapértelmezés szerint mindkettő betöltődik a munkamenetekbe; a (memory.memory_enabled / memory.user_profile_enabled) beállítások külön-külön kikapcsolják őket. A szolgáltató kiegészíti őket, de sosem helyettesíti.",
+  },
+
   status: {
     actionFailed: "Művelet sikertelen",
     actionFinished: "Befejezve",
+    actionFinishedOwed: "Frissítve, de még függőben (futtasd újra a `hermes update` parancsot a befejezéshez)",
     actions: "Műveletek",
     agent: "Ügynök",
     activeSessions: "Aktív munkamenetek",

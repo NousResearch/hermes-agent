@@ -16,6 +16,11 @@
  *
  *   git merge-base --is-ancestor <stampCommit> HEAD
  *   git rev-list --count <stampCommit>..HEAD -- <RUNTIME_PATHS>
+ *   git ls-tree <stampCommit> / HEAD -- <RUNTIME_PATHS>   (only when the count is positive)
+ *
+ * The count is evidence and the endpoint content is the verdict: a change and its revert
+ * inside one update range leave the runtime byte-identical, which is exactly when
+ * `hermes update` reuses the packaged app (hermes_cli/desktop_build_reuse.py).
  *
  * Ancestry has to come first, because `A..HEAD` only means "how far HEAD is
  * ahead of A" when A is an ancestor of HEAD. When it is not, the range
@@ -82,17 +87,36 @@ export const RUNTIME_PATHS = [
 
 const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: false }
 
-/** About/version polls share one check per checkout, including failed checks. */
+type GitOptions = Parameters<RunGit>[1]
+
+/**
+ * True only on proof that every runtime path holds the same object at the stamp and at HEAD
+ * (equal object ids are equal content). An empty or failed listing proves nothing, so the
+ * commit count keeps the verdict.
+ */
+async function runtimeContentMatches(runGit: RunGit, stampCommit: string, options: GitOptions): Promise<boolean> {
+  const [built, head] = await Promise.all(
+    [stampCommit, 'HEAD'].map(commit => runGit(['ls-tree', commit, '--', ...RUNTIME_PATHS], options))
+  )
+
+  return built.code === 0 && head.code === 0 && built.stdout.trim() !== '' && built.stdout === head.stdout
+}
+
+/**
+ * About/version polls share one check per checkout, including failed checks.
+ * `isUpdating` may answer asynchronously (the marker's owner liveness is an
+ * async judgement); a sync answer keeps the check synchronous.
+ */
 export function createBundleSkewChecker(
   stamp: BundleSkewStamp | null,
   runGit: RunGit,
-  { isUpdating, now = Date.now }: { isUpdating: () => boolean; now?: () => number }
+  { isUpdating, now = Date.now }: { isUpdating: () => boolean | Promise<boolean>; now?: () => number }
 ): (repoRoot: string) => Promise<BundleSkewResult> {
   const pending = new Map<string, Promise<BundleSkewResult>>()
   const cached = new Map<string, { result: BundleSkewResult; at: number }>()
 
-  return repoRoot => {
-    if (isUpdating()) {
+  const checkUnlessUpdating = (repoRoot: string, updating: boolean): Promise<BundleSkewResult> => {
+    if (updating) {
       cached.clear()
 
       return Promise.resolve(NOT_STALE)
@@ -111,8 +135,8 @@ export function createBundleSkewChecker(
     }
 
     const check = detectBundleSkew(stamp, runGit, repoRoot)
-      .then(result => {
-        if (isUpdating()) {
+      .then(async result => {
+        if (await isUpdating()) {
           return NOT_STALE
         }
 
@@ -125,6 +149,14 @@ export function createBundleSkewChecker(
     pending.set(repoRoot, check)
 
     return check
+  }
+
+  return repoRoot => {
+    const updating = isUpdating()
+
+    return typeof updating === 'boolean'
+      ? checkUnlessUpdating(repoRoot, updating)
+      : updating.then(answer => checkUnlessUpdating(repoRoot, answer))
   }
 }
 
@@ -184,7 +216,10 @@ export async function detectBundleSkew(
       return { desktopCommitsBehind: Number.isFinite(count) ? count : null, outOfSync: false }
     }
 
-    return { desktopCommitsBehind: count, outOfSync: true }
+    // Commits are evidence, content is the verdict: a change and its revert in one update range
+    // count 2 but leave the runtime byte-identical, and `hermes update` then rightly reuses the
+    // packaged app instead of rebuilding it. Warning there would never clear.
+    return { desktopCommitsBehind: count, outOfSync: !(await runtimeContentMatches(runGit, stamp.commit, options)) }
   } catch {
     return NOT_STALE
   }

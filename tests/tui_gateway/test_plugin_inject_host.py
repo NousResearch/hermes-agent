@@ -114,6 +114,7 @@ def test_unknown_session_key_falls_through_to_the_gateway_slot(tmp_path, monkeyp
 
     gateway.assert_called_once_with(
         session_key="agent:main:telegram:dm:42",
+        plugin_home=manager.home_path,
         content="wake telegram",
         plugin_id="notify-plugin",
     )

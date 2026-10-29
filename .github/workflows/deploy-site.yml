@@ -43,7 +43,7 @@ jobs:
     # a skills-index PR that doesn't touch website/** paths and so
     # doesn't auto-deploy via the deploy-docs path.
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Trigger Vercel Deploy
@@ -51,13 +51,13 @@ jobs:
 
   deploy-docs:
     if: github.repository == 'NousResearch/hermes-agent'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           fetch-depth: 0  # extract-plugins.py derives each catalog entry's added/updated dates from git log
 
@@ -236,9 +236,10 @@ jobs:
               cp -a "_site/docs/$d/." "_asset_retention/$d/"
             fi
           done
-          # 2) Drop pool entries no build has produced for 14 days — far
-          #    beyond any edge-cache or open-tab horizon.
-          find _asset_retention -type f -mtime +14 -delete
+          # 2) Drop pool entries no build has produced for 2 days: past any
+          #    edge-cache or open-tab horizon. A 14-day window grew the pool to
+          #    11 GB and the Pages artifact past what Pages will deploy.
+          find _asset_retention -type f -mtime +2 -delete
           find _asset_retention -type d -empty -delete
           # 3) Union-merge the pool into the artifact; --update=none keeps the
           #    current build authoritative for any path it produced.

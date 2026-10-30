@@ -534,6 +534,10 @@ def dashboard_auth_plan(*, section, username, password, env):
             "dashboard auth is set via HERMES_DASHBOARD_BASIC_AUTH_* environment variables; "
             "clear those from the gateway environment first")
     from plugins.dashboard_auth.basic import hash_password
+    # Function-local import: the handler is re-created against server.py globals
+    # (tui_gateway/method_ctx.py::bind_module), so the module-level `import secrets`
+    # is invisible at call time and the generate-a-secret branch 500s.
+    import secrets
     section = section if isinstance(section, dict) else {}
     sets = {
         "dashboard.basic_auth.username": username,

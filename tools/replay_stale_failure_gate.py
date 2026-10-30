@@ -109,7 +109,7 @@ def main(argv):
     print(f"  stale failure events: {grand_total}")
     print(f"  suppressed by gate:   {grand_suppressed}")
     print(f"  delivered by gate:    {grand_delivered}")
-    print(f"\n  production was NOT mutated (replay ran on .backup() copies, opened mode=ro)")
+    print("\n  production was NOT mutated (replay ran on .backup() copies, opened mode=ro)")
     return 0
 
 

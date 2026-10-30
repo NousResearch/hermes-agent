@@ -163,7 +163,7 @@ def test_missing_captioned_file_falls_back_to_text():
     assert "error" in res
     assert "not found" in res["error"]
     # ...but the caption text was delivered on its own first.
-    assert [url for url, _ in calls] == ["http://localhost:3000/health", "http://localhost:3000/send"]
+    assert [url for url, _ in calls] == ["http://127.0.0.1:3000/health", "http://127.0.0.1:3000/send"]
     assert calls[1][1]["message"] == "floor plan"
 
 
@@ -178,7 +178,7 @@ def test_standalone_send_uses_persisted_secondary_bridge_port(tmp_path, monkeypa
     with patch("aiohttp.ClientSession", return_value=session_ctx):
         result = asyncio.run(_standalone_send(SimpleNamespace(token="", extra={}), "12345", "hello"))
     assert result["success"] is True
-    assert [url for url, _ in calls] == ["http://localhost:3042/health", "http://localhost:3042/send"]
+    assert [url for url, _ in calls] == ["http://127.0.0.1:3042/health", "http://127.0.0.1:3042/send"]
 
 
 @pytest.mark.parametrize(
@@ -220,9 +220,9 @@ def test_secondary_standalone_sends_use_active_profile_port_for_text_media_and_m
             reset_hermes_home_override(override)
         assert result.get("success") is True, result
         assert [url for url, _ in calls] == [
-            f"http://localhost:{port}/health",
-            f"http://localhost:{port}/send",
-            f"http://localhost:{port}/send-media",
+            f"http://127.0.0.1:{port}/health",
+            f"http://127.0.0.1:{port}/send",
+            f"http://127.0.0.1:{port}/send-media",
         ]
         assert calls[1][1]["mentions"] == ["12345@s.whatsapp.net"]
         assert calls[2][1]["filePath"] == str(media)
@@ -255,4 +255,4 @@ def test_standalone_send_posts_only_through_this_profiles_bridge(tmp_path, repor
         assert posted == []
     else:
         assert result.get("success") is True, result
-        assert posted == ["http://localhost:3000/send", "http://localhost:3000/send-media"]
+        assert posted == ["http://127.0.0.1:3000/send", "http://127.0.0.1:3000/send-media"]

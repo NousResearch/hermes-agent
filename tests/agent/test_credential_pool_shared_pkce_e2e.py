@@ -546,3 +546,58 @@ def test_refresh_of_unhydrated_shared_row_hydrates_instead_of_marking_exhausted(
     assert out is not None and out.access_token == "rot-access"
     assert all(e.last_status != STATUS_EXHAUSTED for e in pool.entries() if e.label == LABEL)
     assert adapter.read_shared_hermes_oauth_credentials(LABEL)["refreshToken"] == "rot-refresh"
+
+
+def test_grant_file_without_payload_label_is_never_trusted_by_filename(homes, monkeypatch):
+    """A ``<label>.json`` whose payload declares no ``label`` must not be
+    served for that label, must not be listed, and must not be retired as an
+    alias when the canonical file is published (Codex review 8)."""
+    from agent.anthropic_adapter import (
+        list_shared_hermes_oauth_credentials,
+        read_shared_hermes_oauth_credentials,
+        write_shared_hermes_oauth_credentials,
+    )
+
+    root, worker = homes
+    _use_home(monkeypatch, root)
+    stray = root / ".anthropic_oauth" / f"{LABEL}.json"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_text(json.dumps({"accessToken": "stray-access", "refreshToken": "stray-refresh", "expiresAt": FUTURE_MS}))
+
+    assert read_shared_hermes_oauth_credentials(LABEL) is None
+    assert list_shared_hermes_oauth_credentials() == {}
+    _write_store(worker, [])
+    assert [e for e in _load(monkeypatch, worker)._available_entries() if e.label == LABEL] == []
+
+    _use_home(monkeypatch, root)
+    assert write_shared_hermes_oauth_credentials(
+        {"accessToken": "canon-access", "refreshToken": "canon-refresh", "expiresAt": FUTURE_MS}, label=LABEL
+    )
+    assert stray.exists(), "an unlabelled file is not an alias and must not be retired"
+    assert read_shared_hermes_oauth_credentials(LABEL)["accessToken"] == "canon-access"
+
+
+def test_alias_with_a_different_payload_label_is_not_matched(homes, monkeypatch):
+    from agent.anthropic_adapter import (
+        list_shared_hermes_oauth_credentials,
+        read_shared_hermes_oauth_credentials,
+        write_shared_hermes_oauth_credentials,
+    )
+
+    root, _worker = homes
+    _use_home(monkeypatch, root)
+    other = root / ".anthropic_oauth" / f"{LABEL}.json"  # filename says LABEL ...
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text(json.dumps(
+        {"accessToken": "other-access", "refreshToken": "other-refresh", "expiresAt": FUTURE_MS, "label": "someone-else"}
+    ))  # ... payload says otherwise
+
+    assert read_shared_hermes_oauth_credentials(LABEL) is None
+    assert read_shared_hermes_oauth_credentials("someone-else")["accessToken"] == "other-access"
+    assert set(list_shared_hermes_oauth_credentials()) == {"someone-else"}
+
+    assert write_shared_hermes_oauth_credentials(
+        {"accessToken": "canon-access", "refreshToken": "canon-refresh", "expiresAt": FUTURE_MS}, label=LABEL
+    )
+    assert other.exists(), "a different account's grant must not be retired as LABEL's alias"
+    assert set(list_shared_hermes_oauth_credentials()) == {LABEL, "someone-else"}

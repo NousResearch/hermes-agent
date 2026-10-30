@@ -1597,7 +1597,9 @@ def _find_shared_hermes_oauth_label_aliases(label: Optional[str]) -> List[Path]:
     Earlier builds named the file ``<sanitized>.json`` (no digest); the exact
     label is still recoverable from the payload.  Readers fall back to these
     so a grant never goes dark across a filename-scheme change, and writers
-    retire them once the canonical file is published.
+    retire them once the canonical file is published.  Only the payload's
+    ``label`` field identifies an alias -- never the filename -- so a stray
+    ``<label>.json`` without a label can neither be served nor retired.
     """
     want = str(label or "default").strip() or "default"
     shared_dir = _get_shared_hermes_oauth_dir()
@@ -1617,9 +1619,25 @@ def _find_shared_hermes_oauth_label_aliases(label: Optional[str]) -> List[Path]:
             continue
         if not isinstance(data, dict) or not data.get("accessToken"):
             continue
-        if str(data.get("label") or path.stem).strip() == want:
+        if _shared_grant_payload_label(data) == want:
             aliases.append(path)
     return aliases
+
+
+def _shared_grant_payload_label(data: Any) -> Optional[str]:
+    """The label a per-label grant file declares for itself, or None.
+
+    Per-label files are always written with a string ``label`` (see
+    write_shared_hermes_oauth_credentials); a file without one is not a
+    trusted grant for any account, regardless of its filename.
+    """
+    if not isinstance(data, dict):
+        return None
+    label = data.get("label")
+    if not isinstance(label, str):
+        return None
+    label = label.strip()
+    return label or None
 
 
 def shared_hermes_oauth_lock_target(label: Optional[str]) -> Path:
@@ -1700,7 +1718,10 @@ def list_shared_hermes_oauth_credentials() -> Dict[str, Dict[str, Any]]:
                 logger.debug("Skipping unreadable shared Hermes OAuth grant %s: %s", path.name, exc)
                 continue
             if isinstance(data, dict):
-                name = str(data.get("label") or path.stem).strip()
+                name = _shared_grant_payload_label(data)
+                if name is None:
+                    logger.debug("Skipping shared Hermes OAuth grant %s: payload declares no label", path.name)
+                    continue
                 try:
                     is_canonical = path.name == _shared_pkce_label_filename(name)
                 except ValueError:

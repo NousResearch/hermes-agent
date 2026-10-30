@@ -127,7 +127,7 @@ import {
   markAllSessionsRead,
   sessionPinId
 } from '@/store/session'
-import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
+import { $sessionDotStateById, $unreadSessionCount, sessionStatusBucket } from '@/store/session-dot-state'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -150,7 +150,7 @@ import {
 import type { SidebarNavItem } from '../../types'
 import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
 
-import { SidebarSectionAddButton } from './chrome'
+import { SidebarSectionAddButton, SidebarUnreadBadge } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
@@ -494,6 +494,8 @@ export function ChatSidebar({
   const sessionsLoadError = useStore($sessionsLoadError)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
+  // The header's aggregate badge; the per-chat counts ride the rows.
+  const unreadBadgeCount = useStore($unreadSessionCount)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   const activeConnectionId = useStore($activeConnectionId)
@@ -1940,10 +1942,10 @@ export function ChatSidebar({
                 }
                 label={sessionsLabel}
                 labelMeta={
-                  worktreeGroupingActive ? (
-                    reposScanning && !projectsSkeletonVisible ? (
-                      <GlyphSpinner ariaLabel={s.loading} className="text-[0.6875rem] text-(--ui-text-quaternary)" />
-                    ) : undefined
+                  worktreeGroupingActive && reposScanning && !projectsSkeletonVisible ? (
+                    <GlyphSpinner ariaLabel={s.loading} className="text-[0.6875rem] text-(--ui-text-quaternary)" />
+                  ) : unreadBadgeCount > 0 ? (
+                    <SidebarUnreadBadge count={unreadBadgeCount} />
                   ) : undefined
                 }
                 liveSessions={inProject ? enteredProjectOverlaySessions : undefined}

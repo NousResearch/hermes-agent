@@ -65,7 +65,7 @@ import { isBrowserWindow, isSecondaryWindow } from './windows'
  */
 
 /** profile key → durable id → last acknowledged message_count. */
-type SeenCounts = Record<string, Record<string, number>>
+export type SeenCounts = Record<string, Record<string, number>>
 
 /** profile key → durable ids flagged by the live busy→idle edge. */
 type Markers = Record<string, string[]>
@@ -160,6 +160,21 @@ const isSelected = (row: SessionInfo, selected: null | string): boolean =>
 /** The persistence bucket a row belongs to — its OWN profile, never the live
  *  gateway's (the lists are routinely cross-profile). */
 const profileKeyForRow = (row: SessionInfo): string => normalizeProfileKey(row.profile)
+
+/**
+ * Messages added since this chat was last acknowledged — the per-row "new"
+ * count. 0 for a chat this client has never acknowledged: a fresh install (or a
+ * cleared localStorage) must not paint every conversation's whole history as
+ * new. Watermarks advance on ack (opening the chat) and are stored per profile
+ * and per durable lineage id, so the number survives renames and compression.
+ */
+export function newMessagesSinceSeen(row: SessionInfo, seen: SeenCounts): number {
+  const seenCount = seen[profileKeyForRow(row)]?.[sessionPinId(row)]
+
+  return typeof seenCount === 'number' && Number.isFinite(row.message_count)
+    ? Math.max(0, row.message_count - seenCount)
+    : 0
+}
 
 /** The row a bare stored id refers to. Ids are caller-supplied and each
  *  profile's backend is its own namespace, so two profiles can hold the same

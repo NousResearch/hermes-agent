@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import time
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -217,6 +218,10 @@ def base_venv(project_root: Path) -> Path:
     return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
+_STORE_ROOT_CACHE: dict[tuple[str, bool], tuple[float, Path]] = {}
+_STORE_ROOT_CACHE_TTL = 60.0
+
+
 def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Path:
     """Resolve a payload-relative or stamped store before PM imports.
 
@@ -225,12 +230,32 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
     ``honor_runtime_override=False``: a persisted artifact (an installed
     launcher) has to bind the store of the tree it serves, never a runtime
     directory inherited through the environment.
+
+    Memoized per ``(project_root, honor_runtime_override)`` for
+    ``_STORE_ROOT_CACHE_TTL``: the answer is install LAYOUT, which only a
+    reinstall changes, while ``_store_path_dirs`` (once per shell spawn) asks it
+    dozens of times and every ask walks the parents checking install stamps.
+    A cache miss costs what the uncached call always did.
     """
     if honor_runtime_override:
         override = os.environ.get("HERMES_RUNTIME_DIR")
         if override:
             return Path(override).resolve()
-    root = Path(project_root).resolve()
+    # The stamp walk is anchored on the home root as well as the checkout: a process that
+    # rebinds HERMES_HOME must not keep resolving the previous home's store.
+    key = (os.path.normcase(os.path.abspath(str(project_root))), honor_runtime_override,
+           str(dependency_home_root()), str(get_default_hermes_root()))
+    now = time.monotonic()
+    cached = _STORE_ROOT_CACHE.get(key)
+    if cached is not None and now - cached[0] < _STORE_ROOT_CACHE_TTL:
+        return cached[1]
+    resolved = _resolve_store_root(Path(project_root).resolve())
+    _STORE_ROOT_CACHE[key] = (now, resolved)
+    return resolved
+
+
+def _resolve_store_root(root: Path) -> Path:
+    """``store_root``'s uncached body: payload manifest, else nearest install stamp."""
     payload = _payload_manifest(root)
     store = payload[0].get("store") if payload else None
     if store:

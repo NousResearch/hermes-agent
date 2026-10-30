@@ -2195,6 +2195,8 @@ export interface TelegramOnboardingApplyResponse {
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
+  /** Persisted row kind; "adviser" marks model-facing plugin guidance, not a human prompt. */
+  display_kind?: string;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };

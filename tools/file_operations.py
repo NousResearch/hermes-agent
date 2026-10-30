@@ -204,6 +204,22 @@ def _refuse_introduced_json_constant(path: str, content: str,
         "string instead and retry."))
 
 
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(?=/|$)")
+
+
+def _windows_drive_path(path: str) -> bool:
+    """True for ``C:/x`` / ``C:\\x``: the only shape the in-process primitives can take on
+    Windows, where ``os.*`` speaks no other form."""
+    return bool(_WINDOWS_DRIVE_RE.match(path or ""))
+
+
+def _msys_drive_to_windows(path: str) -> str:
+    """``/c/Users/x`` → ``C:/Users/x``; anything else (``/tmp``, ``//server/share``) passes through."""
+    m = _MSYS_DRIVE_RE.match(path or "")
+    return f"{m.group(1).upper()}:{path[2:]}" if m else path
+
+
 class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     """File operations over any terminal backend exposing ``execute(command, cwd)``
     returning ``{"output": str, "returncode": int}``.
@@ -347,10 +363,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         else base64 over the transport; ``(None, result)`` hands back the failed shell read for the
         caller's message. Only a regular file gets a native open (a FIFO would block this thread); the
         rest take the shell path and its timeout, as before."""
-        if self._native_read_enabled():
+        if self._native_read_enabled(path):
             import stat as _stat
-            full = path if os.path.isabs(path) else os.path.join(
-                getattr(self.env, "cwd", None) or self.cwd, path)
+            full = self._native_path(path)
             try:
                 # One lookup, not two: a stat-then-open pair can have the path swapped for a FIFO in
                 # between, and that open blocks this thread forever (no backend timeout covers it).
@@ -580,7 +595,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
         The local POSIX backend does the same in-process (``tools.file_operations_native``).
         """
-        if self._native_read_enabled():
+        if self._native_read_enabled(path):
             error = _native_io.atomic_write(self._native_path(path), content.encode("utf-8", "surrogateescape"))
             return ExecuteResult(stdout=error or "", exit_code=1 if error else 0)
         q_path = self._escape_shell_arg(path)
@@ -831,7 +846,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         path = self._expand_path(path)  # before shell escaping: ~ doesn't expand in quotes
         offset, limit = normalize_read_pagination(offset, limit)
 
-        if self._native_read_enabled():
+        if self._native_read_enabled(path):
             return self._read_file_native(path, offset, limit)
 
         # Images / known-binary extensions never inline content; the sequential
@@ -909,21 +924,33 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
             file_size=file_size, file_ends_with_newline=file_ends_with_newline)
 
-    def _native_read_enabled(self) -> bool:
-        """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + a backend whose
-        files are the host's (``uses_host_filesystem``: the file is on this host, path already native;
-        Windows keeps the shell path since file_operations holds Git-Bash-style paths there).
-        ``HERMES_NATIVE_FILE_READ=0`` turns the fast path off."""
+    def _native_read_enabled(self, path: Optional[str] = None) -> bool:
+        """Whether a file operation may bypass the shell: only on ``LocalEnvironment`` (the file is
+        on this host). POSIX keeps the whole native lane; Windows takes it ONLY for a path that
+        resolves to a drive path (``C:/x``, or an MSYS ``/c/x`` translated here), because
+        ``os.*`` cannot open Git-Bash's other shapes (``/tmp``, ``//share``) — those keep the
+        shell. ``path=None`` on Windows answers False: a caller that cannot name its target
+        cannot prove the shape. ``HERMES_NATIVE_FILE_READ=0`` turns the fast path off."""
         flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
         if flag in ("0", "false", "no", "off"):
             return False
-        # Same "are these the host's files" test the LSP path uses; an attribute read
-        # and self.env is never rebound, so nothing to memoize.
-        return sys.platform != "win32" and self._lsp_local_only()
+        # Same "is this env the local host" test the LSP path uses; isinstance is
+        # microseconds and self.env is never rebound, so nothing to memoize.
+        cached = getattr(self, "_native_read_ok", None)
+        if cached is None:
+            cached = self._lsp_local_only()
+            self._native_read_ok = cached
+        if not cached:
+            return False
+        if sys.platform != "win32":
+            return True
+        return path is not None and _windows_drive_path(self._native_path(path))
 
     def _native_path(self, path: str) -> str:
-        """``path`` resolved the way the shell resolves it: against the live backend cwd."""
-        return path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
+        """``path`` resolved the way the shell resolves it: against the live backend cwd, and on
+        Windows from Git-Bash's ``/c/x`` to the ``C:/x`` the in-process primitives need."""
+        full = path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
+        return _msys_drive_to_windows(full) if sys.platform == "win32" else full
 
     def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
         """``read_file`` without a shell — same contract as the shell path, byte for
@@ -937,8 +964,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         unexpected OSError hands over to the shell path."""
         import stat as _stat
 
-        full = path if os.path.isabs(path) else os.path.join(
-            getattr(self.env, "cwd", None) or self.cwd, path)
+        full = self._native_path(path)
         try:
             st = os.stat(full)
         except (FileNotFoundError, NotADirectoryError):
@@ -1424,7 +1450,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         else:
             body_mode = None
 
-        native = _native_io.probe(self._native_path(path), body_mode == "cat") if self._native_read_enabled() else None
+        native = _native_io.probe(self._native_path(path), body_mode == "cat") if self._native_read_enabled(path) else None
         if native is not None:
             has_bom, raw = native
             # Decoded as the shell transport decodes (errors="replace"): same pre_content either way.
@@ -1497,7 +1523,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         The explicit flag saves the model a confirming re-read; a mismatch is a hard
         error. ``verified`` is None when the hash could not be taken."""
         try:
-            disk_sha = _native_io.sha256_of(self._native_path(path)) if self._native_read_enabled() else None
+            disk_sha = _native_io.sha256_of(self._native_path(path)) if self._native_read_enabled(path) else None
             hash_result = None if disk_sha else self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
             if hash_result is not None and hash_result.exit_code == 0 and hash_result.stdout.strip():
                 disk_sha = hash_result.stdout.strip().split()[0]

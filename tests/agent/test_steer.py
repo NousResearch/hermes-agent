@@ -80,6 +80,16 @@ class TestSteerDrain:
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
 
+    def test_adviser_steer_is_not_a_user_intervention(self):
+        agent = _bare_agent()
+        agent._turn_user_intervened = False
+        assert agent.steer("review note", kind="adviser") is True
+        assert agent._pending_steer_kind == "adviser"
+        assert agent._turn_user_intervened is False
+        # A human steer still clears the unattended flag.
+        assert agent.steer("typed note") is True
+        assert agent._turn_user_intervened is True
+
     def test_withdraw_takes_back_one_unconsumed_ticket_and_keeps_the_rest(self):
         agent = _bare_agent()
         agent.steer("first")
@@ -128,7 +138,6 @@ class TestSteerDrain:
         agent.clear_interrupt(hard_cancel=True)
         assert agent._pending_steer is None
         assert agent.withdraw_steer("t") is True, "dropped unread: never delivered"
-
 
 
 class TestActiveTurnRedirect:
@@ -537,6 +546,36 @@ class TestSteerInjection:
         assert repairs == 0
         assert [m["role"] for m in merged] == ["user", "user"]
         assert merged[-1]["content"] == "next question"
+
+    def test_persisted_adviser_row_is_never_merged_with_the_next_prompt(self):
+        """An adviser row is user-shaped for the provider, but the user did not write it.
+
+        Round-tripping it through the alternation repair would rewrite a persisted row with the
+        user's next prompt and leave the transcript claiming the user said it.
+        """
+        from agent.agent_runtime_helpers import _merge_consecutive_users
+        from agent.prompt_builder import advisory_user_row
+
+        adviser = advisory_user_row("[adviser — advisory only]\n- [concern] re-read the diff\n[end adviser]")
+        before = dict(adviser)
+        merged, repairs = _merge_consecutive_users([adviser, {"role": "user", "content": "next question"}])
+        assert adviser == before
+        assert repairs == 0
+        assert [m["role"] for m in merged] == ["user", "user"]
+        assert merged[-1]["content"] == "next question"
+
+    def test_trailing_adviser_row_does_not_hide_the_pending_tool_round(self):
+        """The advice lands right after the newest tool result; a round with no answer must still
+        be found or compaction pairs the tool row with the advice instead of the model's reply."""
+        from agent.context_compressor import _pending_tool_round
+
+        messages = [
+            {"role": "assistant", "content": "", "tool_calls": []},
+            {"role": "tool", "content": "ok", "tool_call_id": "a"},
+            {"role": "user", "content": "[adviser — advisory only]\n- [concern] x\n[end adviser]",
+             "display_kind": "adviser"},
+        ]
+        assert list(_pending_tool_round(messages)) == [1]
 
     def test_multimodal_tool_content_untouched_steer_lands_as_user_row(self):
         """Anthropic-style list content on tool results is left untouched —

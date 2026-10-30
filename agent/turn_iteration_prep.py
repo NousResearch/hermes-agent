@@ -287,8 +287,12 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
-            from agent.prompt_builder import steer_user_row
-            messages.insert(_si + 1, steer_user_row(steer_text))
+            from agent.prompt_builder import steer_row
+            from agent.plugin_events import notify_plugin_message
+            steer_kind = str(getattr(agent, "_pending_steer_kind", "user") or "user")
+            row = steer_row(steer_text, steer_kind)
+            messages.insert(_si + 1, row)
+            notify_plugin_message(agent, row)
             logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
             return
     from agent.agent_runtime_helpers import _requeue_pending_steer

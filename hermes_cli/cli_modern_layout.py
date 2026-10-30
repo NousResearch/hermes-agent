@@ -186,6 +186,44 @@ def tool_row(function_name: str, args: dict | None, duration: float, result=None
     return "\n".join(out)
 
 
+# A verbose result body is reference material, not the answer: dim, hung off the same gutter as an
+# inline diff, and bounded head+tail so one `read_file` of a 2k-line file cannot bury the turn. A
+# clipped middle prints its line count — a shortened result that reads as the whole one misleads.
+_TOOL_OUTPUT_LINE_CHARS = 400
+_TOOL_OUTPUT_HEAD_LINES = 12
+_TOOL_OUTPUT_TAIL_LINES = 8
+
+
+def _tool_output_rows(text: str) -> list[str]:
+    """Result lines for the verbose body: whole when short, head + ``… (+N more lines)`` + tail."""
+    rows = [
+        line if len(line) <= _TOOL_OUTPUT_LINE_CHARS else line[:_TOOL_OUTPUT_LINE_CHARS - 1] + "…"
+        for line in text.rstrip("\n").splitlines()
+    ]
+    if len(rows) <= _TOOL_OUTPUT_HEAD_LINES + _TOOL_OUTPUT_TAIL_LINES:
+        return rows
+    omitted = len(rows) - _TOOL_OUTPUT_HEAD_LINES - _TOOL_OUTPUT_TAIL_LINES
+    return [
+        *rows[:_TOOL_OUTPUT_HEAD_LINES],
+        t("cli.stream.tool_output_more", count=omitted),
+        *rows[-_TOOL_OUTPUT_TAIL_LINES:],
+    ]
+
+
+def completed_tool_output(cli, result) -> str:
+    """The result body printed under a finished tool row in ``display.tool_progress: verbose``.
+
+    ``""`` when the call produced no printable text (empty strings, dict/multimodal envelopes the
+    row already summarizes). Always dim: the row above owns the ✗ and the suffix, so the body is
+    evidence to read past, not a second alarm.
+    """
+    text = result if isinstance(result, str) else ""
+    if not text.strip():
+        return ""
+    gutter = f"{_DIM}│{_RST} " if is_modern(cli) else "  "
+    return "\n".join(f"{gutter}{_DIM}{row}{_RST}" for row in _tool_output_rows(text))
+
+
 _ACTIVE = False  # one CLI per process; read by printers that get no CLI handle (gateway inline diffs)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _DIFF_FILE_RE = re.compile(r"^a/(.+?) → b/(.+)$")

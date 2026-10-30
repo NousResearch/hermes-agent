@@ -7,12 +7,13 @@ Single `memory` tool: add/patch/remove or a batch `operations` list."""
 import copy
 import json
 import logging
+import os
 from contextvars import ContextVar
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
-from utils import is_truthy_value
+from utils import TRUTHY_STRINGS, is_truthy_value
 from tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; Windows uses msvcrt. MemoryStore reads both lazily from
@@ -303,9 +304,44 @@ def get_builtin_memory_config(config: Optional[dict[str, Any]] = None) -> dict[s
     return section if isinstance(section, dict) else {}
 
 
+#: The minir memory plugin takes over the two built-in stores through its own config block,
+#: the same ``memory.minir`` block ``hermes memory setup`` writes. The switch defaults on inside
+#: that block: a host without the plugin (no block) keeps MEMORY.md and USER.md untouched, and
+#: the plugin documents the opt-out plus its env override.
+_PLUGIN_MEMORY_BLOCK = "minir"
+_BLOCK_BUILTIN_MEMORY_KEY = "block_builtin_memory"
+_BLOCK_BUILTIN_MEMORY_ENV = "MINIR_BLOCK_BUILTIN_MEMORY"
+_FALSEY_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _plugin_blocks_builtin_memory(section: dict[str, Any]) -> bool:
+    """Whether the configured memory plugin suppresses MEMORY.md and USER.md.
+
+    Gating on the plugin's block keeps every other install unchanged: no block means no
+    suppression, and a different selected provider wins over a stale block. ``provider`` may be
+    empty when the plugin is installed as a context engine only, so an unset provider does not
+    veto the block. ``MINIR_BLOCK_BUILTIN_MEMORY`` overrides the stored value, matching the
+    plugin's env-wins contract.
+    """
+    provider = str(section.get("provider") or "").strip()
+    if provider and provider != _PLUGIN_MEMORY_BLOCK:
+        return False
+    block = section.get(_PLUGIN_MEMORY_BLOCK)
+    if not isinstance(block, dict):
+        return False
+    raw = str(os.environ.get(_BLOCK_BUILTIN_MEMORY_ENV, "")).strip().lower()
+    if raw in TRUTHY_STRINGS:
+        return True
+    if raw in _FALSEY_STRINGS:
+        return False
+    return is_truthy_value(block.get(_BLOCK_BUILTIN_MEMORY_KEY), default=True)
+
+
 def get_builtin_memory_store_flags(config: Optional[dict[str, Any]] = None) -> tuple[bool, bool]:
     """Return ``(memory_enabled, user_profile_enabled)`` from resolved config."""
     section = get_builtin_memory_config(config)
+    if _plugin_blocks_builtin_memory(section):
+        return False, False
     return tuple(is_truthy_value(section.get(k), default=True) for k in ("memory_enabled", "user_profile_enabled"))
 
 

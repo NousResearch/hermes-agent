@@ -1687,6 +1687,15 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
+    extra_handler = getattr(agent, "_extra_tool_handlers", {}).get(function_name)
+    if extra_handler is not None:
+        # A per-run tool the caller owns (nested reviewer's ``advise``). Its handler runs
+        # synchronously on this call's thread and returns the tool result string.
+        return _SequentialDispatch(
+            execute=lambda next_args: extra_handler(next_args),
+            error_result=lambda e: json.dumps({"error": f"Tool '{function_name}' failed: {e}"}),
+            error_log="extra tool handler raised for %s: %s",
+        )
     if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
         # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
         inline_executor = INLINE_TOOL_EXECUTORS[function_name]

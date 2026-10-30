@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "جارٍ تثبيت المهارة..."
     busy_skills: "جارٍ معالجة أمر المهارات..."
     busy_browser: "جارٍ إعداد المتصفح..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "جارٍ إعادة تحميل خوادم MCP..."
     busy_reload_skills: "جارٍ إعادة تحميل المهارات..."
     processing_command: "جارٍ معالجة الأمر..."

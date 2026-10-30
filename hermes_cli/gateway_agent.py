@@ -121,6 +121,9 @@ class GatewayAgent:
         self.connection_update_callback = connection_update_callback
         self._reasoning_callback = None
         self._show_reasoning_sent = None
+        # The session the effort was last committed to (``session.mutate reasoning``): a rotated id
+        # inherits the profile's level without owning it, so it has to be committed again.
+        self._reasoning_owner = None
         self.thinking_callback = thinking_callback
         self.tool_progress_callback = tool_progress_callback
         self.tool_start_callback = tool_start_callback
@@ -266,7 +269,12 @@ class GatewayAgent:
         if effort is None:
             return False
         info = self._state().info or {}
-        if not explicit and info.get("reasoning_effort") == effort:
+        # ``info`` states the effort the session inherits, not the one it owns: a session minted by
+        # /new, /resume or /branch reports the profile level while its turns resolve no effort at all,
+        # so trusting the inherited value skipped the only mutation that gives the new session one and
+        # the provider was never asked to reason. Commit per session id.
+        if (not explicit and info.get("reasoning_effort") == effort
+                and self._reasoning_owner == self.session_id):
             return True
         try:
             snapshot = self.connection.call("session.resume", session_id=self.session_id)
@@ -276,6 +284,7 @@ class GatewayAgent:
                                  expected_generation=snapshot["execution_generation"], operation="reasoning",
                                  payload={"effort": effort})
             info["reasoning_effort"] = effort
+            self._reasoning_owner = self.session_id
             return True
         except (GatewayClientError, KeyError, TypeError) as exc:
             logger.debug("session.mutate reasoning failed: %s", exc)

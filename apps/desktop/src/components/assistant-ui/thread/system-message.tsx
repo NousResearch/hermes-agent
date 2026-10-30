@@ -8,6 +8,7 @@ import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/compo
 import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
 import { ToolIcon } from '@/components/ui/tool-icon'
+import type { AdviserDisplay } from '@/lib/chat-messages/types'
 import { LinkifiedText } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
@@ -63,10 +64,56 @@ export const BackgroundResult: FC<BackgroundResultProps> = ({ text, report, proc
   )
 }
 
+/** One tone per advice row: a mixed block must not paint every note as its loudest one. */
+function adviserTone(severity: string): string {
+  return severity === 'blocker'
+    ? 'text-(--ui-red)'
+    : severity === 'concern'
+      ? 'text-(--ui-orange)'
+      : 'text-(--ui-text-tertiary)'
+}
+
 export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+  const adviser = useAuiState(s => s.message.metadata.custom?.adviser as AdviserDisplay | undefined)
+
+  if (adviser) {
+    const tone = adviserTone(adviser.severity)
+
+    return (
+      <MessagePrimitive.Root
+        className="w-full min-w-0 self-start py-1 pl-(--message-text-indent)"
+        data-role="system"
+        data-severity={adviser.severity}
+        data-slot="aui_adviser-message-root"
+      >
+        <div className="min-w-0 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-card) px-3 py-2">
+          <div className="flex min-w-0 items-center gap-1.5 pb-1">
+            <Codicon className={cn('shrink-0', tone)} name="lightbulb" size="0.8125rem" />
+            <span className={cn(SCAFFOLD_LABEL_CLASS, 'shrink-0')}>Adviser</span>
+            <span className={cn(SCAFFOLD_LABEL_CLASS, 'min-w-0 truncate text-(--ui-text-tertiary)')}>
+              {adviser.label}
+            </span>
+            <MessageTimelineTimestamp />
+          </div>
+          {adviser.items.length > 0 ? (
+            <div className="flex min-w-0 flex-col gap-1">
+              {adviser.items.map((item, index) => (
+                <div className="min-w-0" data-severity={item.severity} key={`${index}-${item.label}`}>
+                  <span className={cn(SCAFFOLD_LABEL_CLASS, adviserTone(item.severity))}>{item.label}</span>
+                  <MarkdownTextContent isRunning={false} text={item.text} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <MarkdownTextContent isRunning={false} text={adviser.body} />
+          )}
+        </div>
+      </MessagePrimitive.Root>
+    )
+  }
 
   if (!text) {
     return null

@@ -116,6 +116,10 @@ class CLIChatTurnMixin:
                 # boundaries (tool-calling loops), reset once per user turn.
                 self._reasoning_shown_this_turn = False
                 self._streamed_text_this_turn = ""
+                # Which step's reasoning the live box printed, and the block already committed
+                # above a tool batch; both are turn-scoped, not stream-reset.
+                self._reasoning_streamed_this_turn = ""
+                self._reasoning_block_printed = ""
                 self._chat_setup_turn_audio(turn, message, voice_input)
                 # Per-prompt elapsed timer — frozen when the agent thread finishes.
                 self._prompt_start_time = time.time()
@@ -332,6 +336,14 @@ class CLIChatTurnMixin:
         # Notes and voice prefix are API-local: the staged input stays the durable transcript
         # value so a close-path marker follows the same dict instead of a second user row.
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
+        # A leftover adviser trigger re-enters the REPL as a pending input; label its row so
+        # every surface draws a card instead of words the user typed.
+        _display_kind = None
+        _pending_kinds = getattr(self, "_pending_input_kinds", None)
+        if _pending_kinds:
+            _display_kind = _pending_kinds.pop(str(message), None)
+            if _display_kind == "user":
+                _display_kind = None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         # Set only by a dispatcher-spawned `-q` run; a human turn keeps today's call shape.
@@ -347,7 +359,8 @@ class CLIChatTurnMixin:
                     user_message=agent_message,
                     conversation_history=self.conversation_history[:-1],
                     stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
-                    persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                    persist_user_message=_persist_clean_user_message,
+                    persist_user_display_kind=_display_kind, moa_config=_moa_cfg,
                     **_author_kwargs,
                 )
             if getattr(self, "_pending_moa_disable_after_turn", False):
@@ -636,6 +649,12 @@ class CLIChatTurnMixin:
             preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
             _cprint(f"\n{t('cli.chat.delivering_leftover_steer', preview=preview)}")
             self._pending_input.put(_leftover_steer)
+            _kinds = getattr(self, "_pending_input_kinds", None)
+            if _kinds is None:
+                _kinds = self._pending_input_kinds = {}
+            _kinds[str(_leftover_steer)] = ("adviser"
+                                           if (turn.result or {}).get("pending_steer_kind") == "adviser"
+                                           else "user")
 
         return response
 
@@ -674,29 +693,20 @@ class CLIChatTurnMixin:
         return pending_message, _show_interrupt_marker
 
     def _chat_print_reasoning_box(self, turn):
-        """Collapsed reasoning box when show_reasoning is on and streaming did not already show it."""
-        from cli import _DIM, _RST, _cprint
-        # _reasoning_shown_this_turn, not _reasoning_stream_started: the latter resets at
-        # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
-        if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
-            reasoning = turn.result.get("last_reasoning")
-            if reasoning and getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import thought_rows
-                for line in thought_rows(None, reasoning, self.reasoning_full):
-                    _cprint(line)
-            elif reasoning:
-                w = self._scrollback_box_width()
-                r_label = f" {t('cli.chat.reasoning_label')} "
-                r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
-                r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
-                # First 10 lines unless the user opted into /reasoning full.
-                lines = reasoning.strip().splitlines()
-                if len(lines) > 10 and not self.reasoning_full:
-                    display_reasoning = "\n".join(lines[:10])
-                    display_reasoning += f"\n{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - 10)}{_RST}"
-                else:
-                    display_reasoning = reasoning.strip()
-                _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+        """Collapsed reasoning box when show_reasoning is on and streaming did not already show it.
+
+        Never after the answer: when the reply itself already streamed, a box printed now would
+        sit under the final response. A tool step's reasoning is printed above its rows
+        (``_print_tool_step_reasoning``), which is the only place it can precede the output.
+        """
+        if not (getattr(self, "show_reasoning", False) and turn.result
+                and not getattr(self, "_reasoning_shown_this_turn", False)):
+            return
+        answer = " ".join(str(turn.result.get("final_response") or "").split())
+        streamed = " ".join(getattr(self, "_streamed_text_this_turn", "").split())
+        if answer and answer in streamed:
+            return
+        self._emit_reasoning_block(turn.result.get("last_reasoning") or "")
 
     def _chat_print_response_panel(self, turn, response):
         """Response box (close TTS-drawn box / post-stream transform / Rich Panel), then billing CTA."""

@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "Instalando la skill..."
     busy_skills: "Procesando el comando de skills..."
     busy_browser: "Configurando el navegador..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "Recargando los servidores MCP..."
     busy_reload_skills: "Recargando las skills..."
     processing_command: "Procesando el comando..."

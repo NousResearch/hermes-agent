@@ -56,6 +56,7 @@ const DRAFT_SUPERSEDING_EVENT_TYPES = new Set([
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
   'message.interim',
+  'message.adviser',
   'thinking.delta',
   'reasoning.delta',
   'reasoning.available',
@@ -73,6 +74,7 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
   'message.complete',
   'message.delta',
   'message.interim',
+  'message.adviser',
   'message.start',
   'reasoning.available',
   'reasoning.delta',

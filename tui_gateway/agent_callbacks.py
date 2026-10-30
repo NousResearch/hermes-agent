@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 
 import contextlib
+import re
 import threading
 
 from .method_ctx import bind_module
@@ -181,7 +182,11 @@ def _agent_cbs(sid: str) -> dict:
         "tour_callback": lambda payload: _tour_request(sid, payload),
         # set_theme (desktop GUI): theme.apply with the tour probe ladder, or a theme.pick card.
         "theme_callback": lambda payload: theme_request(sid, payload),
-        "setup_beat_callback": lambda payload: _setup_beat_request(sid, payload)}
+        "setup_beat_callback": lambda payload: _setup_beat_request(sid, payload),
+        # A plugin-injected adviser row (steer/continuation): let a live surface draw the card
+        # now instead of waiting for the next transcript hydrate. A plain mid-turn steer is a
+        # user row and keeps its own surface path.
+        "plugin_message_callback": lambda row: _announce_plugin_row(sid, row)}
 
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
@@ -189,6 +194,34 @@ def _agent_cbs(sid: str) -> dict:
         callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
             "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
     return callbacks
+
+
+def _announce_plugin_row(sid: str, row: Any) -> None:
+    """Emit ``message.adviser`` for an injected adviser row, and for nothing else.
+
+    ``plugin_message_callback`` also fires for a mid-turn steer delivered at a tool
+    boundary; that row is the operator's words and already has a surface path, so
+    it must not be redrawn as plugin advice.
+    """
+    if not isinstance(row, dict) or str(row.get("display_kind") or "") != "adviser":
+        return
+    _emit("message.adviser", sid, _adviser_payload(row))
+
+
+def _adviser_payload(row: dict) -> dict:
+    """The event payload for one injected adviser row; the Desktop draws the card."""
+    text = str(row.get("content") or "")
+    label = "advisory"
+    match = re.search(r"^- \[([^\]]+)\]", text, re.MULTILINE)
+    if match:
+        label = match.group(1).strip()
+    return {
+        "id": str(row.get("plugin_message_id") or ""),
+        "text": text,
+        "severity": label.split(" · ")[0].strip() or "advisory",
+        "label": label,
+        "display_kind": "adviser",
+    }
 
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:

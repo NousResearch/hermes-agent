@@ -321,9 +321,14 @@ INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES = frozenset({"todo_list", "session_search",
 def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineToolExecutor]:
     """Inline executor for ``invoke_tool`` (concurrent path), or None for registry dispatch.
 
-    Precedence: todo_list/session_search/memory, then memory-manager tools, then the
-    remaining inline tools (``message_agent`` excluded).
+    Precedence: the run's own extra tools, todo_list/session_search/memory, then
+    memory-manager tools, then the remaining inline tools (``message_agent`` excluded).
     """
+    extra = getattr(agent, "_extra_tool_handlers", None)
+    if extra:
+        handler = extra.get(function_name)
+        if handler is not None:
+            return lambda agent, args, ctx: handler(args)
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager

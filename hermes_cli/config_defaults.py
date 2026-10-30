@@ -201,6 +201,11 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
+        # Max consecutive plugin stop-gate continuations per turn
+        # (`hermes_cli.plugin_runtime.request_continuation`). Separate from the
+        # verify budget: an adviser acting on its own finding must not consume the
+        # coding-verification allowance.
+        "max_plugin_continuations": 2,
         # Verification closure: after code edits in a workspace, refuse a final answer until fresh
         # verification evidence exists or the agent explains why it can't check (bounded loop,
         # passive ledger). False (default) because the nudges proved more noise than signal; true =

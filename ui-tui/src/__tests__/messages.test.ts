@@ -55,6 +55,38 @@ describe('toTranscriptMessages', () => {
     ])
   })
 
+  it('projects adviser rows as an adviser card, not a user prompt', () => {
+    const text = [
+      '[adviser — advisory only]',
+      '- [concern · reviewer] The patch drops the retry path.',
+      '- [nit] Name the fallback.',
+      '[end adviser]'
+    ].join('\n')
+
+    const [message] = toTranscriptMessages([{ role: 'user', text, display_kind: 'adviser' }])
+
+    expect(message.role).toBe('system')
+    expect(message.text).not.toContain('[adviser')
+    expect(message.text).not.toContain('[end adviser]')
+    expect(message.text).toContain('drops the retry path')
+    expect(message.adviser).toMatchObject({ label: 'concern · reviewer', severity: 'concern' })
+    expect(message.adviser?.items).toHaveLength(2)
+  })
+
+  it('lets a blocker listed second raise the card severity', () => {
+    const text = [
+      '[adviser — advisory only]',
+      '- [concern · reviewer] The patch drops the retry path.',
+      '- [blocker · reviewer] The migration never ran.',
+      '[end adviser]'
+    ].join('\n')
+
+    const [message] = toTranscriptMessages([{ role: 'user', text, display_kind: 'adviser' }])
+
+    expect(message.adviser).toMatchObject({ severity: 'blocker' })
+    expect(message.adviser?.items.map(item => item.severity)).toEqual(['concern', 'blocker'])
+  })
+
   it('projects async_delegation_complete with task_count metadata', () => {
     const rows = [
       { role: 'user', text: 'do work' },
@@ -140,6 +172,95 @@ describe('MessageLine', () => {
       .find(line => line.includes('Okay'))
 
     expect(renderedLine).toContain('Ψ > Okay')
+  })
+
+  it('renders an adviser card with its label instead of a user gutter glyph', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 80,
+        msg: {
+          adviser: { items: [], label: 'concern · reviewer', severity: 'concern' },
+          role: 'system',
+          text: 'The patch drops the retry path.'
+        },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+
+    expect(rendered).toContain('adviser · concern · reviewer')
+    expect(rendered).toContain('The patch drops the retry path.')
+  })
+
+  it('renders each advice row with its own label in a mixed block', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 80,
+        msg: {
+          adviser: {
+            items: [
+              { label: 'concern · reviewer', severity: 'concern', text: 'read the import first' },
+              { label: 'blocker · reviewer', severity: 'blocker', text: 'the test never ran' }
+            ],
+            label: 'blocker · reviewer',
+            severity: 'blocker'
+          },
+          role: 'system',
+          text: 'read the import first\nthe test never ran'
+        },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+
+    expect(rendered).toContain('adviser · blocker · reviewer')
+    expect(rendered).toContain('concern · reviewer')
+    expect(rendered).toContain('blocker · reviewer')
+    expect(rendered).toContain('the test never ran')
   })
 
   it('keeps historical thinking blocks collapsed by default', () => {

@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@/lib/chat-messages'
+import type { AdviserDisplay, ChatMessage } from '@/lib/chat-messages'
 
 import { persistedTurnsEquivalent } from './pending-turn-identity'
 
@@ -29,6 +29,10 @@ const COMPARED_FIELDS = [
   'recovered',
   'asyncResult',
   'asyncResultKind',
+  // Plugin adviser card content; a rehydrated label/body must repaint.
+  'adviser',
+  // Stable id of an injected adviser row; the live event and the hydrate must agree on it.
+  'pluginMessageId',
   'id',
   'role',
   'pending',
@@ -152,6 +156,18 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
   )
 }
 
+function adviserEquivalent(a: AdviserDisplay | undefined, b: AdviserDisplay | undefined): boolean {
+  if (a === b) {
+    return true
+  }
+
+  if (!a || !b) {
+    return false
+  }
+
+  return a.severity === b.severity && a.label === b.label && a.body === b.body
+}
+
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
@@ -171,6 +187,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.branchGroupId !== b.branchGroupId ||
     a.timestamp !== b.timestamp ||
     a.completedAt !== b.completedAt ||
+    !adviserEquivalent(a.adviser, b.adviser) ||
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
     (a.interim ?? false) !== (b.interim ?? false) ||

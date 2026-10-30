@@ -23316,6 +23316,41 @@
         "title": "McpServersTestResult",
         "type": "object"
       },
+      "MessageAdviserPayload": {
+        "additionalProperties": false,
+        "description": "``agent_callbacks.plugin_message_callback``: one injected adviser row.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "display_kind": {
+            "title": "Display Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "severity",
+          "label",
+          "display_kind"
+        ],
+        "title": "MessageAdviserPayload",
+        "type": "object"
+      },
       "MessageCompletePayload": {
         "additionalProperties": false,
         "description": "``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /\n``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /\n``compute_host_bridge`` (``text`` + ``status``).",
@@ -49104,6 +49139,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/GatewayReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "message.adviser",
+      "summary": "Plugin adviser advice injected into the live transcript; render as an adviser card.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/MessageAdviserPayload"
           }
         }
       ]

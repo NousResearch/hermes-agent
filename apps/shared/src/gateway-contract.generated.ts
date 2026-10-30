@@ -5662,6 +5662,14 @@ export interface MessageInterimPayload {
   turn_id?: string | null
   segment?: number | null
 }
+/** ``agent_callbacks.plugin_message_callback``: one injected adviser row. */
+export interface MessageAdviserPayload {
+  id: string
+  text: string
+  severity: string
+  label: string
+  display_kind: string
+}
 /** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {
   text?: string | unknown
@@ -7039,6 +7047,8 @@ export interface BackendGatewayEventMap {
   'free_tier.challenge': FreeTierChallengePayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
   'gateway.ready': GatewayReadyPayload
+  /** Plugin adviser advice injected into the live transcript; render as an adviser card. */
+  'message.adviser': MessageAdviserPayload
   /** The turn ended: final text, usage and outcome. */
   'message.complete': MessageCompletePayload
   /** One streamed chunk of the assistant reply (null text: segment boundary). */
@@ -7180,6 +7190,7 @@ export const GATEWAY_EVENT_TYPES = [
   'error',
   'free_tier.challenge',
   'gateway.ready',
+  'message.adviser',
   'message.complete',
   'message.delta',
   'message.interim',

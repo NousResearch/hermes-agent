@@ -210,6 +210,65 @@ function splitCompactionContent(content: string): CompactionSplit | null {
   };
 }
 
+// A plugin adviser row persists as user-role content with ``display_kind="adviser"``:
+// model-facing guidance, never a human prompt. Its bracketed header/footer are machine
+// chrome, so the inspector shows the severity label + advice body instead.
+const ADVISER_HEADER_RE = /^\[adviser[^\n]*\]\s*/;
+const ADVISER_FOOTER_RE = /\s*\[end adviser\]\s*$/;
+const ADVISER_ITEM_RE = /^- \[([^\]]+)\]\s*(.+)$/gm;
+const ADVISER_TURNS_RE = /\((\d+) turns? ago\)/i;
+
+function splitAdviserContent(
+  content: string,
+): {
+  label: string;
+  body: string;
+  severity: string;
+  turnsAgo: number | null;
+  items: { label: string; severity: string; text: string }[];
+} | null {
+  const raw = content.trim();
+  if (!ADVISER_HEADER_RE.test(raw)) return null;
+  const body = raw
+    .replace(ADVISER_HEADER_RE, "")
+    .replace(ADVISER_FOOTER_RE, "")
+    .trim();
+  // The per-note header is `severity · target · adviser`; find the known severity token
+  // instead of trusting a fixed position.
+  const items = [...body.matchAll(ADVISER_ITEM_RE)].map((match) => {
+    const itemLabel = match[1].trim();
+    const itemSeverity =
+      itemLabel
+        .split(" · ")
+        .map((part) => part.trim().toLowerCase())
+        .find((part) => part in ADVISER_SEVERITY_STYLES) || "advisory";
+    return { label: itemLabel, severity: itemSeverity, text: match[2].trim() };
+  });
+  const top = items.reduce<(typeof items)[number] | undefined>((best, item) => {
+    const rank = (value: string) => ({ blocker: 3, concern: 2, nit: 1 })[value] ?? 0;
+    return !best || rank(item.severity) > rank(best.severity) ? item : best;
+  }, undefined);
+  const turns = ADVISER_TURNS_RE.exec(body);
+  return {
+    label: top?.label ?? "advisory",
+    body,
+    severity: top?.severity ?? "advisory",
+    turnsAgo: turns ? Number(turns[1]) : null,
+    items,
+  };
+}
+
+// Severity coloring for an adviser card: the inspector should read the same way the
+// TUI/Desktop cards do (blocker red, concern amber, everything else muted).
+const ADVISER_SEVERITY_STYLES: Record<
+  string,
+  { bg: string; text: string }
+> = {
+  blocker: { bg: "bg-destructive/10", text: "text-destructive" },
+  concern: { bg: "bg-warning/10", text: "text-warning" },
+  nit: { bg: "bg-muted/50", text: "text-muted-foreground" },
+};
+
 
 function MessageBubble({
   msg,
@@ -252,6 +311,12 @@ function MessageBubble({
       text: "text-muted-foreground italic",
       label: "Context handoff",
     },
+    // Plugin adviser guidance: model-facing, so it must never read as a user turn.
+    adviser: {
+      bg: "bg-muted/50",
+      text: "text-muted-foreground",
+      label: "adviser",
+    },
   };
 
   // When a compaction handoff is merged into the front of the first
@@ -290,14 +355,28 @@ function MessageBubble({
   }
 
   const isCompaction = compactionSplit !== null;
-  const style = isCompaction
-    ? ROLE_STYLES.compaction
-    : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
-  const label = isCompaction
-    ? ROLE_STYLES.compaction.label
-    : msg.tool_name
-      ? `${t.sessions.roles.tool}: ${msg.tool_name}`
-      : style.label;
+  const adviserSplit =
+    msg.display_kind === "adviser" && typeof msg.content === "string"
+      ? splitAdviserContent(msg.content)
+      : null;
+  const adviserStyle = adviserSplit
+    ? { ...ROLE_STYLES.adviser, ...(ADVISER_SEVERITY_STYLES[adviserSplit.severity] ?? {}) }
+    : null;
+  const style = adviserStyle
+    ? adviserStyle
+    : isCompaction
+      ? ROLE_STYLES.compaction
+      : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
+  const label = adviserSplit
+    ? `${ROLE_STYLES.adviser.label} · ${adviserSplit.label}` +
+      (adviserSplit.turnsAgo != null
+        ? ` · ${adviserSplit.turnsAgo} ${adviserSplit.turnsAgo === 1 ? "turn" : "turns"} ago`
+        : "")
+    : isCompaction
+      ? ROLE_STYLES.compaction.label
+      : msg.tool_name
+        ? `${t.sessions.roles.tool}: ${msg.tool_name}`
+        : style.label;
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {
@@ -329,7 +408,28 @@ function MessageBubble({
           </span>
         )}
       </div>
-      {msg.content &&
+      {adviserSplit && (
+        <div className="flex flex-col gap-1 text-sm text-foreground leading-relaxed">
+          {adviserSplit.items.length > 0 ? (
+            adviserSplit.items.map((item, index) => (
+              <div className="whitespace-pre-wrap" key={`${index}-${item.label}`}>
+                <span
+                  className={`text-xs font-semibold ${
+                    (ADVISER_SEVERITY_STYLES[item.severity] ?? ADVISER_SEVERITY_STYLES.nit).text
+                  }`}
+                >
+                  {item.label}
+                </span>{" "}
+                <span>{item.text}</span>
+              </div>
+            ))
+          ) : (
+            <div className="whitespace-pre-wrap">{adviserSplit.body}</div>
+          )}
+        </div>
+      )}
+      {!adviserSplit &&
+        msg.content &&
         (msg.role === "system" ? (
           <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
             {msg.content}

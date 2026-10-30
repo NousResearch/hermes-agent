@@ -11,6 +11,7 @@ import os
 import queue
 import sys
 import threading
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -581,6 +582,9 @@ def format_steer_marker(steer_text: str) -> str:
 
 
 STEER_DISPLAY_KIND = "steer"
+#: Row kind for plugin advice delivered mid-turn. Not a user steer: the text carries its own
+#: `[adviser — advisory only]` frame and must not claim the user's authority.
+ADVISER_DISPLAY_KIND = "adviser"
 
 
 def steer_user_row(steer_text: str) -> dict[str, Any]:
@@ -590,6 +594,24 @@ def steer_user_row(steer_text: str) -> dict[str, Any]:
     never merges the next real prompt into it and history renderers can label it."""
     return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
             "display_kind": STEER_DISPLAY_KIND}
+
+
+def advisory_user_row(text: str) -> dict[str, Any]:
+    """Plugin advice as a user-role row without the user-authority marker.
+
+    Providers need a user/tool row at the delivery point, but an adviser is not the user. The
+    body already opens with ``[adviser — advisory only]``; ``display_kind`` keeps it out of the
+    "human input" bucket in history/compaction code that checks the kind.
+    """
+    return {"role": "user", "content": str(text), "display_kind": ADVISER_DISPLAY_KIND,
+            "plugin_message_id": uuid.uuid4().hex}
+
+
+def steer_row(text: str, kind: str = "user") -> dict[str, Any]:
+    """Pick the row shape for a drained steer: operator text or plugin advice."""
+    if str(kind or "").lower() == ADVISER_DISPLAY_KIND:
+        return advisory_user_row(text)
+    return steer_user_row(text)
 
 
 STEER_CHANNEL_NOTE = (

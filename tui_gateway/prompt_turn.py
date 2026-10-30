@@ -445,9 +445,16 @@ def _run_post_turn_followups(
     requeued first so it isn't dropped; then goal continuation, then completion
     notifications.  Each nested submit re-checks ``running`` under the lock."""
     steer = result.get("pending_steer") if isinstance(result, dict) else None
+    steer_kind = result.get("pending_steer_kind") if isinstance(result, dict) else None
     if isinstance(steer, str) and steer.strip():
         with session["history_lock"]:
-            _enqueue_prompt(session, steer, session.get("transport"))
+            envelope = _enqueue_prompt(session, steer, session.get("transport"))
+            if envelope is not None:
+                # An adviser trigger is still a real turn, but its row must render as an adviser
+                # card, not as words the user typed. The label rides the queued row into the
+                # drained turn, where ``_run_prompt_submit`` adopts it.
+                _persist_queued_user_row(
+                    session, envelope, "adviser" if steer_kind == "adviser" else None)
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:

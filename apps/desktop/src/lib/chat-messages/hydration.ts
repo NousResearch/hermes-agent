@@ -182,8 +182,44 @@ const NOTICE_DISPLAY_KINDS = [
   'auto_continue',
   'personality_switch',
   // Hermes closing a failed turn, not the model speaking.
-  'failed_turn'
+  'failed_turn',
+  // Plugin adviser guidance: a user-role row the model saw, but not a human prompt.
+  'adviser'
 ] as const
+
+const ADVISER_HEADER_RE = /^\[adviser[^\n]*\]\s*/
+const ADVISER_FOOTER_RE = /\s*\[end adviser\]\s*$/
+const ADVISER_ITEM_RE = /^- \[([^\]]+)\]\s*(.*)$/gm
+const ADVISER_SEVERITY_RANK: Record<string, number> = { blocker: 3, concern: 2, nit: 1 }
+
+/** Parse the rendered adviser block into the card's label and body. Display-only. */
+export function adviserFromMessage(content: string): ChatMessage['adviser'] | undefined {
+  const raw = String(content || '').trim()
+  if (!raw) {
+    return undefined
+  }
+
+  const body = raw.replace(ADVISER_HEADER_RE, '').replace(ADVISER_FOOTER_RE, '').trim()
+  const items = [...body.matchAll(ADVISER_ITEM_RE)].map(match => {
+    const label = match[1].trim()
+
+    return { label, severity: label.split(' · ')[0]?.trim() || 'advisory', text: match[2].trim() }
+  })
+  // The card's own badge must not understate a mixed block: one blocker in the rows makes
+  // the card a blocker even when a concern was listed first.
+  const top = items.reduce<(typeof items)[number] | undefined>(
+    (best, item) =>
+      !best || (ADVISER_SEVERITY_RANK[item.severity] ?? 0) > (ADVISER_SEVERITY_RANK[best.severity] ?? 0) ? item : best,
+    undefined
+  )
+
+  return {
+    severity: top?.severity ?? 'advisory',
+    label: top?.label ?? 'advisory',
+    body,
+    items
+  }
+}
 
 function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
   return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
@@ -518,6 +554,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? persistedImageRefs(rawDisplayContent) : null
     const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
     const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
+    const adviser = message.display_kind === 'adviser' ? adviserFromMessage(displayContent || '') : undefined
     const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
     const extractedAttachmentRefs = liftedRefs.length ? liftedRefs : undefined
 
@@ -658,6 +695,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
+      ...(adviser ? { adviser } : {}),
+      ...(message.plugin_message_id
+        ? { pluginMessageId: String(message.plugin_message_id) }
+        : {}),
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
       ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }

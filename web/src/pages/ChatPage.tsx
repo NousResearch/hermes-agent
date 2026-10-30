@@ -32,6 +32,7 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { NativeChat } from "@/pages/NativeChat";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -185,6 +186,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // Why ptyState is "ended": the agent process exited (/exit or crash), or the
   // server could not start it at all (close 1011; the reason is in the terminal).
   const [endedReason, setEndedReason] = useState<"exited" | "start-failed">("exited");
+  // Native transcript is the default surface; the PTY stays mounted underneath so switching
+  // is instant and the running session is not lost. `0` is the only persisted opt-out.
+  const [nativeView, setNativeView] = useState(() => {
+    try {
+      return localStorage.getItem("hermes.chat.native-view") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("hermes.chat.native-view", nativeView ? "1" : "0");
+    } catch {
+      // private mode: keep the in-memory choice
+    }
+  }, [nativeView]);
   const navigate = useNavigate();
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2013,6 +2030,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   panel
                 </span>
               </span>
+            </Button>
+          )}
+
+          {nativeView && (
+            <div className="absolute inset-0 z-40 flex min-h-0 flex-col overflow-hidden rounded-lg bg-background">
+              <NativeChat onExit={() => setNativeView(false)} />
+            </div>
+          )}
+
+          {!nativeView && (
+            <Button
+              ghost
+              onClick={() => setNativeView(true)}
+              title="Switch to native chat"
+              aria-label="Switch to native chat"
+              className={cn(
+                "absolute z-10",
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30 bg-black/20",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "bottom-2 left-2 px-2 py-1 text-xs",
+              )}
+              style={{ color: terminalFg }}
+            >
+              Native
             </Button>
           )}
         </div>

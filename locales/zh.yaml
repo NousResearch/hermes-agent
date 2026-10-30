@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "正在安装技能..."
     busy_skills: "正在处理技能命令..."
     busy_browser: "正在配置浏览器..."
+    tool_output_more: "…（另有 {count} 行）"
     busy_reload_mcp: "正在重新加载 MCP 服务器..."
     busy_reload_skills: "正在重新加载技能..."
     processing_command: "正在处理命令..."

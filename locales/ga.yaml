@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "Ag suiteáil na scile..."
     busy_skills: "Ag próiseáil ordú scileanna..."
     busy_browser: "Ag cumrú an bhrabhsálaí..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "Ag athlódáil freastalaithe MCP..."
     busy_reload_skills: "Ag athlódáil scileanna..."
     processing_command: "Ag próiseáil an ordaithe..."

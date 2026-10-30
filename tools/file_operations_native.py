@@ -76,8 +76,13 @@ def atomic_write(path: str, data: bytes) -> Optional[str]:
         return f"{e.strerror or e}: {e.filename or target}"
     try:
         if mode is not None:
+            # ``fchmod`` is POSIX-only: Windows has no descriptor-level chmod (its path
+            # ``chmod`` only carries the read-only bit), so there the temp keeps the 0o600 it
+            # was created with. Best effort either way, exactly like the shell script.
+            fchmod = getattr(os, "fchmod", None)
             try:
-                os.fchmod(fd, mode)  # before any content: the bytes never sit in a wider file
+                if fchmod is not None:
+                    fchmod(fd, mode)  # before any content: the bytes never sit in a wider file
             except OSError:
                 pass  # best effort, as in the shell script (the temp then stays 0o600)
         with open(fd, "wb") as fh:

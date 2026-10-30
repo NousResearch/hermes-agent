@@ -7,7 +7,10 @@ tool history that was lost when the TUI switched to a single-line spinner.
 
 import sys
 import importlib
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 # Module-level reference to the cli module (set by _make_cli on first call)
@@ -139,9 +142,152 @@ class TestToolProgressScrollback:
         assert mock_print.call_count == 2
 
 
+class TestVerboseToolOutput:
+    """``display.tool_progress: verbose`` prints each call's result body under its row.
+
+    Its label promises results; before this the mode committed the same one-line row as
+    'all'. The one-line modes are the fold, so no body may appear there.
+    """
+
+    def test_verbose_prints_the_result_under_the_row(self):
+        cli = _make_cli(tool_progress="verbose")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "echo hi", {"command": "echo hi"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None,
+                                  duration=0.1, is_error=False, result="hello\nworld")
+
+        assert mock_print.call_count == 2
+        row, body = (call.args[0] for call in mock_print.call_args_list)
+        assert "hello" not in row
+        assert "hello" in body and "world" in body
+
+    @pytest.mark.parametrize("mode", ["all", "new", "off"])
+    def test_one_line_modes_print_no_body(self, mode):
+        """The fold: every other mode keeps a single row per call."""
+        cli = _make_cli(tool_progress=mode)
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "echo hi", {"command": "echo hi"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None,
+                                  duration=0.1, is_error=False, result="hello")
+
+        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        assert "hello" not in printed
+
+    def test_empty_and_non_text_results_add_no_body(self):
+        cli = _make_cli(tool_progress="verbose")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "true", {"command": "true"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None,
+                                  duration=0.1, is_error=False, result="  ")
+            cli._on_tool_progress("tool.started", "read_file", "a.png", {"path": "a.png"})
+            cli._on_tool_progress("tool.completed", "read_file", None, None,
+                                  duration=0.1, is_error=False, result={"content": []})
+
+        assert mock_print.call_count == 2  # one row per call, nothing under either
+
+
+class TestVerboseModeArgument:
+    """``/verbose <mode>`` pins one mode instead of cycling, which makes the fold one step."""
+
+    def test_a_mode_word_pins_that_mode(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint"):
+            cli._toggle_verbose("/verbose verbose")
+
+        assert cli.tool_progress_mode == "verbose"
+
+    def test_bare_command_still_cycles(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint"):
+            cli._toggle_verbose("/verbose")
+
+        assert cli.tool_progress_mode == "verbose"
+
+    def test_an_unknown_word_prints_usage_and_keeps_the_mode(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._toggle_verbose("/verbose loud")
+
+        assert cli.tool_progress_mode == "all"
+        assert "off|new|all|verbose" in str(mock_print.call_args[0][0])
 
 
 
+
+
+
+
+class TestReasoningBeforeToolOutput:
+    """A step's thinking prints above the rows it caused, and never after the answer.
+
+    Providers that stream no reasoning deltas deliver the whole block on the finished
+    assistant message. The tool row then printed with no thinking above it, and the turn-end
+    fallback printed that thinking under the final answer.
+    """
+
+    @staticmethod
+    def _cli_with_step_reasoning(reasoning="read it before answering"):
+        cli = _make_cli(tool_progress="verbose")
+        cli.show_reasoning = True
+        cli.reasoning_full = True
+        cli._reasoning_shown_this_turn = False
+        cli._streamed_text_this_turn = ""
+        cli.agent = SimpleNamespace(messages=[
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "reasoning": reasoning,
+             "tool_calls": [{"id": "call-1"}]},
+        ])
+        return cli
+
+    def test_step_reasoning_lands_above_the_tool_row(self):
+        cli = self._cli_with_step_reasoning()
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "cat a.txt", {"command": "cat a.txt"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None,
+                                  duration=0.1, is_error=False, result="file body")
+
+        printed = [str(call.args[0]) for call in mock_print.call_args_list]
+        reasoning_at = next(i for i, row in enumerate(printed) if "read it before answering" in row)
+        row_at = next(i for i, row in enumerate(printed) if "file body" in row)
+        assert reasoning_at < row_at
+
+    def test_parallel_calls_of_one_batch_share_one_block(self):
+        cli = self._cli_with_step_reasoning()
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            for name in ("terminal", "read_file"):
+                cli._on_tool_progress("tool.started", name, "x", {})
+
+        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        assert printed.count("read it before answering") == 1
+
+    def test_reasoning_the_live_box_already_printed_is_not_repeated(self):
+        cli = self._cli_with_step_reasoning()
+        cli._reasoning_streamed_this_turn = "read it before answering"
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "cat a.txt", {"command": "cat a.txt"})
+
+        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        assert "read it before answering" not in printed
+
+    def test_turn_end_box_is_skipped_once_the_answer_streamed(self):
+        cli = self._cli_with_step_reasoning()
+        cli._streamed_text_this_turn = "the answer is 42"
+        turn = SimpleNamespace(result={"last_reasoning": "weighing the options",
+                                       "final_response": "the answer is 42"})
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._chat_print_reasoning_box(turn)
+
+        mock_print.assert_not_called()
+
+    def test_turn_end_box_still_prints_before_an_unstreamed_answer(self):
+        cli = self._cli_with_step_reasoning()
+        turn = SimpleNamespace(result={"last_reasoning": "weighing the options",
+                                       "final_response": "the answer is 42"})
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._chat_print_reasoning_box(turn)
+
+        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        assert "weighing the options" in printed
 
 
 class TestMoAReferenceBlocks:

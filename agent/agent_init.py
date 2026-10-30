@@ -450,9 +450,14 @@ _CONTROL_STATE: dict[str, Any] = {
     "_model_request_active": threading.Event,
     "_supports_active_turn_redirect": True,
     # /steer: the drain hook appends the note to the last tool result after the current
-    # batch — no interrupt, no new user turn (role alternation preserved).
+    # batch — no interrupt, no new user turn (role alternation preserved). ``kind`` is
+    # "user" for an operator steer and "adviser" for plugin advice, which must not be
+    # framed as a direct user message.
     "_pending_steer": None,
+    "_pending_steer_kind": "user",
     "_pending_steer_lock": threading.Lock,
+    # Surface-installed observer for rows a plugin injects (adviser steer/continuation).
+    "plugin_message_callback": None,
     # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
     # rebuild the tail with the correction. Drained at a role-safe boundary.
     "_pending_redirect": None,
@@ -1006,6 +1011,40 @@ def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
     if headers:
         kwargs["default_headers"] = dict(headers)
     return kwargs
+
+
+def _merge_extra_tools(agent, extra_tools) -> None:
+    """Merge per-run tool definitions a caller owns into this agent's tool table.
+
+    ``extra_tools`` is the nested-run escape hatch (a reviewer's own ``advise`` tool): each entry
+    is ``{name, description, parameters, handler}``. The handler stays on the agent instance, not
+    in the process-wide registry, so no other agent — the main run included — can see or call it.
+    A name that collides with a registry tool replaces that tool for this run only, which is what
+    "the run owns this name" has to mean when the table is built from a shared registry.
+    """
+    handlers: dict[str, Callable[[dict], Any]] = {}
+    specs: list[dict[str, Any]] = []
+    for entry in extra_tools or ():
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        handler = entry.get("handler")
+        if not name or not callable(handler):
+            continue
+        function: dict[str, Any] = {"name": name,
+                                    "description": str(entry.get("description") or "")}
+        parameters = entry.get("parameters")
+        if isinstance(parameters, dict) and parameters:
+            function["parameters"] = parameters
+        handlers[name] = handler
+        specs.append({"type": "function", "function": function})
+    agent._extra_tool_handlers = handlers
+    if not specs:
+        return
+    agent.tools = [tool for tool in (agent.tools or [])
+                   if str((tool.get("function") or {}).get("name") or "") not in handlers]
+    agent.tools.extend(specs)
+    agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
 
 
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
@@ -2109,6 +2148,7 @@ def init_agent(
     acp_command: str | None = None, acp_args: list[str] | None = None, command: str | None = None,
     args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
     enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
+    extra_tools: list[dict[str, Any]] | None = None, cache_scope: str = "",
     save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
     tool_progress_mode: str = "all", ephemeral_system_prompt: str | None = None,
     log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: list[str] | None = None,
@@ -2220,6 +2260,11 @@ def init_agent(
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
+    _merge_extra_tools(agent, extra_tools)
+    # A caller that runs many agents against one logical conversation (the adviser) can pin the
+    # cache scope: the prompt_cache_key derivation then keys every run of that reviewer into its
+    # own shard instead of the process-wide session id. Empty keeps the host's own resolution.
+    agent._declared_cache_scope = str(cache_scope or "").strip()
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,

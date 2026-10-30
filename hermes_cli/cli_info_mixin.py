@@ -578,19 +578,28 @@ class CLIInfoMixin:
         except Exception:
             pass
 
-    def _toggle_verbose(self):
-        """Cycle tool progress mode: off → new → all → verbose → off.
+    def _toggle_verbose(self, cmd_original: str | None = None):
+        """Cycle tool progress mode: off → new → all → verbose → off; ``/verbose <mode>`` pins one.
 
         Tool-progress display is INDEPENDENT of global DEBUG logging: this never changes
         ``self.verbose`` or the agent's ``verbose_logging`` / ``quiet_mode`` (those belong to
-        ``-v`` and ``/verbose-logging``).
+        ``-v`` and ``/verbose-logging``). ``verbose`` prints each call's result body under its row;
+        ``all``/``new`` keep one line per call, which is the fold.
         """
         from cli import _cprint, save_config_value
-        try:
-            idx = _TOOL_PROGRESS_CYCLE.index(self.tool_progress_mode)
-        except ValueError:
-            idx = 2  # default to "all"
-        self.tool_progress_mode = _TOOL_PROGRESS_CYCLE[(idx + 1) % len(_TOOL_PROGRESS_CYCLE)]
+        from hermes_cli.focus_view import TOOL_PROGRESS_MODES
+        word = (str(cmd_original or "").split()[1:2] or [""])[0].strip().lower()
+        if word and word not in TOOL_PROGRESS_MODES:
+            _cprint(f"  /verbose [{'|'.join(TOOL_PROGRESS_MODES)}]")
+            return
+        if word:
+            self.tool_progress_mode = word
+        else:
+            try:
+                idx = _TOOL_PROGRESS_CYCLE.index(self.tool_progress_mode)
+            except ValueError:
+                idx = 2  # default to "all"
+            self.tool_progress_mode = _TOOL_PROGRESS_CYCLE[(idx + 1) % len(_TOOL_PROGRESS_CYCLE)]
 
         # /verbose is the explicit tool-progress control, so cycling it takes ownership of the
         # mode back from focus view (else a "focus" badge + hidden-line counts would show while

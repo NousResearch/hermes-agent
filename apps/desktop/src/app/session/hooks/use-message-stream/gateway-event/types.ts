@@ -41,6 +41,12 @@ export interface GatewayEventDeps {
     occurredAt?: number,
     stamp?: null | SegmentStamp
   ) => void
+  /** Append one adviser row pushed by the host; idempotent by ``pluginMessageId``. */
+  appendAdviserMessage?: (
+    sessionId: string,
+    payload: { id?: string; text?: string; severity?: string; label?: string } | undefined,
+    occurredAt?: number
+  ) => void
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,

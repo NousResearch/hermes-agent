@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "스킬 설치 중..."
     busy_skills: "스킬 명령 처리 중..."
     busy_browser: "브라우저 설정 중..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "MCP 서버 다시 불러오는 중..."
     busy_reload_skills: "스킬 다시 불러오는 중..."
     processing_command: "명령 처리 중..."

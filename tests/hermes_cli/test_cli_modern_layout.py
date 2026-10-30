@@ -259,3 +259,45 @@ def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
                    "", "📖", "💻",                  # tool rows, tight
                    "", "BAR", "☤", "It", "BAR",    # answer
                    "", "─"], got                   # footer
+
+
+def test_verbose_tool_body_hangs_off_the_diff_gutter():
+    """The result body sits under its row behind the same │ the inline diffs use."""
+    from hermes_cli.cli_modern_layout import completed_tool_output
+
+    cli = type("Stub", (), {"_modern_layout": True})()
+    assert _plain(completed_tool_output(cli, "alpha\nbeta")).splitlines() == ["│ alpha", "│ beta"]
+
+
+def test_classic_layout_indents_the_tool_body_without_a_gutter():
+    from hermes_cli.cli_modern_layout import completed_tool_output
+
+    cli = type("Stub", (), {"_modern_layout": False})()
+    assert _plain(completed_tool_output(cli, "alpha")).splitlines() == ["  alpha"]
+
+
+def test_long_tool_result_keeps_head_and_tail_and_counts_the_middle():
+    """A tail matters more than a longer head: failures and summaries land at the end."""
+    from hermes_cli.cli_modern_layout import completed_tool_output
+
+    cli = type("Stub", (), {"_modern_layout": True})()
+    rows = _plain(completed_tool_output(cli, "\n".join(f"line{i}" for i in range(1, 41)))).splitlines()
+    assert rows[0] == "│ line1" and rows[-1] == "│ line40"
+    assert any("(+20 more lines)" in row for row in rows)
+    assert len(rows) == 21  # 12 head + the count + 8 tail
+
+
+def test_an_overlong_tool_line_is_clipped_and_marked():
+    from hermes_cli.cli_modern_layout import completed_tool_output
+
+    cli = type("Stub", (), {"_modern_layout": True})()
+    (row,) = _plain(completed_tool_output(cli, "x" * 900)).splitlines()
+    assert row.endswith("…") and len(row) == len("│ ") + 400
+
+
+@pytest.mark.parametrize("result", ["", "  \n ", {"content": []}, None])
+def test_a_result_without_text_prints_no_body(result):
+    from hermes_cli.cli_modern_layout import completed_tool_output
+
+    cli = type("Stub", (), {"_modern_layout": True})()
+    assert completed_tool_output(cli, result) == ""

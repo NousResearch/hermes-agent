@@ -76,6 +76,45 @@ def test_status_line_prints_immediately_outside_a_box(cli_stub):
     assert not getattr(cli, "_held_status_lines", [])
 
 
+def test_adviser_row_renders_a_labelled_block_after_the_box_footer(cli_stub):
+    """A plugin-injected adviser row is model-facing guidance, not a human prompt: the CLI
+    labels it and parks it behind an open reply box instead of showing a bare user turn."""
+    cli, emitted = cli_stub
+    row = {
+        "content": "[adviser — advisory only]\n- [blocker · reviewer] Stop: the migration drops the index.\n[end adviser]",
+        "display_kind": "adviser",
+        "plugin_message_id": "abc123",
+        "role": "user",
+    }
+
+    cli._stream_delta("First paragraph.\n")
+    cli._on_adviser_row(row)
+    cli._flush_stream()
+
+    lines = [_plain(e) for e in emitted]
+    header = next(i for i, l in enumerate(lines) if "adviser · blocker · reviewer" in l)
+    body = next(i for i, l in enumerate(lines) if "drops the index" in l)
+    footer = next(i for i, l in enumerate(lines) if l.startswith("╰"))
+    assert footer < header < body, lines
+    assert not any("[adviser — advisory only]" in l for l in lines)
+    assert not any(l.startswith("  You:") for l in lines)
+
+
+def test_adviser_row_without_advice_text_is_ignored(cli_stub):
+    cli, emitted = cli_stub
+    cli._on_adviser_row({"content": "[adviser — advisory only]\n[end adviser]", "display_kind": "adviser", "role": "user"})
+    assert emitted == []
+
+
+def test_plain_steer_row_is_not_drawn_as_adviser_guidance(cli_stub):
+    """The same callback fires for a mid-turn steer; that row is the operator's words."""
+    cli, emitted = cli_stub
+    cli._stream_delta("Streaming.\n")
+    cli._on_adviser_row({"content": "[steer] Ship the smaller patch.", "display_kind": "steer", "role": "user"})
+    cli._flush_stream()
+    assert not any("adviser" in _plain(e) for e in emitted)
+
+
 @pytest.mark.parametrize("response, expect_panel", [
     ("Partial answer.", False),  # the streamed text itself: already on screen
     ("Operation interrupted: waiting for model response (3.0s elapsed).", True),  # never streamed

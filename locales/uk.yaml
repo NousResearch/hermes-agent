@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "Встановлення навички..."
     busy_skills: "Обробка команди навичок..."
     busy_browser: "Налаштування браузера..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "Перезавантаження MCP-серверів..."
     busy_reload_skills: "Перезавантаження навичок..."
     processing_command: "Обробка команди..."

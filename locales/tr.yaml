@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "Skill kuruluyor..."
     busy_skills: "Skill komutu işleniyor..."
     busy_browser: "Tarayıcı yapılandırılıyor..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "MCP sunucuları yeniden yükleniyor..."
     busy_reload_skills: "Skill'ler yeniden yükleniyor..."
     processing_command: "Komut işleniyor..."

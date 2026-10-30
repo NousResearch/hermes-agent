@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "Skill wird installiert..."
     busy_skills: "Skills-Befehl wird verarbeitet..."
     busy_browser: "Browser wird konfiguriert..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "MCP-Server werden neu geladen..."
     busy_reload_skills: "Skills werden neu geladen..."
     processing_command: "Befehl wird verarbeitet..."

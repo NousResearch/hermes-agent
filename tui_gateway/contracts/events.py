@@ -195,6 +195,20 @@ event("message.interim", MessageInterimPayload,
       doc="Interim assistant commentary (text beside tool calls) sealed as its own segment.")
 
 
+class MessageAdviserPayload(Payload):
+    """``agent_callbacks.plugin_message_callback``: one injected adviser row."""
+
+    id: str
+    text: str
+    severity: str
+    label: str
+    display_kind: str
+
+
+event("message.adviser", MessageAdviserPayload,
+      doc="Plugin adviser advice injected into the live transcript; render as an adviser card.")
+
+
 class TurnStatus(WireEnum):
     """``prompt_turn._result_status``."""
 

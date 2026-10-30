@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "Installeer vaardigheid..."
     busy_skills: "Verwerk vaardigheidsopdrag..."
     busy_browser: "Stel blaaier op..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "Herlaai MCP-bedieners..."
     busy_reload_skills: "Herlaai vaardighede..."
     processing_command: "Verwerk opdrag..."

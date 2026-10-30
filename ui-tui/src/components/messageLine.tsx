@@ -146,6 +146,45 @@ export const MessageLine = memo(function MessageLine({
     )
   }
 
+  // Plugin adviser guidance: a card, not a "you" bubble — the model saw this row,
+  // the human never typed it.
+  if (msg.adviser) {
+    const toneFor = (severity: string) =>
+      severity === 'blocker' ? t.color.error : severity === 'concern' ? t.color.warn : t.color.muted
+
+    const tone = toneFor(msg.adviser.severity)
+    const adviserGutter = transcriptGutterWidth('system', t.brand.prompt)
+    const adviserWidth = transcriptBodyWidth(cols, 'system', t.brand.prompt, TERMUX_TUI_MODE)
+
+    return (
+      <Box flexDirection="column" marginBottom={1} marginTop={leadGap ? 1 : 0}>
+        <Box>
+          <NoSelect flexShrink={0} fromLeftEdge width={adviserGutter}>
+            <Text color={tone}>◆ </Text>
+          </NoSelect>
+          <Text bold color={tone}>{`adviser · ${msg.adviser.label}`}</Text>
+        </Box>
+        <Box>
+          <NoSelect flexShrink={0} fromLeftEdge width={adviserGutter}>
+            <Text> </Text>
+          </NoSelect>
+          <Box flexDirection="column" width={adviserWidth}>
+            {msg.adviser.items.length > 0 ? (
+              msg.adviser.items.map((item, index) => (
+                <Box flexDirection="column" key={`${index}-${item.label}`}>
+                  <Text color={toneFor(item.severity)}>{item.label}</Text>
+                  <Md cols={adviserWidth} compact={compact} t={t} text={item.text} />
+                </Box>
+              ))
+            ) : (
+              <Md cols={adviserWidth} compact={compact} t={t} text={msg.text} />
+            )}
+          </Box>
+        </Box>
+      </Box>
+    )
+  }
+
   // Timeline events (model switches, delegation completions) render as
   // dim ◈ markers with no gutter — not as opaque user messages.
   if (msg.kind === 'event') {

@@ -2643,6 +2643,7 @@ cli:
     busy_skills_install: "Skill telepítése..."
     busy_skills: "Skills parancs feldolgozása..."
     busy_browser: "Böngésző konfigurálása..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "MCP-szerverek újratöltése..."
     busy_reload_skills: "Skillek újratöltése..."
     processing_command: "Parancs feldolgozása..."

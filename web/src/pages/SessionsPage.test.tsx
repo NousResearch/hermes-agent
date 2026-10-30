@@ -316,3 +316,73 @@ describe("SessionsPage header slots across navigation", () => {
     expect(header()).not.toContain("Prune old sessions");
   });
 });
+
+describe("adviser transcript rows", () => {
+  it("labels plugin adviser guidance as adviser, never as a user turn", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      session_id: "sid-adviser",
+      messages: [
+        { role: "user", content: "run the migration" },
+        {
+          role: "user",
+          display_kind: "adviser",
+          content:
+            "[adviser — advisory only]\n- [blocker · reviewer] Stop: the migration drops the index. (1 turn ago)\n[end adviser]",
+        },
+      ],
+    });
+    await renderSessionsPage([
+      { id: "sid-adviser", profile: "default", source: "cli", model: null, title: "Advised", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 2, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "run" },
+    ]);
+    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+    await waitFor(() => (document.body.textContent ?? "").includes("drops the index"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("adviser · blocker · reviewer");
+    expect(text).toContain("adviser · blocker · reviewer · 1 turn ago");
+    expect(text).toContain("Stop: the migration drops the index.");
+    expect(text).not.toContain("[adviser — advisory only]");
+    expect(text).not.toContain("[end adviser]");
+    // The severity drives the card color, the same way the TUI/Desktop cards read.
+    const cardLabel = Array.from(document.querySelectorAll("span")).find(
+      (span) => span.textContent?.trim() === "adviser · blocker · reviewer · 1 turn ago",
+    );
+    expect(cardLabel).toBeTruthy();
+    expect(cardLabel!.closest('[class*="bg-destructive"]')).not.toBeNull();
+    // Only the real prompt wears the User label.
+    const userLabels = Array.from(document.querySelectorAll("span")).filter(
+      (span) => span.textContent?.trim() === "User",
+    );
+    expect(userLabels).toHaveLength(1);
+  });
+
+  it("gives each advice row its own severity in a mixed block", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      session_id: "sid-adviser-mixed",
+      messages: [
+        {
+          role: "user",
+          display_kind: "adviser",
+          content:
+            "[adviser — advisory only]\n- [concern · reviewer] read the import first\n- [blocker · reviewer] the test never ran\n[end adviser]",
+        },
+      ],
+    });
+    await renderSessionsPage([
+      { id: "sid-adviser-mixed", profile: "default", source: "cli", model: null, title: "Mixed", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 1, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "advice" },
+    ]);
+    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+    await waitFor(() => (document.body.textContent ?? "").includes("the test never ran"));
+
+    const rows = Array.from(document.querySelectorAll("div.whitespace-pre-wrap"));
+    const concern = rows.find((row) => row.textContent?.includes("read the import first"));
+    const blocker = rows.find((row) => row.textContent?.includes("the test never ran"));
+
+    expect(concern?.querySelector("span")?.className).toContain("text-warning");
+    expect(blocker?.querySelector("span")?.className).toContain("text-destructive");
+  });
+});

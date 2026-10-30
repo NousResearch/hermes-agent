@@ -151,6 +151,30 @@ class TestDisplayResumedHistory:
         assert "opaque" not in output
 
 
+    def test_adviser_rows_render_as_guidance_not_user_input(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "run the migration"},
+            {
+                "role": "user",
+                "display_kind": "adviser",
+                "content": (
+                    "[adviser — advisory only]\n"
+                    "- [blocker · reviewer] Stop: the migration drops the index.\n"
+                    "[end adviser]"
+                ),
+            },
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "◆ adviser" in output
+        assert "blocker · reviewer: Stop: the migration drops the index." in output
+        assert "[adviser — advisory only]" not in output
+        assert "[end adviser]" not in output
+        assert output.count("You:") == 1
+
+
 
     def test_tool_only_message_skipped_by_default(self):
         """Assistant messages with only tool_calls (no text) are skipped when

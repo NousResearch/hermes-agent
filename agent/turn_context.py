@@ -616,6 +616,9 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0),
+    # Plugin stop-gate continuations (`hermes_cli.plugin_runtime`); a per-turn
+    # budget so a plugin asking to continue forever cannot trap the loop.
+    ("_plugin_continue_nudges", 0),
 )
 
 

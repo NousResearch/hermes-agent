@@ -86,6 +86,26 @@ def held_stream_transforms() -> tuple[Callable, ...]:
     return _delivery_manager().held_transforms()
 
 
+#: A callback may declare its own wall-clock budget instead of the global
+#: ``plugins.hook_callback_timeout``: a ``pre_tool_call`` gate that consults a model needs more
+#: than the default 30 s, while every other callback must keep it. Read once per call and clamped
+#: to the same ceiling; an undeclared or malformed attribute changes nothing.
+_CALLBACK_TIMEOUT_ATTR = "__hook_timeout__"
+
+
+def _callback_budget(cb: Callable, default: float) -> float:
+    """The budget for one callback: its declared ``__hook_timeout__``, or *default*."""
+    declared = getattr(cb, _CALLBACK_TIMEOUT_ATTR, None)
+    if declared is None:
+        return default
+    try:
+        value = float(declared)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        return default
+    return min(value, _MAX_HOOK_CALLBACK_TIMEOUT_SECS)
+
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
     """Block directive for a fail-closed hook whose callback raised: names the callback and the
     error (truncated — a hook that embeds tool args in its exception must not grow the tool
@@ -303,7 +323,11 @@ class PluginDispatchMixin:
         for cb in callbacks:
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    # A callback may carry its own budget (``__hook_timeout__``); the global
+                    # value is the default, not the ceiling. The threaded path itself is still
+                    # gated on the global timeout above.
+                    ret = self._run_hook_callback_bounded(
+                        hook_name, cb, kwargs, _callback_budget(cb, timeout))
                     if ret is _HOOK_SKIPPED:
                         if failed is not None:
                             failed.append(cb)

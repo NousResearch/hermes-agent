@@ -782,9 +782,8 @@ class SearchMixin:
     def _path_exists_probe(self, path: str) -> ExecuteResult:
         """Existence probe; stdout contains "exists" or "not_found" (or the probe's
         ``cwd_error`` when the exec wrapper itself failed)."""
-        if self._native_read_enabled():
-            full = path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
-            return ExecuteResult(stdout="exists" if os.path.exists(full) else "not_found")
+        if self._native_read_enabled(path):
+            return ExecuteResult(stdout="exists" if os.path.exists(self._native_path(path)) else "not_found")
         return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
 
     def _dispatch_search(self, pattern: str, path: str, target: str,

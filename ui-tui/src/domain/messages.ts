@@ -1,7 +1,41 @@
 import { LONG_MSG } from '../config/limits.js'
 import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
-import type { Msg, SessionInfo } from '../types.js'
+import type { AdviserMeta, Msg, SessionInfo } from '../types.js'
+
+// Adviser rows are persisted as rendered text: a bracketed header, one `- [label] text`
+// line per advice, and a footer. The card shows the same body the Desktop parses.
+const ADVISER_HEADER_RE = /^\[adviser[^\n]*\]\s*/
+const ADVISER_FOOTER_RE = /\s*\[end adviser\]\s*$/
+const ADVISER_ITEM_RE = /^- \[([^\]]+)\]\s*(.*)$/gm
+const ADVISER_SEVERITY_RANK: Record<string, number> = { blocker: 3, concern: 2, nit: 1 }
+
+/** Split an adviser block into its display body and card metadata. */
+export const adviserFromText = (content: string): { body: string; meta: AdviserMeta } | undefined => {
+  const raw = String(content || '').trim()
+
+  if (!raw) {
+    return undefined
+  }
+
+  const body = raw.replace(ADVISER_HEADER_RE, '').replace(ADVISER_FOOTER_RE, '').trim()
+  const items = [...body.matchAll(ADVISER_ITEM_RE)].map(match => {
+    const label = match[1].trim()
+
+    return { label, severity: label.split(' · ')[0]?.trim() || 'advisory', text: match[2].trim() }
+  })
+  // A mixed block is as loud as its strongest row, not as its first one.
+  const top = items.reduce<(typeof items)[number] | undefined>(
+    (best, item) =>
+      !best || (ADVISER_SEVERITY_RANK[item.severity] ?? 0) > (ADVISER_SEVERITY_RANK[best.severity] ?? 0) ? item : best,
+    undefined
+  )
+
+  return {
+    body,
+    meta: { items, label: top?.label ?? 'advisory', severity: top?.severity ?? 'advisory' }
+  }
+}
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
@@ -100,6 +134,16 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
 
     if (role === 'assistant') {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
+      pending = []
+    } else if (display_kind === 'adviser') {
+      // Plugin guidance the model saw; a user-role row, but never a human prompt.
+      const parsed = adviserFromText(text)
+      out.push({
+        ...(parsed?.meta ? { adviser: parsed.meta } : {}),
+        role: 'system',
+        text: parsed?.body ?? text,
+        ...(createdAt !== undefined && { createdAt })
+      })
       pending = []
     } else if (role === 'user' || role === 'system') {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }) })

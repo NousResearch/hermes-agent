@@ -88,18 +88,25 @@ def _ic_slot(agent, lock_attr: str, slot: str):
 
 
 def _steer_parts(agent) -> list:
-    """The buffered steers as ``(ticket, text)`` pairs; ``_pending_steer`` is their newline join. A ticket
-    names one submission (a gateway transfer). A buffer another writer set directly is one ticketless part."""
+    """The buffered steers as ``(ticket, text, kind)`` triples; ``_pending_steer`` is their newline join. A
+    ticket names one submission (a gateway transfer). A buffer another writer set directly is one
+    ticketless user part."""
     pending = _ic_slot(agent, "_pending_steer_lock", "_pending_steer")
     parts = vars(agent).get("_pending_steer_parts") or []
-    if "\n".join(text for _, text in parts) != (pending or ""):
-        return [(None, pending)] if pending else []
+    if "\n".join(text for _, text, _ in parts) != (pending or ""):
+        return [(None, pending, "user")] if pending else []
     return list(parts)
 
 
 def _set_steer_parts(agent, parts: list) -> None:
     agent._pending_steer_parts = parts
-    agent._pending_steer = "\n".join(text for _, text in parts) or None
+    agent._pending_steer = "\n".join(text for _, text, _ in parts) or None
+    # Advice from a plugin reviewer must not borrow the user's authority: the drained row carries
+    # ``display_kind="adviser"`` only when every buffered part is advice. A mixed buffer is an
+    # ordinary user row, so user text never ends up dressed as machine advice.
+    agent._pending_steer_kind = (
+        "adviser" if parts and all(kind == "adviser" for _, _, kind in parts) else "user"
+    )
 
 
 def _steer_fates(agent) -> dict:
@@ -114,8 +121,8 @@ def requeue_drained_steer(agent, steer_text: str) -> None:
     with _ic_lock(agent, "_pending_steer_lock"):
         drained, parts = vars(agent).pop("_steer_last_drain", (None, None))
         if drained != steer_text or not parts:
-            parts = [(None, steer_text)]
-        for ticket, _ in parts:
+            parts = [(None, steer_text, "user")]
+        for ticket, _, _ in parts:
             _steer_fates(agent).pop(ticket, None)
         _set_steer_parts(agent, _steer_parts(agent) + parts)
 
@@ -301,23 +308,33 @@ class InterruptControlMixin:
             # claimed a hard interrupt supersedes the steer — but nothing gated this wipe on
             # hard_cancel, so a soft clear dropped a live user message with no trace.
             with _ic_lock(self, "_pending_steer_lock"):
-                for ticket, _ in _steer_parts(self):
+                for ticket, _, _ in _steer_parts(self):
                     if ticket is not None:
                         _steer_fates(self)[ticket] = False
                 _set_steer_parts(self, [])
         return True
 
-    def steer(self, text: str, *, ticket=None) -> bool:
-        """Queue user text for delivery as its own user row after the current tool batch finishes (no
+    def steer(self, text: str, *, ticket=None, kind: str = "user") -> bool:
+        """Queue text for delivery as its own user row after the current tool batch finishes (no
         interrupt); multiple calls concatenate with newlines. Returns False for empty text. ``ticket``
-        names the submission, so ``withdraw_steer`` can settle exactly it, whatever text others carry."""
+        names the submission, so ``withdraw_steer`` can settle exactly it, whatever text others carry.
+
+        ``kind="adviser"`` marks the row so the model is not told the text is a direct user
+        message: a plugin reviewer's advice must not borrow the user's authority.
+        """
         if not text or not text.strip():
             return False
         cleaned = text.strip()
+        is_adviser = str(kind or "").lower() == "adviser"
         with _ic_lock(self, "_pending_steer_lock"):
-            _set_steer_parts(self, _steer_parts(self) + [(ticket, cleaned)])
-        # The turn no longer ran on its own (first-task-done detection reads this off the result).
-        self._turn_user_intervened = True
+            _set_steer_parts(
+                self,
+                _steer_parts(self) + [(ticket, cleaned, "adviser" if is_adviser else "user")],
+            )
+        # A reviewer's advice is not a user intervention: first-task-done detection must keep
+        # reading the turn as unattended. Only a human steer clears that flag.
+        if not is_adviser:
+            self._turn_user_intervened = True
         return True
 
     def redirect(self, text: str) -> bool:
@@ -401,7 +418,7 @@ class InterruptControlMixin:
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             parts = _steer_parts(self)
             _set_steer_parts(self, [])
-            for ticket, _ in parts:
+            for ticket, _, _ in parts:
                 if ticket is not None:
                     _steer_fates(self)[ticket] = True
             self._steer_last_drain = (text, parts)  # requeue_drained_steer restores its tickets
@@ -414,7 +431,7 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             parts = _steer_parts(self)
             _set_steer_parts(self, [part for part in parts if part[0] is not None])
-        return "\n".join(text for ticket, text in parts if ticket is None) or None
+        return "\n".join(text for ticket, text, _ in parts if ticket is None) or None
 
     def withdraw_steer(self, ticket) -> bool:
         """Settle one ``steer(text, ticket=...)`` by identity (the gateway's transfer of a queued prompt):

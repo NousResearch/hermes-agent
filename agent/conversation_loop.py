@@ -1813,6 +1813,7 @@ def run_conversation(
     from agent.turn_context import export_current_turn_boundary
     from agent.turn_finalizer import settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
+    from hermes_cli import plugin_runtime
     from tools.vision_tools_history_budget import native_turn_images
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
@@ -1821,6 +1822,11 @@ def run_conversation(
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
         try:
+            # A plugin with a background reviewer needs a handle to this live turn:
+            # `plugin_runtime.steer` / `request_continuation` are keyed by session id and
+            # released here. Bind inside the try so a failing binder cannot skip the
+            # voice-route teardown below.
+            plugin_runtime.bind_turn(agent)
             result = _run_conversation_turn(
                 agent,
                 user_message,
@@ -1838,7 +1844,11 @@ def run_conversation(
                 title_user_message=title_user_message,
                 prelude=prelude,
             )
+            # A plugin that finished its review after the final answer can hand the surface one
+            # more turn through the existing pending_steer contract.
+            plugin_runtime.attach_post_turn(agent, result)
         finally:
+            plugin_runtime.unbind_turn(agent)
             end_voice_turn_route(agent)
     settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)

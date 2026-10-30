@@ -1347,6 +1347,12 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
+  # A plugin may also keep the turn open through the plugin control surface
+  # (`hermes_cli.plugin_runtime.request_continuation`), independent of code edits.
+  # This caps those continuations per turn so a plugin cannot trap the loop.
+  # Default 2.
+  # max_plugin_continuations: 2
+
   # Enable verbose logging
   verbose: false
   

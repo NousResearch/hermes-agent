@@ -729,6 +729,7 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
+    | 'adviser'
     | 'async_delegation_complete'
     | 'auto_continue'
     | 'failed_turn'
@@ -738,6 +739,8 @@ export interface SessionMessage {
     | 'process_complete'
     | 'steer'
     | string
+  /** Stable id of a plugin-injected row (adviser steer/continuation); live/hydrate dedupe. */
+  plugin_message_id?: string
   /**
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.

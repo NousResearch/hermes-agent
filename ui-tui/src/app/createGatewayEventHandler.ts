@@ -9,6 +9,7 @@ import type { UsageLimit } from '@hermes/shared/plan-usage'
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
+import { adviserFromText } from '../domain/messages.js'
 import { usageFromTick } from '../domain/usage.js'
 import type {
   AnyGatewayEvent,
@@ -830,6 +831,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // an abandoned-prompt record, so the tool.complete and message.complete
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
+  // A plugin adviser row arrives live AND in the next transcript hydrate; the gateway
+  // stamps plugin_message_id, so the live card is drawn once per id.
+  const shownAdviserIds = new Set<string>()
   const showChallenge = createFreeTierChallengePresenter(sys, openExternalUrl)
   const showBillingVerification = createBillingVerificationPresenter(sys, openExternalUrl)
 
@@ -1814,6 +1818,43 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.recordMessageDelta(ev.payload ?? ({} as MessageDeltaPayload))
 
         return
+      case 'message.adviser': {
+        // A plugin injected an adviser row into the live turn. The durable row also
+        // arrives on the next hydrate, so `plugin_message_id` dedupes the live card.
+        const payload = ev.payload
+        const id = String(payload?.id ?? '')
+        const text = typeof payload?.text === 'string' ? payload.text : ''
+
+        if (!text.trim() || (id && shownAdviserIds.has(id))) {
+          return
+        }
+
+        if (id) {
+          shownAdviserIds.add(id)
+
+          if (shownAdviserIds.size > 128) {
+            const oldest = shownAdviserIds.values().next().value
+
+            if (oldest !== undefined) {
+              shownAdviserIds.delete(oldest)
+            }
+          }
+        }
+
+        const parsed = adviserFromText(text)
+        const label = String(payload?.label ?? '').trim()
+        const severity = String(payload?.severity ?? '').trim()
+
+        appendMessage({
+          ...(parsed
+            ? { adviser: { ...parsed.meta, label: label || parsed.meta.label, severity: severity || parsed.meta.severity } }
+            : {}),
+          role: 'system',
+          text: parsed?.body ?? text
+        })
+
+        return
+      }
       case 'message.interim': {
         const text = ev.payload?.text
 

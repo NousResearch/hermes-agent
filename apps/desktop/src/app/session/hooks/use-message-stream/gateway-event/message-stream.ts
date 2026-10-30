@@ -231,6 +231,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
   const {
+    appendAdviserMessage,
     appendAssistantDelta,
     appendReasoningDelta,
     compactedTurnRef,
@@ -250,6 +251,20 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'message.delta') {
     if (sessionId) {
       appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt, segmentStamp(payload))
+    }
+
+    return true
+  }
+
+  if (event.type === 'message.adviser') {
+    // A plugin injected an adviser row into the live turn. The durable row also arrives on
+    // the next hydrate; appendAdviserMessage dedupes by pluginMessageId.
+    if (sessionId) {
+      appendAdviserMessage?.(
+        sessionId,
+        payload as { id?: string; text?: string; severity?: string; label?: string } | undefined,
+        occurredAt
+      )
     }
 
     return true

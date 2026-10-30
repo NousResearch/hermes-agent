@@ -2626,6 +2626,7 @@ cli:
     busy_skills_install: "スキルをインストール中..."
     busy_skills: "skills コマンドを処理中..."
     busy_browser: "ブラウザを設定中..."
+    tool_output_more: "… (+{count} more lines)"
     busy_reload_mcp: "MCP サーバーを再読み込み中..."
     busy_reload_skills: "スキルを再読み込み中..."
     processing_command: "コマンドを処理中..."

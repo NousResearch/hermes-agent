@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
+from agent.plugin_events import notify_plugin_message
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -75,6 +77,51 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     except Exception:
         logger.debug("pre_verify hook check failed", exc_info=True)
     return None
+
+
+def _plugin_continuation(agent) -> Optional[dict]:
+    """A plugin's stop-gate request for one more round, or ``None``.
+
+    Unlike ``pre_verify`` this is not tied to file edits: it is the only channel a
+    plugin has to act on something it noticed while the final model call ran. The
+    per-turn budget (``agent.max_plugin_continuations``, default 2) bounds a plugin
+    that always asks to continue; a request over budget is discarded so it cannot
+    leak into the next turn.
+    """
+    session = str(getattr(agent, "session_id", "") or "")
+    if not session:
+        return None
+    try:
+        from hermes_cli import plugin_runtime
+
+        used = int(getattr(agent, "_plugin_continue_nudges", 0) or 0)
+        if used >= plugin_runtime.max_continuations():
+            # Dropped, not deferred: the plugin sees `expired` and returns its rows to
+            # pending instead of losing them to a delivery that never happened.
+            plugin_runtime.discard_continuation(session)
+            return None
+        return plugin_runtime.take_continuation(session)
+    except Exception:
+        logger.debug("plugin continuation gate failed", exc_info=True)
+        return None
+
+
+def _plugin_continuation_row(pending: dict) -> dict:
+    """The durable user-role row a plugin continuation is delivered as.
+
+    Not flagged synthetic: the advice stays visible in the transcript and is
+    replayed on resume, which is the point of the channel. ``display_kind`` lets
+    history renderers label it apart from a human prompt.
+    """
+    from hermes_cli.plugin_runtime import DISPLAY_KIND
+
+    return {
+        "role": "user",
+        "content": str(pending.get("text") or "").strip(),
+        "display_kind": DISPLAY_KIND,
+        "plugin_source": str(pending.get("source") or ""),
+        "plugin_message_id": uuid.uuid4().hex,
+    }
 
 
 def _kanban_stop_nudge(agent, messages) -> Optional[str]:
@@ -153,6 +200,30 @@ def apply_stop_gates(
             pending_verification_response=final_response,
             # Prefix semantics on purpose: the streamed prefix IS on screen here. The gateway
             # interim verdict uses _interim_content_fully_streamed instead (#88954).
+            pending_verification_response_previewed=agent._interim_content_was_streamed(
+                final_response or ""
+            ),
+        )
+
+    _plugin_pending = _plugin_continuation(agent)
+    if _plugin_pending:
+        agent._plugin_continue_nudges = getattr(agent, "_plugin_continue_nudges", 0) + 1
+        final_msg["finish_reason"] = "plugin_continue"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history,
+            "plugin continuation interim flush failed",
+        )
+        plugin_row = _plugin_continuation_row(_plugin_pending)
+        append_message(messages, plugin_row)
+        notify_plugin_message(agent, plugin_row)
+        agent._session_messages = messages
+        logger.debug(
+            "plugin continuation nudge issued (attempt %d, source=%s)",
+            agent._plugin_continue_nudges, _plugin_pending.get("source") or "",
+        )
+        return StopGateVerdict(
+            continue_turn=True, final_response=None,
+            pending_verification_response=final_response,
             pending_verification_response_previewed=agent._interim_content_was_streamed(
                 final_response or ""
             ),

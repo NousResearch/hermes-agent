@@ -178,6 +178,63 @@ class CLIStreamMixin:
         if flush_text:
             self._emit_reasoning_preview(flush_text)
 
+    def _step_reasoning_text(self) -> str:
+        """Reasoning of the assistant message that requested the running tool batch.
+
+        Providers that stream no reasoning deltas land the whole block on the finished message,
+        so it is readable here — before the rows that step caused — instead of only in the
+        turn-end fallback, where it printed under the answer.
+        """
+        messages = getattr(getattr(self, "agent", None), "messages", None) or []
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            return str(message.get("reasoning") or message.get("reasoning_content") or "")
+        return ""
+
+    def _print_tool_step_reasoning(self) -> None:
+        """Print a tool batch's reasoning above its rows, once, unless the live box showed it.
+
+        Called on ``tool.started``: rows land on ``tool.completed``, so the thinking that asked
+        for a call stays above the output it produced.
+        """
+        if not getattr(self, "show_reasoning", False):
+            return
+        try:
+            self._flush_reasoning_preview(force=True)
+        except Exception:
+            pass
+        text = self._step_reasoning_text()
+        squashed = " ".join(text.split())
+        if not squashed or squashed == getattr(self, "_reasoning_block_printed", ""):
+            return  # nothing to show, or the parallel calls of one batch share the step
+        self._reasoning_block_printed = squashed
+        # The stored block can carry a tail the delta stream never sent, so match on its head:
+        # that is enough to know the live box already printed this step.
+        if squashed[:80] in " ".join(getattr(self, "_reasoning_streamed_this_turn", "").split()):
+            return
+        self._emit_reasoning_block(text)
+
+    def _emit_reasoning_block(self, text: str) -> None:
+        """One complete reasoning block: frame, its text (10 lines unless /reasoning full), ``∴``."""
+        from cli import _DIM, _RST, _cprint
+        if not text.strip():
+            return
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import thought_rows
+            for line in thought_rows(None, text, self.reasoning_full):
+                _cprint(line)
+            return
+        w = self._scrollback_box_width()
+        r_label = f" {t('cli.chat.reasoning_label')} "
+        lines = text.strip().splitlines()
+        if len(lines) > 10 and not self.reasoning_full:
+            shown = "\n".join(lines[:10]) + f"\n{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - 10)}{_RST}"
+        else:
+            shown = text.strip()
+        _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
+                f"\n{_DIM}{shown}{_RST}\n{_DIM}└{'─' * (w - 2)}┘{_RST}")
+
     def _format_submitted_user_message_preview(self, user_input: str) -> str:
         """Format the submitted user-message scrollback preview."""
         from cli import _accent_hex, datetime
@@ -267,6 +324,9 @@ class CLIStreamMixin:
         if not text:
             return
         self._reasoning_shown_this_turn = True
+        # Turn-level record of what the live box printed, so a step's whole-block reasoning is
+        # not printed a second time above its tool rows.
+        self._reasoning_streamed_this_turn = getattr(self, "_reasoning_streamed_this_turn", "") + text
         if getattr(self, "_stream_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
@@ -320,6 +380,43 @@ class CLIStreamMixin:
         held, self._held_status_lines = getattr(self, "_held_status_lines", []), []
         for line in held:
             _cprint(line)
+
+    def _on_adviser_row(self, row) -> None:
+        """Render one plugin-injected adviser row (minir host series) above the prompt.
+
+        The row is a real user-role message the model saw, but the human never typed it, so
+        it must not surface as an unlabelled prompt. Lines go through ``_agent_status_print``
+        so a streaming reply box holds them to its footer instead of splitting the answer.
+        """
+        try:
+            from hermes_cli.cli_agent_setup_mixin import _adviser_items, _adviser_rows
+            if not isinstance(row, dict) or row.get("display_kind") != "adviser":
+                return
+            if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
+                return
+            content = row.get("content")
+            items = _adviser_items(content)
+            if not items:
+                # Rows written before per-note labels existed still carry a body.
+                label, body = _adviser_rows(content)
+                if not body:
+                    return
+                items = [(label, " ".join(body))]
+
+            def tone(label: str) -> tuple[str, str]:
+                severity = label.split(" · ")[0].strip().lower()
+                color = "\033[31m" if severity == "blocker" else "\033[33m" if severity == "concern" else ""
+                return color, ("\033[0m" if color else "")
+
+            rank = {"blocker": 3, "concern": 2, "nit": 1}
+            top_label = max(items, key=lambda item: rank.get(item[0].split(" · ")[0].strip().lower(), 0))[0]
+            color, reset = tone(top_label)
+            self._agent_status_print(f"  {color}◆ adviser · {top_label}{reset}")
+            for label, text in items:
+                row_color, row_reset = tone(label)
+                self._agent_status_print(f"    {row_color}· {label} — {text}{row_reset}")
+        except Exception:
+            pass
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
@@ -752,6 +849,14 @@ class CLIStreamMixin:
             self._invalidate()
             return
 
+        if event_type == "tool.started":
+            # The thinking that asked for this batch belongs above the rows it causes; the
+            # turn-end fallback would print it under the final answer instead.
+            try:
+                self._print_tool_step_reasoning()
+            except Exception:
+                pass
+
         # Feed the pet: tools mean "running"; a failed tool latches the turn to end on a sulk.
         if event_type == "tool.started":
             self._pet_reasoning = False
@@ -787,9 +892,15 @@ class CLIStreamMixin:
                     return
                 self._last_scrollback_tool = function_name
                 try:
-                    from hermes_cli.cli_modern_layout import completed_tool_line
+                    from hermes_cli.cli_modern_layout import completed_tool_line, completed_tool_output
                     _cprint(completed_tool_line(self, function_name, stored_args, duration, kwargs.get("result"),
                                                 kwargs.get("is_error", False)))
+                    # "verbose" is the mode whose label promises results, so the body lands under its
+                    # row; "all"/"new" keep one line per call — that is the fold.
+                    if self.tool_progress_mode == "verbose":
+                        body = completed_tool_output(self, kwargs.get("result"))
+                        if body:
+                            _cprint(body)
                 except Exception:
                     pass
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched

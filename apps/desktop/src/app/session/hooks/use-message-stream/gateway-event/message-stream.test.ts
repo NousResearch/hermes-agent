@@ -37,6 +37,7 @@ function context(type: GatewayEventName): GatewayEventContext {
       completeAssistantMessage: vi.fn(),
       failAssistantMessage: vi.fn(),
       finalizeInterimAssistantMessage: vi.fn(),
+      appendAdviserMessage: vi.fn(),
       flushQueuedDeltas: vi.fn(),
       dropQueuedDeltas: vi.fn(),
       hydrateFromStoredSession: vi.fn(async () => undefined),

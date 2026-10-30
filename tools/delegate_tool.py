@@ -14,11 +14,13 @@ tool calls or reasoning.
 import logging
 import time
 import weakref
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
+from agent.tool_guardrails import reserve_subagent_spawns
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +232,9 @@ def _build_child_agent(
     override_reasoning_effort: Any = None,
     profile_home: Optional[Path] = None,
     override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
+    # Batch construction is transactional: delegate_task activates every child
+    # only after all siblings have been built successfully.
+    defer_spawn_lifecycle: bool = False,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -345,19 +350,40 @@ def _build_child_agent(
     if child_pool is not None:
         child._credential_pool = child_pool
 
-    _attach_child(parent_agent, child)  # interrupt propagation
+    if not defer_spawn_lifecycle:
+        _enter_child_spawn_lifecycle(child, parent_agent, goal)
+    return child
+
+
+def _enter_child_spawn_lifecycle(child, parent_agent, goal: str) -> None:
+    """Attach one fully built child and emit its spawn lifecycle exactly once."""
+    # A test double or legacy internal builder may already have attached the
+    # child. Keep activation idempotent so interrupt fan-out never holds the
+    # same child twice.
+    active_children = getattr(parent_agent, "_active_children", None)
+    lock = getattr(parent_agent, "_active_children_lock", None)
+    if active_children is None:
+        attached = False
+    elif lock:
+        with lock:
+            attached = any(existing is child for existing in active_children)
+    else:
+        attached = any(existing is child for existing in active_children)
+    if not attached:
+        _attach_child(parent_agent, child)  # interrupt propagation
     # spawn_requested now — the child may queue for seconds when the pool is
     # saturated — then the subagent_start lifecycle hook.
-    _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
+    _safe_progress(getattr(child, "tool_progress_callback", None), "subagent.spawn_requested", preview=goal)
+    parent_sid = getattr(parent_agent, "session_id", None)
+    parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     with _quiet("subagent_start hook invocation failed", exc_info=True):
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "subagent_start", parent_session_id=parent_sid,
             parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,
-            child_session_id=getattr(child, "session_id", None), child_subagent_id=subagent_id,
-            child_role=effective_role, child_goal=goal,
+            child_session_id=getattr(child, "session_id", None), child_subagent_id=getattr(child, "_subagent_id", None),
+            child_role=getattr(child, "_delegate_role", "leaf"), child_goal=goal,
         )
-    return child
 
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
@@ -456,50 +482,67 @@ def _build_children(
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
     children = []
-    for i, t in enumerate(task_list):
-        route = routes[i]
-        if route.error:
-            continue  # refused by its backend: no child; its result entry is the refusal
-        _task_schema = task_schemas[i] if i < len(task_schemas) else None
-        _child_context = t.get("context")
-        if _task_schema is not None:
-            _child_context = append_output_contract(_child_context, _task_schema)
-        try:
-            child = _build_child_preserving_parent_tools(
-                task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=route.creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_route_overrides(route),
-            )
-        except ValueError as exc:
-            # An owner refusal can land mid-batch: the siblings built so far hold reservations.
-            for _, _, built in children:
-                _detach_child(parent_agent, built)
-                _close_child(built, "Failed to close child after a refused sibling")
+    try:
+        for i, t in enumerate(task_list):
+            route = routes[i]
+            if route.error:
+                continue  # refused by its backend: no child; its result entry is the refusal
+            _task_schema = task_schemas[i] if i < len(task_schemas) else None
+            _child_context = t.get("context")
+            if _task_schema is not None:
+                _child_context = append_output_contract(_child_context, _task_schema)
+            try:
+                child = _build_child_preserving_parent_tools(
+                    task_index=i, goal=t["goal"], context=_child_context,
+                    toolsets=None,  # always inherit the parent's toolsets
+                    model=route.creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                    parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                    defer_spawn_lifecycle=True, **_route_overrides(route),
+                )
+            except ValueError as exc:
+                # An owner refusal can land mid-batch: the siblings built so far hold reservations.
+                for _, _, built in children:
+                    _detach_child(parent_agent, built)
+                    _close_child(built, "Failed to close child after a refused sibling")
+                return [], str(exc)
+            # Record ownership immediately: any later decoration failure must
+            # close/detach this child along with earlier siblings.
+            children.append((i, t, child))
+            pin_child_service_tier(child, route.creds)
+            if _task_schema is not None:
+                with _quiet("Could not attach output schema to child %d", i):
+                    child._delegate_output_schema = _task_schema
+            # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
+            _t_images = task_images[i] if task_images and i < len(task_images) else None
+            if _t_images:
+                with _quiet("Could not attach images to child %d", i):
+                    child._delegate_images = _t_images
+            # Tee progress events into the live transcript (wrapper keeps the
+            # _flush contract and swallows writer failures).
+            _writer = live_writers[i] if i < len(live_writers) else None
+            if _writer is not None:
+                child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
+                child._live_transcript_path = str(_writer.path)
+            if route.report() is not None:
+                child._delegate_route = route.report()
+            if live_deleg_id:
+                child._delegation_id = live_deleg_id
+                _ident_ref = getattr(child, "_progress_identity_ref", None)
+                if isinstance(_ident_ref, dict):
+                    _ident_ref["delegation_id"] = live_deleg_id
+        # Enter the spawn lifecycle only after the whole admitted batch exists;
+        # a construction failure therefore has no partially started children.
+        for _, task, child in children:
+            _enter_child_spawn_lifecycle(child, parent_agent, task["goal"])
+    except BaseException as exc:
+        # A construction/decoration failure leaves no partially started children: everything
+        # built so far is torn back down (never dispatched, no lifecycle hooks left dangling).
+        for _, _, child in children:
+            _detach_child(parent_agent, child)
+            _close_child(child, "Failed to close child after batch construction failure")
+        if isinstance(exc, ValueError):
             return [], str(exc)
-        pin_child_service_tier(child, route.creds)
-        if _task_schema is not None:
-            with _quiet("Could not attach output schema to child %d", i):
-                child._delegate_output_schema = _task_schema
-        # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
-        _t_images = task_images[i] if task_images and i < len(task_images) else None
-        if _t_images:
-            with _quiet("Could not attach images to child %d", i):
-                child._delegate_images = _t_images
-        # Tee progress events into the live transcript (wrapper keeps the
-        # _flush contract and swallows writer failures).
-        _writer = live_writers[i] if i < len(live_writers) else None
-        if _writer is not None:
-            child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
-            child._live_transcript_path = str(_writer.path)
-        if route.report() is not None:
-            child._delegate_route = route.report()
-        if live_deleg_id:
-            child._delegation_id = live_deleg_id
-            _ident_ref = getattr(child, "_progress_identity_ref", None)
-            if isinstance(_ident_ref, dict):
-                _ident_ref["delegation_id"] = live_deleg_id
-        children.append((i, t, child))
+        raise
     return children, None
 
 
@@ -526,6 +569,20 @@ def _settle_refused_transcripts(refused: list[dict[str, Any]], live_deleg_id: Op
             with _quiet("Live transcript finalize failed", exc_info=True):
                 _writer.finalize(entry)
     update_manifest_statuses(live_deleg_id, refused, home=live_home, completed=False)
+
+
+def _finalize_failed_construction(live_deleg_id, live_writers, task_list, error: str, *, home=None) -> None:
+    """Close live-log lifecycle state for a batch that never reached dispatch."""
+    results = []
+    for index, _task in enumerate(task_list):
+        entry = {"task_index": index, "status": "error", "error": error}
+        results.append(entry)
+        writer = live_writers[index] if index < len(live_writers) else None
+        if writer is not None:
+            with _quiet("Live transcript construction-failure finalize failed", exc_info=True):
+                writer.finalize(entry)
+    from tools.delegation_live_log import update_manifest_statuses
+    update_manifest_statuses(live_deleg_id, results, home=home)
 
 
 def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
@@ -599,6 +656,8 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     max_children = _get_max_concurrent_children()
+    task_schemas: List[Optional[Dict[str, Any]]] = []
+    task_images: List[Optional[List[str]]] = []
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
@@ -617,49 +676,84 @@ def delegate_task(
     runnable = [r for r in routes if not r.error]
     if not runnable:
         return tool_error(" ".join(dict.fromkeys(r.error for r in routes)))
-    refused = [r.refused_entry(i) for i, r in enumerate(routes) if r.error]
-    # Batch-level model/provider labels (transcript headers, completion block): blank when tasks took different
-    # routes, so each child reports what it actually runs on.
-    creds = runnable[0].creds if all(r.creds == runnable[0].creds for r in runnable) else dict.fromkeys(runnable[0].creds)
-    err = _oneshot_spawn_budget(parent_agent, len(runnable))
-    if err:
-        return tool_error(err)
+    # Per-turn spawn cap (#72550): reserve the normalised batch AFTER routing (backend refusals already
+    # excluded), trim the excess tasks, and charge the turn budget only when the whole admitted batch was
+    # built transactionally. Control actions and backend-refused tasks never touch the reservation.
+    assert task_list is not None
+    with reserve_subagent_spawns(len(runnable)) as spawn_reservation:
+        admitted = spawn_reservation.count
+        rejected_tasks = []
+        if admitted < len(runnable):
+            # Cap-trimmed tasks become per-task refusals so every task keeps its result entry and
+            # its live transcript/manifest row (aggregation requires one entry per task_index).
+            for index in range(admitted, len(routes)):
+                if routes[index].error:
+                    continue  # already refused by its backend: keep that reason
+                routes[index] = replace(routes[index], error="per-turn subagent spawn cap reached")
+            rejected_tasks = [
+                {
+                    "task_index": index,
+                    "goal": task.get("goal", ""),
+                    "status": "rejected",
+                    "reason": "per-turn subagent spawn cap reached",
+                }
+                for index, task in enumerate(task_list)
+                if routes[index].error == "per-turn subagent spawn cap reached"
+            ]
+            runnable = [r for r in routes if not r.error]
+        refused = [r.refused_entry(i) for i, r in enumerate(routes) if r.error]
+        # Batch-level model/provider labels (transcript headers, completion block): blank when tasks took different
+        # routes, so each child reports what it actually runs on.
+        creds = runnable[0].creds if all(r.creds == runnable[0].creds for r in runnable) else dict.fromkeys(runnable[0].creds)
+        err = _oneshot_spawn_budget(parent_agent, len(runnable))
+        if err:
+            return tool_error(err, **({"rejected_tasks": rejected_tasks} if rejected_tasks else {}))
+        if not runnable:
+            # Every task was cap-trimmed: nothing admits, so nothing charges and nothing runs.
+            return tool_error("Per-turn subagent spawn cap reached.", rejected_tasks=rejected_tasks)
 
-    overall_start = time.monotonic()
-    # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
-    # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
-    #
-    # The transcripts' profile home is resolved from stable parent-owned
-    # state (the parent's per-profile SessionDB path), NOT ambient
-    # get_hermes_dir(): this thread may have crossed a raw threading.Thread
-    # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
-    # and process-wide HERMES_HOME is unstable under concurrent
-    # multi-profile workers — either way transcripts could land in the
-    # wrong profile (#91996). state.db sits directly under the home, so
-    # its parent IS the home; None falls back to today's ambient resolve
-    # (with a warning — that fallback is exactly the #91996 failure mode).
-    _live_home = _parent_live_home(parent_agent)
+        overall_start = time.monotonic()
+        # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on
+        # message content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
+        #
+        # The transcripts' profile home is resolved from stable parent-owned
+        # state (the parent's per-profile SessionDB path), NOT ambient
+        # get_hermes_dir(): this thread may have crossed a raw threading.Thread
+        # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
+        # and process-wide HERMES_HOME is unstable under concurrent
+        # multi-profile workers — either way transcripts could land in the
+        # wrong profile (#91996). state.db sits directly under the home, so
+        # its parent IS the home; None falls back to today's ambient resolve
+        # (with a warning — that fallback is exactly the #91996 failure mode).
+        _live_home = _parent_live_home(parent_agent)
 
-    from tools.delegation_live_log import create_live_transcripts
-    live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
-        home=_live_home,
-    )
-    if refused:  # settled before anything runs: transcripts and manifest show the refusal (async units skip them)
-        _settle_refused_transcripts(refused, live_deleg_id, live_writers, _live_home)
-    _announce_batch(parent_agent, len(task_list), live_deleg_id)
-    origin = _capture_origin()
+        from tools.delegation_live_log import create_live_transcripts
+        live_deleg_id, live_writers, live_paths = create_live_transcripts(
+            task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+            home=_live_home,
+        )
+        if refused:  # settled before anything runs: transcripts and manifest show the refusal (async units skip them)
+            _settle_refused_transcripts(refused, live_deleg_id, live_writers, _live_home)
+        _announce_batch(parent_agent, len(task_list), live_deleg_id)
+        origin = _capture_origin()
 
-    children, err = _build_children(
-        task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
-    if err:
-        return tool_error(err)
+        try:
+            children, err = _build_children(
+                task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter,
+                parent_agent=parent_agent, live_deleg_id=live_deleg_id,
+                live_writers=live_writers, task_images=task_images,
+            )
+        except BaseException as exc:
+            _finalize_failed_construction(live_deleg_id, live_writers, task_list, str(exc), home=_live_home)
+            raise
+        if err:
+            _finalize_failed_construction(live_deleg_id, live_writers, task_list, err, home=_live_home)
+            return tool_error(err, **({"rejected_tasks": rejected_tasks} if rejected_tasks else {}))
+        spawn_reservation.commit(len(children))
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
-        live_home=_live_home, refused=refused,
+        live_home=_live_home, refused=refused, rejected_tasks=rejected_tasks,
     )
     return _run_batch(batch, background)
 

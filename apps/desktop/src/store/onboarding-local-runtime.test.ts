@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import * as notifications from '@/store/notifications'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 
@@ -52,10 +53,12 @@ describe('refreshOnboarding with the local model server down', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(coldState())
+    $localModelsEnabled.set(false)
     vi.restoreAllMocks()
   })
 
   it('keeps the app open and names the server, never provider sign-in', async () => {
+    $localModelsEnabled.set(true)
     const notify = vi.spyOn(notifications, 'notify')
 
     const ready = await refreshOnboarding({
@@ -74,6 +77,19 @@ describe('refreshOnboarding with the local model server down', () => {
         message: SERVER_OFF
       })
     )
+  })
+
+  it('offers another model where there is no Local models pane (the Webapp)', async () => {
+    const notify = vi.spyOn(notifications, 'notify')
+
+    await refreshOnboarding({
+      requestGateway: localModelGateway({ error: SERVER_OFF, error_code: 'local_runtime_unavailable', ok: false })
+    })
+
+    expect($desktopOnboarding.get().configured).toBe(true)
+    const shown = notify.mock.calls.at(-1)?.[0]
+    expect(shown?.action?.label).toBe('Choose another model')
+    expect(shown?.message).toContain('Hermes desktop app')
   })
 
   it('still opens onboarding for an uncoded failure (a missing credential)', async () => {

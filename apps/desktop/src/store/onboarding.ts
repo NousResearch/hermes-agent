@@ -30,11 +30,13 @@ import {
 } from '@/store/free-tier'
 import { followHandoff, handoffStillMoving } from '@/store/free-tier-sign-in'
 import { $gatewayBootGeneration } from '@/store/live-sync'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import { requestRoute } from '@/store/recovery-requests'
+import { setModelPickerOpen } from '@/store/session'
 import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -315,14 +317,23 @@ function isLocalRuntimeDown(runtime: RuntimeReadinessResult, state: DesktopOnboa
   return runtime.source === 'runtime_check' && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE && !state.requested
 }
 
+// The Webapp has no Local models pane (the flag is Electron-only), so there the way forward it can
+// offer is another model, and the sentence must not send the user to a pane they cannot open.
+const WEBAPP_LOCAL_RUNTIME_DOWN =
+  "The local model server isn't serving. Start it from the Hermes desktop app (Settings → Providers → Local models), or choose another model."
+
 function keepConfiguredWithLocalRuntimeDown(reason: string) {
+  const pane = $localModelsEnabled.get()
+
   writeCachedConfigured(true)
   patch({ configured: true, reason })
   notify({
-    action: { label: 'Open Local models', onClick: () => requestRoute(LOCAL_MODELS_ROUTE) },
+    action: pane
+      ? { label: 'Open Local models', onClick: () => requestRoute(LOCAL_MODELS_ROUTE) }
+      : { label: 'Choose another model', onClick: () => setModelPickerOpen(true) },
     id: 'local-runtime-unavailable',
     kind: 'warning',
-    message: reason,
+    message: pane ? reason : WEBAPP_LOCAL_RUNTIME_DOWN,
     title: 'Local model unavailable'
   })
 }

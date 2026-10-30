@@ -970,6 +970,47 @@ selection. A stale ambient CA-file path cannot prevent those clients from
 starting. PM index credentials are sent only to their exact HTTPS origin;
 redirects to another origin do not receive them.
 
+### Mutual TLS (client certificates) {#mutual-tls}
+
+Some providers and MCP servers require the client to present its own
+certificate. Configure it once, machine-wide:
+
+```yaml
+# ~/.hermes/config.yaml
+agent:
+  mtls:
+    cert_file: "~/secrets/hermes-client.pem"        # cert, cert+key, or a .p12/.pfx bundle
+    key_file: "~/secrets/hermes-client-key.pem"     # omit for a combined PEM or PKCS#12
+    ca_cert: "~/secrets/internal-ca.pem"            # optional private signer
+    password_env: "HERMES_MTLS_KEY_PASSWORD"        # optional, name of the env var
+```
+
+`cert_file` accepts three shapes: a PEM certificate with the key in `key_file`,
+one combined PEM holding both, or a PKCS#12 bundle (`.p12` / `.pfx`) whose
+passphrase comes from the environment variable named by `password_env`. A
+PKCS#12 bundle is unwrapped once into a PEM pair under
+`<profile home>/cache/mtls/` (directory `0700`, files `0600`) because OpenSSL's
+`load_cert_chain` reads files only; rotating the bundle re-extracts it.
+
+What the block applies to:
+
+| Surface | Gets the certificate | Precedence |
+|---|---|---|
+| LLM providers (OpenAI-compatible, Gemini native, Anthropic), model metadata, auxiliary calls | Yes, every request | An endpoint's own `ssl_ca_cert` still decides trust |
+| Remote MCP servers (Streamable HTTP and SSE) | Only when the server entry sets no `client_cert` | Per-server `client_cert` / `client_key` always win |
+| Browser, terminal, web tools | No — they have their own TLS stacks | — |
+
+`agent.mtls.ca_cert` is a *fallback* trust root, used only when the endpoint
+names no bundle of its own; it never overrides a provider `ssl_ca_cert` or a
+per-server `ssl_verify`. A missing or unreadable certificate is never fatal:
+Hermes logs one warning per process and connects without a client certificate,
+so a typo leaves the endpoint's own TLS error as the visible symptom rather
+than taking the agent offline. `hermes config check` reports the missing file
+up front.
+
+Passphrases never live in `config.yaml` — `password_env` names an environment
+variable (`~/.hermes/.env`), so backups and config dumps carry no secret.
+
 ## Trusted-by-placement extension points {#trusted-by-placement}
 
 Most third-party code Hermes can run is gated by an explicit allow-list: general plugins need `plugins.enabled`, shell hooks need a first-use approval (or `hooks_auto_accept`), MCP servers are listed in config. One surface is deliberately different:

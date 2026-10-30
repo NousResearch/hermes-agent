@@ -49,6 +49,7 @@ from hermes_cli.doctor_tools import (
     _check_terminal_backend,
     _check_tool_availability,
 )
+from hermes_cli.doctor_runtime import _check_local_runtime
 from hermes_cli.doctor_state import (
     _check_checkpoint_store,
     _check_cron_store,
@@ -129,6 +130,7 @@ DOCTOR_CHECKS = (
     ('Memory Provider', _check_memory_provider), (None, _check_plugins_disabled_by_update),
     (None, _check_plugins_in_both_lists),
     ('NeMo Relay Plugins', _check_relay_plugins),
+    ('Local Models Runtime', _check_local_runtime),
     (None, _check_profiles),
 )
 

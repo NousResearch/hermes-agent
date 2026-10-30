@@ -94,6 +94,45 @@ class TestCollectProfileGatewayTopology:
         assert topo["gateways"] == []
         assert topo["profile_platforms"] == {}
 
+    def test_host_multiplex_banner_ignores_standalone_shim_reason(self, tmp_path, monkeypatch):
+        """A live host multiplexer plus `gateway.standalone: true` siblings must not
+        paint the dashboard migrate banner. Those siblings record
+        STANDALONE_PROFILE_REASON on their own gateway_state; that is the shim,
+        not a host boot-guard refusal."""
+        from hermes_cli.gateway_multiplex_mode import STANDALONE_PROFILE_REASON
+
+        homes = [("default", tmp_path / "d"), ("apollo", tmp_path / "a")]
+        runtimes = {
+            "default": {
+                "served_profiles": ["default", "deployer"],
+                "multiplex_standalone_reason": None,
+            },
+            "apollo": {
+                "served_profiles": [],
+                "multiplex_standalone_reason": STANDALONE_PROFILE_REASON,
+            },
+        }
+        _patch_topology(
+            monkeypatch, homes, running={"default", "apollo"}, runtimes=runtimes
+        )
+        topo = _collect_profile_gateway_topology()
+        assert topo["gateway_mode"] == "multiplex"
+        assert topo["multiplex_standalone_reason"] is None
+
+    def test_host_guard_refusal_still_surfaces_on_dashboard(self, tmp_path, monkeypatch):
+        homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
+        reason = "profile(s) 'coder' still run their own gateway"
+        runtimes = {
+            "default": {
+                "served_profiles": ["default"],
+                "multiplex_standalone_reason": reason,
+            },
+        }
+        _patch_topology(monkeypatch, homes, running={"default"}, runtimes=runtimes)
+        topo = _collect_profile_gateway_topology()
+        assert topo["gateway_mode"] != "multiplex"
+        assert topo["multiplex_standalone_reason"] == reason
+
     def test_collects_per_profile_platform_maps(self, tmp_path, monkeypatch):
         # Independent per-profile gateways (gateway_mode == "multiple") each
         # write their own gateway_state.json; the collector surfaces every

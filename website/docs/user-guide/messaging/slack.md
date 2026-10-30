@@ -567,10 +567,10 @@ streaming:
 
 #### Initial notification preview
 
-For Slack replies, Hermes buffers the first streamed text until completed
-sentences contain at least 80 characters of content, then streams subsequent
-updates normally. A short opening sentence is held together with the next
-sentence(s). Headings alone do not release the preview; completed paragraphs,
+For each new Slack reply message, Hermes buffers its first streamed text until
+completed sentences contain at least 80 characters of content, then streams
+updates to that message normally. A short opening sentence is held together with
+the next sentence(s). Headings alone do not release the preview; completed paragraphs,
 list items and fenced code blocks provide boundaries for non-prose replies.
 Sentence detection is conservative: code, URLs, decimals and common
 abbreviations are not treated as sentence endings.

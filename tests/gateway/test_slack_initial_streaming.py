@@ -1,4 +1,4 @@
-"""Slack's first answer notification waits for useful text, not its activity status."""
+"""Each new Slack answer message waits for useful text, not its activity status."""
 
 import asyncio
 import re
@@ -82,6 +82,8 @@ def _displayed(client, cursor):
 @pytest.mark.parametrize("cursor", ["", " ▉"])
 @pytest.mark.parametrize("ending", [
     "sentence", "short", "bare-finish", "overflow", "tool", "commentary", "flush", "stale", "cancel",
+    "tool-short", "commentary-short", "flush-short",
+    "commentary-only", "commentary-only-short",
 ])
 async def test_slack_initial_answer_visibility(transport, cursor, ending):
     client = _SlackClient(downgrade=transport == "downgrade")
@@ -105,7 +107,8 @@ async def test_slack_initial_answer_visibility(transport, cursor, ending):
     try:
         await adapter.send_typing("D1", metadata=metadata)
         assert client.assistant_threads_setStatus.await_count == 1
-        await consumer.settled_delta("OK")
+        has_preamble = not ending.startswith("commentary-only")
+        await consumer.settled_delta("OK" if has_preamble else "")
         assert client.calls == []
         assert not consumer.final_response_sent
 
@@ -158,25 +161,43 @@ async def test_slack_initial_answer_visibility(transport, cursor, ending):
             assert list(client.messages.values()) == [final]
             assert consumer.delivered_final_matches(final) is True
         else:
-            if ending == "tool":
+            boundary = ending.removesuffix("-short").removesuffix("-only")
+            if boundary == "tool":
                 consumer.on_delta(None)
-            elif ending == "commentary":
-                consumer.on_commentary("Checking the result")
+            elif boundary == "commentary":
+                consumer.on_commentary("Delegating…")
             else:
                 assert await asyncio.to_thread(consumer.flush_pending_sync)
-            await async_wait_until(lambda: "OK" in client.messages.values(),
-                                   what="short completed preamble delivered at boundary")
+            if has_preamble:
+                await async_wait_until(lambda: "OK" in client.messages.values(),
+                                       what="short completed preamble delivered at boundary")
             assert not consumer.final_response_sent
-            if ending == "commentary":
-                await async_wait_until(lambda: len(client.messages) == 2,
+            if boundary == "commentary":
+                await async_wait_until(lambda: len(client.messages) == 1 + has_preamble,
                                        what="commentary delivered after preamble")
-            await consumer.settled_delta("Next")
-            assert _displayed(client, cursor)[-1] == "Next"
-            consumer.finish("Next answer")
+                assert list(client.messages.values())[-1] == "Delegating…"
+            calls_before = list(client.calls)
+            await consumer.settled_delta("Je vous donnerai le")
+            assert client.calls == calls_before
+            if ending.endswith("-short"):
+                final = "Je vous donnerai le résultat"
+            else:
+                await consumer.settled_delta(" résultat. ")
+                assert client.calls == calls_before  # A complete short sentence still waits.
+                body = "Voici une deuxième phrase suffisamment longue pour fournir un aperçu vraiment utile"
+                await consumer.settled_delta(body)
+                assert client.calls == calls_before  # Length alone does not open a message.
+                await consumer.settled_delta(". ")
+                first = "Je vous donnerai le résultat. " + body + ". "
+                assert _displayed(client, cursor)[-1] == first
+                await consumer.settled_delta("Suite incomplète")
+                assert _displayed(client, cursor)[-1] == first + "Suite incomplète"
+                final = first + "Suite incomplète terminée."
+            consumer.finish(final)
             await asyncio.wait_for(task, timeout=10)
-            expected = ["OK", "Next answer"]
-            if ending == "commentary":
-                expected.insert(1, "Checking the result")
+            expected = ["OK", final] if has_preamble else [final]
+            if boundary == "commentary":
+                expected.insert(int(has_preamble), "Delegating…")
             assert list(client.messages.values()) == expected
         assert consumer.final_response_sent
         assert consumer.final_content_delivered

@@ -76,7 +76,7 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
-    # Internal first-notification policy; completed messages always bypass it.
+    # Internal per-message notification policy; completed messages always bypass it.
     initial_text_min_chars: int = 0
 
 
@@ -126,7 +126,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
-        self._initial_text_visible = self.cfg.initial_text_min_chars <= 0
         if self.cfg.initial_text_min_chars > 0:
             # The sentence gate replaces the tiny-preview heuristic. Completed short
             # preambles must still flush at tool/commentary boundaries, not be dropped.
@@ -199,6 +198,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _reset_message_state(self) -> None:
         """Per-message (segment) state: fresh at construction and after each segment break."""
+        self._initial_text_visible = self.cfg.initial_text_min_chars <= 0
         self._message_id: Optional[str] = None
         self._message_created_ts: Optional[float] = None  # fresh-final age
         # ``_stream_ledger`` mirrors ``_accumulated`` but is NOT truncated when
@@ -857,12 +857,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                        and self._message_id is None)
         # Segment break finalizes so platforms needing explicit closure (DingTalk AI
         # Cards) don't leave the segment stuck loading; it closes a preamble, not the
-        # answer.
+        # answer. Non-cumulative commentary also ends the preamble before resetting it.
         tick.update_visible = await self._send_or_edit(
-            display_text, finalize=tick.got_done or tick.got_segment_break,
+            display_text, finalize=(tick.got_done or tick.got_segment_break
+                                    or (tick.commentary_text is not None
+                                        and not self._cumulative_transport())),
             is_turn_final=tick.got_done)
         # Transport no-ops may return True without showing anything. Only an
-        # acknowledged text frame releases the turn-wide gate (never reset per bubble).
+        # acknowledged text frame releases the gate for this message's updates.
         if self._clean_for_display(self._last_sent_text).strip():
             self._initial_text_visible = True
         self._last_edit_time = time.monotonic()
@@ -937,8 +939,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         cumulative = self._cumulative_transport()
         if not cumulative:
             self._reset_segment_state()
-        if await self._send_commentary(commentary_text):
-            self._initial_text_visible = True
+        await self._send_commentary(commentary_text)
         self._last_edit_time = time.monotonic()
         if not cumulative:
             self._reset_segment_state()

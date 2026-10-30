@@ -392,7 +392,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
             # Session verbs live on the authority; everything else the sidecar still
             # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
             # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
-            # method neither side knows, which is what the client's version-skew notice keys on.
+            # method neither side knows, which the client's capability fallbacks key on.
             resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
         return resp
 

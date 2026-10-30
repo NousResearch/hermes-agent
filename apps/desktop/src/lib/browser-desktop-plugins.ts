@@ -2,7 +2,7 @@ import type { HermesApiRequest, HermesReadFileTextResult } from '@/global'
 
 type DesktopPluginsBridge = Pick<
   Window['hermesDesktop'],
-  'desktopPluginsRoot' | 'readDir' | 'readFileText' | 'readPluginSource'
+  'desktopPluginsRoot' | 'readDir' | 'readFileText' | 'readPluginSource' | 'reconcileDesktopPlugins'
 >
 
 interface BrowserDesktopPluginsOptions {
@@ -35,6 +35,9 @@ export function createBrowserDesktopPluginsBridge({ api, files }: BrowserDesktop
     },
     readDir: path => (inside(path) ? get('list', path) : files.readDir(path)),
     readFileText: path => (inside(path) ? readFile(path) : files.readFileText(path)),
-    readPluginSource: readFile
+    readPluginSource: readFile,
+    // The server copies agent+desktop packages' desktop halves into the folder, as Electron does.
+    reconcileDesktopPlugins: async () =>
+      (await api<{ touched: string[] }>({ method: 'POST', path: '/api/desktop-plugins/reconcile' })).touched
   }
 }

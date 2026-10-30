@@ -760,16 +760,45 @@ def is_coin_name_only(finding: Finding, line: str) -> bool:
     return bool(hits) and all(_is_standalone_coin_name(line, h.start(), h.end()) for h in hits)
 
 
-# Google mints installed-app (desktop/CLI) OAuth clients with a ``GOCSPX-`` secret that its OAuth
-# docs say cannot be kept confidential: every copy of the app ships it (gcloud does). A plugin is
-# such an app, so the literal identifies a public client rather than leaking a credential; it stays
-# in the report for review (caution) instead of hard-blocking the install.
-_GOOGLE_PUBLIC_CLIENT_SECRET = re.compile(r'["\']GOCSPX-[A-Za-z0-9_-]{20,}["\']')
+# Key shapes the vendor documents as public, shipped in every copy of a client: a Google
+# installed-app (desktop/CLI) OAuth client secret (``GOCSPX-``, gcloud ships one) and a PostHog
+# project API key (``phc_``, a write-only ingest key every web page embeds). The literal identifies
+# a client rather than leaking a credential, so it stays in the report for review (caution) instead
+# of hard-blocking the install. Only when EVERY ``hardcoded_secret`` literal on the line has one of
+# these prefixes: a PostHog personal key (``phx_``) or any other token beside it keeps critical.
+_PUBLIC_CLIENT_KEY_PREFIXES = ("GOCSPX-", "phc_")
+_SECRET_LITERAL = re.compile(r'[=:]\s*["\']([A-Za-z0-9+/=_-]{20,})')
 
 
-def is_google_installed_app_secret(finding: Finding, line: str) -> bool:
-    """A ``hardcoded_secret`` hit whose literal is a Google installed-app OAuth client secret."""
-    return finding.pattern_id == "hardcoded_secret" and bool(_GOOGLE_PUBLIC_CLIENT_SECRET.search(line))
+def is_public_client_key(finding: Finding, line: str) -> bool:
+    """A ``hardcoded_secret`` hit whose every matched literal is a public-by-design client key."""
+    if finding.pattern_id != "hardcoded_secret":
+        return False
+    literals = [_SECRET_LITERAL.search(m.group(0)) for m in _PATTERN_BY_ID["hardcoded_secret"].finditer(line)]
+    return bool(literals) and all(
+        lit is not None and lit.group(1).startswith(_PUBLIC_CLIENT_KEY_PREFIXES) for lit in literals)
+
+
+# ``/proc/self/<leaf>`` and ``/proc/<pid>/<leaf>`` files that describe scheduling and container
+# placement (cgroup membership, mount layout, start time in ``stat``, limits): container CPU-quota
+# detection and pid-reuse checks read them. A read of one of these is not process introspection.
+# The leaves that leak or reach another process keep ``high``: ``environ``, ``cmdline``, ``mem``,
+# ``maps``, ``fd``, ``root``/``cwd`` (procfs escape into the host tree), ``exe``, ``ns`` and any
+# leaf not listed, as do a bare ``/proc/self`` and any write.
+_BENIGN_PROC_LEAVES = frozenset({
+    "cgroup", "mountinfo", "mounts", "stat", "statm", "status", "limits", "io", "comm", "cpuset",
+    "sched", "schedstat", "oom_score"})
+_PROC_PATH = re.compile(r"/proc/(?:self|\d+)(?:/([\w.-]*))?")
+_PROC_WRITE = re.compile(
+    r"write_text|write_bytes|\.write\s*\(|open\s*\([^)\n]{0,300}?['\"][rbt]*[wax+][rbt+]*['\"]|O_WRONLY|O_RDWR|>\s*['\"]?/proc/|\btee\b")
+
+
+def is_own_proc_read(finding: Finding, line: str) -> bool:
+    """A ``proc_access`` hit where every ``/proc`` path on the line is a benign leaf, read only."""
+    if finding.pattern_id != "proc_access":
+        return False
+    leaves = [m.group(1) for m in _PROC_PATH.finditer(line)]
+    return bool(leaves) and all(leaf in _BENIGN_PROC_LEAVES for leaf in leaves) and not _PROC_WRITE.search(line)
 
 
 __all__ = [
@@ -787,13 +816,14 @@ __all__ = [
     "is_disclosed_config_note",
     "is_doc_prose",
     "is_env_dump_in_safety_clause",
-    "is_google_installed_app_secret",
     "is_hex_in_char_class",
     "is_inert_fixture_line",
     "is_json_prose_value",
     "is_loopback_continuation",
     "is_loopback_only",
+    "is_own_proc_read",
     "is_pip_install_in_prose_literal",
+    "is_public_client_key",
     "is_quoted_injection_phrase",
     "is_regex_alternation_token",
     "is_repo_root_traversal",

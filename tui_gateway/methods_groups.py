@@ -22,8 +22,10 @@ _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
-LONG_HANDLERS = frozenset(_METHODS)
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
+    "groups.attachment.download")
+#: ``groups.discard`` is forwarded to an owning gateway only, so local capabilities never list it.
+LONG_HANDLERS = frozenset(_METHODS) | {"groups.discard"}
 
 _service_lock = threading.Lock()
 _run_store_lock = threading.Lock()
@@ -403,6 +405,27 @@ def _(rid, params: dict, service) -> dict:
 
 
 @_room_method(
+    "groups.attachment.upload", code=5121, room_code=4125, service_code=4123,
+    service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Retain one composer file for a later ``groups.send`` manifest (same store as the gateway route)."""
+    from gateway.session_hosted_attachments import store_upload
+    room_id = params.get("room_id")
+    service._owned_authority(room_id)
+    service._room(room_id)
+    return _ok(rid, store_upload(service, room_id, params))
+
+
+@_room_method("groups.attachment.download", code=5123, room_code=4126, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """Read one committed room file for a viewer of this gateway's room."""
+    from gateway.session_hosted_attachments import read_download
+    room_id = params.get("room_id")
+    service._room(room_id)
+    return _ok(rid, read_download(service, room_id, params))
+
+
+@_room_method(
     "groups.disband", code=5114, room_code=4113, service_code=4123,
     service_message=_WORKER_UNAVAILABLE)
 def _(rid, params: dict, service) -> dict:
@@ -470,6 +493,13 @@ def _(rid, params: dict, service) -> dict:
         "execution_generation": int(task.get("execution_generation") or 0),
         "cancel_generation": int(task.get("cancel_generation") or 0)}
     return _ok(rid, {"retried": True, "task": receipt})
+
+
+@_room_method("groups.discard", code=5125)
+def _(rid, params: dict) -> dict:
+    """Discard one indeterminate room task: forwarded to the gateway that owns the room, the only
+    runtime that offers Discard; a room this backend drives itself never shows the action."""
+    return _err(rid, 4127, "Only the Hermes gateway that owns this Group Chat can discard its work.")
 
 
 def _passthrough(

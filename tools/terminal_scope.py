@@ -116,9 +116,10 @@ def build_profile_terminal_scope(
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
     Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- *env_overlay*
-    <- profile ``config.yaml`` ``terminal:``. Total by construction, so a bound scope never
-    widens back to ambient authority. Raises :class:`TerminalPolicyUnavailable` if a present
-    file is unreadable.
+    <- profile ``config.yaml`` ``terminal:`` <- managed-scope ``terminal:``. Total by construction,
+    so a bound scope never widens back to ambient authority. Raises :class:`TerminalPolicyUnavailable`
+    if a present file is unreadable, except a ``.env`` that refuses reads while managed scope pins
+    ``terminal.backend``.
 
     *env_overlay* is a TRUSTED ``TERMINAL_*`` mapping captured from the launch process before
     multiplexing began (``tui_gateway/launch_profile_policy.py``): the launch profile's
@@ -127,6 +128,8 @@ def build_profile_terminal_scope(
     closes. It sits where the process env sits in the standalone bridge — explicit YAML keys
     still win (``apply_terminal_config_to_env``).
     """
+    from hermes_cli import managed_scope
+    from hermes_cli.config import _deep_merge
     from hermes_cli.config_backend import config_exists
 
     home = Path(hermes_home)
@@ -135,11 +138,13 @@ def build_profile_terminal_scope(
     env_path = home / ".env"
     if env_path.exists():
         # load_env_file swallows OSError by design (secret scope fails soft); an unreadable
-        # profile .env must fail closed here.
+        # profile .env must fail closed here, unless managed scope pins the backend: a sandbox
+        # launcher withholds the .env and pins the backend there, and load_env_file reads it as {}.
         try:
             env_path.read_bytes()
         except Exception as exc:
-            raise TerminalPolicyUnavailable(f"cannot read {env_path}: {exc}") from exc
+            if not isinstance(exc, PermissionError) or managed_scope.pinned_terminal_backend() is None:
+                raise TerminalPolicyUnavailable(f"cannot read {env_path}: {exc}") from exc
         from agent.secret_scope import load_env_file
 
         profile_env = load_env_file(env_path)
@@ -164,6 +169,7 @@ def build_profile_terminal_scope(
         has_config = config_exists(config_path)
     except Exception as exc:
         raise TerminalPolicyUnavailable(f"cannot resolve terminal config in {home}: {exc}") from exc
+    raw_terminal = None
     if has_config:
         from hermes_cli.config_backend import read_config_doc_readonly
 
@@ -176,6 +182,13 @@ def build_profile_terminal_scope(
         if isinstance(raw_terminal, dict):
             _apply_terminal_mapping(scope, raw_terminal)
             image_pinned = image_pinned or "docker_image" in raw_terminal
+    managed_terminal = managed_scope.apply_managed_overlay({}).get("terminal")
+    if isinstance(managed_terminal, dict):
+        # Managed scope applies last, merged per key into the profile's mapping as load_config() merges
+        # them, so a managed docker_env entry keeps the profile's other entries. A null value pins nothing.
+        _apply_terminal_mapping(
+            scope, _deep_merge(raw_terminal if isinstance(raw_terminal, dict) else {}, managed_terminal))
+        image_pinned = image_pinned or managed_terminal.get("docker_image") is not None
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)
     return scope

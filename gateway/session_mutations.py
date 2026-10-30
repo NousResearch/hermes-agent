@@ -253,6 +253,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 # no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
     applied = False
+    result = None
     async with commit_lock or nullcontext():
         if prepared is not None and 'snapshot' not in prepared:
             # Exact retry: the durable receipt is the result. Never re-prepare (compress
@@ -267,7 +268,14 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             if operation == 'delete':
                 from gateway.session_onboarding import ending_run_on_delete
                 commit = partial(ending_run_on_delete, authority.db, ref.session_id, commit)
-            result = await asyncio.to_thread(commit)
+            try:
+                result = await asyncio.to_thread(commit)
+            finally:
+                if operation == 'compress':
+                    # Before the projection's boundary eviction ends the resident agent's engine
+                    # session; a refused commit only releases a one-off engine.
+                    from gateway.session_mutation_compress import finish_compress_engine
+                    await finish_compress_engine(authority, prepared, result if applied else None)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
         finally:

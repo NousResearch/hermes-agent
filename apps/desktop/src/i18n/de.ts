@@ -10,6 +10,7 @@ import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
+import { deMemoryLayers } from './de_memory_layers'
 import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
@@ -681,6 +682,7 @@ export const deOverrides = {
     noResults: 'Keine Sprachen gefunden'
   },
   settings: {
+    memoryLayers: deMemoryLayers,
     subpages: {
       appearanceTheme: 'Design',
       appearanceTypography: 'Typografie',
@@ -840,6 +842,17 @@ export const deOverrides = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Geprüfter Pin ${sha}` : 'Geprüfter Pin'),
         latestCommit: 'Neuester Commit',
+        sourceMoved: sha =>
+          sha
+            ? `Das Repository hat sich seit deiner Prüfung geändert. Prüfe die neue Version (Commit ${sha}), bevor du sie installierst.`
+            : 'Das Repository hat sich seit deiner Prüfung geändert. Die neue Version wird gelesen…',
+        legacyBackendConfirm:
+          'Dieses Backend ist älter als diese App und kann nicht garantieren, dass genau die geprüfte Version installiert wird: Hat sich das Repository seitdem geändert, wird stattdessen die neuere Version installiert. Aktualisiere das Backend, um diese Garantie zu bekommen.',
+        installAnyway: 'Trotzdem installieren',
+        partialInstall: sha =>
+          sha
+            ? `Das Plugin ist nur teilweise installiert: Der Agent-Teil ist mit Commit ${sha} installiert, der Desktop-Teil konnte nicht folgen, weil sich das Repository seit deiner Prüfung geändert hat. Aktiviere unter „Erweitert“ die erzwungene Neuinstallation, um beide Teile durch die angezeigte Version zu ersetzen, oder brich ab, um nur den Agent-Teil zu behalten.`
+            : 'Das Plugin ist nur teilweise installiert: Der Agent-Teil ist installiert, der Desktop-Teil konnte nicht folgen, weil sich das Repository seit deiner Prüfung geändert hat. Aktiviere unter „Erweitert“ die erzwungene Neuinstallation, um beide Teile durch die angezeigte Version zu ersetzen, oder brich ab, um nur den Agent-Teil zu behalten.',
         nothingToInstall: 'Dieses Paket hat hier nichts zu installieren.'
       }
     },
@@ -2858,9 +2871,6 @@ export const deOverrides = {
       resume: 'Fortsetzen',
       runNow: 'Jetzt ausführen',
       memoryData: 'Memory-Daten',
-      memoryDataDesc: 'Eingebaute Memory-Dateien, die in jede Session eingefügt werden',
-      memoryProvider: name => `Aktiver Provider: ${name}`,
-      builtinMemory: 'eingebaut',
       memoryFile: 'Agent-Memory (MEMORY.md)',
       userFile: 'Benutzerprofil (USER.md)',
       bytes: size => size,
@@ -4787,7 +4797,8 @@ export const deOverrides = {
     saveApply: 'Speichern & anwenden',
     notExpressible: 'diese Anordnung greift ineinander (Windrad) — noch nicht als verschachtelte Splits ausdrückbar',
     zoneCount: count => `${count} Zonen`,
-    tabCount: count => `${count} Tabs`
+    tabCount: count => `${count} Tabs`,
+    tabActions: title => `Aktionen für ${title}`
   },
   contextMenu: {
     link: {

@@ -409,7 +409,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
-    noteTurnSettled(sessionId)
+    // The view mirrors this runtime only while bound to it (settled-turns.ts).
+    noteTurnSettled(sessionId, deps.activeSessionIdRef.current === sessionId)
     completeAssistantMessage(
       sessionId,
       finalText,

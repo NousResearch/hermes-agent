@@ -176,7 +176,7 @@ platforms:
         priority_mode: prepend  # prepend | append | replace
         priority:
           - my_plugin_command
-          - songsee          # skill commands work here too
+          - excalidraw       # skill commands work here too
 ```
 
 `priority_mode` controls how your list combines with Hermes' built-in priority list:

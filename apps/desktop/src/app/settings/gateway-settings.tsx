@@ -18,6 +18,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
 import { ExternalLink } from '@/lib/external-link'
+import { hostHas } from '@/lib/host-capabilities'
 import {
   AlertCircle,
   Check,
@@ -31,7 +32,6 @@ import {
   RefreshCw,
   Terminal
 } from '@/lib/icons'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
@@ -177,7 +177,7 @@ interface GatewaySettingsProps {
 export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
   useSettingDeepLink('gateway', page => subpage === undefined || page === subpage)
 
-  if (isBrowserHostedDesktop()) {
+  if (!hostHas('gatewayManagement')) {
     return <WebappGatewaySettings embedded={embedded} />
   }
 

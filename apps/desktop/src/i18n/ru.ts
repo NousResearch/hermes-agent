@@ -9,6 +9,7 @@ import { ruConnectors } from './ru_connectors'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
+import { ruMemoryLayers } from './ru_memory_layers'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
@@ -331,6 +332,7 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    memoryLayers: ruMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -1769,9 +1771,6 @@ export const ruOverrides = {
       resume: 'Продолжить',
       runNow: 'Запустить сейчас',
       memoryData: 'Данные памяти',
-      memoryDataDesc: 'Встроенные файлы памяти, внедряемые в каждый сеанс',
-      memoryProvider: name => `Активный провайдер: ${name}`,
-      builtinMemory: 'встроенный',
       memoryFile: 'Память агента (MEMORY.md)',
       userFile: 'Профиль пользователя (USER.md)',
       bytes: size => size,
@@ -3455,7 +3454,8 @@ export const ruOverrides = {
     saveApply: 'Сохранить и применить',
     notExpressible: 'эта расстановка зацеплена (pinwheel) — пока не выразима как вложенные разделения',
     zoneCount: count => `${count} ${RU_NOUN(count, 'зона', 'зоны', 'зон')}`,
-    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`
+    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`,
+    tabActions: title => `Действия: ${title}`
   },
   contextMenu: {
     link: {

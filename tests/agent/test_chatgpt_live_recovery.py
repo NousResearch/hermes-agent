@@ -315,3 +315,32 @@ def test_signed_out_plan_initialization_never_resolves_a_billing_fallback(sessio
         _routed_client_kwargs(agent, [{"provider": "openrouter", "model": "vendor/model"}], 30)
     assert calls == ["openai-chatgpt"]
     assert agent.provider == "openai-chatgpt"
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("status,message", [
+    (429, "Too many requests"),
+    (402, "Payment required"),
+    (404, "Model not found"),
+    (400, "Unsupported parameter: fixture_field"),
+])
+def test_auxiliary_generic_http_refusal_never_uses_paid_fallback(session, async_mode, status, message, monkeypatch):
+    from agent import auxiliary_client as aux
+    from openai import APIStatusError
+
+    _, requests, replies, _ = session
+    replies.extend(httpx.Response(status, json={"error": {"message": message}}) for _ in range(20))
+    fallback_calls = []
+    original = aux._try_main_agent_model_fallback
+
+    def fallback(*args, **kwargs):
+        fallback_calls.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(aux, "_try_main_agent_model_fallback", fallback)
+    kwargs = {"task": "compression", "messages": [{"role": "user", "content": "Summarize"}]}
+    with pytest.raises(APIStatusError):
+        asyncio.run(aux.async_call_llm(**kwargs)) if async_mode else aux.call_llm(**kwargs)
+    assert not fallback_calls, "A selected ChatGPT plan must never resolve a billed fallback"
+    assert requests and {request.url.host for request in requests} == {"api.openai.com"}
+    assert len(requests) <= 3

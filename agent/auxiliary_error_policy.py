@@ -19,6 +19,9 @@ def provider_error_verdict(error: Exception, provider: str, *, model: str = "", 
 
 def require_provider_recovery(error: Exception, provider: str, *, fallback: bool = False,
                               model: str = "", base_url: str = "") -> None:
+    # A generic SDK verdict cannot authorize spending outside the selected ChatGPT plan.
+    if fallback and provider == "openai-chatgpt":
+        raise error
     verdict = provider_error_verdict(error, provider, model=model, base_url=base_url)
     if verdict is None:
         return

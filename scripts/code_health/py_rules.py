@@ -821,6 +821,92 @@ def elif_ladder(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
 
 _COPY_CONTEXT = "contextvars.copy_context"
 
+_ANN_BUILTINS = frozenset(dir(__import__("builtins")))
+
+
+def _has_future_annotations(tree: ast.Module) -> bool:
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+
+
+def _calls_bind_module(tree: ast.Module) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "bind_module")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "bind_module")
+        )
+        for node in ast.walk(tree)
+    )
+
+
+def _module_bound_names(tree: ast.Module) -> set[str]:
+    names = set(_ANN_BUILTINS)
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _unbound_annotation_lines(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, bound: set[str]
+) -> Iterator[int]:
+    anns = [fn.returns] if fn.returns else []
+    anns.extend(
+        arg.annotation
+        for arg in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)
+        if arg.annotation
+    )
+    for ann in anns:
+        attr_roots = {
+            id(node.value)
+            for node in ast.walk(ann)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+        }
+        for node in ast.walk(ann):
+            if (
+                isinstance(node, ast.Name)
+                and id(node) not in attr_roots
+                and node.id not in bound
+            ):
+                yield node.lineno
+
+
+def eager_split_annotation_name(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    """Unbound names in annotations of bind_module modules that evaluate them at def time.
+
+    F821 is excluded for ``tui_gateway/*`` because bind_module injects *body* names
+    (``_ok``, ``_err``, ``_sessions``). Annotations still evaluate in the split
+    module on Python 3.11–3.13 when the file has no postponed annotations.
+    """
+    if _has_future_annotations(tree) or not _calls_bind_module(tree):
+        return ()
+    bound = _module_bound_names(tree)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield from _unbound_annotation_lines(node, bound)
+        elif isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield from _unbound_annotation_lines(item, bound)
+
 
 def _context_names(own: list[ast.AST]) -> set[str]:
     """Names this scope binds only to ``contextvars.copy_context()``."""
@@ -874,4 +960,5 @@ CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX011": elif_ladder,
     "HX012": raw_thread,
     "HX013": wall_clock_sleep,
+    "HX014": eager_split_annotation_name,
 }

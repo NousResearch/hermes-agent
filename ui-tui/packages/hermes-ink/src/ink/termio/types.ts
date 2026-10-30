@@ -152,9 +152,7 @@ export type EraseAction =
 // =============================================================================
 
 export type ScrollAction =
-  | { type: 'up'; count: number }
-  | { type: 'down'; count: number }
-  | { type: 'setRegion'; top: number; bottom: number }
+  { type: 'up'; count: number } | { type: 'down'; count: number } | { type: 'setRegion'; top: number; bottom: number }
 
 // =============================================================================
 // Mode Actions
@@ -177,9 +175,7 @@ export type LinkAction = { type: 'start'; url: string; params?: Record<string, s
 // =============================================================================
 
 export type TitleAction =
-  | { type: 'windowTitle'; title: string }
-  | { type: 'iconName'; name: string }
-  | { type: 'both'; title: string }
+  { type: 'windowTitle'; title: string } | { type: 'iconName'; name: string } | { type: 'both'; title: string }
 
 // =============================================================================
 // Tab Status Action (OSC 21337)

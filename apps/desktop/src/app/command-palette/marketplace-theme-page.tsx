@@ -8,30 +8,22 @@
  * user can grab several.
  */
 
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
+import { StatusRow } from '@/app/command-palette/status-row'
 import { HUD_ITEM, HUD_TEXT } from '@/app/floating-hud'
+import { useDebounced } from '@/app/hooks/use-debounced'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
+import { $marketplaceInstalls } from '@/themes/user-themes'
 
 const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-
-function useDebounced<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value)
-
-  useEffect(() => {
-    const handle = setTimeout(() => setDebounced(value), delayMs)
-
-    return () => clearTimeout(handle)
-  }, [value, delayMs])
-
-  return debounced
-}
 
 interface MarketplaceThemePageProps {
   search: string
@@ -43,8 +35,8 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
   const { t } = useI18n()
   const copy = t.commandCenter.installTheme
   const debouncedSearch = useDebounced(search.trim(), 300)
+  const installs = useStore($marketplaceInstalls)
   const [installingId, setInstallingId] = useState<string | null>(null)
-  const [installed, setInstalled] = useState<Record<string, true>>({})
   const [installError, setInstallError] = useState<string | null>(null)
 
   const query = useQuery({
@@ -52,6 +44,20 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
     queryFn: () => window.hermesDesktop?.themes?.searchMarketplace(debouncedSearch) ?? Promise.resolve([]),
     staleTime: 5 * 60 * 1000
   })
+
+  // Already installed → just re-activate it; never re-download what we have.
+  const select = (item: DesktopMarketplaceSearchItem) => {
+    const owned = installs.get(item.extensionId)
+
+    if (owned) {
+      triggerHaptic('crisp')
+      onPickTheme(owned.name)
+
+      return
+    }
+
+    void install(item)
+  }
 
   const install = async (item: DesktopMarketplaceSearchItem) => {
     if (installingId) {
@@ -65,7 +71,6 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
       const theme = await installVscodeThemeFromMarketplace(item.extensionId)
 
       triggerHaptic('crisp')
-      setInstalled(prev => ({ ...prev, [item.extensionId]: true }))
       onPickTheme(theme.name)
     } catch (error) {
       setInstallError(error instanceof Error ? error.message : copy.error)
@@ -75,17 +80,17 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
   }
 
   if (query.isLoading) {
-    return <Status icon={<Loader2 className="size-3.5 animate-spin" />} text={copy.loading} />
+    return <StatusRow icon={<Loader2 className="size-3.5 animate-spin" />} text={copy.loading} />
   }
 
   if (query.isError) {
-    return <Status text={copy.error} tone="error" />
+    return <StatusRow text={copy.error} tone="error" />
   }
 
   const results = query.data ?? []
 
   if (results.length === 0) {
-    return <Status text={copy.empty} />
+    return <StatusRow text={copy.empty} />
   }
 
   return (
@@ -93,7 +98,7 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
       {installError && <p className="px-2 pb-1 pt-1.5 text-[0.6875rem] text-(--ui-red)">{installError}</p>}
       {results.map(item => {
         const busy = installingId === item.extensionId
-        const done = installed[item.extensionId]
+        const done = installs.has(item.extensionId)
 
         return (
           <button
@@ -104,7 +109,7 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
             )}
             disabled={Boolean(installingId) && !busy}
             key={item.extensionId}
-            onClick={() => void install(item)}
+            onClick={() => select(item)}
             onMouseDown={event => event.preventDefault()}
             role="option"
             type="button"
@@ -138,20 +143,6 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
           </button>
         )
       })}
-    </div>
-  )
-}
-
-function Status({ icon, text, tone }: { icon?: React.ReactNode; text: string; tone?: 'error' }) {
-  return (
-    <div
-      className={cn(
-        'flex items-center justify-center gap-2 px-2 py-6 text-xs',
-        tone === 'error' ? 'text-(--ui-red)' : 'text-muted-foreground'
-      )}
-    >
-      {icon}
-      {text}
     </div>
   )
 }

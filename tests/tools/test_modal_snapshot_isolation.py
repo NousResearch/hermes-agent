@@ -60,13 +60,10 @@ def _install_modal_test_modules(
     _reset_modules(("tools", "hermes_cli", "modal"))
 
     hermes_cli = types.ModuleType("hermes_cli")
-    hermes_cli.__path__ = []  # type: ignore[attr-defined]
+    hermes_cli.__path__ = [str(REPO_ROOT / "hermes_cli")]  # type: ignore[attr-defined]
     sys.modules["hermes_cli"] = hermes_cli
     hermes_home = tmp_path / "hermes-home"
     os.environ["HERMES_HOME"] = str(hermes_home)
-    sys.modules["hermes_cli.config"] = types.SimpleNamespace(
-        get_hermes_home=lambda: hermes_home,
-    )
 
     tools_package = types.ModuleType("tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
@@ -75,6 +72,13 @@ def _install_modal_test_modules(
     env_package = types.ModuleType("tools.environments")
     env_package.__path__ = [str(TOOLS_DIR / "environments")]  # type: ignore[attr-defined]
     sys.modules["tools.environments"] = env_package
+
+    # The faked modal module below answers every SDK touch; the real lazy-dep
+    # gate (a version-pinned metadata check) must not refuse first on an
+    # install without the modal extra.
+    sys.modules["tools.lazy_deps"] = types.SimpleNamespace(
+        ensure=lambda *args, **kwargs: None
+    )
 
     class _DummyBaseEnvironment:
         def __init__(self, cwd: str, timeout: int, env=None):
@@ -107,6 +111,11 @@ def _install_modal_test_modules(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2))
 
+    def _update_json_store(path, update):
+        data = _load_json_store(path)
+        update(data)
+        _save_json_store(path, data)
+
     def _file_mtime_key(host_path):
         try:
             st = Path(host_path).stat()
@@ -119,11 +128,12 @@ def _install_modal_test_modules(
         _ThreadedProcessHandle=_DummyThreadedProcessHandle,
         _load_json_store=_load_json_store,
         _save_json_store=_save_json_store,
+        _update_json_store=_update_json_store,
         _file_mtime_key=_file_mtime_key,
     )
     sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
     sys.modules["tools.credential_files"] = types.SimpleNamespace(
-        get_credential_file_mounts=lambda: [],
+        get_credential_file_mounts=list,
         iter_skills_files=lambda **kw: [],
         iter_cache_files=lambda **kw: [],
     )
@@ -131,6 +141,7 @@ def _install_modal_test_modules(
     from_id_calls: list[str] = []
     registry_calls: list[tuple[str, list[str] | None]] = []
     create_calls: list[dict] = []
+    snapshot_calls: list[dict] = []
 
     class _FakeImage:
         @staticmethod
@@ -150,7 +161,8 @@ def _install_modal_test_modules(
         def __init__(self, image):
             self.image = image
 
-            async def _snapshot_aio():
+            async def _snapshot_aio(**kwargs):
+                snapshot_calls.append(kwargs)
                 return types.SimpleNamespace(object_id=snapshot_id)
 
             async def _terminate_aio():
@@ -171,11 +183,6 @@ def _install_modal_test_modules(
             raise RuntimeError(f"cannot restore {image_id}")
         return _FakeSandboxInstance(image)
 
-    class _FakeMount:
-        @staticmethod
-        def from_local_file(host_path: str, remote_path: str):
-            return {"host_path": host_path, "remote_path": remote_path}
-
     class _FakeApp:
         lookup = types.SimpleNamespace(aio=_lookup_aio)
 
@@ -186,24 +193,25 @@ def _install_modal_test_modules(
         Image=_FakeImage,
         App=_FakeApp,
         Sandbox=_FakeSandbox,
-        Mount=_FakeMount,
     )
 
     return {
         "snapshot_store": hermes_home / "modal_snapshots.json",
         "create_calls": create_calls,
+        "snapshot_calls": snapshot_calls,
         "from_id_calls": from_id_calls,
         "registry_calls": registry_calls,
     }
 
 
-def test_modal_environment_migrates_legacy_snapshot_key_and_uses_snapshot_id(tmp_path):
+def test_modal_environment_migrates_legacy_snapshot_key_and_uses_snapshot_id(tmp_path, monkeypatch):
     state = _install_modal_test_modules(tmp_path)
     snapshot_store = state["snapshot_store"]
     snapshot_store.parent.mkdir(parents=True, exist_ok=True)
     snapshot_store.write_text(json.dumps({"task-legacy": "im-legacy123"}))
 
     modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)
     env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-legacy")
 
     try:
@@ -212,36 +220,6 @@ def test_modal_environment_migrates_legacy_snapshot_key_and_uses_snapshot_id(tmp
         assert json.loads(snapshot_store.read_text()) == {"direct:task-legacy": "im-legacy123"}
     finally:
         env.cleanup()
-
-
-def test_modal_environment_prunes_stale_direct_snapshot_and_retries_base_image(tmp_path):
-    state = _install_modal_test_modules(tmp_path, fail_on_snapshot_ids={"im-stale123"})
-    snapshot_store = state["snapshot_store"]
-    snapshot_store.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_store.write_text(json.dumps({"direct:task-stale": "im-stale123"}))
-
-    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
-    env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-stale")
-
-    try:
-        assert [call["image"] for call in state["create_calls"]] == [
-            {"kind": "snapshot", "image_id": "im-stale123"},
-            {"kind": "registry", "image": "python:3.11"},
-        ]
-        assert json.loads(snapshot_store.read_text()) == {}
-    finally:
-        env.cleanup()
-
-
-def test_modal_environment_cleanup_writes_namespaced_snapshot_key(tmp_path):
-    state = _install_modal_test_modules(tmp_path, snapshot_id="im-cleanup456")
-    snapshot_store = state["snapshot_store"]
-
-    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
-    env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-cleanup")
-    env.cleanup()
-
-    assert json.loads(snapshot_store.read_text()) == {"direct:task-cleanup": "im-cleanup456"}
 
 
 def test_resolve_modal_image_uses_snapshot_ids_and_registry_images(tmp_path):
@@ -256,3 +234,86 @@ def test_resolve_modal_image_uses_snapshot_ids_and_registry_images(tmp_path):
     assert state["from_id_calls"] == ["im-snapshot123"]
     assert state["registry_calls"][0][0] == "python:3.11"
     assert "ensurepip" in state["registry_calls"][0][1][0]
+
+
+def test_persistent_cleanup_snapshots_without_expiry(tmp_path, monkeypatch):
+    """The SDK default retains a filesystem snapshot for 30 days; an idle persistent
+    sandbox would then silently restart from the base image, so Hermes must opt out."""
+    state = _install_modal_test_modules(tmp_path, snapshot_id="im-fresh")
+    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)
+
+    env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-ttl")
+    env.cleanup()
+
+    assert state["snapshot_calls"] == [{"ttl": None}]
+    assert json.loads(state["snapshot_store"].read_text()) == {"direct:task-ttl": "im-fresh"}
+
+
+def test_concurrent_snapshot_stores_keep_both_tasks(tmp_path, monkeypatch):
+    """Two persistent sandboxes torn down at once each record their snapshot id; the
+    second store must not be overwritten by the first one's stale read of the file."""
+    import threading
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    import tools.environments.base as base_module
+    import tools.environments.modal as modal_module
+    from tests.lock_contention import watch_file_lock_contention
+    from tests.waiting import wait_until
+
+    contended = watch_file_lock_contention(monkeypatch)
+    original_load = base_module._load_json_store
+    a_loaded = threading.Event()
+    release_a = threading.Event()
+
+    def load_then_block_in_a(path):
+        data = original_load(path)
+        if threading.current_thread().name == "cleanup-A" and not a_loaded.is_set():
+            a_loaded.set()
+            release_a.wait(10)
+        return data
+
+    monkeypatch.setattr(base_module, "_load_json_store", load_then_block_in_a)
+    monkeypatch.setattr(modal_module, "_load_json_store", load_then_block_in_a)
+
+    cleanup_a = threading.Thread(
+        target=modal_module._store_direct_snapshot, args=("task-A", "im-AAAA"), name="cleanup-A")
+    cleanup_a.start()
+    assert a_loaded.wait(10)
+    cleanup_b = threading.Thread(
+        target=modal_module._store_direct_snapshot, args=("task-B", "im-BBBB"), name="cleanup-B")
+    cleanup_b.start()
+    # Unlocked code lets B finish here; a locked store is seen parking B on the lock.
+    wait_until(lambda: not cleanup_b.is_alive() or contended.is_set(),
+               what="cleanup B finished or blocked on the snapshot store lock")
+    release_a.set()
+    cleanup_a.join(10)
+    cleanup_b.join(10)
+
+    assert json.loads(modal_module._snapshot_store().read_text(encoding="utf-8")) == {
+        "direct:task-A": "im-AAAA",
+        "direct:task-B": "im-BBBB",
+    }
+
+
+def test_snapshot_store_update_proceeds_when_the_lock_is_unavailable(tmp_path, monkeypatch):
+    """A wedged or unsupported lock must not abort a sandbox lifecycle step: modal's restore
+    fallback deletes the failed snapshot id and then retries with the base image."""
+    import contextlib
+
+    import hermes_cli.auth as auth_module
+    import tools.environments.modal as modal_module
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+    @contextlib.contextmanager
+    def wedged_lock(*_args, **_kwargs):
+        raise TimeoutError("Timed out waiting for the snapshot store lock")
+        yield
+
+    modal_module._store_direct_snapshot("task-A", "im-AAAA")
+    monkeypatch.setattr(auth_module, "_file_lock", wedged_lock)
+
+    modal_module._delete_direct_snapshot("task-A", "im-AAAA")
+
+    assert json.loads(modal_module._snapshot_store().read_text(encoding="utf-8")) == {}

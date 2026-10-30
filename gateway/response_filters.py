@@ -1,0 +1,248 @@
+"""Gateway response filtering helpers.
+
+These decide whether a completed agent turn should be delivered to the chat,
+not what should be persisted in conversation history.
+"""
+
+from __future__ import annotations
+
+import unicodedata
+from typing import Any, Optional
+
+# Exact whole-response markers meaning "the agent intentionally chose not to
+# reply". Keep small and explicit; arbitrary empty output remains an
+# error/empty-response path, not silence. A lane that does not think in English
+# translates the sentinel rather than dropping it, and the whole control token
+# then reaches the user as content, so the translated forms are carried here
+# too. zh-Hans is the only non-English locale this project ships documentation
+# for, which is where the list stops.
+LIVE_GATEWAY_SILENT_MARKERS = frozenset({
+    "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
+    "[静默]", "静默", "[沉默]", "沉默",
+})
+
+# Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing
+# new this tick"). Derived from the set above so a new marker cannot be added to
+# one rule and forgotten in the other.
+_BRACKETED_SILENCE_MARKERS = tuple(
+    sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
+)
+
+# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
+# machinery kinds may vanish on a bare silence marker.
+INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
+# Async-result cards the in-process TUI persisted: a producer's internal event naming one (with a
+# display_text) persists as that row kind instead of internal_notification.
+PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+# What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
+# receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
+# nameable; never a client-chosen presentation such as ``hidden``.
+PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+
+# Longer than any marker could plausibly be, even with stray punctuation.
+_MARKER_LENGTH_CAP = 64
+
+
+def _canonical_silence_candidate(text: str) -> str:
+    return " ".join(text.strip().upper().split())
+
+
+def _is_edge_punctuation(ch: str) -> bool:
+    # Square brackets stay structural so malformed ``[SILENT`` cannot become ``SILENT``.
+    return ch not in "[]" and unicodedata.category(ch).startswith("P")
+
+
+def _strip_edge_silence_punctuation(text: str) -> str:
+    """Strip stray edge punctuation (``.NO_REPLY``, ``*NO_REPLY*``) without erasing marker structure."""
+    start, end = 0, len(text)
+    while start < end and _is_edge_punctuation(text[start]):
+        start += 1
+    while end > start and _is_edge_punctuation(text[end - 1]):
+        end -= 1
+    return text[start:end].strip()
+
+
+def _canonical_silence_candidates(text: Any) -> tuple[str, ...]:
+    """Canonical forms of a short marker-sized response; ``()`` when not a candidate at all."""
+    stripped = text.strip() if isinstance(text, str) else ""
+    if not 0 < len(stripped) <= _MARKER_LENGTH_CAP:
+        return ()
+    depunctuated = _strip_edge_silence_punctuation(stripped)
+    forms = (stripped,) if depunctuated == stripped else (stripped, depunctuated)
+    return tuple(_canonical_silence_candidate(f) for f in forms)
+
+
+def is_intentional_silence_response(response: Any) -> bool:
+    """True only when ``response`` is exactly a silence marker.
+
+    Prose that merely mentions ``NO_REPLY`` must be delivered normally. A blank
+    response is not silence either — that is the empty-response failure path.
+    """
+    return any(c in LIVE_GATEWAY_SILENT_MARKERS for c in _canonical_silence_candidates(response))
+
+
+def _split_trailing_line(text: str) -> tuple[str, str]:
+    """``(head, last line)`` of ``text`` with trailing blank space ignored; head is ``""`` when
+    there is only one line."""
+    head, _, tail = text.rstrip().rpartition("\n")
+    return head.rstrip(), tail
+
+
+def strip_trailing_silence_marker(response: Any) -> Any:
+    """Drop a silence marker that closes a real reply on its own line.
+
+    ``"Here is the answer.\\n\\nNO_REPLY"`` delivers ``"Here is the answer."``: the model
+    answered, then also said it has nothing more to add, and the token is not meant for the
+    reader. A bare marker is returned unchanged (that is the silence verdict, decided by
+    :func:`is_intentional_silence_response`), and a marker inside a line is prose.
+    """
+    if not isinstance(response, str):
+        return response
+    head, tail = _split_trailing_line(response)
+    return head if head.strip() and is_intentional_silence_response(tail) else response
+
+
+def ends_with_partial_silence_marker(text: Any) -> bool:
+    """True while a streamed reply's last line could still become a trailing silence marker
+    (``"answer\\n\\nNO_RE"``), so a stream preview never shows a marker it later retracts."""
+    if not isinstance(text, str):
+        return False
+    head, tail = _split_trailing_line(text)
+    return bool(head.strip()) and is_partial_silence_marker(tail)
+
+
+class SilenceMarkerStreamHold:
+    """Delta gate for a live reply stream that may be, or end in, a silence marker.
+
+    :meth:`feed` returns the part of the reply that is safe to show (or speak) now: nothing
+    while the whole reply could still become a bare marker, everything but the last line while
+    that line could still become a closing one. :meth:`finish` releases what the completed reply
+    delivers, so a held line that never became a marker (``"NO problem"``) still arrives in full.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._sent = 0
+
+    def feed(self, delta: str) -> str:
+        buf = self._buf = self._buf + delta
+        if is_partial_silence_marker(buf):
+            return ""
+        if ends_with_partial_silence_marker(buf):
+            return self._release(len(_split_trailing_line(buf)[0]))
+        return self._release(len(buf))
+
+    def finish(self) -> str:
+        if is_intentional_silence_response(self._buf):
+            return ""
+        return self._release(len(strip_trailing_silence_marker(self._buf)))
+
+    def _release(self, upto: int) -> str:
+        if upto <= self._sent:
+            return ""
+        out, self._sent = self._buf[self._sent:upto], upto
+        return out
+
+
+def is_autonomous_silence_response(response: Any) -> bool:
+    """Loose silence matcher for autonomous lanes (cron, webhook).
+
+    Models reliably bracket ``[SILENT]`` with a short note, so unlike the
+    interactive EXACT rule this also suppresses when a marker sits on its own
+    first/last line or the bracketed sentinel opens the response (``[SILENT] No
+    changes detected``).  A token buried mid-sentence is still delivered.
+    Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
+    """
+    stripped = response.strip() if isinstance(response, str) else ""
+    if not stripped:
+        return False
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
+    # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
+    # be suppressed in chat yet delivered by cron.
+    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
+        is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
+    )
+
+
+def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
+    """Silence markers suppress delivery only for successful agent turns."""
+    return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+
+
+def display_kind_for_event(event: Any) -> str | None:
+    """The persisted user-row kind for a gateway turn: only self-injected events are machinery.
+
+    A scheduled heartbeat prompt is self-injected too (``_heartbeat_session_id`` is stamped only
+    by the gateway poller, never inferred from inbound text), but it deliberately stays
+    non-internal so authorization and the emergency stop still apply to it.
+    """
+    from gateway.session_display import admission_display
+    if kind := admission_display(event).get("kind"):
+        # A canonical admission committed hidden (Desktop widget intent): never a user bubble.
+        return kind
+    if getattr(event, "internal", False) and _producer_card(event):
+        return event.metadata["display_kind"]
+    if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
+        return INTERNAL_NOTIFICATION_DISPLAY_KIND
+    return None
+
+
+def _producer_card(event: Any) -> dict:
+    metadata = getattr(event, "metadata", None) or {}
+    text = metadata.get("display_text")
+    if (getattr(event, "internal", False) and metadata.get("display_kind") in PRODUCER_NOTICE_DISPLAY_KINDS
+            and isinstance(text, str) and text.strip()):
+        return {"display_text": text}
+    return {}
+
+
+def display_metadata_for_event(event: Any) -> dict:
+    """``{"display_text": ...}`` for an internal event whose producer named an async-result card, plus the
+    ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
+    from gateway.session_display import admission_display
+    preview = admission_display(event).get("title_preview")
+    return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
+
+
+def persisted_user_metadata_for_event(event: Any) -> dict:
+    """The user row's display metadata: ``display_metadata_for_event`` plus the canonical admission's
+    ``submission_id``, which lets a client match a send whose ack it never received to its stored row."""
+    from gateway.session_display import admission_submission
+    return {**display_metadata_for_event(event), **admission_submission(event)}
+
+
+def is_machinery_display_kind(display_kind: Any) -> bool:
+    """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
+
+    The caller passes the current turn's persisted display kind instead of inferring it from the
+    transcript: the inbound user row is not persisted yet, and a previous internal row must never
+    authorize silence on a human turn.
+    """
+    return display_kind in MACHINERY_DISPLAY_KINDS
+
+
+def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None) -> bool:
+    """Whether a successful bare silence marker may remain silent for this turn."""
+    return is_machinery_display_kind(display_kind) or reply_expected is False
+
+
+def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:
+    """The persisted user row's ``reply_expected`` key, only when the adapter knew; crash recovery
+    reads it back to judge a silence marker as the live turn did."""
+    return {} if reply_expected is None else {"reply_expected": reply_expected}
+
+
+def is_partial_silence_marker(text: Any) -> bool:
+    """True while streamed ``text`` could still resolve to a silence marker.
+
+    A buffer whose canonical form is a non-empty *prefix* of a marker (``"NO"`` on
+    the way to ``"NO_REPLY"``, or an exact marker not yet terminated by stream-end)
+    is held back so a raw marker is never shown and then retracted.  Divergence
+    from every marker, or exceeding the cap, resumes normal streaming.
+    """
+    return any(
+        c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
+        for c in _canonical_silence_candidates(text)
+    )

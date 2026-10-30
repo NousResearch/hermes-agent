@@ -10,6 +10,8 @@
  * header is a small regex.
  */
 
+import { capitalize } from '@/lib/text'
+
 export type CommitGroupId = 'new' | 'fixed' | 'faster' | 'improved' | 'other'
 
 export interface CommitGroup {
@@ -33,6 +35,11 @@ interface BuildOptions {
   maxGroups?: number
   maxPerGroup?: number
   maxTotal?: number
+  /** Per-group display labels (e.g. localized). A group without an entry
+   *  keeps its English default. */
+  labels?: Partial<Record<CommitGroupId, string>>
+  /** Label + item for the empty-state fallback group. */
+  fallback?: { label: string; item: string }
 }
 
 const GROUP_META: Record<CommitGroupId, { label: string; order: number }> = {
@@ -110,7 +117,7 @@ function tidySubject(subject: string): string {
     return cleaned
   }
 
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+  return capitalize(cleaned)
 }
 
 /**
@@ -167,11 +174,53 @@ export function buildCommitChangelog(
     .map(([id, items]) => ({ id, items, label: GROUP_META[id].label, order: GROUP_META[id].order }))
     .sort((a, b) => a.order - b.order)
     .slice(0, maxGroups)
-    .map(({ id, items, label }): CommitGroup => ({ id, items, label }))
+    .map(({ id, items, label }): CommitGroup => ({ id, items, label: options.labels?.[id] ?? label }))
 
   if (result.length === 0) {
-    return [FALLBACK_GROUP]
+    const fallback = options.fallback
+
+    return [
+      {
+        ...FALLBACK_GROUP,
+        label: fallback?.label ?? FALLBACK_GROUP.label,
+        items: [fallback?.item ?? FALLBACK_GROUP.items[0]]
+      }
+    ]
   }
 
   return result
+}
+
+/** Format a full changelog text for clipboard copy.
+ *
+ *  Header: `=== Hermes Update Changelog ===`
+ *  Behind header: `Behind by N commits on branch X`
+ *  Each commit: `type(scope)!: subject — author`
+ *  Breaking commits use canonical `type(scope)!:` not `type!(scope):`.
+ */
+export function formatFullChangelogText(
+  commits: readonly { sha?: string; summary?: string; author?: string }[],
+  behind: number,
+  branch?: string
+): string {
+  const lines: string[] = ['=== Hermes Update Changelog ===']
+
+  if (behind > 0) {
+    lines.push(`Behind by ${behind} commit${behind === 1 ? '' : 's'}${branch ? ` on branch ${branch}` : ''}`)
+  }
+
+  lines.push('')
+
+  for (const c of commits) {
+    const parsed = parseCommitHeader(c.summary ?? '')
+    const type = parsed.type ?? ''
+    const scope = parsed.scope ? `(${parsed.scope})` : ''
+    const bang = parsed.breaking ? '!' : ''
+    const tag = type + scope + bang
+    const subject = parsed.subject || c.summary || ''
+    const line = tag ? `${tag}: ${subject} — ${c.author ?? ''}` : `${subject} — ${c.author ?? ''}`
+    lines.push(line)
+  }
+
+  return lines.join('\n')
 }

@@ -1,38 +1,70 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
+import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
+import {
+  deleteSession,
+  getHermesConfigRecord,
+  peekConfigReadOrigin,
+  retainConfigReadOrigin,
+  saveHermesConfig,
+  setSessionArchived
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
+import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
+import { formatCombo } from '@/lib/keybinds/combo'
+import { confirm } from '@/store/confirm'
+import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
+import { untombstoneSessions } from '@/store/session-removal'
+import { forgetSessionUnread } from '@/store/session-unread'
+import { listEveryArchivedSession } from '@/store/sidebar-archive'
+import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
-import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
-const ARCHIVED_FETCH_LIMIT = 200
+// The toast names the chord the user actually has: a browser tab and a remap
+// both differ from ⌘/Ctrl+N.
+function newSessionShortcut(): null | string {
+  const combo = bindingsFor('session.new')[0]
 
-function workspaceLabel(cwd: null | string | undefined): string {
-  const path = cwd?.trim()
-
-  if (!path) {
-    return ''
-  }
-
-  return (
-    path
-      .replace(/[/\\]+$/, '')
-      .split(/[/\\]/)
-      .filter(Boolean)
-      .pop() ?? path
-  )
+  return combo ? formatCombo(combo) : null
 }
 
-export function SessionsSettings() {
+const DEFAULT_AUTO_ARCHIVE_DAYS = 3
+
+interface SessionsSettingsProps {
+  subpage?: string
+}
+
+export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+  useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
+
+  if (subpage === 'default-directory') {
+    return (
+      <SettingsContent>
+        <DefaultProjectDirSetting />
+      </SettingsContent>
+    )
+  }
+
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+}
+
+function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
@@ -43,53 +75,75 @@ export function SessionsSettings() {
     setLoading(true)
 
     try {
-      const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
-      setLocalSessions(result.sessions)
+      setLocalSessions(await listEveryArchivedSession())
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [s.failedLoad])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const unarchive = useCallback(async (session: SessionInfo) => {
-    setBusyId(session.id)
+  const unarchive = useCallback(
+    async (session: SessionInfo) => {
+      setBusyId(session.id)
 
-    try {
-      await setSessionArchived(session.id, false, session.profile)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      // Surface it again in the sidebar without waiting for a full refresh.
-      setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
-      triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: s.restored })
-    } catch (err) {
-      notifyError(err, s.unarchiveFailed)
-    } finally {
-      setBusyId(null)
-    }
-  }, [s])
+      try {
+        await setSessionArchived(session.id, false, session.profile)
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        // Surface it again in the sidebar without waiting for a full refresh, and
+        // lift any optimistic eviction so the grouped tree shows it again too.
+        untombstoneSessions([session.id, session._lineage_root_id])
+        restoreListedSession({ ...session, archived: false })
+        triggerHaptic('selection')
+        notify({ durationMs: 2_000, kind: 'success', message: s.restored })
+      } catch (err) {
+        notifyError(err, s.unarchiveFailed)
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [s]
+  )
 
-  const remove = useCallback(async (session: SessionInfo) => {
-    if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
-      return
-    }
+  const remove = useCallback(
+    async (session: SessionInfo) => {
+      const ok = await confirm({
+        confirmLabel: s.deletePermanently,
+        destructive: true,
+        title: s.deleteConfirm(sessionTitle(session))
+      })
 
-    setBusyId(session.id)
+      if (!ok) {
+        return
+      }
 
-    try {
-      await deleteSession(session.id, session.profile)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      triggerHaptic('warning')
-    } catch (err) {
-      notifyError(err, s.deleteFailed)
-    } finally {
-      setBusyId(null)
-    }
-  }, [s])
+      setBusyId(session.id)
+
+      try {
+        await deleteSession(session.id, session.profile)
+        // Permanent delete bypasses removeSession, so retire the persisted
+        // unread state here too rather than leaving it to rot.
+        forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
+        // Same for the journaled in-flight tail: it holds this session's
+        // prompt and tool calls in localStorage, and a deleted session must
+        // not leave that copy behind to age out on its own. Both ids — the
+        // stored tip and the durable lineage root — the journal keys on the
+        // stored id and the row may carry either.
+        purgeInFlightTurnJournals([session.id, session._lineage_root_id])
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        triggerHaptic('warning')
+      } catch (err) {
+        notifyError(err, s.deleteFailed)
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [s]
+  )
 
   useDeepLinkHighlight({
     elementId: id => `archived-session-${id}`,
@@ -98,12 +152,14 @@ export function SessionsSettings() {
   })
 
   if (loading) {
-    return <LoadingState label={s.loading} />
+    return <SettingsSkeleton sections={[{ rows: 1 }, { heading: true, rows: 4 }]} />
   }
 
   return (
     <SettingsContent>
-      <DefaultProjectDirSetting />
+      {includeDefaultDirectory && <DefaultProjectDirSetting />}
+
+      <AutoArchiveSetting />
 
       <SectionHeading
         icon={Archive}
@@ -119,7 +175,7 @@ export function SessionsSettings() {
       ) : (
         <div className="grid gap-1">
           {sessions.map(session => {
-            const label = workspaceLabel(session.cwd)
+            const label = pathLeaf(session.cwd)
             const busy = busyId === session.id
 
             return (
@@ -165,12 +221,126 @@ export function SessionsSettings() {
   )
 }
 
+// Opt-in retention: soft-hide chats untouched for N days. The policy itself
+// (last-activity sweep, pin exemption) lives in the backend
+// (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
+// just toggles the config keys, so CLI / gateway / Desktop all honour one
+// setting. Pins are exempt on the backend, so pinned chats survive regardless.
+function AutoArchiveSetting() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
+  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
+
+  useEffect(() => {
+    // Config REST is only reachable through the Electron bridge; skip in
+    // non-Electron contexts (tests/storybook) rather than throwing.
+    if (!window.hermesDesktop) {
+      return
+    }
+
+    let alive = true
+
+    void getHermesConfigRecord()
+      .then(record => {
+        if (!alive) {
+          return
+        }
+
+        const sessions = (record.sessions ?? {}) as Record<string, unknown>
+        const parsedDays = Number(sessions.auto_archive_days)
+        setConfig(record)
+        setEnabled(Boolean(sessions.auto_archive))
+        setDays(Number.isFinite(parsedDays) && parsedDays > 0 ? Math.round(parsedDays) : DEFAULT_AUTO_ARCHIVE_DAYS)
+      })
+      .catch(() => {
+        // Leave the control unmounted if config can't be read.
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const persist = useCallback(
+    async (autoArchive: boolean, archiveDays: number) => {
+      if (!config) {
+        return
+      }
+
+      const sessions = {
+        ...((config.sessions ?? {}) as Record<string, unknown>),
+        auto_archive: autoArchive,
+        auto_archive_days: archiveDays
+      }
+
+      // Read the route at save time from the record itself, and carry it onto
+      // the replacement snapshot so the next save still targets the gateway
+      // that served the original GET.
+      const writeScope = peekConfigReadOrigin(config)
+
+      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
+
+      try {
+        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+        // snapshot would overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
+      } catch (err) {
+        notifyError(err, s.autoArchiveFailed)
+      }
+    },
+    [config, s.autoArchiveFailed]
+  )
+
+  if (!config) {
+    return null
+  }
+
+  return (
+    <div className="mb-6">
+      <ToggleRow
+        checked={enabled}
+        description={s.autoArchiveDesc}
+        id={settingElementId(SETTING_IDS.sessions.autoArchive)}
+        label={s.autoArchiveTitle}
+        onChange={on => {
+          setEnabled(on)
+          void persist(on, days)
+        }}
+      />
+      {enabled && (
+        <ListRow
+          action={
+            <div className="flex items-center gap-2">
+              <Input
+                aria-label={s.autoArchiveDaysLabel}
+                className="w-20"
+                min={1}
+                onBlur={() => void persist(true, days)}
+                onChange={e => setDays(Math.max(1, Math.round(Number(e.target.value) || 1)))}
+                type="number"
+                value={days}
+              />
+              <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                {s.autoArchiveDaysUnit}
+              </span>
+            </div>
+          }
+          title={s.autoArchiveDaysLabel}
+        />
+      )}
+    </div>
+  )
+}
+
 // Lets the user pin the default cwd for new sessions. Without this, packaged
 // builds on Windows used to spawn sessions in the install dir (`win-unpacked`
 // / Program Files), which buried any files Hermes wrote there.
 function DefaultProjectDirSetting() {
   const { t } = useI18n()
   const s = t.settings.sessions
+  const profile = useStore($connection)?.profile ?? ''
   const [dir, setDir] = useState<null | string>(null)
   const [fallback, setFallback] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -189,6 +359,13 @@ function DefaultProjectDirSetting() {
 
     let alive = true
 
+    // The folder on screen belongs to the profile this effect loaded. Drop it
+    // on a switch so the next paint and the next save both use the profile
+    // that is open now.
+    if (hostHas('originScopedPrefs')) {
+      setDir(null)
+    }
+
     void settings.getDefaultProjectDir().then(result => {
       if (!alive) {
         return
@@ -202,7 +379,7 @@ function DefaultProjectDirSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [profile])
 
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
@@ -214,22 +391,26 @@ function DefaultProjectDirSetting() {
     setBusy(true)
 
     try {
-      const picked = await settings.pickDefaultProjectDir()
+      // A browser tab has no native dialog for the server's disk: pick through the server
+      // folder browser Projects already use.
+      const picked = !hostHas('nativeFolderPicker')
+        ? { dir: (await selectDesktopPaths({ defaultPath: dir ?? undefined, directories: true }))[0] ?? null }
+        : await settings.pickDefaultProjectDir()
 
-      if (picked.canceled || !picked.dir) {
+      if (!picked.dir) {
         return
       }
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
       applyConfiguredDefaultProjectDir(result.dir)
-      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated(newSessionShortcut()) })
     } catch (err) {
       notifyError(err, s.updateDirFailed)
     } finally {
       setBusy(false)
     }
-  }, [s])
+  }, [dir, s])
 
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
@@ -254,7 +435,7 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title={s.defaultDirTitle} />
+      <SectionHeading icon={FolderOpen} page title={s.defaultDirTitle} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.defaultDirDesc}
       </p>

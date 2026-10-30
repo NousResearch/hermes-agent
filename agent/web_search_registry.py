@@ -115,8 +115,14 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             )
 
     # Fallbacks are availability-filtered so a registered-but-keyless provider
-    # never becomes "active" on a fresh install.
-    eligible = [p for p in snapshot.values() if _capable(p) and _available(p)]
+    # never becomes "active" on a fresh install. Marker providers (AUTO_SELECTABLE
+    # False — availability reflects another capability's credentials, e.g. the
+    # Codex chat OAuth behind openai-native) stay out of every automatic walk and
+    # answer to ``web.search_backend`` only (#135684).
+    eligible = [
+        p for p in snapshot.values()
+        if _capable(p) and _available(p) and getattr(p, "AUTO_SELECTABLE", True)
+    ]
     if len(eligible) == 1:
         return eligible[0]
 

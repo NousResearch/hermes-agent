@@ -110,9 +110,12 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
             f.issues.extend(r.issues)
 
 
+from hermes_cli.doctor_startup_hooks import _check_startup_hooks
+
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
+    ('Python Startup Hooks (supply chain)', _check_startup_hooks),
     ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
     ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
     ('Configuration Files', _check_env_file),

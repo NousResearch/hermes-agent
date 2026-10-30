@@ -1242,14 +1242,14 @@ def compute_next_run(
         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
         # attaching the zone to a naive wall clock resolves the repeated autumn hour
         # to its EARLIER occurrence (fold=0), so a base inside the second occurrence
-        # got a "next run" up to an hour in the PAST — the fire path would re-fire
-        # immediately and re-anchor, looping. Try both folds of each candidate wall
-        # clock and return the earliest instant strictly after the base; a repeated
-        # hour has two instants, so two candidates always suffice.
+        # got a "next run" up to an hour in the PAST. Return the earliest instant strictly
+        # after the base, trying the second pass (fold=1) only for a job that runs in it:
+        # a fixed-time job whose run ended in the second pass fired a second time that
+        # night (jobs_time.repeated_hour_folds). Two candidate wall clocks always suffice.
         base_ts = base_time.timestamp()
         next_wall = it.get_next(datetime)
         for _ in range(2):
-            for fold in (0, 1):
+            for fold in jobs_time.repeated_hour_folds(expr):
                 candidate = next_wall.replace(tzinfo=zone, fold=fold)
                 if candidate.timestamp() > base_ts:
                     return candidate.isoformat()

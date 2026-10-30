@@ -335,9 +335,14 @@ class TestHandleResumeCommand:
         runner = _make_runner(
             session_db=db, current_session_id="current_session_001", event=event
         )
+        # Shared numbering (#146798): the untitled current session is the
+        # newest activity, so it heads the list exactly as /sessions shows it
+        # (marked current since #68547); position 2 is therefore lane_newer,
+        # not lane_older as under the old titled-only /resume list. Foreign
+        # lanes stay excluded either way.
         await runner._handle_resume_command(event)
         runner.session_store.switch_session.assert_called_once()
-        assert runner.session_store.switch_session.call_args[0][1] == "lane_older"
+        assert runner.session_store.switch_session.call_args[0][1] == "lane_newer"
         db.close()
 
     @pytest.mark.asyncio

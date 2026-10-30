@@ -998,16 +998,50 @@ class GatewaySessionCommandsMixin:
 
     # -------------------------------------------------------------- /resume, /sessions
 
-    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
-        """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
-        widen = allow_all and self._resume_caller_is_admin(source)
-        # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
-        # onto its live tip and must sit where the user last touched it (#114271).
-        sessions = await self._session_db.list_sessions_rich(
+    async def _numbered_session_listing(self, source, session_key: str, current_session_id: str,
+                                        *, allow_all: bool, apply_visibility: bool,
+                                        include_unnamed: bool = False,
+                                        include_all_sources: bool = False) -> list[dict]:
+        """One numbered listing for /sessions and /resume (#146798).
+
+        Candidates come from the shared helper (same query, lineage-activity
+        sort, titled-or-current filter, over-fetch); the caller's visibility
+        filter runs BEFORE the page is cut to 10, so invisible rows cannot eat
+        page slots. Numbers bind at pick time: activity between listing and
+        pick moves the pick (stated residual race; a snapshot would answer
+        from a list the user no longer sees).
+        """
+        from hermes_cli.session_listing import query_numbered_session_listing
+        candidates = await asyncio.to_thread(
+            query_numbered_session_listing, getattr(self._session_db, "_db", self._session_db),
             source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10, order_by_last_active=True)
-        titled = [s for s in sessions if s.get("title")][:10]
-        return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
+            session_key=session_key, current_session_id=current_session_id,
+            include_all_sources=include_all_sources, include_unnamed=include_unnamed,
+            limit=10, exclude_sources=["tool"])
+        if not apply_visibility:
+            return candidates[:10]
+        visible = []
+        for row in candidates:
+            if await self._resume_row_visible(source, row, allow_all):
+                visible.append(row)
+            if len(visible) >= 10:
+                break
+        return visible
+
+    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
+        """Numbered sessions visible to the caller (origin-scoped unless admin ``--all``).
+
+        Shares its listing with /sessions through the numbered-listing contract
+        (#146798): a number shown by /sessions resolves to the same session
+        here. Rank by lineage activity, not root started_at: a lineage
+        compressed for days is projected onto its live tip and must sit where
+        the user last touched it (#114271).
+        """
+        widen = allow_all and self._resume_caller_is_admin(source)
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        return await self._numbered_session_listing(
+            source, None if widen else session_key, current_entry.session_id,
+            allow_all=allow_all, apply_visibility=True)
 
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
@@ -1139,7 +1173,9 @@ class GatewaySessionCommandsMixin:
             return f"{base}\n{scope_note}" if scope_note else base
         lines = [t("gateway.resume.list_header")]
         for idx, s in enumerate(titled[:10], start=1):
-            title = s["title"]
+            title = s.get("title") or "—"
+            if s.get("is_current_session"):
+                title = f"{title} (current)"
             if source.platform == Platform.MATRIX and allow_all:
                 origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
                 if origin:
@@ -1176,18 +1212,25 @@ class GatewaySessionCommandsMixin:
         if include_all and not cross_origin:
             scope_notice = t("gateway.sessions.all_requires_admin")
         current_entry = await self.async_session_store.get_or_create_session(source)
-        rows = await asyncio.to_thread(
-            query_session_listing, getattr(self._session_db, "_db", self._session_db),
-            source=source.platform.value if source.platform else None,
-            session_key=None if cross_origin else session_key,
-            current_session_id=current_entry.session_id, include_current_session=True,
-            include_all_sources=cross_origin, include_unnamed=include_unnamed,
-            search_query=search_query,
-            # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
-        if not cross_origin:
-            rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
-        rows = rows[:10]
+        if search_query:
+            rows = await asyncio.to_thread(
+                query_session_listing, getattr(self._session_db, "_db", self._session_db),
+                source=source.platform.value if source.platform else None,
+                session_key=None if cross_origin else session_key,
+                current_session_id=current_entry.session_id, include_current_session=True,
+                include_all_sources=cross_origin, include_unnamed=include_unnamed,
+                search_query=search_query,
+                # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
+                limit=50, exclude_sources=["tool"])
+            if not cross_origin:
+                rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
+            rows = rows[:10]
+        else:
+            # Default view shares its numbering with /resume (#146798).
+            rows = await self._numbered_session_listing(
+                source, None if cross_origin else session_key, current_entry.session_id,
+                allow_all=False, apply_visibility=not cross_origin,
+                include_unnamed=include_unnamed, include_all_sources=cross_origin)
         if search_query:
             title = t("gateway.sessions.title_matching", query=search_query)
         else:

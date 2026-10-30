@@ -179,8 +179,10 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
-               current_run_started_at: Optional[int] = None) -> dict[str, Any]:
+               current_run_started_at: Optional[int] = None,
+               display_title: Optional[str] = None) -> dict[str, Any]:
     d = asdict(task)
+    d["display_title"] = display_title if display_title is not None else task.title
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
         d["age"] = kanban_db.task_age(task)
@@ -192,6 +194,33 @@ def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
     # start; after a retry the run clock must tick from the fresh run).
     d["current_run_started_at"] = current_run_started_at
     return d
+
+
+def _projected_display_titles(conn: sqlite3.Connection, tasks: list[kanban_db.Task]) -> dict[str, str]:
+    blocked_ids = [task.id for task in tasks if task.status == "blocked"]
+    if not blocked_ids:
+        return {}
+    placeholders = _placeholders(blocked_ids)
+    rows = conn.execute(
+        f"WITH ranked AS (SELECT e.task_id, e.kind, e.payload, "
+        f"ROW_NUMBER() OVER (PARTITION BY e.task_id ORDER BY e.id DESC) AS rank "
+        f"FROM task_events e WHERE e.task_id IN ({placeholders}) "
+        "AND e.kind IN ('blocked', 'unblocked')) "
+        "SELECT task_id, payload FROM ranked WHERE rank = 1 AND kind = 'blocked'",
+        tuple(blocked_ids),
+    ).fetchall()
+    parked_ids = {
+        row["task_id"] for row in rows
+        if json.loads(row["payload"] or "{}").get("reason") == "initial_status"
+    }
+    projected = {}
+    for task in tasks:
+        if task.id not in parked_ids:
+            continue
+        title = task.title or ""
+        projected[task.id] = re.sub(r"^\[[^]\r\n]*\]", "[parked]", title, count=1) \
+            if re.match(r"^\[[^]\r\n]*\]", title) else f"[parked] {title}"
+    return projected
 
 
 def _attachment_dict(a: kanban_db.Attachment) -> dict[str, Any]:
@@ -320,13 +349,15 @@ def get_board(
         # One window-function query for latest summaries (avoids N+1); cards get a
         # truncated preview, the full text comes from /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        display_titles = _projected_display_titles(conn, tasks)
         # One query for the active run's start per card (avoids N+1); the run
         # clock ticks from this, not the task's first-ever start.
         run_start_map = kanban_db.current_run_started_ats(conn, [t.id for t in tasks])
         for t in tasks:
             full = summary_map.get(t.id)
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None),
-                           current_run_started_at=run_start_map.get(t.id))
+                           current_run_started_at=run_start_map.get(t.id),
+                           display_title=display_titles.get(t.id))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -388,10 +419,12 @@ def get_task(
         if run_state_type not in (None, "status", "outcome"):
             raise HTTPException(status_code=400, detail="run_state_type must be 'status' or 'outcome'")
         task = _require_task(conn, task_id)
+        display_title = _projected_display_titles(conn, [task]).get(task_id)
         # Drawer returns the FULL summary (cards on /board carry a 200-char preview).
         task_d = _task_dict(
             task, latest_summary=kanban_db.latest_summary(conn, task_id),
-            current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id))
+            current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id),
+            display_title=display_title)
         links = _links_for(conn, task_id)
         child_summaries = kanban_db.latest_summaries(conn, links["children"])
         children = filter(None, (kanban_db.get_task(conn, cid) for cid in links["children"]))
@@ -711,8 +744,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if payload.title is not None or payload.body is not None:
             _patch_title_body(conn, task_id, payload, board)
         updated = kanban_db.get_task(conn, task_id)
+        display_title = _projected_display_titles(conn, [updated]).get(task_id) if updated else None
         return {"task": _task_dict(
-            updated, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
+            updated,
+            current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id),
+            display_title=display_title,
         ) if updated else None}
 
 

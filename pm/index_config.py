@@ -7,9 +7,10 @@ only way any dependency resolves at all (#88453, #94613, #95608). Only those
 cross the boundary; the lockfile stays authoritative for what gets installed.
 
 uv never reads pip's configuration, so a pip-only mirror (``PIP_INDEX_URL`` or
-``index-url`` in pip.conf) is bridged to ``UV_INDEX_URL`` unless uv already has
-an index of its own. Stdlib only: the bootstrap runner imports this before any
-dependency exists.
+``index-url`` in pip.conf/pip.ini) is bridged to ``UV_INDEX_URL`` unless uv already
+has an index of its own. File-based ``extra-index-url`` is also bridged, with
+explicit uv settings taking precedence over pip's environment and then files.
+Stdlib only: the bootstrap runner imports this before any dependency exists.
 """
 from __future__ import annotations
 
@@ -95,14 +96,14 @@ def pip_config_candidates(env: Mapping[str, str]) -> list[Path]:
     return global_files + user_files + [Path(sys.prefix) / name] + explicit_files
 
 
-def pip_conf_index_url(env: Mapping[str, str]) -> str | None:
+def _pip_conf_value(env: Mapping[str, str], option: str) -> str | None:
     # Raw: pip does not interpolate, and mirror URLs carry percent-encoded credentials.
     parser = configparser.RawConfigParser()
     try:
         parser.read(str(path) for path in pip_config_candidates(env))
         if not parser.has_section("global"):
             return None
-        return parser.get("global", "index-url", fallback="").strip() or None
+        return parser.get("global", option, fallback="").strip() or None
     except configparser.Error:
         return None
 
@@ -142,11 +143,14 @@ def bridged_index_settings(ambient: Mapping[str, str]) -> dict[str, str]:
     """
     settings = {key: value for key, value in ambient.items() if is_forwarded(key)}
     if not any(settings.get(key) for key in _UV_INDEX_KNOBS):
-        index_url = (ambient.get("PIP_INDEX_URL") or "").strip() or pip_conf_index_url(ambient)
+        index_url = (ambient.get("PIP_INDEX_URL") or "").strip() or _pip_conf_value(ambient, "index-url")
         if index_url:
             settings["UV_INDEX_URL"] = index_url
     for pip_key, uv_key in _PIP_TO_UV:
         value = (ambient.get(pip_key) or "").strip()
+        if pip_key == "PIP_EXTRA_INDEX_URL" and not value and not settings.get(uv_key):
+            # pip accepts indented continuation lines; uv's env list is space-separated.
+            value = " ".join((_pip_conf_value(ambient, "extra-index-url") or "").split())
         if value and not settings.get(uv_key):
             settings[uv_key] = value
     return settings

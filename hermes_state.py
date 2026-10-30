@@ -77,6 +77,9 @@ from hermes_state_wal import (
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_prompt_refresh import SessionPromptRefreshMixin
+from hermes_state_session_jobs import SessionJobsMixin
+from hermes_state_steps import SessionStepsMixin
+from hermes_state_tasks import SessionTasksMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -464,7 +467,7 @@ def _foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
 class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
-    SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
+    SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionStepsMixin, SessionTasksMixin, SessionJobsMixin, SessionTitlesMixin,
     SessionMessagesMixin, SessionPruneRewriteMixin, SessionApiContentMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
     SessionPromptRefreshMixin,
 ):

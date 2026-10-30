@@ -476,11 +476,33 @@ class SessionSessionsMixin:
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
-        ``'compression'`` even if a stale end_session() lands later); reopen_session() to re-end."""
-        self._execute_write(lambda conn: self._end_and_bump(
-            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-            (time.time(), end_reason, session_id), session_id, end_reason,
-        ))
+        ``'compression'`` even if a stale end_session() lands later); reopen_session() to re-end.
+
+        Also pauses the session's turn/step jobs: they are bound to this chat's clock and must
+        never fire after it ends (they stay listed for an explicit resume).
+        """
+        def _do(conn):
+            changed = self._end_and_bump(
+                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                (time.time(), end_reason, session_id), session_id, end_reason,
+            )
+            if changed:
+                conn.execute(
+                    "UPDATE session_jobs SET enabled = 0, paused_reason = ?, updated_at = ?"
+                    " WHERE origin_session_id = ? AND enabled = 1",
+                    ("origin session ended", time.time(), session_id),
+                )
+            return changed
+
+        self._execute_write(_do)
+        try:
+            from scheduler.engine import peek_engine
+
+            engine = peek_engine()
+            if engine is not None:
+                engine.drop_session(session_id)
+        except Exception:  # the scheduler is an observer; never fail a session end
+            pass
 
     def _end_and_bump(self, conn, sql: str, params: tuple, session_id: str, reason: str) -> int:
         """Run an end-stamp UPDATE; only a boundary this call actually wrote advances the

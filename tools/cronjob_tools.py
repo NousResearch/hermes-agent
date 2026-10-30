@@ -674,6 +674,11 @@ def _with_guidance(result: dict[str, Any], job: dict[str, Any], deliver: Optiona
 
 
 def _action_create(a: dict[str, Any]) -> str:
+    from tools.cronjob_session_jobs import create_logical_job, parse_logical_schedule
+
+    logical = parse_logical_schedule(a.get("schedule"))
+    if logical is not None:
+        return create_logical_job(a, logical)
     prompt, script = a["prompt"], a["script"]
     deliver = _normalize_deliver_param(a["deliver"])
     if not a["schedule"]:
@@ -754,8 +759,17 @@ def _action_create(a: dict[str, Any]) -> str:
 
 
 def _action_list(a: dict[str, Any]) -> str:
+    from tools.cronjob_session_jobs import list_logical_jobs
+
     jobs = [_format_job(job) for job in list_jobs(include_disabled=a["include_disabled"])]
-    _result = {"success": True, "count": len(jobs), "jobs": jobs}
+    session_jobs = list_logical_jobs(a["include_disabled"])
+    _result = {"success": True, "count": len(jobs) + len(session_jobs), "jobs": jobs}
+    if session_jobs:
+        _result["session_jobs"] = session_jobs
+        _result["session_jobs_note"] = (
+            "Session jobs are bound to the chat that created them: they fire on that session's "
+            "turn/step clock and pause when the session ends. They are not in jobs.json."
+        )
     # Same inert-job class as create; an empty list has nothing inert.
     if jobs:
         # Same silent-inert-job class as create (#87033): an agent inspecting existing jobs in a
@@ -1075,6 +1089,10 @@ def cronjob(
             return handler(a)
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
+        if job_id.startswith("tj_"):
+            from tools.cronjob_session_jobs import handle_logical_job_action
+
+            return handle_logical_job_action(normalized, job_id, a)
         # Job resolution precedes the action check (an unknown action on a missing job
         # reports the missing job) — preserved ordering.
         job, error = _resolve_job_or_error(job_id)
@@ -1132,7 +1150,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "schedule": {
                 "type": "string",
                 "type": "string",
-                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
+                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'; (6) logical session clock — 'every 3 turns', 'every 2 steps', 'each turn', 'in 5 steps'. Forms 1-5 are wall-clock and outlive the chat. Form 6 is SESSION-BOUND: it fires on the Nth committed turn/step of this chat, runs in a fresh session, and pauses when this session ends — never describe it as a timer."
             },
             "name": {
                 "type": "string",

@@ -1825,6 +1825,7 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
+    plugin_task: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1844,6 +1845,15 @@ def create_job(
         raise ValueError("paused_reason must be a string.")
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
+    if plugin_task is not None:
+        if (not isinstance(plugin_task, dict)
+                or not isinstance(plugin_task.get("plugin_id"), str) or not plugin_task.get("plugin_id")
+                or not isinstance(plugin_task.get("task_name"), str) or not plugin_task.get("task_name")):
+            raise ValueError("plugin_task requires plugin_id and task_name.")
+        # Mutually exclusive payload kind: no agent prompt, script, skills, or monitor.
+        if prompt or script or skill or skills or no_agent or monitor_script or monitor_url:
+            raise ValueError("plugin_task cannot be combined with prompt/script/skills/no_agent/monitor.")
+        plugin_task = {"plugin_id": plugin_task["plugin_id"], "task_name": plugin_task["task_name"]}
     parsed_schedule = parse_schedule(schedule)
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
@@ -1865,7 +1875,7 @@ def create_job(
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
     validate_schedule_knobs(parsed_schedule, f["timezone"], f["grace_minutes"])
     prompt_text = _coerce_job_text(prompt).strip()
-    if not prompt_text and not f["script"] and not normalized_skills:
+    if not prompt_text and not f["script"] and not normalized_skills and plugin_task is None:
         raise ValueError(EMPTY_PAYLOAD_ERROR)
     # Reject gateway-lifecycle commands (respawn loops) here, not just in the CLI: covers the tool.
     from cron.lifecycle_guard import check_gateway_lifecycle
@@ -1875,6 +1885,7 @@ def create_job(
         prompt_text
         or (normalized_skills[0] if normalized_skills else None)
         or (f["script"] if f["no_agent"] else None)
+        or (plugin_task["task_name"] if plugin_task else None)
         or "cron job"
     )
     name = name or label_source[:50].strip()
@@ -1928,6 +1939,7 @@ def create_job(
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
         ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
+        ("plugin_task", plugin_task),
     ):
         if value is not None:
             job[key] = value

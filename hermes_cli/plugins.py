@@ -869,6 +869,39 @@ class PluginContext(PluginCapabilityCtxMixin, PluginServiceCtxMixin):
                                     "Plugin %s registered auxiliary task: %s (%s)", key, display_name,
                                     previous=existing)
 
+    def schedule(
+        self, *, name: str, period: str = "step", every: int = 1, phase: str = "post",
+        handler: Callable, timeout_ms: Optional[int] = None, cron: Optional[str] = None,
+    ):
+        """Register a periodic task on the turn clock, the step clock, or wall-clock cron.
+
+        Turn/step tasks are observers: they never mutate messages, the system prompt, the toolset
+        or the model (per-conversation prompt caching must survive). Registration is idempotent;
+        a changed ``every``/``phase`` resets the cadence once and writes a ``rescheduled`` audit
+        row. Unloading the plugin removes the wheel nodes and disables the task durably.
+
+        Design: website/docs/developer-guide/scheduled-tasks.md.
+        """
+        if self._load_abandoned:
+            return None
+        if period == "cron":
+            from scheduler.cron_api import schedule_cron_task
+
+            return schedule_cron_task(
+                self, name=name, cron=cron, handler=handler, timeout_ms=timeout_ms)
+        from scheduler.plugin_api import register_scheduled_task
+        from scheduler.tasks import TaskSpec
+
+        spec = TaskSpec(
+            plugin_id=self.plugin_id, name=name, period=period, every=every, phase=phase,
+            handler=handler, timeout_ms=timeout_ms,
+        )
+        handle = register_scheduled_task(spec)
+        if handle is None:
+            return None
+        self._track("scheduled_task", name, lambda: handle.release("plugin unloaded"))
+        return handle
+
     def register_redaction_patterns(self, patterns) -> int:
         """Additively register secret-token regexes with :mod:`agent.redact`; returns the count accepted.
         Plugins can over-redact, never weaken built-ins; ``security.redact_secrets: false`` applies

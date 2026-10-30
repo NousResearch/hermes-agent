@@ -795,6 +795,8 @@ const sidebars: SidebarsConfig = {
             'developer-guide/multiplexing-gateway',
             'developer-guide/completion-backlog-delivery',
             'developer-guide/session-storage',
+            'developer-guide/turn-and-step-counters',
+            'developer-guide/scheduled-tasks',
             'developer-guide/state-db-recovery',
             'developer-guide/provider-runtime',
             'developer-guide/config-backend',

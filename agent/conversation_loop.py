@@ -1739,6 +1739,8 @@ def _run_conversation_turn(
             break
         if _pg.action == "continue":
             continue
+        from scheduler.agent_hooks import on_step_pre
+        on_step_pre(agent, step_index=s.api_call_count)
         _run_phase(announce_api_call, agent, s)
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
@@ -1867,6 +1869,8 @@ def run_conversation(
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
+    from scheduler.agent_hooks import on_turn_committed
+    on_turn_committed(agent, result)
     _close_durable_failed_turn(agent, result)
     return result
 

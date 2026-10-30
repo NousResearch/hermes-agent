@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import random
 import sys
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
@@ -405,6 +406,12 @@ def begin_iteration(
 
     api_call_count += 1
     agent._api_call_count = api_call_count
+    # Opaque correlation id for this logical iteration (pre/post step hooks and turn_steps
+    # rows). Never an ordinal: refunds reuse the provisional api_call_count but a re-issued
+    # request is a new iteration. See website/docs/developer-guide/scheduled-tasks.md.
+    agent._current_iteration_uid = (
+        f"{getattr(agent, '_current_turn_id', '') or 'session'}:it:{uuid.uuid4().hex[:12]}"
+    )
     agent._touch_activity(f"starting API call #{api_call_count}")
 
     # Grace call: budget exhausted but the model gets one more call. Consume the

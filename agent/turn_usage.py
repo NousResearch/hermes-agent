@@ -11,6 +11,7 @@ model/provider. Logger name stays ``agent.conversation_loop`` for caplog parity.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -45,6 +46,78 @@ def _loop_mod():
     return _cl
 
 
+def _get(obj: Any, key: str, default: Any = None) -> Any:
+    """Read *key* from an attribute-style response or a plain dict."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _tool_names_from_response(response: Any) -> list[str]:
+    """Best-effort tool names requested by *response* across the provider dialects.
+
+    The ledger's ``tool_names`` is descriptive; the turn loop normalizes tool calls only after
+    usage accounting, so this reads the raw Chat Completions, Responses, and Anthropic shapes.
+    """
+    names: list[str] = []
+
+    def _push(call: Any) -> None:
+        fn = _get(call, "function", None)
+        name = _get(fn, "name", None) if fn is not None else None
+        name = name or _get(call, "name", None)
+        if isinstance(name, str) and name:
+            names.append(name)
+
+    choices = _get(response, "choices", None)
+    if isinstance(choices, (list, tuple)) and choices:
+        message = _get(choices[0], "message", None)
+        for call in _get(message, "tool_calls", None) or ():
+            _push(call)
+    for call in _get(response, "tool_calls", None) or ():
+        _push(call)
+    for item in _get(response, "output", None) or ():
+        if _get(item, "type", "") in ("function_call", "custom_tool_call"):
+            _push(item)
+    for block in _get(response, "content", None) or ():
+        if _get(block, "type", "") == "tool_use":
+            _push(block)
+    return names[:64]
+
+
+def _ledger_step(
+    agent: Any, response: Any, *, api_call_count: int, api_duration: float,
+    usage_status: str, status: str = "ok", finish_reason: Any = None,
+    total_tokens: int = 0, error: Any = None,
+) -> dict[str, Any]:
+    """The ``turn_steps`` payload for one main-loop provider call."""
+    now = time.time()
+    duration = max(float(api_duration or 0.0), 0.0)
+    tool_names = _tool_names_from_response(response)
+    step: dict[str, Any] = {
+        "turn_id": getattr(agent, "_current_turn_id", "") or None,
+        "turn_seq": int(getattr(agent, "_user_turn_count", 0) or 0) or None,
+        "step_index": int(api_call_count or 0) or None,
+        "iteration_uid": getattr(agent, "_current_iteration_uid", "") or None,
+        "role": "assistant",
+        "step_kind": "llm",
+        "agent_name": str(getattr(agent, "_agent_name", "") or ""),
+        "usage_status": usage_status,
+        "api_calls": 1,
+        "tool_call_count": len(tool_names),
+        "tool_names": tool_names,
+        "total_tokens": int(total_tokens or 0),
+        "started_at": now - duration,
+        "ended_at": now,
+        "duration_ms": int(duration * 1000),
+        "status": status,
+        "finish_reason": finish_reason,
+        "request_id": getattr(agent, "_current_api_request_id", "") or None,
+    }
+    if error:
+        step["error"] = str(error)[:2000]
+    return step
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when
@@ -73,6 +146,7 @@ def _fold_moa_usage(agent, canonical_usage):
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    finish_reason: Any = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
@@ -96,6 +170,28 @@ def record_response_usage(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
+        # Step ledger: the request reached the provider but no counter delta is queued
+        # (chat-completions semantics), so this row is exactly what invariant 2's
+        # ``count(usage_status='missing')`` term accounts for.
+        if agent._session_db and agent.session_id:
+            try:
+                if not agent._session_db_created:
+                    agent._ensure_db_session()
+                agent._session_db.queue_token_counts(
+                    agent.session_id,
+                    step=_ledger_step(
+                        agent, response, api_call_count=api_call_count, api_duration=api_duration,
+                        usage_status="missing", finish_reason=finish_reason,
+                    ),
+                )
+                from scheduler.agent_hooks import on_step_committed
+                on_step_committed(
+                    agent, step_index=api_call_count, usage_status="missing",
+                    duration_ms=int(max(float(api_duration or 0.0), 0.0) * 1000),
+                    finish_reason=finish_reason,
+                )
+            except Exception as e:  # silent loss here undercounts analytics
+                logger.debug("Step ledger persistence failed (session=%s): %s", agent.session_id, e)
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = with_served_service_tier(
@@ -279,6 +375,21 @@ def record_response_usage(
                 model=agent.model,
                 api_call_count=1,
                 task=getattr(agent, "_turn_route_task", "") or "",
+                step=_ledger_step(
+                    agent, response, api_call_count=api_call_count, api_duration=api_duration,
+                    usage_status="ok", finish_reason=finish_reason, total_tokens=total_tokens,
+                ),
+            )
+            from scheduler.agent_hooks import on_step_committed
+            on_step_committed(
+                agent, step_index=api_call_count, usage_status="ok", total_tokens=total_tokens,
+                input_tokens=canonical_usage.input_tokens,
+                output_tokens=canonical_usage.output_tokens,
+                cache_read_tokens=canonical_usage.cache_read_tokens,
+                cache_write_tokens=canonical_usage.cache_write_tokens,
+                reasoning_tokens=canonical_usage.reasoning_tokens,
+                duration_ms=int(max(float(api_duration or 0.0), 0.0) * 1000),
+                finish_reason=finish_reason,
             )
         except Exception as e:  # silent loss here undercounts analytics
             logger.debug(

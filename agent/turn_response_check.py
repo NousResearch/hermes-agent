@@ -195,7 +195,7 @@ def check_api_response(
     _usage_outcome = record_response_usage(
         agent, response, messages=messages, api_call_count=api_call_count,
         api_duration=api_duration, compression_attempts=compression_attempts,
-        max_compression_attempts=max_compression_attempts,
+        max_compression_attempts=max_compression_attempts, finish_reason=finish_reason,
     )
     compression_attempts = _usage_outcome.compression_attempts
     if _usage_outcome.rearmed:

@@ -10,7 +10,9 @@ import logging
 import threading
 import time
 import weakref
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+from hermes_state_steps import aux_step
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -104,10 +106,14 @@ class SessionUsageMixin:
                    WHERE id = ?""", (provider, base_url, billing_mode, session_id))
         self._execute_write(_do)
 
-    def queue_token_counts(self, session_id: str, **kwargs) -> None:
-        """Enqueue a token/cost delta for the background writer (same kwargs as
-        :meth:`update_token_counts`). After close() stopped the writer, falls back to the
-        synchronous path and may raise."""
+    def queue_token_counts(self, session_id: str, step: Optional[Mapping[str, Any]] = None, **kwargs) -> None:
+        """Enqueue a token/cost delta (plus an optional ``step`` ledger payload) for the
+        background writer (same kwargs as :meth:`update_token_counts`). After close() stopped
+        the writer, falls back to the synchronous path and may raise."""
+        if step is not None:
+            # Reserved carrier: queue entries stay ``(session_id, kwargs)`` tuples, and the
+            # coalescer treats any entry carrying this key as unmergeable.
+            kwargs["_step"] = step
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
@@ -133,8 +139,10 @@ class SessionUsageMixin:
                         atexit.register(_drain_at_exit)
                 self._token_queue_cond.notify_all()
         if writer_stopped:
-            # close() ran: enqueueing would drop the delta silently, so apply inline.
-            self.update_token_counts(session_id, **kwargs)
+            # close() ran: enqueueing would drop the delta silently, so apply inline. ``_step``
+            # is only a queue carrier; passing it here would be an unexpected kwarg.
+            kwargs.pop("_step", None)
+            self.update_token_counts(session_id, step=step, **kwargs)
 
     def _apply_claimed_batch(self, batch) -> None:
         """Apply a batch whose ``busy`` flag the caller already claimed, then release."""
@@ -215,8 +223,12 @@ class SessionUsageMixin:
             logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
             coalesced = batch
         for session_id, kwargs in coalesced:
+            step = kwargs.pop("_step", None)
             try:
-                self.update_token_counts(session_id, **kwargs)
+                if step is not None and not kwargs:
+                    self.record_turn_step(session_id, step)  # usage-less response
+                else:
+                    self.update_token_counts(session_id, step=step, **kwargs)
             except Exception as exc:
                 # Accounting loss is logged, never raised into a turn.
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
@@ -227,7 +239,7 @@ class SessionUsageMixin:
         groups: list[tuple[Optional[tuple], str, dict[str, Any]]] = []
         for session_id, kwargs in batch:
             key = None
-            if not kwargs.get("absolute"):
+            if not kwargs.get("absolute") and "_step" not in kwargs:
                 key = (session_id, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
             if groups and key is not None and groups[-1][0] == key:
                 merged = groups[-1][2]
@@ -288,25 +300,27 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
-        source: Optional[str]=None, task: str = "",
+        source: Optional[str]=None, task: str = "", step: Optional[Mapping[str, Any]]=None,
     ) -> None:
         """Update totals and route attribution, ensuring the legacy missing-row backfill.
         *absolute*=False increments (per-API-call deltas, CLI path); *absolute*=True sets directly
         (gateway path, where the cached agent holds cumulative totals). ``source`` is the session's
         real surface for the row-existence guard; callers that don't know it leave the placeholder.
         ``task`` names a per-turn route (``voice_chat``): its calls count in the session totals and
-        land in ``session_model_usage`` under that task, but never become the session's recorded route."""
+        land in ``session_model_usage`` under that task, but never become the session's recorded route.
+        ``step`` writes one ``turn_steps`` row in the *same* transaction (never on absolute writes)."""
         values = dict(locals())
         values.pop('self')
         values.pop('session_id')
         values.pop('source')
+        values.pop('step')
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
         # writer it must carry the agent's real source: the turn lease treats an existing row as
         # proof the create already happened, so the creator never returns to repair an anonymous
         # ``unknown`` placeholder and the session stays a phantom for life (#111999).
         self._insert_session_row(session_id, source or "unknown", model=model)
-        self._execute_write(lambda conn: self._update_token_counts_in_transaction(conn, session_id, **values))
+        self._execute_write(lambda conn: self._update_token_counts_in_transaction(conn, session_id, step=step, **values))
 
     def _update_token_counts_in_transaction(
         self, conn, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str | None=None, cache_read_tokens: int=0,
@@ -314,6 +328,7 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False, task: str="",
+        step: Optional[Mapping[str, Any]]=None,
     ) -> None:
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         sql = _TOKEN_UPDATE_ABSOLUTE_SQL if absolute else _TOKEN_UPDATE_DELTA_SQL
@@ -358,6 +373,10 @@ class SessionUsageMixin:
         conn.execute(sql, params)
         if record_model_usage:
             self._record_model_usage(conn, session_id, task=task, **usage)
+        if step is not None and not absolute:
+            # Same transaction as the usage write: the ledger row and the aggregate it mirrors
+            # commit together (invariant 1 in website/docs/developer-guide/scheduled-tasks.md).
+            self._insert_turn_step(conn, session_id, step, usage)
 
     def _record_model_usage(
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
@@ -393,7 +412,7 @@ class SessionUsageMixin:
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
         billing_base_url: Optional[str]=None, input_tokens: int=0, output_tokens: int=0, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
-        api_call_count: int=1,
+        api_call_count: int=1, step: Optional[Mapping[str, Any]]=None,
     ) -> None:
         """Record an auxiliary LLM call's usage (vision, compression, title generation, ...)
         as a per-(model, provider, task) delta in ``session_model_usage`` WITHOUT touching
@@ -422,6 +441,13 @@ class SessionUsageMixin:
                     "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
                     (own_profile, session_id))
             self._record_model_usage(conn, session_id, task=task, **usage)
+            # One aux ledger row per write; api_calls>1 is the aggregate (background review,
+            # named-agent run) whose per-call detail does not exist upstream.
+            self._insert_turn_step(
+                conn, session_id,
+                step if step is not None else aux_step(task, usage["api_call_count"]),
+                usage,
+            )
         self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:

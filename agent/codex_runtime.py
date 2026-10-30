@@ -132,7 +132,8 @@ def _coerce_usage_int(value: Any) -> int:
     return 0
 
 
-def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable[[], dict]) -> None:
+def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable[[], dict],
+                        step: dict[str, Any] | None = None) -> None:
     """Enqueue per-call accounting for the SessionDB background writer. ``counts`` is built
     lazily inside the guarded try so a stub agent without a session DB is never touched."""
     if not (agent._session_db and agent.session_id):
@@ -141,9 +142,70 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
         if not agent._session_db_created:
             agent._ensure_db_session()
         from agent.turn_usage import _agent_session_source
-        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
+        agent._session_db.queue_token_counts(
+            agent.session_id, source=_agent_session_source(agent), step=step, **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
+
+
+def _codex_tool_names(turn: Any) -> list[str]:
+    """Tool names requested across this Codex turn's projected messages."""
+    names: list[str] = []
+    for message in getattr(turn, "projected_messages", None) or ():
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or ():
+            fn = call.get("function") if isinstance(call, dict) else None
+            name = (fn or {}).get("name") if isinstance(fn, dict) else None
+            if isinstance(name, str) and name:
+                names.append(name)
+        content = message.get("content")
+        for item in content if isinstance(content, list) else ():
+            if isinstance(item, dict) and item.get("type") in ("function_call", "custom_tool_call"):
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    names.append(name)
+    return names[:64]
+
+
+def _codex_ledger_step(agent, turn: Any, usage: dict[str, Any] | None) -> dict[str, Any]:
+    """The ``turn_steps`` payload for one Codex app-server turn (always one provider call)."""
+    import uuid as _uuid
+
+    turn_id = getattr(agent, "_current_turn_id", "") or None
+    iteration_uid = getattr(agent, "_current_iteration_uid", "") or None
+    if not iteration_uid:
+        iteration_uid = f"{turn_id or 'session'}:it:{_uuid.uuid4().hex[:12]}"
+        agent._current_iteration_uid = iteration_uid
+    error = getattr(turn, "error", None)
+    status = "error" if error else ("interrupted" if getattr(turn, "interrupted", False) else "ok")
+    names = _codex_tool_names(turn)
+    codex_turn = getattr(turn, "turn_id", None) or ""
+    thread_id = getattr(turn, "thread_id", None) or ""
+    now = time.time()
+    step: dict[str, Any] = {
+        "turn_id": turn_id,
+        "turn_seq": int(getattr(agent, "_user_turn_count", 0) or 0) or None,
+        "step_index": int(getattr(agent, "_api_call_count", 0) or 0) or None,
+        "iteration_uid": iteration_uid,
+        "role": "assistant",
+        "step_kind": "llm",
+        "agent_name": str(getattr(agent, "_agent_name", "") or ""),
+        # A usage-less codex turn still queues ``api_call_count=1``, so its row must read 'ok'
+        # (marking it 'missing' would double-count in reconciliation invariant 2).
+        "usage_status": "ok",
+        "api_calls": 1,
+        "tool_call_count": int(getattr(turn, "tool_iterations", 0) or 0),
+        "tool_names": names,
+        "total_tokens": int((usage or {}).get("totalTokens") or 0),
+        "started_at": now,
+        "ended_at": now,
+        "status": status,
+        "request_id": f"codex:{thread_id}:{codex_turn}" if (thread_id or codex_turn) else None,
+    }
+    if error:
+        step["error"] = str(error)[:2000]
+    return step
 
 
 def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
@@ -165,7 +227,10 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         if compressor is not None and callable(getattr(compressor, "note_usage_less_response", None)):
             compressor.note_usage_less_response()
         _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
-                            counts=lambda: billing(billing_mode="subscription_included"))
+                            counts=lambda: billing(billing_mode="subscription_included"),
+                            step=_codex_ledger_step(agent, turn, None))
+        from scheduler.agent_hooks import on_step_committed
+        on_step_committed(agent, step_index=int(getattr(agent, "_api_call_count", 0) or 0))
         return {}
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
     # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
@@ -212,6 +277,17 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
         counts=lambda: billing(**token_counts, **cost_fields,
                                billing_mode="subscription_included" if cost_result.status == "included" else None),
+        step=_codex_ledger_step(agent, turn, usage),
+    )
+    from scheduler.agent_hooks import on_step_committed
+    on_step_committed(
+        agent, step_index=int(getattr(agent, "_api_call_count", 0) or 0),
+        total_tokens=total_tokens,
+        input_tokens=canonical_usage.input_tokens,
+        output_tokens=canonical_usage.output_tokens,
+        cache_read_tokens=canonical_usage.cache_read_tokens,
+        cache_write_tokens=canonical_usage.cache_write_tokens,
+        reasoning_tokens=canonical_usage.reasoning_tokens,
     )
     return {**usage_dict, "last_prompt_tokens": prompt_tokens, **cost_fields}
 
@@ -758,6 +834,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
     try:
+        from scheduler.agent_hooks import on_step_pre
+        on_step_pre(agent, step_index=int(getattr(agent, "_api_call_count", 0) or 0) + 1)
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
         turn = agent._codex_session.run_turn(

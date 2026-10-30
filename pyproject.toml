@@ -699,6 +699,8 @@ include = [
   "tui_gateway.*",
   "cron",
   "cron.*",
+  "scheduler",
+  "scheduler.*",
   "acp_adapter",
   "plugins",
   "plugins.*",

@@ -871,6 +871,7 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
+    from hermes_state_steps import aux_step, normalize_step_payload
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
     source = None
     if not auxiliary:
@@ -882,6 +883,10 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         raw = payload.get('source')
         source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
+    try:
+        step = normalize_step_payload(payload.pop('step', None))
+    except ValueError:
+        raise RuntimeStoreError('invalid_params') from None
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')
@@ -899,9 +904,15 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     if auxiliary:
         if not payload.get('task'):
             raise RuntimeStoreError('invalid_params')
-        db._record_model_usage(conn, session_id, **({'api_call_count': 1} | payload))
+        usage = {'api_call_count': 1} | payload
+        db._record_model_usage(conn, session_id, **usage)
+        db._insert_turn_step(
+            conn, session_id,
+            step if step is not None else aux_step(payload['task'], usage['api_call_count']),
+            usage,
+        )
     else:
-        db._update_token_counts_in_transaction(conn, session_id, **payload)
+        db._update_token_counts_in_transaction(conn, session_id, step=step, **payload)
         # The managed worker's platform is the policy label (gui), not the in-process
         # agent surface (desktop). Stamp the same created_surface the insert uses.
         from gateway.session_policy import created_surface

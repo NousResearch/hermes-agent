@@ -2585,6 +2585,22 @@ def run_job(
         from cron.scheduler_authority import run_canonical_job
         return run_canonical_job(job, extra_prompt=extra_prompt, cancel_event=cancel_event,
                                  execution_id=execution_id)
+    return _run_job_local(job, defer_agent_teardown=defer_agent_teardown, extra_prompt=extra_prompt,
+                          cancel_event=cancel_event, execution_id=execution_id,
+                          session_id_override=(owner_execution[1] if owner_execution is not None else None))
+
+
+def _run_job_local(
+    job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
+    session_id_override: Optional[str] = None,
+) -> tuple[bool, str, str, Optional[str]]:
+    """Run a job inside THIS process, bypassing the gateway-admission path.
+
+    ``run_job`` routes ordinary jobs through the canonical (gateway-owned) runtime; scheduled
+    turn/step jobs are session-bound and have no gateway admission to observe, so they call this
+    body directly. Prompt, skills, fresh session and teardown are the same code path.
+    """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
@@ -2593,8 +2609,7 @@ def run_job(
         return early
     from run_agent import AIAgent
 
-    _cron_session_id = (owner_execution[1] if owner_execution is not None else
-                        f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")
+    _cron_session_id = session_id_override or f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
@@ -2832,6 +2847,13 @@ def run_one_job(
 
     execution_id = str(job["execution_id"])
     note_cron_execution(job)
+    if job.get("plugin_task"):
+        # Mutually exclusive payload kind: a registered plugin handler runs here, in-process,
+        # never through the external agent worker (which has no plugin registry).
+        from scheduler.cron_api import run_plugin_task_job
+
+        run_plugin_task_job(job, execution_id)
+        return True
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:

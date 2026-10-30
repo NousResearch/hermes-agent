@@ -1222,6 +1222,10 @@ def build_turn_context(
             )
 
     _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
+    # Turn clock: the row exists now, so a resumed session seeds step_seq/turn_seq exactly.
+    from scheduler.agent_hooks import on_turn_start
+
+    on_turn_start(agent)
 
     return TurnContext(
         user_message=user_message, original_user_message=original_user_message, messages=messages,

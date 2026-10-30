@@ -505,6 +505,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_activity_description TEXT,
     last_activity_provenance TEXT,
     api_call_count INTEGER DEFAULT 0,
+    -- Durable logical clocks (website/docs/developer-guide/scheduled-tasks.md). ``turn_seq`` is the
+    -- user-turn ordinal (seeded from ``agent._user_turn_count``), ``step_seq`` the committed
+    -- provider-call ordinal whose rows live in ``turn_steps``. No schema_version bump: columns are
+    -- reconciled from this DDL by _reconcile_columns().
+    turn_seq INTEGER NOT NULL DEFAULT 0,
+    step_seq INTEGER NOT NULL DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
@@ -581,6 +587,128 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     first_seen REAL,
     last_seen REAL,
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+);
+
+-- One row per provider call (the scheduler's step ledger). ``step_seq`` is assigned by the
+-- writer transaction for main-loop LLM steps and is NULL for auxiliary / aggregated rows, so
+-- the UNIQUE key never collides on them (SQLite allows multiple NULLs). Tokens and cost are
+-- copied from the same payload that feeds ``session_model_usage`` in the same transaction, so
+-- the two reconcile exactly.
+CREATE TABLE IF NOT EXISTS turn_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id TEXT,
+    step_seq INTEGER,
+    turn_seq INTEGER,
+    step_index INTEGER,
+    parent_step_id INTEGER REFERENCES turn_steps(id),
+    role TEXT NOT NULL CHECK (role IN ('assistant','tool','aux')),
+    step_kind TEXT NOT NULL CHECK (step_kind IN ('llm','tool','aux')),
+    agent_name TEXT NOT NULL DEFAULT '',
+    profile_name TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    billing_provider TEXT NOT NULL DEFAULT '',
+    billing_base_url TEXT NOT NULL DEFAULT '',
+    billing_mode TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
+    usage_status TEXT NOT NULL DEFAULT 'ok'
+        CHECK (usage_status IN ('ok','missing','aggregated')),
+    api_calls INTEGER NOT NULL DEFAULT 1,
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    tool_names TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd REAL NOT NULL DEFAULT 0,
+    cost_status TEXT,
+    cost_source TEXT,
+    pricing_version TEXT,
+    started_at REAL NOT NULL,
+    ended_at REAL NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok'
+        CHECK (status IN ('ok','error','timeout','interrupted')),
+    finish_reason TEXT,
+    request_id TEXT,
+    iteration_uid TEXT,
+    error TEXT,
+    UNIQUE (session_id, step_seq)
+);
+
+CREATE TABLE IF NOT EXISTS task_state (
+    plugin_id TEXT NOT NULL,
+    task_name TEXT NOT NULL,
+    period TEXT NOT NULL,
+    every INTEGER NOT NULL,
+    phase TEXT NOT NULL DEFAULT 'post',
+    spec_hash TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    disabled_by TEXT,
+    error_streak INTEGER NOT NULL DEFAULT 0,
+    run_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    next_due_hint INTEGER,
+    last_fired_at REAL,
+    last_status TEXT,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (plugin_id, task_name)
+);
+
+CREATE TABLE IF NOT EXISTS task_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_id TEXT NOT NULL DEFAULT 'core',
+    task_name TEXT NOT NULL,
+    period TEXT NOT NULL CHECK (period IN ('turn','step')),
+    phase TEXT NOT NULL CHECK (phase IN ('pre','post')),
+    owner_pid TEXT NOT NULL DEFAULT '',
+    session_id TEXT, turn_id TEXT, turn_seq INTEGER, step_seq INTEGER, step_index INTEGER,
+    profile_name TEXT NOT NULL DEFAULT '',
+    agent_name TEXT NOT NULL DEFAULT '',
+    started_at REAL NOT NULL,
+    ended_at REAL NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL
+        CHECK (status IN ('ok','error','timeout','skipped','disabled','rescheduled')),
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_name, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_runs_session ON task_runs(session_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_jobs (
+    id TEXT PRIMARY KEY,
+    origin_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    profile_name TEXT NOT NULL DEFAULT '',
+    name TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('turn','step')),
+    every INTEGER NOT NULL CHECK (every >= 1),
+    remaining INTEGER,
+    next_due_seq INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    skills TEXT,
+    deliver TEXT, failure_deliver TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    paused_reason TEXT,
+    origin_depth INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL, updated_at REAL NOT NULL,
+    last_fired_at REAL, last_status TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_jobs_session
+    ON session_jobs(origin_session_id, next_due_seq);
+
+CREATE TABLE IF NOT EXISTS session_job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    origin_session_id TEXT,
+    fired_at_seq INTEGER NOT NULL,
+    run_session_id TEXT,
+    parent_job_id TEXT,
+    started_at REAL NOT NULL, ended_at REAL, status TEXT NOT NULL, error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS runtime_epoch (
@@ -765,6 +893,9 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+CREATE INDEX IF NOT EXISTS idx_turn_steps_session ON turn_steps(session_id, step_seq DESC);
+CREATE INDEX IF NOT EXISTS idx_turn_steps_turn ON turn_steps(turn_id);
+CREATE INDEX IF NOT EXISTS idx_turn_steps_time ON turn_steps(profile_name, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """

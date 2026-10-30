@@ -136,6 +136,13 @@ function reportedFailure(
   return { any: raw, raw, runtime }
 }
 
+function failedRuntimeReason(reason: string, credentialsConfigured: boolean, route: { errorCode?: string }): string {
+  // A coded failure names its own cause; the suffix exists to explain an uncoded disagreement.
+  return credentialsConfigured && !route.errorCode
+    ? `${reason} setup.status reports configured credentials, but runtime resolution still failed.`
+    : reason
+}
+
 export function interpretRuntimeReadiness(
   signals: RuntimeReadinessSignals,
   options: RuntimeReadinessOptions = {}
@@ -172,18 +179,11 @@ export function interpretRuntimeReadiness(
       }
     }
 
-    let reason = failure.runtime ?? defaultReason
-
-    // A coded failure names its own cause; the suffix exists to explain an uncoded disagreement.
-    if (checksDisagree && setupConfigured && !route.errorCode) {
-      reason = `${reason} setup.status reports configured credentials, but runtime resolution still failed.`
-    }
-
     return {
       ...route,
       checksDisagree,
       ready: false,
-      reason,
+      reason: failedRuntimeReason(failure.runtime ?? defaultReason, checksDisagree && setupConfigured === true, route),
       source: 'runtime_check'
     }
   }

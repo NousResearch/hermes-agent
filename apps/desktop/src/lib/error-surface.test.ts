@@ -207,6 +207,21 @@ describe('cron session read-only (#141348)', () => {
   })
 })
 
+describe('managed local model server down', () => {
+  it('reads as an unreachable model server and offers another model, never a key update', () => {
+    const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: false })
+
+    expect(errorCardText(en.assistant.thread, surface).title).toBe(en.assistant.thread.errorLayers.endpoint)
+    expect(errorCardActions(surface)).toEqual({ primary: 'switch_provider' })
+  })
+
+  it('offers Retry first while the server is still starting', () => {
+    const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: true })
+
+    expect(errorCardActions(surface)).toEqual({ primary: 'retry', secondary: 'switch_provider' })
+  })
+})
+
 describe('usage-window refusal', () => {
   it('shows the stop-line sentence, not the out-of-credits copy', () => {
     const message = "You've hit your daily limit · resets 15:56 · turn on Keep going in /topup"

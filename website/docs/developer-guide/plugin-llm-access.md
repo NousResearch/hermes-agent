@@ -752,12 +752,13 @@ when nothing was started.
 fork's final text, or `None`), `handle.actions` (the whitelisted tool
 names it called, in order), `handle.wait(timeout)` and `handle.cancel()`.
 `outcome` is one of `deferred`, `running`, `ok`, `cancelled`,
-`superseded`, `timeout`, `budget_exhausted`, `error` or
-`refused:<reason>`: `parent_gone` (the session agent was released before
-the fork started), `moa` (a Mixture-of-Agents runtime), `agent_provider`
-(an agent-as-provider runtime that runs its own tools) or
-`runtime_changed` (the session switched model or provider since the
-turn). The handle never exposes the fork agent itself.
+`superseded`, `timeout`, `budget_exhausted`, `error`, `error:spawn` (the
+fork's worker thread could not start; `fork_session` returns the settled
+handle rather than raising) or `refused:<reason>`: `parent_gone` (the
+session agent was released before the fork started), `moa` (a
+Mixture-of-Agents runtime), `agent_provider` (an agent-as-provider
+runtime that runs its own tools) or `runtime_changed` (the session
+switched model or provider since the turn). The handle never exposes the fork agent itself.
 
 ### Telling a fork from the live agent
 

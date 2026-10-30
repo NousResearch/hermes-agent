@@ -554,6 +554,38 @@ def test_a_fork_of_a_fenced_turn_is_refused_at_launch(forks, consented):
     assert forks.built and not parent._plugin_fork_jobs
 
 
+class _Unstartable(threading.Thread):
+    def start(self):
+        raise RuntimeError("can't start new thread")
+
+
+def _spawn_raises(target, **kwargs):
+    raise RuntimeError("spawn failed")
+
+
+@pytest.mark.parametrize("spawn", [_spawn_raises, lambda target, **kwargs: _Unstartable(target=target, **kwargs)],
+                         ids=["spawn_context_thread", "thread_start"])
+def test_a_fork_whose_worker_cannot_start_settles_and_never_holds_up_the_next_turn(
+        forks, consented, monkeypatch, caplog, spawn):
+    """No worker exists to settle the admitted job, so the launcher does: ``fork_session`` returns
+    the handle settled ``error:spawn`` (it never raises into the plugin), the job leaves the
+    parent's registry with its request exit published, and the next live turn has nothing to
+    await."""
+    from agent import memory_provider
+
+    launched: list = []
+    launch = plugin_session_fork._launch
+    monkeypatch.setattr(plugin_session_fork, "_launch", lambda job: (launched.append(job), launch(job))[1])
+    monkeypatch.setattr(memory_provider, "spawn_context_thread", spawn)
+    parent = _agent()
+    handle = _ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q")
+    assert handle.done and handle.outcome == "error:spawn" and not handle.cancelled
+    assert not parent._plugin_fork_jobs and launched[0].run.request_done.is_set() and forks.built == []
+
+    background_review.cancel_background_review_for_live_turn(parent)
+    assert "did not acknowledge cancellation" not in caplog.text  # no wait on the dead run
+
+
 # ── 4. end to end through real discovery, a real turn and a real fork ────────────────────
 
 _E2E_PLUGIN = '''

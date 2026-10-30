@@ -78,7 +78,13 @@ function readWindowsUserEnvVar(
     stdout = exec('reg', ['query', 'HKCU\\Environment', '/v', name], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 5000
+      timeout: 5000,
+      // execFileSync's default sends the child's stderr to the parent's
+      // stderr. `reg` writes "ERROR: The system was unable to find the
+      // specified registry key or value." on every miss -- the common case
+      // here -- so the user's console filled with a scary-looking line for
+      // a perfectly normal lookup. Capture it instead.
+      stdio: ['ignore', 'pipe', 'pipe']
     })
   } catch {
     // `reg` missing, or value absent (reg exits 1) — caller falls back.

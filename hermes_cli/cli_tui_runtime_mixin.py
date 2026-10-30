@@ -341,6 +341,10 @@ class CLITuiRuntimeMixin:
 
     def _tui_startup_prewarm_and_warnings(self, _welcome_skin):
         """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off and OpenClaw-residue banners."""
+        # Import on one thread before both prewarm workers can race the SDK import (#145661).
+        with suppress(Exception):
+            import openai
+
         # Warm the /model picker cache off-thread (else its first open blocks ~1-2s).
         with suppress(Exception):
             from hermes_cli.model_switch_providers import prewarm_picker_cache_async

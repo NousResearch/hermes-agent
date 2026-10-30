@@ -24,6 +24,7 @@ Harness: same style as tests/tui_gateway/test_tui_entry_mcp_owner.py — import
 
 from __future__ import annotations
 
+import builtins
 import io
 
 from tui_gateway import entry
@@ -89,3 +90,17 @@ def test_main_marks_stdout_as_the_rpc_channel(monkeypatch):
     _run_main(monkeypatch, [])
 
     assert entry.server._stdio_is_rpc_channel is True
+
+
+def test_sdk_import_precedes_stdio_tui_prewarm(monkeypatch):
+    events = []
+    original_import = builtins.__import__
+
+    def record_import(name, *args, **kwargs):
+        if name == "openai":
+            events.append("sdk")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", record_import)
+    _run_main(monkeypatch, events, prewarm=lambda: events.append("picker"))
+    assert events.index("sdk") < events.index("picker")

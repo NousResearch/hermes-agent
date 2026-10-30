@@ -24,6 +24,19 @@ _ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNOR
 _MAX_FILENAME_CHARS = 255
 
 
+def inline_flags_padded(msg: "MessageEvent") -> list[Optional[bool]]:
+    """``msg``'s ``media_text_inlined`` padded to its own ``media_urls`` length.
+
+    ``media_urls`` / ``media_types`` / ``media_text_inlined`` are index-parallel: the
+    native admission contract requires ``len(media_text_inlined)`` to be either 0 or
+    exactly ``len(media_urls)`` — one flag per attachment. A source that tracks no
+    per-file state contributes ``None`` (unknown) rather than dropping the flag.
+    """
+    flags = list(getattr(msg, "media_text_inlined", []) or [])
+    missing = len(msg.media_urls) - len(flags)
+    return flags + [None] * missing if missing > 0 else flags
+
+
 def clean_attachment_filename(name: object) -> str:
     """An untrusted attachment filename reduced to a display-safe basename; ``""`` when unusable.
 
@@ -155,13 +168,21 @@ class MessageEvent:
     def extend_media(self, other: "MessageEvent") -> None:
         """Append *other*'s attachments (urls, types and original names) to this event's. Names are
         padded with ``""`` on either side so each stays on its own attachment; events without names
-        (native adapters keep the name in the cache path) leave ``media_filenames`` untouched."""
+        (native adapters keep the name in the cache path) leave ``media_filenames`` untouched.
+
+        ``media_text_inlined`` rides along: it is index-parallel to ``media_urls`` (one flag per
+        attachment), so merging the URLs without the flags left the lists mismatched and native
+        admission refused the whole message with ``media_text_inlined_length``.
+        """
+        own_flags = inline_flags_padded(self)
+        other_flags = inline_flags_padded(other)
         if self.media_filenames or other.media_filenames:
             def pad(msg: "MessageEvent") -> list[str]:
                 return (list(msg.media_filenames) + [""] * len(msg.media_urls))[: len(msg.media_urls)]
             self.media_filenames = pad(self) + pad(other)
         self.media_urls.extend(other.media_urls)
         self.media_types.extend(other.media_types)
+        self.media_text_inlined = own_flags + other_flags
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

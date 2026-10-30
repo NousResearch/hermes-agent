@@ -1791,48 +1791,10 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
         reset_hermes_home_override(home_token)
 
 
-@_contextmanager
-def _profile_runtime_scope(
-    profile_home: Path, prepared_secret_scope: Optional[dict] = None, *,
-    hydrate_secrets: bool = True):
-    """Scope config/skills/memory AND credentials to a profile for one turn (multiplexed path only).
-    ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
-    ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
-    ``os.environ``, so subprocesses never inherit cross-profile secrets."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import set_secret_scope, reset_secret_scope
-
-    home_token = secret_token = None
-    try:
-        home_token = set_hermes_home_override(str(profile_home))
-        if prepared_secret_scope is not None:
-            secrets = prepared_secret_scope
-        elif hydrate_secrets:
-            secrets = _load_profile_secret_scope(Path(profile_home))
-        else:
-            from tui_gateway.launch_profile_policy import owner_secret_scope  # caller already hydrated off-loop
-            secrets = owner_secret_scope(Path(profile_home))
-        secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
-        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-        # pinned (first-writer-wins backend leak; #68559).
-        from tools.terminal_scope import install_and_reset_profile_terminal_scope
-
-        with install_and_reset_profile_terminal_scope(Path(profile_home)):
-            yield
-    finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
-
-
-@_asynccontextmanager
-async def _async_profile_runtime_scope(profile_home: Path):
-    """Enter a profile scope without loading secret files on the event loop."""
-    secrets = await asyncio.to_thread(_load_profile_secret_scope, Path(profile_home))
-    with _profile_runtime_scope(Path(profile_home), secrets):
-        yield
+from gateway.run_profile_scope import (
+    _async_profile_runtime_scope,
+    _profile_runtime_scope,
+)
 
 
 def load_gateway_config_for_runner() -> "GatewayConfig":

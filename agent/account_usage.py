@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
 import hashlib
 import math
+import os
 import time
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
@@ -43,6 +46,11 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    # Populated when the endpoint returns HTTP 429; carries the parsed
+    # Retry-After value (seconds from now).  Read by _fetch_pool_snapshot to
+    # record the negative-cache deadline without changing fetch_account_usage's
+    # external contract (it still returns a snapshot, not an exception).
+    retry_after_seconds: Optional[float] = None
 
     @property
     def available(self) -> bool:
@@ -63,6 +71,189 @@ class PooledUsageSnapshot:
 _POOL_USAGE_CACHE: dict[tuple[str, str], tuple[AccountUsageSnapshot, float]] = {}
 _POOL_USAGE_CACHE_TTL = 300.0
 _POOL_USAGE_CACHE_LOCK = threading.Lock()
+
+# Negative cache: maps (provider, fingerprint) → monotonic deadline.
+# Any request arriving before the deadline is suppressed without hitting the
+# network; the caller receives an unavailable snapshot with
+# unavailable_reason="rate_limited_until <iso>".  Protected by
+# _POOL_USAGE_CACHE_LOCK (same lock, no additional contention).
+_RATE_LIMIT_UNTIL: dict[tuple[str, str], float] = {}
+
+# Cross-process file cache: default TTL for the per-fingerprint JSON file.
+# Adjusted via config.yaml agent.account_usage_file_cache_ttl (seconds).
+# Combined with the in-process 300-s cache and any dashboard 30-s cache,
+# upstream HTTP calls are bounded to ≤ 1 per fingerprint per 2 minutes
+# across all Hermes processes sharing the same HERMES_HOME.
+_FILE_CACHE_TTL_DEFAULT = 120.0
+_file_cache_ttl_resolved: Optional[float] = None
+
+
+class UsageRateLimitedError(Exception):
+    """Raised when the usage endpoint returns HTTP 429.
+
+    Propagated from ``_fetch_anthropic_account_usage`` through
+    ``fetch_account_usage`` so that ``_fetch_pool_snapshot`` can record the
+    negative-cache deadline keyed on the credential fingerprint.
+    """
+
+    def __init__(self, retry_after_seconds: float) -> None:
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(f"usage endpoint rate-limited for {retry_after_seconds:.0f}s")
+
+
+def _parse_retry_after(header: Optional[str], default_seconds: float = 600.0) -> float:
+    """Parse a ``Retry-After`` header value (delta-seconds or HTTP-date).
+
+    Returns the number of seconds to back off from now, lower-bounded at 1.
+    Falls back to *default_seconds* on any parse failure or missing header.
+    """
+    if not header:
+        return default_seconds
+    val = header.strip()
+    # Try delta-seconds first (most common: "3600").
+    try:
+        secs = float(val)
+        return max(1.0, secs)
+    except ValueError:
+        pass
+    # Try RFC 7231 HTTP-date ("Thu, 30 Oct 2026 19:58:00 GMT").
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(val)
+        delta = (dt - _utc_now()).total_seconds()
+        return max(1.0, delta)
+    except Exception:
+        pass
+    return default_seconds
+
+
+def _get_file_cache_ttl() -> float:
+    """Return the configured cross-process file-cache TTL (seconds).
+
+    Reads ``agent.account_usage_file_cache_ttl`` from config on first call,
+    then caches the result for the process lifetime.
+    """
+    global _file_cache_ttl_resolved
+    if _file_cache_ttl_resolved is not None:
+        return _file_cache_ttl_resolved
+    try:
+        from hermes_cli.config import load_config
+
+        val = (load_config().get("agent") or {}).get("account_usage_file_cache_ttl")
+        if isinstance(val, (int, float)) and val > 0:
+            _file_cache_ttl_resolved = float(val)
+            return _file_cache_ttl_resolved
+    except Exception:
+        pass
+    _file_cache_ttl_resolved = _FILE_CACHE_TTL_DEFAULT
+    return _FILE_CACHE_TTL_DEFAULT
+
+
+def _file_cache_path(provider: str, fingerprint: str) -> Optional[Path]:
+    """Return the Path for a per-fingerprint JSON cache file.
+
+    Returns ``None`` when the fingerprint is empty (display-only entries that
+    are never cached).  Sanitises the fingerprint so it is safe as a filename
+    component on all supported OSes.
+    """
+    if not fingerprint:
+        return None
+    from hermes_constants import get_hermes_home
+
+    fp_safe = fingerprint.replace(":", "_").replace("/", "_")[:64]
+    if not fp_safe:
+        return None
+    return get_hermes_home() / "cache" / "account_usage" / f"{provider}_{fp_safe}.json"
+
+
+def _snapshot_to_cache_dict(snapshot: AccountUsageSnapshot, ttl: float) -> dict:
+    """Serialise a snapshot to a JSON-safe dict (no token data)."""
+    windows = [
+        {
+            "label": w.label,
+            "used_percent": w.used_percent,
+            "reset_at": w.reset_at.isoformat() if w.reset_at else None,
+            "detail": w.detail,
+        }
+        for w in snapshot.windows
+    ]
+    return {
+        "provider": snapshot.provider,
+        "source": snapshot.source,
+        "fetched_at": snapshot.fetched_at.isoformat(),
+        "title": snapshot.title,
+        "plan": snapshot.plan,
+        "windows": windows,
+        "details": list(snapshot.details),
+        "unavailable_reason": snapshot.unavailable_reason,
+        # Wall-clock expiry so cross-process readers can validate TTL.
+        "expires_at_unix": time.time() + ttl,
+    }
+
+
+def _snapshot_from_cache_dict(data: dict, provider: str) -> Optional[AccountUsageSnapshot]:
+    """Deserialise a snapshot from a JSON dict.  Returns None on any error."""
+    try:
+        windows = tuple(
+            AccountUsageWindow(
+                label=str(w["label"]),
+                used_percent=float(w["used_percent"]) if w.get("used_percent") is not None else None,
+                reset_at=_parse_dt(w.get("reset_at")),
+                detail=w.get("detail"),
+            )
+            for w in (data.get("windows") or [])
+        )
+        return AccountUsageSnapshot(
+            provider=str(data.get("provider") or provider),
+            source=str(data.get("source") or "file_cache"),
+            fetched_at=_parse_dt(data.get("fetched_at")) or _utc_now(),
+            title=str(data.get("title") or "Account limits"),
+            plan=data.get("plan"),
+            windows=windows,
+            details=tuple(str(d) for d in (data.get("details") or [])),
+            unavailable_reason=data.get("unavailable_reason"),
+        )
+    except Exception:
+        return None
+
+
+def _file_cache_read(provider: str, fingerprint: str) -> Optional[AccountUsageSnapshot]:
+    """Read a cached snapshot from disk; returns None if missing, expired, or corrupt."""
+    path = _file_cache_path(provider, fingerprint)
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if time.time() >= float(data.get("expires_at_unix", 0)):
+            return None  # expired
+        return _snapshot_from_cache_dict(data, provider)
+    except Exception:
+        return None  # corrupt / missing → fail-safe: ignore and re-fetch
+
+
+def _file_cache_write(provider: str, fingerprint: str, snapshot: AccountUsageSnapshot) -> None:
+    """Write a snapshot to the cross-process file cache (atomic, 0600)."""
+    path = _file_cache_path(provider, fingerprint)
+    if path is None:
+        return
+    ttl = _get_file_cache_ttl()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(_snapshot_to_cache_dict(snapshot, ttl), default=str)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.chmod(0o600)
+        os.replace(tmp, path)
+        # Also ensure the final file is 0600 (os.replace preserves tmp perms
+        # on Linux but not on all macOS versions).
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except Exception:
+        logger.debug("account_usage: file cache write failed (non-fatal)", exc_info=True)
+
 
 
 def _usage_credential_fingerprint(token: Optional[str], entry: Optional[dict] = None) -> str:
@@ -112,10 +303,69 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
     if token:
         key = (provider, fingerprint)
         with _POOL_USAGE_CACHE_LOCK:
+            # 1. Negative cache: suppress re-requests during a rate-limit window.
+            blocked_until = _RATE_LIMIT_UNTIL.get(key)
+            if blocked_until is not None and now < blocked_until:
+                remaining_s = blocked_until - now
+                unblocks_at = datetime.fromtimestamp(
+                    time.time() + remaining_s, tz=timezone.utc
+                )
+                return AccountUsageSnapshot(
+                    provider=provider,
+                    source="oauth_usage_api",
+                    fetched_at=_utc_now(),
+                    unavailable_reason=f"rate_limited_until {unblocks_at.isoformat()}",
+                )
+            # 2. In-process success cache.
             cached = _POOL_USAGE_CACHE.get(key)
             if cached and now - cached[1] < _POOL_USAGE_CACHE_TTL:
                 return cached[0]
-    snapshot = fetch_account_usage(provider, api_key=token) if token else fetch_account_usage(provider)
+
+        # 3. Cross-process file cache (read outside lock — I/O should not block
+        #    the lock; worst case two threads both miss and make one extra HTTP call).
+        file_snap = _file_cache_read(provider, fingerprint)
+        if file_snap is not None:
+            with _POOL_USAGE_CACHE_LOCK:
+                _POOL_USAGE_CACHE[key] = (file_snap, now)
+            return file_snap
+
+    # 4. Make the upstream HTTP call.
+    try:
+        snapshot = fetch_account_usage(provider, api_key=token) if token else fetch_account_usage(provider)
+    except UsageRateLimitedError as exc:
+        # Store the negative-cache deadline so subsequent callers (same or
+        # other processes via the file cache) avoid hammering the endpoint.
+        retry_after = exc.retry_after_seconds
+        blocked_until_mono = now + retry_after
+        unblocks_at = datetime.fromtimestamp(time.time() + retry_after, tz=timezone.utc)
+        if token and fingerprint:
+            with _POOL_USAGE_CACHE_LOCK:
+                _RATE_LIMIT_UNTIL[(provider, fingerprint)] = blocked_until_mono
+        return AccountUsageSnapshot(
+            provider=provider,
+            source="oauth_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason=f"rate_limited_until {unblocks_at.isoformat()}",
+        )
+
+    if snapshot is not None and snapshot.retry_after_seconds is not None:
+        # fetch_account_usage returned a 429 snapshot with a parsed Retry-After.
+        # Record the negative-cache deadline so this (provider, fingerprint) pair
+        # is not re-requested until the window expires.
+        retry_after = snapshot.retry_after_seconds
+        blocked_until_mono = now + retry_after
+        unblocks_at = datetime.fromtimestamp(time.time() + retry_after, tz=timezone.utc)
+        if token and fingerprint:
+            with _POOL_USAGE_CACHE_LOCK:
+                _RATE_LIMIT_UNTIL[(provider, fingerprint)] = blocked_until_mono
+        # Return a richer reason that surface the unblock time.
+        return AccountUsageSnapshot(
+            provider=provider,
+            source="oauth_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason=f"rate_limited_until {unblocks_at.isoformat()}",
+        )
+
     if token and snapshot is None:
         snapshot = AccountUsageSnapshot(
             provider=provider,
@@ -126,6 +376,8 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
     if token and snapshot is not None and snapshot.available:
         with _POOL_USAGE_CACHE_LOCK:
             _POOL_USAGE_CACHE[(provider, fingerprint)] = (snapshot, now)
+        if fingerprint:
+            _file_cache_write(provider, fingerprint, snapshot)
     return snapshot
 
 
@@ -949,6 +1201,15 @@ def _fetch_anthropic_account_usage(api_key: Optional[str] = None) -> Optional[Ac
     }
     with httpx.Client(timeout=15.0) as client:
         response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
+        if response.status_code == 429:
+            retry_after = _parse_retry_after(response.headers.get("retry-after"))
+            return AccountUsageSnapshot(
+                provider="anthropic",
+                source="oauth_usage_api",
+                fetched_at=_utc_now(),
+                unavailable_reason="Usage endpoint returned HTTP 429. Rate limited; wait before retrying.",
+                retry_after_seconds=retry_after,
+            )
         response.raise_for_status()
     payload = response.json() or {}
     windows: list[AccountUsageWindow] = []

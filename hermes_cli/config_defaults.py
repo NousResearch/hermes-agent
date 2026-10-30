@@ -265,6 +265,22 @@ DEFAULT_CONFIG = {
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Mutual TLS: present a client certificate to LLM provider endpoints and to
+        # remote MCP servers that configure no certificate of their own. Empty =
+        # off. `cert_file` takes a PEM certificate, a combined cert+key PEM, or a
+        # PKCS#12 bundle (.p12/.pfx); `key_file` is the PEM private key and is
+        # omitted for a combined PEM or a PKCS#12 bundle. `ca_cert` is a private
+        # signing bundle for endpoints the OS store does not trust (an endpoint's
+        # own `ssl_ca_cert` / per-server `ssl_verify` still wins). The passphrase,
+        # when the key or bundle needs one, is read from the env var NAMED in
+        # `password_env` — never stored here. `~` expands; a relative path is
+        # resolved against the current directory.
+        "mtls": {
+            "cert_file": "",
+            "key_file": "",
+            "ca_cert": "",
+            "password_env": "",
+        },
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},

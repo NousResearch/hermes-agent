@@ -204,13 +204,15 @@ FEISHU_GROUP_POLICY=allowlist   # 默认
 | `allowlist` | Hermes 仅响应 `FEISHU_ALLOWED_USERS` 中列出的用户的 @提及。 |
 | `disabled` | Hermes 完全忽略所有群消息。 |
 
-在所有模式下，消息处理前机器人必须被明确 @提及（或 @all）。私信始终绕过此限制。
+默认情况下，消息处理前机器人必须被明确 @提及（或 @all）。私信始终绕过此限制。
 
 设置 `FEISHU_REQUIRE_MENTION=false` 可让 Hermes 读取所有群消息而无需 @提及：
 
 ```bash
 FEISHU_REQUIRE_MENTION=false
 ```
+
+对于未 @机器人、且不在线程中或引用回复中的普通群消息，模型可以返回 `NO_REPLY` 等静默标记选择不回复；Hermes 会静默处理，不发送警告。私信、命令以及 @机器人或 @all 的消息仍需要回复。群内所有用户共享会话时也遵循此规则。
 
 如需按群控制，在 `group_rules` 条目中设置 `require_mention`——参见下方[按群访问控制](#per-group-access-control)。
 

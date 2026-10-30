@@ -1,0 +1,28 @@
+name: annotate-for-hermes
+repo: https://github.com/LarryLemonBot/annotate-for-hermes
+sha: e2b7db76d01556a78f5f87e29be9f02a0793ca6a
+title: "Annotate for Hermes"
+description: >-
+  Collect comments on selected assistant passages in one attachment inside the
+  message composer. Review, edit or remove each comment, then send all selections
+  with an ordinary reply. Disclosure — Desktop-only; uses the public composer
+  annotation API and draft/session SDK, renders its own popovers, and temporarily
+  highlights selected text. No network calls, credentials, telemetry, model calls,
+  Python hooks, automatic sends, self-updater or changes to application files.
+maintainer: LarryLemonBot
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/LarryLemonBot/annotate-for-hermes#readme
+platforms: [linux, macos, windows]
+screenshots:
+  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/e2b7db76d01556a78f5f87e29be9f02a0793ca6a/docs/annotation-preview.png
+known_issues:
+  - "Development preview: requires the response-annotations v1 Desktop API from PR #146959. Stock Hermes 0.22.5 does not provide it. Do not merge this entry until the API is released and both compatibility floors are updated."
+  - "Unsaved popover comments and source highlights do not survive an app reload. Draft attachments do."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -34,6 +34,12 @@ _last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] 
 # move this signature and rescan on the next lookup instead of waiting for /reload-skills (CFG-8).
 _skill_commands_sig_by_key: dict[tuple, tuple] = {}
 _publish_lock = threading.Lock()
+
+# Single-flight for the command-map scan and the generation it last published at: concurrent
+# completion RPCs (asyncio.to_thread workers) on a cold palette each ran a full scan; waiters
+# re-check the published map instead (measured: 6 concurrent complete.slash, 8-9 s -> ~1 scan).
+_SCAN_SINGLEFLIGHT = threading.Lock()
+_skill_commands_generation = 0
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
 # applied by hermes_cli/commands_platforms.py, not here.
@@ -518,6 +524,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
+    global _skill_commands_generation
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
@@ -555,6 +562,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         # (file I/O, deferred imports) stays outside it.
         _skill_commands_by_key[key] = commands
         _skill_commands_sig_by_key[key] = signature
+        _skill_commands_generation += 1  # wakes single-flight waiters (get_skill_commands)
     return commands
 
 
@@ -620,15 +628,22 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
     with _publish_lock:
         cached = _skill_commands_by_key.get(key)
         scanned_at = _skill_commands_sig_by_key.get(key)
+        generation = _skill_commands_generation
     if cached is not None:
         # A skill installed or removed from another terminal moves the dir signature: rescan, so the
         # long-lived gateway's palette and dispatch see it without /reload-skills (CFG-8).
         current = _skill_dirs_signature()
         if current is None or scanned_at is None or current == scanned_at:
             return cached
-    # Scan outside the lock — file I/O and deferred imports; concurrent scans
-    # are safe since each builds its own map.
-    return scan_skill_commands()
+    with _SCAN_SINGLEFLIGHT:
+        # Single-flight: a caller that waited while another thread scanned reuses that scan's
+        # published map instead of walking and parsing the same tree again.
+        with _publish_lock:
+            if _skill_commands_generation != generation:
+                return _skill_commands_by_key.get(key) or scan_skill_commands()
+        # Scan outside the publish lock — file I/O and deferred imports; concurrent scans
+        # are safe since each builds its own map.
+        return scan_skill_commands()
 
 
 # Plugin projection cache. The projection re-parses every plugin SKILL.md and sits on the

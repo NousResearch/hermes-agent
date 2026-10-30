@@ -234,7 +234,14 @@ async def read(connection, ref, params, *, kind):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:read')
-    live = authority.sessions[ref.session_id]
+    # In a worker thread (it inherits the dispatch's owner scope): the projection takes the session's
+    # event lock, which every streamed token takes too, reads state.db (compression lineage, local
+    # receipt, control meta) and the process registry under its lock. Clients poll these every 1-5 s per
+    # open session, so on the loop they were a large share of loop time with many sessions running.
+    return await asyncio.to_thread(_read_projection, authority, authority.sessions[ref.session_id], ref, params, kind)
+
+
+def _read_projection(authority, live, ref, params, kind):
     with live.event_stream.lock:
         if kind == 'control':
             # Persisted per session id, never the route's live objects: readable after a messaging

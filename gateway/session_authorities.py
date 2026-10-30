@@ -12,6 +12,7 @@ scoped or not, exactly as before.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -280,6 +281,52 @@ def holds_admission(authority, session_id) -> bool:
         logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
                                                  session_id, getattr(authority, 'profile_id', '?'), exc)
         return True
+
+
+def _prepare_owner_scope(home: Path):
+    """``(secrets, terminal scope)`` of the profile at *home*, built the way ``_profile_runtime_scope``
+    builds them on entry (under the home override, the terminal policy under the secret scope);
+    ``None`` when *home* is not a directory (``owner_scope`` binds nothing then)."""
+    if not home.is_dir():
+        return None
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.terminal_scope import prepare_profile_terminal_scope
+    from tui_gateway.launch_profile_policy import owner_secret_scope
+    home_token = set_hermes_home_override(str(home))
+    try:
+        secrets = owner_secret_scope(home)
+        secret_token = set_secret_scope(secrets, profile_home=str(home))
+        try:
+            return secrets, prepare_profile_terminal_scope(home)
+        finally:
+            reset_secret_scope(secret_token)
+    finally:
+        reset_hermes_home_override(home_token)
+
+
+@asynccontextmanager
+async def async_owner_scope(authority):
+    """``owner_scope`` for a coroutine on the gateway loop: the profile's ``.env``, ``config.yaml`` and
+    terminal policy are read in a worker thread, then only the context variables are set here.
+
+    Every RPC a client sends enters its owner's scope, and the classic CLI, Ink and Desktop poll
+    ``subagent.list`` / ``process.list`` every 1-5 s per session: built on the loop, that scope was the
+    largest single cost of RPC dispatch on a multiplexed gateway with many sessions open."""
+    runner = getattr(authority, 'runner', None)
+    home = Path(str(authority.profile_id))
+    if not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False) or not home.is_absolute():
+        with owner_scope(authority):  # the launch scope (frozen sources) or nullcontext: no profile files
+            yield
+        return
+    prepared = await asyncio.to_thread(_prepare_owner_scope, home)
+    if prepared is None:
+        yield
+        return
+    from gateway.run import _profile_runtime_scope
+    secrets, terminal = prepared
+    with _profile_runtime_scope(home, secrets, prepared_terminal_scope=terminal):
+        yield
 
 
 def owner_scope(authority, *, hydrate_secrets=False):

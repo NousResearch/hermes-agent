@@ -308,6 +308,10 @@ def _is_hermes_managed_bin_dir(directory: str) -> bool:
         return False
     if resolved == Path(sys.executable).resolve().parent:
         return True
+    from pm.environments import install_state_dir
+    envs_dir = (install_state_dir(Path(__file__).resolve().parents[1]) / "environments").resolve()
+    if envs_dir in resolved.parents:
+        return True
     from hermes_constants import get_hermes_home
     try:
         home = Path(get_hermes_home()).resolve()

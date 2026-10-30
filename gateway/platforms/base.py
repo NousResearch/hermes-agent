@@ -1597,8 +1597,8 @@ class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
-    # Adapter-specific metadata. Contract: Telegram edit-overflow partials set
-    # raw_response["partial_overflow"] so the stream consumer sends the missing tail.
+    # Adapter-specific metadata. Contracts: raw_response["partial_overflow"] (Telegram edit-overflow partial: the stream
+    # consumer sends the missing tail); raw_response["failure_notice_sent"] (a failed media send already posted a notice).
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
     retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
@@ -4230,8 +4230,7 @@ class BasePlatformAdapter(ABC):
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
-            """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
-            do."""
+            """MEDIA tags may route to send_voice (bare files never); an adapter's own failure notice is not repeated."""
             ext = Path(path).suffix.lower()
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                 result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
@@ -4244,7 +4243,8 @@ class BasePlatformAdapter(ABC):
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
-                await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+                if not (isinstance(result.raw_response, dict) and result.raw_response.get("failure_notice_sent")):
+                    await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
             return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:

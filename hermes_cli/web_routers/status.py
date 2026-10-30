@@ -533,8 +533,8 @@ async def get_status(profile: Optional[str] = None,
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
     activity hints and the auth-gate shape — no bodies, no session content, no secrets.
 
-    ``active_agents`` is the resolved messaging gateway's persisted in-flight turn count,
-    not a count of Desktop turns. ``active_sessions`` is a best-effort count in the
+    ``active_agents`` is the resolved gateway's persisted active-work count, not a
+    host-wide idle guarantee. ``active_sessions`` is a best-effort count in the
     selected profile's latest 50 stored sessions: not ended and active within five
     minutes. It returns zero on timeout or lookup failure. Neither field establishes
     that all Desktop chats are idle or that restarting a shared backend is safe.

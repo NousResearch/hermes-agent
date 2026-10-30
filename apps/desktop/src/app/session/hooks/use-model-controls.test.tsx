@@ -11,6 +11,7 @@ import {
   $currentProvider,
   $currentReasoningEffortWire,
   getCurrentModelSource,
+  markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider,
@@ -550,7 +551,7 @@ describe('useModelControls', () => {
     // A user pick must survive the lifecycle refreshes that fire on boot / fresh
     // draft / session events.
     setCurrentModel('anthropic/claude-sonnet-4.6')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
     setCurrentProvider('anthropic')
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
@@ -581,7 +582,7 @@ describe('useModelControls', () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash', provider: 'custom:relay' })
     setCurrentModel('claude-sonnet-4-6')
     setCurrentProvider('anthropic')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
 
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
 
@@ -606,7 +607,7 @@ describe('useModelControls', () => {
 
     setCurrentModel('deepseek-v4.1-flash')
     setCurrentProvider('custom:hyper')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
 
     const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
 
@@ -807,7 +808,7 @@ describe('useModelControls', () => {
     const queryClient = new QueryClient()
     setCurrentModel('default')
     setCurrentProvider('moa')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
     // Populated catalog without a moa row: every preset disabled.
     queryClient.setQueryData(modelOptionsQueryKey('default'), {
       model: 'openai/gpt-5.5',
@@ -834,7 +835,7 @@ describe('useModelControls', () => {
     const queryClient = new QueryClient()
     setCurrentModel('balanced')
     setCurrentProvider('moa')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
     queryClient.setQueryData(modelOptionsQueryKey('default'), {
       model: 'openai/gpt-5.5',
       provider: 'openai',
@@ -860,7 +861,7 @@ describe('useModelControls', () => {
     const queryClient = new QueryClient()
     setCurrentModel('default')
     setCurrentProvider('moa')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
     // Empty cache AND a catalog dispatcher that fails: absence of data must
     // never read as "the preset was removed".
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai' })
@@ -883,7 +884,7 @@ describe('useModelControls', () => {
     const queryClient = new QueryClient()
     setCurrentModel('my-own-slug')
     setCurrentProvider('custom')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
     queryClient.setQueryData(modelOptionsQueryKey('default'), {
       model: 'openai/gpt-5.5',
       provider: 'openai',
@@ -917,7 +918,7 @@ describe('useModelControls', () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
     setCurrentModel('z-ai/glm-5.2')
     setCurrentProvider('nvidia')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
 
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
 
@@ -934,7 +935,7 @@ describe('useModelControls', () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
     setCurrentModel('claude-sonnet-4-6')
     setCurrentProvider('anthropic')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
 
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
 
@@ -948,7 +949,7 @@ describe('useModelControls', () => {
   it('keeps a manual custom:* pick without consulting the profile default', async () => {
     setCurrentModel('deepseek-v4-flash')
     setCurrentProvider('custom:relay')
-    setCurrentModelSource('manual')
+    markComposerSelectionManual()
     // getGlobalModelInfo is a shared module mock; count only this test's calls.
     vi.mocked(getGlobalModelInfo).mockClear()
 

@@ -66,6 +66,7 @@ import {
   _resetSessionOwnerHintsForTests,
   getSessionOwnerHint,
   knownSessionOwner,
+  markComposerSelectionManual,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionId,
@@ -1167,6 +1168,10 @@ async function createWith(
 
   setCurrentCwd('')
   setNewChatWorkspaceTarget(undefined)
+  // A new chat is composed against a draft: no live session. Other describes
+  // leave an active runtime id behind, which would make a manual pick look like
+  // it was made inside a live chat (and therefore not armed for this draft).
+  setActiveSessionId(null)
   profileSetup()
 
   let handle: HarnessHandle | null = null
@@ -1325,10 +1330,10 @@ describe('submitTextToNewSession pin release', () => {
     let second!: Promise<{ runtimeSessionId: string; sessionId: string }>
     act(() => {
       setCurrentModel('model-owner-a')
-      setCurrentModelSource('manual')
+      markComposerSelectionManual()
       first = handle!.submitTextToNewSession('a', 'owner-a')
       setCurrentModel('model-owner-b')
-      setCurrentModelSource('manual')
+      markComposerSelectionManual()
       second = handle!.submitTextToNewSession('b', 'owner-b')
       setCurrentModel('')
       setCurrentModelSource('')
@@ -1488,6 +1493,10 @@ describe('createBackendSessionForSend profile routing', () => {
     $currentModel.set('')
     $currentProvider.set('')
     setCurrentModelSource('')
+    // Each test here composes a NEW chat: the previous test's live runtime must
+    // not leak, or a manual pick reads as made-inside-a-session and stops being
+    // armed for the draft.
+    setActiveSessionId(null)
     $currentReasoningEffort.set('')
     setNewChatWorkspaceTarget(undefined)
     vi.restoreAllMocks()
@@ -1541,13 +1550,46 @@ describe('createBackendSessionForSend profile routing', () => {
     const params = await createWith(() => {
       setCurrentModel('anthropic/claude-opus-5')
       setCurrentProvider('anthropic')
-      setCurrentModelSource('manual')
+      // A real composer pick goes through markComposerSelectionManual() (which
+      // arms the pick for THIS draft); setting the source alone is only a
+      // restored/stale value and must NOT pin a new chat.
+      markComposerSelectionManual()
     })
 
     expect(params).toMatchObject({
       model: 'anthropic/claude-opus-5',
       provider: 'anthropic'
     })
+  })
+
+  // The paid-model leak: the composer selection is persisted, so a pick made
+  // for one chat used to ride every later new chat. A manual source restored
+  // from storage (no pick in this draft) must fall back to the profile default.
+  it('does not pin a restored manual source to a new chat', async () => {
+    const params = await createWith(() => {
+      setCurrentModel('deepseek/deepseek-v4-pro')
+      setCurrentProvider('nous')
+      setCurrentModelSource('manual')
+    })
+
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
+  })
+
+  // A pick made while a session was live belongs to that chat only; the next
+  // new chat must not inherit it.
+  it('does not leak a pick made inside a live session into a new chat', async () => {
+    // Pick while a chat is live...
+    setActiveSessionId('runtime-previous')
+    setCurrentModel('deepseek/deepseek-v4-pro')
+    setCurrentProvider('nous')
+    markComposerSelectionManual()
+
+    // ...then start a fresh chat (createWith publishes the draft state).
+    const params = await createWith(() => {})
+
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
   })
 
   // An unset source is the first-run/cleared state — nothing the user picked,
@@ -1632,9 +1674,9 @@ describe('createBackendSessionForSend profile routing', () => {
     setCurrentModel('anthropic/claude-sonnet-4.6')
     setCurrentProvider('anthropic')
     // A real composer pick marks the selection manual; this test drives the
-    // atoms directly, so set the source explicitly. Only a manual selection
-    // rides along as a per-session override.
-    setCurrentModelSource('manual')
+    // atoms directly, so arm it explicitly. Only a manual selection made in
+    // this draft rides along as a per-session override.
+    markComposerSelectionManual()
     setCurrentReasoningEffort('high')
     setCurrentFastMode(true)
     // Priority rides as `fast` alone: a pre-Ultrafast backend rejects `service_tier`.

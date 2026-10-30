@@ -202,15 +202,65 @@ class StormInfo(NamedTuple):
     backoff_s: float
 
 
+def _storm_chain_gap(window_s: float, max_gap_seconds: float) -> float:
+    """Inter-boot gap that still links two starts into the SAME respawn chain.
+
+    Floored by ``window_s`` so narrowing the window never makes the breaker
+    *less* sensitive. Chaining on the gap is period-agnostic: a fixed-window
+    prune only sees cycles faster than the window, so a slower respawn loop
+    drops its history every boot and never trips (the same reasoning as
+    ``gateway.restart_loop_guard``).
+    """
+    return float(max(1.0, window_s, max_gap_seconds))
+
+
+def _storm_chain(boots: list[float], newest: float, gap: float) -> list[float]:
+    """The unbroken chain of starts ending at ``newest`` (oldest first).
+
+    Walks backwards while each gap stays within ``gap``; the first wider gap
+    ends the chain (older starts are a resolved episode).
+    """
+    chain: list[float] = []
+    previous = newest
+    for stamp in sorted(boots, reverse=True):
+        if stamp > newest:
+            # Clock moved backwards (NTP step, restored file): a future entry is
+            # adjacent, not a break.
+            chain.append(stamp)
+            continue
+        if previous - stamp > gap:
+            break
+        chain.append(stamp)
+        previous = stamp
+    chain.reverse()
+    return chain
+
+
 def record_start_and_check_storm(
-    max_starts: int = 5, window_s: float = 120.0, *, backoff_cap_s: float = 300.0
+    max_starts: int = 5,
+    window_s: float = 120.0,
+    *,
+    backoff_cap_s: float = 300.0,
+    max_gap_seconds: float = 300.0,
+    now: Optional[float] = None,
 ) -> Optional[StormInfo]:
-    """Record this start; :class:`StormInfo` when > ``max_starts`` landed in ``window_s``.
-    Best-effort: a broken ``gateway-starts.log`` ledger is logged and swallowed, never fatal."""
+    """Record this start; :class:`StormInfo` when the respawn chain exceeds ``max_starts``.
+
+    The chain lives in ``gateway-starts.log`` -- this breaker's OWN store, which
+    already records every start. It must NOT write ``gateway/restart_loop.json``:
+    that file belongs to the auto-resume breaker, which counts only boots that
+    had a resume-pending session, and pre-loading it with every healthy boot
+    made a legitimate restart sequence trip auto-resume suppression (a pending
+    session was silently not resumed).
+
+    The ledger is the flat boot record the incident forensics read, so its
+    timestamps also show the backoff taking effect (start spacing grows).
+    Best-effort: a broken ledger is logged and swallowed, never fatal.
+    """
     try:
         path = get_hermes_home() / "gateway-starts.log"
         make_user_dir(path.parent, parents=True, exist_ok=True)
-        now = datetime.now(UTC).timestamp()
+        now_ts = datetime.now(UTC).timestamp() if now is None else float(now)
         existing: list[float] = []
         if path.exists():
             for line in path.read_text(encoding="utf-8-sig").splitlines():
@@ -221,19 +271,103 @@ def record_start_and_check_storm(
                     existing.append(float(line))
                 except ValueError:
                     pass  # corrupt/truncated ledger line — skip, never fatal
-        existing.append(now)
-        recent = [ts for ts in existing if now - ts <= window_s]
-        # Ring-buffer the persisted file so it stays bounded.
+        existing.append(now_ts)
+        gap = _storm_chain_gap(window_s, max_gap_seconds)
+        chain = _storm_chain(existing, now_ts, gap)
+        # Ring-buffer the persisted file so it stays bounded. The chain is a
+        # suffix of the ledger, so trimming the OLDEST entries can only shorten
+        # a chain that is already far past the threshold.
         to_write = existing[-max(max_starts * 4, 40):]
         tmp = path.with_suffix(".tmp")
         tmp.write_text("\n".join(repr(ts) for ts in to_write) + "\n", encoding="utf-8")
         os.replace(tmp, path)
-        if len(recent) <= max_starts:
+
+        if len(chain) <= max_starts:
             return None
-        backoff = min(backoff_cap_s, 5.0 * (2 ** min(len(recent) - max_starts, 6)))
-        return StormInfo(count=len(recent), window_s=window_s, backoff_s=backoff)
+        backoff = min(backoff_cap_s, 5.0 * (2 ** min(len(chain) - max_starts, 6)))
+        return StormInfo(count=len(chain), window_s=window_s, backoff_s=backoff)
     except Exception as _e:
         logger.debug("respawn-storm breaker bookkeeping failed (non-fatal): %s", _e)
+        return None
+
+
+_STORM_CHECKED_PID: Optional[int] = None
+
+
+def respawn_storm_backoff(
+    *,
+    force: bool = False,
+    max_starts: Optional[int] = None,
+    window_s: Optional[float] = None,
+    max_gap_seconds: Optional[float] = None,
+    now: Optional[float] = None,
+) -> Optional[StormInfo]:
+    """Portable app-level respawn-storm breaker (for supervisors without a floor).
+    Defaults mirror DEFAULT_CONFIG ``gateway.respawn_storm``; HERMES_GATEWAY_MAX_STARTS /
+    HERMES_GATEWAY_START_WINDOW_S / HERMES_GATEWAY_START_MAX_GAP_S override;
+    max_starts <= 0 disables.
+    Idempotent per process unless force=True. Never blocks startup on failure."""
+    global _STORM_CHECKED_PID
+    pid = os.getpid()
+    if not force and _STORM_CHECKED_PID == pid:
+        return None
+    _STORM_CHECKED_PID = pid
+    try:
+        _max_starts = max_starts if max_starts is not None else 5
+        _win = window_s if window_s is not None else 120.0
+        _gap = max_gap_seconds if max_gap_seconds is not None else 300.0
+        if max_starts is None or window_s is None or max_gap_seconds is None:
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config()
+                _gw = _cfg.get("gateway") if isinstance(_cfg, dict) else None
+                _rs = _gw.get("respawn_storm") if isinstance(_gw, dict) else None
+                if isinstance(_rs, dict):
+                    if max_starts is None and isinstance(_rs.get("max_starts"), int):
+                        _max_starts = _rs["max_starts"]
+                    if window_s is None and isinstance(_rs.get("window_seconds"), (int, float)):
+                        _win = float(_rs["window_seconds"])
+                    if max_gap_seconds is None and isinstance(_rs.get("max_gap_seconds"), (int, float)):
+                        _gap = float(_rs["max_gap_seconds"])
+            except Exception:
+                pass
+            if max_starts is None:
+                try:
+                    _max_starts = int(os.environ["HERMES_GATEWAY_MAX_STARTS"])
+                except (KeyError, ValueError):
+                    pass
+            if window_s is None:
+                try:
+                    _win = float(os.environ["HERMES_GATEWAY_START_WINDOW_S"])
+                except (KeyError, ValueError):
+                    pass
+            if max_gap_seconds is None:
+                try:
+                    _gap = float(os.environ["HERMES_GATEWAY_START_MAX_GAP_S"])
+                except (KeyError, ValueError):
+                    pass
+
+        _storm = (
+            record_start_and_check_storm(
+                max_starts=_max_starts, window_s=_win, max_gap_seconds=_gap, now=now,
+            )
+            if _max_starts > 0 else None
+        )
+        if _storm is not None:
+            logger.warning(
+                "Gateway (re)started %d times in %.0fs — backing off %.0fs to break a respawn storm.",
+                _storm.count, _storm.window_s, _storm.backoff_s,
+            )
+            # Tell the startup watchdog the backoff sleep is intentional, not a parked deadlock.
+            try:
+                from hermes_startup_watchdog import kick_startup_watchdog
+                kick_startup_watchdog(extra_s=_storm.backoff_s)
+            except Exception:
+                pass
+            time.sleep(_storm.backoff_s)
+        return _storm
+    except Exception as _be:
+        logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
         return None
 
 

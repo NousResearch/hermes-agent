@@ -40,6 +40,11 @@ _LAUNCH_HEADROOM = 1 << 30
 # UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
 # app, so budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
+# llama-server's prompt cache: its own default size, and the smallest worth keeping. The cache holds
+# conversations the server switched away from (a background job, an earlier chat); without it each
+# switch re-reads the whole conversation.
+_PROMPT_CACHE_MAX = 8 << 30
+_PROMPT_CACHE_MIN = 512 << 20
 
 # Engine-fallback gates for the unified-pool quirk — BOTH must hold, and no discrete card can
 # meet either: (1) the allocator's pool exceeds the smi report by well past rounding/ECC slack
@@ -67,7 +72,8 @@ _DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
 def _stdout(*argv: str) -> str:
     return subprocess.run(
-        list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+        list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+        check=False,
     ).stdout
 
 
@@ -117,23 +123,31 @@ def _linux_ram_from_meminfo(text: str) -> tuple[int, int] | None:
         return None
 
 
-def _ram_bytes() -> tuple[int, int]:
-    """(total, available) physical memory, cross-platform stdlib."""
+def _windows_memory_status():
+    """GlobalMemoryStatusEx, or None off Windows."""
+    import ctypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = ([("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)]
+                    + [(name, ctypes.c_ulonglong) for name in (
+                        "ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                        "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")])
+
     try:
-        import ctypes
-
-        class MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = ([("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)]
-                        + [(name, ctypes.c_ulonglong) for name in (
-                            "ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
-                            "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")])
-
         stat = MEMORYSTATUSEX()
         stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return stat.ullTotalPhys, stat.ullAvailPhys
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return None
+        return stat
     except (AttributeError, OSError):
-        pass
+        return None
+
+
+def _ram_bytes() -> tuple[int, int]:
+    """(total, available) physical memory, cross-platform stdlib."""
+    stat = _windows_memory_status()
+    if stat is not None:
+        return stat.ullTotalPhys, stat.ullAvailPhys
     try:
         if sys.platform == "darwin":
             # macOS getconf has no _PHYS_PAGES/_AVPHYS_PAGES (exit 64) — the POSIX branch would
@@ -244,7 +258,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
             [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            creationflags=windows_hide_flags())
+            creationflags=windows_hide_flags(), check=False)
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
@@ -325,7 +339,7 @@ def _engine_device_pool() -> tuple[int, bool | None] | None:
             return None
         exe = engine.binary
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent))
+                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent), check=False)
         if out.returncode != 0:
             return None
         for line in (out.stdout + out.stderr).splitlines():
@@ -404,6 +418,51 @@ def _uma_budget(base: int, total: int, *, gpu_name: str = "",
                           gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
 
 
+def _windows_commit_room(own_bytes: int = 0) -> int | None:
+    """Commit the managed server may take on Windows right now, or None off Windows.
+
+    Windows charges every GPU allocation to commit: the RAM Windows can see plus the page file.
+    Memory carved out for the GPU is invisible to Windows, so a bigger carve-out leaves less
+    commit for the model it was meant to hold. ``own_bytes`` is what the managed server holds now
+    and frees before the new instance loads. A desktop margin stays free.
+    """
+    stat = _windows_memory_status()
+    if stat is None or not stat.ullTotalPageFile:
+        return None
+    margin = max(_MARGIN_FLOOR, int(stat.ullTotalPhys * _MARGIN_FRACTION))
+    return max(0, int(stat.ullAvailPageFile) + max(0, own_bytes) - margin)
+
+
+def model_commit_bytes(model_bytes: int) -> int:
+    """What Windows charges to commit for a model estimated at ``model_bytes`` of device memory:
+    the estimate runs ~20% under the charge, which is the UMA headroom."""
+    return int(model_bytes / (1 - _UMA_HEADROOM_FRACTION))
+
+
+def prompt_cache_bytes(live: HardwareBudget | None, model_bytes: int, residents: int = 1) -> int | None:
+    """Size for llama-server's prompt cache beside a model of ``model_bytes`` (the estimate the
+    window was planned with), or None when the engine default applies.
+
+    Windows unified memory only: each loaded model's cache comes out of the same commit as the
+    models, so each of the ``residents`` models the router may hold at once (its ``--models-max``)
+    gets an even share of what they leave.
+    """
+    room = live.commit_room_bytes if live is not None else None
+    if room is None or model_bytes <= 0:
+        return None
+    residents = max(1, residents)
+    model_commit = model_commit_bytes(model_bytes)
+    cache = min(_PROMPT_CACHE_MAX, max(0, room - residents * model_commit) // residents)
+    return cache if cache >= _PROMPT_CACHE_MIN else 0
+
+
+def usable_beside_prompt_cache(live: HardwareBudget, residents: int = 1) -> int:
+    """Device memory a model may plan with on Windows unified memory and still leave each of the
+    ``residents`` models the smallest useful prompt cache: the inverse of ``prompt_cache_bytes``."""
+    share = live.commit_room_bytes // max(1, residents) - _PROMPT_CACHE_MIN
+    return min(live.usable_vram_bytes, max(0, int(share * (1 - _UMA_HEADROOM_FRACTION))))
+
+
 def _gpu_engine_runs_the_model() -> bool:
     """Whether a Vulkan/HIP engine runs the model: the serving or installed engine, else the one
     setup would install for ``local_runtime.backend``. False when the engine can't be resolved."""
@@ -450,9 +509,9 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
-    # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
-    # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
-    # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
+    # but nvcuda loads via the system loader). Deliberately NOT clamped to OS RAM: carved-out
+    # memory is invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that
+    # capacity. On Windows, commit narrows the launch window instead (``launch_budget``).
     unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
     if unified is not None:
         logger.info(
@@ -505,14 +564,19 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
     an error: a 32 GiB card with 4.5-6.3 GiB held by other apps decoded at ~24 tok/s at the
     capacity window, and at ~90 tok/s at a window sized from free memory.
 
-    ``own_bytes`` is what the managed server holds now and frees before the new instance loads.
-    A stopped server's memory reads as free by the time its process has exited (measured on
-    Windows: free memory was fully back at the first reading after exit). None for unified memory
-    (its live budget is already free memory) and when the device query fails, so callers keep the
-    capacity plan.
+    ``own_bytes`` is the device-memory estimate of what the managed server holds now and frees
+    before the new instance loads. A stopped server's memory reads as free by the time its process
+    has exited (measured on Windows: free memory was fully back at the first reading after exit).
+    Unified memory: free commit on Windows (the model and its prompt cache must fit there), with
+    ``own_bytes`` converted to the commit Windows charged for it, else None (its live budget is
+    already free memory). None too when the device query fails, so callers keep the capacity plan.
     """
     if capacity.uma:
-        return None
+        room = _windows_commit_room(model_commit_bytes(own_bytes) if own_bytes > 0 else 0)
+        if room is None:
+            return None
+        usable = min(capacity.usable_vram_bytes, int(room * (1 - _UMA_HEADROOM_FRACTION)))
+        return replace(capacity, usable_vram_bytes=usable, commit_room_bytes=room)
     vram = _nvidia_vram()
     if vram is not None:
         total, free = vram[0], vram[1]

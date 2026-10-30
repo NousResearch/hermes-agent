@@ -6,6 +6,7 @@ import asyncio
 import os
 import time
 from typing import Dict, Optional
+from hermes_cli.process_identity import is_owner_death_supervisor, release_process_groups
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
 
@@ -77,8 +78,9 @@ def _snapshot_child_pids() -> set:
 
 
 # argv markers of non-MCP gateway children that can race into the snapshot delta during an
-# MCP spawn (defense-in-depth; LSP/slash_worker already use start_new_session). Matched against
-# argv[1:] because Python/Java children start with the interpreter path.
+# MCP spawn (defense-in-depth: LSP servers and the slash worker lead their own groups under the
+# owner-death supervisor, see spawn_owned). Matched against argv[1:] because Python/Java children
+# start with the interpreter path.
 _NON_MCP_CHILD_CMDLINE_MARKERS: tuple[str, ...] = (
     "tui_gateway.slash_worker", "tui_gateway.entry",
     "-dorg.eclipse.equinox.launcher", "eclipse.jdt.ls", "org.eclipse.equinox.launcher_",  # jdtls
@@ -101,6 +103,8 @@ def _filter_mcp_children(pids: set) -> set:
             argv = psutil.Process(pid).cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue  # raced away or zombie — cannot be our fresh server, unsafe to track
+        if is_owner_death_supervisor(argv):
+            continue  # the shared reaper of every owned child; MCP teardown must never kill it
         if not any(marker in arg for arg in argv[1:] for marker in _NON_MCP_CHILD_CMDLINE_MARKERS):
             kept.add(pid)
     return kept
@@ -385,7 +389,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
             logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)
     # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL
     # dance still leaves the supervisor holding them.
-    _core._update_death_supervisor("unregister", pgids.values())
+    release_process_groups(pgids.values())
 
 
 def _stop_mcp_loop_if_idle() -> bool:

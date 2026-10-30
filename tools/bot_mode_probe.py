@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections.abc import Collection
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
@@ -64,9 +65,17 @@ def _profile_name(home: Path) -> str:
     return home.name if home.parent.name == "profiles" else "default"
 
 
-def _handle(name: str) -> str:
-    # The mention middleware aliases the default profile as @hermes.
-    return "hermes" if name == "default" else name
+def _handle(name: str, names: Collection[str]) -> str:
+    """The @handle a local profile answers to; ``names`` are the roster's folder ids. The default
+    profile is @hermes only while no real profile holds that name: a pre-reservation
+    ``profiles/hermes`` keeps @hermes, and the default answers to @default."""
+    return "hermes" if name == "default" and "hermes" not in names else name
+
+
+def _profile_for_handle(handle: str, names: Collection[str]) -> str:
+    """The folder id a bare @handle names on this install: @hermes is the default profile's alias
+    only while no real profile holds that name (a pre-reservation ``profiles/hermes`` keeps it)."""
+    return "default" if handle == "hermes" and "hermes" not in names else handle
 
 
 def _roster(root: Path) -> list[tuple[str, Path]]:
@@ -167,11 +176,11 @@ def _friendly_names(profile_dir: Path) -> tuple[str, str]:
     return _swallow(_read, ("", ""))
 
 
-def _display_name(name: str, profile_dir: Path) -> str:
+def _display_name(name: str, profile_dir: Path, names: Collection[str]) -> str:
     """Human-facing sender name, in the Desktop's ``botFriendlyNames`` order: Bot Mode title,
     then profile.yaml ``display_name`` (``hermes profile rename``), else the @handle — the
     renamed primary signs as ``Maia (@hermes)``, not ``hermes (@hermes)`` (#89720)."""
-    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name)
+    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name, names)
 
 
 # Tokens the Desktop mention parser reserves; a bot titled "Hermes" never hijacks @hermes.
@@ -209,7 +218,9 @@ def _peers(root: Path) -> list[str]:
     """Registered peer gateway names (``hermes peer``) from config.yaml, read
     directly (no config-loader import; the section is absent on most installs). Never raises."""
     def _names() -> list[str]:
-        peers = (_read_yaml_dict(root / "config.yaml", "bot_peers") or {}).get("bot_peers")
+        from hermes_cli.config_backend import read_config_doc_readonly
+        doc = read_config_doc_readonly(root / "config.yaml")
+        peers = doc.get("bot_peers") if isinstance(doc, dict) else None
         return sorted(str(n) for n in peers if str(n).strip()) if isinstance(peers, dict) else []
 
     return _swallow(_names, [])
@@ -225,10 +236,14 @@ def _remote_roster(root: Path) -> list[dict]:
     return _swallow(_read, [])
 
 
-def local_taken_forms(root: Path) -> set[str]:
-    """Bare forms this gateway's own profiles answer to (handles + friendly-name slugs); a remote
-    row must not be offered under any of them, since local resolution wins (``_resolve_local_name``)."""
-    return {_handle(name) for name, _d in _roster(root)} | set(local_alias_map(root))
+def local_taken_forms(home: Path) -> set[str]:
+    """Bare forms this install's own profiles answer to: folder ids, @handles and friendly-name
+    slugs. A remote row must not be offered under any of them, since local resolution wins
+    (``_resolve_local_name`` accepts the folder id ``default`` even while the default shows as
+    @hermes). Read from the install root, so a named profile's home sees its siblings too."""
+    root = _hermes_root(home)
+    names = [name for name, _d in _roster(root)]
+    return set(names) | {_handle(name, names) for name in names} | set(local_alias_map(root))
 
 
 def _remote_paragraph(root: Path) -> str:
@@ -271,7 +286,9 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster = _roster(root)
+    names = [name for name, _d in roster]
+    roster_lines = [_bullet(f"@{_handle(name, names)}", _profile_role(d)) for name, d in roster if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
@@ -297,10 +314,10 @@ def _build_section(home: Path) -> str:
         "concisely via message_agent to their handle, and if it is a pure FYI "
         "with nothing to add, staying silent is fine — never ping-pong "
         "acknowledgements.\n"
-        f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
+        f"You are `@{_handle(me, names)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
-        + _remote_paragraph(root)
+        + _remote_paragraph(home)
         + _peer_paragraph(root)
     )
 
@@ -433,7 +450,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
     surface["remote_roster"] = sorted(
-        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(root)
+        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(resolved)
     )
     return _swallow(
         lambda: hashlib.sha256(json.dumps(surface, sort_keys=True).encode("utf-8")).hexdigest()[:12],

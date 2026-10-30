@@ -1,0 +1,19 @@
+name: phone-harness
+repo: https://github.com/ShawnPana/phone-harness
+sha: 7e3ea6cff1377db4d4f37e852c59493120aa52b6
+subdir: integrations/hermes
+title: Phone Harness
+description: "Drive a real phone from Hermes with one phone_exec tool: an iPhone via iPhone Mirroring on a Mac, an Android over adb, or a cloud phone from Phone Harness Cloud. Disclosure — runs model-written Python on this computer with your user's permissions through the phone-harness package (installed from PyPI); every phone_exec call goes to Hermes's approval prompt unless you opt in to classifier auto-run, a heuristic, bypassable check that decides which scripts ask first; taps and types into your real phone and its apps and accounts; screenshots go to the system temp folder and are attached to the tool result for vision models; a cloud phone streams its screen to Phone Harness Cloud, bills by the minute, and uses phone-harness's own cloud sign-in (~/.config/phone-harness/auth.json); phone-harness's PostHog telemetry (script text, script output, helper arguments) is off under Hermes unless you opt in."
+maintainer: ShawnPana
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/ShawnPana/phone-harness/tree/main/integrations/hermes#readme
+capabilities:
+  provides_tools:
+  - phone_exec
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

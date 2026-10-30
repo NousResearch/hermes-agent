@@ -160,6 +160,7 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
             [*bound, "bash", "-c", script], stdout=fd,
+            # detached-spawn: ok — forensics dump runs while the gateway dies; bounded by timeout(1)
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:
@@ -232,6 +233,7 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue

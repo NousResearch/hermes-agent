@@ -156,6 +156,11 @@ def collect_superseded_generations(project_root: Path) -> None:
 _METADATA_FLAGS = frozenset({"-h", "--help", "-V", "--version"})
 
 
+def _is_read_only_gateway_status(command: list[str]) -> bool:
+    """Whether *command* is the recovery diagnostic that must not run an update tail."""
+    return command[:2] == ["gateway", "status"]
+
+
 def completion_pending_path(project_root: Path) -> Path:
     """Marker for a source update whose dependency sync committed but whose tail
     (launchers, products, maintenance) has not finished.
@@ -192,24 +197,53 @@ def _completion_attempts_path(project_root: Path) -> Path:
     return completion_pending_path(project_root).with_name("source-completion-attempts")
 
 
-def _record_completion_attempt(root: Path, *, failed: bool) -> None:
+#: What a launch-time dependency sync consumes. A failed sync is recorded against
+#: these inputs (#139952): relaunching over the same inputs repeats the same doomed
+#: repair and backs off, while a corrected source update is a fresh repair.
+_SYNC_INPUTS = ("pyproject.toml", "uv.lock", "pm/lock.json")
+
+
+def _sync_inputs_digest(root: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    for name in _SYNC_INPUTS:
+        try:
+            digest.update((root / name).read_bytes())
+        except OSError:
+            digest.update(b"-")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _read_completion_attempts(record: Path) -> tuple[int, str | None]:
+    """``(attempts, inputs digest or None)``; raises OSError/ValueError when unreadable."""
+    lines = record.read_text(encoding="utf-8-sig").split()
+    return int(lines[0]) if lines else 0, lines[1] if len(lines) > 1 else None
+
+
+def _record_completion_attempt(root: Path, *, failed: bool, inputs: str | None = None) -> None:
     """Track consecutive completion-tail failures beside the pending marker.
 
     The pending marker itself is armed *before* the tail runs (a crash between
     the dependency commit and the tail must leave the obligation), so the
     marker alone cannot distinguish "never tried" from "tried and failed N
     times". The attempts record can: success clears both, failure bumps it.
+    *inputs* (a failed dependency sync's input digest) restarts the count when
+    the failures before it were for other inputs.
     """
     record = _completion_attempts_path(root)
     if not failed:
         record.unlink(missing_ok=True)
         return
     try:
-        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0") + 1
+        attempts, recorded = _read_completion_attempts(record)
     except (OSError, ValueError):
-        attempts = 1
+        attempts, recorded = 0, None
+    if inputs is not None and recorded is not None and recorded != inputs:
+        attempts = 0
     try:
-        record.write_text(f"{attempts}\n", encoding="utf-8")
+        record.write_text(f"{attempts + 1}\n" + (f"{inputs}\n" if inputs else ""), encoding="utf-8")
     except OSError:
         pass  # a read-only install state degrades to unbounded retries, never blocks boot
 
@@ -225,10 +259,11 @@ def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, 
 
     record = _completion_attempts_path(project_root)
     try:
-        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0")
+        attempts, inputs = _read_completion_attempts(record)
     except (OSError, ValueError):
         return True, 0, 0
-    if attempts <= 0:
+    if attempts <= 0 or (inputs is not None and inputs != _sync_inputs_digest(project_root)):
+        # Failed syncs of other inputs say nothing about this tree's repair.
         return True, 0, 0
     if attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
         return False, attempts, 0
@@ -335,6 +370,58 @@ def _tree_matches_completed_stamp(root: Path) -> bool:
     return info.commit == commit and not info.dirty
 
 
+# `hermes update` flags that report and exit without changing anything (subcommands/update.py).
+_REPORT_ONLY_UPDATE_FLAGS = frozenset({"--check", "--plan", "--list-venv-holders"})
+
+
+def _may_retry_completion(root: Path, command: list[str], *, current: bool) -> bool:
+    """Whether this launch runs the owed repair now; a suppressed one says why when it matters."""
+    import sys
+
+    if not current and command[:1] == ["update"] and not _REPORT_ONLY_UPDATE_FLAGS & set(command):
+        # `hermes update` is the remedy every backed-off launch names: it always tries the repair.
+        # Its report-only forms change nothing, so they stay inside the backoff like any launch.
+        return True
+    may_retry, attempts, backoff = completion_retry_state(root)
+    if not may_retry and attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+        # The tail has failed often enough that every relaunch re-running it
+        # does more harm than good (#122206: "every launch burns ~4 minutes").
+        # Leave the marker for an explicit `hermes update`; say so once.
+        print(
+            f"hermes: a source update could not be finished automatically "
+            f"({attempts} attempts); run `hermes update` from a shell to finish it",
+            file=sys.stderr, flush=True,
+        )
+    elif not may_retry and not current:
+        # Inside the backoff window a finished-dependencies tail waits silently (the record's age
+        # tracks the wait); stale dependencies are worth one line in front of the user.
+        print(
+            f"hermes: running with the previous dependencies after {attempts} failed syncs; "
+            f"next automatic retry in {max(1, backoff // 60)} min, or run `hermes update` to finish it",
+            file=sys.stderr, flush=True,
+        )
+    return may_retry
+
+
+def _relaunch_target(root: Path, python: Path, *, same: bool) -> Path | None:
+    """*python*, unless this process is a relaunch into that same interpreter and is still stale.
+
+    A relaunched child that is still stale would find the same install state in the next child
+    too: exec'ing would loop forever (#122513), so it boots as it is. The marker can outlive the
+    relaunch that set it (a restore re-execs ``sys.orig_argv``), so a marked child whose sync DID
+    make the install current relaunches once more: that next child boots current, never here.
+    """
+    import sys
+
+    import pm
+
+    if same and getattr(sys, "_hermes_relaunched", False) and not pm.venv_is_current(project_root=root):
+        print("hermes: relaunching did not leave this install current; running with the "
+              "dependencies it has — run `hermes update` to finish it", file=sys.stderr, flush=True)
+        return None
+    return python
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -359,8 +446,13 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    if (command_argv(argv)[:1] == ["pm"]
+    command = command_argv(argv)
+    if (command[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
+            # This is the recovery path shown by the Desktop when a pending update has
+            # fenced the gateway. Completing that same tail first can take minutes and
+            # leaves the user without the fence diagnosis or a usable restart remedy.
+            or _is_read_only_gateway_status(command)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
@@ -386,20 +478,12 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return _prepare_borrowed_launch(root, owner, current=current)
     pending = completion_pending_path(root)
     owed_to_cli = current and pending.is_file() and _supervised_child()
-    _may_retry, _attempts, _backoff = completion_retry_state(root)
-    if not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
-        # The tail has failed often enough that every relaunch re-running it
-        # does more harm than good (#122206: "every launch burns ~4 minutes").
-        # Leave the marker for an explicit `hermes update`; say so once.
-        print(
-            f"hermes: a source update could not be finished automatically "
-            f"({_attempts} attempts); run `hermes update` from a shell to finish it",
-            file=sys.stderr, flush=True,
-        )
-    elif not _may_retry:
-        # Backoff window not yet elapsed: skip this launch's retry without
-        # noise (the record's age tracks the wait), leaving the marker armed.
-        pass
+    if not _may_retry_completion(root, command, current=current):
+        if not current:
+            # No repair ran, so this install is exactly as stale as it was: a relaunch would land
+            # back here with the same answer and exec again, forever. Boot on the previous
+            # dependency generation, as a launch whose sync failed does.
+            return None
     elif not owed_to_cli and (not current or pending.is_file()):
         # The marker alone first (a process the live update spawned runs under its claim and
         # inherits no checkout lock); install_root still names the checkout whose held lock
@@ -440,7 +524,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
     if not current or not same:
         publish_launchers(root)
-        return python
+        return _relaunch_target(root, python, same=same)
     if owed_to_cli:
         # Left owed, not dropped: say so (once, in the process that boots) where an
         # operator of the unit will read it.
@@ -500,7 +584,16 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         completed = _tree_matches_completed_stamp(root)
         # ponytail: commit-only match; a product dir deleted by hand is rebuilt on demand
         # by its own entry point (the TUI/web freshness gates), not here.
-        _sync_source_dependencies(root, arm=not completed)
+        try:
+            _sync_source_dependencies(root, arm=not completed)
+        except Exception:
+            # The pending marker is armed before this sync. A sync failure is
+            # therefore an automatic completion failure too: without recording
+            # it, every Desktop relaunch bypasses the retry backoff and starts
+            # the same expensive repair again.
+            if not completed:
+                _record_completion_attempt(root, failed=True, inputs=_sync_inputs_digest(root))
+            raise
         if completed:
             clear_completion(root)
             return
@@ -607,7 +700,10 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    # _hermes_relaunched marks the child this starts (not processes it spawns) for _relaunch_target;
+    # a restore re-execs sys.orig_argv and keeps it, which is why that guard re-checks currency.
+    prefix = (f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+              "sys._hermes_relaunched = True; ")
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

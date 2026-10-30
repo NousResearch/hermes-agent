@@ -82,3 +82,19 @@ def test_every_seeder_keeps_every_platform_display_default(tmp_path, monkeypatch
     config_path = home / "config.yaml"
     assert config_path.exists()  # the resolution checks below would pass on a missing file
     assert_keeps_platform_display_defaults(_load_gateway_config(config_path))
+
+
+def test_config_edit_refusal_without_a_config_file_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """A backend with no local file (Remote Config) refuses `config edit` with rc 1, so a script
+    cannot read the refusal as a successful edit (teknium1 P3 on #122509)."""
+    import hermes_cli.config as cfg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(cfg, "is_managed", lambda: False)
+    monkeypatch.setattr(cfg, "supports_file_tooling", lambda: False)
+    monkeypatch.setattr(cfg.subprocess, "run", lambda *a, **k: pytest.fail("no editor may open"))
+    with pytest.raises(SystemExit) as exc:
+        cfg.edit_config()
+    assert exc.value.code == 1
+    assert "hermes config set" in capsys.readouterr().err
+    assert not (tmp_path / "config.yaml").exists()

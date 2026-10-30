@@ -27,7 +27,8 @@ type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   if (req.choices) {
-    return req.choices.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
+    // The gateway decides which choices exist; the numbering stays the familiar one (Deny last).
+    return APPROVAL_OPTS.filter(choice => req.choices!.includes(choice))
   }
 
   if (req.smartDenied) {

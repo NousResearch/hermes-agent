@@ -29,7 +29,7 @@ def test_delegate_publication_refuses_without_our_claim(tmp_path, claim):
                    "DESKTOP_PID=0 HANDOFF_RUN='' MARKER_CLAIMED=1; "
                    f". {shlex.quote(str(POSIX.with_name('marker.sh')))}; "
                    f"marker_add_delegate {child.pid}")
-        result = subprocess.run(["bash", "-c", prelude], cwd=tmp_path, timeout=20)
+        result = subprocess.run(["bash", "-c", prelude], cwd=tmp_path, timeout=20, check=False)
         assert result.returncode != 0, "a missing/foreign claim is not a published delegate"
         assert (marker.read_bytes() if marker.exists() else None) == original
     finally:

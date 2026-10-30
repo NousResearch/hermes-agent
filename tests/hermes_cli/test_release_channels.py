@@ -141,6 +141,30 @@ def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
     assert waits == []
 
 
+@pytest.mark.parametrize(("base", "headers", "blocked"), [
+    ("https://hermes-assets.nousresearch.com", {"Server": "cloudflare", "Content-Type": "text/html"}, True),
+    ("https://hermes-assets.nousresearch.com", {"Server": "cloudflare", "cf-cache-status": "DYNAMIC"}, False),
+    ("https://other-r2.example", {"Server": "cloudflare", "Content-Type": "text/html"}, False),
+])
+def test_cdn_firewall_403_names_the_network_not_the_install(base, headers, blocked):
+    """#128295: a Cloudflare block that never reached our bucket must not read as a bare HTTP 403."""
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import ChannelError, ChannelReader
+
+    hdrs = Message()
+    for key, value in headers.items():
+        hdrs[key] = value
+
+    def opener(request, timeout):
+        raise HTTPError(request.full_url, 403, "Forbidden", hdrs, None)
+
+    with pytest.raises(ChannelError) as raised:
+        ChannelReader(base, opener=opener).read_bytes("releases/channels/pm-preview.json")
+    assert ("CDN firewall (Cloudflare) refused this network" in str(raised.value)) is blocked
+    assert str(raised.value).startswith("Channel read unavailable: HTTP 403")
+
+
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
     with object_server() as (url, objects, _headers, _requests, _faults):

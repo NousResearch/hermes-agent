@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from agent.deadline import poll_until
 from agent.shell_hooks import (
     _TOOL_EVENTS as _TOOL_SCOPED_EVENTS,
     _ToolMatcherMixin,
@@ -71,6 +72,10 @@ class WebhookTarget(_ToolMatcherMixin):
 def register_from_config(cfg: Optional[dict[str, Any]]) -> list[WebhookTarget]:
     """Register every configured outbound webhook on the plugin manager.  Malformed ``hooks.outbound``
     means zero targets — never raises.  Returns the targets that ended up wired (deduplicated)."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
     if not isinstance(cfg, dict):
         return []
     from utils import env_var_enabled
@@ -119,14 +124,11 @@ def iter_configured_targets(cfg: Optional[dict[str, Any]]) -> list[WebhookTarget
 
 def flush(timeout: float = 5.0) -> bool:
     """Block until all queued deliveries are done (or *timeout* elapses); True if drained."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def _drained() -> bool:
         with _delivery_queue.all_tasks_done:
-            if _delivery_queue.unfinished_tasks == 0:
-                return True
-        time.sleep(0.02)
-    with _delivery_queue.all_tasks_done:
-        return _delivery_queue.unfinished_tasks == 0
+            return _delivery_queue.unfinished_tasks == 0
+
+    return poll_until(_drained, timeout, 0.02)
 
 
 def re_register_config_hooks() -> None:
@@ -223,6 +225,10 @@ def _make_callback(event: str, target: WebhookTarget):
     """Build the notify-only closure ``invoke_hook()`` calls per firing."""
 
     def _callback(**kwargs: Any) -> None:
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return
         if event in _TOOL_SCOPED_EVENTS and not target.matches_tool(kwargs.get("tool_name")):
             return
         delivery_id = uuid.uuid4().hex

@@ -1,8 +1,8 @@
 """A backend binds even while another process holds the install lock.
 
 Regression: ``runtime_lock`` waited forever, and the lock is held across a whole dependency
-rebuild (tens of seconds on a bundle), so the second backend — the ``hermes-setup`` onboarding
-profile — never reached its port: the renderer gave up at 40 s and Electron killed it at 90 s
+rebuild (tens of seconds on a bundle), so the second backend — a pooled backend for
+another profile — never reached its port: the renderer gave up at 40 s and Electron killed it at 90 s
 while the holder ran a uv build it had started for a status probe. Deciding what a lost race
 means is the caller's job now: readers skip, explicit installs still wait.
 """

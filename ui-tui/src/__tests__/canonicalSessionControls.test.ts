@@ -1,0 +1,387 @@
+import { beforeEach, expect, it, vi } from 'vitest'
+
+import { createSlashHandler } from '../app/createSlashHandler.js'
+import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+
+const flush = () => new Promise(resolve => setImmediate(resolve))
+const info = { model: 'old', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 4 }
+
+function harness() {
+  let compressed = false
+
+  const request = vi.fn(async (method: string, params: any) => {
+    if (method === 'session.resume') {
+      return {
+        session_id: 'owner',
+        revision: 8,
+        execution_generation: 4,
+        info: { ...info, execution_generation: compressed ? 5 : 4 },
+        messages: [{ role: 'assistant', text: 'summary' }]
+      }
+    }
+
+    if (method === 'session.info') {
+      return { title: params.session_id === 'child' ? 'Parent #2' : 'Parent' }
+    }
+
+    if (method === 'session.mutate') {
+      compressed = params.operation === 'compress'
+
+      return { model: 'picked', branched_session_id: 'child', execution_generation: 5 }
+    }
+
+    return { value: params.value ?? 'queue', status: 'queued' }
+  })
+
+  const sys = vi.fn()
+
+  const ctx = {
+    slashFlightRef: { current: 0 },
+    gateway: { gw: { isCanonical: true, request }, rpc: request },
+    transcript: { sys, setHistoryItems: vi.fn() },
+    local: { maybeWarn: vi.fn() },
+    session: { resumeById: vi.fn() },
+    composer: { enqueue: vi.fn() }
+  }
+
+  return { ctx, request, slash: createSlashHandler(ctx as any) }
+}
+
+beforeEach(() => {
+  resetUiState()
+  patchUiState({ sid: 'owner', info })
+})
+
+it('canonical model, branch and compression use generation-fenced owner mutations and hydrate results', async () => {
+  const { ctx, request, slash } = harness()
+
+  for (const [command, operation, payload] of [
+    ['/model picked --provider custom --tui-session', 'model', { model: 'picked', provider: 'custom' }],
+    ['/branch Child name', 'branch', { title: 'Child name' }],
+    ['/compress keep context', 'compress', { focus: 'keep context' }]
+  ] as const) {
+    slash(command)
+    await flush()
+    expect(request).toHaveBeenCalledWith('session.mutate', {
+      session_id: 'owner',
+      request_id: expect.any(String),
+      expected_revision: 8,
+      expected_generation: 4,
+      operation,
+      payload
+    })
+
+    if (operation === 'model') {
+      expect(getUiState().info?.execution_generation).toBe(5)
+    }
+  }
+
+  expect(ctx.session.resumeById).toHaveBeenCalledWith('child')
+  expect(ctx.transcript.setHistoryItems).toHaveBeenCalledWith(
+    expect.arrayContaining([expect.objectContaining({ role: 'assistant', text: 'summary' })])
+  )
+  expect(
+    request.mock.calls.some(([method]) => ['config.set', 'session.branch', 'session.compress'].includes(method))
+  ).toBe(false)
+})
+
+it('ambiguous mutations retry the frozen identity while unsupported model scopes never mutate', async () => {
+  const { request, slash } = harness()
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4 } as any
+    }
+
+    throw new Error('connection lost')
+  })
+  slash('/branch same')
+  await flush()
+  slash('/branch same')
+  await flush()
+  const calls = request.mock.calls.filter(([method]) => method === 'session.mutate')
+  expect(calls).toHaveLength(2)
+  expect(calls[0]![1]).toEqual(calls[1]![1])
+  slash('/model picked --global')
+  await flush()
+  expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(2)
+})
+
+it('late model or compression replies cannot replace a newer execution snapshot', async () => {
+  for (const command of ['/model picked', '/compress']) {
+    resetUiState()
+    patchUiState({ sid: 'owner', info })
+    const { ctx, request, slash } = harness()
+    let release!: (value: any) => void
+    request.mockImplementation(async (method: string) => {
+      if (method === 'session.resume') {
+        return { revision: 8, execution_generation: 4, info, messages: [] } as any
+      }
+
+      return new Promise(resolve => {
+        release = resolve
+      })
+    })
+    slash(command)
+    await flush()
+    patchUiState({ info: { ...info, model: 'newer', execution_generation: 6 } })
+    release({ model: 'picked', execution_generation: 5 })
+    await flush()
+    expect(getUiState().info).toMatchObject({ model: 'newer', execution_generation: 6 })
+    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+  }
+})
+
+it('busy mode is session scoped and steering includes the observed execution generation', async () => {
+  patchUiState({ busy: true })
+  const { request, slash } = harness()
+  slash('/busy steer')
+  await flush()
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'busy', value: 'steer', session_id: 'owner' })
+  expect(getUiState().busyInputMode).toBe('steer')
+  slash('/busy status')
+  await flush()
+  expect(request).toHaveBeenCalledWith('config.get', { key: 'busy', session_id: 'owner' })
+  slash('/steer correction')
+  await flush()
+  expect(request).toHaveBeenCalledWith('session.steer', {
+    session_id: 'owner',
+    text: 'correction',
+    execution_generation: 4
+  })
+})
+
+it('a guarded canonical model switch asks; yes re-sends once with the owner token, no changes nothing', async () => {
+  for (const accept of [false, true]) {
+    resetUiState()
+    resetOverlayState()
+    patchUiState({ sid: 'owner', info })
+    const { request, slash } = harness()
+    request.mockImplementation(async (method: string, params: any) => {
+      if (method === 'session.resume') {
+        return { revision: 8, execution_generation: 4, info } as any
+      }
+
+      return params.payload.confirm === 'tok-1'
+        ? { model: 'pricey', execution_generation: 5 }
+        : {
+            status: 'confirmation_required',
+            confirm: 'tok-1',
+            confirm_message: 'pricey IS EXPENSIVE',
+            target_model: 'pricey'
+          }
+    })
+    slash('/model pricey')
+    await flush()
+    const ask = getOverlayState().confirm
+    expect(ask?.detail).toBe('pricey IS EXPENSIVE')
+    expect(getUiState().info?.model).toBe('old')
+
+    if (accept) {
+      ask!.onConfirm()
+      await flush()
+      await flush()
+    }
+
+    const sends = request.mock.calls
+      .filter(([method]) => method === 'session.mutate')
+      .map(([, params]) => params.payload)
+
+    expect(sends).toEqual(accept ? [{ model: 'pricey' }, { model: 'pricey', confirm: 'tok-1' }] : [{ model: 'pricey' }])
+    expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
+  }
+})
+
+it('/branch prints main\'s "branched →" confirmation after the child resume has repainted', async () => {
+  // The resume resets the visible history: a line printed before it settles is wiped (FINDINGS row 26).
+  const { ctx, slash } = harness()
+  const order: string[] = []
+  let settle!: () => void
+  ctx.session.resumeById = vi.fn(() => {
+    order.push('resume')
+
+    return new Promise<void>(resolve => {
+      settle = () => {
+        order.push('repainted')
+        patchUiState({ sid: 'child' }) // the resume moves the view (and the slash's destination) to the child
+        resolve()
+      }
+    })
+  })
+  ctx.transcript.sys = vi.fn((line: string) => order.push(`sys:${line}`))
+
+  slash('/branch Child name')
+  await flush()
+  expect(order).toEqual(['resume'])
+  settle()
+  await flush()
+  expect(order).toEqual(['resume', 'repainted', 'sys:branched → Parent #2'])
+})
+
+it('a /compress that removes nothing prints main\'s "No changes" report without re-hydrating', async () => {
+  patchUiState({
+    usage: {
+      calls: 2,
+      input: 30400,
+      output: 100,
+      total: 30500,
+      context_used: 30400,
+      context_max: 262100,
+      context_percent: 12,
+      compressions: 0
+    }
+  })
+  const { ctx, request, slash } = harness()
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      return { session_id: 'owner', revision: 8, execution_generation: 4, info, messages: [] } as any
+    }
+
+    return {
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'noop',
+      summary: {
+        headline: 'No changes from compression: 2 messages',
+        noop: true,
+        token_line: 'Approx request size: ~6,547 tokens (unchanged)'
+      }
+    } as any
+  })
+
+  slash('/compress')
+  await flush()
+  await flush()
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('No changes from compression: 2 messages')
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('  Approx request size: ~6,547 tokens (unchanged)')
+  expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+  expect(request.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
+  expect(getUiState().usage.context_used).toBe(30400)
+  expect(getUiState().usage.compressions).toBe(0)
+})
+
+it("a committed /compress drops the previous reply's context meter and counts the compaction", async () => {
+  patchUiState({
+    usage: {
+      calls: 2,
+      input: 30400,
+      output: 100,
+      total: 30500,
+      context_used: 30400,
+      context_max: 262100,
+      context_percent: 12,
+      compressions: 0
+    }
+  })
+  const { request, slash } = harness()
+  let resumes = 0
+
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      resumes += 1
+      const generation = resumes === 1 ? 4 : 5
+
+      return {
+        session_id: 'owner',
+        revision: 8,
+        execution_generation: generation,
+        info: { ...info, execution_generation: generation },
+        messages: [{ role: 'assistant', text: 'summary' }]
+      } as any
+    }
+
+    return {
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'compressed',
+      execution_generation: 5,
+      summary: {
+        headline: 'Compressed: 12 → 10 messages',
+        token_line: 'Approx request size: ~14,682 → ~15,777 tokens'
+      }
+    } as any
+  })
+
+  slash('/compress')
+  await flush()
+  await flush()
+  const usage = getUiState().usage
+
+  expect(usage.context_used).toBe(0)
+  expect(usage.context_percent).toBe(0)
+  expect(usage.compressions).toBe(1)
+  expect(usage.context_max).toBe(262100)
+  expect(usage.calls).toBe(2)
+})
+
+it('a pick deferred by a running turn says it applies from the next turn', async () => {
+  const { ctx, request, slash } = harness()
+
+  request.mockImplementation(async (method: string) =>
+    method === 'session.mutate'
+      ? { model: 'picked', operation: 'model', status: 'deferred', execution_generation: 4 }
+      : { session_id: 'owner', revision: 8, execution_generation: 4, info }
+  )
+
+  slash('/model picked --tui-session')
+  await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+  expect(ctx.transcript.sys.mock.calls[0][0]).toContain('applies next turn')
+  expect(getUiState().info?.model).toBe('old')
+})
+
+it('a picker-issued --reasoning rides in the one canonical model selection, deferred or not', async () => {
+  const { request, slash } = harness()
+  slash('/model picked --provider custom --reasoning HIGH --tui-session')
+  await flush()
+  await flush()
+
+  const sends = request.mock.calls
+    .filter(([method]) => method === 'session.mutate')
+    .map(([, params]) => [params.operation, params.payload])
+
+  // One request: a busy session defers it and commits model + level together at the boundary.
+  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: 'high' }]])
+  expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
+})
+
+it('an unknown --reasoning level is refused like any unsupported model option, mutating nothing', async () => {
+  const { request, slash } = harness()
+  slash('/model picked --reasoning warp --tui-session')
+  await flush()
+  await flush()
+  expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(0)
+})
+
+it('a guarded switch re-asks with the effort riding the confirmed re-send', async () => {
+  resetOverlayState()
+  const { request, slash } = harness()
+  request.mockImplementation(async (method: string, params: any) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4, info } as any
+    }
+
+    if (params.operation === 'reasoning') {
+      return { effort: params.payload.effort, execution_generation: 6 }
+    }
+
+    return params.payload.confirm === 'tok-1'
+      ? { model: 'pricey', execution_generation: 5 }
+      : {
+          status: 'confirmation_required',
+          confirm: 'tok-1',
+          confirm_message: 'pricey IS EXPENSIVE',
+          target_model: 'pricey'
+        }
+  })
+  slash('/model pricey --reasoning max --tui-session')
+  await flush()
+  getOverlayState().confirm!.onConfirm()
+  await flush()
+  await flush()
+  const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
+  expect(sends).toEqual([
+    { model: 'pricey', reasoning: 'max' },
+    { model: 'pricey', reasoning: 'max', confirm: 'tok-1' }
+  ])
+  expect(getUiState().info?.model).toBe('pricey')
+})

@@ -64,18 +64,18 @@ def record_nous_rate_limit(
 ) -> None:
     """Record that Nous Portal is rate-limited in the shared state file.
 
-    Reset time comes from headers, then ``error_context["reset_at"]`` (body
-    parsing), then ``default_cooldown``.
+    Reset time comes from ``error_context["reset_at"]`` (the 429 body's own wait), then headers, then
+    ``default_cooldown``. The body wins: a welcome-tier refusal says when to retry (410 s), while the
+    hourly bucket's reset header is that window's end (about an hour) even with requests left in it.
     """
     now = time.time()
     reset_at = None
-    header_seconds = _parse_reset_seconds(headers)
-    if header_seconds is not None:
-        reset_at = now + header_seconds
-    if reset_at is None and isinstance(error_context, dict):
+    if isinstance(error_context, dict):
         ctx_reset = error_context.get("reset_at")
         if isinstance(ctx_reset, (int, float)) and ctx_reset > now:
             reset_at = float(ctx_reset)
+    if reset_at is None and (header_seconds := _parse_reset_seconds(headers)) is not None:
+        reset_at = now + header_seconds
     if reset_at is None:
         reset_at = now + default_cooldown
 

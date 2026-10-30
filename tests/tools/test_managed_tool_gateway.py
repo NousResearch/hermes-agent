@@ -215,14 +215,13 @@ def test_read_nous_provider_state_falls_back_to_global_root_for_share_auth_profi
     # root identity. The connector gate must see that identity, or manage_connections vanishes
     # from the profile's tool list while every other credential reader still works.
     root = tmp_path / ".hermes"
-    profile = root / "profiles" / "hermes-setup"
+    profile = root / "profiles" / "work"
     profile.mkdir(parents=True)
     (root / "auth.json").write_text(json.dumps({
         "version": 1,
         "providers": {"nous": {"auth_method": "anonymous", "access_token": "tok"}},
     }))
     monkeypatch.setenv("HERMES_HOME", str(profile))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     import hermes_constants

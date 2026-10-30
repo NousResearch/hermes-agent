@@ -68,7 +68,7 @@ class _FakeRPC:
         task,
         execution_generation,
         on_terminal,
-        member_id="",
+        member_id="", attachments=None,
     ):
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
         return {"accepted": True}
@@ -280,7 +280,7 @@ class _PromptRecordingRPC(_FakeRPC):
         task,
         execution_generation,
         on_terminal,
-        member_id="",
+        member_id="", attachments=None,
     ):
         self.prompts.append((profile, prompt))
         on_terminal({"status": "settled", "text": f"reply from {profile}"})

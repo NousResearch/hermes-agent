@@ -31,6 +31,7 @@ def source_repository(git_cmd=None, cwd=None) -> str:
             [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             stdin=subprocess.DEVNULL, env=source_git_env(),
+            check=False,
         )
         match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
         if result.returncode == 0 and match:
@@ -79,7 +80,8 @@ def _resolve_channel(name: str, repository: str):
 
 def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
                           forward_only: bool = False) -> SourceTarget:
-    """Resolve every subscription, including default labels, through R2.
+    """Resolve a subscription: stable from GitHub releases, main from the git branch,
+    preview channels (e.g. ``pm-preview``) through their R2 records.
 
     ``forward_only`` (an unchosen default subscription) pins a checkout that already
     contains the release to its own HEAD, so the update is a no-op instead of a downgrade.
@@ -94,6 +96,24 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     return target
 
 
+def _probe(git_cmd, cwd, *args):
+    """``git <args>`` in ``cwd``, or None when git did not answer: an unknown relation, not a claim.
+
+    Before the updater's fetch the release commit is usually absent, and git 2.43 spends 7-12 s
+    of CPU on a blobless clone failing to find it even with lazy fetch off (#137646).
+    """
+    from hermes_cli.source_check import source_git_env
+
+    try:
+        return subprocess.run(
+            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
+            check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git %s did not answer: %s", " ".join(args), exc)
+        return None
+
+
 def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
 
@@ -102,39 +122,38 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     """
     from hermes_cli.source_check import _github_compare, source_git_env
 
-    def run(*args):
-        return subprocess.run(
-            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env())
-
-    head = run("rev-parse", "HEAD").stdout.strip()
+    head = subprocess.run(
+        [*git_cmd, "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(), check=False,
+    ).stdout.strip()
     if not _SHA.fullmatch(head):
         return None
-    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry == 0:
+    # An unanswered probe falls through to the comparison API, as a shallow checkout's does.
+    ancestry = _probe(git_cmd, cwd, "merge-base", "--is-ancestor", commit, head)
+    if ancestry is not None and ancestry.returncode == 0:
         return head
     # A shallow boundary makes exit 1 a guess; full history makes it proof.
-    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        return None
+    if ancestry is not None and ancestry.returncode == 1:
+        shallow = _probe(git_cmd, cwd, "rev-parse", "--is-shallow-repository")
+        if shallow is not None and shallow.stdout.strip() == "false":
+            return None
     status = (_github_compare(commit, head, repository) or {}).get("status")
     return None if status in ("behind", "diverged") else head
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
-    from hermes_cli.release_channels import ChannelNotFound, validate_name
+    from hermes_cli.release_channels import validate_name
 
     validate_name(channel)
     repository = repository or source_repository(git_cmd, cwd)
     if channel == "stable":
         return _resolve_stable(repository, git_cmd, cwd)
-    try:
-        resolved = _resolve_channel(channel, repository)
-    except ChannelNotFound:
-        if channel != "main":
-            raise
-        # main IS the source branch; its record can only add a retirement.
-        # Until one is published, a checkout keeps following the branch via git.
+    if channel == "main":
+        # main IS the git branch. No R2 record is read: none was ever published, and a
+        # network that answers it with 403 instead of 404 (regional WAFs) must not stop
+        # an install from following the branch it is on.
         return SourceTarget(channel, channel, repository, branch="main")
+    resolved = _resolve_channel(channel, repository)
     terminal = resolved.terminal
     if terminal["repository"].lower() != repository.lower():
         raise ValueError("Channel repository does not match this source installation")
@@ -159,14 +178,26 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
                         version=request["sourceVersion"], build_id=request["buildId"])
 
 
+def _describe_release_failure(failure: BaseException) -> str:
+    """A transport failure names its cause (a rate limit is not "no release")."""
+    if isinstance(failure, (urllib.error.URLError, TimeoutError)):
+        from hermes_cli.github_api import describe_github_failure
+
+        # The request that failed, not the configuration: a rejected token retries anonymously.
+        return describe_github_failure(failure, authenticated=getattr(failure, "hermes_authenticated", False))
+    return f"No published stable release could be verified: {failure}"
+
+
 def _resolve_stable(repository: str, git_cmd=None, cwd=None) -> SourceTarget:
     """Stable IS the repository's latest published GitHub release: the tag a release
     publishes (non-draft, non-prerelease, strict vX.Y.Z), verified against origin.
     No R2 record or pointer is consulted; publishing the release is the only promotion.
     """
-    tag, commit = resolve_source_release("stable", git_cmd, cwd, repository=repository, pointer=False)
-    if commit is None:
-        raise ValueError("No published stable release could be verified")
+    try:
+        tag, commit = _resolve_release("stable", git_cmd, cwd, repository=repository, pointer=False)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        logger.warning("Could not resolve the stable source release: %s", exc)
+        raise ValueError(_describe_release_failure(exc)) from exc
     return SourceTarget("stable", "stable", repository, commit=commit, version=str(tag).removeprefix("v"))
 
 
@@ -193,6 +224,7 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
             [*git_cmd, "rev-list", "--ancestry-path", f"{request['commit']}..HEAD"], cwd=cwd,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             stdin=subprocess.DEVNULL, env=source_git_env(),
+            check=False,
         )
         # The target need not exist locally before the updater's fetch. When it
         # does, any descendants prove that this pinned build would roll us back.
@@ -254,9 +286,14 @@ def _published(release, channel: str) -> bool:
 
 
 def _json(url: str):
-    text = _read(url)
-    assert text is not None
-    return json.loads(text)
+    """GitHub API JSON with the updater's credential ladder (token, gh, anonymous).
+
+    Anonymous api.github.com is 60 requests/hour per address, so an unauthenticated
+    stable lookup fails for everyone behind one office, CI or container exit.
+    """
+    from hermes_cli.source_check import _request
+
+    return json.loads(_request(url))
 
 
 def _published_fallback(channel: str, base: str) -> dict:
@@ -300,6 +337,45 @@ def _release_pointer(channel: str) -> tuple[str | None, str | None]:
     return page.tags[0], None
 
 
+def _resolve_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
+                     pointer: bool = True) -> tuple[str, str]:
+    """``resolve_source_release`` that raises the failure instead of returning ``(None, None)``."""
+    if channel not in ("stable", "canary"):
+        raise ValueError(f"Not a release channel: {channel}")
+    repository = repository or source_repository(git_cmd, cwd)
+    base = f"https://api.github.com/repos/{repository}"
+    tag, pinned_sha = (_release_pointer(channel)
+                       if pointer and repository.lower() == OFFICIAL_REPOSITORY.lower() else (None, None))
+    if tag is None:
+        release = _published_fallback(channel, base)
+        tag = release["tag_name"]
+    else:
+        release = _json(f"{base}/releases/tags/{tag}")
+    if not _published(release, channel) or release["tag_name"] != tag:
+        raise ValueError(f"{tag} is not a published {channel} release")
+    commit = _json(f"{base}/commits/{tag}")
+    sha = commit.get("sha") if isinstance(commit, dict) else None
+    if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+        raise ValueError(f"No published commit for release {tag}")
+    if git_cmd is not None:
+        from hermes_cli.source_check import source_git_env
+
+        ref = f"refs/tags/{tag}"
+        result = subprocess.run(
+            [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
+            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=True, timeout=60, stdin=subprocess.DEVNULL,
+            env=source_git_env(),
+        )
+        refs = dict((parts[1], parts[0]) for line in result.stdout.splitlines()
+                    if len(parts := line.split()) == 2)
+        if refs.get(ref + "^{}", refs.get(ref)) != sha:
+            raise ValueError(f"Origin tag {tag} does not match the published release commit")
+    if pinned_sha is not None and sha != pinned_sha:
+        raise ValueError(f"Release {tag} no longer matches its published commit")
+    return tag, sha
+
+
 def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
                            pointer: bool = True) -> tuple[str | None, str | None]:
     """Read published stable/canary release metadata (not channel discovery).
@@ -311,41 +387,8 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
     ``git_cmd`` resolves the selected tag on origin; ZIP callers omit it and
     resolve the same tag through GitHub's commit endpoint.
     """
-    if channel not in ("stable", "canary"):
-        raise ValueError(f"Not a release channel: {channel}")
     try:
-        repository = repository or source_repository(git_cmd, cwd)
-        base = f"https://api.github.com/repos/{repository}"
-        tag, pinned_sha = (_release_pointer(channel)
-                           if pointer and repository.lower() == OFFICIAL_REPOSITORY.lower() else (None, None))
-        if tag is None:
-            release = _published_fallback(channel, base)
-            tag = release["tag_name"]
-        else:
-            release = _json(f"{base}/releases/tags/{tag}")
-        if not _published(release, channel) or release["tag_name"] != tag:
-            raise ValueError(f"{tag} is not a published {channel} release")
-        commit = _json(f"{base}/commits/{tag}")
-        sha = commit.get("sha") if isinstance(commit, dict) else None
-        if not isinstance(sha, str) or not _SHA.fullmatch(sha):
-            raise ValueError(f"No published commit for release {tag}")
-        if git_cmd is not None:
-            from hermes_cli.source_check import source_git_env
-
-            ref = f"refs/tags/{tag}"
-            result = subprocess.run(
-                [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
-                cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                check=True, timeout=60, stdin=subprocess.DEVNULL,
-                env=source_git_env(),
-            )
-            refs = dict((parts[1], parts[0]) for line in result.stdout.splitlines()
-                        if len(parts := line.split()) == 2)
-            if refs.get(ref + "^{}", refs.get(ref)) != sha:
-                raise ValueError(f"Origin tag {tag} does not match the published release commit")
-        if pinned_sha is not None and sha != pinned_sha:
-            raise ValueError(f"Release {tag} no longer matches its published commit")
-        return tag, sha
+        return _resolve_release(channel, git_cmd, cwd, repository=repository, pointer=pointer)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("Could not resolve the %s source release: %s", channel, exc)
         return None, None

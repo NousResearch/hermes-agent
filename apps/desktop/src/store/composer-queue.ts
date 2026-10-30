@@ -1,4 +1,4 @@
-import { SLASH_COMMAND_RE } from '@hermes/shared'
+import { randomUuid, SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import {
@@ -7,6 +7,25 @@ import {
   revokeAttachmentPreviewUrls,
   revokeDiscardedAttachmentPreviews
 } from './composer'
+import { $connection } from './session'
+import { knownOwnerForSession } from './session-states'
+
+/** Local owner routes use canonical admission; remote legacy queues stay local. */
+export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
+  const owner = knownOwnerForSession(sessionId)
+
+  if (owner && typeof owner === 'object' && owner.mode) {
+    return owner.mode === 'local'
+  }
+
+  const connection = $connection.get()
+
+  if (owner && typeof owner === 'object' && owner.connectionId !== connection?.connectionId) {
+    return false
+  }
+
+  return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
+}
 
 export interface RemoveQueuedPromptOptions {
   /**
@@ -18,6 +37,10 @@ export interface RemoveQueuedPromptOptions {
 
 export interface QueuedPromptEntry {
   id: string
+  serverStatus?: string
+  /** The queued-row verbs the owner serves for a server row (`steer`, `replace`); none from an
+   *  owner that predates them. Projected from the pending snapshot, never set locally. */
+  serverControls?: string[]
   text: string
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
@@ -34,11 +57,21 @@ export interface QueuedPromptEntry {
    *  A user gesture — manual send, redirect, queueing a fresh prompt — clears
    *  it, exactly like the composer's in-process counter. */
   drainFailures?: number
+  /** The submission id a local entry drains under once its words or attachments were edited (else
+   *  `id`). The first drain may already be admitted with its ack lost: under that id the edit would
+   *  read as the original's retry and settle as delivered without ever running. */
+  submissionId?: string
   attachments: ComposerAttachment[]
   queuedAt: number
 }
 
+/** The `submission_id` a queued entry is sent (and matched against the owner's admissions) under. */
+export const queuedSubmissionId = (entry: Pick<QueuedPromptEntry, 'id' | 'submissionId'>): string =>
+  entry.submissionId ?? entry.id
+
 export interface EnqueueQueuedPromptPayload {
+  /** Stable id to reuse (a canonical submission id), else one is minted. */
+  id?: string
   text: string
   attachments: ComposerAttachment[]
   displayText?: string
@@ -139,10 +172,10 @@ const toPersistedEntry = (entry: QueuedPromptEntry): QueuedPromptEntry => {
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text' | 'serverStatus'>): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return !entry.serverStatus && Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -269,6 +302,11 @@ const mutateSession = (sid: string, op: (queue: QueuedPromptEntry[]) => null | Q
   return true
 }
 
+/** Replace one session's queue wholesale (canonical receipt reconciliation),
+ *  through the same live-merge path as every other mutation. */
+export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean =>
+  mutateSession(sid, () => queue)
+
 if (typeof window !== 'undefined') {
   // Cross-window sync (#46732): every desktop window boots the queue atom from
   // the same localStorage key. The `storage` event fires in every window EXCEPT
@@ -297,6 +335,24 @@ const nextId = () => `queued-${Date.now()}-${Math.random().toString(36).slice(2,
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
 
+const attachmentKeys = (attachments: ComposerAttachment[]) => JSON.stringify(attachments.map(a => a.id))
+
+// An edited local entry is a new message: it drains under a fresh submission id (see `submissionId`).
+// The frozen `@terminal` transport is part of what is sent: a new selection behind the same chip text
+// changes the payload, so under the old id it would read as the original's retry and be dropped.
+const editedSubmission = (
+  entry: QueuedPromptEntry,
+  text: string,
+  attachments: ComposerAttachment[],
+  previousTransport: string | undefined
+) =>
+  !entry.serverStatus &&
+  (entry.text !== text ||
+    attachmentKeys(entry.attachments) !== attachmentKeys(attachments) ||
+    (previousTransport?.trim() ?? '') !== (frozenQueuedTransportById.get(entry.id)?.trim() ?? ''))
+    ? { submissionId: randomUuid() }
+    : {}
+
 export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEntry[] => {
   const sid = sidOf(key)
 
@@ -310,7 +366,12 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
  * them submitting the same entry — and the gateway runs the second copy as its
  * own turn. Web Locks are arbitrated by the browser across windows and freed if
  * the holder closes; a waiting window then finds an entry the holder sent
- * already gone. Without Web Locks there is no other window to exclude.
+ * already gone. Web Locks exist only in secure contexts: the Webapp served over
+ * plain HTTP to a non-loopback address has none, nothing here excludes its other
+ * tabs, and two of them can submit one entry. Both copies carry the entry id as
+ * their submission id, and the Webapp always dials the canonical gateway, which
+ * answers a repeated request id carrying the same payload with the first
+ * admission, not a second turn.
  */
 export const withQueueDrainClaim = <T>(sid: string, task: (queue: QueuedPromptEntry[]) => Promise<T>): Promise<T> => {
   const run = () => task(current()[sid] ?? [])
@@ -330,7 +391,7 @@ export const enqueueQueuedPrompt = (
   }
 
   const entry: QueuedPromptEntry = {
-    id: nextId(),
+    id: payload.id ?? nextId(),
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
@@ -389,8 +450,10 @@ export const removeQueuedPrompt = (
 
   let removed: QueuedPromptEntry | undefined
 
+  // Server-owned (admitted) rows retire through the gateway, never locally.
+
   mutateSession(sid, queue => {
-    removed = queue.find(e => e.id === id)
+    removed = queue.find(e => e.id === id && !e.serverStatus)
 
     return removed ? queue.filter(e => e.id !== id) : null
   })
@@ -504,6 +567,7 @@ export const updateQueuedPrompt = (
       }
 
       changed = true
+      const previousTransport = frozenQueuedTransportById.get(entry.id)
 
       if (update.frozenTransport !== undefined) {
         const nextFrozen = update.frozenTransport?.trim() ?? ''
@@ -524,6 +588,7 @@ export const updateQueuedPrompt = (
 
       return {
         ...rest,
+        ...editedSubmission(entry, update.text, attachments, previousTransport),
         text: update.text,
         attachments,
         ...(nextDisplay ? { displayText: nextDisplay } : {})
@@ -578,8 +643,12 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
   }
 
   const next: QueueState = { ...live }
+  const target = live[to] ?? []
+  // An entry re-mirrored under the old key after an earlier migration keeps
+  // its one row on the target: same id, same submission (#138934).
+  const onTarget = new Set(target.map(entry => entry.id))
   delete next[from]
-  next[to] = [...(live[to] ?? []), ...pending]
+  next[to] = [...target, ...pending.filter(entry => !onTarget.has(entry.id))]
 
   $queuedPromptsBySession.set(next)
   save(next)

@@ -218,7 +218,7 @@ def allowlisted_env() -> dict[str, str]:
 def _run(argv: list[str], *, timeout: int, text: bool = False, **kwargs) -> subprocess.CompletedProcess:
     if text:
         kwargs.update(text=True, encoding="utf-8", errors="replace")
-    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)
+    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
 
 
 def iron_proxy_version(binary: Path) -> str:
@@ -734,6 +734,7 @@ def _spawn_daemon(bin_path: Path, cfg: Path, env: dict[str, str], log_path: Path
         # start_new_session is POSIX-only (Windows isn't supported anyway — no upstream binary).
         return subprocess.Popen(
             [str(bin_path), "-config", str(cfg)], env=env, stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT,
+            # detached-spawn: ok — a daemon meant to outlive the CLI that started it; `hermes egress stop` ends it (pidfile + nonce)
             **({} if platform.system() == "Windows" else {"start_new_session": True}),
         )
     except OSError as exc:

@@ -38,8 +38,9 @@ def _lazy(module, name):
     return getattr(__import__(module, fromlist=[name]), name)
 
 
-def _pin_profile_model(profile_dir, provider, model) -> None:
-    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(profile_dir, provider, model)
+def _pin_profile_model(profile_dir, provider, model, base_url="") -> None:
+    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(
+        profile_dir, provider, model, base_url=base_url)
 
 
 def _model_provider_params(params) -> tuple:
@@ -518,18 +519,29 @@ def _inherit_launch_model(path) -> bool:
     model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
-    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
+    # A custom endpoint travels with the model it backs (same seed as the CLI path). It is
     # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
     # rejects a provider it has not been told about ("Unknown provider").
     # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
-    if custom:
-        from hermes_cli.config import load_config, save_config
+    seed = _lazy("hermes_cli.profile_model_seed", "launch_model_seed")(read_user_config_raw())
+    if seed.get("providers") or seed.get("custom_providers"):
+        from hermes_cli.config import save_config
+        merge = _lazy("hermes_cli.profile_model_seed", "merge_endpoint_seed")
         with _hermes_home_scope(path):
-            cfg = load_config()
-            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
-            save_config(cfg)
-    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
+            save_config(merge(read_user_config_raw(), seed))
+    # Bare ``custom``/``local`` carries its endpoint into validation (the new profile's config names
+    # none); other providers ignore it. Validation needs the expanded URL, the profile keeps the
+    # launch file's spelling so a ${VAR} URL stays a ref.
+    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
+                       str(model_cfg.get("base_url") or ""))
+    raw_url = ((read_user_config_raw() or {}).get("model") or {}).get("base_url")
+    if isinstance(raw_url, str) and "${" in raw_url:
+        from hermes_cli.config import save_config
+        with _hermes_home_scope(path):
+            cfg = read_user_config_raw() or {}
+            if isinstance(cfg.get("model"), dict) and cfg["model"].get("base_url") == model_cfg.get("base_url"):
+                cfg["model"]["base_url"] = raw_url
+                save_config(cfg)
     return True
 
 
@@ -726,15 +738,48 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
             try:
                 from hermes_cli.skills_config import save_disabled_skills
                 save_disabled_skills(cfg, _clean_names(params["disabled_skills"]))
-                applied["skills"] = True
+                applied["skills"] = _landed(cfg, ("skills", "disabled"))
                 cfg = load_config() or {}
             except Exception:
                 applied["skills"] = False
         if isinstance(params.get("enabled_toolsets"), list):
-            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config))
+            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config)) \
+                and _landed(cfg, ("platform_toolsets", "cli"))
         if want_mcp:
+            mcp_cfg = load_config() or {}
             applied["mcp_servers"] = _best_effort(lambda: _save_mcp_toggles(
-                load_config() or {}, params["enabled_mcp_servers"], launch_mcp, save_config))
+                mcp_cfg, params["enabled_mcp_servers"], launch_mcp, save_config)) \
+                and _landed(mcp_cfg, ("mcp_servers",), _mcp_toggle_state)
+
+
+def _mcp_toggle_state(servers):
+    """Every toggle field ``_save_mcp_toggles`` writes, per server: ``enabled`` AND the legacy
+    ``disabled`` it removes. A lock that kept ``disabled: true`` leaves the server off for the
+    editor (and on for the runtime) although ``enabled`` landed, so it must not read as applied."""
+    if not isinstance(servers, dict):
+        return servers
+    return {k: (e.get("enabled"), e.get("disabled", _ABSENT)) for k, e in servers.items() if isinstance(e, dict)}
+
+
+_ABSENT = "<absent>"
+
+
+def _landed(cfg: dict, path: tuple, key=lambda v: v) -> bool:
+    """Whether the section a bulk ``save_config`` was asked to write now reads back as written.
+    Under Remote Config a bulk save omits a locked key (with a stderr note) instead of raising, so
+    an editor that reported success after the save would acknowledge an edit the plane refused.
+    Compared on the user layer as read back (the effective doc in remote mode), absent == absent."""
+    from hermes_cli.config import read_user_config_raw
+
+    def at(doc):
+        node = doc
+        for seg in path:
+            if not isinstance(node, dict) or seg not in node:
+                return None
+            node = node[seg]
+        return node
+
+    return key(at(read_user_config_raw() or {})) == key(at(cfg))
 
 
 def _unlink_asset_files(assets_dir, asset) -> int:

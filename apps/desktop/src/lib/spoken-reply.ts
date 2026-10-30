@@ -91,6 +91,27 @@ export function assistantTurnKey(
   return `${sessionId ?? ''}:${assistantTurnIndex(messages, id)}`
 }
 
+// FNV-1a: a short, deterministic text fingerprint every window computes alike.
+function textHash(text: string): string {
+  let hash = 0x811c9dc5
+
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+
+  return (hash >>> 0).toString(36)
+}
+
+/** One spoken message of a turn. A turn with tool calls speaks several bubbles
+ *  under one user turn (progress updates, then the final reply), so the turn
+ *  key alone would let the first bubble's claim swallow the rest. Pass the
+ *  bubble's last text part: a live-id rewrite and a hydration fold both keep
+ *  it, so the key survives either. */
+export function spokenSegmentKey(turnKey: string, text: string): string {
+  return `${turnKey}:${textHash(text)}`
+}
+
 /** If a spoken live-tail row vanished and the same user turn now has a durable
  *  id, migrate the anchor — even when tool rows moved the assistant ordinal.
  *  Leave durable ids and later turns alone. */

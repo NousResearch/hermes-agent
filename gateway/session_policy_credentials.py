@@ -10,6 +10,9 @@ from agent.credential_persistence import fingerprint_secret_value
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
+# (session, path) pairs already reported as dropped: the ref is never pruned, so without this every
+# turn of a long-lived session re-logs the same mismatch.
+_REPORTED_DROPS = set()
 PREFIX = 'profile-config-v1:'
 _ABSENT = object()
 
@@ -286,8 +289,11 @@ def recover_config_secrets(authority, policy, skip=None):
                         + ' config.yaml since this session started')
                 # Any other secret (an MCP env token, an unused provider's key) is simply no longer
                 # supplied: the frozen tree holds None there, never the profile's new value.
-                logger.warning('Session %s: frozen config secret %s no longer matches the profile '
-                               'config; skipping it', source.get('session'), path)
+                key = (source.get('session'), tuple(path))
+                if key not in _REPORTED_DROPS:
+                    _REPORTED_DROPS.add(key)
+                    logger.warning('Session %s: frozen config secret %s no longer matches the profile '
+                                   'config; skipping it', source.get('session'), path)
                 dropped.append(tuple(path))
                 continue
             values[tuple(path)] = value

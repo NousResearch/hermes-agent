@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
+from agent.interrupt_compat import _accepts_keyword
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 from tools.async_delegation_worker import worker_ledger, require_ledger_owner
@@ -1133,12 +1134,26 @@ def _sweep_stale_locked(now: float):
     return stalled, expired, any_monitorable
 
 
-def _call_interrupt(fn, msg: str, *args) -> bool:
-    """Invoke an ``interrupt_fn``; True on success, else debug-log ``msg`` (+ exc)."""
+# ``reason`` values of a person's explicit stop (gateway ``stop_command*`` variants, CLI and desktop
+# ``/stop``, ``/new`` resets): the children get the user's own stop. Teardown (session end, viewer
+# close, shutdown) and the stall monitor stay system stops, so their turns are not booked as user cancels.
+_USER_STOP_REASONS = frozenset({"/stop", "new_command", "session_reset"})
+
+
+def _is_user_stop(reason: str) -> bool:
+    return reason in _USER_STOP_REASONS or reason.startswith("stop_command")
+
+
+def _call_interrupt(fn, msg: str, *args, user_stop: bool = False) -> bool:
+    """Invoke an ``interrupt_fn``; True on success, else debug-log ``msg`` (+ exc). ``user_stop`` is
+    forwarded only to callbacks that declare it (zero-argument callbacks keep working)."""
     if not callable(fn):
         return False
     try:
-        fn()
+        if user_stop and _accepts_keyword(fn, "user_stop"):
+            fn(user_stop=True)
+        else:
+            fn()
         return True
     except Exception as exc:
         logger.debug(msg, *args, exc)
@@ -1264,8 +1279,10 @@ def list_async_delegations() -> list[dict[str, Any]]:
 
 def _interrupt_records(targets: list[dict[str, Any]], caller: str, reason: str, msg: str) -> int:
     """Call ``interrupt_fn`` on each record; log ``msg`` once; returns how many succeeded."""
+    user_stop = _is_user_stop(reason)
     count = sum(
-        _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"))
+        _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"),
+                        user_stop=user_stop)
         for r in targets)
     if count:
         logger.info(msg, count, reason)

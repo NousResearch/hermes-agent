@@ -129,9 +129,10 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
     except (ValueError, UnboundLocalError) as e:
         logger.debug("Could not remove child from active_children: %s", e)
 
-def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
+def _signal_child_stop(child: Any, *reason: str, tool_reason: Optional[str] = "parent delegation ended") -> None:
     """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
-    fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
+    fixed cause the child's tools see (a pending approval wait reports it instead of a user deny);
+    ``None`` passes the user's own explicit stop through, so the child is not booked as system-aborted."""
     with _quiet(None):
         if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
                 and hasattr(child, "_interrupt_requested")):

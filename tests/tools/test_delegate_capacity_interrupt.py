@@ -11,8 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
+from agent.interrupt_control import InterruptControlMixin, interrupted_during_api_call_reason
 from agent.turn_context import _bind_interrupt_scope
+from hermes_cli.observability.shared_metrics_contract import task_terminal_state
 from tools import async_delegation
 from tools.delegate_tool_dispatch import _Batch, _dispatch_background
 from tools.interrupt import is_interrupted, set_interrupt
@@ -74,6 +75,7 @@ class _ControlledChild(_Parent):
             self.observed_interrupt = (
                 self._interrupt_message, self._hard_interrupt_requested.is_set(),
             )
+            self.observed_exit_reason = interrupted_during_api_call_reason(self)
             self.unwinding.set()
             assert self.allow_finish.wait(30), "test did not release child cleanup"
             return {
@@ -303,3 +305,28 @@ def test_accepted_background_child_keeps_registry_cancellation_ownership(registr
             child.hard_interrupt("test teardown")
         child.allow_finish.set()
         assert child.closed.wait(5)
+
+
+@pytest.mark.parametrize("reason, expected_end_reason", [
+    # A person's /stop (gateway variants, CLI/desktop) or /new reaches the background child as their stop.
+    ("stop_command", "user_cancelled"),
+    ("stop_command_chat_scope", "user_cancelled"),
+    ("/stop", "user_cancelled"),
+    ("session_reset", "user_cancelled"),
+    # Session teardown and shutdown are not the user cancelling the child's work.
+    ("session_end", "system_aborted"),
+    ("CLI shutdown", "system_aborted"),
+])
+def test_background_child_stop_keeps_who_asked_for_it(registry_state, reason, expected_end_reason):
+    parent, child = _Parent(), _ControlledChild()
+    try:
+        result = json.loads(_dispatch_background(_batch(parent, child)))
+        assert result["status"] == "dispatched"
+        assert child.started.wait(5)
+        assert async_delegation.interrupt_for_session(parent_session_id=parent.session_id, reason=reason) == 1
+        assert child.unwinding.wait(5)
+        terminal = task_terminal_state({"interrupted": True, "turn_exit_reason": child.observed_exit_reason})
+        assert terminal[1] == expected_end_reason
+    finally:
+        child.allow_finish.set()
+        registry_state.get(timeout=5)

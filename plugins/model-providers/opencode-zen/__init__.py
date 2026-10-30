@@ -91,6 +91,12 @@ class OpenCodeGoProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        from agent.opencode_go_gemini import is_opencode_go_gemini_route
+        if is_opencode_go_gemini_route(self.name, model, context.get("base_url") or self.base_url):
+            # Gemini on Go rides Google's wire: reasoning goes in the body as thinking_config.
+            from agent.transports.chat_completions import _build_gemini_thinking_config
+            config = _build_gemini_thinking_config(_flat_model_name(model), reasoning_config)
+            return ({"thinking_config": config} if config else {}), {}
         if _is_glm_5_2_model(model):
             # Native reasoning_effort knob (high/max); server default when unset/disabled.
             effort = re_.requested_effort(reasoning_config)

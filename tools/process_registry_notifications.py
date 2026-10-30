@@ -108,22 +108,24 @@ def _delegation_config() -> dict:
         return {}
 
 
-def _delegation_model_not_found(results, config) -> bool:
-    """True when a result reflects a config-level model_not_found rejection: needs a
+def _delegation_model_rejection_count(results, config) -> int:
+    """Count failed results reflecting a config-level model_not_found rejection: needs a
     model-not-found phrase AND the currently-configured model name in the same text,
     so a stale task failing on a removed model is not mis-attributed to the config."""
     model = str((config or {}).get("model") or "").lower()
     if not model:
-        return False
+        return 0
     patterns = _model_not_found_patterns()
-    texts = (" ".join(str(x) for x in (r.get("error"), r.get("summary")) if x).lower() for r in results or [])
-    return any(model in text and any(p in text for p in patterns) for text in texts)
+    texts = (" ".join(str(x) for x in (r.get("error"), r.get("summary")) if x).lower()
+             for r in results or [] if r.get("status") not in _DONE)
+    return sum(model in text and any(p in text for p in patterns) for text in texts)
 
 
 def _delegation_model_not_found_notice(results) -> list[str] | None:
     """Config-level model_not_found notice lines, or None (fail-open) — once per batch."""
     config = _delegation_config()
-    if not _delegation_model_not_found(results, config):
+    rejected = _delegation_model_rejection_count(results, config)
+    if not rejected:
         return None
     model = config.get("model") or "?"
     provider = config.get("provider") or "configured provider"
@@ -131,7 +133,7 @@ def _delegation_model_not_found_notice(results) -> list[str] | None:
         "⚠ SUBAGENT MODEL REJECTED: the configured Subagent Model "
         f'"{model}" was rejected by provider "{provider}" '
         "(HTTP 400: not a valid model ID).",
-        "Every task in this batch failed for this reason before doing any work.",
+        f"{rejected} of {len(results)} task(s) reported this model rejection. Other task outcomes are listed below.",
         "Check Settings → Advanced → Subagent Model (or: hermes config get delegation.model)."]
     with suppress(Exception):
         from hermes_cli.fallback_config import get_fallback_chain

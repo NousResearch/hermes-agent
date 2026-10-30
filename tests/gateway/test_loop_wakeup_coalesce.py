@@ -119,8 +119,8 @@ async def test_post_persist_raise_lands_once_across_five_watcher_passes(loop_env
 
     assert len(_wakeup_turns(store, 1)) == 1
     state = loops.load_loop(SID)
-    assert state.ticks_fired == 1
-    assert state.awaiting_response is True  # landed: the turn owns the tick until it is answered
+    assert state.ticks_fired == 0  # rolled back with the landed stamp — live, not wedged
+    assert state.awaiting_response is False
     assert state.landed_tick == 1  # the coalesce marker is stamped for cross-surface re-fires
 
 
@@ -145,7 +145,7 @@ async def test_viewer_rollback_of_landed_tick_coalesces_the_refire(loop_env):
 
     assert len(_wakeup_turns(store, 1)) == 1  # coalesced: no re-injection
     state = loops.load_loop(SID)
-    assert state.ticks_fired == 1 and state.awaiting_response is True
+    assert state.ticks_fired == 1 and state.awaiting_response is False  # claim released: loop live
     assert state.landed_tick == 0  # marker consumed by the coalesce
 
 
@@ -228,7 +228,7 @@ class TestLoopManagerCoalesce:
 
         mgr.abandon_tick(msg1)  # driver: raised after persist
         state = loops.load_loop(SID)
-        assert state.ticks_fired == 1 and state.awaiting_response is True
+        assert state.ticks_fired == 0 and state.awaiting_response is False  # live, tick left due
         assert state.landed_tick == 1 and state.landed_digest == loops.wakeup_payload_digest(msg1)
 
         mgr.abandon_tick()  # rollback of the landed tick (same index re-renders)
@@ -237,7 +237,7 @@ class TestLoopManagerCoalesce:
 
         assert mgr.fire_tick() is None  # coalesced — no second '#1' prompt
         state = loops.load_loop(SID)
-        assert state.ticks_fired == 1 and state.awaiting_response is True
+        assert state.ticks_fired == 1 and state.awaiting_response is False  # left rolled back
         assert state.landed_tick == 0
 
     def test_plain_abandon_reuses_index_when_nothing_persisted(self, loop_env):

@@ -21,6 +21,9 @@ IDENTICAL_STRINGS_ERROR = (
     "Provide the existing text to replace in old_string and the changed "
     "replacement text in new_string.")
 
+_REDACTED_ENV_PLACEHOLDER_RE = re.compile(
+    r"\$\{[A-Z_][A-Z0-9_]*\.\.\.[A-Z0-9_]*\}")
+
 UNICODE_MAP = {
     "\u201c": '"', "\u201d": '"',  # smart double quotes
     "\u2018": "'", "\u2019": "'",  # smart single quotes
@@ -381,6 +384,10 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             "old_string is only whitespace — provide non-blank text to match. Set it "
             "to the exact existing text the replacement should replace (read the file "
             "first if unsure). Do not re-send this call unchanged.")
+    if _REDACTED_ENV_PLACEHOLDER_RE.search(old_string) or _REDACTED_ENV_PLACEHOLDER_RE.search(new_string):
+        return content, 0, None, (
+            "Refused: old_string or new_string contains a redacted environment "
+            "placeholder from the read view. Edit this value with a script instead.")
     # All consumers, including validation and approval previews, must use the
     # same correction policy before a fuzzy strategy can match ambiguous text.
     from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift

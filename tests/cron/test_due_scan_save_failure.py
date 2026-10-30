@@ -246,7 +246,10 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
     save_jobs(load_jobs() + [dict(_due_job("other"), next_run_at=(clock["now"] + timedelta(hours=1)).isoformat())])
     assert store_health.degraded_record(cron_store / "cron") is None
     with monkeypatch.context() as m:  # fails again before the scan's save lands: still not missed
+        from cron import runtime_state  # a full disk fails runtime.db too, not only jobs.json
         m.setattr(cronjobs, "_stage_jobs_payload", _enospc)
+        m.setattr(runtime_state, "write_runtime_states", _enospc)
+        m.setattr(runtime_state, "stage_runtime_and_definitions", _enospc)
         assert [d["id"] for d in get_due_jobs()] == ["once"]
     save_jobs(load_jobs())  # second recovery
     assert [d["id"] for d in get_due_jobs()] == ["once"]

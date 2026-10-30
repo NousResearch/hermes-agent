@@ -256,6 +256,41 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
+def _telegram_album_images(media_files, force_document):
+    """``file://`` URLs when the batch is two or more existing photos and nothing else, else ``[]``
+    (GIFs need sendAnimation; mixed media and forced documents keep the per-file path)."""
+    from urllib.parse import quote
+    ok = not force_document and len(media_files) > 1 and all(
+        not v and os.path.splitext(p)[1].lower() in _IMAGE_EXTS - {".gif"} and os.path.exists(p) for p, v in media_files)
+    return [("file://" + quote(os.path.abspath(p)), None) for p, _ in media_files] if ok else []
+
+
+async def _send_telegram_album(token, bot, chat_id, images, thread_id):
+    """Photos as native albums through ``TelegramAdapter.send_multiple_images`` (10 per sendMediaGroup,
+    photo-by-photo fallback for a refused chunk): the live gateway adapter on its own loop, else an
+    unconnected adapter over this standalone bot (no polling). ``None`` when neither is usable, so the
+    caller keeps its per-photo path."""
+    from gateway.config import Platform, PlatformConfig
+    # notify: send_message has always notified; the adapter mutes non-final sends by default.
+    metadata = {"notify": True, **({"thread_id": str(thread_id)} if thread_id else {})}
+    try:
+        runner, adapter = _live_adapter(Platform.TELEGRAM)
+        if adapter is not None and adapter.is_connected:
+            from tools.send_message_tool import _dispatch_on_gateway_loop
+            result = await _dispatch_on_gateway_loop(
+                runner, lambda: adapter.send_multiple_images(chat_id, images, metadata),
+                "send_message: failed to schedule Telegram album on gateway loop")
+            return None if isinstance(result, dict) else result  # dict: never scheduled
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token=token))
+        adapter._bot = bot
+        return await adapter.send_multiple_images(chat_id, images, metadata)
+    except Exception as e:
+        logger.warning("Telegram album via adapter unavailable, sending photos one by one: %s",
+                       _sanitize_error_text(e), exc_info=True)
+        return None
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     try:
@@ -279,6 +314,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+        album = None
+        if images := await asyncio.to_thread(_telegram_album_images, media_files, force_document):
+            album = await _send_telegram_album(token, bot, chat_id, images, thread_id)
+        if album is not None:
+            media_files = []  # the adapter already fell back photo by photo for a refused album
+            if not album.success:
+                warnings.append(_sanitize_error_text(f"Failed to send Telegram photo album: {album.error}"))
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
@@ -300,9 +342,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])
-        if last_msg is None:
+        if last_msg is None and not (album and album.success):
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
-        return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
+        return _success("telegram", chat_id, warnings, **({"message_id": str(last_msg.message_id)} if last_msg else {}))
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}"}

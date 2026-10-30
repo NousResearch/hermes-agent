@@ -136,6 +136,18 @@ function entryField(entry: unknown, key: string): unknown {
 }
 
 /**
+ * Non-primary entries own their jar; so does a tunnelled one even as primary,
+ * because every tunnel is 127.0.0.1 and Chromium jars ignore the port.
+ */
+function ownsJar(entry: unknown, id: string, primaryId: string): boolean {
+  return id !== primaryId || Boolean(entryField(entry, 'sshTunnel'))
+}
+
+function v1RemoteOwnsLegacyJar(own: unknown, ownBaseNorm: string, v1Norm: string | null): boolean {
+  return Boolean(v1Norm && ownBaseNorm === v1Norm && !entryField(own, 'sshTunnel'))
+}
+
+/**
  * Decide the Electron session partition a cookie-authenticated request against
  * `requestUrl` must ride. See the module header for the rules.
  */
@@ -189,11 +201,11 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
     const ownBaseNorm = normalizeForMatch(entryField(own, 'url'))
 
     if (
-      wantedId !== primaryId &&
+      ownsJar(own, wantedId, primaryId) &&
       entryField(own, 'kind') === 'remote' &&
       entryField(own, 'authMode') === 'oauth' &&
       ownBaseNorm &&
-      !(v1Norm && ownBaseNorm === v1Norm)
+      !v1RemoteOwnsLegacyJar(own, ownBaseNorm, v1Norm)
     ) {
       return `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(wantedId)}`
     }

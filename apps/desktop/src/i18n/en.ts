@@ -28,6 +28,7 @@ import { enPluginUpdate } from './en_plugin_update'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enSshTunnel } from './en_ssh_tunnel'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
@@ -1277,6 +1278,7 @@ export const en: Translations = {
     },
     // v2 multi-connection registry: Settings → Gateways.
     connections: {
+      sshTunnel: enSshTunnel,
       title: 'Registered gateways',
       intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
@@ -1632,9 +1634,7 @@ export const en: Translations = {
         paymentAndCredits: 'Payment & credits',
         usage: 'Usage'
       },
-      usage: {
-        title: 'Usage'
-      },
+      usage: { title: 'Usage' },
       buyCredits: {
         customAmount: 'Custom credit amount',
         title: 'Buy credits now',

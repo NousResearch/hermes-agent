@@ -36,8 +36,17 @@ import {
   normAuthMode
 } from './connection-config'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
+import {
+  type RemoteGatewayTunnelConfig,
+  remoteGatewayTunnelFields,
+  remoteGatewayTunnelKey
+} from './remote-gateway-tunnel'
 
 export const REGISTRY_VERSION = 2
+
+function remoteFingerprint(kind: 'cloud' | 'remote', url: string, tunnel?: RemoteGatewayTunnelConfig): string {
+  return `${kind}:${normalizeRemoteBaseUrl(url)}:${remoteGatewayTunnelKey(tunnel)}`
+}
 
 export const LOCAL_CONNECTION_ID = 'local'
 
@@ -53,6 +62,8 @@ export interface RegistryConnection {
   label: string
   /** remote/cloud: normalized base URL. */
   url?: string
+  /** remote: optional SSH transport to a loopback gateway URL. */
+  sshTunnel?: RemoteGatewayTunnelConfig
   /** remote/cloud: 'token' | 'oauth'. */
   authMode?: 'oauth' | 'token'
   /** remote: encrypted token envelope (opaque here; main.ts encrypts/decrypts). */
@@ -915,6 +926,7 @@ export function connectionIdForPendingLogin(opts: {
 // ── Validation ──────────────────────────────────────────────────────────────
 
 export interface ConnectionInput {
+  sshTunnel?: { host: string } | null
   id?: string
   kind: ConnectionKind
   label: string
@@ -1039,10 +1051,16 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
     // Duplicate prevention: remote/cloud entries collide on the normalized URL
     // (trimmed, trailing slashes stripped, lowercased) regardless of kind — a
     // cloud entry and a remote entry pointing at the same gateway are dupes.
-    const urlKey = (value: string) => value.trim().replace(/\/+$/, '').toLowerCase()
+    const tunnel = remoteGatewayTunnelFields(kind, url, input.sshTunnel)
+
+    const urlKey = (value: string, sshTunnel?: RemoteGatewayTunnelConfig) =>
+      `${value.trim().replace(/\/+$/, '').toLowerCase()} ${remoteGatewayTunnelKey(sshTunnel)}`
 
     const urlDupe = registry.connections.find(
-      c => (c.kind === 'remote' || c.kind === 'cloud') && c.id !== id && urlKey(c.url || '') === urlKey(url)
+      c =>
+        (c.kind === 'remote' || c.kind === 'cloud') &&
+        c.id !== id &&
+        urlKey(c.url || '', c.sshTunnel) === urlKey(url, tunnel.sshTunnel)
     )
 
     if (urlDupe) {
@@ -1051,7 +1069,7 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
 
     // Cloud never stores a token (below), so it is always oauth.
     const authMode = storedAuthMode(kind, input.authMode, undefined)
-    const entry: RegistryConnection = { id, kind, label, url, authMode }
+    const entry: RegistryConnection = { id, kind, label, url, authMode, ...tunnel }
 
     // A token is only meaningful for token-auth remotes. Dropping it here is
     // what clears the stale envelope when an entry is switched token→oauth
@@ -1115,6 +1133,7 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
 
   inherit('url')
   inherit('authMode')
+  inherit('sshTunnel')
   inherit('org')
 
   if (
@@ -1176,6 +1195,10 @@ export function connectionDialFieldsChanged(before: RegistryConnection, after: R
     if ((before[field] ?? null) !== (after[field] ?? null)) {
       return true
     }
+  }
+
+  if (remoteGatewayTunnelKey(before.sshTunnel) !== remoteGatewayTunnelKey(after.sshTunnel)) {
+    return true
   }
 
   // Token envelopes are opaque here (main.ts encrypts). An edit that carries
@@ -1302,6 +1325,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         clean.url = url
         clean.authMode = storedAuthMode(kind, entry.authMode, entry.token)
+        Object.assign(clean, remoteGatewayTunnelFields(kind, url, entry.sshTunnel))
 
         if (entry.token !== undefined) {
           clean.token = entry.token
@@ -1397,7 +1421,8 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
       return null
     }
 
-    const fingerprint = `${kind}:${url}`
+    const tunnel = remoteGatewayTunnelFields(kind, url, block.sshTunnel)
+    const fingerprint = remoteFingerprint(kind, url, tunnel.sshTunnel)
     const existing = byFingerprint.get(fingerprint)
 
     if (existing) {
@@ -1417,7 +1442,8 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
       kind,
       label,
       url,
-      authMode: normAuthMode(block.authMode)
+      authMode: normAuthMode(block.authMode),
+      ...tunnel
     }
 
     if (block.token !== undefined) {
@@ -1606,19 +1632,20 @@ export function reconcileAppliedGlobalConnection(
   const block = config.remote && typeof config.remote === 'object' ? config.remote : {}
   const url = normalizeRemoteBaseUrl(block.url)
 
+  const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
+  const tunnel = remoteGatewayTunnelFields(kind, url, block.sshTunnel)
+  const fingerprint = remoteFingerprint(kind, url, tunnel.sshTunnel)
   const existing = registry.connections.find(connection => {
     if (connection.kind !== 'remote' && connection.kind !== 'cloud') {
       return false
     }
 
     try {
-      return normalizeRemoteBaseUrl(connection.url) === url
+      return remoteFingerprint(connection.kind, connection.url || '', connection.sshTunnel) === fingerprint
     } catch {
       return false
     }
   })
-
-  const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
 
   const hostLabel = hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway')
   const name = kind === 'cloud' ? String(block.name ?? existing?.name ?? '').trim() : ''
@@ -1641,7 +1668,8 @@ export function reconcileAppliedGlobalConnection(
       token: block.token,
       headers: block.headers,
       org: block.org,
-      name
+      name,
+      ...tunnel
     },
     registry
   )
@@ -1778,13 +1806,23 @@ export function reconcileRegistryDrift(
     return unchanged
   }
 
+  const kind = config.mode === 'cloud' ? 'cloud' : 'remote'
+  let tunnel: { sshTunnel?: RemoteGatewayTunnelConfig }
+
+  try {
+    tunnel = remoteGatewayTunnelFields(kind, url, block.sshTunnel)
+  } catch {
+    return unchanged
+  }
+
+  const fingerprint = remoteFingerprint(kind, url, tunnel.sshTunnel)
   const alreadyRegistered = registry.connections.some(connection => {
     if (connection.kind !== 'remote' && connection.kind !== 'cloud') {
       return false
     }
 
     try {
-      return normalizeRemoteBaseUrl(connection.url) === url
+      return remoteFingerprint(connection.kind, connection.url || '', connection.sshTunnel) === fingerprint
     } catch {
       return false
     }

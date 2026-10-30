@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Check, Loader2, LogIn } from '@/lib/icons'
 
+import { RemoteSetupTunnelFields } from './tunnel-fields'
 import type { RemoteSetup } from './use-remote-setup'
 
 interface FieldProps {
@@ -78,6 +79,7 @@ export function RemoteSetupFields({
           value={credentials.url}
         />
       </Field>
+      <RemoteSetupTunnelFields disabled={disabled} hidden={registry} setup={setup} urlDisabled={urlDisabled} />
       {!registry && setup.probeStatus === 'probing' ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" />

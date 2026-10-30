@@ -23,6 +23,7 @@ import { esPluginUpdate } from './es_plugin_update'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esSshTunnel } from './es_ssh_tunnel'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
@@ -1409,9 +1410,7 @@ export const esOverrides = {
             'Frecuencia de muestreo del audio en Hz. Un valor mayor ofrece más calidad y archivos más grandes.',
           bitRate: 'Tasa de bits de MP3 en bps. Solo se aplica cuando el códec es mp3.'
         },
-        neutts: {
-          device: 'Dispositivo de inferencia local para NeuTTS.'
-        }
+        neutts: { device: 'Dispositivo de inferencia local para NeuTTS.' }
       },
       stt: {
         enabled: 'Activa transcripción de voz local o respaldada por proveedor.',
@@ -1613,6 +1612,7 @@ export const esOverrides = {
       clear: 'Limpiar'
     },
     connections: {
+      sshTunnel: esSshTunnel,
       title: 'Gateways registrados',
       intro:
         'Gestiona este dispositivo y cada gateway de Hermes al que puede llegar mediante conexiones remotas, SSH o Cloud.',

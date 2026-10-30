@@ -8,6 +8,7 @@ import {
 } from './connection-config'
 import type { ConnectionRegistry } from './connection-registry'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
+import type { RemoteGatewayTunnelConfig } from './remote-gateway-tunnel'
 
 type RouteSource = 'env' | 'profile' | 'registry' | 'settings'
 
@@ -28,6 +29,7 @@ export type DesktopRemoteRoute =
       headers?: Record<string, unknown>
       kind: 'cloud' | 'remote'
       org?: string
+      sshTunnel?: RemoteGatewayTunnelConfig
       source: RouteSource
       token?: unknown
       url: string
@@ -112,7 +114,8 @@ export function resolveDesktopRemoteRoute({
         org: kind === 'cloud' ? String(profileConfig?.org || '').trim() || undefined : undefined,
         source: 'profile' as const,
         token: override.token,
-        url: override.url
+        url: override.url,
+        sshTunnel: override.sshTunnel
       },
       matchingConnectionId(registry, route, 'unique')
     )
@@ -171,7 +174,8 @@ export function resolveDesktopRemoteRoute({
       org: kind === 'cloud' ? String(config.remote?.org || '').trim() || undefined : undefined,
       source: 'settings' as const,
       token: config.remote?.token,
-      url: String(config.remote?.url || '')
+      url: String(config.remote?.url || ''),
+      sshTunnel: config.remote?.sshTunnel
     },
     matchingConnectionId(registry, route, 'primary')
   )
@@ -219,6 +223,7 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
     authMode: normAuthMode(entry.authMode),
     connectionId: entry.id,
     headers: entry.headers,
+    sshTunnel: entry.sshTunnel,
     kind: entry.kind,
     org: entry.kind === 'cloud' ? String(entry.org || '').trim() || undefined : undefined,
     source: 'registry',

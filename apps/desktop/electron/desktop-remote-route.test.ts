@@ -39,6 +39,44 @@ test('profile remote wins precedence and carries one exact registry id', () => {
   assert.equal(route?.connectionId, 'worker')
 })
 
+test('v1 global remote carries its tunnel and matches the exact primary identity', () => {
+  const sshTunnel = { host: 'alice@gw-host' }
+
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'remote',
+      remote: { url: 'http://127.0.0.1:9119', authMode: 'oauth', sshTunnel }
+    },
+    registry: registry('gateway', [
+      { id: 'direct', kind: 'remote', label: 'Direct', url: 'http://127.0.0.1:9119', authMode: 'oauth' },
+      { id: 'gateway', kind: 'remote', label: 'Gateway', url: 'http://127.0.0.1:9119', authMode: 'oauth', sshTunnel }
+    ])
+  })
+
+  assert.equal(route?.source, 'settings')
+  assert.equal(route?.connectionId, 'gateway')
+  assert.deepEqual(route?.kind === 'remote' ? route.sshTunnel : undefined, sshTunnel)
+})
+
+test('v1 profile remote carries its SSH tunnel', () => {
+  const sshTunnel = { host: 'alice@gw-host' }
+
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'local',
+      profiles: { worker: { mode: 'remote', url: 'http://127.0.0.1:9119', authMode: 'oauth', sshTunnel } }
+    },
+    profile: 'worker',
+    registry: registry('local', [
+      { id: 'worker', kind: 'remote', label: 'Worker', url: 'http://127.0.0.1:9119', authMode: 'oauth', sshTunnel }
+    ])
+  })
+
+  assert.equal(route?.source, 'profile')
+  assert.equal(route?.connectionId, 'worker')
+  assert.deepEqual(route?.kind === 'remote' ? route.sshTunnel : undefined, sshTunnel)
+})
+
 test('environment route wins over global but never claims a registry id', () => {
   const route = resolveDesktopRemoteRoute({
     config: { mode: 'remote', remote: { url: 'https://global.test', token: tokenB } },

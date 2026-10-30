@@ -23,6 +23,7 @@ import { frPluginUpdate } from './fr_plugin_update'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frSshTunnel } from './fr_ssh_tunnel'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
@@ -1412,9 +1413,7 @@ export const frOverrides = {
             "Fréquence d'échantillonnage audio en Hz. Plus élevée = meilleure qualité, fichiers plus volumineux.",
           bitRate: "Débit binaire MP3 en bps. S'applique uniquement lorsque le codec est mp3."
         },
-        neutts: {
-          device: "Périphérique d'inférence local pour NeuTTS."
-        }
+        neutts: { device: "Périphérique d'inférence local pour NeuTTS." }
       },
       stt: {
         enabled: 'Activer la transcription vocale locale ou via fournisseur.',
@@ -1618,6 +1617,7 @@ export const frOverrides = {
       clear: 'Effacer'
     },
     connections: {
+      sshTunnel: frSshTunnel,
       title: 'Connexions',
       intro:
         'Enregistrez tous les emplacements où vivent vos agents : cet appareil, les gateways distantes de votre réseau et les instances Hermes Cloud. Ils sont tous conservés ici.',

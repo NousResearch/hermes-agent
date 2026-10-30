@@ -23,6 +23,7 @@ def _interaction(user_id=1):
     return SimpleNamespace(
         user=SimpleNamespace(id=user_id, display_name="alice", roles=[]),
         response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock(), defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
         message=SimpleNamespace(embeds=[]),
         data={"values": ["x"]},
         channel_id=5,
@@ -85,6 +86,8 @@ async def test_unauthorized_click_uses_the_shared_notice(monkeypatch, name, call
         ("update", lambda v, i: v._respond(i, "y", None, "x")),
         ("clarify", lambda v, i: v._resolve_choice(i, 0, "a")),
         ("clarify", lambda v, i: v._on_other(i)),
+        ("model", lambda v, i: v._switch_selected_model(i, "m2")),
+        ("model", lambda v, i: v._on_cancel(i)),
     ],
 )
 async def test_answered_view_is_released(monkeypatch, tmp_path, name, call):

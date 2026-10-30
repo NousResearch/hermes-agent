@@ -574,6 +574,41 @@ hermes sessions pinned
 hermes sessions pinned --json > pinned-sessions.json
 ```
 
+### Recording Session Outcomes
+
+An outcome records what happened to a session's work afterwards (#138653), so recall and memory tools
+can weigh work that shipped against work that was reverted. Outcomes stay in `state.db`: nothing leaves
+the machine.
+
+```bash
+hermes sessions outcome add 20250305_091523 --signal merged --source github \
+  --url https://github.com/acme/app/pull/42           # id, unique prefix or title
+hermes sessions outcome add "Fix uploader" --signal custom --verdict neutral --source ci \
+  --note "shipped behind a flag" --observed-at 2h
+hermes sessions outcome list 20250305_091523 --since 7d --json
+hermes sessions outcome remove 17
+```
+
+`--signal` is one of `merged`, `reverted`, `review_accepted`, `review_rejected`, `ci_passed`,
+`ci_failed`, `ticket_closed`, `ticket_reopened` or `custom`. `--verdict` (`good`, `bad`, `neutral`)
+defaults to the signal's (`reverted`, `*_failed`, `*_rejected` and `ticket_reopened` are `bad`) and is
+required for `custom`. `--source` is a lowercase label (`a-z 0-9 _ . -`, at most 64). `--ref`/`--note`
+are single lines (512/500 characters; notes are scanned for prompt injection). Hermes sets the
+`recorder` itself: `agent` when the command runs inside a session (`HERMES_SESSION_ID` is set), else
+`cli`; plugins calling `SessionDB.record_session_outcome` pass `plugin:<id>`. Re-recording the same
+session, signal, source, ref and recorder updates that row; an agent can `remove` only `agent` rows.
+
+Outcomes are stored on the exact session id and read across its compression lineage (the root and the
+latest continuation see the same outcomes); a delegate subagent reads its parent's. `/reset` and
+`/branch` start a separate conversation and never share them. They are deleted with their session and
+carried by `export`/`import`, `recover` and `repair-profiles`.
+
+`hermes sessions outcome list --json` is the stable interface for tools outside Hermes (memory
+consolidation or dreaming plugins): `{"version": 1, "outcomes": [...]}`, newest `observed_at` first,
+each with `id`, `session_id`, `signal`, `verdict`, `source`, `recorder`, `ref`, `note`, `observed_at`
+and `recorded_at` (Unix seconds). Version 1 may gain fields but never renames or removes one. Exit codes:
+`0` ok, `2` invalid input, `3` unknown session or outcome.
+
 ### Prune Old Sessions
 
 ```bash
@@ -975,6 +1010,7 @@ Each result carries:
 - `bookend_start` / `bookend_end` — first/last 3 user+assistant messages for full results; empty lists for compact results
 - `messages` — ±5 messages around the FTS5 match for full results; only the flagged anchor message for compact results
 - `match_message_id`, `messages_before`, `messages_after`
+- `outcomes` — only when the session has [recorded outcomes](#recording-session-outcomes): up to three, newest first, each `{signal, verdict, source, recorder}` (never the note or ref)
 
 The top result reconstructs goal → match → resolution immediately. If another compact result looks more promising, use its session and message IDs with the scroll shape. Typical wall time is tens of milliseconds on a real session DB.
 
@@ -1185,6 +1221,7 @@ Key tables in `state.db`:
 - **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Titles have a unique index (NULL titles allowed, only non-NULL must be unique).
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
+- **session_outcomes** — external outcomes per session (signal, verdict, source, recorder, ref, note, observed_at); deleted with their session
 
 ## Session Expiry and Cleanup
 

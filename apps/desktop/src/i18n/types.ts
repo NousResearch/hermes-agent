@@ -2984,6 +2984,10 @@ export interface Translations extends NoticeTranslations {
     preparingAudio: string
     speakingResponse: string
     readingAloud: string
+    pausePlayback: string
+    resumePlayback: string
+    playbackPaused: string
+    stopPlayback: string
     themeSuggestions: string
     noMatchingThemes: string
     themeTryPre: string

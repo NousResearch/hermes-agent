@@ -143,3 +143,54 @@ async def test_a_bot_chat_stamped_with_a_forwarded_login_subject_is_never_moved_
     record = await _deliver(headless.authority, 'f')
     assert record['session_id'] == old
     assert db.get_session_by_title('Bot Chat')['id'] == old and len(db._read_all('SELECT id FROM sessions')) == 1
+
+
+def _lineage(db, root_stamp, tip_stamp, tip_column=None, tip_value=None):
+    # A compressed old local Bot Chat: the root holds the title, the delivery adopts the tip.
+    db.create_session('bot_chat_root', 'tui', user_id=root_stamp)
+    db.set_session_title('bot_chat_root', 'Bot Chat')
+    db.append_message('bot_chat_root', 'user', 'earlier')
+    db.end_session('bot_chat_root', 'compression')
+    db.create_session('bot_chat_tip', 'tui', user_id=tip_stamp, parent_session_id='bot_chat_root')
+    db.append_message('bot_chat_tip', 'user', 'later')
+    if tip_column:
+        db._execute_write(lambda conn: conn.execute(f'UPDATE sessions SET {tip_column}=? WHERE id=?',
+                                                    (tip_value, 'bot_chat_tip')))
+    assert db.get_compression_tip('bot_chat_root') == 'bot_chat_tip'
+
+
+@pytest.mark.parametrize('root_stamp, tip_stamp, tip_column, tip_value', [
+    ('basic:alice', 'basic:alice', 'session_key', 'agent:main:tui:dm:stale'),  # a crash-routed tip
+    ('basic:alice', 'uid:1001', None, None),                                  # another user's tip
+    ('basic:alice', 'basic:alice', 'profile_name', 'another-profile'),         # another profile's tip
+    (None, 'basic:alice', 'session_key', 'agent:main:tui:dm:stale'),           # an unstamped root
+])
+@pytest.mark.asyncio
+async def test_a_lineage_whose_tip_nobody_can_adopt_is_moved_aside(
+        headless, monkeypatch, root_stamp, tip_stamp, tip_column, tip_value):
+    # The delivery adopts the tip, never the root, so a root the owner could open does not keep a
+    # lineage whose tip no open can adopt: that title would refuse every delivery for good.
+    import gateway.session_worker_reservation as reservation
+    monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
+    db = headless.authority.db
+    _lineage(db, root_stamp, tip_stamp, tip_column, tip_value)
+    first = await _deliver(headless.authority, '1')
+    new = first['session_id']
+    assert new not in ('bot_chat_root', 'bot_chat_tip') and str(db.get_session(new)['chat_id']).startswith('local-')
+    assert db.get_session_by_title('Bot Chat')['id'] == new
+    assert db.get_session('bot_chat_root')['title'] == 'Bot Chat (tui bot_chat_root)'
+    assert (await _deliver(headless.authority, '2'))['session_id'] == new
+
+
+@pytest.mark.asyncio
+async def test_a_lineage_whose_tip_the_owner_adopts_stays_in_place(headless, monkeypatch):
+    # The converse, a guard against moving too much (main moved this lineage aside): another user's
+    # root above the owner's own tip is the owner's chat; the delivery adopts the tip.
+    import gateway.session_worker_reservation as reservation
+    monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
+    db = headless.authority.db
+    _lineage(db, 'uid:1001', 'basic:alice')
+    record = await _deliver(headless.authority, '3')
+    assert record['session_id'] == 'bot_chat_tip'
+    assert db.get_session_by_title('Bot Chat')['id'] == 'bot_chat_root'
+    assert len(db._read_all('SELECT id FROM sessions')) == 2

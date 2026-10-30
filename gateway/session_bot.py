@@ -216,8 +216,9 @@ def displaceable_bot_chat(authority, row, subject=None):
     """The id holding the canonical title when the Bot Chat is a conversation this delivery can
     never adopt, rename (the title is its identity) or rename over the API, so it would refuse
     every delivery for good: an ``api_`` row an older gateway or a plain ``POST /api/sessions``
-    minted, a messaging row, or unbound local history ``_kept_local_history`` does not keep for
-    the delivering *subject*. Else None: a bound local chat and kept history are never moved."""
+    minted, a messaging row, or a lineage whose compression tip (the row a delivery adopts) is
+    unbound local history ``_kept_local_history`` does not keep for the delivering *subject*.
+    Else None: a bound local chat and kept history are never moved."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_PREFIX
 
@@ -239,9 +240,9 @@ def displaceable_bot_chat(authority, row, subject=None):
                             (POLICY_PREFIX + (chat_id or candidate['id']),
                              LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
                 return None
-        if _kept_local_history(db, candidate, subject):
-            return None
-    return row['id']
+    # Only the tip is adopted (``_target``), so only the tip decides: a root the owner could adopt
+    # above a tip nobody can would otherwise hold the title and refuse every delivery.
+    return None if _kept_local_history(db, tip, subject) else row['id']
 
 
 def release_superseded_bot_chat(db, store, route, session_id):

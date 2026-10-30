@@ -71,8 +71,9 @@ def _load(monkeypatch, home: Path):
     return load_pool("anthropic")
 
 
-def _shared_file(root: Path) -> Path:
-    return root / ".anthropic_oauth.json"
+def _shared_file(root: Path, label: str = LABEL) -> Path:
+    safe = label.replace(" ", "_")
+    return root / ".anthropic_oauth" / f"{safe}.json"
 
 
 def _mock_refresh(monkeypatch, *, valid: set, counter: list):
@@ -105,8 +106,7 @@ def test_root_seeds_shared_grant_and_worker_copy_becomes_reference(homes, monkey
     root_pool = _load(monkeypatch, root)
     assert [e.source for e in root_pool.entries()] == ["hermes_pkce_shared"]
     shared = json.loads(_shared_file(root).read_text())
-    assert set(shared["grants"]) == {LABEL}
-    assert shared["grants"][LABEL]["refreshToken"] == "root-refresh"
+    assert shared["refreshToken"] == "root-refresh"
     assert oct(_shared_file(root).stat().st_mode & 0o777) == oct(0o600)
 
     worker_pool = _load(monkeypatch, worker)
@@ -114,7 +114,7 @@ def test_root_seeds_shared_grant_and_worker_copy_becomes_reference(homes, monkey
     assert [r["source"] for r in rows] == ["hermes_pkce_shared"]
     assert rows[0]["label"] == LABEL
     # The worker's stale copy must never leak into the shared source.
-    assert json.loads(_shared_file(root).read_text())["grants"][LABEL]["refreshToken"] == "root-refresh"
+    assert json.loads(_shared_file(root).read_text())["refreshToken"] == "root-refresh"
 
     selected = worker_pool.select()
     assert selected is not None
@@ -158,7 +158,7 @@ def test_refresh_in_one_profile_is_visible_to_the_other_without_refreshing(homes
     chosen = root_pool.select()
     assert chosen is not None and chosen.access_token == "access-from-root-refresh"
     assert calls == ["root-refresh"]
-    shared = json.loads(_shared_file(root).read_text())["grants"][LABEL]
+    shared = json.loads(_shared_file(root).read_text())
     assert shared["refreshToken"] == "root-refresh-rot"
 
     # Worker's next select() picks up the rotated pair from the file: no refresh call.
@@ -239,7 +239,7 @@ def test_revoked_refresh_token_syncs_from_shared_and_retries_once(homes, monkeyp
     assert refreshed is not None
     assert calls == ["root-refresh", "ext-refresh"]  # 404 -> sync -> exactly one retry
     assert refreshed.access_token == "access-from-ext"
-    assert json.loads(_shared_file(root).read_text())["grants"][LABEL]["refreshToken"] == "ext-refresh-rot"
+    assert json.loads(_shared_file(root).read_text())["refreshToken"] == "ext-refresh-rot"
     row = _read_store(worker)[0]
     assert row["source"] == "hermes_pkce_shared"
     assert not row.get("access_token") and not row.get("refresh_token")
@@ -263,9 +263,8 @@ def test_two_labels_migrate_independently_without_cross_hydration(homes, monkeyp
         ],
     )
     _load(monkeypatch, root)
-    grants = json.loads(_shared_file(root).read_text())["grants"]
-    assert grants[LABEL]["refreshToken"] == "a-refresh"
-    assert grants[other]["refreshToken"] == "b-refresh"
+    assert json.loads(_shared_file(root).read_text())["refreshToken"] == "a-refresh"
+    assert json.loads(_shared_file(root, other).read_text())["refreshToken"] == "b-refresh"
 
     worker_pool = _load(monkeypatch, worker)
     available = worker_pool._available_entries()  # hydrates every reference row

@@ -602,7 +602,7 @@ class CredentialPool:
         # loop runs unbounded and non-interruptible.  Reset whenever a real
         # entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
-        self._missing_shared_oauth_warned = False
+        self._missing_shared_oauth_warned: set[str] = set()
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -784,11 +784,11 @@ class CredentialPool:
             from agent.anthropic_adapter import read_shared_hermes_oauth_credentials
             creds = read_shared_hermes_oauth_credentials(entry.label)
             if not creds:
-                if not self._missing_shared_oauth_warned:
+                if entry.label not in self._missing_shared_oauth_warned:
                     logger.warning("Anthropic shared OAuth source is missing; skipping credential %s", entry.label)
-                    self._missing_shared_oauth_warned = True
+                    self._missing_shared_oauth_warned.add(entry.label)
                 return entry
-            self._missing_shared_oauth_warned = False
+            self._missing_shared_oauth_warned.discard(entry.label)
             access = creds.get("accessToken", "")
             refresh = creds.get("refreshToken", "")
             expires = creds.get("expiresAt")
@@ -2279,15 +2279,22 @@ def _migrate_legacy_hermes_pkce_entries(entries: List[PooledCredential]) -> bool
             return read_shared_hermes_oauth_credentials()
     legacy_shared = read_shared_hermes_oauth_credentials()
     labels = {entry.label for entry in legacy}
-    if legacy_shared and len(labels) == 1 and shared_path.exists():
-        # The old single-grant file is safe to assign only when this pool has
-        # exactly one legacy label; never fan one grant out to other labels.
-        _publish(legacy_shared, next(iter(labels)))
+    if legacy_shared and shared_path.exists():
+        grants = legacy_shared.get("grants") if isinstance(legacy_shared.get("grants"), dict) else None
+        if grants:
+            for label in labels:
+                grant = grants.get(label)
+                if isinstance(grant, dict) and grant.get("accessToken"):
+                    _publish(grant, label)
+        elif len(labels) == 1:
+            # The old single-grant file is safe to assign only when this pool
+            # has exactly one legacy label; never fan one grant out to others.
+            _publish(legacy_shared, next(iter(labels)))
     # Only the default profile may promote its local copy; worker copies may
     # already be revoked and must never become the shared source.
     if not shared_path.exists() and get_hermes_home() == get_default_hermes_root():
         for seed in legacy:
-            if seed.access_token and seed.refresh_token:
+            if seed.access_token and seed.refresh_token and not _read(seed.label):
                 _publish({
                     "accessToken": seed.access_token,
                     "refreshToken": seed.refresh_token,
@@ -2295,13 +2302,14 @@ def _migrate_legacy_hermes_pkce_entries(entries: List[PooledCredential]) -> bool
                 }, seed.label)
     changed = False
     for index, entry in enumerate(entries):
-        if entry.source == "manual:hermes_pkce" and _read(entry.label):
+        shared = _read(entry.label)
+        if entry.source == "manual:hermes_pkce" and shared:
             entries[index] = replace(
                 entry,
                 source="hermes_pkce_shared",
-                access_token="",
-                refresh_token=None,
-                expires_at_ms=None,
+                access_token=shared.get("accessToken", ""),
+                refresh_token=shared.get("refreshToken"),
+                expires_at_ms=shared.get("expiresAt"),
             )
             changed = True
     return changed

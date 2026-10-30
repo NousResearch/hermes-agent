@@ -21,6 +21,7 @@ def shared_home(tmp_path, monkeypatch):
     root = tmp_path / "hermes"
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr("agent.anthropic_adapter.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("agent.credential_pool.get_default_hermes_root", lambda: root)
     monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
     monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     return root
@@ -102,3 +103,43 @@ def test_missing_shared_source_is_skipped_with_warning(shared_home, caplog):
     with caplog.at_level("WARNING"):
         assert pool.select() is None
     assert "shared OAuth source is missing" in caplog.text
+
+
+def test_shared_grants_use_independent_label_files_and_safe_names(shared_home):
+    from agent.anthropic_adapter import (
+        _shared_pkce_label_filename,
+        read_shared_hermes_oauth_credentials,
+        write_shared_hermes_oauth_credentials,
+    )
+
+    write_shared_hermes_oauth_credentials({"accessToken": "a-access"}, label="team a")
+    write_shared_hermes_oauth_credentials({"accessToken": "b-access"}, label="team-b")
+    files = sorted((shared_home / ".anthropic_oauth").glob("*.json"))
+    assert [path.name for path in files] == ["team-b.json", "team_a.json"]
+    first = read_shared_hermes_oauth_credentials("team a")
+    second = read_shared_hermes_oauth_credentials("team-b")
+    assert first and first["accessToken"] == "a-access"
+    assert second and second["accessToken"] == "b-access"
+    assert _shared_pkce_label_filename("") == "default.json"
+    for unsafe in ("../escape", ".hidden", "a/b", "a\\b"):
+        with pytest.raises(ValueError):
+            _shared_pkce_label_filename(unsafe)
+
+
+def test_legacy_grant_map_migrates_only_matching_labels(shared_home):
+    from agent.anthropic_adapter import _get_shared_hermes_oauth_file
+    from agent.credential_pool import _migrate_legacy_hermes_pkce_entries
+
+    legacy = _get_shared_hermes_oauth_file()
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"grants": {
+        "one": {"accessToken": "one-access", "refreshToken": "one-refresh"},
+        "two": {"accessToken": "two-access", "refreshToken": "two-refresh"},
+    }}))
+    entries = [_entry("one"), _entry("two")]
+    for entry in entries:
+        entry.source = "manual:hermes_pkce"
+    assert _migrate_legacy_hermes_pkce_entries(entries)
+    assert (shared_home / ".anthropic_oauth" / "one.json").exists()
+    assert (shared_home / ".anthropic_oauth" / "two.json").exists()
+    assert {entry.access_token for entry in entries} == {"one-access", "two-access"}

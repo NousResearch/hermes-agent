@@ -244,6 +244,13 @@ def auth_add_command(args) -> None:
         # copied entry with the same label; leaving it would let stale refresh
         # tokens win before the shared reference.
         _migrate_legacy_hermes_pkce_entries(pool._entries)
+        # A label identifies one shared grant. Replace, rather than append to,
+        # an existing reference so repeated `auth add --label X` cannot create
+        # ambiguous rows for the same on-disk grant.
+        pool._entries[:] = [
+            item for item in pool._entries
+            if not (item.source == "hermes_pkce_shared" and item.label == label)
+        ]
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],

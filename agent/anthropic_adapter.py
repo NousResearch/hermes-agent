@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
@@ -1559,28 +1560,61 @@ def _get_shared_hermes_oauth_file() -> Path:
     return root / ".anthropic_oauth.json"
 
 
+def _shared_pkce_label_filename(label: Optional[str]) -> str:
+    """Return the safe filename used for one shared PKCE grant."""
+    value = str(label or "default").strip() or "default"
+    if value in {".", ".."} or value.startswith(".") or "/" in value or "\\" in value:
+        raise ValueError("Invalid shared PKCE label")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("Invalid shared PKCE label")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+    if not safe or safe in {".", ".."}:
+        raise ValueError("Invalid shared PKCE label")
+    return f"{safe}.json"
+
+
+def _get_shared_hermes_oauth_dir() -> Path:
+    return _get_shared_hermes_oauth_file().parent / ".anthropic_oauth"
+
+
+def _get_shared_hermes_oauth_label_file(label: Optional[str]) -> Path:
+    return _get_shared_hermes_oauth_dir() / _shared_pkce_label_filename(label)
+
+
 def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Read one shared Hermes PKCE grant without falling back to a profile file."""
-    oauth_file = _get_shared_hermes_oauth_file()
-    if not oauth_file.exists():
-        return None
-    try:
-        data = json.loads(oauth_file.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return None
-        if label is not None:
-            data = data.get("grants", {}).get(label) if isinstance(data.get("grants"), dict) else None
-        return data if isinstance(data, dict) and data.get("accessToken") else None
-    except (json.JSONDecodeError, OSError, IOError) as exc:
-        logger.debug("Failed to read shared Hermes OAuth credentials: %s", exc)
-        return None
+    """Read one shared Hermes PKCE grant, preferring its label file."""
+    paths = []
+    if label is not None:
+        paths.append(_get_shared_hermes_oauth_label_file(label))
+    paths.append(_get_shared_hermes_oauth_file())
+    for oauth_file in paths:
+        if not oauth_file.exists():
+            continue
+        try:
+            data = json.loads(oauth_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            if label is not None:
+                if isinstance(data.get("grants"), dict):
+                    data = data["grants"].get(label)
+                elif oauth_file == _get_shared_hermes_oauth_file():
+                    legacy_label = data.get("shared_label") or data.get("label") or "default"
+                    if legacy_label != label:
+                        continue
+            if label is None and isinstance(data.get("grants"), dict):
+                return data
+            if isinstance(data, dict) and data.get("accessToken"):
+                return data
+        except (json.JSONDecodeError, OSError, IOError) as exc:
+            logger.debug("Failed to read shared Hermes OAuth credentials: %s", exc)
+    return None
 
 
 def write_shared_hermes_oauth_credentials(
     credentials: Dict[str, Any], label: Optional[str] = None
 ) -> bool:
     """Atomically publish a labelled PKCE grant for all profiles."""
-    path = _get_shared_hermes_oauth_file()
+    path = _get_shared_hermes_oauth_label_file(label)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.parent.chmod(0o700)
@@ -1595,17 +1629,6 @@ def write_shared_hermes_oauth_credentials(
             fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
             try:
                 payload = credentials
-                if label is not None:
-                    existing = {}
-                    if path.exists():
-                        try:
-                            loaded = json.loads(path.read_text(encoding="utf-8"))
-                            if isinstance(loaded, dict) and isinstance(loaded.get("grants"), dict):
-                                existing = loaded["grants"]
-                        except (OSError, json.JSONDecodeError):
-                            pass
-                    existing[label] = credentials
-                    payload = {"grants": existing}
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh, indent=2)
                     fh.flush()

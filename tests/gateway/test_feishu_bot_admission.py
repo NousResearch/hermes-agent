@@ -41,7 +41,37 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
     assert settings.require_mention is expected
 
 
-# --- Module-level helpers --------------------------------------------------
+def test_feishu_load_settings_ignore_at_all_per_group():
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    settings = FeishuAdapter._load_settings(
+        extra={"group_rules": {"oc_chat": {"policy": "open", "ignore_at_all": True}}}
+    )
+    assert settings.group_rules["oc_chat"].ignore_at_all is True
+
+
+@pytest.mark.parametrize("require_mention", [False, True])
+def test_feishu_ignore_at_all_preserves_direct_mentions(require_mention):
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = make_adapter_skeleton(group_policy="open", require_mention=require_mention)
+    adapter._group_rules = {"oc_chat": FeishuGroupRule(policy="open", ignore_at_all=True)}
+    broadcast = make_message(chat_type="group", chat_id="oc_chat")
+    broadcast.content = '{"text":"@_all hello"}'
+    broadcast.mentions = [SimpleNamespace(key="@_all", id=SimpleNamespace(open_id="", user_id=""), name="所有人")]
+    assert adapter._admit(make_sender(), broadcast) == "group_at_all_ignored"
+
+    direct = make_message(chat_type="group", chat_id="oc_chat")
+    direct.content = '{"text":"@_bot please check"}'
+    direct.mentions = [SimpleNamespace(key="@_bot", id=SimpleNamespace(open_id="ou_me", user_id=""), name="Hermes")]
+    assert adapter._admit(make_sender(), direct) is None
+
+    mixed = make_message(chat_type="group", chat_id="oc_chat")
+    mixed.content = '{"text":"@_all please check with @_bot"}'
+    mixed.mentions = broadcast.mentions + direct.mentions
+    assert adapter._admit(make_sender(), mixed) is None
+
+
 
 
 def test_sender_identity_collects_every_non_empty_id_variant():

@@ -1175,10 +1175,12 @@ hermes cron edit <job> --catch-up on                                # always run
 ```
 
 (`cronjob_manage` takes `catch_up: true|false`; the Desktop job editor has the same choice as
-**Missed runs**: *Use the default*, *Run once when back*, *Skip them*.) Without it, recurring jobs follow
-`cron.catch_up_missed` and one-shots keep their 120-second grace: a reminder missed by more than
+**Missed runs**: *Use the default*, *Run once when back*, *Skip them*.) Without it, recurring jobs
+skip a miss past an explicit `--grace-minutes` and otherwise follow `cron.catch_up_missed`;
+one-shots keep their 120-second grace: a reminder missed by more than
 that is dropped. A one-shot with `--catch-up on` instead fires once, late, when the scheduler is
-back.
+back. `--catch-up on` also beats `--grace-minutes`: the grace sets when a run counts as missed,
+and the job still runs once for it.
 
 **Missed runs are visible.** Every slot the scheduler passes over is booked as one `missed ×N`
 row in the execution ledger: `missed ×3 (skipped, catch-up off; next run …)` for a skip, and

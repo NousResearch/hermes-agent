@@ -33,6 +33,8 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
     url = f"http://127.0.0.1:{peer.server_port}/v1"
     (home / "config.yaml").write_text(json.dumps({
         "gateway": {"multiplex_profiles": False},
+        "agent": {"image_input_mode": "native"},
+        "model_overrides": {"custom": {"flags-model": {"supports_vision": True}}},
         "model": {"provider": "custom", "default": "flags-model", "base_url": url},
         "auxiliary": {"title_generation": {"enabled": False}}}))
     env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
@@ -78,6 +80,13 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
             assert "in repo a" in history and "in repo b" not in history
             latest, latest_sid = hermes("chat", "--resume", "latest", "-q", "latest in b", "-Q", cwd=repo_b)
             assert latest.returncode == 0 and latest_sid == sid_b, latest
+
+            from tests.gateway.test_session_images import PNG
+            image_path = repo_a / "attached.png"
+            image_path.write_bytes(PNG)
+            image_result, _ = hermes("chat", "-q", "attached image", "--image", str(image_path), "-Q", cwd=repo_a)
+            assert image_result.returncode == 0, image_result
+            assert '"type": "image_url"' in json.dumps(peer.requests[-1]["messages"])
 
             tools, _ = hermes("--list-toolsets", cwd=repo_a, module="cli")
             assert tools.returncode == 0 and "terminal" in tools.stdout, tools

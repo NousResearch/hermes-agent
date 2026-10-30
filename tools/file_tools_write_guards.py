@@ -4,8 +4,11 @@ Every guard returns ``None`` when the write may proceed, else an error string
 the tool returns verbatim.
 Guards, in the order the tools apply them: ``_check_sensitive_path`` (hard
 deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
-(ALWAYS ask), ``_check_approval_required_write`` (normal gate),
-``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
+(ALWAYS ask; covers project instruction files AND the HERMES_HOME reinjected
+substrates — memories/, cron/jobs.json, webhook_subscriptions.json, skills/**),
+``_check_approval_required_write`` (normal gate),
+``_check_cross_profile_path`` (sandbox-mirror lost-work),
+``_is_internal_file_tool_content``.
 ``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
 whole-file overwrite of content this task never saw or that changed since.
 """
@@ -136,6 +139,47 @@ def _hermes_exempt_homes() -> tuple[str, ...]:
     return (home, root) if root and root != home else (home,)
 
 
+def _reinjected_substrate_label(candidate: str, real_home: str) -> str | None:
+    """Label when ``candidate`` (absolute path) lands in a HERMES_HOME substrate whose
+    content is auto-reinjected into future agent context or acts unattended — the
+    home-tree exceptions to the ``~/.hermes`` exemption of the protected-instruction gate:
+
+    * ``memories/**``      — injected into EVERY turn's system prompt;
+    * ``cron/jobs.json``   — job prompts run unattended on schedule;
+    * ``cron/scripts`` …   — the default ``script=`` lane: ``~/.hermes/scripts/**``
+      executes on the scheduler with NO agent in the loop at all;
+    * ``webhook_subscriptions.json`` — event payloads dispatch agent prompts;
+    * ``skills/**``        — SKILL.md text and .py scripts are force-loaded into
+      dispatched runs (the dedicated ``skill_manage``/``memory`` tools honor
+      ``<subsystem>.write_approval``; the generic file tools consulted NONE of
+      these guards for these paths — the parity gap #117818 documents).
+
+    These follow the SAME always-ask gate as AGENTS.md (one-operation approval, no
+    yolo bypass, fail-closed without a human), governed by the same
+    ``security.protected_instruction_files`` kill switch. Home files OUTSIDE this set
+    (LEDGER.md, the root's direct SOUL.md/AGENTS.md under a named profile, kanban.db,
+    logs, ...) keep the plain exemption: they are not on this auto-reinjection path.
+    """
+    try:
+        rel = os.path.relpath(candidate, real_home)
+    except ValueError:
+        return None
+    if os.path.isabs(rel) or rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return None
+    parts = rel.replace("\\", "/").split("/")
+    if parts[0] == "memories" and len(parts) > 1:
+        return rel
+    if parts[0] == "skills" and len(parts) > 1:
+        return rel
+    if parts[0] == "scripts" and len(parts) > 1:
+        return rel
+    if parts[:-1] == ["cron"] and parts[-1] == "jobs.json":
+        return rel
+    if rel == "webhook_subscriptions.json":
+        return rel
+    return None
+
+
 def _resolved_or_raw(filepath: str, task_id: str) -> str:
     """Task-resolved path string, falling back to the raw input on resolution failure."""
     try:
@@ -230,12 +274,21 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         resolved = os.path.realpath(normalized)
 
     # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
-    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
+    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only —
+    # with ONE exception, enforced below: the home's REINJECTED SUBSTRATES
+    # (memories/, cron/jobs.json, webhook_subscriptions.json, skills/**.py) have
+    # no other gate on this path (the memory/skill tools' ``write_approval`` is
+    # not consulted by the generic file tools, #117818), yet their content is
+    # auto-reinjected into future agent context or acts unattended.
     # Must run before the ``.hermes`` component rule, which would match the home.
     # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
     # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
     for real_home in _hermes_exempt_homes():
         if resolved == real_home or resolved.startswith(real_home + os.sep):
+            for candidate in (normalized, resolved):
+                label = _reinjected_substrate_label(candidate, real_home)
+                if label:
+                    return label
             return None
 
     for candidate in (normalized, resolved):

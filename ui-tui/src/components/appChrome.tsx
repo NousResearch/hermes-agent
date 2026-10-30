@@ -243,6 +243,30 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+/**
+ * Format one provider's usage for the single-line status bar.
+ *
+ * Single-account pools render the bare window percentages. Multi-account
+ * pools show live accounts only and collapse dead/unreadable entries to a
+ * `⚠N` count so they don't push the real numbers off the line. "Live" matches
+ * the web panel's contract (web/src/lib/usage-quota.ts): available AND at
+ * least one window — an available account with no windows has nothing to
+ * render and counts as unreadable rather than printing an empty segment.
+ */
+export function formatProviderUsage(name: string, provider: UsageMeterInfo['claude']): string {
+  if (!provider.accounts || provider.accounts.length <= 1) {
+    return `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
+  }
+  const live = provider.accounts.filter(account => account.available && account.windows.length > 0)
+  const dead = provider.accounts.length - live.length
+  const parts = live.map(account => {
+    const marker = account.active ? '●' : ''
+    return `${marker}${account.label} ${account.windows.map(window => `${window.usedPercent}%`).join('/')}`
+  })
+  if (dead > 0) parts.push(`⚠${dead}`)
+  return `${name} ${parts.length ? parts.join(' ') : '—'}`
+}
+
 // `minLeftContent` is the display width of the high-priority left segments
 // (status indicator + model + context). Reserving it makes the cwd/branch
 // segment on the right yield FIRST on narrow terminals, instead of squeezing
@@ -479,24 +503,8 @@ export function StatusRule({
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
-  const providerUsage = (name: string, provider: UsageMeterInfo['claude']) => {
-    if (!provider.accounts || provider.accounts.length <= 1) {
-      return `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
-    }
-    // One-line status bar: show live accounts only; dead/unreadable pool
-    // entries collapse to a count so they don't push the real numbers off.
-    const live = provider.accounts.filter(account => account.available)
-    const dead = provider.accounts.length - live.length
-    const parts = live.map(account => {
-      const marker = account.active ? '●' : ''
-      return `${marker}${account.label} ${account.windows.map(window => `${window.usedPercent}%`).join('/')}`
-    })
-    if (dead > 0) parts.push(`⚠${dead}`)
-    return `${name} ${parts.length ? parts.join(' ') : '—'}`
-  }
-
   const usageMeterText = usageMeter
-    ? `${providerUsage('Claude', usageMeter.claude)} · ${providerUsage('Codex', usageMeter.codex)}`
+    ? `${formatProviderUsage('Claude', usageMeter.claude)} · ${formatProviderUsage('Codex', usageMeter.codex)}`
     : ''
 
   // A credits notice replaces the status/verb slot, but only when idle —

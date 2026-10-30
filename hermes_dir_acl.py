@@ -363,6 +363,21 @@ def grant_tree_user_access(root: str | Path, *, pin_root: bool = False,
     return granted, skipped, failed
 
 
+def _link_ancestor_dirs(root: Path, linked: set[Path]) -> set[Path]:
+    """Every ancestor of *linked* that sits inside *root*, computed once per branch."""
+    holds_link: set[Path] = set()
+    for link in linked - {root}:
+        if not link.is_relative_to(root):
+            continue
+        for parent in link.parents:
+            if parent in holds_link:
+                break
+            holds_link.add(parent)
+            if parent == root:
+                break
+    return holds_link
+
+
 def _grant_entries(root: Path, real_root: str, entries: list[tuple[Path, bool]],
                    skipped: list[Path]) -> tuple[int, list[Path], list[tuple[Path, str]]]:
     """Grant each walked entry on its own (the pywin32 write does not propagate). The ONE walk
@@ -370,9 +385,7 @@ def _grant_entries(root: Path, real_root: str, entries: list[tuple[Path, bool]],
     fallback never re-walks a subtree per directory (it refuses exactly those dirs, as before)."""
     linked = {root, *skipped}  # a skipped link, or the root itself when it was skipped
     linked.update(p for p, is_dir in entries if not is_dir and _hard_linked_file(p))
-    holds_link: set[Path] = set()
-    for bad in linked - {root}:
-        holds_link.update(parent for parent in bad.parents if parent == root or root in parent.parents)
+    holds_link = _link_ancestor_dirs(root, linked)
     if root in skipped:
         holds_link.add(root)
     granted, failed = 0, []

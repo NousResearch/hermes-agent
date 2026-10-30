@@ -177,8 +177,10 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "or to understand your own features, tools, or capabilities, the documentation at "
     "https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date information. The `hermes-agent` "
-    "skill has the actual commands and proven workflows — load it with skill_view(name='hermes-agent') "
-    "before configuring, modifying, or troubleshooting Hermes so you don't guess or invent workarounds."
+    "skill has the actual commands and proven workflows. If that same skill is already loaded for the "
+    "current task or thread, reuse its instructions instead of loading it again. Otherwise, load it with "
+    "skill_view(name='hermes-agent') before configuring, modifying, or troubleshooting Hermes so you "
+    "don't guess or invent workarounds."
 )
 
 # Variant for sessions without the skills toolset (e.g. Blank Slate): naming skill_view() there would dangle.
@@ -1339,8 +1341,10 @@ def _render_skills_index(
     return (
         "## Skills\n"
         "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
+        "task, you MUST load it with skill_view(name) and follow its instructions. "
+        "If that same relevant skill is already loaded for the current task or thread, reuse its instructions "
+        "instead of loading it again. Err on the side of loading — it is always better to have context you "
+        "don't need than to miss critical steps, pitfalls, "
         "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
         "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
         f"even if you think you could handle the task with basic tools like {_basic_tools}. "

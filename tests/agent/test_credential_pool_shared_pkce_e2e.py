@@ -661,6 +661,23 @@ def test_padded_payload_label_normalizes_to_an_exact_match(homes, monkeypatch):
     assert read_shared_hermes_oauth_credentials(f" {LABEL}")["accessToken"] == "ok-access"
 
 
+def test_padded_requested_label_matches_legacy_singleton(homes, monkeypatch):
+    from agent.anthropic_adapter import read_shared_hermes_oauth_credentials
+
+    root, _worker = homes
+    _use_home(monkeypatch, root)
+    legacy = root / ".anthropic_oauth.json"
+    legacy.write_text(json.dumps({
+        "accessToken": "legacy-access",
+        "refreshToken": "legacy-refresh",
+        "expiresAt": FUTURE_MS,
+        "shared_label": LABEL,
+    }))
+
+    got = read_shared_hermes_oauth_credentials(f" {LABEL} ")
+    assert got is not None and got["accessToken"] == "legacy-access"
+
+
 def test_read_validates_the_bytes_it_returns_under_the_label_lock(homes, monkeypatch):
     """The alias list is re-read and re-validated inside the label lock, so a
     file that changed between discovery and read cannot leak a foreign grant."""

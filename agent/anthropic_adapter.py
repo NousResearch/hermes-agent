@@ -1691,10 +1691,10 @@ def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optiona
             return None
         if label is not None:
             if isinstance(data.get("grants"), dict):
-                data = data["grants"].get(label)
+                data = data["grants"].get(want)
             else:
                 legacy_label = data.get("shared_label") or data.get("label") or "default"
-                if legacy_label != label:
+                if str(legacy_label).strip() != want:
                     return None
         if label is None and isinstance(data.get("grants"), dict):
             return data

@@ -9750,7 +9750,12 @@ def _read_assignee_credentials(
                             _out_pool_readings[_provider] = fetch_pool_account_usage(
                                 _provider, usable_only=True
                             )
-            except Exception:
+            except Exception as exc:
+                _log.warning(
+                    "provider_meter: pool usage lookup failed; falling back to "
+                    "single-credential meter (%s: %s)",
+                    type(exc).__name__, exc,
+                )
                 _out_pool_readings.clear()
     finally:
         if override_token is not None and reset_hermes_home_override is not None:

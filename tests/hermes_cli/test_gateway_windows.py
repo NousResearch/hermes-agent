@@ -319,8 +319,26 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     assert cwd
 
 
+def test_refused_reinstall_keeps_the_registered_task(monkeypatch, tmp_path):
+    """Registering a logon trigger needs elevation, deleting your own task does not: a repair from a normal
+    shell that deleted first was refused the create and left no task at all, so nothing supervised the gateway."""
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+
+    def fake_schtasks(args):
+        calls.append(args[0])
+        return (1, "", "ERROR: Access is denied.")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+
+    ok, detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", tmp_path / "Hermes_Gateway_alice.cmd")
+
+    assert ok is False and "Access is denied" in detail
+    assert "/Delete" not in calls
+
+
 def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_path):
-    """Install must delete+create so stale minute-repeat task settings are not preserved.
+    """Install must replace the whole definition so stale minute-repeat task settings are not preserved.
 
     Host-agnostic on purpose: ``_install_scheduled_task`` only renders the task
     XML and shells out through ``_exec_schtasks`` (mocked here as the genuine
@@ -334,8 +352,6 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
 
     def fake_schtasks(args):
         calls.append(tuple(args))
-        if args[0] == "/Delete":
-            return (0, "SUCCESS", "")
         if args[0] == "/Create":
             xml_path = Path(args[args.index("/XML") + 1])
             xml_seen["text"] = xml_path.read_text(encoding="utf-16")
@@ -347,10 +363,9 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
 
     assert ok is True
     assert "/Change" not in [arg for call in calls for arg in call]
-    assert calls[0][:4] == ("/Delete", "/F", "/TN", "Hermes_Gateway_alice")
-    assert calls[1][0] == "/Create"
-    assert "/XML" in calls[1]
-    assert "/SC" not in calls[1]
+    assert calls[0][:4] == ("/Create", "/F", "/TN", "Hermes_Gateway_alice")
+    assert "/XML" in calls[0]
+    assert "/SC" not in calls[0]
     assert "<Delay>PT30S</Delay>" in xml_seen["text"]
     assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml_seen["text"]
     assert "<StopOnIdleEnd>false</StopOnIdleEnd>" in xml_seen["text"]
@@ -767,7 +782,7 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     monkeypatch.setattr("builtins.print", lambda *a, **k: None)
 
     assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
-    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Create"]
     assert "<RestartOnFailure>" in registered["xml"]
     assert gateway_windows.compare_scheduled_task_drift(registered["xml"], template) == []
 

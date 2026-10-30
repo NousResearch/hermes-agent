@@ -585,15 +585,10 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
 
 
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
-    """Create or replace the Scheduled Task. Returns (success, detail). Always delete+create, never
-    ``/Change``: it preserves stale repeat/restart settings that relaunch the gateway every minute."""
-    delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
-    delete_detail = (delete_err or delete_out or "").strip()
-    if "cannot find" in delete_detail.lower():
-        delete_detail = ""
-    if delete_code != 0 and delete_detail and _is_access_denied(delete_detail):
-        return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
-    # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
+    """Create or replace the Scheduled Task. Returns (success, detail). ``/Create /F /XML`` replaces the
+    whole definition, never ``/Change``: it preserves stale repeat/restart settings that relaunch the
+    gateway every minute. No delete first: a logon trigger needs elevation and deleting your own task
+    does not, so a refused create from a normal shell would leave no task at all."""
     user = _resolve_task_user()
     launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
     xml_path = launcher_path.with_suffix(".task.xml")
@@ -613,8 +608,6 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
             xml_path.unlink(missing_ok=True)
         except OSError:
             pass
-    if delete_detail:
-        last_err = f"{last_err.strip()} (delete detail: {delete_detail})"
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
 
 

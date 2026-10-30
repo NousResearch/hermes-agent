@@ -3,6 +3,11 @@ import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
 
+type VisibilityWriter = (keys: Set<string> | null, providers: readonly ModelOptionProvider[]) => void
+let writer: VisibilityWriter | null = null
+
+export function setVisibilityWriter(next: VisibilityWriter | null): void { writer = next }
+
 const STORAGE_KEY = 'hermes.desktop.visible-models'
 
 /** Every `provider::model` key the user has had a chance to judge — snapshotted
@@ -116,6 +121,10 @@ function allFamilyKeys(providers: readonly ModelOptionProvider[]): Set<string> {
 /** Persist the visible set and, when the current catalog is supplied, mark every
  *  model in it as judged so only models that appear later count as new. */
 export function setVisibleModels(keys: Set<string>, providers: readonly ModelOptionProvider[] = []): void {
+  if (writer) { writer(keys, providers);
+
+ return }
+
   $visibleModels.set(new Set(keys))
   persistString(STORAGE_KEY, JSON.stringify([...keys]))
 
@@ -146,6 +155,7 @@ function persistKnownModels(known: Set<string>): void {
  *  union — that would mark a newcomer judged on the very render that first
  *  shows it. Call when the catalog has loaded. */
 export function seedKnownModels(providers: readonly ModelOptionProvider[]): void {
+  if (writer) {return}
   const stored = $visibleModels.get()
 
   if ($knownModels.get() !== null || stored === null || providers.length === 0) {
@@ -179,6 +189,10 @@ export function seedKnownModels(providers: readonly ModelOptionProvider[]): void
  *  This is the user's way out of that without a global storage-key bump; Edit
  *  Models reaches it through `resetModelVisibilityKeepingCustoms`. */
 export function resetModelVisibility(): void {
+  if (writer) { writer(null, []);
+
+ return }
+
   $visibleModels.set(null)
   persistString(STORAGE_KEY, null)
   $knownModels.set(null)
@@ -249,7 +263,7 @@ export function resolveVisibleKeys(
     return defaultVisibleKeys(providers)
   }
 
-  if (stored.size === 0) {
+  if (stored.size === 0 && !writer) {
     return new Set()
   }
 
@@ -265,7 +279,7 @@ export function resolveVisibleKeys(
     const hasStoredProvider = [...stored].some(key => key.startsWith(providerPrefix) && !isProviderSentinel(key))
 
     if (!hasStoredProvider) {
-      expandProviderDefaults(provider, next)
+      expandProviderDefaults(provider, next, key => !writer || !known?.has(key))
     } else if (known) {
       expandProviderDefaults(provider, next, key => !known.has(key))
     }

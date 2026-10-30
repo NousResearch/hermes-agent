@@ -4,6 +4,10 @@ import { persistStringArray, storedStringArray } from '@/lib/storage'
 
 import { modelVisibilityKey } from './model-visibility'
 
+let writer: ((provider: string, model: string, value: boolean) => void) | null = null
+
+export function setFavoriteWriter(next: typeof writer): void { writer = next }
+
 const STORAGE_KEY = 'hermes.desktop.favorite-models'
 
 /** Stable `provider::model` key for a favorite. Reuses the visibility-store
@@ -36,6 +40,10 @@ export function setFavoriteModels(keys: readonly string[]): void {
 
 /** Favorite a provider/model pair (appended to the order) or unfavorite it. */
 export function toggleFavoriteModel(provider: string, model: string): void {
+  if (writer) { writer(provider, model, !isModelFavorite(provider, model));
+
+ return }
+
   const key = favoriteModelKey(provider, model)
   const current = $favoriteModels.get()
 

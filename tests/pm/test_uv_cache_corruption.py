@@ -227,10 +227,13 @@ def test_valid_entries_uv_accepts_are_never_flagged(tmp_path, files):
     assert corrupt_cached_packages(tmp_path) == set()
 
 
-@pytest.mark.parametrize("damage", ["WHEEL", "METADATA", "RECORD", "missing-RECORD", "WHEEL-without-version"])
+@pytest.mark.parametrize("damage", ["WHEEL", "METADATA", "RECORD", "missing-RECORD", "WHEEL-without-version",
+                                    "RECORD-tail"])
 def test_torn_writes_are_flagged(tmp_path, damage):
     files = {"WHEEL": b"Wheel-Version: 1.0\n", "METADATA": b"Name: alpha-dep\n", "RECORD": b"a,,\n"}
-    if damage == "missing-RECORD":
+    if damage == "RECORD-tail":  # the first pages reached the disk, a later one did not
+        files["RECORD"] = b"a/b.py,,\n" * 20000 + b"\0" * 4096
+    elif damage == "missing-RECORD":
         del files["RECORD"]
     elif damage == "WHEEL-without-version":
         files["WHEEL"] = b"Root-Is-Purelib: true\n"

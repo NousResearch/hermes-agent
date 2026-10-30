@@ -134,3 +134,11 @@ def coverage_for_commit(
     if not covered and not marked:
         return None, None
     return covered, unresolved
+
+
+def archive_in_place(agent: Any, messages: list, persisted: list, **kwargs: Any) -> int:
+    """``archive_and_compact`` for the agent's session, writing the current turn's user row in its persisted form."""
+    from agent.session_persistence import durable_turn_user_row
+
+    with durable_turn_user_row(agent, messages, persisted):
+        return agent._session_db.archive_and_compact(agent.session_id, persisted, **kwargs)

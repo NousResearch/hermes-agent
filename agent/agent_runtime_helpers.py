@@ -3375,10 +3375,14 @@ def tool_results_this_turn(messages: list[dict[str, Any]]) -> int:
 
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
-# message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# message TAIL announcing a next action, so mid-sentence "I will" never trips it. Include explicit
+# cross-message promises: a model that says it will continue or that its next message will contain
+# the result has declared this response incomplete even when it already called tools earlier.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
-    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
+    r"|\bi(?:['\u2019]ll| will) continue (?:executing|working|investigating|debugging)\b"
+    r"|\bthe next message will contain\b)"
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 

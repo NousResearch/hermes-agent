@@ -43,6 +43,11 @@ class UpdatePlan:
     expected_version: Optional[str] = None
     profiles: list = field(default_factory=list)
     runtimes: list = field(default_factory=list)  # list[RuntimeRecord]
+    # Sessions with activity inside _ACTIVE_SESSION_WINDOW_SECONDS, per profile
+    # (item 6: the plan names the agent turns a restart will interrupt). Profiles
+    # whose state.db is missing or unreadable are simply absent — a probe never
+    # fails the report.
+    active_sessions: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
@@ -349,7 +354,55 @@ def collect_runtime_inventory() -> UpdatePlan:
     seen: set[int] = set()
     _collect_gateway_runtimes(plan, profile_homes, seen)
     _collect_ledger_runtimes(plan, seen)
+    with _probe("Active-session inventory"):
+        plan.active_sessions = _collect_active_sessions(profile_homes)
     return plan
+
+
+#: A session counts as "active" (its turn will feel the restart) when it has
+#: activity inside this window. Heartbeats persist ~60s apart, so 15 minutes
+#: comfortably covers an agent mid-turn without sweeping up yesterday's chats.
+_ACTIVE_SESSION_WINDOW_SECONDS = 15 * 60
+
+
+def _count_recent_sessions(home) -> int | None:
+    """Sessions active inside the window, or None when the db is absent/unreadable.
+
+    Read-only open (``mode=ro`` + ``query_only``) against the live file — a WAL
+    reader never blocks the gateway's writers. The sessions table is small
+    (one row per session, not per message), so the full scan is cheap even on a
+    multi-GB state.db. Never raises.
+    """
+    import sqlite3
+    import time
+
+    try:
+        db = home / "state.db"
+        if not db.is_file():
+            return None
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            con.execute("PRAGMA query_only=ON")
+            cutoff = time.time() - _ACTIVE_SESSION_WINDOW_SECONDS
+            row = con.execute(
+                "SELECT COUNT(*) FROM sessions WHERE COALESCE(last_activity_at, started_at, 0) > ?",
+                (cutoff,),
+            ).fetchone()
+        finally:
+            con.close()
+        return int(row[0]) if row else 0
+    except Exception:
+        return None
+
+
+def _collect_active_sessions(profile_homes: list) -> dict:
+    counts = {}
+    for name, home in profile_homes:
+        with suppress(Exception):
+            n = _count_recent_sessions(home)
+            if n:
+                counts[str(name)] = n
+    return counts
 
 
 def print_update_plan(plan: UpdatePlan) -> None:
@@ -363,6 +416,12 @@ def print_update_plan(plan: UpdatePlan) -> None:
         print("  ⚠ This install is NOT updatable in place.")
         print(f"    Update via: {plan.update_mechanism}")
     print(f"  Profiles: {', '.join(plan.profiles) if plan.profiles else '(none found)'}")
+    active = getattr(plan, "active_sessions", None) or {}
+    if active:
+        total = sum(active.values())
+        print(f"  Sessions with recent activity ({total} — their turns restart with the fleet):")
+        for profile, n in sorted(active.items()):
+            print(f"    • {profile}: {n} active session{'s' if n != 1 else ''}")
     if not plan.runtimes:
         print("  Running Hermes services: none detected — code swap only.")
         return

@@ -358,11 +358,14 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: dict[int, str] = {}
+        # Per-snapshot `element_index -> (x, y, w, h)` for the driver's coordinate-only `drag` tool.
+        self._snapshot_bounds: dict[int, tuple[int, int, int, int]] = {}
 
     def _set_active_target(self, target: dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._snapshot_bounds = {}  # prior snapshot's bounds: same reasoning — a stale box must not steer a gesture
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,

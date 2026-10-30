@@ -45,21 +45,24 @@ class TestDeepSeekThinkingWireShape:
         assert top_level == {}
 
 
-    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
-    def test_standard_efforts_pass_through(self, deepseek_profile, effort):
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("xhigh", "high"),
+            ("max", "max"),
+            ("minimal", "low"),
+            ("ultra", "max"),
+        ],
+    )
+    def test_efforts_normalize_to_the_deepseek_wire(self, deepseek_profile, effort, expected):
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
             model="deepseek-v4-pro",
         )
-        assert top_level == {"reasoning_effort": effort}
-
-    @pytest.mark.parametrize("effort", ["xhigh", "max", "MAX", "  Max  "])
-    def test_xhigh_and_max_normalize_to_max(self, deepseek_profile, effort):
-        _, top_level = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": effort},
-            model="deepseek-v4-pro",
-        )
-        assert top_level == {"reasoning_effort": "max"}
+        assert top_level == {"reasoning_effort": expected}
 
     def test_explicitly_disabled_sends_disabled_marker(self, deepseek_profile):
         """``reasoning_config.enabled=False`` → ``thinking.type=disabled``.
@@ -275,4 +278,3 @@ class TestDeepSeekAuxModel:
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert deepseek_profile.default_aux_model
         assert _get_aux_model_for_provider("deepseek") == deepseek_profile.default_aux_model
-

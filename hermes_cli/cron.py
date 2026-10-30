@@ -902,6 +902,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     if action == "run":
         print(f"  {_run_outcome(result.get('job', {}))}")
         if (job.get('executed') and job.get('execution_success') is False
+                and job.get('last_status') != 'cancelled'
                 and not job.get('delegation_id') and job.get('execution_mode') != 'background'):
             return 1
     return 0
@@ -918,6 +919,8 @@ def _run_outcome(job: dict[str, Any]) -> str:
     if job.get("execution_mode") == "background":
         return "Running in background."
     if job.get("executed"):
+        if not job.get("execution_success") and job.get("last_status") == "cancelled":
+            return "Ran now: cancelled."
         return f"Ran now: {'succeeded' if job.get('execution_success') else 'failed'}."
     return job.get("execution_skipped") or "It will run on the next scheduler tick."
 

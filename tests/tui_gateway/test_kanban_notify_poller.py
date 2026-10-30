@@ -250,6 +250,44 @@ class TestFormatKanbanEventText:
         assert "timed out" in text
 
 
+    def test_iteration_budget_is_not_reported_as_a_timeout(self):
+        """An exhausted ITERATION budget is not a runtime timeout.
+
+        The old message read ``limit_seconds`` from a payload that carries
+        only ``budget_used``/``budget_max``, so it printed
+        ``max_runtime=0s`` — naming a timeout the worker never hit and a cap
+        of zero seconds.
+        """
+        ev = SimpleNamespace(
+            kind="timed_out",
+            payload={"budget_used": 300, "budget_max": 300},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "ran out of iterations" in text, text
+        assert "300/300" in text, text
+        assert "max_runtime" not in text, text
+
+
+    def test_iteration_budget_falls_back_to_the_error_string(self):
+        """A payload written before the structured fields still reads right."""
+        ev = SimpleNamespace(
+            kind="timed_out",
+            payload={"error": "Iteration budget exhausted (150/150) — task could not complete"},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "ran out of iterations" in text, text
+        assert "150/150" in text, text
+        assert "max_runtime" not in text, text
+
+
+    def test_a_real_timeout_still_reports_its_runtime_cap(self):
+        """A genuine runtime timeout keeps the runtime wording."""
+        ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": 900})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "timed out" in text, text
+        assert "max_runtime=900s" in text, text
+
+
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.
 

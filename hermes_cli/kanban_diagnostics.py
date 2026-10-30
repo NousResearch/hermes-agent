@@ -736,6 +736,50 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_parked_needs_routing(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A ``parked`` card has no assignee — nobody can run it.
+
+    Parked is the visible form of "queued but not runnable": the dispatcher
+    moved it out of ``ready`` because it had no name to route it to. The card
+    is not broken and never will fix itself — it needs a PROFILE. Age
+    escalates the signal so a long-parked card stands out from a fresh one.
+    """
+    threshold_seconds = float(cfg.get("stranded_threshold_seconds", 30 * 60))
+    if _task_field(task, "status") != "parked":
+        return []
+    parked_ts = _latest_event_ts(events, {"parked"})
+    if parked_ts == 0:
+        parked_ts = int(_task_field(task, "created_at", default=0) or 0)
+    if parked_ts == 0:
+        return []
+    age_seconds = now - parked_ts
+    if age_seconds < threshold_seconds:
+        return []
+    age_str = f"{age_seconds / 3600:.1f}h" if age_seconds >= 3600 else f"{int(age_seconds / 60)}m"
+    if age_seconds >= threshold_seconds * 6:
+        severity = "critical"
+    elif age_seconds >= threshold_seconds * 2:
+        severity = "error"
+    else:
+        severity = "warning"
+    actions = [
+        DiagnosticAction(kind="reassign", label="Assign a profile to route it",
+                         payload={"current_assignee": ""}),
+        _cli_hint("List parked cards", "hermes kanban list --status parked"),
+    ]
+    return [Diagnostic(
+        kind="parked_needs_routing", severity=severity,
+        title=f"Parked for {age_str} with no assignee",
+        detail=f"This task has been parked for {age_str} because no assignee could route it, so the "
+               f"dispatcher will never run it. Assign a profile (or set kanban.default_assignee) and "
+               f"it returns to the ready lane.",
+        actions=actions,
+        first_seen_at=parked_ts, last_seen_at=parked_ts, count=1,
+        data={"parked_since": parked_ts, "age_seconds": int(age_seconds),
+              "threshold_seconds": int(threshold_seconds)},
+    )]
+
+
 def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     """A ``running`` card whose claim expired >= cfg["stale_running_grace_seconds"]
     (default 1h) ago with no live recorded worker.
@@ -819,6 +863,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_parked_needs_routing,
     _rule_stale_running,
 ]
 

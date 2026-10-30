@@ -116,6 +116,7 @@ DEFAULT_WORKFLOW = Workflow(
         Column("triage", "Triage", "◇"),
         Column("todo", "Todo", "◻"),
         Column("scheduled", "Scheduled", "⏱", drag_target=False),
+        Column("parked", "Parked", "⏸"),
         Column("ready", "Ready", "▶"),
         Column("running", "Running", "●", drag_target=False),
         Column("blocked", "Blocked", "⊘"),
@@ -123,17 +124,21 @@ DEFAULT_WORKFLOW = Workflow(
         Column("done", "Done", "✓"),
     ),
     manual=_frozen_manual({
-        "triage": ("todo", "ready"),
-        "todo": ("triage", "scheduled", "ready"),
-        "scheduled": ("triage", "todo", "ready"),
-        "ready": ("triage", "todo", "scheduled", "blocked", "review", "done"),
-        "running": ("triage", "todo", "scheduled", "ready", "blocked", "review", "done"),
-        "blocked": ("triage", "todo", "scheduled", "ready", "done"),
+        "triage": ("todo", "ready", "parked"),
+        "todo": ("triage", "scheduled", "ready", "parked"),
+        "scheduled": ("triage", "todo", "ready", "parked"),
+        # ``parked`` holds a card nobody can run: it has no assignee, so the
+        # dispatcher would skip it forever. Leaving it needs a real
+        # destination (assigning one lands it back in its lane).
+        "parked": ("triage", "todo", "ready"),
+        "ready": ("triage", "todo", "scheduled", "blocked", "review", "done", "parked"),
+        "running": ("triage", "todo", "scheduled", "ready", "blocked", "review", "done", "parked"),
+        "blocked": ("triage", "todo", "scheduled", "ready", "done", "parked"),
         # Known quirk kept for zero behavior change: review -> todo lands in ``ready``
         # (reopen_review_task ignores the requested target). Phase 1 fixes it.
-        "review": ("triage", "todo", "ready", "done"),
-        "done": ("triage", "todo", "ready"),
-        ARCHIVED: ("triage", "todo", "ready"),  # restore from the archive filter
+        "review": ("triage", "todo", "ready", "done", "parked"),
+        "done": ("triage", "todo", "ready", "parked"),
+        ARCHIVED: ("triage", "todo", "ready", "parked"),  # restore from the archive filter
     }),
 )
 DEFAULT_WORKFLOW.validate()

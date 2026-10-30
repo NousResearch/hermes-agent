@@ -577,13 +577,16 @@ _RUNNING_DIRECT_MSG = "Cannot set status to 'running' directly; use the dispatch
 
 
 def _drag_to(conn, task_id: str, s: str) -> bool:
-    """Drag-drop into ready/todo/triage: blocked/scheduled -> ready re-opens via ``unblock_task``;
+    """Drag-drop into ready/todo/triage/parked: blocked/scheduled -> ready re-opens via ``unblock_task``;
     leaving ``review`` goes through ``reopen_review_task`` (stale-run recovery, parent re-gate,
     ``review_reopened`` event) instead of a raw write; ``triage`` needs no current-state query."""
     current = kanban_db.get_task(conn, task_id) if s != "triage" else None
     if s == "ready" and current and current.status in ("blocked", "scheduled"):
         return kanban_db.unblock_task(conn, task_id)
-    if current is not None and current.status == "review":
+    # Parking a review card parks the REVIEW, not the work: the card still
+    # needs a reviewer. ``reopen_review_task`` would land it in the worker
+    # lane (``ready``), which is the opposite of what the operator asked.
+    if current is not None and current.status == "review" and s != "parked":
         return kanban_db.reopen_review_task(conn, task_id)
     return _set_status_direct(conn, task_id, s)
 
@@ -600,7 +603,8 @@ _STATUS_HANDLERS: dict[str, Any] = {
         conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
     "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
     "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),
-    "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage")}
+    "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage"),
+    "parked": lambda conn, tid, p: _drag_to(conn, tid, "parked")}
 
 
 def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
@@ -761,12 +765,18 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             return False
         was_running = prev["status"] == "running"
         reopening_satisfied_parent = prev["status"] in {"done", "archived"} and effective_status not in {"done", "archived"}
+        # ``parked`` means "no assignee, needs routing". Dragging an assigned
+        # card there must clear the assignee, or the card sits in the parked
+        # column while still naming a worker — the dispatcher would then claim
+        # it and the column would lie.
+        assignee_sql = ", assignee = NULL" if effective_status == "parked" else ""
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
             "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
-            "WHERE id = ?",
+            + assignee_sql +
+            " WHERE id = ?",
             (effective_status,) * 4 + (task_id,))
         if cur.rowcount != 1:
             return False
@@ -1267,10 +1277,38 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 
 
 @router.post("/dispatch")
-def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
-    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
+def dispatch(dry_run: bool = Query(False), max_n: Optional[int] = Query(None, alias="max"), board: Optional[str] = Query(None)):
+    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick.
+
+    The concurrency caps come from the same place the gateway and the CLI
+    read them, so a nudge can never spawn MORE than the configured ceiling:
+    ``kanban.max_in_progress`` (host-level, counted across every board) and
+    ``kanban.max_spawn`` (per-board). ``?max=`` remains an explicit override
+    for one call, and it is still clamped by the host cap — the query
+    parameter narrows the spawn, it does not widen the budget.
+
+    The previous default of 8 was a hardcoded literal that ignored
+    ``kanban.max_in_progress`` entirely: a board capped at 24 was still
+    limited to 8 spawns by the browser's nudge button.
+    """
+    kanban_cfg = (_load_config_or_empty().get("kanban") or {})
+    max_in_progress = kbd.resolve_max_in_progress(kbd._positive_int(kanban_cfg.get("max_in_progress"), None))
+    max_spawn = kbd._positive_int(kanban_cfg.get("max_spawn"), None)
+    if max_n is not None:
+        # An explicit ?max= narrows the per-board budget; it never lifts it.
+        max_spawn = max_n if max_spawn is None else min(max_spawn, max_n)
+    if max_spawn is not None and max_in_progress is not None:
+        # The host cap is the ceiling for the per-board budget too, so a
+        # ?max= (or kanban.max_spawn) above it cannot buy extra spawns.
+        max_spawn = min(max_spawn, max_in_progress)
     with _board_conn(board) as (board, conn):
-        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
+        result = kbd.dispatch_once(
+            conn,
+            dry_run=dry_run,
+            max_spawn=max_spawn,
+            max_in_progress=max_in_progress,
+            board=board,
+        )
         try:
             return asdict(result)  # DispatchResult is a dataclass
         except TypeError:

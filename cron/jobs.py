@@ -1419,7 +1419,7 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _has_legacy_runtime(record: Dict[str, Any]) -> bool:
+def _has_legacy_runtime(record: dict[str, Any]) -> bool:
     """True for a jobs.json record still carrying scheduler state (pre-split store, or written by an
     older Hermes after a downgrade)."""
     repeat = record.get("repeat")
@@ -1427,10 +1427,10 @@ def _has_legacy_runtime(record: Dict[str, Any]) -> bool:
         isinstance(repeat, dict) and "completed" in repeat)
 
 
-def _split_job(job: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _split_job(job: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """One merged job -> ``(definition for jobs.json, runtime row)``."""
-    definition: Dict[str, Any] = {}
-    runtime: Dict[str, Any] = {}
+    definition: dict[str, Any] = {}
+    runtime: dict[str, Any] = {}
     for key, value in job.items():
         (runtime if _is_runtime_field(key) else definition)[key] = copy.deepcopy(value)
     repeat = definition.get("repeat")
@@ -1442,7 +1442,7 @@ def _split_job(job: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return definition, runtime
 
 
-def _merge_job(definition: Dict[str, Any], runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _merge_job(definition: dict[str, Any], runtime: Optional[dict[str, Any]]) -> dict[str, Any]:
     """jobs.json record + its runtime row -> the merged dict every caller works with, built IN PLACE
     on ``definition`` (both inputs are freshly parsed and private to this load). Per field: a
     scheduler field the jobs.json record itself carries wins (a pre-split store, an older Hermes
@@ -1473,7 +1473,7 @@ def _merge_job(definition: Dict[str, Any], runtime: Optional[Dict[str, Any]]) ->
     return job
 
 
-def _write_definitions_file(jobs_file: Path, definitions: List[Dict[str, Any]]) -> None:
+def _write_definitions_file(jobs_file: Path, definitions: list[dict[str, Any]]) -> None:
     """Replace jobs.json with ``definitions`` (fsynced temp + atomic rename, owner preserved)."""
     stat_before = None
     for probe in (jobs_file, jobs_file.parent):
@@ -1519,12 +1519,33 @@ def _recover_pending_definitions() -> None:
         acknowledge_pending_definitions(store.cron_dir, generation_id or "", applied=applied)
 
 
-def load_jobs() -> List[Dict[str, Any]]:
+def load_jobs() -> list[dict[str, Any]]:
     """Load all jobs: jobs.json definitions merged with their runtime.db state."""
     return _load_jobs(recover=True)
 
 
-def _load_jobs(*, recover: bool) -> List[Dict[str, Any]]:
+def _normalize_repeat_completed(jobs: list[dict[str, Any]]) -> bool:
+    """Coerce every ``repeat.completed`` to a non-negative int in place; True if any changed.
+
+    A hand-edited "completed" that is not a non-negative int (null, "2", 1.0, -5, Infinity)
+    would crash every counter reader (None += 1, "2" + 1), render as "None/3" / "2.0/3", or
+    grant extra runs; normalize it once here so readers can trust a non-negative int.
+    OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises.
+    Runs on the MERGED view: repeat.completed normally lives in runtime.db, not jobs.json."""
+    changed = False
+    for job in jobs:
+        rep = job.get("repeat")
+        if isinstance(rep, dict) and "completed" in rep and (
+                type(rep["completed"]) is not int or rep["completed"] < 0):
+            try:
+                rep["completed"] = max(int(rep["completed"]), 0)
+            except (TypeError, ValueError, OverflowError):
+                rep["completed"] = 0
+            changed = True
+    return changed
+
+
+def _load_jobs(*, recover: bool) -> list[dict[str, Any]]:
     store = _current_cron_store()
     jobs_file = store.jobs_file
     ensure_dirs()
@@ -1603,20 +1624,8 @@ def _load_jobs(*, recover: bool) -> List[Dict[str, Any]]:
     # Digest the records as parsed, BEFORE the in-place merge below adds runtime fields to them.
     definitions_digest = _canonical_digest(jobs)
     jobs = [_merge_job(j, runtime_rows.get(str(j.get("id")))) for j in jobs]
-    for job in jobs:
-        # A hand-edited "completed" that is not a non-negative int (null, "2", 1.0, -5, Infinity)
-        # would crash every counter reader (None += 1, "2" + 1), render as "None/3" / "2.0/3", or
-        # grant extra runs; normalize it once here so readers can trust a non-negative int.
-        # OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises.
-        # Runs on the MERGED view: repeat.completed normally lives in runtime.db, not jobs.json.
-        rep = job.get("repeat")
-        if isinstance(rep, dict) and "completed" in rep and (
-                type(rep["completed"]) is not int or rep["completed"] < 0):
-            try:
-                rep["completed"] = max(int(rep["completed"]), 0)
-            except (TypeError, ValueError, OverflowError):
-                rep["completed"] = 0
-            repair = repair or "invalid repeat.completed normalized"
+    if _normalize_repeat_completed(jobs):
+        repair = repair or "invalid repeat.completed normalized"
     if legacy and not repair:
         # Lossless: the merged view already holds every value; the save moves scheduler state
         # into runtime.db and strips it from jobs.json, atomically via the pending journal.
@@ -1694,7 +1703,7 @@ def _record_load_stamp(stamp: Optional[tuple[int, int, int]]) -> None:
 
 
 def _record_loaded_runtime(
-    rows: Optional[Dict[str, Optional[str]]], definitions_digest: Optional[str] = None,
+    rows: Optional[dict[str, Optional[str]]], definitions_digest: Optional[str] = None,
 ) -> None:
     """Remember what this _jobs_lock() section loaded — each runtime row's stored text (so its save
     rewrites only rows it changed; text, because callers mutate the merged dicts in place) and the digest of jobs.json's records (so an unchanged-definition save need not
@@ -1706,7 +1715,7 @@ def _record_loaded_runtime(
         _jobs_lock_state.loaded_definitions_digest = definitions_digest if rows is not None else None
 
 
-def _disk_definitions_digest(jobs_file: Path) -> Tuple[bool, Optional[str]]:
+def _disk_definitions_digest(jobs_file: Path) -> tuple[bool, Optional[str]]:
     """``(known, digest)`` of jobs.json's records: from the load snapshot when the stamp proves the
     file unchanged since, else by re-reading it. ``digest`` is None for a pre-split (legacy),
     non-canonical (bare list, or parsed only with ``strict=False``) or unreadable file — all force
@@ -1719,7 +1728,7 @@ def _disk_definitions_digest(jobs_file: Path) -> Tuple[bool, Optional[str]]:
         return False, None
     try:
         data, lenient = _parse_jobs_file(jobs_file)
-    except Exception:
+    except (OSError, ValueError):  # unreadable, undecodable or not JSON at all
         return True, None
     on_disk = data.get("jobs", []) if isinstance(data, dict) else None
     if lenient or not isinstance(on_disk, list) or any(
@@ -1815,8 +1824,8 @@ def _save_jobs_unlocked(
     jobs_file = store.jobs_file
     ensure_dirs()
     removed = {str(i) for i in (removed_ids or ()) if i}
-    definitions: List[Any] = []
-    runtime: Dict[str, Dict[str, Any]] = {}
+    definitions: list[Any] = []
+    runtime: dict[str, dict[str, Any]] = {}
     for job in jobs:
         if not isinstance(job, dict):
             definitions.append(job)  # junk entries round-trip untouched, as before the split
@@ -1917,7 +1926,7 @@ def _raw_disk_digest(jobs_file: Path) -> Optional[str]:
     return None if on_disk is None else _canonical_digest(on_disk)
 
 
-def _definitions_changed(jobs_file: Path, definitions: List[Any]) -> bool:
+def _definitions_changed(jobs_file: Path, definitions: list[Any]) -> bool:
     """Whether jobs.json must be rewritten: missing, unreadable, still carrying pre-split scheduler
     state, or its records differ from ``definitions``."""
     exists, digest = _disk_definitions_digest(jobs_file)

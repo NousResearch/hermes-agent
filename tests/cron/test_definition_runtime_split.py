@@ -388,7 +388,7 @@ def test_remove_job_deletes_its_runtime_row(hermes_env):
 def test_stale_save_leaves_rows_it_did_not_change(hermes_env):
     """A writer holding an old snapshot (degraded lock) must not roll back a sibling's newer state
     for a job it never touched."""
-    import cron.jobs as jobs
+    from cron import jobs
     from cron.runtime_state import write_runtime_states
 
     a = jobs.create_job(prompt="a", schedule="every 2h")
@@ -506,7 +506,7 @@ def test_legacy_job_id_record_keeps_identity_and_state(hermes_env):
 def test_quick_snapshot_never_splits_a_job_from_its_runtime_row(hermes_env, monkeypatch):
     """A removal landing while the snapshot is being taken must not leave the snapshot holding a
     definition whose runtime row is already gone."""
-    import hermes_cli.backup as backup
+    from hermes_cli import backup
     from cron.jobs import create_job, load_jobs, mark_job_run, remove_job
 
     job = create_job(prompt="ping", schedule="every 2h")
@@ -544,7 +544,8 @@ def _remove_in_another_process(job_id):
 
     repo_root = Path(__file__).resolve().parents[2]
     done = subprocess.run([sys.executable, "-c", _REMOVER, job_id], cwd=repo_root,
-                          env=dict(os.environ), capture_output=True, text=True, timeout=120)
+                          env=dict(os.environ), capture_output=True, text=True, timeout=120,
+                          check=False)
     assert done.returncode == 0, done.stderr
 
 
@@ -565,7 +566,7 @@ def _cron_lock_is_free():
 def _race_a_removal_with_the_executions_db_copy(home, monkeypatch, job_id):
     """While the backup copies cron/executions.db (a non-pair file), probe the store lock and let
     another process remove ``job_id``. Returns the probe results."""
-    import hermes_cli.backup as backup
+    from hermes_cli import backup
 
     sqlite3.connect(home / "cron" / "executions.db").execute(
         "CREATE TABLE IF NOT EXISTS runs (id INTEGER)").connection.close()
@@ -596,7 +597,7 @@ def test_quick_snapshot_pair_survives_a_removal_during_a_slow_cron_copy(hermes_e
     """A removal by another process while a large non-pair cron file (executions.db) is being
     copied must not leave the snapshot's jobs.json declaring a job whose runtime row is gone, and
     the store lock must not be held across that copy."""
-    import hermes_cli.backup as backup
+    from hermes_cli import backup
     from cron.jobs import create_job, load_jobs, mark_job_run
 
     job = create_job(prompt="ping", schedule="every 2h")
@@ -616,7 +617,7 @@ def test_full_backup_pair_survives_a_removal_during_a_slow_cron_copy(
     cron/jobs.json and cron/runtime.db must be a pair that existed together."""
     import zipfile
 
-    import hermes_cli.backup as backup
+    from hermes_cli import backup
     from cron.jobs import create_job, mark_job_run
 
     job = create_job(prompt="ping", schedule="every 2h")
@@ -674,7 +675,7 @@ def test_full_backup_takes_runtime_db_created_by_a_migration_after_the_scan(
     carry that state, not the stripped definitions alone."""
     import zipfile
 
-    import hermes_cli.backup as backup
+    from hermes_cli import backup
     from cron.jobs import load_jobs
     from cron.runtime_state import load_runtime_states
 
@@ -704,8 +705,8 @@ def test_update_recovery_with_nothing_to_fold_writes_under_the_store_lock(
     """When every restored job still has its live runtime row there is nothing to fold, but the
     restored jobs.json must still be written under the store lock: a removal slipping in between
     would otherwise have its definition brought back without its runtime row."""
-    import hermes_cli.backup as backup
-    import cron.jobs as jobs
+    from hermes_cli import backup
+    from cron import jobs
     from cron.jobs import create_job, get_job, mark_job_run
 
     lost = create_job(prompt="lost", schedule="every 2h")
@@ -752,7 +753,7 @@ def test_update_recovery_with_nothing_to_fold_writes_under_the_store_lock(
 def test_root_writer_hands_runtime_db_to_the_store_owner(hermes_env, monkeypatch):
     """A root CLI command migrating another user's store must not leave runtime.db root-owned 0600:
     the unprivileged gateway could then no longer load any job (#68483 for jobs.json)."""
-    import cron.jobs as jobs
+    from cron import jobs
 
     _write_combined(hermes_env, [_combined_record()])
     cron_dir = (hermes_env / "cron").resolve()
@@ -787,7 +788,7 @@ def test_root_writer_hands_runtime_db_to_the_store_owner(hermes_env, monkeypatch
 
 def _runtime_only_save(home):
     """A save that changes only scheduler state (the per-fire advance), after one normal save."""
-    import cron.jobs as jobs
+    from cron import jobs
 
     record = _combined_record()
     jobs.save_jobs([record])
@@ -800,7 +801,7 @@ def test_full_runtime_db_raises_enospc_so_the_store_degrades(hermes_env, monkeyp
     """A full disk fails the runtime.db commit with SQLITE_FULL. The scheduler degrades an unwritable
     store (cron/store_health.py) only on OSError, so the commit must surface as ENOSPC like the
     jobs.json write beside it, not as a sqlite3 error that fails the whole tick."""
-    import hermes_cli.sqlite_util as sqlite_util
+    from hermes_cli import sqlite_util
     from cron import store_health
 
     jobs, record, before = _runtime_only_save(hermes_env)

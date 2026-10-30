@@ -137,7 +137,7 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def _decode_state(job_id: str, payload: str) -> Dict[str, Any]:
+def _decode_state(job_id: str, payload: str) -> dict[str, Any]:
     """Decode one row; fail closed on corruption (silently dropping state could re-fire a job)."""
     try:
         state = json.loads(payload)
@@ -153,7 +153,7 @@ def serialize_state(state: Mapping[str, Any]) -> str:
     return _dumps(dict(state))
 
 
-def read_store(cron_dir: Path) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], bool]:
+def read_store(cron_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str], bool]:
     """``(every job's runtime row, each row's stored text, whether an interrupted save's journal is
     pending)`` in one read snapshot; empty when the store was never created. The stored text lets a
     caller detect changes without keeping a (mutable, aliasable) copy of the decoded row."""
@@ -168,14 +168,14 @@ def read_store(cron_dir: Path) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str
     return states, {str(r["job_id"]): str(r["state_json"]) for r in rows}, pending
 
 
-def load_runtime_states(cron_dir: Path) -> Dict[str, Dict[str, Any]]:
+def load_runtime_states(cron_dir: Path) -> dict[str, dict[str, Any]]:
     """Every job's runtime row for one profile; ``{}`` when the store was never created."""
     return read_store(cron_dir)[0]
 
 
 def load_pending_definitions(
     cron_dir: Path,
-) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str]]:
+) -> tuple[Optional[list[dict[str, Any]]], Optional[str], Optional[str]]:
     """``(definitions, generation_id, base_digest)`` of an unacknowledged save, else all None."""
     if not runtime_db_path(cron_dir).exists():
         return None, None, None
@@ -206,7 +206,7 @@ def acknowledge_pending_definitions(
     discarded journal keeps them, because its jobs are still declared."""
     if generation_id == "legacy":
         match = "singleton = 1 AND (generation_id IS NULL OR generation_id = '')"
-        params: Tuple[Any, ...] = ()
+        params: tuple[Any, ...] = ()
     else:
         match = "singleton = 1 AND generation_id = ?"
         params = (generation_id,)
@@ -226,7 +226,7 @@ def acknowledge_pending_definitions(
 def _write_rows(
     conn: sqlite3.Connection, states: Mapping[str, Mapping[str, Any]], *,
     removed_ids: Collection[str], replace: bool, delete: bool = True,
-) -> List[str]:
+) -> list[str]:
     """Upsert ``states`` and delete ``removed_ids`` (or only return them, ``delete=False``). Rows
     for other jobs are left alone — under the degraded (flock-timeout) path a sibling may have
     committed them after this writer's load — unless ``replace`` asks for the wholesale rewrite

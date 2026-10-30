@@ -293,6 +293,18 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+/* "All boards" aggregate view: the origin-board label on each card. Accent
+   colour (rather than the muted tenant tag) so a mixed-board column reads
+   board-vs-tag at a glance; long board names ellipsize. */
+.hermes-kanban-board-tag {
+  border-color: var(--color-primary, #6ea8fe) !important;
+  color: var(--color-primary, #6ea8fe) !important;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Board-level project binding readout in the board switcher; the × unbinds. */
 .hermes-kanban-board-project-unbind {
   margin-left: 0.25rem;

@@ -1259,3 +1259,85 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
         "/api/plugins/kanban/events?token=secret-xyz&board=alive"
     ) as ws:
         assert ws is not None
+
+
+# ---------------------------------------------------------------------------
+# GET /board?board=* — cross-board aggregate view (#121549)
+# ---------------------------------------------------------------------------
+
+def _post_task(client, board, title, **extra):
+    payload = {"title": title, "assignee": "ops", **extra}
+    r = client.post(f"/api/plugins/kanban/tasks?board={board}", json=payload)
+    assert r.status_code == 200, r.text
+    return r.json()["task"]
+
+
+def test_board_star_merges_every_live_board(client):
+    """``board=*`` concatenates every live board into the same status columns
+    and tags each card with the board it came from (ids are per-board)."""
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    a = _post_task(client, "alpha", "alpha task")
+    b = _post_task(client, "beta", "beta task")
+
+    r = client.get("/api/plugins/kanban/board?board=*")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["aggregate"] is True
+    assert {"alpha", "beta"} <= {board["slug"] for board in data["boards"]}
+    # Same lanes, same order as the single-board payload.
+    assert [c["name"] for c in data["columns"]] == [
+        c["name"] for c in client.get("/api/plugins/kanban/board").json()["columns"]
+    ]
+    ready = {
+        t["id"]: t
+        for c in data["columns"] if c["name"] == "ready"
+        for t in c["tasks"]
+    }
+    assert ready[a["id"]]["board"] == "alpha"
+    assert ready[b["id"]]["board"] == "beta"
+    assert ready[a["id"]]["board_name"]
+
+
+def test_board_star_honours_filters(client):
+    """The aggregate reuses the single-board query params instead of inventing
+    a second filter dialect."""
+    kb.create_board("one")
+    kb.create_board("two")
+    _post_task(client, "one", "acme job", tenant="acme")
+    _post_task(client, "two", "other job", tenant="other")
+
+    data = client.get("/api/plugins/kanban/board?board=*&tenant=acme").json()
+    titles = [t["title"] for c in data["columns"] for t in c["tasks"]]
+    assert titles == ["acme job"]
+    # `tenants` is the union of every board's tenants, not the active filter —
+    # same contract as the single-board payload (the UI renders it as lanes).
+    assert data["tenants"] == ["acme", "other"]
+
+
+def test_board_star_skips_archived_boards(client):
+    """An archived board is a tombstone, not a live source of cards."""
+    kb.create_board("alive")
+    kb.create_board("gone")
+    _post_task(client, "gone", "doomed")
+    _post_task(client, "alive", "survivor")
+    kb.remove_board("gone", archive=True)
+
+    data = client.get("/api/plugins/kanban/board?board=*").json()
+    assert "gone" not in {board["slug"] for board in data["boards"]}
+    assert "alive" in {board["slug"] for board in data["boards"]}
+    titles = [t["title"] for c in data["columns"] for t in c["tasks"]]
+    assert "survivor" in titles
+    assert "doomed" not in titles
+
+
+def test_board_star_is_read_only(client):
+    """``*`` is a view sentinel, not a slug: every write endpoint rejects it
+    with 400 while real boards stay writable."""
+    r = client.post("/api/plugins/kanban/tasks?board=*", json={"title": "nope"})
+    assert r.status_code == 400, r.text
+    task = _post_task(client, "default", "still writable")
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}?board=*", json={"title": "nope"}
+    )
+    assert r.status_code == 400, r.text

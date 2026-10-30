@@ -101,7 +101,7 @@ def relay_explicitly_disabled() -> bool:
     is for every other platform, and an absent key keeps URL-only activation.
     """
     from gateway.config import Platform, PlatformConfig
-    from gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers
+    from gateway.config_loader import build_platform_sections, read_yaml_layers
     from hermes_constants import get_hermes_home
 
     try:
@@ -110,10 +110,9 @@ def relay_explicitly_disabled() -> bool:
         return False
     if not isinstance(cfg, dict):
         return False
-    gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
-    platforms = merge_platform_sections(cfg, gateway, {})
-    bridge_platform_shared_keys(cfg, gateway.get("platforms"), {}, platforms, [Platform.RELAY])
-    block = platforms.get("relay")
+    sections = build_platform_sections(cfg, {}, names={Platform.RELAY.value})
+    sections.finish([Platform.RELAY])
+    block = sections.platforms.get("relay")
     if not isinstance(block, dict) or not block.get("extra", {}).get("_enabled_explicit"):
         return False
     return not PlatformConfig.from_dict(block).enabled

@@ -7,9 +7,11 @@ silently replaced by the nested one. Both overwrite whatever legacy gateway.json
 """
 
 import contextlib
+import copy
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -520,10 +522,9 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     if not yaml_cfg:
         return
 
-    gateway_section = yaml_cfg.get("gateway")
-    bridge_toplevel_keys(yaml_cfg, gateway_section, gw_data)
-    gateway_platforms = gateway_section.get("platforms") if isinstance(gateway_section, dict) else None
-    platforms_data = merge_platform_sections(yaml_cfg, gateway_section, gw_data)
+    bridge_toplevel_keys(yaml_cfg, yaml_cfg.get("gateway"), gw_data)
+    sections = build_platform_sections(yaml_cfg, gw_data)
+    platforms_data = sections.platforms
 
     try:
         from hermes_cli.plugins import discover_plugins
@@ -541,17 +542,77 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         entries = registry.configured_entries(activation_predicate(
             yaml_cfg=yaml_cfg, platform_names=platforms_data, home=home, registry=registry))
     targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
-    # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
-    # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
-    authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
-    from hermes_cli import managed_scope
-    managed_extra = _apply_managed_extra(authored, managed_scope.apply_managed_overlay({}), platforms_data)
     warned: set = set()  # one warning per conflicting (platform, key) across both copy sites
-    bridge_platform_shared_keys(
-        yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)
-    apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
-                            warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
+    # After discovery: a user-installed plugin's ``gateway.<id>`` shorthand only passes the
+    # ``Platform(key)`` probe in ``finish``'s merges once its plugin is registered.
+    authored, managed_extra = sections.finish(targets, warned=warned)
+    apply_plugin_yaml_hooks(yaml_cfg, sections.gateway_platforms, platforms_data, registry, warned=warned,
+                            authored=authored, managed_extra=managed_extra, entries=entries)
     bridge_core_env_settings(yaml_cfg, platforms_data)
+
+
+@dataclass(eq=False)
+class PlatformSections:
+    """One config.yaml's platform blocks, merged by ``build_platform_sections``; ``finish`` runs the
+    loader's remaining platform steps."""
+
+    cfg: dict = field(repr=False)  # the config the steps read: only *names*' blocks (copies) when given
+    gw_data: dict = field(repr=False)  # the gateway config under construction
+    names: Optional[set]
+    platforms: dict = field(repr=False)  # ``gw_data["platforms"]``
+
+    @property
+    def gateway_platforms(self) -> Any:
+        gateway_section = self.cfg.get("gateway")
+        return gateway_section.get("platforms") if isinstance(gateway_section, dict) else None
+
+    def finish(self, targets: list, *, warned: Optional[set] = None) -> tuple[dict, dict]:
+        """Snapshot what config.yaml authored, apply the administrator's pins over it, then bridge each
+        target's shared keys and explicit top-level ``enabled`` (``bridge_platform_shared_keys``).
+        The loader calls this after plugin discovery (see ``load_yaml_layer``).
+
+        Returns ``(authored, managed_extra)`` for the plugin YAML hooks."""
+        from hermes_cli import managed_scope
+
+        managed = managed_scope.apply_managed_overlay({})
+        if self.names is not None:
+            managed = _only_platforms(managed, self.names)
+        # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
+        # already in ``platforms``, which stays the base layer every config.yaml key overrides.
+        authored = snapshot_authored_extra(merge_platform_sections(self.cfg, self.cfg.get("gateway"), {}))
+        managed_extra = _apply_managed_extra(authored, managed, self.platforms)
+        bridge_platform_shared_keys(self.cfg, self.gateway_platforms, self.gw_data, self.platforms, targets,
+                                    warned=warned, authored=authored)
+        return authored, managed_extra
+
+
+def build_platform_sections(yaml_cfg: dict, gw_data: dict, *, names: Optional[set] = None) -> PlatformSections:
+    """Merge *yaml_cfg*'s platform blocks (only *names*' when given) into ``gw_data["platforms"]``;
+    ``PlatformSections.finish`` completes the loader's platform steps.
+
+    *names* restricts config.yaml, and in ``finish`` the managed overlay, to those platforms' blocks
+    (deep copies): no other key reaches the merges' ``Platform(key)`` probes, so a caller judging
+    another profile's platform never registers that profile's plugin ids process-wide, and the
+    steps, which write into blocks they reuse, never touch the caller's dict.
+    """
+    if names is not None:
+        yaml_cfg = _only_platforms(yaml_cfg, names)
+    platforms = merge_platform_sections(yaml_cfg, yaml_cfg.get("gateway"), gw_data)
+    return PlatformSections(cfg=yaml_cfg, gw_data=gw_data, names=names, platforms=platforms)
+
+
+def _only_platforms(cfg: Any, names: set) -> dict:
+    """Copies of *cfg*'s blocks for *names*, in every place a platform block may live."""
+    def only(section: Any) -> dict:
+        if not isinstance(section, dict):
+            return {}
+        return {key: copy.deepcopy(value) for key, value in section.items() if key in names}
+
+    cfg = cfg if isinstance(cfg, dict) else {}
+    gateway_section = cfg.get("gateway")
+    gateway_section = gateway_section if isinstance(gateway_section, dict) else {}
+    return {"platforms": only(cfg.get("platforms")), **only(cfg),
+            "gateway": {"platforms": only(gateway_section.get("platforms")), **only(gateway_section)}}
 
 
 def load_gateway_config_file(gateway_config_file: str):

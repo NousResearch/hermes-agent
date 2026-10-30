@@ -883,6 +883,15 @@ CREATE TABLE IF NOT EXISTS task_links (
     PRIMARY KEY (parent_id, child_id)
 );
 
+-- Non-blocking containment; task_links remains the dispatch dependency graph.
+CREATE TABLE IF NOT EXISTS task_groups (
+    parent_id  TEXT NOT NULL,
+    child_id   TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (parent_id, child_id),
+    CHECK (parent_id <> child_id)
+);
+
 CREATE TABLE IF NOT EXISTS task_comments (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
@@ -974,6 +983,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
+CREATE INDEX IF NOT EXISTS idx_task_groups_parent    ON task_groups(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
@@ -1639,6 +1649,77 @@ def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
 
 def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return _linked_ids(conn, "child_id", "parent_id", task_id)
+
+
+def group_task(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+    """Group one task under another without creating a dispatch dependency.
+
+    Project cards use this for epic/story/task containment. Each child has at
+    most one parent and the group graph is acyclic. The operation logs both
+    sides and leaves workflow status and ``task_links`` unchanged.
+    """
+    if parent_id == child_id:
+        raise ValueError("a task cannot group itself")
+    with write_txn(conn):
+        missing = _find_missing_parents(conn, [parent_id, child_id])
+        if missing:
+            raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        current = conn.execute(
+            "SELECT parent_id FROM task_groups WHERE child_id = ?", (child_id,)
+        ).fetchone()
+        if current and current["parent_id"] != parent_id:
+            raise ValueError(f"task {child_id} already belongs to group {current['parent_id']}")
+        seen: set[str] = set()
+        stack = [child_id]
+        while stack:
+            node = stack.pop()
+            if node == parent_id:
+                raise ValueError("grouping would create a cycle")
+            if node in seen:
+                continue
+            seen.add(node)
+            descendants = conn.execute(
+                "SELECT child_id FROM task_groups WHERE parent_id = ?", (node,)
+            ).fetchall()
+            stack.extend(row["child_id"] for row in descendants)
+        conn.execute(
+            "INSERT OR IGNORE INTO task_groups (parent_id, child_id, created_at) VALUES (?, ?, ?)",
+            (parent_id, child_id, int(time.time())),
+        )
+        payload = {"parent": parent_id, "child": child_id}
+        _append_event(conn, child_id, "grouped", payload)
+        _append_event(conn, parent_id, "group_child_added", payload)
+
+
+def ungroup_task(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    """Remove one non-blocking group and record the relation change."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM task_groups WHERE parent_id = ? AND child_id = ?",
+            (parent_id, child_id),
+        )
+        if cur.rowcount:
+            payload = {"parent": parent_id, "child": child_id}
+            _append_event(conn, child_id, "ungrouped", payload)
+            _append_event(conn, parent_id, "group_child_removed", payload)
+        return cur.rowcount > 0
+
+
+def group_parent_id(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the containment parent; dependency edges are not consulted."""
+    row = conn.execute(
+        "SELECT parent_id FROM task_groups WHERE child_id = ?", (task_id,)
+    ).fetchone()
+    return str(row["parent_id"]) if row else None
+
+
+def group_child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return direct containment children in stable creation order."""
+    rows = conn.execute(
+        "SELECT child_id FROM task_groups WHERE parent_id = ? ORDER BY created_at, child_id",
+        (task_id,),
+    ).fetchall()
+    return [str(row["child_id"]) for row in rows]
 
 
 def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict]:
@@ -3840,6 +3921,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
     """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
+    conn.execute("DELETE FROM task_groups WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
     for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 

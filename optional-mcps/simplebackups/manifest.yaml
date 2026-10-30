@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: simplebackups
+connector_slug: simplebackups
+description: Check, debug and fix your backups from any AI assistant. See which backups are failing and why, read run logs, and run, pause or resume backups for your databases, servers and storage.
+source: https://simplebackups.com/docs/mcp/overview
+
+# SimpleBackups ships a remote MCP server with native OAuth 2.1 + Dynamic Client
+# Registration over Streamable HTTP. Hermes's MCP client handles discovery, PKCE,
+# token exchange, and refresh — nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.simplebackups.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - simplebackups
+    - simple backups
+    - backup
+    - backups
+    - database backup
+    - server backup
+    - backup failed
+    - failing backups
+    - restore backup
+    - backup logs
+    - supabase backup
+  hosts:
+    - simplebackups.com
+    - simplebackups.ai
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with SimpleBackups.
+  After auth, restart your Hermes session so the SimpleBackups tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure simplebackups

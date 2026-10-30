@@ -6,7 +6,8 @@ JSON-RPC channel every other Settings surface uses. Contracts:
 
 - ``vault.list``   → metadata only ({id, kind, label, origin, created_at,
   and for logins identifier/identifier_type — identifiers are visible
-  metadata by design}); passwords NEVER appear in any response.
+  metadata by design; ``origin_match: "any_site"`` for a card saved for
+  any site}); passwords NEVER appear in any response.
 - ``vault.add``    → validates via ``VaultStore.add_item``; the secret
   payload arrives over the local RPC channel, goes straight into the
   encrypted store, and is never logged. Error strings are defensively

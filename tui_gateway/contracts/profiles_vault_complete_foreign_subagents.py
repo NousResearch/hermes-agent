@@ -449,6 +449,11 @@ class VaultKind(WireEnum):
     address = "address"
 
 
+class VaultOriginMatch(WireEnum):
+    exact = "exact"
+    any_site = "any_site"
+
+
 class VaultItem(Result):
     """Metadata-only view (``VaultItemMeta.to_dict`` + ``backend``); never a secret."""
 
@@ -460,6 +465,7 @@ class VaultItem(Result):
     identifier: str | None = None
     identifier_type: str | None = None
     has_otp: bool | None = None
+    origin_match: VaultOriginMatch | None = None
     backend: str
 
 

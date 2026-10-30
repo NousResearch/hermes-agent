@@ -449,10 +449,12 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             _stop_state_server()
 
         try:
-            from hermes_cli.local_runtime.binaries import installed_engine
+            from hermes_cli.local_runtime.binaries import configured_engine, installed_engine
             from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-            engine = installed_engine(section.get("backend", "auto"))
+            engine = configured_engine(section.get("binary"))
+            if engine is None:
+                engine = installed_engine(section.get("backend", "auto"))
             if engine is None:
                 logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
                 return None

@@ -217,9 +217,9 @@ def displaceable_bot_chat(authority, row):
     ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row, an
     unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
     adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
-    over the API, so it would refuse every delivery for good. A bound local chat, old local history
-    a native open adopts (``_kept_local_history``) and a Desktop row a login stamped as its own are
-    never moved."""
+    over the API, so it would refuse every delivery for good. Bindings on either compression segment
+    are never displaced. Unbound history is kept when its tip is adoptable by the host owner, or
+    carries the existing Desktop foreign-unstructured-stamp exception (``_kept_local_history``)."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_PREFIX
 
@@ -241,9 +241,8 @@ def displaceable_bot_chat(authority, row):
                             (POLICY_PREFIX + (chat_id or candidate['id']),
                              LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
                 return None
-        if _kept_local_history(db, candidate):
-            return None
-    return row['id']
+    # Delivery adopts the tip, not the titled root. An adoptable root cannot rescue an invalid tip.
+    return None if _kept_local_history(db, tip) else row['id']
 
 
 def release_superseded_bot_chat(db, store, route, session_id):
@@ -275,27 +274,24 @@ def release_superseded_bot_chat_at_boot(db, store):
 
 
 def _kept_local_history(db, row):
-    """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
-    or Desktop row a native open adopts (unstamped, or stamped with the host owner's OS identity,
-    an owner login label, or a structured login subject),
-    or a Desktop row a served login stamped with its label (kept as on main, even with a route
-    column or another profile's name). Any other local-source row no open can ever adopt (a route
-    column left by a crash or reconnect, another profile's stamp, or outside Desktop a foreign
-    stamp) is not: it held the title and refused every delivery for good (#141243, #143715)."""
+    """Keep an unbound tip the host owner's native open can adopt, using that open's owner rule.
+
+    Desktop's foreign unstructured stamps retain their existing exception (#140183), even with a
+    stale route or foreign profile. Owner labels and structured subjects still require validation:
+    a stale route, foreign profile or foreign subject must not pin an unusable Bot Chat forever.
+    """
     from gateway.session_identity import parse_authenticated_subject
-    from gateway.owner_identity import same_owner
-    from gateway.session_worker_reservation import owner_worker_subject
+    from gateway.owner_identity import host_owner_subject, same_owner
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
+    owner = host_owner_subject()
     user_id = row.get('user_id')
-    if (user_id and not legacy_account_label(row) and not same_owner(user_id, owner_worker_subject())
-            and parse_authenticated_subject(user_id) is None):
-        # Keep the Desktop foreign-login exception (#140183). Owner login labels must instead
-        # reach validation: delivery and native open must agree before this door displaces history.
-        return row.get('source') == 'desktop'
+    if user_id and not legacy_account_label(row) and not same_owner(user_id, owner):
+        # Preserve the plain-label exception without extending it to foreign structured subjects.
+        return row.get('source') == 'desktop' and parse_authenticated_subject(user_id) is None
     try:
-        validate_legacy_row(db, row, subject=user_id)
+        validate_legacy_row(db, row, subject=owner)
     except RuntimeStoreError:
         return False
     return True

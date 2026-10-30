@@ -44,16 +44,22 @@ async def _deliver(authority, key):
     ('session_key', 'agent:main:tui:dm:stale'),   # route left by a crash, never bound
     ('profile_name', 'another-profile'),          # stamped by another profile
 ])
+@pytest.mark.parametrize('source,stamp', [('tui', None), ('desktop', 'basic:alice')])
 @pytest.mark.asyncio
-async def test_an_unadoptable_local_bot_chat_is_moved_aside_and_the_delivery_lands(headless, column, value):
+async def test_an_unadoptable_local_bot_chat_is_moved_aside_and_the_delivery_lands(
+        headless, monkeypatch, column, value, source, stamp):
     from tests.waiting import async_wait_until
+    import gateway.session_worker_reservation as reservation
+    monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')
     db = headless.authority.db
-    old = _squatter(db, '20261018_071332_c8e3e4', column=column, value=value)
+    old = _squatter(db, '20261018_071332_c8e3e4', column=column, value=value, source=source)
+    if stamp:
+        db._execute_write(lambda conn: conn.execute('UPDATE sessions SET user_id=? WHERE id=?', (stamp, old)))
     first = await _deliver(headless.authority, 'a')  # pinned to the squatter: the beat still lands
     new = first['session_id']
     assert new != old and str(db.get_session(new)['chat_id']).startswith('local-'), first
     assert db.get_session_by_title('Bot Chat')['id'] == new
-    assert db.get_session(old)['title'] == f'Bot Chat (tui {old})', 'the old row keeps its id under a visible name'
+    assert db.get_session(old)['title'] == f'Bot Chat ({source} {old})', 'the old row keeps its id under a visible name'
     # Every later beat finds the minted chat by title: no further move, no second Bot Chat.
     second = await _deliver(headless.authority, 'b')
     assert second['session_id'] == new
@@ -69,9 +75,14 @@ async def test_an_unadoptable_local_bot_chat_is_moved_aside_and_the_delivery_lan
     ('tui', 'github:alice', 'agent:main:tui:dm:stale'),  # a crash's route column, never bound
     ('tui', 'uid:1001', None),                           # another OS user, not this host's identity
     ('desktop', 'auth:v1:["basic","","alice"]', 'agent:main:tui:dm:stale'),  # a subject, but routed
+    ('desktop', 'basic:alice', 'agent:main:tui:dm:stale'),  # an owner label still needs a valid route
+    ('tui', 'auth:v1:["local","","uid:1001"]', None),  # another OS user, even when structured
+    ('tui', 'auth:v1:["github","","alice"]', None),  # not a registered login provider
+    ('desktop', 'auth:v1:["local","","uid:1001"]', None),
+    ('desktop', 'auth:v1:["github","","alice"]', 'agent:main:tui:dm:stale'),
 ])
 @pytest.mark.asyncio
-async def test_a_bot_chat_another_login_stamped_is_moved_aside_and_the_delivery_lands(
+async def test_an_unadoptable_stamped_bot_chat_is_moved_aside_and_the_delivery_lands(
         headless, monkeypatch, source, stamp, route):
     # Foreign stamps and stale routes remain unadoptable. An owner's login label alone no longer
     # makes a row foreign, but a crash's route column still prevents adoption (Desktop too).
@@ -98,11 +109,18 @@ async def test_a_bot_chat_another_login_stamped_is_moved_aside_and_the_delivery_
     assert len(db._read_all('SELECT id FROM sessions')) == 2
 
 
+@pytest.mark.parametrize('column,value', [
+    (None, None),
+    ('session_key', 'agent:main:tui:dm:stale'),
+    ('profile_name', 'another-profile'),
+])
 @pytest.mark.asyncio
-async def test_a_desktop_bot_chat_a_login_stamped_is_never_moved_aside(headless):
+async def test_a_desktop_bot_chat_a_foreign_login_label_stamped_is_never_moved_aside(headless, column, value):
     # A served login's own Desktop row stays that login's (#140183): refused, never renamed.
     db = headless.authority.db
     old = _squatter(db, 'desktop_bot_chat', column='user_id', value='github:alice', source='desktop')
+    if column:
+        db._execute_write(lambda conn: conn.execute(f'UPDATE sessions SET {column}=? WHERE id=?', (value, old)))
     db.append_message(old, 'user', 'earlier')
     with pytest.raises(RuntimeStoreError) as refused:
         await _deliver(headless.authority, 'f')

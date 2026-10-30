@@ -9,20 +9,35 @@ from tests.waiting import async_wait_until
 headless = peer.headless
 
 
-@pytest.mark.parametrize("open_first", [False, True])
+@pytest.mark.parametrize("source", ["cli", "tui"])
 @pytest.mark.parametrize(
-    "stamp", ["basic:alice", "self-hosted:alice", 'auth:v1:["basic","","alice"]']
+    "open_first", [False, True], ids=["delivery-first", "open-first-control"]
+)
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "basic:alice",
+        "self-hosted:alice",
+        'auth:v1:["basic","","alice"]',
+        "test-login:alice",
+    ],
 )
 @pytest.mark.asyncio
 async def test_owner_chat_retains_identity_history_and_replies_in_both_orders(
-    headless, monkeypatch, stamp, open_first
+    headless, monkeypatch, source, stamp, open_first
 ):
     import gateway.session_worker_reservation as reservation
+    from types import SimpleNamespace
+
+    from hermes_cli.dashboard_auth import registry
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
+    monkeypatch.setattr(
+        registry, "list_session_providers", lambda: [SimpleNamespace(name="test-login")]
+    )
     db = headless.authority.db
     sid = "existing-bot-chat"
-    db.create_session(sid, source="tui", user_id=stamp)
+    db.create_session(sid, source=source, user_id=stamp)
     db.set_session_title(sid, "Bot Chat")
     db.append_message(sid, "user", "existing project context")
     db.append_message(sid, "assistant", "existing answer")
@@ -52,9 +67,10 @@ async def test_owner_chat_retains_identity_history_and_replies_in_both_orders(
         await owner.close()
 
 
+@pytest.mark.parametrize("source", ["cli", "tui"])
 @pytest.mark.asyncio
 async def test_owner_login_chat_is_not_replaced_while_its_legacy_writer_is_live(
-    headless, monkeypatch
+    headless, monkeypatch, source
 ):
     from pathlib import Path
 
@@ -68,7 +84,7 @@ async def test_owner_login_chat_is_not_replaced_while_its_legacy_writer_is_live(
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
     db = headless.authority.db
     sid = "busy-existing-bot-chat"
-    db.create_session(sid, source="tui", user_id="basic:alice")
+    db.create_session(sid, source=source, user_id="basic:alice")
     db.set_session_title(sid, "Bot Chat")
     db.append_message(sid, "assistant", "existing project context")
     lease, refusal = try_acquire_active_session(

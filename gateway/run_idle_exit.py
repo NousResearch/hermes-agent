@@ -122,9 +122,28 @@ def _kanban_busy() -> str | None:
     return None
 
 
-def _ledger_busy(runner) -> str | None:
+def _retired_homes(runner) -> set[Path]:
+    """Homes whose state.db was deleted or replaced under this gateway (a client removed its throwaway
+    home). Their SessionDB refuses every write for good, so this process can serve nothing there, and a
+    fresh probe of them is refused too, which the store gates would read as work forever."""
+    from gateway.session_authorities import all_authorities
+    from hermes_state_errors import StateDbReplacedError
+    retired = set()
+    for authority in all_authorities(runner):
+        try:
+            # Under _lock: mid-close() the sidecars are gone before the generation is cleared.
+            with authority.db._lock:
+                authority.db._raise_if_db_replaced()
+        except StateDbReplacedError:
+            retired.add(Path(authority.profile_id))
+    return retired
+
+
+def _ledger_busy(runner, retired=frozenset()) -> str | None:
     from gateway.session_authorities import all_authorities
     for authority in all_authorities(runner):
+        if Path(authority.profile_id) in retired:
+            continue
         db = authority.db
         if db._read_all("SELECT 1 FROM session_admissions WHERE status IN ('queued','started') LIMIT 1"):
             return f"admissions pending in {authority.profile_id}"
@@ -194,8 +213,9 @@ def busy_reason(runner, *, window: float, count_clients: bool = True) -> str | N
             return "agent work in flight"
         if runner._scale_to_zero_has_live_background_work():
             return "background work in flight"
-        homes = _served_homes(runner)
-        return (_messaging_busy(runner) or _ledger_busy(runner) or _profile_start_busy(runner)
+        retired = _retired_homes(runner)
+        homes = [home for home in _served_homes(runner) if home not in retired]
+        return (_messaging_busy(runner) or _ledger_busy(runner, retired) or _profile_start_busy(runner)
                 or _cron_busy(homes) or _kanban_busy() or _store_gates_busy(homes))
     except Exception as exc:
         logger.debug("idle-exit probe failed; staying up", exc_info=True)

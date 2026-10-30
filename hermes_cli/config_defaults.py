@@ -1887,6 +1887,10 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # Hold a ready card whose assignee posted a GitHub PR link in the last 24h (no duplicate PR on a
+        # crash/requeue) until a handoff (reassign, changes requested, review reopen, unblock). false
+        # turns the guard off for boards whose workers read the card's thread before acting.
+        "respawn_guard_active_pr": True,
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

@@ -1638,19 +1638,32 @@ def check_respawn_guard(
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Only a link the card's own assignee posted is that signal: a link another
+    #    profile or a human posts ("the endpoints are on PR #19") is a cross-reference,
+    #    and counting it stranded cards that had never run in ``ready`` for hours.
+    #    An unassigned card counts every link (fail closed).
     #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
+    #    reviewer changes_requested, review reopen, an unblock answering the
+    #    card's needs_input question) names the profile that must now work on
+    #    THAT PR — a closer or the implementer finishing it, not a duplicate
+    #    implementation (#111910). A crash/reclaim is not a handoff, so the
+    #    worker that opened the PR is still not re-spawned against it.
+    #    ``kanban.respawn_guard_active_pr: false`` turns the guard off for boards
+    #    whose workers read the card's thread (PR links included) before acting.
+    if not respawn_guard_active_pr_enabled():
+        return None
+    assignee_row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    assignee = assignee_row[0] if assignee_row is not None else None
     pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
-                                          cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
-                if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
+                                          cols=", body, author", unreadable=now)  # duplicate-PR risk: fail closed
+                if (not assignee or c["author"] == assignee)
+                and _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
     if pr_times:
         # Strictly after: a same-second tie stays guarded (fail closed).
         if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
                 conn, "task_events", task_id, max(pr_times),
-                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
+                "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'unblocked')",
+                cols=", kind, payload", strict=True)):
             return None
         return "active_pr"
 
@@ -1816,6 +1829,16 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """:func:`has_spawnable_ready` for the review column."""
     return _has_spawnable(conn, "review")
+
+
+def respawn_guard_active_pr_enabled() -> bool:
+    """Whether the ``active_pr`` respawn guard applies (``kanban.respawn_guard_active_pr``).
+    Default true; a board whose workers read the card's comment thread before acting can turn it off."""
+    try:
+        from hermes_cli.config import load_config
+        return bool((load_config() or {}).get("kanban", {}).get("respawn_guard_active_pr", True))
+    except Exception:
+        return True
 
 
 def review_dispatch_enabled() -> bool:

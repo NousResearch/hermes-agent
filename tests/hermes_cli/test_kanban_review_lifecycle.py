@@ -928,3 +928,66 @@ def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Pat
             "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
         ).fetchone()
         assert (run["outcome"], run["profile"]) == ("blocked", None)
+
+
+def test_active_pr_guard_counts_only_the_assignees_own_pr_links(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PR link another profile or a human posts on a card is a cross-reference ("the endpoints
+    are on PR #19"), not this card's own PR: it must not strand the card in ``ready``. The
+    assignee's own link still guards; an unassigned card counts every link (fail closed)."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="wire hero", assignee="dev")
+        kb.add_comment(conn, tid, author="other", body="Endpoints: https://github.com/example/repo/pull/19")
+        kb.add_comment(conn, tid, author="desktop", body="see https://github.com/example/repo/pull/20")
+        assert kbd.check_respawn_guard(conn, tid) is None
+        assert tid in [s[0] for s in kbd.dispatch_once(conn, dry_run=True).spawned]
+
+        kb.add_comment(conn, tid, author="dev", body="Opened https://github.com/example/repo/pull/21")
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        loose = kb.create_task(conn, title="unassigned", assignee=None)
+        kb.add_comment(conn, loose, author="other", body="https://github.com/example/repo/pull/22")
+        assert kbd.check_respawn_guard(conn, loose) == "active_pr"
+
+
+def test_active_pr_guard_lifts_when_the_card_is_unblocked_after_the_pr(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker posts its PR, blocks the card for a human decision, and the human answers and
+    unblocks it: that unblock is a handoff (the implementer must continue THAT PR), so the card
+    must spawn instead of sitting in ``ready`` behind ``active_pr``."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="landing directions", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body="Shots on https://github.com/example/repo/pull/12")
+        assert kb.block_task(conn, tid, reason="Which direction?", kind="needs_input")
+        _backdate_comments(conn, tid)
+        kb.add_comment(conn, tid, author="desktop", body="neither, repropose two")
+        assert kb.unblock_task(conn, tid)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_can_be_turned_off(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``kanban.respawn_guard_active_pr: false``: a board whose workers read the card's thread
+    (PR links included) before acting never holds a card for a PR link."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="own pr", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body="Opened https://github.com/example/repo/pull/44")
+        monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {"kanban": {"respawn_guard_active_pr": False}})
+        assert kbd.check_respawn_guard(conn, tid) is None

@@ -1225,3 +1225,14 @@ def test_flush_drops_unterminated_think_tail(tag):
     chunker = SentenceChunker()
     assert chunker.feed(f"The spoken part. {tag}half-formed reas") == []
     assert chunker.flush() == ["The spoken part."]
+
+
+@pytest.mark.parametrize("tag", ["think", "thinking", "THINK", "reasoning"])
+def test_idle_flush_keeps_reasoning_hidden_until_the_closing_tag(tag):
+    chunker = ts.SentenceChunker()
+    assert chunker.feed(f"The spoken part. <{tag}>" + "private reasoning " * 10) == []
+    assert chunker.flush() == ["The spoken part."]
+    assert chunker.flush() == []
+    assert chunker.feed("More private reasoning. ") == []
+    assert chunker.feed(f"</{tag}>The actual spoken answer. ") == ["The actual spoken answer. "]
+    assert chunker.flush() == []

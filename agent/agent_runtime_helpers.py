@@ -24,7 +24,7 @@ from agent.message_metadata import (
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
-from agent.trajectory import convert_scratchpad_to_think
+from agent.trajectory import _trajectory_tool_responses, convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider,
@@ -34,6 +34,7 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_skill_mirror import mirror_skill_write_to_memory_providers
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
@@ -138,33 +139,6 @@ def _trajectory_tool_call_turn(msg: dict[str, Any]) -> str:
         tool_call_json = {"name": tool_call["function"]["name"], "arguments": arguments}
         content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
     return _with_think_block(content).rstrip()
-
-
-def _trajectory_tool_responses(msg: dict[str, Any], messages: list[dict[str, Any]], start: int) -> tuple[list[str], int]:
-    """Collect the ``<tool_response>`` blocks for the tool run starting at ``start``; returns ``(blocks, next_index)``."""
-    tool_responses = []
-    j = start
-    while j < len(messages) and messages[j]["role"] == "tool":
-        tool_msg = messages[j]
-        tool_content = tool_msg["content"]
-        try:  # pretty-print tool content if it looks like JSON
-            if tool_content.strip().startswith(("{", "[")):
-                tool_content = json.loads(tool_content)
-        except (json.JSONDecodeError, AttributeError):
-            pass
-        tool_index = len(tool_responses)
-        tool_name = (
-            msg["tool_calls"][tool_index]["function"]["name"]
-            if tool_index < len(msg["tool_calls"])
-            else "unknown"
-        )
-        payload = json.dumps(
-            {"tool_call_id": tool_msg.get("tool_call_id", ""), "name": tool_name, "content": tool_content},
-            ensure_ascii=False,
-        )
-        tool_responses.append(f"<tool_response>\n{payload}\n</tool_response>")
-        j += 1
-    return tool_responses, j
 
 
 def convert_to_trajectory_format(agent, messages: list[dict[str, Any]], user_query: str, completed: bool) -> list[dict[str, Any]]:
@@ -2577,7 +2551,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools
-            return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+            result = model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+            # Mirror successful built-in skill_manage writes to external
+            # providers — parity with the sequential executor path and with
+            # the memory-tool branch above.
+            mirror_skill_write_to_memory_providers(
+                agent, function_name, result, next_args,
+                task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+            )
+            return result
     if skip_tool_execution_middleware:
         return _execute(function_args)
     from hermes_cli.middleware import run_tool_execution_middleware

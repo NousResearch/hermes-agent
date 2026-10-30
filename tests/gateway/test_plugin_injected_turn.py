@@ -5,6 +5,9 @@ the fork's context, a dispatch whitelist and auto-denied approvals. When it inje
 turn the gateway starts for it runs from the gateway's own context, never the caller's: that turn's
 handlers see none of the fork's state.
 
+Nor does an injected turn supersede the session's running background review and plugin forks the
+way a person's turn does: it lets them finish first, for a bounded wait an interrupt ends early.
+
 Real plugin discovery, fork worker (``start_session_fork``), tool dispatch
 (``model_tools.handle_function_call``), plugin injection API, GatewayRunner, DiscordAdapter and
 SessionAuthority FIFO; the fork's model turn and the Discord transport are scripted.
@@ -14,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import logging
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +38,7 @@ CALLER_SCOPED: contextvars.ContextVar[str | None] = contextvars.ContextVar("test
 _PLUGIN_BODY = '''
 import json
 import sys
+import threading
 
 from hermes_cli.plugins import get_pre_tool_call_directive
 from tools.terminal_tool import _get_approval_callback
@@ -114,7 +120,7 @@ def probe(monkeypatch):
     monkeypatch.setattr(background_review, "release_cache_parity_fork",
                         lambda parent, fork, *, task, session_id=None: {})
     state = SimpleNamespace(calls=[], injected=[], live=[], turns=[], prompt=PROMPT, session_key=None,
-                            caller_scoped=CALLER_SCOPED)
+                            caller_scoped=CALLER_SCOPED, resident=None)
     monkeypatch.setitem(sys.modules, "_inject_probe", state)
     state.ctx = _load_plugin()
     yield state
@@ -151,6 +157,10 @@ async def _gateway_session(monkeypatch, probe):
         return SendResult(success=True, message_id="sent")
 
     async def turn(event, source, quick_key, run_generation):
+        if probe.resident is not None:
+            # The resident agent's run_conversation starts by superseding its background work.
+            from agent.background_review import cancel_background_review_for_live_turn
+            await runner._run_in_executor_with_context(cancel_background_review_for_live_turn, probe.resident)
         if event.text == PROMPT:
             probe.live.append(await runner._run_in_executor_with_context(_live_turn_dispatch, probe))
         probe.turns.append(event.text)
@@ -178,6 +188,7 @@ async def _gateway_session(monkeypatch, probe):
             runner.session_store.lookup_by_session_key(probe.session_key).session_id)]
         await async_wait_until(lambda: live.task is not None and live.task.done(), timeout=10,
                                what="the session's drain to go idle")
+        probe.adapter, probe.source, probe.session = adapter, source, live
         yield runner
     finally:
         runner._clear_plugin_message_injector()
@@ -233,3 +244,121 @@ async def test_a_turn_injected_from_the_gateway_loop_does_not_inherit_the_caller
         await async_wait_until(lambda: probe.live, timeout=10, what="the injected turn's tool round")
 
     assert probe.live == [[LIVE_TURN_VIEW]] and probe.injected == []
+
+
+# --- Background work the session is running when a turn starts ---------------------------------
+# A plugin-injected turn lets the session's running background review and plugin forks finish (up
+# to a bounded wait an interrupt ends early) instead of superseding them; a person's turn still
+# supersedes them at once. Covered on both paths a turn supersedes them: the authority's own cancel
+# of a cold /refine review (``_execute_claimed``) and the resident agent's first step.
+
+WAITS = "Turn waits for"
+
+
+class _Interruptible:
+    """A background model run: runs until released or interrupted."""
+
+    _review_input_token_budget = 1000
+
+    def __init__(self):
+        self.started, self.stop = threading.Event(), threading.Event()
+        self.interrupted = False
+
+    def interrupt(self, message=None):
+        self.interrupted = True
+        self.stop.set()
+
+    def run_conversation(self, user_message, conversation_history=None):  # as the fork agent
+        self.started.set()
+        self.stop.wait(30)
+        return {"final_response": "Offered.", "messages": []}
+
+
+def _start_refine_review(guard):
+    """A cold /refine review on the session's guard, as ``gateway.session_refine`` starts one."""
+    from agent.background_review import finish_background_review_run, prepare_background_review_run
+
+    run, review, outcome = prepare_background_review_run(guard), _Interruptible(), []
+    assert run is not None and run.begin_request(review)
+
+    def worker():
+        review.stop.wait(30)
+        outcome.append("cancelled" if review.interrupted else "completed")
+        finish_background_review_run(guard, run)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return SimpleNamespace(review=review, outcome=outcome, thread=thread)
+
+
+async def _start_background_work(monkeypatch, probe):
+    """The resident agent's running plugin fork and the session's running /refine review."""
+    from agent import background_review
+
+    fork = _Interruptible()
+    monkeypatch.setattr(background_review, "build_cache_parity_fork",
+                        lambda parent, task_cfg, *, max_iterations, write_origin: (fork, {}, False))
+    parent, token = contextvars.copy_context().run(_issue_lease_in_a_turn_scope)
+    parent._interrupt_requested = False
+    handle = probe.ctx.fork_session(token, "Worth sharing?", tools=["cw_offer"])
+    assert handle is not None
+    await asyncio.to_thread(fork.started.wait, 10)
+    probe.resident = parent
+    return SimpleNamespace(parent=parent, fork=fork, handle=handle, refine=_start_refine_review(probe.session.review))
+
+
+@pytest.mark.asyncio
+async def test_a_plugin_injected_turn_lets_the_sessions_running_review_and_fork_finish(monkeypatch, probe, caplog):
+    """The live report: the plugin's message superseded the user's own review (result=none)."""
+    caplog.set_level(logging.INFO, logger="agent.background_review")
+    async with _gateway_session(monkeypatch, probe):
+        bg = await _start_background_work(monkeypatch, probe)
+        assert probe.ctx.inject_message(PROMPT, session_key=probe.session_key) is True
+        await async_wait_until(lambda: caplog.text.count(WAITS) == 1, timeout=10, what="the wait for the review")
+        during_review = (bg.refine.review.interrupted, bg.fork.interrupted, PROMPT in probe.turns)
+        bg.refine.review.stop.set()  # the review finishes on its own
+        await async_wait_until(lambda: caplog.text.count(WAITS) == 2, timeout=10, what="the wait for the fork")
+        during_fork = (bg.fork.interrupted, PROMPT in probe.turns)
+        bg.fork.stop.set()  # so does the fork
+        await async_wait_until(lambda: PROMPT in probe.turns, timeout=10, what="the injected turn")
+        assert await asyncio.to_thread(bg.handle.wait, 10)
+        bg.refine.thread.join(10)
+
+    assert {"during_review": during_review, "during_fork": during_fork, "review": bg.refine.outcome,
+            "fork": bg.handle.outcome} == {
+        "during_review": (False, False, False), "during_fork": (False, False),
+        "review": ["completed"], "fork": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_a_persons_turn_still_supersedes_them_at_once(monkeypatch, probe, caplog):
+    from gateway.platforms.event import MessageEvent
+
+    caplog.set_level(logging.INFO, logger="agent.background_review")
+    async with _gateway_session(monkeypatch, probe):
+        bg = await _start_background_work(monkeypatch, probe)
+        await probe.adapter.handle_message(MessageEvent(text="B", source=probe.source, message_id="B"))
+        await async_wait_until(lambda: "B" in probe.turns, timeout=10, what="the person's turn")
+        assert await asyncio.to_thread(bg.handle.wait, 10)
+        bg.refine.thread.join(10)
+
+    assert (bg.refine.outcome, bg.handle.outcome, bg.fork.interrupted, WAITS in caplog.text) == (
+        ["cancelled"], "cancelled", True, False)
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_of_the_session_agent_ends_the_injected_turns_wait(monkeypatch, probe, caplog):
+    """A person stopping or overtaking the turn interrupts the session agent: the injected turn stops
+    waiting and supersedes the fork still running, well inside the 120 s bound."""
+    caplog.set_level(logging.INFO, logger="agent.background_review")
+    async with _gateway_session(monkeypatch, probe):
+        bg = await _start_background_work(monkeypatch, probe)
+        bg.refine.review.stop.set()
+        bg.refine.thread.join(10)
+        assert probe.ctx.inject_message(PROMPT, session_key=probe.session_key) is True
+        await async_wait_until(lambda: WAITS in caplog.text, timeout=10, what="the wait for the fork")
+        bg.parent._interrupt_requested = True
+        await async_wait_until(lambda: PROMPT in probe.turns, timeout=10, what="the injected turn")
+        assert await asyncio.to_thread(bg.handle.wait, 10)
+
+    assert (bg.handle.outcome, bg.fork.interrupted) == ("cancelled", True)

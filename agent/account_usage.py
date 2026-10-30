@@ -348,11 +348,11 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
             unavailable_reason=f"rate_limited_until {unblocks_at.isoformat()}",
         )
 
-    if snapshot is not None and snapshot.retry_after_seconds is not None:
+    if snapshot is not None and getattr(snapshot, "retry_after_seconds", None) is not None:
         # fetch_account_usage returned a 429 snapshot with a parsed Retry-After.
         # Record the negative-cache deadline so this (provider, fingerprint) pair
         # is not re-requested until the window expires.
-        retry_after = snapshot.retry_after_seconds
+        retry_after = float(getattr(snapshot, "retry_after_seconds"))
         blocked_until_mono = now + retry_after
         unblocks_at = datetime.fromtimestamp(time.time() + retry_after, tz=timezone.utc)
         if token and fingerprint:

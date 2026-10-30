@@ -394,3 +394,21 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+class TestCoerceUnionWithoutTopLevelType:
+    """A property typed only by anyOf/oneOf branches gets the same scalar repair as a typed one.
+    Regression: terminal's ``notify`` (anyOf boolean|array) arrived as "true" and the tool rejected
+    it, so a Brain session could not start a background card (2026-09-28)."""
+
+    def test_string_boolean_reaches_the_boolean_branch(self):
+        schema = TestCoerceToolArgs()._mock_schema(
+            {"notify": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": {"type": "string"}}]}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"notify": "true"}) == {"notify": True}
+            assert coerce_tool_args("test_tool", {"notify": '["ready"]'}) == {"notify": ["ready"]}
+
+    def test_a_union_that_accepts_strings_keeps_the_string(self):
+        schema = TestCoerceToolArgs()._mock_schema({"v": {"anyOf": [{"type": "string"}, {"type": "boolean"}]}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"v": "true"}) == {"v": "true"}

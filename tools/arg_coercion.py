@@ -42,7 +42,7 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not prop_schema:
             continue
         prop_schema = resolve_local_schema_ref(prop_schema, parameters)
-        expected = prop_schema.get("type")
+        expected = prop_schema.get("type") or _union_branch_types(prop_schema)
         is_container = isinstance(value, (list, tuple))
 
         # Bare non-list value for an array schema. Strings go through
@@ -85,6 +85,16 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                 )
 
     return args
+
+
+def _union_branch_types(schema: dict) -> list | None:
+    """Branch types of an untyped anyOf/oneOf (terminal ``notify``: boolean|array), or None when a
+    branch accepts strings: then the model's string is already valid and nothing is repaired."""
+    branches = schema.get("anyOf") or schema.get("oneOf")
+    if not isinstance(branches, list):
+        return None
+    types = [b.get("type") for b in branches if isinstance(b, dict) and isinstance(b.get("type"), str)]
+    return types if types and "string" not in types else None
 
 
 def _schema_accepts_kind(

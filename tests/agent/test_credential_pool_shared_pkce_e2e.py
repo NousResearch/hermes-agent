@@ -464,3 +464,85 @@ def test_refresh_and_publish_lock_the_same_label_target_from_every_profile(homes
     assert targets[0] == targets[1] == expected
     assert expected != _get_shared_hermes_oauth_file()
     assert expected.with_suffix(".lock").exists()
+
+
+def test_pre_digest_alias_file_is_read_listed_once_and_retired_on_publish(homes, monkeypatch):
+    """A grant published by an earlier build under ``<sanitized>.json`` (no
+    digest) must still resolve for its label, appear once in discovery, and be
+    retired the first time the canonical file is published."""
+    from agent.anthropic_adapter import (
+        list_shared_hermes_oauth_credentials,
+        read_shared_hermes_oauth_credentials,
+        write_shared_hermes_oauth_credentials,
+    )
+
+    root, worker = homes
+    _use_home(monkeypatch, root)
+    alias = root / ".anthropic_oauth" / f"{LABEL}.json"
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    alias.write_text(json.dumps(
+        {"accessToken": "alias-access", "refreshToken": "alias-refresh", "expiresAt": FUTURE_MS, "label": LABEL}
+    ))
+    canonical = _shared_file(root, LABEL)
+    assert alias != canonical and not canonical.exists()
+
+    got = read_shared_hermes_oauth_credentials(LABEL)
+    assert got and got["accessToken"] == "alias-access"
+    listed = list_shared_hermes_oauth_credentials()
+    assert list(listed) == [LABEL] and listed[LABEL]["accessToken"] == "alias-access"
+
+    # An empty profile hydrates from the alias too.
+    _write_store(worker, [])
+    pool = _load(monkeypatch, worker)
+    assert {e.label: e.access_token for e in pool._available_entries() if e.label == LABEL} == {LABEL: "alias-access"}
+
+    # Publishing (e.g. after a refresh) moves the label to the canonical file.
+    _use_home(monkeypatch, root)
+    assert write_shared_hermes_oauth_credentials(
+        {"accessToken": "canon-access", "refreshToken": "canon-refresh", "expiresAt": FUTURE_MS}, label=LABEL
+    )
+    assert canonical.exists() and not alias.exists()
+    assert read_shared_hermes_oauth_credentials(LABEL)["accessToken"] == "canon-access"
+    assert list(list_shared_hermes_oauth_credentials()) == [LABEL]
+
+
+def test_canonical_file_wins_over_stale_alias_in_discovery(homes, monkeypatch):
+    from agent.anthropic_adapter import list_shared_hermes_oauth_credentials, read_shared_hermes_oauth_credentials
+
+    root, _worker = homes
+    _use_home(monkeypatch, root)
+    canonical = _shared_file(root, LABEL)
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_text(json.dumps({"accessToken": "canon-access", "refreshToken": "canon-refresh", "label": LABEL}))
+    alias = root / ".anthropic_oauth" / f"{LABEL}.json"
+    alias.write_text(json.dumps({"accessToken": "stale-access", "refreshToken": "stale-refresh", "label": LABEL}))
+
+    assert read_shared_hermes_oauth_credentials(LABEL)["accessToken"] == "canon-access"
+    assert list_shared_hermes_oauth_credentials()[LABEL]["accessToken"] == "canon-access"
+
+
+def test_refresh_of_unhydrated_shared_row_hydrates_instead_of_marking_exhausted(homes, monkeypatch):
+    """A raw shared reference row (no token material on disk) handed to
+    _refresh_entry(force=True) must hydrate from the shared file and refresh,
+    not be marked exhausted for lacking a refresh token."""
+    import agent.anthropic_adapter as adapter
+    from agent.credential_pool import STATUS_EXHAUSTED
+
+    root, worker = homes
+    _publish(monkeypatch, root, LABEL, "shared-access", "shared-refresh")
+    _write_store(worker, [])
+    pool = _load(monkeypatch, worker)
+    raw = next(e for e in pool.entries() if e.label == LABEL)
+    assert raw.source == "hermes_pkce_shared" and not raw.refresh_token
+
+    calls = []
+    def fake_refresh(refresh_token, **_):
+        calls.append(refresh_token)
+        return {"access_token": "rot-access", "refresh_token": "rot-refresh", "expires_at_ms": FUTURE_MS}
+    monkeypatch.setattr(adapter, "refresh_anthropic_oauth_pure", fake_refresh)
+
+    out = pool._refresh_entry(raw, force=True)
+    assert calls == ["shared-refresh"]
+    assert out is not None and out.access_token == "rot-access"
+    assert all(e.last_status != STATUS_EXHAUSTED for e in pool.entries() if e.label == LABEL)
+    assert adapter.read_shared_hermes_oauth_credentials(LABEL)["refreshToken"] == "rot-refresh"

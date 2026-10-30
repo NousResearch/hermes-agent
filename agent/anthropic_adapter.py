@@ -1591,6 +1591,37 @@ def _get_shared_hermes_oauth_label_file(label: Optional[str]) -> Path:
     return _get_shared_hermes_oauth_dir() / _shared_pkce_label_filename(label)
 
 
+def _find_shared_hermes_oauth_label_aliases(label: Optional[str]) -> List[Path]:
+    """Grant files for ``label`` that live under a non-canonical filename.
+
+    Earlier builds named the file ``<sanitized>.json`` (no digest); the exact
+    label is still recoverable from the payload.  Readers fall back to these
+    so a grant never goes dark across a filename-scheme change, and writers
+    retire them once the canonical file is published.
+    """
+    want = str(label or "default").strip() or "default"
+    shared_dir = _get_shared_hermes_oauth_dir()
+    if not shared_dir.is_dir():
+        return []
+    try:
+        canonical = _get_shared_hermes_oauth_label_file(label)
+    except ValueError:
+        return []
+    aliases: List[Path] = []
+    for path in sorted(shared_dir.glob("*.json")):
+        if path == canonical:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, IOError):
+            continue
+        if not isinstance(data, dict) or not data.get("accessToken"):
+            continue
+        if str(data.get("label") or path.stem).strip() == want:
+            aliases.append(path)
+    return aliases
+
+
 def shared_hermes_oauth_lock_target(label: Optional[str]) -> Path:
     """Canonical path whose ``.lock`` sibling serializes one labelled grant.
 
@@ -1614,6 +1645,7 @@ def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optiona
     paths = []
     if label is not None:
         paths.append(_get_shared_hermes_oauth_label_file(label))
+        paths.extend(_find_shared_hermes_oauth_label_aliases(label))
     paths.append(_get_shared_hermes_oauth_file())
     for oauth_file in paths:
         if not oauth_file.exists():
@@ -1648,9 +1680,15 @@ def list_shared_hermes_oauth_credentials() -> Dict[str, Dict[str, Any]]:
     """
     grants: Dict[str, Dict[str, Any]] = {}
 
-    def _accept(label: Any, data: Any) -> None:
+    def _accept(label: Any, data: Any, *, canonical: bool = False) -> None:
         name = str(label or "").strip()
-        if name and isinstance(data, dict) and data.get("accessToken") and name not in grants:
+        if not name or not isinstance(data, dict) or not data.get("accessToken"):
+            return
+        # The canonical (digest-named) file always wins over an alias left by
+        # an older filename scheme; among aliases the first one found wins.
+        if canonical:
+            grants[name] = data
+        elif name not in grants:
             grants[name] = data
 
     shared_dir = _get_shared_hermes_oauth_dir()
@@ -1662,7 +1700,12 @@ def list_shared_hermes_oauth_credentials() -> Dict[str, Dict[str, Any]]:
                 logger.debug("Skipping unreadable shared Hermes OAuth grant %s: %s", path.name, exc)
                 continue
             if isinstance(data, dict):
-                _accept(data.get("label") or path.stem, data)
+                name = str(data.get("label") or path.stem).strip()
+                try:
+                    is_canonical = path.name == _shared_pkce_label_filename(name)
+                except ValueError:
+                    is_canonical = False
+                _accept(name, data, canonical=is_canonical)
 
     legacy = _get_shared_hermes_oauth_file()
     if legacy.exists():
@@ -1710,6 +1753,15 @@ def write_shared_hermes_oauth_credentials(
                 os.replace(tmp, path)
             finally:
                 tmp.unlink(missing_ok=True)
+            # The canonical file now holds the newest grant; retire any copy
+            # left under an older filename so the label resolves to one file
+            # (an alias with a stale refresh token must never win a race).
+            for alias in _find_shared_hermes_oauth_label_aliases(label):
+                try:
+                    alias.unlink()
+                    alias.with_suffix(".lock").unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.debug("Failed to retire shared Hermes OAuth alias %s: %s", alias.name, exc)
     except (OSError, IOError, TimeoutError) as exc:
         logger.debug("Failed to write shared Hermes OAuth credentials: %s", exc)
         return False

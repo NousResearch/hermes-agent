@@ -1161,6 +1161,16 @@ class CredentialPool:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+        if (
+            self.provider == "anthropic"
+            and entry.source == "hermes_pkce_shared"
+            and not entry.refresh_token
+        ):
+            # A shared reference row carries no token material on disk; it is
+            # hydrated lazily by _available_entries().  Hydrate here too so a
+            # caller holding the raw row cannot mark a healthy shared account
+            # exhausted just because it was never selected first.
+            entry = self._sync_anthropic_entry_from_shared_file(entry)
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)

@@ -109,6 +109,13 @@ def test_known_unsupported_route_skips_response_format_before_first_request():
         base_url="https://api.deepseek.com/v1")
     assert "response_format" not in custom_deepseek.get("extra_body", {})
 
+    # opencode-go 400s json_schema with a body that names nothing ({"model": "<id>"}), so the retry
+    # ladder can't catch it; the profile has to declare it.
+    go = _build_call_kwargs(
+        "opencode-go", "deepseek-v4.1-flash", messages, extra_body={"response_format": dict(_JSON_SCHEMA)},
+        base_url="https://opencode.ai/zen/go/v1", task="title_generation")
+    assert "response_format" not in go.get("extra_body", {})
+
 
 def test_rejection_memo_is_per_model_and_ignores_schema_validation_errors():
     """One model's ``json_schema`` rejection on an aggregator host must not strip the field for every other

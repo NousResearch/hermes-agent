@@ -581,6 +581,10 @@ flushes the remaining text regardless of length. Long text without a recognized
 boundary can therefore remain buffered until it finishes. This applies to both
 native streaming and edit-based delivery, not other messaging platforms.
 
+When a long reply needs several messages, Hermes closes the visible message in
+place instead of posting its prefix again. Each new continuation is buffered by
+the same rule before it opens; a completed short remainder is always sent.
+
 Working status and tool-progress messages remain independent and immediate;
 progress messages may generate their own notifications. Buffering improves the
 initial answer content available to Slack, but notification truncation and

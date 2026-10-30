@@ -496,6 +496,13 @@ class StreamTransportMixin:
             return True
         result = await self._edit_message(message_id=self._message_id, content=text,
                                           finalize=finalize)
+        if (not result.success and finalize and not is_turn_final
+                and self.cfg.initial_text_min_chars > 0
+                and getattr(result, "error_kind", None) == "transient"):
+            # Closing an overflow head is idempotent: retry its own message before
+            # fallback can repost text already visible in a partially updated head.
+            result = await self._edit_message(message_id=self._message_id, content=text,
+                                              finalize=True)
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)

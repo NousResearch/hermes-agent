@@ -58,10 +58,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_stream_commit import try_finalize_stream
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_stream_commit import try_finalize_stream  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -2239,7 +2241,7 @@ class SlackAdapter(BasePlatformAdapter):
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
             # message: seal it instead of posting a duplicate.
-            stream_result = await self._try_finalize_stream(chat_id, content, metadata)
+            stream_result = await try_finalize_stream(self, chat_id, content, metadata)
             if stream_result is not None:
                 return stream_result
             formatted = self.format_message(content)
@@ -2643,81 +2645,6 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug(
                 "[Slack] chat.stopStream failed for %s/%s: %s", chat_id, stream.get("ts"), e)
             return False
-
-    async def _try_finalize_stream(
-        self, chat_id: str, content: str, metadata: Optional[dict[str, Any]] = None
-    ) -> Optional[SendResult]:
-        """Seal the active native stream if ``content`` is its final text: SendResult when the
-        stream IS the final message; None when unrelated (interim commentary), leaving it open.
-
-        Invariant (duplicate-final class): a successfully streamed answer is NEVER posted a
-        second time. A fresh post happens only when the streamed message is demonstrably
-        uncommittable — the seal failed AND an in-place ``chat.update`` of it failed — or when
-        the content is unrelated to the stream."""
-        md = metadata or {}
-        # Streaming contract: interim sends (commentary, segment-tail flushes) and editable
-        # previews are never the turn final, whatever their text looks like.
-        if md.get("_interim_send") or md.get("expect_edits"):
-            return None
-        key = self._stream_key(chat_id, md)
-        stream = self._active_streams.get(key) if key else None
-        if stream is None:
-            return None
-        text = self._strip_stream_cursor(content)
-        sent = stream.get("sent", "")
-        kind, delta = self._stream_relation(sent, text)
-        if kind == "unrelated":
-            # A turn-final that only restyled the streamed answer (mrkdwn conversion turned
-            # ``*Done:*`` into ``_Done:_``) replaces it in place so the thread holds ONE answer.
-            # Anything else — including mid-turn notify replies (/status, /approve, clarify
-            # answers) that share the thread key — is not this stream's final: leave the stream
-            # open and let send() post it fresh.
-            if not (md.get("notify") and text.strip() and sent.strip()
-                    and self._mrkdwn_insensitive(text) == self._mrkdwn_insensitive(sent)):
-                return None
-            return await self._commit_stream(key, stream, text, metadata, replace=True)
-        if kind == "extends" and len(delta) > self.MAX_MESSAGE_LENGTH:
-            # Tail too large for one append: close the stream on what is visible and let the
-            # normal split path deliver the full final.
-            self._active_streams.pop(key, None)
-            await self._seal_stream(key, stream)
-            return None
-        return await self._commit_stream(key, stream, text, metadata, delta=delta)
-
-    async def _commit_stream(
-        self, key: tuple[str, str, str], stream: dict[str, Any], text: str,
-        metadata: Optional[dict[str, Any]], delta: str = "", replace: bool = False,
-    ) -> Optional[SendResult]:
-        """Close ``stream`` as the turn's final message holding ``text``: SendResult on success,
-        None when send() must post the final fresh (a duplicate beats a lost answer).
-
-        Bounded: stopStream (appending ``delta``), one retry ONLY when nothing is appended
-        (``markdown_text`` APPENDS: a first attempt that landed server-side but raised here would
-        repeat the tail), then one idempotent in-place ``chat.update`` carrying the full text —
-        always when ``replace`` (the content changed) or the seal failed, otherwise only to apply
-        a rich Block Kit layout (non-fatal: the streamed markdown stands)."""
-        chat_id, ts = key[1], stream["ts"]
-        self._active_streams.pop(key, None)
-        sealed = await self._seal_stream(key, stream, delta=delta)
-        if not sealed and not (delta and delta.strip()):
-            sealed = await self._seal_stream(key, stream)
-        if sealed and not replace and not self._maybe_blocks(text):
-            committed = True
-        else:
-            # A reopened stream's message starts at ``base``; the sealed one before it already
-            # shows the prefix. (A ``replace`` rewrite is not prefix-aligned, so use it whole.)
-            shown = text if replace else text[stream.get("base", 0):]
-            edited = await self.edit_message(chat_id, ts, shown, finalize=True, metadata=metadata)
-            committed = edited.success or (sealed and not replace)
-            if not sealed:
-                logger.warning(
-                    "[Slack] chat.stopStream failed for %s/%s; %s", chat_id, ts,
-                    "final committed via chat.update instead (no duplicate post)" if committed
-                    else "in-place update failed too, delivering the final as a fresh post")
-        if not committed:
-            return None
-        await self.stop_typing(chat_id, metadata)
-        return SendResult(success=True, message_id=ts)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a thread status via assistant.threads.setStatus.

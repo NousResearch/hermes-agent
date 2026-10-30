@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.platforms.base import _custom_unit_to_cp
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -33,6 +32,7 @@ from gateway.response_filters import (
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_initial_text import initial_text_ready
+from gateway.stream_consumer_overflow import overflow_head_end, split_buffered_first_send
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -601,9 +601,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                             self._signal_flush(tick.flush_event)
                             await asyncio.sleep(0.05)
                             continue
-                    # The split tail goes out now, so a commentary or tool boundary drained in
-                    # this tick still lands after it instead of being dropped.
-                    await self._push_update(tick)
+                    # A split creates a new message: recheck its gate. Explicit boundaries
+                    # still flush a short tail before commentary or tools.
+                    if self.cfg.initial_text_min_chars <= 0 or self._should_edit(tick):
+                        await self._push_update(tick)
 
                 if tick.got_done:
                     await self._finalize_turn(tick)
@@ -771,6 +772,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
         tail stays in _accumulated as the active preview later deltas edit in place.
         True when the turn finished here (the run loop returns)."""
+        if self.cfg.initial_text_min_chars > 0:
+            return await split_buffered_first_send(self, tick)
         chunks = self._truncate_for_stream(self._accumulated, self._safe_limit, self._len_fn)
         if len(chunks) <= 1:
             # Malformed/legacy adapter result must still be splittable.
@@ -824,10 +827,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _seal_overflow_heads(self) -> None:
         """Existing message overflowing: seal it with the head, start a new message for the rest."""
         while self._overflows() and self._message_id is not None and self._edit_supported:
-            cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
-            split_at = self._accumulated.rfind("\n", 0, cp_budget)
-            if split_at < cp_budget // 2:
-                split_at = cp_budget
+            split_at = overflow_head_end(self)
             chunk = self._accumulated[:split_at]
             # finalize=True: the sealed chunk is never edited again, so it needs its
             # rich-text pass now.  is_turn_final=False: a split head is not the
@@ -835,9 +835,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             ok = await self._send_or_edit(chunk, finalize=True, is_turn_final=False)
             if self._fallback_final_send or not ok:
                 break  # keep the full text intact for the fallback final send
-            self._accumulated = self._accumulated[split_at:].lstrip("\n")
+            remainder = self._accumulated[split_at:]
+            self._accumulated = remainder if self.cfg.initial_text_min_chars > 0 else remainder.lstrip("\n")
             self._message_id = None
             self._last_sent_text = ""
+            self._initial_text_visible = self.cfg.initial_text_min_chars <= 0
             self._turn_split_delivery = True
 
     async def _push_update(self, tick: _Tick) -> None:

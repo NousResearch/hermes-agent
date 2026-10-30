@@ -18,15 +18,18 @@ class StreamFallbackMixin:
     """Non-streaming delivery paths used once progressive edits fail or the turn ends oddly."""
 
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str], *,
-                              final: bool = False) -> Optional[str]:
+                              final: bool = False, seal_draft: bool = False) -> Optional[str]:
         """Send a new chunk threaded to ``reply_to_id``; returns the new message_id."""
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
         try:
+            metadata = self._metadata_for_send(final=final, expect_edits=not final) or {}
+            if seal_draft and self._use_draft_streaming and not self._stream_is_message():
+                metadata["_finalize_draft_id"] = self._draft_id
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
-                metadata=self._metadata_for_send(final=final, expect_edits=not final))
+                metadata=metadata or None)
             if not (result.success and result.message_id):
                 self._edit_supported = False
                 return reply_to_id

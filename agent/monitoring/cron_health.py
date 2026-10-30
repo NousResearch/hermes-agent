@@ -120,7 +120,10 @@ def _is_overdue(job: dict[str, Any], now: datetime) -> bool:
     try:
         if next_run.tzinfo is None and now.tzinfo is not None:
             next_run = next_run.replace(tzinfo=now.tzinfo)
-        return (now - next_run).total_seconds() > _compute_grace_seconds(schedule)
+        # A per-job grace override moves the scheduler's own overdue line; the metric must
+        # agree with it or the dashboard flags jobs the ticker considers on time.
+        return (now - next_run).total_seconds() > _compute_grace_seconds(
+            schedule, job.get("grace_minutes"))
     except (TypeError, ValueError):
         return False
 

@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host, randomUuid } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -1252,7 +1252,7 @@ async function runGroupChatMemberTurnLeased(
     runtimeIds.add(liveRuntime)
 
     // A UUID, not a clock+random suffix: a marker persisted by a previous process must never equal a token this one mints.
-    const turn = `${liveRuntime}:${crypto.randomUUID()}`
+    const turn = `${liveRuntime}:${randomUuid()}`
     liveGroupTurns.add(turn)
     markGroupTurnInFlight(group, member, {
       before,

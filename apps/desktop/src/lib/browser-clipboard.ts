@@ -1,4 +1,5 @@
 import { IMAGE_EXTENSION_BY_MIME } from '@/lib/browser-uploads'
+import { copyTextThroughSelection } from '@/lib/clipboard'
 
 interface BrowserClipboardOptions {
   /** Stores clipboard image bytes where the agent can read them. */
@@ -37,7 +38,8 @@ export function createBrowserClipboardBridge({
       return ''
     },
     writeClipboard: async (text: string) => {
-      if (!nativeWriteClipboard) {return false}
+      // No Clipboard API on an insecure origin: the same selection copy as writeClipboardText.
+      if (!nativeWriteClipboard) {return copyTextThroughSelection(text)}
 
       await nativeWriteClipboard(text)
 

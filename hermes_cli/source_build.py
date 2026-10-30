@@ -159,6 +159,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     from hermes_cli.update_stage import publish_stage
 
     failures: list[tuple[str, BaseException]] = []
+    publish_stage("Building the apps")
 
     def attempt(name: str, step) -> bool:
         try:
@@ -273,12 +274,15 @@ def _rebuild_served_webapp(project_root: Path, publish_stage) -> None:
 
 
 def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:
+    from hermes_cli.desktop_build_reuse import packaged_desktop_reusable
     from hermes_cli.main_desktop import (
         _packaged_desktop_current_for_head, _refresh_installed_desktop_apps, build_prepared_desktop)
 
     desktop_dir = project_root / "apps/desktop"
     if _packaged_desktop_current_for_head(desktop_dir, project_root):
         print("  ✓ Desktop app is up to date")
+    elif built_from := packaged_desktop_reusable(desktop_dir, project_root, env):
+        print(f"  ✓ Desktop app is up to date: no desktop build input changed since {built_from[:12]}")
     else:
         publish_stage("Building the desktop app")
         # The desktop build mutates checkout-scoped node_modules and

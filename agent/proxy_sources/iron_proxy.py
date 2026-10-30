@@ -734,6 +734,7 @@ def _spawn_daemon(bin_path: Path, cfg: Path, env: dict[str, str], log_path: Path
         # start_new_session is POSIX-only (Windows isn't supported anyway — no upstream binary).
         return subprocess.Popen(
             [str(bin_path), "-config", str(cfg)], env=env, stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT,
+            # detached-spawn: ok — a daemon meant to outlive the CLI that started it; `hermes egress stop` ends it (pidfile + nonce)
             **({} if platform.system() == "Windows" else {"start_new_session": True}),
         )
     except OSError as exc:

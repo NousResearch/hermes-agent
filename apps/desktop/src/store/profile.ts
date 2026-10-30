@@ -3,18 +3,12 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
+import { persistStore } from '@/lib/persist-store'
+import { initialGatewayProfile } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
-import {
-  arraysEqual,
-  persistBoolean,
-  persistStringArray,
-  persistStringRecord,
-  storedBoolean,
-  storedStringArray,
-  storedStringRecord
-} from '@/lib/storage'
+import { arraysEqual, persistBoolean, persistStringArray, persistStringRecord, storedBoolean, storedStringArray, storedStringRecord } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { registryConnectionKind } from '@/store/connection-registry-state'
 import {
@@ -200,7 +194,7 @@ const PROFILE_ORDER_STORAGE_KEY = 'hermes.desktop.profileOrder'
 
 export const $profileOrder = atom<string[]>(storedStringArray(PROFILE_ORDER_STORAGE_KEY))
 
-$profileOrder.subscribe(value => persistStringArray(PROFILE_ORDER_STORAGE_KEY, [...value]))
+persistStore($profileOrder, (value, options) => persistStringArray(PROFILE_ORDER_STORAGE_KEY, [...value], options), [])
 
 export function setProfileOrder(names: string[]): void {
   if (!arraysEqual($profileOrder.get(), names)) {
@@ -221,7 +215,7 @@ const PROFILE_COLORS_STORAGE_KEY = 'hermes.desktop.profileColors'
 
 export const $profileColors = atom<Record<string, string>>(storedStringRecord(PROFILE_COLORS_STORAGE_KEY))
 
-$profileColors.subscribe(value => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value))
+persistStore($profileColors, (value, options) => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value, options), {})
 
 // Set (or, with null, clear) a profile's color override.
 export function setProfileColor(name: string, color: null | string): void {
@@ -288,13 +282,15 @@ export async function switchProfile(name: string): Promise<void> {
 // gateway to that profile's backend (spawned on demand by the Electron pool).
 // A single-profile user never triggers a swap, so their path is unchanged.
 
-// The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot. The gateway registry
+// The profile the live gateway WebSocket is currently connected to. Starts on
+// the registry's own initial route (initialGatewayProfile: a browser host's
+// serving profile, else default) and follows the primary (window) backend's
+// profile once boot adopts it. The gateway registry
 // mirrors its own route into this atom via the onActiveRouteChanged callback
 // (wired in use-gateway-boot's configureGatewayRegistry), so registry-internal
 // eviction fallbacks (connection removal, profile delete) can never
 // leave this naming a profile the active socket no longer serves (#89206).
-export const $activeGatewayProfile = atom<string>('default')
+export const $activeGatewayProfile = atom<string>(initialGatewayProfile())
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
@@ -677,6 +673,12 @@ export async function ensureGatewayProfile(
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
+    // A Webapp tab routes on its cached served set, which predates a profile
+    // created a moment ago: bring it up to date before either lookup below, so
+    // the descriptor and the shared-primary route both see the new profile on
+    // the tab's socket. No-op elsewhere, and for a profile the set already has.
+    await window.hermesDesktop?.refreshServedProfile?.(target).catch(() => undefined)
+
     // ensureGatewayForProfile opens (or reuses) the target's socket and points
     // the active gateway at it — without closing the profile you came from.
     // The descriptor resolves concurrently so nothing awaits between the
@@ -950,7 +952,7 @@ const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 // single-profile users (who never see the switcher) are completely unaffected.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
 
-$showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
+persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value, options), false)
 
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
@@ -1020,7 +1022,7 @@ export function selectProfile(name: string): void {
 // — and its startup profile is the tab's own `?profile=`, which `remember`
 // rewrites in place. The per-origin default and other tabs are untouched.
 function remembersProfilePick(target: string): Promise<boolean> {
-  if (isBrowserHostedDesktop()) {
+  if (hostHas('tabStartupProfile')) {
     return Promise.resolve(true)
   }
 

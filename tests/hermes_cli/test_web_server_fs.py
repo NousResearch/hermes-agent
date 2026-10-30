@@ -259,8 +259,8 @@ def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monke
     """The browser lists an SSH workspace through ``/api/fs/list``. Its Download checks the file
     with a HEAD, then hands the browser the URL a download ticket authorizes (an anchor cannot send
     the session header). Both read the file on the SSH machine, as native Desktop's download does,
-    never a file at the same path on the gateway's own disk. The ticket is single-use and dies
-    with its profile."""
+    never a file at the same path on the gateway's own disk. The ticket allows a few retries of
+    that exact URL, then dies with its profile."""
     from hermes_cli import web_server_file_tickets as file_tickets
     from hermes_constants import mark_named_profile_deleted
 
@@ -302,16 +302,22 @@ def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monke
             checked = client.head(route, params=query)
             assert (checked.status_code, checked.content) == (200, b""), (path, checked.text)
             params = ticketed(query)
-            saved = anchor.get(route, params=params)
-            assert (saved.status_code, saved.content) == (200, b"remote copy"), path
+            saved = None
+            for _ in range(file_tickets.DOWNLOAD_MAX_REDEMPTIONS):
+                saved = anchor.get(route, params=params)
+                assert (saved.status_code, saved.content) == (200, b"remote copy"), path
             assert saved.headers["content-disposition"].startswith("attachment;")
             assert anchor.get(route, params=params).status_code == 401
-        assert streamed == [str(same_path), remote_only]  # the HEAD checks read nothing
+        expected = (
+            [str(same_path)] * file_tickets.DOWNLOAD_MAX_REDEMPTIONS
+            + [remote_only] * file_tickets.DOWNLOAD_MAX_REDEMPTIONS
+        )
+        assert streamed == expected  # the HEAD checks read nothing
 
         params = ticketed({"path": remote_only, "profile": "remote-dev"})
         mark_named_profile_deleted(profile)
         assert anchor.get(route, params=params).status_code in (401, 403, 404)
-        assert streamed == [str(same_path), remote_only]
+        assert streamed == expected
     finally:
         anchor.close()
 

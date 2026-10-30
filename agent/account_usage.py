@@ -123,14 +123,15 @@ def _fetch_pool_snapshot(provider: str, token: Optional[str], fingerprint: str) 
             fetched_at=_utc_now(),
             unavailable_reason="Usage lookup unavailable.",
         )
-    if token:
-        assert snapshot is not None
+    if token and snapshot is not None and snapshot.available:
         with _POOL_USAGE_CACHE_LOCK:
             _POOL_USAGE_CACHE[(provider, fingerprint)] = (snapshot, now)
     return snapshot
 
 
-def fetch_pool_account_usage(provider: Optional[str]) -> list[PooledUsageSnapshot]:
+def fetch_pool_account_usage(
+    provider: Optional[str], *, usable_only: bool = False
+) -> list[PooledUsageSnapshot]:
     """Fetch usage once per credential in a provider's pool.
 
     Pool discovery intentionally goes through ``hermes_cli.auth`` so profile
@@ -174,6 +175,12 @@ def fetch_pool_account_usage(provider: Optional[str]) -> list[PooledUsageSnapsho
     for raw_entry in raw_entries:
         if not isinstance(raw_entry, dict):
             continue
+        if usable_only:
+            status = raw_entry.get("last_status")
+            if status == "dead" or (
+                status == "exhausted" and raw_entry.get("last_error_code") in (402, 429)
+            ):
+                continue
         token = _pool_entry_token(raw_entry)
         fingerprint = _usage_credential_fingerprint(token, raw_entry)
         snapshot = (

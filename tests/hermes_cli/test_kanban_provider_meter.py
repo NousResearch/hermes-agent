@@ -74,6 +74,26 @@ CANDIDATES_CODEX_ONLY = (
 )
 
 
+def test_choose_available_candidate_requires_headroom_in_every_window():
+    readings = {
+        "anthropic": AccountUsageSnapshot(
+            provider="anthropic",
+            source="test",
+            fetched_at=datetime.now(timezone.utc),
+            windows=(
+                AccountUsageWindow(label="session", used_percent=20),
+                AccountUsageWindow(label="weekly", used_percent=95),
+            ),
+        )
+    }
+
+    assert choose_available_candidate(
+        (ProviderMeterCandidate("anthropic", "claude-sonnet-4-6"),),
+        readings,
+        minimum_remaining_percent=10,
+    ) is None
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1 — Defect 2: only providers with assignee credentials are eligible
 # ---------------------------------------------------------------------------

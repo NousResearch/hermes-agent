@@ -9530,6 +9530,7 @@ def _jwt_expired_for_meter(token: object) -> bool:
 
 def _read_assignee_credentials(
     hermes_home: Path,
+    _out_pool_readings: Optional[dict] = None,
 ) -> dict[str, tuple[Optional[str], Optional[str]]]:
     """Read usable provider credentials from an assignee profile.
 
@@ -9739,6 +9740,23 @@ def _read_assignee_credentials(
             api_key = (env_vars.get("OPENAI_API_KEY") or "").strip()
             if api_key:
                 result["openai-codex"] = (api_key, None)
+        if _out_pool_readings is not None:
+            try:
+                from agent.account_usage import fetch_pool_account_usage
+                from hermes_cli.auth import read_credential_pool
+                for _provider in ("anthropic", "openai-codex"):
+                    if _provider in result:
+                        if read_credential_pool(_provider):
+                            _out_pool_readings[_provider] = fetch_pool_account_usage(
+                                _provider, usable_only=True
+                            )
+            except Exception as exc:
+                _log.warning(
+                    "provider_meter: pool usage lookup failed; falling back to "
+                    "single-credential meter (%s: %s)",
+                    type(exc).__name__, exc,
+                )
+                _out_pool_readings.clear()
     finally:
         if override_token is not None and reset_hermes_home_override is not None:
             try:
@@ -9753,14 +9771,62 @@ def _serialize_meter_readings(readings: dict) -> dict:
     """Serialize AccountUsageSnapshot readings to a JSON-safe dict for event payloads."""
     out: dict = {}
     for provider, snap in readings.items():
+        if isinstance(snap, list):
+            from hermes_cli.kanban_provider_meter import select_pool_reading
+
+            accounts = []
+            for pooled in snap:
+                account = pooled.snapshot
+                accounts.append({
+                    "label": pooled.label,
+                    "source": account.source,
+                    "fingerprint": pooled.fingerprint[:8],
+                    "available": account.available,
+                    "unavailable_reason": account.unavailable_reason,
+                    "title": account.title,
+                    "plan": account.plan,
+                    "details": list(account.details),
+                    "windows": [
+                        {
+                            "label": w.label,
+                            "used_percent": w.used_percent,
+                            "reset_at": w.reset_at.isoformat() if w.reset_at else None,
+                            "detail": w.detail,
+                        }
+                        for w in account.windows
+                    ],
+                })
+            selected = select_pool_reading(snap)
+            snap = selected.snapshot if selected is not None else None
+            serialized = _serialize_meter_readings({provider: snap})[provider]
+            if serialized is None:
+                serialized = {"available": False, "accounts": accounts}
+            else:
+                serialized["accounts"] = accounts
+                preferred = selected
+                if preferred is not None:
+                    serialized["preferred_account"] = {
+                        "label": preferred.label,
+                        "fingerprint": preferred.fingerprint[:8],
+                    }
+            out[provider] = serialized
+            continue
         if snap is None:
             out[provider] = None
         else:
             out[provider] = {
                 "available": snap.available,
                 "unavailable_reason": snap.unavailable_reason,
+                "title": snap.title,
+                "plan": snap.plan,
+                "details": list(snap.details),
                 "windows": [
-                    {"label": w.label, "used_percent": w.used_percent}
+                    {
+                        "label": w.label,
+                        "used_percent": w.used_percent,
+                        "reset_at": w.reset_at.isoformat() if w.reset_at else None,
+                        "detail": w.detail,
+                    }
                     for w in snap.windows
                 ],
             }
@@ -9792,7 +9858,8 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
         # ---- resolve assignee credentials --------------------------------
         assignee = str(task.assignee or "").strip()
         assignee_home = _resolve_assignee_home(assignee)
-        creds = _read_assignee_credentials(assignee_home)
+        pool_readings: dict = {}
+        creds = _read_assignee_credentials(assignee_home, pool_readings)
 
         if not creds:
             _log.warning(
@@ -9855,6 +9922,7 @@ def _remediate_provider_meter(task: Task, conn: Optional[sqlite3.Connection] = N
             candidates,
             minimum_remaining_percent=int(settings.get("minimum_remaining_percent", 10)),
             _credentials=creds,
+            _pool_readings=pool_readings,
             _out_readings=(out_readings := {}),
         )
 

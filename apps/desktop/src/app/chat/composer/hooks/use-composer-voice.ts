@@ -220,6 +220,7 @@ export function useComposerVoice({
     busy,
     consumePendingResponse,
     enabled: voiceConversationActive && !liveEngineActive,
+    maxTurnSeconds: maxRecordingSeconds,
     onFatalError: () => setVoiceConversationActive(false),
     // Speaking over the model mid-generation interrupts the in-flight turn —
     // the same seam as the Stop button — so the interjection becomes the next

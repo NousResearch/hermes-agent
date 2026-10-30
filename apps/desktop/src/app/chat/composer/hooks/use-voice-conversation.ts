@@ -52,6 +52,24 @@ interface VoiceConversationOptions {
   /** Awaited right before the mic is opened. Used to let the wake-word listener
    *  fully release the capture device first, so the two never contend. */
   beforeMicOpen?: () => Promise<void> | void
+  /** Ceiling for one listening turn, in seconds (`voice.max_recording_seconds`,
+   *  the same knob that caps push-to-talk dictation). See `voiceTurnCapMs`. */
+  maxTurnSeconds?: number
+}
+
+const DEFAULT_TURN_SECONDS = 60
+const MAX_TURN_SECONDS = 600
+
+/** A turn that hits this ceiling is stopped, transcribed and submitted as if the
+ *  user had finished, so a fixed 60 s cut continuous speech off mid-sentence
+ *  (#140482). Follow the dictation ceiling instead, with the same 1-600 s clamp;
+ *  an unset or invalid value keeps the old 60 s. */
+export function voiceTurnCapMs(seconds?: number): number {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return DEFAULT_TURN_SECONDS * 1000
+  }
+
+  return Math.max(1, Math.min(Math.trunc(seconds), MAX_TURN_SECONDS)) * 1000
 }
 
 /**
@@ -90,7 +108,8 @@ export function useVoiceConversation({
   consumePendingResponse,
   parkText,
   focusInput,
-  beforeMicOpen
+  beforeMicOpen,
+  maxTurnSeconds
 }: VoiceConversationOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
@@ -104,6 +123,10 @@ export function useVoiceConversation({
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
+  // Read when each listen arms its ceiling, so a settings change applies to the
+  // next turn without rebuilding the turn callbacks.
+  const maxTurnSecondsRef = useRef(maxTurnSeconds)
+  maxTurnSecondsRef.current = maxTurnSeconds
   const pendingStartRef = useRef(false)
   const turnClosingRef = useRef(false)
   const meterFailuresRef = useRef(0)
@@ -407,12 +430,12 @@ export function useVoiceConversation({
       // transcription paths await before submitting audio.
       conversation.warmup = syncSttLease(VOICE_INPUT_LEASE, true, conversation.owner)
       // Clear any prior turn-timeout before arming a fresh one. Each listen
-      // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
+      // cycle reassigns turnTimeoutRef; without clearing first, a stale turn
       // timer from an earlier cycle survives and later fires handleTurn() in
       // the middle of a new listen, cutting it short (or, after enough idle
       // re-listens, wedging the loop into a state it doesn't re-arm from).
       clearTurnTimeout()
-      turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
+      turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), voiceTurnCapMs(maxTurnSecondsRef.current))
     } catch (error) {
       notifyError(error, voiceCopy.couldNotStartSession)
       pendingStartRef.current = false

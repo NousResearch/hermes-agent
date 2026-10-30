@@ -28,7 +28,7 @@ def _squatter(db, sid, *, column, value, source='tui'):
     return sid
 
 
-async def _deliver(authority, key):
+async def _deliver(authority, key, connection=None):
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     from tools.bot_live_delivery import _bot_chat_tip
@@ -36,7 +36,7 @@ async def _deliver(authority, key):
     # The cron producer's door: ``bot_relay.deliver`` on a local interactive connection, no author,
     # pinned to the Bot Chat it discovered first (``find_canonical_live_owner``).
     pinned = _bot_chat_tip(home)
-    return await deliver(_local_owner(authority), dict(id=key * 32, profile=served_profile_name(home),
+    return await deliver(connection or _local_owner(authority), dict(id=key * 32, profile=served_profile_name(home),
                                                        message='cron beat', **({'session_id': pinned} if pinned else {})))
 
 
@@ -69,14 +69,19 @@ async def test_an_unadoptable_local_bot_chat_is_moved_aside_and_the_delivery_lan
     ('tui', 'github:alice', 'agent:main:tui:dm:stale'),  # a crash's route column, never bound
     ('tui', 'uid:1001', None),                           # another OS user, not this host's identity
     ('desktop', 'auth:v1:["basic","","alice"]', 'agent:main:tui:dm:stale'),  # a subject, but routed
+    ('desktop', 'basic:alice', 'agent:main:tui:dm:stale'),  # an owner label is no foreign login: routed, moved
+    ('tui', 'auth:v1:["local","","uid:1001"]', None),     # another OS user's subject
+    ('tui', 'auth:v1:["github","","alice"]', None),       # a subject no registered login names
+    ('desktop', 'auth:v1:["local","","uid:1001"]', None), # a subject is no Desktop login label
 ])
 @pytest.mark.asyncio
-async def test_a_bot_chat_another_login_stamped_is_moved_aside_and_the_delivery_lands(
+async def test_an_unadoptable_stamped_bot_chat_is_moved_aside_and_the_delivery_lands(
         headless, monkeypatch, source, stamp, route):
-    # Foreign stamps and stale routes remain unadoptable. An owner's login label alone no longer
-    # makes a row foreign, but a crash's route column still prevents adoption (Desktop too).
+    # Foreign stamps (a label outside Desktop, any ``auth:v1`` subject the owner does not own) and
+    # stale routes are unadoptable. An owner's login label alone does not make a row foreign, but a
+    # crash's route column still prevents adoption (Desktop too).
     # No caller can adopt these rows, so they held the title and refused every
-    # delivery for good (#143715). Moving it keeps its id, stamp and messages.
+    # delivery for good (#143715). Moving one keeps its id, stamp and messages.
     from tests.waiting import async_wait_until
     import gateway.session_worker_reservation as reservation
     monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject

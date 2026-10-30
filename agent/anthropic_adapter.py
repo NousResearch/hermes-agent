@@ -1610,6 +1610,48 @@ def read_shared_hermes_oauth_credentials(label: Optional[str] = None) -> Optiona
     return None
 
 
+def list_shared_hermes_oauth_credentials() -> Dict[str, Dict[str, Any]]:
+    """Return every published shared PKCE grant keyed by label.
+
+    Covers the label directory (``<root>/.anthropic_oauth/<label>.json``) and
+    the legacy singleton file (either a ``grants`` map or one bare grant).
+    Unreadable or malformed files are skipped; a new profile without pool rows
+    relies on this to discover grants it never copied.
+    """
+    grants: Dict[str, Dict[str, Any]] = {}
+
+    def _accept(label: Any, data: Any) -> None:
+        name = str(label or "").strip()
+        if name and isinstance(data, dict) and data.get("accessToken") and name not in grants:
+            grants[name] = data
+
+    shared_dir = _get_shared_hermes_oauth_dir()
+    if shared_dir.is_dir():
+        for path in sorted(shared_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, IOError) as exc:
+                logger.debug("Skipping unreadable shared Hermes OAuth grant %s: %s", path.name, exc)
+                continue
+            if isinstance(data, dict):
+                _accept(data.get("label") or path.stem, data)
+
+    legacy = _get_shared_hermes_oauth_file()
+    if legacy.exists():
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, IOError) as exc:
+            logger.debug("Skipping unreadable legacy shared Hermes OAuth file: %s", exc)
+            data = None
+        if isinstance(data, dict):
+            if isinstance(data.get("grants"), dict):
+                for label, creds in data["grants"].items():
+                    _accept(label, creds)
+            else:
+                _accept(data.get("shared_label") or data.get("label") or "default", data)
+    return grants
+
+
 def write_shared_hermes_oauth_credentials(
     credentials: Dict[str, Any], label: Optional[str] = None
 ) -> bool:
@@ -1629,6 +1671,10 @@ def write_shared_hermes_oauth_credentials(
             fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
             try:
                 payload = credentials
+                if label is not None:
+                    # The filename is sanitized; keep the exact label inside so
+                    # discovery can recover it (see list_shared_hermes_oauth_credentials).
+                    payload = {**credentials, "label": str(label)}
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh, indent=2)
                     fh.flush()

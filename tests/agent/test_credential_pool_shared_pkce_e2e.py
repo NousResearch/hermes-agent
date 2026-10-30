@@ -296,3 +296,53 @@ def test_malformed_shared_file_skips_reference_with_warning_and_keeps_row(homes,
         {"accessToken": "restored", "refreshToken": "restored-r", "expiresAt": FUTURE_MS}, label=LABEL
     )
     assert _load(monkeypatch, worker).select().access_token == "restored"
+
+
+def test_empty_profile_discovers_every_shared_label_without_copies(homes, monkeypatch):
+    """A profile with no pool rows (e.g. a freshly created worker) must see all
+    published grants by label -- no `auth add`, no copied tokens."""
+    root, worker = homes
+    other = "second account"  # label with a character the filename sanitizer rewrites
+    from agent.anthropic_adapter import write_shared_hermes_oauth_credentials
+
+    _use_home(monkeypatch, root)
+    assert write_shared_hermes_oauth_credentials(
+        {"accessToken": "a-access", "refreshToken": "a-refresh", "expiresAt": FUTURE_MS}, label=LABEL
+    )
+    assert write_shared_hermes_oauth_credentials(
+        {"accessToken": "b-access", "refreshToken": "b-refresh", "expiresAt": FUTURE_MS}, label=other
+    )
+    _write_store(worker, [])
+
+    pool = _load(monkeypatch, worker)
+    available = pool._available_entries()
+    by_label = {e.label: e for e in available}
+    assert set(by_label) == {LABEL, other}
+    assert {e.source for e in available} == {"hermes_pkce_shared"}
+    assert by_label[LABEL].access_token == "a-access"
+    assert by_label[other].access_token == "b-access"
+    assert pool.select() is not None
+
+    rows = _read_store(worker)
+    assert sorted(r["label"] for r in rows) == sorted([LABEL, other])
+    assert all(r["source"] == "hermes_pkce_shared" for r in rows)
+    assert all(not r.get("access_token") and not r.get("refresh_token") for r in rows)
+
+    # Reloading must not duplicate rows or collapse the two labels into one.
+    pool2 = _load(monkeypatch, worker)
+    assert len(_read_store(worker)) == 2
+    assert {e.label for e in pool2._available_entries()} == {LABEL, other}
+
+
+def test_empty_profile_discovers_legacy_grants_map_file(homes, monkeypatch):
+    """Pre-directory layout: `<root>/.anthropic_oauth.json` holding a grants map."""
+    root, worker = homes
+    (root / ".anthropic_oauth.json").write_text(
+        json.dumps({"grants": {LABEL: {"accessToken": "legacy-access", "refreshToken": "legacy-refresh", "expiresAt": FUTURE_MS}}})
+    )
+    _write_store(worker, [])
+    pool = _load(monkeypatch, worker)
+    picked = pool.select()
+    assert picked is not None
+    assert picked.label == LABEL and picked.access_token == "legacy-access"
+    assert _read_store(worker)[0]["source"] == "hermes_pkce_shared"

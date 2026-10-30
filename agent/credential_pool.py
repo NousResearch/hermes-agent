@@ -2178,8 +2178,13 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
             entries[:] = [entry for idx, entry in enumerate(entries) if idx not in legacy_indices]
     matching_indices = []
     for idx, entry in enumerate(entries):
-        if entry.source == source:
-            matching_indices.append(idx)
+        if entry.source != source:
+            continue
+        # Shared PKCE references are keyed by label: one row per account, so
+        # only rows with the same label count as "the same" entry.
+        if source == "hermes_pkce_shared" and payload.get("label") and entry.label != payload.get("label"):
+            continue
+        matching_indices.append(idx)
 
     existing_idx = matching_indices[0] if matching_indices else None
     duplicate_indices = set(matching_indices[1:])
@@ -2383,13 +2388,35 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             return changed, active_sources
 
         from agent.anthropic_adapter import (
+            list_shared_hermes_oauth_credentials,
             read_claude_code_credentials,
             read_hermes_oauth_credentials,
-            read_shared_hermes_oauth_credentials,
         )
 
+        # Shared PKCE grants are keyed by label: seed one reference row per
+        # label so a fresh profile with no pool rows discovers every grant the
+        # default root published.  Reference rows never carry token material;
+        # they hydrate from the shared store at selection time.
+        if not _is_suppressed(provider, "hermes_pkce_shared"):
+            shared_grants = list_shared_hermes_oauth_credentials()
+            if shared_grants:
+                active_sources.add("hermes_pkce_shared")
+            for shared_label in shared_grants:
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    "hermes_pkce_shared",
+                    {
+                        "source": "hermes_pkce_shared",
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": "",
+                        "refresh_token": None,
+                        "expires_at_ms": None,
+                        "label": shared_label,
+                    },
+                )
+
         for source_name, creds in (
-            ("hermes_pkce_shared", read_shared_hermes_oauth_credentials()),
             ("hermes_pkce", read_hermes_oauth_credentials()),
             ("claude_code", read_claude_code_credentials()),
         ):

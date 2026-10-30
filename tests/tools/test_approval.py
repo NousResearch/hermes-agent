@@ -1411,6 +1411,45 @@ class TestDetectSudoStdin:
             is_dangerous, _, _ = detect_dangerous_command(cmd)
             assert is_dangerous is False, cmd
 
+    def test_wrapped_command_flags_are_not_sudo_flags(self):
+        """The scan stops at the command word: `-a`/`--all`/`-s` belong to the
+        wrapped command there, not to sudo. Scanning past it flagged a
+        read-only `sudo -n hubctl ps -a` as a privilege chain and raised an
+        approval prompt for a container listing."""
+        for cmd in (
+            "sudo -n /usr/local/sbin/hubctl ps -a --format '{{.Names}}'",
+            "sudo -n /usr/local/sbin/hubctl ps --all",
+            "timeout 20 sudo -n /usr/local/sbin/hubctl logs -a gluetun",
+            "sudo -n /usr/local/sbin/hubctl inspect --format '{{.State.Status}}' gluetun",
+            "sudo ls -la /var/log",
+            "sudo -ujsmith id",
+            "grep sudo /etc/hosts",
+        ):
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is False, cmd
+
+    def test_privilege_flags_survive_value_options(self):
+        """Bounding the scan to sudo's option run must not lose a real flag
+        behind an option that takes a value (`-u root`, `--close-from 3`)."""
+        for cmd in (
+            "sudo -S whoami",
+            "sudo --stdin id",
+            "sudo -s",
+            "sudo -a /usr/bin/askpass",
+            "sudo --askpass /usr/bin/askpass",
+            "sudo -nS id",
+            "sudo -u root -S id",
+            "sudo -u root -a /usr/bin/askpass",
+            "sudo -n --stdin id",
+            "timeout 5 sudo -H -u root -s",
+            "env X=1 sudo -S id",
+            "sudo --user=root -S id",
+            "sh -c 'sudo -S id'",
+        ):
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert "sudo" in desc.lower(), cmd
+
 
 class TestMacOSPrivateSystemPaths:
     """Inspired by Claude Code 2.1.113 "dangerous path protection".

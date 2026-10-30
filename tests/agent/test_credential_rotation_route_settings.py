@@ -131,3 +131,25 @@ def test_codex_rotation_keeps_proxy_override(monkeypatch):
     assert agent.base_url == "http://127.0.0.1:8787/backend-api/codex"
     assert agent._client_kwargs["base_url"] == "http://127.0.0.1:8787/backend-api/codex"
     assert agent.api_key == "tok-second"
+
+
+def test_credential_rotation_to_another_endpoint_drops_the_old_endpoints_rejections():
+    """A pool entry on a different base URL is a different route: what the old endpoint rejected
+    (stream_options, reasoning fields) must not shape requests to the new one. Same URL keeps them."""
+    from agent.route_verdicts import ROUTE_REJECTION_FIELDS
+
+    def rotate(new_base_url):
+        agent = SimpleNamespace(
+            api_mode="chat_completions", provider="custom", model="shared-model", api_key="old",
+            base_url="https://a.example/v1", _client_kwargs={"api_key": "old", "base_url": "https://a.example/v1"},
+            _apply_client_headers_for_base_url=MagicMock(), _replace_primary_openai_client=MagicMock(),
+            **dict.fromkeys(ROUTE_REJECTION_FIELDS, True),
+        )
+        agent._reapply_route_client_config = MethodType(AIAgent._reapply_route_client_config, agent)
+        entry = SimpleNamespace(runtime_api_key="new", access_token="", runtime_base_url=new_base_url, base_url=new_base_url)
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            AIAgent._swap_credential(agent, entry)
+        return {name: getattr(agent, name) for name in ROUTE_REJECTION_FIELDS}
+
+    assert rotate("https://b.example/v1") == dict.fromkeys(ROUTE_REJECTION_FIELDS, False)
+    assert rotate("https://a.example/v1") == dict.fromkeys(ROUTE_REJECTION_FIELDS, True)

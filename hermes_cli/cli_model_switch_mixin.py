@@ -17,6 +17,7 @@ import threading
 
 from rich.markup import escape as _escape
 from agent.i18n import t
+from agent.route_verdicts import primary_runtime_for_restore
 from utils import base_url_host_matches
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
@@ -700,9 +701,7 @@ class CLIModelSwitchMixin:
         return {
             **_runtime_fields(self),
             "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
-            "agent_primary_runtime": copy.deepcopy(
-                getattr(agent, "_primary_runtime", None)
-            ) if agent is not None else None}
+            "agent_primary_runtime": primary_runtime_for_restore(agent) if agent is not None else None}
 
     def _restore_model_runtime_snapshot(self, snapshot: dict | None) -> None:
         """Restore a model runtime captured before a one-turn override."""

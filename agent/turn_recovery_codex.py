@@ -21,8 +21,8 @@ def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
 
 
 def reset_codex_reasoning_replay(agent: Any) -> None:
-    """The replay verdict belongs to the route that earned it: a ``/model`` switch, fallback
-    activation or primary restore starts the new route with replay on (#61552)."""
+    """The replay verdict belongs to the route that earned it: a route change starts the new route
+    with replay on (#61552). Called through ``route_verdicts.reset_route_verdicts``."""
     agent._codex_reasoning_replay_enabled = True
     agent._codex_reasoning_replay_rejected = False
 

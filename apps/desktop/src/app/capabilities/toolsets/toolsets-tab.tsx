@@ -2,7 +2,11 @@ import { compactNumber } from '@hermes/shared'
 import { useCallback, useMemo, useState } from 'react'
 
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { type ProfileScope, setToolsetEnabled } from '@/hermes'
+import {
+  setToolsetEnabled,
+  setToolsetGroupEnabled,
+  type ProfileScope
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { queryClient } from '@/lib/query-client'
@@ -23,13 +27,17 @@ import {
   TOOLSET_ESSENTIALS,
   TOOLSET_FEATURE_COUNT,
   TOOLSET_FEATURE_MIN,
-  TOOLSET_MORE_THEME,
-  TOOLSET_THEMES,
   toolsetCalls,
   TOOLSETS_QUERY_KEY,
-  toolsetsQueryKey,
-  toolsetTheme
+  toolsetsQueryKey
 } from './toolsets-data'
+
+// Display order for the functional-group sections; unknown groups trail.
+const GROUP_ORDER = ['web', 'system', 'media', 'knowledge', 'integrations', 'plugins', 'other']
+const groupRank = (group: string) => {
+  const i = GROUP_ORDER.indexOf(group)
+  return i === -1 ? GROUP_ORDER.length : i
+}
 
 interface ToolsetsTabProps {
   /** The scope's toolset list, straight from the shell's query. */
@@ -69,12 +77,45 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
     [query, toolCalls, toolsets]
   )
 
+  // The list renders as TOOLSET_GROUPS sections (header + its rows, list sort
+  // preserved inside a section). Switch state and the header switch's write
+  // target the WHOLE group, never the search-filtered view — same contract as
+  // the strip-menu bulk items.
+  const groupedToolsets = useMemo(() => {
+    const byGroup = new Map<string, ToolsetInfo[]>()
+    for (const ts of visibleToolsets) {
+      const key = ts.group ?? 'other'
+      byGroup.set(key, [...(byGroup.get(key) ?? []), ts])
+    }
+
+    return Array.from(byGroup.entries()).sort((a, b) => groupRank(a[0]) - groupRank(b[0]))
+  }, [visibleToolsets])
+
   // Bulk actions and the master-switch state target the WHOLE tab, never the
   // search-filtered view — a tab-wide control that silently scoped to the
   // current query would be a lie.
   const bulkToolsets = useMemo(() => toolsets.filter(ts => isDesktopToolsetVisible(ts.name)), [toolsets])
 
-  // The dialog's toolset; null when closed or when search filters it out.
+  // Whole-group truth for the section-header switches: size + is any child on.
+  // The header is a kill switch — mixed reads as ON; clicking it while on
+  // disables the whole group.
+  const groupState = useMemo(() => {
+    const state = new Map<string, { anyEnabled: boolean; size: number }>()
+    const rowsByGroup = new Map<string, ToolsetInfo[]>()
+    for (const ts of bulkToolsets) {
+      const key = ts.group ?? 'other'
+      rowsByGroup.set(key, [...(rowsByGroup.get(key) ?? []), ts])
+    }
+
+    for (const [group, rows] of rowsByGroup) {
+      state.set(group, { anyEnabled: rows.some(ts => ts.enabled), size: rows.length })
+    }
+
+    return state
+  }, [bulkToolsets])
+
+  // Keep a valid selection: fall back to the first visible row when the
+  // current selection is filtered out (or nothing is selected yet).
   const activeToolset = useMemo(
     () => visibleToolsets.find(ts => ts.name === selectedToolset) ?? null,
     [selectedToolset, visibleToolsets]
@@ -142,6 +183,33 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
     </header>
   )
 
+  // Per-group bulk: one backend request per display group (TOOLSET_GROUPS);
+  // rows repaint from response names.
+  async function bulkApplyGroup(group: string, enabled: boolean) {
+    if (bulkBusy) {
+      return
+    }
+
+    setBulkBusy(true)
+
+    try {
+      const result = await setToolsetGroupEnabled(
+        group,
+        enabled,
+        profile,
+        bulkToolsets.filter(ts => (ts.group ?? 'other') === group).map(ts => ts.name)
+      )
+      const names = new Set(result.names)
+      setToolsets(cur => cur?.map(r => (names.has(r.name) ? { ...r, enabled, available: enabled } : r)) ?? cur)
+      notify({ kind: 'success', title: t.skills.bulkUpdated(result.names.length), message: '' })
+    } catch (err) {
+      notifyError(err, t.skills.failedToUpdate(t.skills.toolsetGroupName(group)))
+    } finally {
+      invalidateSlashCompletions()
+      setBulkBusy(false)
+    }
+  }
+
   if (visibleToolsets.length === 0) {
     return <div className="flex h-full min-h-0 flex-col">{search}<CapabilityEmpty noun="tools" query={query} /></div>
   }
@@ -175,23 +243,40 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
   const used = visibleToolsets.slice(0, TOOLSET_FEATURE_COUNT)
   const ranked = !!toolCalls && used.length === TOOLSET_FEATURE_COUNT && used.every(toolset => toolsetCalls(toolset, toolCalls) > 0)
   const featured = query || visibleToolsets.length <= TOOLSET_FEATURE_MIN ? [] : ranked ? used : visibleToolsets.filter(toolset => TOOLSET_ESSENTIALS.includes(toolset.name))
-  const rest = visibleToolsets.filter(toolset => !featured.includes(toolset))
-
   const sections: CatalogSurfaceSection[] = [
-    {
-      id: 'featured',
-      label: ranked ? ts.mostUsed : ts.essentials,
-      blurb: ranked ? ts.mostUsedBlurb : ts.essentialsBlurb,
-      layout: 'feature',
-      items: featured.map(toolset => item(toolset, 'feature'))
-    },
-    ...[...TOOLSET_THEMES, TOOLSET_MORE_THEME].map(theme => ({
-      id: theme.id,
-      label: ts.themes[theme.id].label,
-      blurb: ts.themes[theme.id].blurb,
-      layout: 'list' as const,
-      items: rest.filter(toolset => toolsetTheme(toolset.name).id === theme.id).map(toolset => item(toolset, 'list'))
-    }))
+    ...(featured.length
+      ? [
+          {
+            id: 'featured',
+            label: ranked ? ts.mostUsed : ts.essentials,
+            blurb: ranked ? ts.mostUsedBlurb : ts.essentialsBlurb,
+            layout: 'feature' as const,
+            items: featured.map(toolset => item(toolset, 'feature'))
+          }
+        ]
+      : []),
+    // Functional groups (the backend's `group`) with a bulk switch on each
+    // header — the config surface this tab exists for. Featured rows are not
+    // repeated inside their group; the header switch targets the WHOLE group
+    // (groupState), never the search-filtered rows.
+    ...groupedToolsets.map(([group, rows]) => {
+      const state = groupState.get(group)
+
+      return {
+        id: `group-${group}`,
+        label: t.skills.toolsetGroupName(group),
+        layout: 'list' as const,
+        action: (
+          <CatalogSwitch
+            aria-label={t.skills.toolsetGroupName(group)}
+            checked={state?.anyEnabled ?? false}
+            disabled={bulkBusy}
+            onCheckedChange={checked => void bulkApplyGroup(group, checked)}
+          />
+        ),
+        items: rows.filter(toolset => !featured.includes(toolset)).map(toolset => item(toolset, 'list'))
+      }
+    })
   ]
 
   return (

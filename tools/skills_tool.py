@@ -169,6 +169,16 @@ def check_skills_requirements() -> bool:
     return True  # always available: the directory is created on first use
 
 
+def _category_text(value: object) -> Optional[str]:
+    """Frontmatter ``category`` as the wire string the desktop renders (its
+    ``asText``). YAML types scalars (``2026`` int, ``2.0`` float, ``yes`` bool);
+    an unconverted value makes the row's category compare unequal to the
+    stringified section name the client sends back on toggle → dead header, 400."""
+    if isinstance(value, (str, int, float)):
+        return str(value) or None
+    return None  # lists/dicts/None: no category, path fallback applies
+
+
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
     (respects test monkeypatching), then skills.external_dirs."""
@@ -261,7 +271,10 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                     "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
                     "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
                                                       and skill_matches_environment(frontmatter)
-                                                      and skill_matches_apps(frontmatter))})
+                                                      and skill_matches_apps(frontmatter)),
+                    # Declared frontmatter category, when the SKILL.md carries one — the config
+                    # listing (_find_all_skills) prefers it over the path-derived fallback.
+                    "declared_category": _category_text(frontmatter.get("category"))})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -280,6 +293,41 @@ def find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
     return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
+
+
+def _find_all_skills(
+    *, skip_disabled: bool = False, include_gated: bool = False, include_plugin: bool = False,
+) -> list[dict[str, Any]]:
+    """Config-surface rows (name, description, category) — first-wins by name. ``include_gated=True``
+    keeps platform/environment/app-gated skills (the Capabilities tab toggles categories the
+    agent's offer-time gates would hide); ``include_plugin=True`` appends plugin-registered skills
+    under the same flags (disk rows shadow same-named plugin rows). A declared frontmatter
+    category wins over the path-derived fallback (flat skills have no category dir to infer)."""
+    skills: list[dict[str, Any]] = []
+    for s in _skill_catalog(skip_disabled=skip_disabled, include_hidden=include_gated):
+        if not s["load_name"] or any(x["name"] == s["name"] for x in skills):
+            continue
+        skills.append({"name": s["name"], "description": s["description"],
+                       "category": s.get("declared_category") or s["category"]})
+    if include_plugin:
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            discover_plugins()
+            for meta in get_plugin_manager().list_plugin_skill_metadata():
+                frontmatter = meta.get("frontmatter") or {}
+                if not include_gated and not skill_matches_platform(frontmatter):
+                    continue
+                name = str(meta.get("name", ""))[:MAX_NAME_LENGTH]
+                if not name or any(x["name"] == name for x in skills):
+                    continue
+                skills.append({
+                    "name": name,
+                    "description": _truncate_description(str(meta.get("description") or "")),
+                    "category": _category_text(meta.get("category")),
+                    "provenance": "plugin"})
+        except Exception:
+            logger.debug("Plugin skill listing failed", exc_info=True)
+    return skills
 
 
 def sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:

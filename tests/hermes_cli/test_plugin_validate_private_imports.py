@@ -126,3 +126,50 @@ def test_skill_catalog_seams_are_public_and_drive_the_skills_tools(tmp_path, mon
     monkeypatch.setattr(skills_tool, "find_all_skills", lambda **_kw: [dict(marker)])
     listed = json.loads(skills_tool.skills_list())
     assert [s["name"] for s in listed["skills"] if s["name"] == "seam-probe-skill"] == ["seam-probe-skill"]
+
+
+def test_documented_session_helper_and_own_install_path_fallback_are_not_flagged(tmp_path):
+    """onebot-platform reads session identity through the documented ``get_session_env``; openltm
+    falls back to its own install path (``plugins.memory.openltm._db``) when the relative import
+    fails. Neither is a core internal. A real core path beside them still warns."""
+    plugin = _plugin(tmp_path / "openltm", {
+        "__init__.py": (
+            "def register(ctx):\n"
+            "    from gateway.session_context import get_session_env\n"
+            "    try:\n"
+            "        from . import _db\n"
+            "    except ImportError:\n"
+            "        import plugins.memory.openltm._db as _db\n"
+            "        from plugins.memory.openltm import _db\n"
+            "    from hermes_cli.gateway_client import _session_ticket\n"
+            "    return get_session_env, _db, _session_ticket\n"
+        ),
+        "_db.py": "",
+    })
+
+    [warning] = _private_warnings(validate_plugin_dir(plugin))
+
+    sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
+    assert sites == ["__init__.py:8 hermes_cli.gateway_client._session_ticket"], sites
+
+
+def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_path):
+    """opencode-sync calls SessionDB / GatewayRunner private methods on the objects it is handed;
+    no import names them, so only the attribute pass can see it. The plugin's own ``_helper`` and
+    ``self._x`` calls are not core reach."""
+    plugin = _plugin(tmp_path / "sync", {"engine.py": (
+        "class Store:\n"
+        "    def _execute_write(self, fn):\n"
+        "        return self._execute_write(fn)\n"
+        "def apply(db, runner, store, route):\n"
+        "    rows = db._row_to_message_dict(None)\n"
+        "    runner._evict_cached_agent(route)\n"
+        "    return store._execute_write(rows)\n"
+    )})
+
+    report = validate_plugin_dir(plugin)
+
+    assert report.ok, report.failures
+    [warning] = [w for w in report.warnings if w.startswith("private core attribute access")]
+    sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
+    assert sites == ["engine.py:5 db._row_to_message_dict", "engine.py:6 runner._evict_cached_agent"], sites

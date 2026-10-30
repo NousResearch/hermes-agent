@@ -30,6 +30,19 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     add_adopt_parser(sessions_subparsers)
 
 
+def _add_refresh_prompts(sessions_subparsers) -> None:
+    refresh = sessions_subparsers.add_parser(
+        "refresh-prompts", help="Make continuing sessions rebuild their system prompt on their next turn",
+        description="After updating SOUL.md, skills or context files in this profile, ask every "
+            "continuing session (or one with --session) to rebuild its stored system prompt once, "
+            "on its next turn, from the current sources. Conversation history and session ids are "
+            "kept; each refreshed session pays one prompt-cache miss. Works while the gateway runs "
+            "and across restarts. Use -p/--profile to target another profile.")
+    refresh.add_argument("--session", default=None, metavar="SESSION_ID",
+        help="Refresh only this session (id or unique prefix)")
+    _flag(refresh, "--json", help="Machine-readable output")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -243,7 +256,6 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "switched on), 'move' them to the default store (a default chat that leaked in), or "
             "'report' (default) — the rows themselves cannot tell the two cases apart")
 
-
     sessions_repair_prompts = sessions_subparsers.add_parser(
         "repair-prompts", help="Report or clear stored system prompts degraded to a reduced-toolset build",
         description="Repair session rows degraded by the pre-#122822 gateway hygiene/compress bug. "
@@ -256,6 +268,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Machine-readable output; with --apply, apply without an interactive confirmation")
     sessions_repair_prompts.add_argument("session_id", nargs="?", default=None,
         help="Destructive override: clear this session even when its stored prompt is healthy")
+    _add_refresh_prompts(sessions_subparsers)
 
     sessions_recover = sessions_subparsers.add_parser(
         "recover", help="Rebuild canonical session data into a separate clean database",

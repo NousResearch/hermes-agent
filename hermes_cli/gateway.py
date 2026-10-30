@@ -34,6 +34,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
+from agent.deadline import poll_until
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
@@ -1176,13 +1177,13 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
-        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
+        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
     except OSError:
         # Parent job object rejected CREATE_BREAKAWAY_FROM_JOB; retry without it (Windows only —
         # ``start_new_session=True`` cannot raise OSError on POSIX).
         fallback_kwargs: dict = (
             {"creationflags": windows_detach_flags_without_breakaway()} if sys.platform == "win32"
-            else {"start_new_session": True}
+            else {"start_new_session": True}  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
         )
         try:
             subprocess.Popen(watcher_argv, **devnull, **popen_env, **fallback_kwargs)
@@ -2420,13 +2421,10 @@ def _ensure_user_systemd_env() -> None:
 
 def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
     """Poll up to ``timeout`` s for a user systemd control socket (user@.service takes a moment after enable-linger)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _user_systemd_socket_ready():
-            _ensure_user_systemd_env()
-            return True
-        time.sleep(0.2)
-    return _user_systemd_socket_ready()
+    if not poll_until(_user_systemd_socket_ready, timeout, 0.2):
+        return False
+    _ensure_user_systemd_env()
+    return True
 
 
 def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
@@ -2434,12 +2432,7 @@ def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
     Only the D-Bus socket counts — ``systemd/private`` alone is enough for ``systemctl --user`` but not for
     the ``systemd-run --user`` that restart-safe workers need. Never adopts anything into our env."""
     bus = Path(f"/run/user/{uid}/bus")
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _path_exists_safe(bus):
-            return True
-        time.sleep(0.2)
-    return _path_exists_safe(bus)
+    return poll_until(lambda: _path_exists_safe(bus), timeout, 0.2)
 
 
 def _loginctl_enable_linger(username: str) -> subprocess.CompletedProcess:
@@ -4015,19 +4008,18 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
     the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
     listener is gone; a timed-out connect is a live listener with a slow accept queue.
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def _port_free() -> bool:
         try:
             with socket.create_connection((host, port), timeout=0.2):
-                pass
+                return False
         except ConnectionRefusedError:
             return True
         except TimeoutError:
-            pass  # a slow accept queue is still a live listener
+            return False  # a slow accept queue is still a live listener
         except OSError:
             return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
-        time.sleep(0.1)
-    return False
+
+    return poll_until(_port_free, timeout, 0.1)
 
 
 def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:

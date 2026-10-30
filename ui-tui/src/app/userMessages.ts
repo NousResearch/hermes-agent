@@ -104,10 +104,17 @@ export const stderrProblemActivity = (line: string): string => {
 // ── RPC errors ────────────────────────────────────────────────────────────
 
 const VERSION_SKEW_RE = /Extra inputs are not permitted|^unknown method:/
+// Both server routes' answer for a method they do not serve (tui_gateway/contracts/registry.py
+// unknown_method_message). A JSON-RPC client sends no version, so this is not proof of skew.
+const UNAVAILABLE_METHOD_RE = /^unknown method: (\S+) — not available on this Hermes backend$/
 
 /** The Ink bundle and the Python backend disagree on the wire: stale dist or an older attached backend. */
 export const isVersionSkewError = (err: unknown): boolean => {
   const { code, message } = rpcShape(err)
+
+  if (UNAVAILABLE_METHOD_RE.test(message ?? '')) {
+    return false
+  }
 
   return (
     code === RPC_UNKNOWN_METHOD ||
@@ -139,6 +146,7 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
   [(_code, text) => text === 'session_read_only', () => t('userMessages.rpc.sessionReadOnly')],
   [(_code, text) => text === 'session_has_children', () => t('userMessages.rpc.sessionHasChildren')],
   [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => UNAVAILABLE_METHOD_RE.exec(text), m => t('userMessages.rpc.methodUnavailable', m?.[1] ?? '?')],
   [(_code, text) => text.trim() === 'launch_credentials_unavailable', () => t('userMessages.rpc.launchCredentialsChanged')],
   [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]

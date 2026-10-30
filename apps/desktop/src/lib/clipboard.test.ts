@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createBrowserClipboardBridge } from './browser-clipboard'
 import { installClipboardShim, writeClipboardText } from './clipboard'
+import { copySvgAsPng } from './svg-image'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 
@@ -104,4 +105,75 @@ describe('writeClipboardText', () => {
 
     await expect(writeClipboardText('payload')).rejects.toThrow('Clipboard write is unavailable')
   })
+
+  // Safari does not focus a clicked button, so the dialog itself can hold focus when its Copy is clicked.
+  it.each(['a button in it', 'the dialog itself'])(
+    'copies through a selection where an insecure origin has no Clipboard API, inside a focus trap while %s has focus',
+    async holder => {
+      document.documentElement.dataset.hermesDesktopHost = 'browser'
+      desktopWindow.hermesDesktop = createBrowserClipboardBridge({
+        saveBuffer: async () => ''
+      }) as Window['hermesDesktop']
+      installClipboardShim()
+      // A modal dialog that pulls focus back inside itself, as Radix's FocusScope does.
+      const dialog = document.body.appendChild(document.createElement('div'))
+      dialog.tabIndex = -1
+      const trigger = dialog.appendChild(document.createElement('button'))
+      const note = dialog.appendChild(document.createElement('p'))
+      note.textContent = 'selected before the copy'
+      const focused = holder === 'the dialog itself' ? dialog : trigger
+
+      const trap = (event: FocusEvent) => {
+        if (!dialog.contains(event.target as Node)) {
+          focused.focus()
+        }
+      }
+
+      document.addEventListener('focusin', trap)
+      focused.focus()
+      const copied: string[] = []
+      let copies = true
+
+      const execCommand = vi.fn((command: string) => {
+        const area = document.activeElement
+
+        copied.push(
+          area instanceof HTMLTextAreaElement
+            ? `${command}:${area.value.slice(area.selectionStart, area.selectionEnd)}`
+            : `${command} in ${area?.tagName}`
+        )
+        // A browser moves the document's selection into the textarea it selects; jsdom does not.
+        document.getSelection()!.removeAllRanges()
+
+        return copies
+      })
+
+      Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+
+      try {
+        await writeClipboardText('copy me')
+        await copySvgAsPng('<svg/>')
+        // Copy path / Copy link call the bridge directly.
+        expect(await desktopWindow.hermesDesktop!.writeClipboard('/repo/file.ts')).toBe(true)
+        expect(copied).toEqual(['copy:copy me', 'copy:<svg/>', 'copy:/repo/file.ts'])
+        // A copy the browser refuses fails, and still gives back focus and the page's selection.
+        copies = false
+        document.getSelection()!.selectAllChildren(note)
+        let selected = ''
+        // jsdom collapses the selection on every focus(), which a browser does not do for a
+        // non-editable element: read it as focus comes back.
+        focused.addEventListener('focus', () => (selected = document.getSelection()!.toString()), { once: true })
+        await expect(writeClipboardText('refused')).rejects.toThrow('Clipboard API is unavailable')
+        expect(copied.at(-1)).toBe('copy:refused')
+        expect(document.querySelector('textarea')).toBeNull()
+        expect(document.activeElement).toBe(focused)
+        expect(selected).toBe('selected before the copy')
+      } finally {
+        Reflect.deleteProperty(document, 'execCommand')
+        document.removeEventListener('focusin', trap)
+        document.getSelection()!.removeAllRanges()
+        dialog.remove()
+      }
+    }
+  )
 })

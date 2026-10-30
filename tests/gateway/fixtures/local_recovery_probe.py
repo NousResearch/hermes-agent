@@ -70,8 +70,21 @@ def websocket(home, desc, **kw):
                    subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + grant['ticket']], **kw)
 
 
+def seed_offline_models_dev(home):
+    """A fresh HERMES_HOME has no models.dev cache, so the daemon's first session.create (tool
+    availability -> vision check -> provider lookup) downloads the public registry in the foreground,
+    and a slow network outlasts rpc()'s deadline. A fresh on-disk cache is served without a request.
+    One unknown provider keeps lookups as empty as an unreachable registry; a test's own seed wins.
+    The cache is per profile home, so multiplexed profiles made before boot get one too."""
+    home = Path(home)
+    for cache in [home / 'models_dev_cache.json', *(p / 'models_dev_cache.json' for p in home.glob('profiles/*') if p.is_dir())]:
+        if not cache.exists():
+            cache.write_text(json.dumps({'hermes-test-offline': {'id': 'hermes-test-offline', 'env': [], 'models': {}}}))
+
+
 @contextmanager
 def daemon(root, home, env, *, barrier, fixture='local_recovery_daemon.py'):
+    seed_offline_models_dev(env.get('HERMES_HOME', home))
     command = [sys.executable, str(root / 'tests/gateway/fixtures' / fixture)] if barrier else [sys.executable, '-m', 'gateway.run']
     with (home / ('first.log' if barrier else 'restart.log')).open('w+') as log:
         proc = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)

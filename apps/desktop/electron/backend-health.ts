@@ -13,8 +13,12 @@ export const DEFAULT_BACKEND_READY_POLL_MS = 500
 // slow to answer and keeps the caller's default timeout.
 export const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 5_000
 
-type FetchPublicJson = (url: string, options?: { timeoutMs?: number }) => Promise<unknown>
-type FetchJson = (url: string, token?: string | null, options?: { timeoutMs?: number }) => Promise<unknown>
+type FetchPublicJson = (url: string, options?: { timeoutMs?: number; freshConnection?: boolean }) => Promise<unknown>
+type FetchJson = (
+  url: string,
+  token?: string | null,
+  options?: { timeoutMs?: number; freshConnection?: boolean }
+) => Promise<unknown>
 
 export interface HermesReadyOptions {
   fetchPublicJson: FetchPublicJson
@@ -33,7 +37,7 @@ export interface HermesReadyOptions {
    * makes a 401 from this probe mean "session rejected" rather than "route
    * behind a gate". Defaults to the credential-free `fetchPublicJson`.
    */
-  probeHealth?: (url: string, options?: { timeoutMs?: number }) => Promise<unknown>
+  probeHealth?: (url: string, options?: { timeoutMs?: number; freshConnection?: boolean }) => Promise<unknown>
   /**
    * Whether `probeHealth` actually presents credentials. Distinguishes the
    * two very different meanings of a 401 (see `waitForHermesReady`).
@@ -285,9 +289,15 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
 
     try {
       if (useStatusFallback) {
-        await options.fetchJson(`${base}/api/status`, options.token)
+        await options.fetchJson(`${base}/api/status`, options.token, {
+          freshConnection: true,
+          timeoutMs: Math.max(1, Math.min(15_000, deadline - now()))
+        })
       } else {
-        await probeHealth(`${base}/api/health`, { timeoutMs: healthProbeTimeoutMs })
+        await probeHealth(`${base}/api/health`, {
+          freshConnection: true,
+          timeoutMs: Math.max(1, Math.min(healthProbeTimeoutMs, deadline - now()))
+        })
       }
 
       return

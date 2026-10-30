@@ -121,6 +121,40 @@ def test_session_key_the_pool_knows_is_expired_is_not_sent(env):
     assert "Bearer ya29.expired" not in seen
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_a_cached_client_is_not_reused_past_its_rows_stored_expiry(env, monkeypatch, pinned):
+    """A client cached while its token was valid keyed only on the token, so once the row's stored expiry
+    passed every cached title call still sent the dead bearer and needed a 401 before refreshing."""
+    home, grants, seen = env
+    if pinned:
+        (home / "config.yaml").write_text(
+            "model:\n  provider: solstice\n  default: gemini-3.1-pro\n"
+            "auxiliary:\n  title_generation:\n    provider: solstice\n    model: gemini-3.1-pro\n", encoding="utf-8")
+    _write(home, _row("ya29.fresh-warm", _now_ms() + 3_600_000))
+    runtime = {"provider": "solstice", "model": "gemini-3.1-pro", "api_key": "ya29.fresh-warm",
+               "base_url": BASE_URL, "api_mode": "chat_completions"}
+    assert _text(_title(runtime)) == "A Title"
+    assert seen == ["Bearer ya29.fresh-warm"]
+
+    data = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    data["credential_pool"]["solstice"][0]["expires_at_ms"] = _now_ms() - 1000
+    (home / "auth.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def respond(self, url, **kw):
+        bearer = (kw.get("headers") or {}).get("Authorization", "")
+        seen.append(bearer)
+        req = httpx.Request("POST", str(url))
+        if GOOGLE in str(url) and bearer.startswith("Bearer ya29.fresh-") and bearer != "Bearer ya29.fresh-warm":
+            return httpx.Response(200, json=OK_BODY, request=req)
+        return httpx.Response(401, request=req, json={"error": {"code": 401, "status": "UNAUTHENTICATED"}})
+
+    monkeypatch.setattr(httpx.Client, "post", respond)
+    seen.clear()
+    assert _text(_title(runtime)) == "A Title"
+    assert seen == ["Bearer ya29.fresh-1"]
+    assert len(grants) == 1
+
+
 def test_pinned_aux_provider_401_refreshes_instead_of_benching(env):
     """``auxiliary.title_generation.provider: solstice`` used to bench the only credential on a 401
     (no refresh), so the next call failed with a cooldown message. It refreshes and keeps working."""

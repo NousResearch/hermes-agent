@@ -3634,7 +3634,7 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = 
     entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
     if not entry_id and not digest:
         return ""
-    return f"{normalized}:{entry_id}:{digest}"
+    return f"{normalized}:{entry_id}:{digest}" + _plugin_oauth.expired_cache_hint(normalized, entry)
 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL (then profile ``hostnames``).
@@ -6037,7 +6037,7 @@ def _get_cached_client(
     if not effective_api_key:
         _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
         if _pool is not None and (_pe := _peek_pool_entry(provider, _pool)) is not None:
-            effective_api_key = _pool_runtime_api_key(_pe) or api_key
+            effective_api_key = _pool_runtime_api_key(_plugin_oauth.fresh_entry(_normalize_aux_provider(provider), _pool, _pe)) or api_key
     client, default_model = resolve_provider_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,

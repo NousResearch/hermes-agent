@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "react-router";
 import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
@@ -17,6 +17,28 @@ export function PageHeaderProvider({
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
+  const [isFullscreen, setIsFullscreen] = useState(
+    () => Boolean(document.fullscreenElement),
+  );
+
+  useEffect(() => {
+    const update = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", update);
+    return () => document.removeEventListener("fullscreenchange", update);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch (error) {
+      console.warn("Fullscreen request failed:", error);
+    }
+  };
+
 
   // Reset before the new route commits: parent layout effects run after child
   // effects, so clearing there would erase the new page's header actions.
@@ -104,6 +126,18 @@ export function PageHeaderProvider({
                 </div>
               ) : null}
             </div>
+
+            {"requestFullscreen" in document.documentElement && "exitFullscreen" in document && (
+              <button
+              type="button"
+              onClick={toggleFullscreen}
+              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              className="shrink-0 rounded border border-current/30 px-2 py-1 text-xs"
+            >
+              {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+              </button>
+            )}
 
             {end ? (
               <div

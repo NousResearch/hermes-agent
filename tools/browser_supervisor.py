@@ -25,6 +25,7 @@ from tools.browser_supervisor_dialogs import (
     DialogSupervisionMixin, PendingDialog,
 )
 from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
+from tools.browser_supervisor_auth import NativeAuthMixin
 
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
@@ -95,7 +96,7 @@ class SupervisorSnapshot:
         return out
 
 
-class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
+class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin, NativeAuthMixin):
     """One supervisor per (task_id, cdp_url) pair. ``start()`` spawns a daemon thread
     running its own asyncio loop, connects, attaches to the first page target, enables
     domains and auto-attach. ``snapshot()`` / ``respond_to_dialog()`` / ``evaluate_runtime()``
@@ -106,6 +107,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if dialog_policy not in _VALID_POLICIES:
             raise ValueError(f"Invalid dialog_policy {dialog_policy!r}; must be one of {sorted(_VALID_POLICIES)}")
         self.task_id = task_id
+        from hermes_constants import hermes_home_key
+        self._vault_owner_home = hermes_home_key()
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
@@ -127,6 +130,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._pending_calls: dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        self._vault_auth_events: dict[str, asyncio.Queue] = {}
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
@@ -375,7 +379,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
         import websockets  # deferred: only supervisors that connect pay the import
         from agent.proxy_bypass import loopback_connect_kwargs
-        connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
+        # Protocol DEBUG logging includes raw frames, including vault credentials.
+        # A private non-propagating logger keeps wire payloads out of all log sinks.
+        wire_logger = logging.Logger("hermes.cdp.wire", level=logging.CRITICAL + 1)
+        wire_logger.propagate = False
+        connect_kwargs = {"max_size": 50 * 1024 * 1024, "logger": wire_logger,
+                          **loopback_connect_kwargs(self.cdp_url)}
         while not self._stop_requested:
             try:
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
@@ -476,6 +485,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 except Exception:
                     logger.debug("CDP supervisor: non-JSON frame dropped")
                     continue
+                if (queue := self._vault_auth_events.get(msg.get("sessionId"))) is not None:
+                    if msg.get("method") in {"Fetch.requestPaused", "Fetch.authRequired",
+                                             "Network.responseReceived", "Network.loadingFailed"}:
+                        queue.put_nowait((msg["method"], msg.get("params", {})))
+                        continue  # scoped auth owns these events, not the dialog bridge
                 if "id" in msg:
                     fut = self._pending_calls.pop(msg["id"], None)
                     if fut is None or fut.done():

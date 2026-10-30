@@ -1,7 +1,7 @@
 """Tests for the DrainSecretProvider plugin (non-interactive bearer secret).
 
 Task 2.0b. Loads the bundled drain plugin module directly and exercises:
-  * the entropy gate (assess_secret_strength) — fail-closed on weak secrets,
+  * the secret sanity gate (assess_secret_strength) — fail-closed on degenerate secrets,
   * constant-time verify_token returning a scoped TokenPrincipal,
   * the register(ctx) entry point's env/config resolution, skip reasons, and
     token-route registration.
@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.dashboard_auth.drain as drain_plugin
+from plugins.dashboard_auth._shared import assess_secret_strength
 from hermes_cli.dashboard_auth import TokenPrincipal, assert_protocol_compliance
 from hermes_cli.dashboard_auth import token_auth
 
@@ -37,29 +38,33 @@ def _strong_secret() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Entropy gate
+# Secret sanity gate
 # ---------------------------------------------------------------------------
 
 
-class TestEntropyGate:
+class TestSecretGate:
     def test_strong_secret_passes(self, drain):
-        assert drain.assess_secret_strength(_strong_secret()) is None
+        assert assess_secret_strength(_strong_secret()) is None
 
     def test_empty_rejected(self, drain):
-        assert drain.assess_secret_strength("") is not None
+        assert assess_secret_strength("") is not None
 
     def test_too_short_rejected(self, drain):
         # 42 chars — one under the 43-char bar.
-        assert drain.assess_secret_strength("a1B2c3" * 7) is not None
+        assert assess_secret_strength("a1B2c3" * 7) is not None
 
     def test_long_but_repeated_rejected(self, drain):
-        # 60 chars, one distinct character → low distinct count + low entropy.
-        assert drain.assess_secret_strength("a" * 60) is not None
+        # 60 chars, one distinct character.
+        assert assess_secret_strength("a" * 60) is not None
 
+    def test_repeated_diverse_block_rejected(self, drain):
+        # Diverse histogram (16 symbols) but trivially predictable: character diversity of
+        # one observed string is not generation entropy, so this must not pass.
+        assert assess_secret_strength("abcdefghijklmnop" * 3) is not None
 
     def test_custom_min_chars_enforced(self, drain):
         s = _strong_secret()  # 43 chars
-        assert drain.assess_secret_strength(s, min_chars=999) is not None
+        assert assess_secret_strength(s, min_chars=999) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -170,3 +175,22 @@ class TestRegister:
         drain.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
         assert "rejected" in drain.LAST_SKIP_REASON
+
+
+    def test_lowered_minimum_is_honored_at_construction(self, drain, monkeypatch):
+        secret = "0123456789abcdefghijklmn"
+        monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", secret)
+        monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {"min_secret_chars": 20})
+        ctx = MagicMock()
+        drain.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert provider.verify_token(token=secret).scopes == ("drain",)
+
+    def test_refused_provider_does_not_rescope_live_route(self, drain, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", _strong_secret())
+        monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {"scope": "other"})
+        token_auth.register_token_route(drain.DRAIN_ROUTE_PATH, scope="drain")
+        ctx = MagicMock()
+        ctx.register_dashboard_auth_provider.return_value = None
+        drain.register(ctx)
+        assert token_auth._match_token_route(drain.DRAIN_ROUTE_PATH) == "drain"

@@ -115,14 +115,16 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_conflict_retry_drops_pending_updates(monkeypatch):
-    """Conflict recovery must use drop_pending_updates=True (#75017).
-
-    Without this, each retry starts a new getUpdates session that
-    immediately gets 409'd by the previous still-expiring session,
-    creating the very conflict we are trying to recover from.
-    """
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (None, True),
+        ({"drop_pending_on_conflict_retry": False}, False),
+    ],
+)
+async def test_conflict_retry_drop_pending_policy(monkeypatch, extra, expected):
+    """Conflict retries preserve the safe default and allow an opt-out for queued updates."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra=extra or {}))
     adapter.set_fatal_error_handler(AsyncMock())
     adapter._drain_polling_connections = AsyncMock()
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -144,10 +146,7 @@ async def test_conflict_retry_drops_pending_updates(monkeypatch):
         conflict("Conflict: terminated by other getUpdates request")
     )
 
-    assert captured.get("drop_pending_updates") is True, (
-        "Conflict retry must use drop_pending_updates=True to terminate "
-        "stale getUpdates sessions on Telegram's servers (#75017)"
-    )
+    assert captured.get("drop_pending_updates") is expected
 
 
 @pytest.mark.asyncio

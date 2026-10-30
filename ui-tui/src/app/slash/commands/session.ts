@@ -23,6 +23,7 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
 import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
+import { runPetCommand } from '../petCommand.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 import { usageTotalsSections } from '../usagePanel.js'
 
@@ -524,26 +525,8 @@ export const sessionCommands: SlashCommand[] = [
   {
     help: 'toggle / adopt / resize an animated pet',
     name: 'pet',
-    usage: '/pet [toggle | list | scale <n> | <slug>]',
-    run: (arg, ctx, cmd) => {
-      const sub = arg.trim().toLowerCase()
-
-      // Gallery picker — the interactive browse surface.
-      if (sub === 'list') {
-        return patchOverlayState({ petPicker: true })
-      }
-
-      // Bare /pet and /pet toggle flip display.pet.enabled via the slash worker.
-      ctx.gateway.gw
-        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
-        .then(
-          ctx.guarded<SlashExecResponse>(r => {
-            const body = r.output || t('slashCmd.session.pet.noOutput')
-            ctx.transcript.sys(r.warning ? t('slashCmd.session.pet.warning', r.warning, body) : body)
-          })
-        )
-        .catch(ctx.guardedErr)
-    }
+    usage: '/pet [toggle | off | list | scale <n> | <slug>]',
+    run: runPetCommand
   },
 
   {

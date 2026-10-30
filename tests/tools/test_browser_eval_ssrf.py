@@ -181,6 +181,29 @@ def test_raw_cdp_metadata_floor_reads_scheme_relative_urls(cdp_guard):
 
 
 @pytest.mark.parametrize("local_backend", [False, True])
+def test_raw_cdp_reads_the_host_after_userinfo(cdp_guard, local_backend):
+    """``)``, ``]``, ``<`` and ``>`` are legal in userinfo, so ``http://x)@169.254.169.254/`` goes to the
+    metadata host: a literal cut at one of them inside its authority is also read past the last ``@``."""
+    for userinfo in ("1.1.1.1)", "1.1.1.1]", "1.1.1.1<", "1.1.1.1>", "1.1.1.1)@1.1.1.1]"):
+        for prefix in ("http://", "//"):
+            target = f"{prefix}{userinfo}@169.254.169.254/latest/meta-data/"
+            call = {"functionDeclaration": f"() => fetch('{target}')"}
+            assert "cloud metadata" in cdp_guard(method="Runtime.callFunctionOn", params=call), target
+    html = {"expression": "document.body.innerHTML = '<img src=\"http://1.1.1.1)@169.254.169.254/latest/\">'"}
+    assert "(http://169.254.169.254/latest/)" in cdp_guard(method="Runtime.evaluate", params=html)
+    raw = {"frameId": "F", "url": "http://1.1.1.1]@169.254.169.254/latest/", "options": {}}
+    assert "cloud metadata" in cdp_guard(method="Network.loadNetworkResource", params=raw)
+    loopback = {"functionDeclaration": "() => fetch('http://1.1.1.1)@127.0.0.1:8080/')"}
+    assert (cdp_guard(method="Runtime.callFunctionOn", params=loopback) is None) == local_backend
+    # The literal as cut is still read too: an address after an unquoted href does not hide the href.
+    href = {"functionDeclaration": "() => el.innerHTML = '<a href=http://127.0.0.1:8080>me@93.184.216.34</a>'"}
+    assert (cdp_guard(method="Runtime.callFunctionOn", params=href) is None) == local_backend
+    # An @ after the authority ended (path, query) leaves the host alone.
+    path = {"frameId": "F", "url": "https://93.184.216.34/a)@169.254.169.254/", "options": {}}
+    assert cdp_guard(method="Network.loadNetworkResource", params=path) is None
+
+
+@pytest.mark.parametrize("local_backend", [False, True])
 def test_raw_cdp_scheme_relative_literals_cost_no_dns_lookup(cdp_guard, monkeypatch):
     """``//word`` comments are judged by their literal host: no resolver call per comment."""
     from tools import url_safety

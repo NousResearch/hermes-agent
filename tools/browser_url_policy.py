@@ -43,6 +43,11 @@ _JS_URL_LITERAL_RE = re.compile(r"https?://" + _URL_BODY, re.IGNORECASE)
 # query (``https://x/?next=//y``) is part of that literal, not a second target.
 _URL_OR_SCHEME_RELATIVE_RE = re.compile(r"""(?:https?://|(?<![\w:/\\])[/\\]{2,}(?=[^/\\\s]))""" + _URL_BODY,
                                         re.IGNORECASE)
+_URL_BODY_RE = re.compile(_URL_BODY)
+# ``)``, ``]``, ``<`` and ``>`` are legal in userinfo, so a literal cut at one inside its authority may be
+# ``http://x)@host``: the rest of the authority (up to ``/ ? # \``) through its last ``@``.
+_USERINFO_TAIL_RE = re.compile(r"""[^\s'"`/?#\\]*@""")
+_LITERAL_HEAD_RE = re.compile(r"(?:https?:)?[/\\]+", re.IGNORECASE)
 _NUMERIC_HOST_RE = re.compile(r"[0-9a-fx.]+")  # _url_hostname lowercases
 
 
@@ -152,10 +157,21 @@ def url_blocked(url: str) -> bool:
 
 def url_literals(text: str, *, protocol_relative: bool = False) -> list[str]:
     """Every ``http(s)://`` literal in free text (a JS expression, an HTML snippet, a CDP param); with
-    ``protocol_relative``, each scheme-relative ``//host/...`` literal too, kept scheme-less."""
+    ``protocol_relative``, each scheme-relative ``//host/...`` literal too, kept scheme-less. A literal cut
+    inside its authority with an ``@`` ahead is also returned as the host a browser reads after that ``@``
+    (``http://x)@host/`` -> ``http://host/``), next to the literal as cut."""
     if not isinstance(text, str):
         return []
-    found = (_URL_OR_SCHEME_RELATIVE_RE if protocol_relative else _JS_URL_LITERAL_RE).findall(text)
+    found = []
+    for m in (_URL_OR_SCHEME_RELATIVE_RE if protocol_relative else _JS_URL_LITERAL_RE).finditer(text):
+        found.append(m.group())
+        head = _LITERAL_HEAD_RE.match(m.group()).group()
+        if any(c in "/?#\\" for c in m.group()[len(head):]):
+            continue  # the authority ended inside the literal: its host is fixed
+        tail = _USERINFO_TAIL_RE.match(text, m.end())
+        host = tail and _URL_BODY_RE.match(text, tail.end())
+        if host:
+            found.append(head + host.group())
     return [m.rstrip(".,;") for m in found]
 
 

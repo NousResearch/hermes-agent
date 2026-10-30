@@ -225,6 +225,17 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
+# `git` accepts global options BEFORE the subcommand (`git -C DIR push`, `git -c k=v push --mirror`,
+# `git --git-dir=… push`). The old `\bgit\s+push\b` adjacency anchor let every global-option spelling
+# bypass the push rules — `git -C /srv/app push --mirror origin` deletes/force-updates every remote
+# ref with zero approval (public incident: PrimeIntellect-ai/prime-agent#2446, 62 branches dropped
+# by a mirror push). The option group is a fixed alternation that consumes exactly its own argument,
+# so it cannot swallow an arbitrary word and revive cross-token false positives.
+_GIT_PUSH = (
+    r'\bgit\b(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=\S+|\s+\S+)'
+    r'|--work-tree(?:=\S+|\s+\S+)|--namespace=\S+|--exec-path(?:=\S+|\s+\S+)))*\s+push\b'
+)
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -444,8 +455,38 @@ DANGEROUS_PATTERNS = [
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # Mirror push deletes/force-updates EVERY remote ref absent locally. Bounded to one command
+    # segment (`[^;|&\n]`) so an unrelated later command's token cannot contaminate the verdict, and
+    # anchored on the `--mirr` FLAG SPELLING (with git's unambiguous long-option abbreviations) so a
+    # remote/branch NAMED `mirror` (`git push origin mirror-sync`) stays clean.
+    (_GIT_PUSH + r'[^;|&\n]*?\s--mirr[a-z]*\b', "git mirror push (deletes/overwrites remote refs not present locally)"),
+    # `git push --prune` DELETES remote branches absent locally — same harm class as --delete below.
+    # Anchored on the push subcommand so the harmless `git fetch --all --prune` (only moves local
+    # tracking refs) is untouched.
+    (_GIT_PUSH + r'[^;|&\n]*?\s--prune\b', "git push prune (deletes remote refs absent locally)"),
+    # Ref deletion has three spellings: the --delete / -d flag, and the colon-prefixed refspec
+    # (`git push origin :branch`, `:refs/heads/b`). A NON-prefixed colon refspec (`main:main`,
+    # `HEAD:main`) is a plain update and does not match — the `:` must sit right after whitespace.
+    (_GIT_PUSH + r'[^;|&\n]*?\s(?:-d\b|--delete\b|:\S+)', "git push delete (removes a remote branch/ref)"),
+    # A LEADING `+` in a refspec is force-push semantics (`git push origin +main:main` ==
+    # `--force main:main`). The `+` must sit immediately after whitespace (refspec PREFIX position);
+    # git forbids `+`-prefixed ref/tag names, so name-internal `+` (`v2.0+build`), a trailing `+`
+    # (`main+`), and a `+` in a LATER command segment (`&& echo +done`) do not match.
+    (_GIT_PUSH + r'[^;|&\n]*?\s\+\S+', "git push force via +refspec prefix (rewrites remote history)"),
+    # --force-with-lease is the safer force variant (it refuses stale overwrites) but still
+    # overwrites when the lease holds, so it stays gated — under its own honest reason instead of
+    # the blanket "rewrites remote history" verdict misattributing it. Must precede the --force
+    # rules: detection returns the FIRST pattern match and `--force\b` matches inside
+    # `--force-with-lease` (hyphen is a word boundary).
+    (_GIT_PUSH + r'[^;|&\n]*?--force-with-lease\b', "git push with lease (safe force variant, still overwrites when lease holds)"),
+    # The pre-existing force rules, re-anchored on _GIT_PUSH (the adjacency form was bypassable by
+    # `git -C DIR push --force`, exactly the landmine shape above) and with the DOTALL `.*` bounded
+    # to one command segment: `.*` used to cross `;`/`&&`/`|`, blocking a harmless
+    # `git push --dry-run … | sed 's/[0-9a-f]\{40\}/…/'` on an unrelated `-f` token in a LATER
+    # segment. Real force pushes (`git push -f … && echo done`) still match because the flag sits
+    # in the push segment itself. Descriptions are unchanged, so stored approvals keep resolving.
+    (_GIT_PUSH + r'[^;|&\n]*?--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (_GIT_PUSH + r'[^;|&\n]*?-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed

@@ -142,6 +142,17 @@ def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
         assert plans == [(expected, None), (expected, None)]
 
 
+def test_a_registered_workspace_does_not_split_an_unmounted_profile_sandbox(home, tmp_path):
+    """Any ``cwd_source: "session"`` workspace (not just the gated writers') keeps the profile key."""
+    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    with _turn(_policy(home, ws, persistent=True, mount=False), 'local-a'):
+        register_task_env_overrides('local-a', {
+            'cwd': str(ws), 'cwd_source': 'session', 'workspace_key': workspace_key_for(str(ws))})
+        assert _plan('local-a') == ('default', None)
+
+
 def test_binding_keeps_a_cd_and_follows_a_workspace_move(home, tmp_path):
     from tools.terminal_tool import get_session_cwd, record_session_cwd
     ws1, ws2 = tmp_path / 'ws1', tmp_path / 'ws2'

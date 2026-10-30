@@ -557,7 +557,9 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
     A gateway-owned CLI/Desktop session registers its client cwd as a ``cwd_source: "session"``
     override (``gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
     concurrent session shared the container bound to whichever workspace created it first; sessions
-    in the same folder still share one. Sessions with no registered workspace keep the profile key.
+    in the same folder still share one. Sessions with no registered workspace keep the profile key,
+    and so does every session while ``docker_mount_cwd_to_workspace`` is off: nothing is bound into
+    the container then, so a workspace must not split the profile's sandbox from its CLI files.
 
     Idempotent: an already-resolved ``<base>:ws:<digest>`` key maps to itself (``ensure_task_env``
     hands the resolved key to ``get_active_env``, which resolves again). A ``delegate_task`` child has
@@ -565,12 +567,14 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
     followed: the child runs in its parent's workspace container, never the profile's.
     Reads the raw table (not :func:`resolve_task_overrides`, which calls back into key resolution).
     """
-    # Desktop/ACP also register a cwd when no host folder is mounted. That cwd must
-    # not split the profile's persistent sandbox away from its existing CLI files.
-    if not task_id or not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"):
+    if not task_id:
         return base
     if task_id.startswith(f"{base}:ws:"):
         return task_id
+    # Without the cwd mount nothing is bound into the container: a registered workspace (a
+    # Desktop session's folder) must not split the profile's sandbox from its CLI files.
+    if not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"):
+        return base
     for key in dict.fromkeys((task_id, _resolve_container_alias(task_id))):
         overrides = _task_env_overrides.get(_qualify_task_key(key))
         if not overrides or overrides.get("cwd_source") != "session":

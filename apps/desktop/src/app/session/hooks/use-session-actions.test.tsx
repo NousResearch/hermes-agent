@@ -75,6 +75,7 @@ import {
   setConnection,
   setCronSessions,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentModelSource,
@@ -6525,6 +6526,46 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).toMatchObject({ cwd: '/repo/work', profile: 'work' })
     expect($sessionTiles.get()).toContainEqual(expect.objectContaining({ ownerProfile: 'work', storedSessionId }))
     expect(knownOwnerForSession(storedSessionId)).toBe('work')
+  })
+
+  it('keeps a project-row tile cwd explicit when profile setup changes the ambient workspace flag', async () => {
+    setConnection({ mode: 'local' } as never)
+    $profiles.set([{ name: 'default' }, { name: 'work' }] as never)
+    $activeGatewayProfile.set('work')
+
+    vi.mocked(ensureGatewayProfile).mockImplementation(async () => {
+      setCurrentCwdExplicit(false)
+    })
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo/work', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-explicit-project-tile'
+        } as never
+      }
+
+      throw new Error(`Unexpected ambient RPC: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', { cwd: '/repo/work', listed: false })
+      })
+
+      expect(createParams).toMatchObject({ cwd: '/repo/work', cwd_explicit: true, profile: 'work' })
+    } finally {
+      vi.mocked(ensureGatewayProfile).mockResolvedValue(undefined)
+    }
   })
 
   // Review of #124265: the stale pin may also have captured ANOTHER connection

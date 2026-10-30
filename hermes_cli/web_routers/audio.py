@@ -732,7 +732,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                         produced_audio = True
                         loop.call_soon_threadsafe(chunks.put_nowait, chunk)
         except Exception as exc:
-            _log.warning("speak-stream synthesis failed: %s", exc)
+            _log.warning("speak-stream synthesis failed (%s)", type(exc).__name__)
             synthesis_failed = True
         finally:
             loop.call_soon_threadsafe(chunks.put_nowait, None)

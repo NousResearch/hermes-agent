@@ -18,7 +18,7 @@ This is different from the [API server](./api-server.md):
 |---|---|---|
 | What it serves | Your agent (full toolset, memory, skills) | Raw model inference |
 | Use case | "Use Hermes as a chat backend" | "Use my Portal sub from another app" |
-| Auth | Your `API_SERVER_KEY` | Any bearer (proxy attaches the real one) |
+| Auth | Your `API_SERVER_KEY` | Any bearer for passthrough adapters; a configured local bearer for Codex |
 | Tool calls | Yes — the agent runs tools | No — passthrough only |
 
 Use the API server when you want the **agent** as a backend. Use the
@@ -72,9 +72,37 @@ automatically when the bearer approaches expiry.
 hermes proxy providers
 ```
 
-Currently shipped: `nous` (Nous Portal) and `xai` (xAI / Grok). More
+Currently shipped: `nous` (Nous Portal), `openai-codex` (ChatGPT/Codex OAuth)
+and `xai` (xAI / Grok). The Codex adapter translates non-streaming OpenAI Chat
+Completions requests to the Codex Responses transport; clients choose a model
+such as `gpt-5.6-luna` in their request. More
 OAuth providers can be added by implementing the `UpstreamAdapter`
 interface in `hermes_cli/proxy/adapters/`.
+
+### ChatGPT/Codex OAuth
+
+The `openai-codex` adapter accepts ordinary non-streaming OpenAI Chat
+Completions requests and routes them through Hermes's existing Codex Responses
+client. It is deliberately loopback-only and requires a downstream bearer so
+another process on the same machine cannot spend the profile owner's ChatGPT
+subscription merely by reaching localhost.
+
+```bash
+hermes auth add openai-codex
+export HERMES_CODEX_PROXY_CLIENT_KEY="$(openssl rand -base64 32)"
+hermes proxy start --provider openai-codex \
+  --auth-key-env HERMES_CODEX_PROXY_CLIENT_KEY \
+  --host 127.0.0.1 --port 8646
+```
+
+Configure the client with the same bearer and a model available to the Codex
+subscription, for example:
+
+```text
+Base URL: http://127.0.0.1:8646/v1
+API key:  $HERMES_CODEX_PROXY_CLIENT_KEY
+Model:    gpt-5.6-luna
+```
 
 ## Check status
 
@@ -108,6 +136,11 @@ Portal:
 Other paths (`/v1/images/generations`, `/v1/audio/speech`, etc.) return
 404 with a clear error pointing at the allowed paths. This keeps stray
 clients from leaking weird requests to the upstream.
+
+For `openai-codex`, the allowed paths are `/v1/chat/completions`
+(non-streaming) and `/v1/models`. The adapter translates Chat Completions to
+Codex Responses internally; it never exposes the OAuth credential to the
+client.
 
 ## Configuring OpenViking to use Portal
 
@@ -179,6 +212,9 @@ so it refuses every request a web page makes (any `Origin`, or a
 `Sec-Fetch-Site` other than `none`): browsers cannot use a wildcard-bound proxy. The proxy has no auth of its own — it accepts any bearer.
 Use a firewall, VPN, or reverse proxy with proper auth if you expose
 this beyond your trusted network.
+
+The `openai-codex` adapter is stricter: it refuses every non-loopback bind,
+even when a downstream key is configured.
 
 ## Rate limits
 

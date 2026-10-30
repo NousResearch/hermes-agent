@@ -17,6 +17,15 @@ class UpstreamCredential:
     expires_at: Optional[str] = None  # ISO-8601, informational
 
 
+@dataclass(frozen=True)
+class LocalAdapterResponse:
+    """Completed response produced locally by a translating adapter."""
+
+    status: int
+    body: bytes
+    content_type: str = "application/json"
+
+
 class UpstreamAdapter(ABC):
     """Contract for an upstream provider the proxy can forward to."""
 
@@ -29,6 +38,16 @@ class UpstreamAdapter(ABC):
     @abstractmethod
     def display_name(self) -> str:
         """Human-readable provider name for logs and ``proxy status``."""
+
+    @property
+    def loopback_only(self) -> bool:
+        """Whether this credential-bearing adapter refuses non-loopback binds."""
+        return False
+
+    @property
+    def requires_downstream_auth(self) -> bool:
+        """Whether clients must prove local authority before inference is invoked."""
+        return False
 
     @property
     @abstractmethod
@@ -54,6 +73,13 @@ class UpstreamAdapter(ABC):
         _ = failed_credential, status_code
         return None
 
+    def handle_local_request(
+        self, rel_path: str, body: bytes
+    ) -> Optional[LocalAdapterResponse]:
+        """Translate and execute a request locally, or return None for passthrough."""
+        _ = rel_path, body
+        return None
+
     def describe(self) -> str:
         """One-line status summary for ``proxy status``."""
         try:
@@ -64,4 +90,4 @@ class UpstreamAdapter(ABC):
         return f"{self.display_name}: {cred.base_url}{ttl}"
 
 
-__all__ = ["UpstreamAdapter", "UpstreamCredential"]
+__all__ = ["LocalAdapterResponse", "UpstreamAdapter", "UpstreamCredential"]

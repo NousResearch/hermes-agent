@@ -114,3 +114,44 @@ class TestCLIDiscardSessionIfEmpty:
         cli.conversation_history = [{"role": "user", "content": "hello"}]
         assert cli._discard_session_if_empty("unflushed") is False
         assert db.get_session("unflushed") is not None
+
+
+class TestSessionSwitchDiscardsEmptyRow:
+    """``_end_current_session`` is the row the classic CLI leaves behind on /resume and
+    /branch. A switch away from a session that never gained content must not leave a
+    titeless row for /resume and ``hermes sessions list`` to offer (#146165)."""
+
+    def _make_cli(self, db, session_id):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._session_db = db
+        cli.conversation_history = []
+        cli.session_id = session_id
+        cli.agent = None
+        return cli
+
+    def test_switch_prunes_row_that_never_gained_content(self, db):
+        from hermes_cli.cli_session_switch import _end_current_session
+
+        db.create_session(session_id="abandoned", source="cli", model="test")
+        cli = self._make_cli(db, "abandoned")
+
+        _end_current_session(cli, "resumed_other")
+
+        assert db.get_session("abandoned") is None
+
+    def test_switch_keeps_row_that_has_messages(self, db):
+        """Ending the row is not deleting it: a session with content survives the switch
+        and carries the switch reason."""
+        from hermes_cli.cli_session_switch import _end_current_session
+
+        db.create_session(session_id="talked", source="cli", model="test")
+        db.append_message("talked", role="user", content="hello")
+        cli = self._make_cli(db, "talked")
+
+        _end_current_session(cli, "resumed_other")
+
+        row = db.get_session("talked")
+        assert row is not None
+        assert row["end_reason"] == "resumed_other"

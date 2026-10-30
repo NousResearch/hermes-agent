@@ -755,11 +755,16 @@ hermes worktree merge hermes-subagent/subagent-<id> \
   sides of a rename, must be that path or under that directory.
 - `--tested SHA`: the commit the child says it verified. Each child is told to
   report it. It must be the branch tip; commits after it refuse the merge.
-- `--gate CMD`: runs after the merge commit. A non-zero exit, or running past
-  `--gate-timeout` (default 1800 s, which kills the gate's whole process tree),
-  resets to the pre-merge commit.
-- Tracked files must be clean first, and a conflict aborts the merge and lists
-  the conflicting files. `--json` prints the full result.
+- `--gate CMD`: runs in the worktree after the merge commit. A non-zero exit,
+  or running past `--gate-timeout` (default 1800 s, which kills the gate's
+  whole process tree), puts the branch back at the pre-merge commit. Files the
+  gate created or staged stay on disk. A gate that commits is reported and
+  nothing is reset.
+- It refuses before merging when tracked files have uncommitted changes
+  (including ones hidden by assume-unchanged or skip-worktree), or when a file
+  the branch writes already exists here untracked or git-ignored. A conflict
+  aborts the merge and lists the conflicting files. `--json` prints the full
+  result.
 
 A useful pattern for a fan-out: commit shared scaffolding (types, stubs,
 tests) first, so every child branches from it, then merge each child's branch

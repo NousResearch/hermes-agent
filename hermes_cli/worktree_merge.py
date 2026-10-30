@@ -8,11 +8,14 @@ coordinator asked for before the merge lands, and keeps it only when the check p
   or sit under a listed directory. Any file outside them refuses the merge.
 * ``--tested SHA``: the commit the child says it verified. It must be on the branch and be its tip;
   commits after it were never run through that verification, so they refuse the merge.
-* ``--gate CMD``: runs in the worktree after the merge commit. A failure or timeout resets the
-  worktree to the commit it had before the merge.
+* ``--gate CMD``: runs in the worktree after the merge commit. A failure or timeout (which kills
+  the gate's whole process tree) puts the branch back at the commit it had before the merge.
 
-The worktree must be clean of tracked changes first, so a reset can never discard user work. A
-conflict aborts the merge and lists the conflicting files.
+Before merging it also refuses: tracked files with uncommitted changes (including ones hidden by
+assume-unchanged/skip-worktree), and any path the branch writes that exists here untracked, since
+git silently overwrites ignored files. So the rollback only touches what the merge brought in; files
+the gate created or staged stay on disk. A gate that moves HEAD itself (a commit) is reported and
+nothing is reset. A conflict aborts the merge and lists the conflicting files.
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ class MergeResult:
     files: list[str] = field(default_factory=list)
     outside_allowed: list[str] = field(default_factory=list)
     untested_commits: list[str] = field(default_factory=list)
+    untracked_collisions: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     gate: Optional[GateResult] = None
     reset_to: str = ""
@@ -69,6 +73,16 @@ def _git(repo: str, *args: str, check: bool = True) -> subprocess.CompletedProce
 
 def _out(repo: str, *args: str) -> str:
     return _git(repo, *args).stdout.strip()
+
+
+def _paths(repo: str, *args: str) -> list[str]:
+    """NUL-separated path output, read as bytes: text mode would turn a ``\\r`` in a name into ``\\n``."""
+    from hermes_cli._subprocess_compat import harden_git_argv
+    result = subprocess.run(["git", *harden_git_argv(args)], cwd=repo, capture_output=True,
+                            stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT, check=False)
+    if result.returncode != 0:
+        raise MergeRefused(f"git {args[0]} failed: {result.stderr.decode('utf-8', 'replace').strip()[:300]}")
+    return sorted({os.fsdecode(name) for name in result.stdout.split(b"\0") if name})
 
 
 def _resolve(repo: str, rev: str, what: str) -> str:
@@ -103,11 +117,26 @@ def _require_clean(repo: str) -> None:
     if dirty:
         raise MergeRefused("the worktree has uncommitted changes to tracked files; commit or stash them first:\n"
                            + dirty[:1000])
+    from hermes_cli.worktree_archive import ArchiveError
+    from hermes_cli.worktree_retention import hidden_index_edits
+    try:
+        hidden = hidden_index_edits(repo)
+    except (ArchiveError, OSError) as exc:
+        raise MergeRefused(f"could not check assume-unchanged/skip-worktree files: {exc}") from exc
+    if hidden:
+        raise MergeRefused("files marked assume-unchanged or skip-worktree have local edits that git status "
+                           "does not show; commit them or clear the flag first: " + ", ".join(hidden[:20]))
 
 
 def _changed_files(repo: str, base: str, tip: str) -> list[str]:
-    raw = _git(repo, "diff", "--name-only", "--no-renames", "-z", base, tip).stdout
-    return sorted({name for name in raw.split("\0") if name})
+    # Plumbing diff-tree ignores diff.* porcelain config (renames, ignoreSubmodules, relative).
+    return _paths(repo, "diff-tree", "-r", "-z", "--name-only", "--no-renames", base, tip)
+
+
+def _untracked_collisions(repo: str, files: list[str]) -> list[str]:
+    """Paths the branch writes that exist here untracked; git overwrites ignored ones without asking."""
+    tracked = set(_paths(repo, "ls-files", "-z"))
+    return [f for f in files if f not in tracked and os.path.lexists(os.path.join(repo, f))]
 
 
 def _untested_commits(repo: str, tested: str, tip: str) -> list[str]:
@@ -132,7 +161,7 @@ def _run_gate(repo: str, command: str, timeout: float) -> GateResult:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            kill_process_tree(proc, grace=2.0)
+            kill_process_tree(proc)  # SIGKILL the live tree at once: a TERM grace lets a setsid'd child slip out
         finally:
             release_process_group_once_empty(proc.pid, proc=proc)
         out.seek(0, os.SEEK_END)
@@ -154,10 +183,16 @@ def _check_branch(repo: str, result: MergeResult, allowed: list[str], tested: Op
         result.untested_commits = _untested_commits(repo, _resolve(repo, tested, "--tested"), result.tip)
         if result.untested_commits:
             raise MergeRefused(f"{len(result.untested_commits)} commit(s) landed after the tested commit")
+    result.untracked_collisions = _untracked_collisions(repo, result.files)
+    if result.untracked_collisions:
+        raise MergeRefused(f"{len(result.untracked_collisions)} file(s) the branch writes exist here untracked "
+                           "(possibly git-ignored); move them aside first")
 
 
 def _merge(repo: str, result: MergeResult) -> bool:
-    merged = _git(repo, "merge", "--no-ff", "--no-edit", result.branch, check=False)
+    # Merge the commit that was checked, not the branch name, which can move in the meantime.
+    merged = _git(repo, "merge", "--no-ff", "--no-edit", "-m", f"Merge branch '{result.branch}'", result.tip,
+                  check=False)
     if merged.returncode == 0:
         result.merge_commit = _out(repo, "rev-parse", "HEAD")
         return True
@@ -186,17 +221,37 @@ def merge_branch(repo: str, branch: str, *, allowed: Optional[list[str]] = None,
         result.error = str(exc)
         return result
     before = _out(repo, "rev-parse", "HEAD")
+    head_ref = _git(repo, "symbolic-ref", "-q", "HEAD", check=False).stdout.strip()
     if not _merge(repo, result):
         return result
     if gate:
         result.gate = _run_gate(repo, gate, gate_timeout)
         if result.gate.timed_out or result.gate.exit_code != 0:
-            _git(repo, "reset", "--hard", before)
-            result.reset_to, result.merge_commit = before, ""
             result.error = "the gate timed out" if result.gate.timed_out else "the gate failed"
+            _undo_merge(repo, result, before, head_ref)
             return result
     result.merged = True
     return result
+
+
+def _undo_merge(repo: str, result: MergeResult, before: str, head_ref: str) -> None:
+    """Put the merged-into branch back at *before* without deleting anything the merge did not bring.
+
+    Same checkout, HEAD still the merge commit: unstage whatever the gate staged (it stays on disk,
+    untracked), then reset the tracked files; the merge brought no path that existed untracked
+    (checked before merging). The gate checked out another branch: leave that checkout alone and move
+    only the original branch ref, and only while it still holds the merge. Anything else (the gate
+    committed) is reported and left as it is."""
+    now_ref = _git(repo, "symbolic-ref", "-q", "HEAD", check=False).stdout.strip()
+    if now_ref == head_ref and _out(repo, "rev-parse", "HEAD") == result.merge_commit:
+        _git(repo, "reset", "-q")
+        _git(repo, "reset", "-q", "--hard", before)
+    elif now_ref == head_ref or not head_ref or \
+            _git(repo, "update-ref", head_ref, before, result.merge_commit, check=False).returncode:
+        result.error += (f"; the gate moved HEAD itself, so nothing was reset: merge commit "
+                         f"{result.merge_commit[:12]} is still on {head_ref or 'the detached HEAD it was made on'}")
+        return
+    result.reset_to, result.merge_commit = before, ""
 
 
 def _print_human(result: MergeResult) -> None:
@@ -209,6 +264,7 @@ def _print_human(result: MergeResult) -> None:
         print(f"✗ Not merged: {result.error}")
     for label, items in (("Outside --allow", result.outside_allowed),
                          ("Commits after the tested commit", result.untested_commits),
+                         ("Untracked files the branch would overwrite", result.untracked_collisions),
                          ("Conflicting files", result.conflicts)):
         if items:
             print(f"  {label}:")

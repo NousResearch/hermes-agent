@@ -101,15 +101,27 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 def _resolve_stt_language(
     provider_key: str, stt_config: Optional[dict[str, Any]] = None, *, extra_keys: tuple = ()
 ) -> Optional[str]:
-    """Language hint for an STT provider, first non-empty wins (never ""): ``stt.<provider>.language``
-    (plus *extra_keys* aliases, e.g. ``language_code``) > ``stt.language`` > ``HERMES_LOCAL_STT_LANGUAGE``
-    env > None (provider auto-detects)."""
+    """Language hint for an STT provider: ``stt.<provider>.language`` (plus *extra_keys* aliases,
+    e.g. ``language_code``) > ``stt.language`` > ``HERMES_LOCAL_STT_LANGUAGE`` env > None (provider
+    auto-detects).
+
+    A provider section that *sets* ``language`` always wins, even when it sets it to the empty
+    string: ``language: ""`` means "auto-detect" and must suppress the global ``stt.language``
+    default instead of falling through to it (#120100).
+    """
     if stt_config is None:
         stt_config = _load_stt_config()
     provider_cfg = _get_stt_section(stt_config, provider_key)
-    candidates = [provider_cfg.get(key) for key in ("language", *extra_keys)]
-    if isinstance(stt_config, dict):
-        candidates.append(stt_config.get("language"))
+    for key in ("language", *extra_keys):
+        if key not in provider_cfg:
+            continue
+        val = provider_cfg.get(key)
+        if val is None:
+            continue  # an explicit null behaves like an absent key
+        if isinstance(val, str):
+            return val.strip() or None  # "" -> auto-detect, no global fallback
+        return None  # non-string value: nothing usable here, and no global fallback either
+    candidates = [stt_config.get("language")] if isinstance(stt_config, dict) else []
     candidates.append(os.getenv(LOCAL_STT_LANGUAGE_ENV))
     return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
 

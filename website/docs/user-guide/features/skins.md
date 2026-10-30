@@ -296,3 +296,4 @@ Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [pr
 - User skins in `~/.hermes/skins/` take precedence over built-in skins with the same name.
 - Skin changes via `/skin` are session-only. To make a skin your permanent default, set it in `config.yaml`.
 - The `banner_logo` and `banner_hero` fields support Rich console markup (e.g., `[bold #FF0000]text[/]`) for colored ASCII art.
+- A whitespace-only `banner_hero` (e.g. `banner_hero: ' '`) shows no hero art; the TUI session panel then uses one full-width column. An empty string keeps the default caduceus.

@@ -252,6 +252,38 @@ Behavior:
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
+## History backfill (`history_backfill`)
+
+With `require_mention: true` (the default), everything posted in a channel without `@hermes` is invisible to the session transcript. History backfill recovers those messages: when the bot is next `@mentioned`, it scans backwards through recent history — stopping at its own last reply — and prepends the skipped posts as context, so a bare `@hermes` also works as "catch me up".
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mattermost.history_backfill` (`MATTERMOST_HISTORY_BACKFILL`) | `true` | Recover mention-gated messages on each mention. |
+| `mattermost.history_backfill_limit` (`MATTERMOST_HISTORY_BACKFILL_LIMIT`) | `50` | Max posts scanned backwards (safety cap; scans usually stop at the bot's own post). |
+
+Behavior by surface:
+
+- **Channels** (mention-gated): the scan covers channel posts since the bot's last reply.
+- **Threads**: a mention inside a thread scans only that thread (threads are self-contained conversations; the channel scrollback is not pulled in).
+- **DMs** and **free-response channels**: skipped — nothing was gated out, so there is no gap to fill.
+
+Each recovered line is rendered `[Name] message` from the sender's Mattermost profile. Senders who fail the access-policy check are prefixed `[unverified]` and framed as background context, not instructions. Posts containing files but no text appear as `(attachment)`.
+
+```yaml
+mattermost:
+  history_backfill: true   # default
+  history_backfill_limit: 50
+```
+
+To turn it off:
+
+```yaml
+mattermost:
+  history_backfill: false
+```
+
+> **Note:** messages that arrive *while* the bot is processing a mention (between trigger and response) are not captured — the same accepted simplification as [Discord's history backfill](discord.md#discordhistory_backfill). REST failures never block the triggering mention; the scan is skipped and logged instead.
+
 ## Troubleshooting
 
 ### Bot is not responding to messages

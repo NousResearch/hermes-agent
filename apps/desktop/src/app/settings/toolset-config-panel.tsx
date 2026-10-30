@@ -816,6 +816,9 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
           </Pill>
         </div>
       )}
+      {toolset === 'browser' && (
+        <p className="px-1 text-xs text-foreground/80">{copy.browserAxesHint}</p>
+      )}
       {providers.map(provider => {
         const isExpanded = expandedProvider === provider.name
         const isBackendActive = provider.is_active || cfg?.active_provider === provider.name

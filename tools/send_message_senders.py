@@ -63,13 +63,25 @@ def _success(platform: str, chat_id, warnings=None, **fields) -> dict:
 
 _NO_DELIVERABLE = "No deliverable text or media remained after processing MEDIA tags"
 
-_TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429", "service unavailable", "503",
-                               "gateway timeout", "504")
+
+def _telegram_transient_send(exc: Exception) -> bool:
+    """Whether a failed send may succeed on a retry: the platform adapter's classifier owns that answer
+    (PTB keys it on error classes — ``BadRequest`` subclasses ``NetworkError`` yet is permanent), so bare
+    status digits inside a message never select a retry. A raw socket error is excluded: unlike a PTB
+    ``NetworkError`` reporting a 5xx or a refused connect, it may have failed mid-write, and a resend
+    would duplicate the message."""
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+    except ImportError:  # adapter unavailable: retry nothing rather than guess from the text
+        return False
+    return (TelegramAdapter._looks_like_network_error(exc)
+            and not TelegramAdapter._is_timed_out(exc) and not isinstance(exc, OSError))
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
-    """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are
-    never retried (the send may have gone through); 5xx/429 back off exponentially."""
+    """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are never
+    retried (the send may have gone through); a transient transport/5xx failure backs off
+    exponentially."""
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:
@@ -79,7 +91,7 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     text = str(exc).lower()
     if "timed out" in text or "timeout" in text:
         return None
-    return float(2 ** attempt) if any(marker in text for marker in _TELEGRAM_TRANSIENT_MARKERS) else None
+    return float(2 ** attempt) if _telegram_transient_send(exc) else None
 
 
 async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):

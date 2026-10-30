@@ -250,6 +250,39 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") is None
 
+    @pytest.mark.parametrize("answer", [
+        # The four persisted titles from the report: Chinese replies of 32-80 characters that
+        # `len(title.split())` counts as 1-8 "words" because CJK has no inter-word spaces.
+        "好的，这个可以做。不过我现在看不到 hermesbubble 的代码（这条对话里没带仓库/文件），所以先把改造方案列出来…",
+        "可以，直接在这说。先判断一个关键点：登录页本身能打开吗？",
+        "我是 ChatGPT，由 OpenAI 开发。当前对话里没有提供可披露的具体模型版本号…",
+        "先确认一下：你说的 **Hermes** 是哪个项目/镜像？（很多 App 都叫 Hermes…",
+        # Japanese takes the same path: kana carries no inter-word spaces. Korean keeps spaces, so it
+        # already trips the word guard; it is here to pin that the character budget changes nothing there.
+        "まず、どのリポジトリの話か教えてもらえますか。この会話にはコードが含まれていないので、確認が必要です。",
+        "네, 그렇게 하시면 됩니다. 다만 지금 대화에는 저장소나 코드가 없어서 먼저 확인이 필요합니다.",
+    ])
+    def test_rejects_answer_shaped_output_in_cjk(self, answer):
+        """CJK replies slip past the word guard (no spaces between words), so the
+        answer-shaped guard needs a character budget per script. Regression for
+        the 0.22.2 behaviour where a 76-char Chinese answer became the title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = answer
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("how do I rename a session?") is None
+
+    def test_accepts_a_short_cjk_title(self):
+        """A real CJK title (13 characters) stays under the character budget."""
+        title = "修复会话标题被中文回复覆盖"
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = title
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("会话标题怎么变成回复了？") == title
+
     def test_accepts_normal_title(self):
         """A normal 3-7 word title is unaffected by the answer-shape guard."""
         mock_response = MagicMock()

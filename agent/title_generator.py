@@ -58,6 +58,22 @@ MAX_DERIVED_TITLE_CHARS = 48
 # answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+# Answer-shaped guard, CJK half: Han, kana and Hangul have no inter-word spaces, so the word count above
+# cannot see a full reply in those scripts (a 76-character Chinese answer counts as three "words"). A title
+# stays short in characters too; a reply does not. 12 words is roughly 20 characters in CJK text, which is
+# also where the Desktop sidebar target sits, so 20 is the ceiling for a title and 28+ is an answer.
+_MAX_TITLE_CJK_CHARS = 20
+# CJK script ranges counted by _cjk_char_count: Han (Unified Ideographs + Extension A), kana, Hangul
+# syllables, and the CJK punctuation/fullwidth blocks a reply in those scripts is written with, so a
+# 32-character "可以，直接在这说。…" counts as 32 characters, not as the 26 letters it has.
+_CJK_RANGES = (
+    ("\u3000", "\u303f"),
+    ("\u3040", "\u30ff"),
+    ("\u3400", "\u4dbf"),
+    ("\u4e00", "\u9fff"),
+    ("\uac00", "\ud7af"),
+    ("\uff01", "\uff60"),
+)
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
@@ -468,6 +484,20 @@ def _is_prompt_example_echo(title: str) -> bool:
     return normalized in _EXAMPLE_ECHO_REJECT
 
 
+def _cjk_char_count(text: str) -> int:
+    """Characters written with CJK scripts or their punctuation in ``text``."""
+    return sum(1 for ch in text if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
+
+
+def _is_answer_shaped(title: str) -> bool:
+    """True when the model answered the user instead of titling the session.
+
+    Titling is a 3-7 word task with a short result; a reply is a full sentence. The word count covers
+    space-delimited text and the character budget covers CJK, where ``str.split()`` sees no boundaries.
+    """
+    return len(title.split()) > _MAX_TITLE_WORDS or _cjk_char_count(title) > _MAX_TITLE_CJK_CHARS
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -536,9 +566,9 @@ def generate_title(
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
         # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+        if title is not None and _is_answer_shaped(title):
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+            logger.debug("Rejecting answer-shaped title output (%r)", title)
             return None
         # Example-echo guard: a title that parrots one of the prompt's own
         # examples back verbatim says nothing about the session — reject it so

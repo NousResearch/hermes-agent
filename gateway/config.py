@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import parse_reasoning_effort
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
@@ -377,17 +378,32 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 @dataclass
 class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel model/provider/system prompt/reasoning override."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    reasoning_effort: Optional[Any] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        values = {f.name: data.get(f.name) for f in fields(cls)}
+        effort = values.get("reasoning_effort")
+        if effort is not None:
+            parsed = parse_reasoning_effort(effort)
+            if parsed is None:
+                logger.warning(
+                    "Unknown reasoning_effort '%s'; ignoring channel override "
+                    "and inheriting configured reasoning", effort,
+                )
+                values["reasoning_effort"] = None
+            else:
+                values["reasoning_effort"] = parsed["effort"] if parsed.get("enabled") else False
+        return cls(**values)
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token
@@ -417,6 +433,7 @@ class PlatformConfig:
     typing_indicator: bool = True  # drives _keep_typing; False where unwanted (Slack setStatus blocks compose)
     # Working-state text for text-rendering indicators (Slack status, Google Chat marker); None = platform default.
     typing_status_text: Optional[str] = None
+    # Per-channel model/provider/system prompt/reasoning overrides.
     channel_overrides: dict[str, ChannelOverride] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
 

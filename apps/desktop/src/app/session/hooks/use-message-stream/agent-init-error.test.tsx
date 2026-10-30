@@ -70,13 +70,8 @@ describe('useMessageStream agent-init error surfacing (#63078)', () => {
     expect(state.busy).toBe(false)
     expect(state.awaitingResponse).toBe(false)
 
-    // A global toast also fired (turn-ending errors are easy to miss inline).
-    // The server already sends plain, actionable copy for an agent-init
-    // failure, so it IS the toast message — not demoted to a detail line
-    // under a generic gloss.
-    const toast = $notifications.get().find(n => n.kind === 'error' && n.message.includes('was not sent'))
-    expect(toast).toBeDefined()
-    expect(toast!.detail).toBeUndefined()
+    // One event, one surface: the card is on screen, so no toast repeats it.
+    expect($notifications.get().find(n => n.kind === 'error')).toBeUndefined()
   })
   it('merges the terminal error frame into the card the agent-init error event already painted', async () => {
     mountStream()

@@ -81,11 +81,11 @@ async def prepare_model(authority, live, payload, prepared):
         held = bound_route_holds(frozen.get('model'), frozen, followed, config)
         # Every other route-bound key follows the profile's current route.
         kept = ('api_key', 'api', 'api_key_from') if held else ()
-        moved = tuple(k for k in ROUTE_BOUND_KEYS if k not in kept)
-        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in moved}
+        route_keys = tuple(k for k in ROUTE_BOUND_KEYS if k not in kept)
+        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in route_keys}
         # The profile's inline key and its private-secret pointer are not copied into the receipt:
         # its secrets stay at the profile's own path, never re-committed under this session.
-        frozen['model'].update({k: followed[k] for k in moved
+        frozen['model'].update({k: followed[k] for k in route_keys
                                 if k in followed and k not in ('api_key', 'api', 'api_key_from')})
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.

@@ -41,6 +41,44 @@ def test_restart_heals_a_world_readable_pointer_left_by_an_older_gateway(tmp_pat
     asyncio.run(run())
 
 
+def test_a_client_polling_during_pointer_publication_never_sees_an_invalid_pointer(tmp_path):
+    # A starting client polls discovery while the gateway publishes; the listener already
+    # accepts, so the pointer must go from absent to complete with no readable empty state
+    # (an empty one is ``invalid_control_pointer``, which a client reports as fatal).
+    import asyncio
+    import sys
+    from gateway.control_socket import GatewayControlServer
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _socket_path
+    home = tmp_path / ("p" * 90) / ".hermes"
+    home.mkdir(parents=True, mode=0o700)
+    seen, state = [], {"armed": False}
+
+    def poll_at_every_syscall(event, _args):
+        if not state["armed"] or not event.startswith(("open", "os.")):
+            return
+        state["armed"] = False  # discovery's own syscalls must not recurse
+        try:
+            seen.append(_socket_path(home).name)
+        except FileNotFoundError:
+            seen.append("absent")
+        except DiscoveryError as exc:
+            seen.append(exc.reason)
+        finally:
+            state["armed"] = True
+    sys.addaudithook(poll_at_every_syscall)  # cannot be removed; disarmed outside start()
+
+    async def run():
+        server = GatewayControlServer(home)
+        state["armed"] = True
+        try:
+            assert await server.start()
+        finally:
+            state["armed"] = False
+        await server.stop()
+    asyncio.run(run())
+    assert "absent" in seen and set(seen) <= {"absent", "control.sock"}, seen
+
+
 def test_group_bits_that_are_an_acl_mask_never_count_as_a_private_group(tmp_path, monkeypatch):
     # With a POSIX ACL (setfacl u:nobody:rwx) the stat group bits are the mask: a 0770 home whose
     # group is the owner's private one may still grant another named user write.
@@ -70,15 +108,19 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
     # client must authenticate the listening process itself (SO_PEERCRED / getpeereid).
     import asyncio
     import inspect
+    from types import SimpleNamespace
     from gateway import control_socket, session_hosted_transport
-    from hermes_cli import gateway_client
+    from hermes_cli import gateway_client, webapp_launcher
     from hermes_cli import gateway_runtime_discovery as discovery
     home = tmp_path / "home"
     home.mkdir(mode=0o700)
     real_uid = os.getuid()
+    answered = []
+    endpoint = SimpleNamespace(profile_id="default", instance_id="owner", control_home=None)
 
     async def run():
-        server = control_socket.GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 1}})
+        server = control_socket.GatewayControlServer(
+            home, verb_handlers={"identify": lambda: answered.append("identify") or {"pid": 1}})
         assert await server.start()
         try:
             path = discovery._socket_path(home)
@@ -86,6 +128,11 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
             monkeypatch.setattr(discovery, "_socket_path", lambda _home: path)
             with pytest.raises(discovery.DiscoveryError, match="unsafe_control_peer"):
                 await asyncio.to_thread(discovery.query_identify, home, timeout=2)
+            with pytest.raises(discovery.DiscoveryError, match="unsafe_control_peer"):
+                await asyncio.to_thread(gateway_client._session_ticket, home, endpoint)
+            with pytest.raises(webapp_launcher.GatewayUnreachable, match="unsafe_control_peer"):
+                await asyncio.to_thread(webapp_launcher._control, home, "identify")
+            assert answered == []  # refused before a request reached the listener
         finally:
             monkeypatch.undo()
             await server.stop()
@@ -94,7 +141,7 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
     spec = importlib.util.spec_from_file_location("tui_bootstrap", "ui-tui/scripts/gateway_bootstrap.py")
     tui_bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tui_bootstrap)
-    for client in (gateway_client._session_ticket, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
+    for client in (gateway_client.private_control_query, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
         source = inspect.getsource(client)
         assert "connect_private(" in source and "AF_UNIX" not in source, client.__qualname__
 

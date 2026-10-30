@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
@@ -13,6 +13,7 @@ import {
 import { $queuedPromptsBySession, clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
+import { $notifications } from '@/store/notifications'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
 import {
@@ -65,6 +66,7 @@ function renderSubmitHook({
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }
+  const focusInput = vi.fn()
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
   const onCancel = vi.fn()
@@ -121,7 +123,7 @@ function renderSubmitHook({
         drainNextQueued: vi.fn(async () => false),
         editorRef,
         exitQueuedEdit: vi.fn(() => false),
-        focusInput: vi.fn(),
+        focusInput,
         inputDisabled,
         loadIntoComposer,
         onCancel,
@@ -142,6 +144,8 @@ function renderSubmitHook({
     loadIntoComposer,
     stashAt,
     clearDraft,
+    editor,
+    focusInput,
     hook,
     onCancel,
     onSteer,
@@ -592,6 +596,45 @@ describe('useComposerSubmit busy-turn routing', () => {
   })
 })
 
+describe('useComposerSubmit keyboard after send', () => {
+  beforeEach(() => {
+    // Touch handling is the browser-hosted Desktop's.
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  })
+
+  afterEach(() => {
+    cleanup()
+    window.document.body.replaceChildren()
+    delete window.document.documentElement.dataset.hermesDesktopHost
+    vi.unstubAllGlobals()
+  })
+
+  // iOS raises the keyboard for a focus() inside the Send tap, covering the
+  // reply just as it starts streaming.
+  it.each([
+    ['desktop', false, false, 1],
+    ['touch with the keyboard up', true, true, 1],
+    ['touch with the keyboard put away', true, false, 0]
+  ])('refocuses the composer after a send on %s', async (_case, touch, editorFocused, focusCalls) => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ addEventListener: vi.fn(), matches: touch, removeEventListener: vi.fn() })
+    )
+    const { editor, focusInput, hook, onSubmit } = renderSubmitHook({ text: 'hello' })
+    editor.tabIndex = 0
+    window.document.body.append(editor)
+
+    if (editorFocused) {
+      editor.focus()
+    }
+
+    await act(async () => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledOnce()
+    expect(focusInput).toHaveBeenCalledTimes(focusCalls)
+  })
+})
+
 describe('useComposerSubmit with a clarify parked on the session', () => {
   // The clarify is a live server→client request: skipping it answers that
   // request frame (`{}`), not a `clarify.respond` RPC.
@@ -1023,5 +1066,91 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onSteer).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('runs no slash command while setup is in progress: the words stay and a note says why', () => {
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+    $notifications.set([])
+    const respond = parkCard('name')
+
+    for (const busy of [false, true]) {
+      const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy, text: '/help' })
+
+      act(() => hook.result.current.submitDraft())
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(queueCurrentDraft).not.toHaveBeenCalled()
+      expect(clearDraft).not.toHaveBeenCalled()
+      cleanup()
+    }
+
+    expect(respond).not.toHaveBeenCalled()
+    // One note, however often Enter is pressed.
+    expect($notifications.get().map(note => note.kind)).toEqual(['info'])
+  })
+
+  it('queues no slash command while setup is in progress (Cmd/Ctrl+Enter)', () => {
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+
+    const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true, text: '/help' })
+
+    act(() => hook.result.current.queueDraft())
+
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+  })
+
+  it('runs slash commands as usual in the same chat once setup has ended', () => {
+    $onboardingPhase.set('done')
+    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+
+    const { hook, onSubmit } = renderSubmitHook({ text: '/help' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledWith('/help', expect.anything())
+  })
+})
+
+describe('useComposerSubmit on an insecure origin (plain-HTTP LAN: no crypto.randomUUID)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+  beforeEach(() => vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) }))
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('sends a fresh draft with a v4 submission_id', async () => {
+    const { hook, onSubmit } = renderSubmitHook({ text: 'hello from the LAN' })
+
+    act(() => hook.result.current.submitDraft())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]).toEqual([
+      'hello from the LAN',
+      expect.objectContaining({ submission_id: expect.stringMatching(V4) })
+    ])
+  })
+
+  it('puts the draft back when preparing the send throws', async () => {
+    const attachment = { id: 'file-1', kind: 'file', label: 'notes.txt', path: '/work/notes.txt' } as ComposerAttachment
+
+    const { clearDraft, hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook({
+      attachments: [attachment],
+      text: 'keep these words'
+    })
+
+    onSubmit.mockImplementation(() => {
+      throw new TypeError('preparation failed')
+    })
+
+    act(() => hook.result.current.submitDraft())
+    expect(clearDraft).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep these words', [attachment]))
+    expect(stashAt).toHaveBeenCalledWith('stored-session', 'keep these words', [attachment])
   })
 })

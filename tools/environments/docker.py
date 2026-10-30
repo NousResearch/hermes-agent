@@ -110,7 +110,7 @@ def _sanitize_label_value(value: str) -> str:
 
 
 # task_id -> host directory name; shared with every backend persisting per-task
-# state on the host (Singularity overlays) so the mapping is fixed in one place.
+# state on the host (the singularity plugin's overlays) so the mapping is fixed in one place.
 _sandbox_dir_name = sanitize_task_id_for_path
 
 
@@ -339,7 +339,7 @@ _BASE_SECURITY_ARGS = [
 # Fork-bomb guard, applied only when the pids cgroup controller is available. The pids cgroup counts
 # THREADS, and a sandbox that hosts the Bot Screen runs a desktop in here: measured on
 # hermes-sandbox:desktop, the idle container is 2 tasks, Xvnc + Xfce + dbus 44, one Chromium with one
-# tab 212, plus the agent's own agent-browser Chromium with two tabs 488. The old 256 was hit in normal
+# tab 212, plus the agent's own Chromium with two tabs 488. The old 256 was hit in normal
 # use and every further `docker exec` (browser command, cua-driver, thumbnail, CDP forward) died with
 # runc's "procReady not received". 2048 leaves room for a working browser and is still three orders of
 # magnitude under the host's pid_max.
@@ -649,7 +649,7 @@ class DockerEnvironment(BaseEnvironment):
     size-limited tmpfs). The container is the security boundary — its filesystem stays
     writable so agents can install packages. Persistence bind-mounts /workspace and /root."""
 
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
     _profile_scoped_passthrough = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:

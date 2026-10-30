@@ -7,6 +7,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
 version: "1.7.8"
+image: https://raw.githubusercontent.com/MarcosAlves90/magi/3f1a38c1804b12080a329a41fc2cc257f1af151a/docs/magi-cover-banner.png
 screenshots:
   - https://raw.githubusercontent.com/MarcosAlves90/magi/3f1a38c1804b12080a329a41fc2cc257f1af151a/docs/screenshots/pending-writes.png
   - https://raw.githubusercontent.com/MarcosAlves90/magi/3f1a38c1804b12080a329a41fc2cc257f1af151a/docs/screenshots/stored-memory.png

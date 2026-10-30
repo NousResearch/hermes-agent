@@ -407,7 +407,7 @@ _cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environm
 set_sudo_password_callback = _lazy_shim("tools.terminal_tool", "set_sudo_password_callback")
 set_approval_callback = _lazy_shim("tools.terminal_tool", "set_approval_callback")
 set_secret_capture_callback = _lazy_shim("tools.skills_tool", "set_secret_capture_callback")
-_cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", "_cleanup_all_browsers")
+_cleanup_all_browsers = _lazy_shim("tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", "_cleanup_all_browsers")
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
@@ -778,8 +778,8 @@ def save_config_value(key_path: str, value: any) -> bool:
     try:
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(config_path.parent)
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
+        from hermes_cli.config_backend import write_config_key
+        write_config_key(config_path, key_path, value)
         try:  # owner-only: config files contain API keys
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
@@ -974,18 +974,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         except Exception:
             pass  # never block startup
 
-    def _show_browser_backend_notice(self):
-        """Once-per-24h hint when the default Browser Use backend silently fell back to built-in tools."""
-        try:
-            from tools.browser_use_cli import default_downgrade_notice
-
-            notice = default_downgrade_notice()
-            if notice:
-                from gateway.warning_notifications import render_notification
-                render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
-        except Exception:
-            logger.debug("browser backend notice failed", exc_info=True)
-
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
 
@@ -1052,14 +1040,18 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
+        from hermes_cli.config_backend import config_exists
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
 
         config_path = _hermes_home / 'config.yaml'
-        if not config_path.exists():
+        if not config_exists(config_path):
             config_path = Path(__file__).parent / 'cli-config.yaml'
-        config_status = _t("cli.config.loaded") if config_path.exists() else _t("cli.config.not_found")
+        config_status = _t("cli.config.loaded") if config_exists(config_path) else _t("cli.config.not_found")
+        from hermes_cli.config_backend import get_config_backend
+        if not get_config_backend().supports_file_tooling():  # no local file: name where config comes from
+            config_path, config_status = get_config_backend().describe(_hermes_home), ""
 
         # ``api_key`` may be a callable bearer provider (Entra ID, Vertex OAuth, key_cmd, ...):
         # label it by its tagged source and never invoke it (that would mint a token just to mask
@@ -1290,10 +1282,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not plugin_handler:
             return
         session_id = getattr(self, "session_id", None) or ""
+        from hermes_cli.plugin_choices import bind_asker, clarify_asker
         try:
-            result = resolve_plugin_command_result(invoke_plugin_command(
-                plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
-                platform="cli"))
+            with bind_asker(clarify_asker(self._clarify_callback)):  # ctx.ask_choice: the clarify panel
+                result = resolve_plugin_command_result(invoke_plugin_command(
+                    plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
+                    platform="cli"))
             if result:
                 _cprint(str(result))
         except Exception as e:
@@ -1639,7 +1633,8 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
 
     def _create_worktree() -> None:
         try:
-            _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
+            # The session freezes this cwd: recorded so a resume recreates the tree quit removed (N8).
+            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=get_hermes_home() / "state.db")
         except Exception:
             logger.debug("worktree setup failed", exc_info=True)
             _wt_result["info"] = None

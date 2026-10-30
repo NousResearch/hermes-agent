@@ -17,8 +17,9 @@ function firstLine(text: string): string {
  * one piece with the composer card (no bordered alert-in-a-card). It never
  * disables the composer — slash commands (`/topup`, `/model`, `/login`) stay
  * usable — it only offers recovery: Nous opens Settings → Billing in-app, other
- * providers deep-link out. The sticky toast is the loud surface; this is the calm
- * reminder that outlives it.
+ * providers deep-link out. It is the one surface for the active chat; a wall in a
+ * background chat also raises a sticky toast, and the turn's card only speaks when
+ * this banner is not up for that chat.
  */
 export function BillingBanner({ sessionId }: { sessionId: null | string }) {
   const active = useStore($billingBlock)

@@ -47,6 +47,10 @@ from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
 from gateway.run_common import _csv_or_list_to_set
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
+# Shared with managed workers (worker_route), so a worker's agent gets every route kwarg an in-process turn's does.
+from gateway.session_worker_construct import (
+    deep_merge_request_overrides as _deep_merge_request_overrides, runtime_agent_kwargs as _runtime_agent_kwargs,
+)
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -2326,21 +2330,6 @@ def _resolve_runtime_agent_kwargs() -> dict:
     return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities}
 
 
-def _runtime_agent_kwargs(runtime: dict) -> dict:
-    """AIAgent constructor kwargs shared by every runtime-provider resolution.
-    ``request_overrides`` passes through as resolved so the provider's request body reaches each turn."""
-    return {
-        "api_key": runtime.get("api_key"),
-        "base_url": runtime.get("base_url"),
-        "provider": runtime.get("provider"),
-        "requested_provider": runtime.get("requested_provider"),
-        "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
-        "request_overrides": runtime.get("request_overrides")}
-
-
 @dataclasses.dataclass(frozen=True)
 class _GatewayModelContext:
     """Effective gateway model route and context-window resolution."""
@@ -2451,18 +2440,6 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
         **_runtime_agent_kwargs(runtime),
         "request_overrides": dict(runtime.get("request_overrides") or {}),
         "capabilities": dict(runtime.get("capabilities") or {})}
-
-
-def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]) -> dict:
-    """Merge request_overrides dicts, deep-merging nested dictionaries."""
-    from hermes_cli.config import _deep_merge
-    base_dict = dict(base or {})
-    override_dict = dict(override or {})
-    if not base_dict:
-        return override_dict
-    if not override_dict:
-        return base_dict
-    return _deep_merge(base_dict, override_dict)
 
 
 def _credential_pool_for_provider(provider: Optional[str]):

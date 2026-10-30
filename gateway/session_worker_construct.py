@@ -189,6 +189,39 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 
 
+# Route kwargs a managed worker keeps as its own instead of taking the resolved runtime's: it constructs on
+# the policy's provider id (``custom:<name>``, never the resolver's bare ``custom``; see worker_route).
+WORKER_OWN_ROUTE_KEYS = frozenset({'provider', 'requested_provider'})
+
+
+def runtime_agent_kwargs(runtime: dict) -> dict:
+    """AIAgent constructor kwargs shared by every runtime-provider resolution: the in-process turn
+    (``gateway.run._runtime_agent_kwargs``) and a managed worker (``worker_route``).
+    ``request_overrides`` passes through as resolved so the provider's request body reaches each turn."""
+    return {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+        "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": runtime.get("request_overrides")}
+
+
+def deep_merge_request_overrides(base, override) -> dict:
+    """Merge request_overrides dicts, deep-merging nested dictionaries."""
+    from hermes_cli.config import _deep_merge
+    base_dict = dict(base or {})
+    override_dict = dict(override or {})
+    if not base_dict:
+        return override_dict
+    if not override_dict:
+        return base_dict
+    return _deep_merge(base_dict, override_dict)
+
+
 def worker_route(policy, construct):
     """Child side: the ``api_key`` / ``base_url`` / ``api_mode`` overrides for the worker's agent, resolved
     as the in-process turn resolves its route (``route_runtime`` with the launch key, if one was bound),
@@ -215,8 +248,18 @@ def worker_route(policy, construct):
     if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
             and not (frozen.get('model') or {}).get('api_mode')):
         api_mode = None
-    return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
-            'api_mode': api_mode}
+    # Every route kwarg the in-process turn gives its agent (``runtime_agent_kwargs``) reaches the
+    # worker's agent too: the credential pool (429/402 rotation across the profile's accounts), the
+    # provider's request_overrides, an ACP command. A field added there flows here by default; only
+    # WORKER_OWN_ROUTE_KEYS stay the worker's own (test_worker_route_carries_every_in_process_route_kwarg).
+    route = {k: v for k, v in runtime_agent_kwargs(runtime).items() if k not in WORKER_OWN_ROUTE_KEYS}
+    route['api_key'] = construct['api_key'] or route['api_key']
+    route['api_mode'] = api_mode
+    # As the in-process turn does (``_resolve_turn_agent_config``): a static fast tier's overrides,
+    # which arrive in the worker's own construct kwargs, deep-merge OVER the provider's.
+    route['request_overrides'] = deep_merge_request_overrides(
+        route['request_overrides'], construct.get('request_overrides')) or None
+    return route
 
 
 def checkpoint_agent_kwargs(config):

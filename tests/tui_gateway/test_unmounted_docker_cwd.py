@@ -100,3 +100,23 @@ def test_unmounted_registration_preserves_configured_container_cwd(tmp_path):
     finally:
         terminal_tool.clear_task_env_overrides("configured-cwd")
         reset_terminal_scope(token)
+
+
+def test_a_bad_unrelated_terminal_setting_does_not_drop_the_registration(tmp_path):
+    """Only the backend and the mount flag decide; an unparsable ``TERMINAL_TIMEOUT`` (which the
+    full terminal config would raise on, inside the caller's blanket suppress) changes nothing."""
+    from tools import terminal_tool
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tui_gateway import server
+
+    token = set_terminal_scope({
+        "TERMINAL_ENV": "docker",
+        "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "false",
+        "TERMINAL_TIMEOUT": "5m",
+    })
+    try:
+        server._register_session_cwd({"session_key": "bad-timeout", "cwd": str(tmp_path), "explicit_cwd": True})
+        assert terminal_tool.resolve_task_overrides("bad-timeout") == {"cwd": "", "cwd_source": "process"}
+    finally:
+        terminal_tool.clear_task_env_overrides("bad-timeout")
+        reset_terminal_scope(token)

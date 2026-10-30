@@ -215,6 +215,8 @@ export class JsonRpcRequestChannel {
   private lastLivenessAt = 0
   /** The bound generation's backend counts `decline` as one client abstaining (see `ServerRequest.decline`). */
   private backendCountsDeclines = false
+  /** The bound generation's canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
+  private backendClarifyBatch = false
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
     Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
@@ -242,6 +244,11 @@ export class JsonRpcRequestChannel {
     return this.options.requestTimeoutMs
   }
 
+  /** Whether the bound generation's canonical owner admits `clarify_batch` on `prompt.submit`. */
+  get clarifyBatch(): boolean {
+    return this.backendClarifyBatch
+  }
+
   get connected(): boolean {
     return this.transport !== null
   }
@@ -252,6 +259,7 @@ export class JsonRpcRequestChannel {
     this.transport = transport
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
+    this.backendClarifyBatch = false
 
     // First on the socket, before the owner's own requests: the backend reads frames in order, and its
     // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
@@ -540,6 +548,7 @@ export class JsonRpcRequestChannel {
       .then(result => {
         if (this.transport === transport) {
           this.backendCountsDeclines = result?.declines_not_shown === true
+          this.backendClarifyBatch = result?.canonical_clarify_batch === true
         }
       })
       .catch(() => undefined)

@@ -1608,8 +1608,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     async def _await_active_work_before_restart(self) -> bool:
         """Wait for in-flight work before ``stop()`` so the requesting turn isn't force-interrupted.
 
-        Wedged turns are excluded (restart is their remedy). True when drained to zero, False when the
-        cap elapsed or only wedged work remains (caller proceeds to ``stop()``).
+        Wedged turns are excluded (restart is their remedy); an operator's interrupt (``restart-interrupt``
+        control verb) skips or ends the wait. True when drained to zero, else False (caller then ``stop()``s).
         """
         active = self._active_work_count()
         if active <= 0:
@@ -1624,10 +1624,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
             return False
         timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
-        if timeout <= 0:
+        if timeout <= 0 or getattr(self, "_restart_interrupt_work", False):
             logger.info(
-                "Restart requested with %d active work unit(s); "
-                "restart_after_turn_timeout=0 — entering stop()/drain immediately", active,
+                "Restart requested with %d active work unit(s); %s — entering stop()/drain immediately", active,
+                "restart_after_turn_timeout=0" if timeout <= 0 else "the operator chose to interrupt it",
             )
             return False
         logger.info(
@@ -1641,11 +1641,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         last_status_at = 0.0
         while self._awaitable_work_count() > 0:
             now = loop.time()
-            if now >= deadline:
+            if now >= deadline or getattr(self, "_restart_interrupt_work", False):
                 logger.warning(
-                    "Restart after-turn wait timed out after %.0fs with %d "
-                    "still active; proceeding to stop()/drain which may "
-                    "interrupt remaining work (#77184)", timeout, self._active_work_count(),
+                    "Restart after-turn wait %s after %.0fs with %d still active; proceeding to stop()/drain "
+                    "which may interrupt remaining work (#77184)", "timed out" if now >= deadline else
+                    "cut short by an operator interrupt", timeout - (deadline - now), self._active_work_count(),
                 )
                 return False
             if (now - last_status_at) >= 30.0:

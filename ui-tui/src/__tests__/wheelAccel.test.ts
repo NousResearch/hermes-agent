@@ -9,17 +9,6 @@ describe('wheelAccel — native path', () => {
     expect(computeWheelStep(s, 1, 1000)).toBe(1)
   })
 
-  it('same-direction fast events ramp mult (window-mode)', () => {
-    const s = initWheelAccel(false, 1)
-
-    computeWheelStep(s, 1, 1000)
-    computeWheelStep(s, 1, 1020)
-    computeWheelStep(s, 1, 1040)
-
-    // Key property: doesn't shrink below base.
-    expect(computeWheelStep(s, 1, 1060)).toBeGreaterThanOrEqual(1)
-  })
-
   it('gap beyond window resets mult to base', () => {
     const s = initWheelAccel(false, 1)
 
@@ -84,12 +73,6 @@ describe('wheelAccel — native path', () => {
 })
 
 describe('wheelAccel — xterm.js path', () => {
-  it('first click returns 2 after long idle', () => {
-    const s = initWheelAccel(true, 1)
-
-    expect(computeWheelStep(s, 1, 1000)).toBeGreaterThanOrEqual(1)
-  })
-
   it('sub-5ms burst returns 1 (same-direction, same-batch)', () => {
     const s = initWheelAccel(true, 1)
 

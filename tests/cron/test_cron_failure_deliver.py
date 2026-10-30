@@ -1,7 +1,7 @@
 """Per-job ``failure_deliver`` routing (NS-788).
 
-A job's FAILURE notices (run failed, escaped scheduler exception, drift-skip /
-blocked-config alerts) resolve their delivery targets from ``failure_deliver``
+A job's FAILURE notices (run failed, escaped scheduler exception, blocked-config
+alerts) resolve their delivery targets from ``failure_deliver``
 when the job sets it, falling back to ``deliver`` when unset — so existing
 jobs behave byte-identically. ``failure_deliver: local`` is structural silence
 for failures: nothing is sent, but state (last_status, run history, output
@@ -16,6 +16,8 @@ import json
 import pytest
 
 import cron.scheduler as s
+from cron import scheduler_delivery as sched_delivery
+from cron import scheduler_preflight as sched_preflight
 from cron.scheduler import _resolve_delivery_targets
 
 
@@ -41,10 +43,9 @@ def cron_env(tmp_path, monkeypatch):
 def run_env(monkeypatch, tmp_path):
     """Drive run_one_job with the REAL delivery path down to a fake sender.
 
-    Bookkeeping primitives are stubbed (recorded), but _deliver_result and
-    _resolve_delivery_targets are the genuine articles — the send that would
-    leave the process is captured at the platform-registry sender seam,
-    exactly where a real slack delivery exits.
+    Bookkeeping primitives are recorded; durable enqueue, gateway drain and
+    target resolution are real. Only the outbound platform sender is replaced.
+    Tests drain explicitly so queue admission cannot masquerade as delivery.
     """
     home = tmp_path / "hermes-home"
     home.mkdir()
@@ -54,11 +55,13 @@ def run_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     send_calls = []
+    transport = {"success": True}
 
     async def fake_sender(pconfig, chat_id, message, *, thread_id=None,
                           media_files=None, force_document=False, caption=None):
         send_calls.append({"chat_id": chat_id, "message": message})
-        return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
+        return {"success": transport["success"], "chat_id": chat_id,
+                "message_id": "1.2", "error": None if transport["success"] else "transport refused"}
 
     import gateway.platform_registry as reg
     import hermes_cli.plugins as hp
@@ -72,11 +75,27 @@ def run_env(monkeypatch, tmp_path):
     monkeypatch.setattr(entry, "standalone_sender_fn", fake_sender)
     monkeypatch.setattr(hp, "discover_plugins", lambda *a, **k: None)
 
-    state = {"send": send_calls, "marked": [], "saved": [], "finished": []}
+    state: dict = {"send": send_calls, "marked": [], "saved": [], "finished": []}
+    from cron import delivery_queue
+    monkeypatch.setattr(delivery_queue, "DELIVERY_DB", home / "cron" / "deliveries.db")
+
+    def drain(*, for_failure):
+        assert send_calls == [], "delivery must wait for the gateway drain"
+        pending = delivery_queue.get_status("exec-t")
+        assert pending is not None and pending["status"] == "pending"
+        assert bool(pending["for_failure"]) is for_failure
+        assert s.drain_delivery_queue(adapters={}, loop=None) == 1
+        result = delivery_queue.get_status("exec-t")
+        assert result is not None
+        assert result["status"] == ("delivered" if transport["success"] else "failed")
+        assert s.drain_delivery_queue(adapters={}, loop=None) == 0
+
+    state["drain"] = drain
+    state["transport"] = transport
 
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": "exec-t"})
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s, "save_job_output",
         lambda jid, out: state["saved"].append(jid) or f"/tmp/{jid}.txt",
@@ -89,11 +108,18 @@ def run_env(monkeypatch, tmp_path):
         s, "finish_execution",
         lambda *a, **kw: state["finished"].append((a, kw)),
     )
+    # The drain settles a queued outcome in the (stubbed) ledger: record it the same way.
+    from cron import executions
+    monkeypatch.setattr(
+        executions, "settle_delivery_outcome",
+        lambda execution_id, outcome: state["finished"].append(
+            ((execution_id,), {"delivery_outcome": outcome})) or True,
+    )
     # No durable incident store in play: never acked, no id.
     monkeypatch.setattr(
         s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, None)
     )
-    monkeypatch.setattr(s, "load_config", lambda: {})
+    monkeypatch.setattr(s, "load_config", dict)
     return state
 
 
@@ -119,6 +145,7 @@ class TestFailureDeliverRouting:
 
         s.run_one_job({"id": "j1", "name": "scout", "deliver": "slack:D0MAIN"})
 
+        run_env["drain"](for_failure=True)
         assert [c["chat_id"] for c in run_env["send"]] == ["D0MAIN"]
         assert "failed" in run_env["send"][0]["message"].lower()
 
@@ -154,6 +181,7 @@ class TestFailureDeliverRouting:
             "deliver": "slack:D0MAIN", "failure_deliver": "slack:D0ALERTS",
         })
 
+        run_env["drain"](for_failure=True)
         assert [c["chat_id"] for c in run_env["send"]] == ["D0ALERTS"]
         assert "failed" in run_env["send"][0]["message"].lower()
 
@@ -168,6 +196,7 @@ class TestFailureDeliverRouting:
         })
 
         assert ok is True
+        run_env["drain"](for_failure=False)
         assert [c["chat_id"] for c in run_env["send"]] == ["D0MAIN"]
         assert "all good, here is the brief" in run_env["send"][0]["message"]
 
@@ -361,6 +390,9 @@ class TestOutcomeBookkeeping:
     ):
         alerted = []
         monkeypatch.setattr(s, "_mark_incident_alerted", alerted.append)
+        monkeypatch.setattr(
+            s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, "inc-local")
+        )
         monkeypatch.setattr(s, "run_job", _failing_run_job())
 
         s.run_one_job({
@@ -370,15 +402,17 @@ class TestOutcomeBookkeeping:
 
         assert run_env["send"] == []
         assert self._outcome(run_env) == "suppressed"
+        assert s.drain_delivery_queue(adapters={}, loop=None) == 0
         assert alerted == [], "silenced failure must NOT mark incident alerted"
 
+    @pytest.mark.parametrize("transport_success", [True, False])
     def test_fd_explicit_target_failure_records_delivered(
-        self, run_env, monkeypatch
+        self, run_env, monkeypatch, transport_success
     ):
         """deliver=origin (unresolvable) + failure_deliver=explicit target:
-        the notice IS delivered — outcome must say so, not 'not_configured'."""
+        the notice is queued then delivered, never 'not_configured'."""
         alerted = []
-        monkeypatch.setattr(s, "_mark_incident_alerted", alerted.append)
+        monkeypatch.setattr(s, "_mark_incident_alerted", lambda incident_id, execution_id=None: alerted.append(incident_id))
         monkeypatch.setattr(
             s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, "inc-b1")
         )
@@ -389,13 +423,20 @@ class TestOutcomeBookkeeping:
             "deliver": "origin", "failure_deliver": "slack:D0OPS",
         })
 
+        run_env["transport"]["success"] = transport_success
+        assert self._outcome(run_env) == "queued"
+        assert alerted == [], "admission alone must NOT mark incident alerted"
+        run_env["drain"](for_failure=True)
         assert [c["chat_id"] for c in run_env["send"]] == ["D0OPS"]
-        assert self._outcome(run_env) == "delivered"
-        assert alerted == ["inc-b1"], "delivered failure ping must mark incident alerted"
+        assert "failed" in run_env["send"][0]["message"].lower()
+        assert self._outcome(run_env) == ("delivered" if transport_success else "failed")
+        assert alerted == (["inc-b1"] if transport_success else []), (
+            "only a delivered failure ping may mark the incident alerted"
+        )
 
     def test_success_outcome_still_reads_deliver_lane(self, run_env, monkeypatch):
         """Success bookkeeping is untouched: fd set, success delivers to
-        deliver and records 'delivered'."""
+        deliver and records queue admission before the actual send."""
         monkeypatch.setattr(s, "run_job", _succeeding_run_job())
 
         s.run_one_job({
@@ -403,6 +444,8 @@ class TestOutcomeBookkeeping:
             "deliver": "slack:D0MAIN", "failure_deliver": "local",
         })
 
+        assert self._outcome(run_env) == "queued"
+        run_env["drain"](for_failure=False)
         assert [c["chat_id"] for c in run_env["send"]] == ["D0MAIN"]
         assert self._outcome(run_env) == "delivered"
 
@@ -416,8 +459,8 @@ class TestPreflightAndDashboardLanes:
     def test_preflight_blocks_unknown_failure_platform(self, monkeypatch):
         """A bogus failure_deliver platform blocks at preflight, exactly
         like a bogus deliver platform would."""
-        monkeypatch.setattr(s, "_is_known_delivery_platform", lambda _p: False)
-        err = s._preflight_check_delivery({
+        monkeypatch.setattr(sched_delivery, "_is_known_delivery_platform", lambda _p: False)
+        err = sched_preflight._preflight_check_delivery({
             "id": "p1", "deliver": "local",
             "failure_deliver": "nonexistent-platform:C1",
         })
@@ -426,7 +469,7 @@ class TestPreflightAndDashboardLanes:
     def test_preflight_failure_deliver_local_adds_no_platforms(self):
         """failure_deliver: local adds nothing to check — a deliver=local
         job with suppressed failures stays zero-cost at preflight."""
-        assert s._preflight_check_delivery({
+        assert sched_preflight._preflight_check_delivery({
             "id": "p2", "deliver": "local", "failure_deliver": "local",
         }) is None
 
@@ -439,8 +482,8 @@ class TestPreflightAndDashboardLanes:
             seen.append(p)
             return False
 
-        monkeypatch.setattr(s, "_is_known_delivery_platform", _known)
-        s._preflight_check_delivery({
+        monkeypatch.setattr(sched_delivery, "_is_known_delivery_platform", _known)
+        sched_preflight._preflight_check_delivery({
             "id": "p3", "deliver": "ghost:C1", "failure_deliver": "ghost:C1",
         })
         assert seen == ["ghost"]
@@ -449,7 +492,7 @@ class TestPreflightAndDashboardLanes:
         """The dashboard update lane normalizes failure_deliver like
         deliver: text stripped, empty clears (None) instead of
         coalescing to a target."""
-        from hermes_cli.web_server import _normalize_dashboard_cron_updates
+        from hermes_cli.web_routers.cron import _normalize_dashboard_cron_updates
 
         out = _normalize_dashboard_cron_updates(
             {"failure_deliver": "  slack:D0ALERTS  "}, tmp_path

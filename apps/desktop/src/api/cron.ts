@@ -1,3 +1,4 @@
+import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import type {
   AutomationBlueprint,
   CronDeliveryTarget,
@@ -7,7 +8,13 @@ import type {
   SessionInfo
 } from '@/types/hermes'
 
-import { connectionScoped, hermesApi, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import {
+  connectionScoped,
+  getApiRequestConnection,
+  hermesApi,
+  profileScoped,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from './client'
 
 // The cron trigger endpoint intentionally waits for the whole job so its
 // response reflects the persisted execution result. Agent jobs can run far
@@ -46,7 +53,16 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
   })
 
-  return runs ?? []
+  // Run rows are backend-returned sessions like any other page, so they carry
+  // the same ownership contract: tag each with the registry connection that
+  // served it so a later resume can name the backend that actually holds the
+  // run. Without the tag the row's bare (or backend-only) profile is not an
+  // exact owner, and clicking a run — especially over SSH/remote, where the
+  // run lives on a host the local pool has never seen — fell to the ambient
+  // id-only resume and the transcript never loaded (#82527). The backend
+  // stamps `profile` (the job's owning profile); this adds the connection
+  // half, exactly as /api/sessions and the sidebar slices do.
+  return stampRowsWithOwningConnection(runs ?? [], getApiRequestConnection())
 }
 
 // The single source of truth for cron delivery targets (local + configured
@@ -125,16 +141,15 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 // instantiateAutomationBlueprint fills the slots and creates a real cron job via
 // the same create_job path as createCronJob.
 //
-// Profile-scoping is intentionally asymmetric: the GET catalog is global (the
-// list endpoint takes no profile — only deliver options are rewritten from the
-// configured gateways), so it carries only the profileScoped() header for
-// routing. instantiate creates a real per-profile job, so it names the target
-// profile explicitly via ?profile=. This mirrors the dashboard's api.ts.
-export function getAutomationBlueprints(): Promise<{ blueprints: AutomationBlueprint[] }> {
+// Both calls name the target profile via ?profile=: the catalog is per profile
+// (built-ins plus that profile's plugin-registered blueprints, deliver options
+// from its gateways), and instantiate creates the job in that profile. Fetch the
+// catalog for the same profile you instantiate into. Mirrors the dashboard's api.ts.
+export function getAutomationBlueprints(profile: string): Promise<{ blueprints: AutomationBlueprint[] }> {
   return hermesApi<{ blueprints: AutomationBlueprint[] }>({
     ...profileScoped(),
     ...connectionScoped(),
-    path: '/api/cron/blueprints',
+    path: `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }

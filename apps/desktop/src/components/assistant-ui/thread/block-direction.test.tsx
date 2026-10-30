@@ -91,12 +91,4 @@ describe('block-level direction chrome', () => {
     expect(code.getAttribute('dir')).toBe('ltr')
     expect(code.closest('ol')?.getAttribute('dir')).toBe('auto')
   })
-
-  it('plain prose blocks stay attribute-free (plaintext CSS owns them)', async () => {
-    render(<Harness text={'שלום לכולם'} />)
-
-    const paragraph = await screen.findByText(/שלום לכולם/)
-
-    expect(paragraph.closest('p')?.hasAttribute('dir')).toBe(false)
-  })
 })

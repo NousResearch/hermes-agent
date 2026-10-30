@@ -1,3 +1,5 @@
+import { isImeComposing } from './ime'
+
 // Pure logic for the find-in-page bar (⌘F). Kept out of the component so the
 // match-counter projection and the in-bar key routing can be unit-tested
 // without jsdom, a BrowserWindow, or the preload bridge.
@@ -45,6 +47,10 @@ export interface FindBarKeyEvent {
   metaKey?: boolean
   ctrlKey?: boolean
   altKey?: boolean
+  /** IME composition state — bare Enter steps must not fire mid-composition. */
+  isComposing?: boolean
+  keyCode?: number
+  nativeEvent?: { isComposing?: boolean; keyCode?: number }
 }
 
 /**
@@ -79,7 +85,10 @@ export function findBarKeyAction(event: FindBarKeyEvent, options: { inInput?: bo
     return event.shiftKey ? 'previous' : 'next'
   }
 
-  if (event.key === 'Enter' && !mod && options.inInput) {
+  // A bare Enter inside the input can also be an IME composition commit
+  // (CJK input); stepping matches on that keystroke jumps the viewport while
+  // the user is still composing their query.
+  if (event.key === 'Enter' && !mod && options.inInput && !isImeComposing(event)) {
     return event.shiftKey ? 'previous' : 'next'
   }
 

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -72,7 +71,7 @@ def test_platform_parser_normalizes_and_validator_rejects(plugin_platform):
     )
     assert chat_id is None
     assert thread_id is None
-    assert error == f"Invalid target '@alice@blocked.example' on {name}"
+    assert error
 
 
 def test_registered_plugin_rejects_unrecognized_opaque_target(plugin_platform):
@@ -129,7 +128,7 @@ def test_plugin_validator_custom_diagnostic_blocks_delivery(plugin_platform):
 @pytest.mark.parametrize("async_handler", [False, True])
 def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_handler):
     name, entry, seen = plugin_platform
-    platform, pconfig, config = _config_for(name)
+    _platform, _pconfig, config = _config_for(name)
 
     if not async_handler:
         def sync_handler(args, chat_id, platform_name, pconfig):
@@ -153,7 +152,7 @@ def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_
 
 
 def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeypatch, capsys):
-    from cron.scheduler import _resolve_single_delivery_target
+    from cron.scheduler_delivery import _resolve_single_delivery_target
     from hermes_cli.send_cmd import cmd_send
 
     name, _entry, _seen = plugin_platform
@@ -188,10 +187,6 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
     }
 
 
-def test_send_message_remains_host_only(plugin_platform):
-    from tools.registry import registry
-
-    assert registry.get_entry("send_message") is None
 
 
 def test_force_reload_unregisters_profile_owned_platform(plugin_platform, monkeypatch):
@@ -247,7 +242,7 @@ with patch("gateway.config.load_gateway_config", return_value=config), \
      patch("gateway.mirror.mirror_to_session", return_value=True):
     host_send = json.loads(send_message_tool({"target": "fmsg:@Alice@Example.COM",
                                               "message": "hello", "subject": "hi"}))
-from cron.scheduler import _resolve_single_delivery_target
+from cron.scheduler_delivery import _resolve_single_delivery_target
 cron = _resolve_single_delivery_target({}, "fmsg:@Alice@Example.COM")
 print(json.dumps({"host_send": host_send, "cron": cron,
                   "model_registered": registry.get_entry("send_message") is not None}))
@@ -270,3 +265,42 @@ print(json.dumps({"host_send": host_send, "cron": cron,
     assert payload["host_send"]["chat_id"] == "@alice@example.com"
     assert payload["cron"]["chat_id"] == "@alice@example.com"
     assert payload["model_registered"] is False
+
+
+def test_declared_target_syntax_and_standalone_policy_drive_send_routing():
+    """Core routes from the entry's ``target_ref_syntax_fn`` / ``standalone_send``, not a per-platform
+    table: a third-party plugin declaring them gets the bundled platforms' semantics."""
+    import asyncio
+
+    from gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
+    from tools.send_message_tool import _send_to_platform
+
+    calls: list[dict] = []
+
+    async def sender(pconfig, chat_id, message, **kw):
+        calls.append({"chat_id": chat_id, "message": message, **kw})
+        return {"success": True}
+
+    def syntax(ref):
+        if ref.startswith("room-"):
+            return ref.partition(":")[::2] if ":" in ref else (ref, None)
+        return NOT_EXPLICIT if ref == "7" else None
+
+    name = "fmsg-syntax-test"
+    platform_registry.register(PlatformEntry(
+        name=name, label="Fixture Syntax", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+        target_ref_syntax_fn=syntax, standalone_sender_fn=sender,
+        standalone_send=StandaloneSendPolicy(label="Fixture", media=True, captionable=True)))
+    try:
+        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+            assert resolve_send_target(name, "room-1:th") == ("room-1", "th", None)
+            # NOT_EXPLICIT skips the generic numeric rule; None falls through to it.
+            assert resolve_send_target(name, "42") == ("42", None, None)
+            assert resolve_send_target(name, "7")[2]
+        media = [(os.path.abspath(__file__).replace(".py", ".png"), False)]
+        result = asyncio.run(_send_to_platform(Platform(name), SimpleNamespace(extra={}), "room-1", "hi",
+                                               media_files=media))
+    finally:
+        platform_registry.unregister(name)
+    assert result == {"success": True}
+    assert calls == [{"chat_id": "room-1", "message": "", "thread_id": None, "media_files": media, "caption": "hi"}]

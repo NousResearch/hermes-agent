@@ -3,10 +3,11 @@
  * message, whether a bot counts as live, and whether its row owns the
  * highlight.
  *
- * Pure below the surfaces. Every one of these takes a roster row and returns
- * a value, so the bot row, the roster pane and the open path can share one
- * answer instead of each deriving its own.
+ * Shared by the bot row, roster pane and open path rather than deriving
+ * competing answers in each surface.
  */
+
+import { atom, host, useValue } from '@hermes/plugin-sdk'
 
 import { botActivitySession, botHandle, botRosterKey, isActiveRosterBot } from './data'
 import type { RosterActivityFilter, RosterRow } from './types'
@@ -23,8 +24,14 @@ export const A2A_PREFIX_RE = /^Message from (?:agent '[^']+'|🤖[^:]+):\s*/i
 
 /** Classify a roster preview: `{ fromBot: handle|null }`. A preview that
  *  starts with the delivery prefix is a bot-to-bot message — the receiving
- *  bot's row should show WHO sent it, not present it as the human's chat. */
-export function previewKind(preview: null | string | undefined): { fromBot: null | string } {
+ *  bot's row should show WHO sent it, not present it as the human's chat.
+ *  `roster` + `connectionId` name the sender's row on the receiver's source,
+ *  so its handle follows the roster (a real 'hermes' profile keeps @hermes). */
+export function previewKind(
+  preview: null | string | undefined,
+  roster: readonly Partial<RosterRow>[] = [],
+  connectionId?: string
+): { fromBot: null | string } {
   const text = (preview || '').trim()
 
   if (!text) {
@@ -41,8 +48,12 @@ export function previewKind(preview: null | string | undefined): { fromBot: null
     // profile reads @hermes, never @default (#89484).
     const sender = (match[1] || match[2] || '').trim().toLowerCase()
 
+    const row = roster.find(
+      bot => bot?.name === sender && (!connectionId || String(bot?.connectionId || '') === connectionId)
+    )
+
     return {
-      fromBot: sender ? botHandle(sender) : null
+      fromBot: sender ? botHandle(sender, row) : null
     }
   }
 
@@ -84,23 +95,62 @@ export function workerActiveAt(bot: null | RosterRow | undefined, now = Date.now
   return Boolean(ts && now / 1000 - ts < WORKER_ACTIVE_WINDOW_S)
 }
 
-/** Bots that are working right now: the profile the gateway is running a
- *  turn for (busy), any bot whose last message landed inside the liveness
- *  window, plus any bot with a live kanban/tool worker. Pure — output
- *  follows the input roster's order, so presence never reorders or hides
- *  the normal list. */
+/** Older shells without the live-turn atom remain idle rather than reading socket state. */
+const $idleTurn = atom(false)
+
+export function useTurnBusy(): boolean {
+  return useValue(host.state.busy || $idleTurn)
+}
+
+interface WorkingOwner {
+  authoritative: boolean
+  connectionId: string
+  name: string
+}
+
+/** The busy atom follows tile focus, not the gateway socket or row selection. */
+export function botWorkingMood(
+  bot: RosterRow,
+  owner: WorkingOwner | null,
+  turnBusy: boolean,
+  activeConnectionId = 'local',
+  now = Date.now(),
+  groupKeys?: ReadonlySet<string>
+): 'idle' | 'think' | 'work' {
+  if (groupKeys?.has(botRosterKey(bot))) {
+    return 'think'
+  }
+
+  const botConnectionId = bot.connectionId || (bot.remoteSource ? '' : activeConnectionId)
+
+  if (
+    turnBusy &&
+    owner?.authoritative &&
+    owner.connectionId &&
+    owner.name === bot.name &&
+    owner.connectionId === botConnectionId
+  ) {
+    return 'think'
+  }
+
+  return workerActiveAt(bot, now) ? 'work' : 'idle'
+}
+
+/** Focused turns, recent messages and live workers, preserving roster order. */
 export function activeBots(
   roster: null | RosterRow[] | undefined,
-  activeProfile: string,
-  gatewayState: string,
-  now = Date.now()
+  owner: WorkingOwner | null,
+  turnBusy: boolean,
+  now = Date.now(),
+  activeConnectionId = 'local',
+  groupKeys?: ReadonlySet<string>
 ): RosterRow[] {
   return (roster || []).filter(bot => {
-    const busyTurn = !bot.remoteSource && bot.name === activeProfile && gatewayState === 'busy'
+    const busyTurn = botWorkingMood(bot, owner, turnBusy, activeConnectionId, now, groupKeys) !== 'idle'
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
 
-    return busyTurn || inWindow || workerActiveAt(bot, now)
+    return busyTurn || inWindow
   })
 }
 

@@ -46,7 +46,7 @@ description: "54 个真实设计系统（Stripe、Linear、Vercel）的 HTML/CSS
 每个模板顶部都包含一个 **Hermes 实现说明** 块，内容包括：
 - CDN 字体替代方案及 Google Fonts `<link>` 标签（可直接粘贴）
 - 主字体和等宽字体的 CSS font-family 栈
-- 提醒使用 `write_file` 创建 HTML 文件，使用 `browser_vision` 进行验证
+- 提醒使用 `write_file` 创建 HTML 文件，使用 `browser_exec`（`capture_screenshot()`）进行验证
 
 ## HTML 生成模式
 
@@ -84,7 +84,7 @@ description: "54 个真实设计系统（Stripe、Linear、Vercel）的 HTML/CSS
 </html>
 ```
 
-使用 `write_file` 写入文件，通过 `generative-widgets` 工作流（cloudflared tunnel）提供服务，并使用 `browser_vision` 验证结果以确认视觉准确性。
+使用 `write_file` 写入文件，通过 `generative-widgets` 工作流（cloudflared tunnel）提供服务，并使用 `browser_exec` 验证结果：打开页面，执行 `capture_screenshot()`，查看截图以确认视觉准确性。
 
 ## 字体替代参考
 

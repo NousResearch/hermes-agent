@@ -6,10 +6,41 @@
 // add a hotkey, add a row here and a handler there — nothing else.
 
 import { registry } from '@/contrib/registry'
-
-import { IS_MAC } from './combo'
+import type { Contribution } from '@/contrib/types'
+import { hostHas } from '@/lib/host-capabilities'
+import { isMacPlatform } from '@/lib/platform'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
+
+// A browser tab acts on some chords before the page sees the keydown: new
+// window / tab / private window, close tab / window, reopen tab, and tab
+// cycling (Chrome, Edge and Firefox: Ctrl/⌘+N, T, W, their Shift forms,
+// Ctrl+Tab, Ctrl+PageUp/PageDown). Actions bound there get a browser default
+// instead: Alt + the same key on Windows and Linux (plain left Alt types no
+// character there; AltGr arrives as Ctrl+Alt or AltGraph), ⌃⌘ + the same key
+// on macOS (Option types a character). Alt+Tab is the OS window switcher, so
+// tab cycling takes ] and [. Native Desktop keeps the native chords.
+interface BrowserChords {
+  /** Omitted: the native default already reaches the page on macOS. */
+  mac?: string
+  other: string
+}
+
+type HostDefaults = Pick<KeybindActionMeta, 'defaults' | 'editableTargetPolicy'>
+
+function hostDefaults(native: readonly string[], browser: BrowserChords): HostDefaults {
+  if (!hostHas('browserShortcutDefaults')) {
+    return { defaults: native }
+  }
+
+  if (isMacPlatform()) {
+    return { defaults: browser.mac ? [browser.mac] : native }
+  }
+
+  // Alt+letter has no Cmd/Ctrl, so it needs the editable-target opt-in to
+  // fire from the composer the way the native ⌘/Ctrl chord does.
+  return { defaults: [browser.other], editableTargetPolicy: 'modified' }
+}
 
 // The self-referential opener — bound + dispatched like any action, but shown in
 // the panel subtitle (not as its own row).
@@ -26,6 +57,17 @@ export interface KeybindActionMeta {
   defaults: readonly string[]
   /** Display label for CONTRIBUTED actions (built-ins use i18n). */
   label?: string
+  /**
+   * The handler may decline (return `false`) when its context does not
+   * apply, handing the chord to the next action bound to it. Sharing a combo
+   * with a later action is then layering, not a conflict.
+   */
+  passthrough?: true
+  /** `modified`: a combo carrying a non-Shift modifier may fire while an
+   *  editable target (the composer) has focus, beyond the global combo-safety
+   *  policy in `actionAllowedInInput`. Bare/shift-only rebinds never qualify,
+   *  so a text key stays typing-safe (#71627). */
+  editableTargetPolicy?: 'modified'
 }
 
 // Positional switch slots for *named* profiles: ⌘1…⌘9 for profiles 1-9, then
@@ -41,6 +83,21 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   id: `profile.switch.${i + 1}`,
   category: 'profiles' as const,
   defaults: [comboForSlot(i + 1)]
+}))
+
+// Positional tab-slot jumps — activate the Nth visible tab of the zone under
+// the pointer (else the focused zone, else the workspace's). They share
+// ⌘1…⌘9 with the profile switchers and pass through when no eligible tab
+// strip exists, so the same chord is "tab N" over a strip and "profile N"
+// anywhere else (#92569: the two are separate actions, so rebinding either
+// changes only that one).
+export const TAB_SLOT_COUNT = 9
+
+const TAB_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: TAB_SLOT_COUNT }, (_, i) => ({
+  id: `view.tabSlot.${i + 1}`,
+  category: 'view' as const,
+  defaults: [comboForSlot(i + 1)],
+  passthrough: true
 }))
 
 // Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
@@ -60,14 +117,26 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
   // live dropdown on the pane under the pointer, else the active composer.
   { id: 'composer.modelPicker', category: 'composer', defaults: ['mod+shift+m'] },
-  // Voice conversation toggle. Matches the documented `voice.record_key`
-  // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
-  // toggle. Off macOS `ctrl` folds to `mod`, which IS the ⌘B/Ctrl+B sidebar
-  // chord, so ship it unbound there (rebindable in the panel) rather than
-  // stealing the long-standing sidebar binding.
-  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
+  // Voice conversation toggle. On macOS that's literally ⌃B — distinct from
+  // the ⌘B sidebar toggle. Off macOS `ctrl` folds to `mod`, so ⌃B IS the
+  // sidebar chord. Ship ⌃⌥V there ("v" for voice) instead of stealing mod+b
+  // or leaving the action unbound.
+  { id: 'composer.voice', category: 'composer', defaults: isMacPlatform() ? ['ctrl+b'] : ['mod+alt+v'] },
+  // Dictation is intentionally unbound: it is available for users who prefer
+  // a keyboard trigger without claiming a chord from text entry by default.
+  { id: 'composer.dictate', category: 'composer', defaults: [] },
+  // Reasoning level up/down — one notch through off → minimal → … → xhigh,
+  // clamped at the ends (#71627). Unbound like dictate: the chords a user
+  // picks (Alt+., Ctrl+Alt+↑, Numpad +/- …) are too personal to claim by
+  // default. `editableTargetPolicy` lets a MODIFIED combo fire while the
+  // composer has focus; bare/shift-only rebinds stay typing-safe.
+  { id: 'composer.reasoningUp', category: 'composer', defaults: [], editableTargetPolicy: 'modified' },
+  { id: 'composer.reasoningDown', category: 'composer', defaults: [], editableTargetPolicy: 'modified' },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
+  // Tab-slot actions BEFORE profile switchers: they claim ⌘1…⌘9 first and
+  // pass through to the profile switch when no tab strip is eligible.
+  ...TAB_SLOT_ACTIONS,
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
   ...PROFILE_SWITCH_ACTIONS,
   { id: 'profile.next', category: 'profiles', defaults: ['mod+shift+]'] },
@@ -78,18 +147,31 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Session ──────────────────────────────────────────────────────────────
   // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
   // hijacked normal typing — pressing uppercase N outside an input (or via an
-  // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
-  // stays; users who liked ⇧N can rebind it in the panel.
-  { id: 'session.new', category: 'session', defaults: ['mod+n'] },
-  { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
-  { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
+  // IME) created a new session unexpectedly.
+  { id: 'session.new', category: 'session', ...hostDefaults(['mod+n'], { mac: 'mod+ctrl+n', other: 'alt+n' }) },
+  { id: 'session.newTab', category: 'session', ...hostDefaults(['mod+t'], { mac: 'mod+ctrl+t', other: 'alt+t' }) },
+  {
+    id: 'session.newWindow',
+    category: 'session',
+    ...hostDefaults(['mod+shift+n'], { mac: 'mod+ctrl+shift+n', other: 'alt+shift+n' })
+  },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
-  { id: 'session.next', category: 'session', defaults: ['ctrl+tab', 'ctrl+pagedown'] },
-  { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab', 'ctrl+pageup'] },
+  {
+    id: 'session.next',
+    category: 'session',
+    ...hostDefaults(['ctrl+tab', 'ctrl+pagedown'], { mac: 'mod+ctrl+]', other: 'alt+]' })
+  },
+  {
+    id: 'session.prev',
+    category: 'session',
+    ...hostDefaults(['ctrl+shift+tab', 'ctrl+pageup'], { mac: 'mod+ctrl+[', other: 'alt+[' })
+  },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
+  { id: 'conversation.scrollPageUp', category: 'session', defaults: ['pageup'] },
+  { id: 'conversation.scrollPageDown', category: 'session', defaults: ['pagedown'] },
   // Archive the active session. Ships unbound (like `session.togglePin`) so an
   // irreversible-feeling, mouse-only action doesn't silently claim a chord for
   // every user — surfaced in the panel for opt-in binding (the issue suggests
@@ -108,7 +190,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.commandCenter', category: 'navigation', defaults: ['mod+.'] },
   { id: 'nav.settings', category: 'navigation', defaults: ['mod+,'] },
   { id: 'nav.profiles', category: 'navigation', defaults: [] },
-  { id: 'nav.skills', category: 'navigation', defaults: [] },
+  { id: 'nav.capabilities', category: 'navigation', defaults: [] },
   { id: 'nav.messaging', category: 'navigation', defaults: [] },
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
@@ -116,6 +198,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
+  // Expose the sidebar's mouse-only grouping control to keyboard-first users.
+  // Ships unbound so it is opt-in and cannot claim another global chord.
+  { id: 'view.cycleSidebarGrouping', category: 'view', defaults: [] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
   // ⌘⇧S — "s" for status bar. VS Code ships
   // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
@@ -128,6 +213,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // way back has to already exist. (⌥+letter emits a symbol on macOS; the
   // binding resolves through KeyT via comboFromEvent's `event.code` fallback.)
   { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
+  // Unbound: the rail is a one-time preference, not something to flip mid-chat.
+  { id: 'view.toggleProfileRail', category: 'view', defaults: [] },
+  // Unbound for the same reason: Simple ↔ Advanced is a stance, not a view
+  // toggle; ⌘K, the layout editor and Settings → Appearance are its doors.
+  { id: 'view.toggleSimpleMode', category: 'view', defaults: [] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
@@ -150,14 +240,18 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // so these stay on `ctrl` — distinct on macOS, folding to Ctrl elsewhere.
   { id: 'view.nextTerminal', category: 'view', defaults: ['ctrl+shift+down'] },
   { id: 'view.prevTerminal', category: 'view', defaults: ['ctrl+shift+up'] },
-  { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
+  { id: 'view.closeTerminal', category: 'view', ...hostDefaults(['ctrl+shift+w'], { other: 'alt+shift+w' }) },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
   // ⌘W closes the focused zone's active tab — its own tab strip (preview) or
   // the tree tab (session tiles, files, terminal). The uncloseable workspace
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
-  { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
-  { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
+  { id: 'view.closeTab', category: 'view', ...hostDefaults(['mod+w'], { mac: 'mod+ctrl+w', other: 'alt+w' }) },
+  {
+    id: 'view.reopenTab',
+    category: 'view',
+    ...hostDefaults(['mod+shift+t'], { mac: 'mod+ctrl+shift+t', other: 'alt+shift+t' })
+  },
   // ⌘F — open the find-in-page bar. `actionAllowedInInput` lets this action
   // fire from inside a textarea / contenteditable (matches browser behavior
   // so typing in the composer and pressing ⌘F focuses find, not 'f').
@@ -178,6 +272,39 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 ]
 
 export const KEYBIND_ACTION_IDS: readonly string[] = KEYBIND_ACTIONS.map(action => action.id)
+
+// The built-in actions a plugin may run by id (`ctx.runAction`, see
+// plugin-actions.ts): view / navigation only. Nothing destructive, nothing
+// that switches profile / model, spawns a shell, or opens native dialogs.
+export const PLUGIN_APP_ACTIONS = [
+  // Panels and layout
+  'view.showBrowser',
+  'view.showFiles',
+  'view.toggleSidebar',
+  'view.toggleRightSidebar',
+  'view.toggleReview',
+  'view.toggleStatusbar',
+  'view.findInPage',
+  // Composer and chat
+  'composer.focus',
+  'session.new',
+  'session.focusSearch',
+  'conversation.scrollPageUp',
+  'conversation.scrollPageDown',
+  // Navigation
+  'nav.commandPalette',
+  'nav.settings',
+  'nav.profiles',
+  'nav.capabilities',
+  'nav.messaging',
+  'nav.artifacts',
+  'nav.cron',
+  'nav.agents',
+  'keybinds.openPanel'
+] as const
+
+/** An app action id a plugin may run with `ctx.runAction`. */
+export type PluginAppActionId = (typeof PLUGIN_APP_ACTIONS)[number]
 
 const ACTION_BY_ID = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
 
@@ -200,18 +327,22 @@ export interface KeybindContribution {
   run: () => void
 }
 
-export function contributedKeybinds(): KeybindContribution[] {
-  return registry
-    .getArea(KEYBINDS_AREA)
+// React consumers pass their `useContributions(KEYBINDS_AREA)` snapshot in:
+// with React Compiler enabled, an independently-called `contributedKeybinds()`
+// can stay memoized across a late registration the subscription DID deliver.
+export function contributedKeybinds(
+  contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)
+): KeybindContribution[] {
+  return contributions
     .map(c => c.data as KeybindContribution)
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))
 }
 
 /** Built-ins + contributed, one metadata list (panel, bindings, conflicts). */
-export function allKeybindActions(): KeybindActionMeta[] {
+export function allKeybindActions(contributions?: readonly Contribution[]): KeybindActionMeta[] {
   return [
     ...KEYBIND_ACTIONS,
-    ...contributedKeybinds().map(k => ({
+    ...contributedKeybinds(contributions).map(k => ({
       id: k.id,
       category: k.category ?? ('view' as const),
       defaults: k.defaults ?? [],
@@ -222,6 +353,21 @@ export function allKeybindActions(): KeybindActionMeta[] {
 
 export function keybindAction(id: string): KeybindActionMeta | undefined {
   return ACTION_BY_ID.get(id) ?? allKeybindActions().find(action => action.id === id)
+}
+
+/** True when `combo` carries a modifier beyond Shift (mod, ctrl, or alt). */
+function comboHasNonShiftModifier(combo: string): boolean {
+  const parts = combo.split('+')
+
+  return parts.slice(0, -1).some(part => part !== 'shift')
+}
+
+/** An action's own allowance for firing inside an editable target: the
+ *  `editableTargetPolicy` gate that `actionAllowedInInput` consults. Only a
+ *  combo with a real modifier qualifies — a bare or shift-only rebind stays
+ *  with the input so it can never hijack typing. */
+export function keybindActionAllowedInEditableTarget(id: string, combo: string): boolean {
+  return keybindAction(id)?.editableTargetPolicy === 'modified' && comboHasNonShiftModifier(combo)
 }
 
 /** The contributed handler for an action id (built-ins wire theirs in use-keybinds). */
@@ -271,8 +417,8 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
   // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
   // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.
-  { id: 'view.terminalCopy', category: 'view', keys: IS_MAC ? ['mod+c'] : ['mod+shift+c'] },
-  { id: 'view.terminalPaste', category: 'view', keys: IS_MAC ? ['mod+v'] : ['mod+shift+v'] },
+  { id: 'view.terminalCopy', category: 'view', keys: isMacPlatform() ? ['mod+c'] : ['mod+shift+c'] },
+  { id: 'view.terminalPaste', category: 'view', keys: isMacPlatform() ? ['mod+v'] : ['mod+shift+v'] },
   // Global OS chord registered in main while HUD mode is up.
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]

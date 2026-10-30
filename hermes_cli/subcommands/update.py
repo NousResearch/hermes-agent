@@ -112,4 +112,16 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Update code and dependencies but defer the fleet restart. Use for updates "
              "running inside a gateway cgroup, then restart gateways separately.",
     )
+    update_parser.add_argument(
+        "--status", action="store_true", default=False,
+        help="Read-only update health report (install shape, update-marker verdict, "
+             "armed completion tail, last receipt) and exit. Exit 0 when idle, 3 when "
+             "attention is needed. Safe on a live fleet; never claims a lock.",
+    )
+    update_parser.add_argument(
+        "--rollback", action="store_true", default=False,
+        help="Roll back the last update: reset the checkout to the pre-update commit "
+             "recorded in its receipt and restore the pre-update quick snapshot, "
+             "then re-sync dependencies. Refuses a dirty tree or a live update.",
+    )
     update_parser.set_defaults(func=cmd_update)

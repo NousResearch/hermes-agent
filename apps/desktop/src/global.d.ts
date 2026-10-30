@@ -723,6 +723,11 @@ declare global {
        *  bisect disables, failed rebuilds, update-check results. null when
        *  no venv operation has run yet. */
       getSyncStatus: () => Promise<DesktopSyncReceipt | null>
+      /** The CLI tail's live progress (`logs/update_stage.json`): the last
+       *  published tail message plus its `at` heartbeat, or null when no tail
+       *  has published. Read alongside `getSyncStatus` while a `running`
+       *  receipt is open. */
+      getUpdateStage: () => Promise<{ message: string; at?: string | null } | null>
       /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
       relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
@@ -834,6 +839,10 @@ export interface DesktopSyncReceipt {
   started_at?: string
   finished_at?: string
   steps?: Array<{ name: string; ok: boolean; detail?: string; at?: string }>
+  /** CLI update receipts (hermes update) carry these; pm receipts never do. */
+  pre_update?: { sha?: string; short_sha?: string; version?: string; source?: string } | null
+  post_update?: { sha?: string; short_sha?: string; version?: string; source?: string } | null
+  stop_reason?: string | null
   venv_rebuild?: { ok: boolean; reason?: string } | null
   pm_sync_outcome?: string
   pm_steps?: DesktopSyncReceipt['steps']
@@ -875,6 +884,9 @@ export interface DesktopVersionInfo {
   baseVersion?: string
   branch?: string | null
   commit?: string | null
+  /** When the install stamp was written (ISO) — rendered as a build age next
+   *  to the commit in Version details. */
+  builtAt?: string | null
   distance?: number
   dirty?: boolean
   source?: 'build' | 'commit-build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'

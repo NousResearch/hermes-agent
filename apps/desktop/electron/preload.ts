@@ -685,6 +685,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: (scope?: { connectionId?: string; profile?: string }) => ipcRenderer.invoke('hermes:version', scope),
+  // The sync-status card surface: the main-process handlers exist, but these
+  // were never exposed here, so the card silently rendered nothing in the
+  // packaged app (optional chaining). Exposed now, with the CLI tail-stage
+  // channel alongside it.
+  getSyncStatus: () => ipcRenderer.invoke('hermes:sync-status'),
+  getUpdateStage: () => ipcRenderer.invoke('hermes:update-stage'),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getMachineProfile: () => ipcRenderer.invoke('hermes:machine:profile'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),

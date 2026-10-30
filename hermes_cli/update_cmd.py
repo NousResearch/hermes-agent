@@ -657,7 +657,17 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
 
     root = _m().PROJECT_ROOT
     if not (root / ".git").exists():
+        # Retarget already ran: reaching here from a generation venv's workspace
+        # snapshot means the owning checkout itself lost its .git (moved tree,
+        # zip install). Name the running source so the error is diagnosable.
+        from hermes_cli.update_owning_install import describe_running_source
+
         print("✗ Not a git repository — cannot check for updates.")
+        source = describe_running_source(root)
+        if source is not None:
+            print(f"  ({source}; retarget already sent this command to the owning code.)")
+        print(f"  Checkout at {root} is not a git tree — reinstall to repair it,")
+        print("  then run `hermes update --status` to confirm the update path is healthy.")
         sys.exit(1)
 
     git_cmd = _base_git_cmd()
@@ -1600,8 +1610,13 @@ def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
     git_dir = _m().PROJECT_ROOT / ".git"
     use_zip_update = not git_dir.exists()
     if use_zip_update and sys.platform != "win32":
+        from hermes_cli.update_owning_install import describe_running_source
+
         print("✗ Not a git repository. Please reinstall:")
         print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
+        source = describe_running_source(_m().PROJECT_ROOT)
+        if source is not None:
+            print(f"  ({source} — if that checkout moved, reinstalling re-anchors it.)")
         _record_stop("not_git_checkout")
         sys.exit(1)
 

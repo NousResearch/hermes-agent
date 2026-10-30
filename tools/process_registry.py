@@ -2037,9 +2037,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             selected = lines[-limit:]
             observed_completion_output = bool(selected) or total_lines == 0
         else:
-            offset = offset or 0
-            selected = lines[offset:offset + limit]
-            stop = slice(offset, offset + limit).indices(total_lines)[1]
+            start = (offset or 0) if offset is None or offset >= 0 else max(total_lines + offset, 0)
+            selected = lines[start:start + limit]
+            stop = slice(start, start + limit).indices(total_lines)[1]
             observed_completion_output = total_lines == 0 or (bool(selected) and stop == total_lines)
         result = {
             **self._status_head(session), "output": "\n".join(selected),
@@ -2610,7 +2610,7 @@ PROCESS_SCHEMA = {
             },
             "offset": {
                 "type": "integer",
-                "description": "Log line offset (default: last 200)."
+                "description": "Log line offset; negative counts back from the end (default: last 200)."
             },
             "limit": {
                 "type": "integer",

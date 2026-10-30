@@ -296,6 +296,100 @@ class TestCreateThread:
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
 
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_adds_requested_user_as_member(self, mock_req, monkeypatch):
+        """A standalone thread starts with the bot as its only member; user_id must be added."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "802", "name": "Owned"}, None]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Owned", user_id="42",
+        ))
+        assert result["success"] is True
+        assert result["user_added_as_thread_member"] is True
+        mock_req.assert_any_call("PUT", "/channels/802/thread-members/42", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_survives_failed_member_add(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "803", "name": "Owned"}, DiscordAPIError(403, "{}")]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Owned", user_id="42",
+        ))
+        assert result["success"] is True
+        assert result["user_added_as_thread_member"] is False
+
+
+# ---------------------------------------------------------------------------
+# Actions: send_message / react / archive_thread / add_thread_member
+# ---------------------------------------------------------------------------
+
+class TestMessagingActions:
+    @patch("tools.discord_tool._discord_request")
+    def test_send_message(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "500", "channel_id": "11"}
+        result = json.loads(discord_core(action="send_message", channel_id="11", content="hello"))
+        assert result == {"success": True, "message_id": "500", "channel_id": "11"}
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/messages", "test-token", body={"content": "hello"})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_send_message_as_reply(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "501", "channel_id": "11"}
+        discord_core(action="send_message", channel_id="11", content="hi", message_id="9")
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/messages", "test-token",
+            body={"content": "hi", "message_reference": {"message_id": "9"}})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_react_url_encodes_emoji(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        result = json.loads(discord_core(
+            action="react", channel_id="11", message_id="9", emoji="\U0001F44D"))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PUT", "/channels/11/messages/9/reactions/%F0%9F%91%8D/@me", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_archive_thread_archives_without_locking(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {}
+        result = json.loads(discord_core(action="archive_thread", channel_id="77"))
+        assert result["success"] is True
+        # `locked` must never be sent: the user reopens threads by hand.
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/77", "test-token", body={"archived": True})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_archive_thread_can_reopen(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {}
+        discord_core(action="archive_thread", channel_id="77", archived=False)
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/77", "test-token", body={"archived": False})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_add_thread_member(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        result = json.loads(discord_core(
+            action="add_thread_member", channel_id="77", user_id="42"))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PUT", "/channels/77/thread-members/42", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_message(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "500"}
+        result = json.loads(discord_admin_handler(
+            action="edit_message", channel_id="11", message_id="500", content="fixed"))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/11/messages/500", "test-token", body={"content": "fixed"})
+
 
 # ---------------------------------------------------------------------------
 # Error handling

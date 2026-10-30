@@ -16,7 +16,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env', 'coding_workspace'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
@@ -442,8 +442,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
         _refuse('row_cwd', 'must be an absolute path when set')
-    if params.get('cwd_explicit') is False and 'cwd' in params:
-        cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
+    from gateway.session_coding_workspace import launch_cwd
+    cwd = launch_cwd(params, cwd, get_hermes_home())
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
     launch_skills(params)
@@ -464,7 +464,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
-    if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
+    if params.get('coding_workspace') is not None or params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
         terminal['TERMINAL_CWD'] = cwd
     client_env = rules = None
     if 'client_env' in params:
@@ -1065,10 +1065,19 @@ def policy_for_source(runner, source):
     return None
 
 
-def workspace_ready(policy) -> bool:
+def workspace_ready(policy, *, task_id=None, session_key=None) -> bool:
     """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
     turn runs in a missing directory."""
-    return Path(policy.cwd).is_dir()
+    if not Path(policy.cwd).is_dir():
+        return False
+    from gateway.session_coding_workspace import verify_policy
+    try:
+        verify_policy(policy, task_id=task_id, session_key=session_key)
+    except RuntimeStoreError as exc:
+        if exc.reason != 'workspace_unavailable':
+            raise
+        return False
+    return True
 
 
 def workspace_unavailable_result(policy) -> dict:

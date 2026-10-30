@@ -5,6 +5,7 @@ import {
   type AgentProfileRoute,
   ensureGatewayAgent,
   ensureGatewayProfile,
+  type NewChatBackendOwner,
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
@@ -40,9 +41,10 @@ function rejectedField(params: Record<string, unknown>, error: unknown): string 
   )
 }
 
-/** `session.create` on the captured owner route (or the window's gateway). */
+/** `session.create` on the captured owner route (or the window's gateway).
+ *  A null `connectionId` is a legacy named-profile owner (coding workspaces). */
 export async function createGatewaySession(
-  route: AgentProfileRoute | null,
+  route: (Omit<AgentProfileRoute, 'connectionId'> & { connectionId: null | string }) | null,
   params: Record<string, unknown>,
   requestGateway: RequestGateway
 ): Promise<SessionCreateResponse> {
@@ -93,7 +95,7 @@ export async function createGatewaySession(
 // value is a mirror of Settings → Model and must not pin the new chat.
 export async function desktopSessionCreateParams(
   cwd: string,
-  capturedRoute = resolveNewChatOwnerRoute(),
+  capturedRoute: NewChatBackendOwner | null = resolveNewChatOwnerRoute(),
   requestedProfile?: string,
   legacyProfileIntent = false,
   includeComposerSelection = true

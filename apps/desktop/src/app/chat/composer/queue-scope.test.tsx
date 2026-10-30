@@ -1,5 +1,7 @@
 import { AssistantRuntimeProvider, type ThreadMessageLike, useExternalStoreRuntime } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -36,25 +38,29 @@ function Harness({ queueSessionKey }: { queueSessionKey: null | string }) {
     onNew: async () => {}
   })
 
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
+
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <MemoryRouter>
-        <I18nProvider configClient={null} initialLocale="en">
-          <ChatBar
-            busy
-            disabled={false}
-            freshDraftKey="__new__:fresh"
-            gateway={null}
-            onCancel={vi.fn()}
-            onSubmit={vi.fn(async () => true)}
-            queueSessionKey={queueSessionKey}
-            // The runtime of the chat just left is still active for a frame after the switch.
-            sessionId="session-a"
-            state={chatBarState}
-          />
-        </I18nProvider>
-      </MemoryRouter>
-    </AssistantRuntimeProvider>
+    <QueryClientProvider client={client}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale="en">
+            <ChatBar
+              busy
+              disabled={false}
+              freshDraftKey="__new__:fresh"
+              gateway={null}
+              onCancel={vi.fn()}
+              onSubmit={vi.fn(async () => true)}
+              queueSessionKey={queueSessionKey}
+              // The runtime of the chat just left is still active for a frame after the switch.
+              sessionId="session-a"
+              state={chatBarState}
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </AssistantRuntimeProvider>
+    </QueryClientProvider>
   )
 }
 

@@ -34,16 +34,23 @@ class CompletionItemsResult(Result):
     items: list[CompletionItem] = Field(default_factory=list)
 
 
+class CompletePathResult(CompletionItemsResult):
+    """An empty ``word`` answers no items but the directory completions would resolve against."""
+
+    sourceCwd: str | None = None
+
+
 class CompletePathParams(ProfileParams):
     """``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` /
     ``session_id`` pick the directory the listing resolves against."""
 
     word: str | None = None
     cwd: str | None = None
+    cwd_explicit: bool | None = None
     session_id: str | None = None
 
 
-method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
+method("complete.path", params=CompletePathParams, result=CompletePathResult,
        doc="Path / @-reference completions for the composer (files, folders, profiles, plugin providers).")
 
 

@@ -134,55 +134,7 @@ def _cleanup_oneshot_runtime() -> None:
             pass
 
 
-def _run_and_exit_oneshot(
-    prompt: str,
-    *,
-    model: object = None,
-    provider: object = None,
-    toolsets: object = None,
-    skills: object = None,
-    usage_file: object = None,
-    resume: object = None,
-    reasoning: object = None,
-) -> None:
-    try:
-        from hermes_cli.oneshot import run_oneshot
-
-        rc = run_oneshot(
-            prompt,
-            model=model,
-            provider=provider,
-            toolsets=toolsets,
-            skills=skills,
-            usage_file=usage_file,
-            resume=resume,
-            reasoning=reasoning,
-        )
-    except KeyboardInterrupt:
-        rc = 130
-    except SystemExit as exc:
-        if exc.code is not None and not isinstance(exc.code, int):
-            print(exc.code, file=sys.stderr)
-            rc = 1
-        else:
-            rc = exc.code
-    except BaseException:
-        # ``run_oneshot`` already maps agent failures to an int rc; anything
-        # still escaping means it malfunctioned. Print it but never fall
-        # through to interpreter teardown (the SIGABRT path this routine fixes).
-        import traceback
-        try:
-            traceback.print_exc()
-        except Exception:
-            pass
-        rc = 1
-    try:
-        _cleanup_oneshot_runtime()
-    finally:
-        # Even an interrupt during cleanup must not fall back into interpreter
-        # finalization, where the native SIGABRT occurs.
-        # The hard exit is the safety boundary for #43055.
-        _exit_after_oneshot(rc)
+from hermes_cli.oneshot import _run_and_exit_oneshot  # body; cleanup/exit above are late-imported there
 
 
 def _warn_if_unsupervised_pid1(pid: int | None = None) -> None:
@@ -1680,6 +1632,27 @@ _CHAT_PASSTHROUGH = (
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    from utils import env_var_enabled
+
+    # In-process one-shot: a non-empty -q under HERMES_INPROCESS_CHAT runs the turn here
+    # (same path as ``_run_and_exit_oneshot``) and never continues into the shared gateway.
+    # Interactive chat, TUI, and chat without -q stay on the gateway.
+    query = getattr(args, "query", None)
+    if env_var_enabled("HERMES_INPROCESS_CHAT") and query:
+        provider = getattr(args, "provider", None)
+        if not provider or str(provider).strip().lower() == "auto":
+            provider = None
+        _run_and_exit_oneshot(
+            query,
+            model=getattr(args, "model", None),
+            provider=provider,
+            toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
+            resume=getattr(args, "resume", None),
+            reasoning=getattr(args, "reasoning", None),
+        )
+        return
+
     from hermes_cli.stream_json import stream_json_requested
     # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
     # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).

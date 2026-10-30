@@ -4426,7 +4426,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             from hermes_cli.models_catalog_static import group_providers
         except Exception:
             group_providers = None
-        by_slug = {p.get("slug"): p for p in providers}
+        # ``group_providers`` lowercases every slug (its output keys and member ids are
+        # lowercase), so user-defined providers whose config key contains uppercase letters
+        # (e.g. ``providers: {MyRelay: ...}`` → slug ``MyRelay``) would miss an exact-key
+        # lookup and be silently dropped from the keyboard. Match case-insensitively; the
+        # row keeps its original slug so ``mp:<slug>`` callbacks resolve exactly.
+        by_slug = {str(p.get("slug") or "").lower(): p for p in providers}
         buttons: list = []
         if group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):

@@ -659,6 +659,26 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, imported_fr
         _step("tools", "Tools", lambda: setup_tools(config, first_install=not is_existing))])
 
 
+def _has_configured_provider() -> bool:
+    """True if any provider credential or auth-store login already exists.
+
+    Walk ``PROVIDER_REGISTRY`` so every API-key provider counts. The previous
+    check only looked at ``OPENROUTER_API_KEY``, ``OPENAI_BASE_URL``, and the
+    active OAuth provider, which treated configured installs as first-time.
+    OpenRouter is not in the registry; ``OPENAI_BASE_URL`` covers keyless
+    local endpoints. Neither is dropped when new registry providers are added.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY, get_active_provider
+
+    provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"}
+    for pconfig in PROVIDER_REGISTRY.values():
+        if pconfig.auth_type == "api_key":
+            provider_env_vars.update(pconfig.api_key_env_vars)
+    if any(get_env_value(var) for var in provider_env_vars):
+        return True
+    return get_active_provider() is not None
+
+
 # First-time mode picker: (menu label, setup_quick runner name) — None falls through to Full Setup.
 _FIRST_TIME_MODES = (
     ("Quick Setup (Nous Portal) — free OAuth login, no API keys, model + tools (recommended)",
@@ -702,10 +722,8 @@ def _run_setup_wizard_impl(args):
         _run_setup_section(config, section)
         return
 
-    # Existing installation == a provider is configured
-    from hermes_cli.auth import get_active_provider
-    is_existing = bool(get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
-                       or get_active_provider() is not None)
+    # Existing installation == a provider is configured (every registry API-key provider).
+    is_existing = _has_configured_provider()
     _print_banner("│             ☤ Hermes Agent Setup Wizard                │",
                   "├─────────────────────────────────────────────────────────┤",
                   "│  Let's configure your Hermes Agent installation.       │",

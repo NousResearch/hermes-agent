@@ -39,6 +39,85 @@ export function currentModelCapabilities(
   return findCatalogProvider(options?.providers ?? [], provider)?.capabilities?.[model]
 }
 
+/** Provider slugs whose Ollama endpoints accept a model's bare id and its `:cloud` tag form
+ *  interchangeably on completions, while `/v1/models` lists the bare form — one model, two
+ *  spellings. Mirrors `hermes_cli.model_switch_providers.same_ollama_model`. OpenRouter-style
+ *  `:suffix` ids name distinct models and never fold. */
+const OLLAMA_CLOUD_FOLD_SLUGS = new Set(['ollama', 'ollama-cloud'])
+
+/** The model id with its ollama `:cloud` tag form removed, lower-cased. */
+function foldOllamaCloud(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/:cloud$/, '')
+}
+
+export function sameOllamaModel(provider: string, a: string, b: string): boolean {
+  if (!OLLAMA_CLOUD_FOLD_SLUGS.has(provider.trim().toLowerCase())) {
+    return false
+  }
+
+  const foldedA = foldOllamaCloud(a)
+  const foldedB = foldOllamaCloud(b)
+
+  // Two absent ids are not one model: an empty pick must match nothing, or a
+  // row with no `-fast` sibling would read as current for an empty selection.
+  return foldedA !== '' && foldedB !== '' && foldedA === foldedB
+}
+
+/** The catalog id the current pick designates on `provider`, chosen among
+ *  `candidateIds` (the ids of one family row), or null when the pick names
+ *  none of them.
+ *
+ *  An exact id always wins. The ollama bare/`:cloud` fold applies only when
+ *  the pick's OWN spelling is absent from `providerCatalog`: the fold bridges
+ *  a spelling the catalog omits, and never overrides a row the catalog lists
+ *  under the pick's own name. The result is always a CANONICAL catalog id, so
+ *  the row's visibility and favorite keys keep addressing the same model. */
+export function currentCatalogId(
+  provider: string,
+  candidateIds: readonly (string | null | undefined)[],
+  currentModel: string,
+  providerCatalog: readonly string[]
+): string | null {
+  if (!currentModel) {
+    return null
+  }
+
+  const ids = candidateIds.filter((id): id is string => Boolean(id))
+  const exact = ids.find(id => id === currentModel)
+
+  if (exact !== undefined) {
+    return exact
+  }
+
+  if (providerCatalog.includes(currentModel)) {
+    return null
+  }
+
+  for (const id of ids) {
+    if (sameOllamaModel(provider, id, currentModel)) {
+      return id
+    }
+  }
+
+  return null
+}
+
+/** True when the live session model names the same model as a catalog row's
+ *  canonical id: the same id, that row's `-fast` sibling, or — on an
+ *  ollama-family provider — the bare/`:cloud` spelling of one model. */
+export function sameSessionModel(provider: string, sessionModel: string, rowModel: string): boolean {
+  if (!sessionModel || !rowModel) {
+    return false
+  }
+
+  const base = sessionModel.replace(/-fast$/, '')
+
+  return base === rowModel || sameOllamaModel(provider, base, rowModel)
+}
+
 // A picked (provider, model) pair is never retargeted from catalog membership.
 // Picker rows are hints (discovered / curated / capped lists); a custom endpoint
 // or a newer release legitimately serves ids the row lacks, and the backend

@@ -134,7 +134,19 @@ export function ProjectOverviewRow({
   const [expanding, setExpanding] = useState(false)
   const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
   const fetched = (previewSessions ?? []).slice(0, limit)
-  const recent = fetched.length ? fetched : latestProjectSessions(project, limit)
+  // `previewSessions` is the ONLY list that knows about optimistic removals — an
+  // archived/deleted row is dropped there while the tree snapshot that feeds the
+  // fallback still names it. An empty filtered list therefore means "no row
+  // survives", not "nothing loaded": falling back unfiltered re-renders the row
+  // the user just removed, and it stays until a reload rebuilds the tree.
+  const snapshot = latestProjectSessions(project, limit)
+
+  const recent = fetched.length
+    ? fetched
+    : isSessionHidden
+      ? snapshot.filter(session => !isSessionHidden(session))
+      : snapshot
+
   // The hydrated lanes come straight from the backend, so — like the drill-in
   // (index.tsx) — they haven't been through the tree's exclusion filter yet.
   const visible = expanded && isSessionHidden ? excludeProjectSessions(expanded, isSessionHidden) : expanded

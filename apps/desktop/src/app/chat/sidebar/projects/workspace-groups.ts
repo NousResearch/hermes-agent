@@ -1,6 +1,7 @@
 import type { HermesGitBranch, HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
+import { sessionIsRemoved } from '@/store/session-removal'
 
 import { rankSessions } from '../order'
 
@@ -696,7 +697,7 @@ export function overlayRepoLanes(
       return { ...g, sessions: [...g.sessions] }
     }
 
-    const kept = g.sessions.filter(s => !removed.has(s.id))
+    const kept = g.sessions.filter(session => !sessionIsRemoved(removed, session))
 
     changed ||= kept.length !== g.sessions.length
 
@@ -706,7 +707,7 @@ export function overlayRepoLanes(
   for (const session of live) {
     const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !sessionPath) {
+    if (sessionIsRemoved(removed, session) || !sessionPath) {
       continue
     }
 
@@ -825,7 +826,7 @@ function overlayHomeLane(
     return Boolean(owner) && owner !== NO_PROJECT_ID
   }
 
-  const belongs = (session: SessionInfo): boolean => !removed.has(session.id) && !ownedElsewhere(session)
+  const belongs = (session: SessionInfo): boolean => !sessionIsRemoved(removed, session) && !ownedElsewhere(session)
   const lane = project.repos[0]?.groups[0]
 
   const homed = (session: SessionInfo): boolean =>
@@ -979,7 +980,7 @@ export function overlayLivePreviews(
   const authoritativeOwners = projectOwnerBySessionId(projects)
 
   for (const session of live) {
-    if (removed.has(session.id)) {
+    if (sessionIsRemoved(removed, session)) {
       continue
     }
 
@@ -998,7 +999,7 @@ export function overlayLivePreviews(
 
   for (const node of projects) {
     const liveRows = byProject.get(node.id) ?? []
-    const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
+    const base = (node.previewSessions ?? []).filter(session => !sessionIsRemoved(removed, session))
 
     if (!liveRows.length && !base.length) {
       continue

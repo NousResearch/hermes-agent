@@ -962,6 +962,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Operator-level parent-gate bypass flag. Set to 1 by
+    # ``promote_task(force=True)`` and cleared by ``claim_task`` on the
+    # first successful claim, honouring the bypass exactly once.
+    force_promoted: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1049,6 +1053,11 @@ class Task:
             block_recurrences=(
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
+                else 0
+            ),
+            force_promoted=(
+                int(row["force_promoted"])
+                if "force_promoted" in keys and row["force_promoted"] is not None
                 else 0
             ),
         )
@@ -1233,7 +1242,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Set to 1 by ``promote_task(force=True)`` to signal that the operator
+    -- has explicitly overridden the parent-dependency gate. The claim gate
+    -- in ``claim_task`` skips the undone-parents check and clears this flag
+    -- atomically so the bypass is honoured exactly once per force-promote.
+    force_promoted       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2418,6 +2432,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "force_promoted" not in cols:
+        # Operator-level parent-gate bypass flag. Set to 1 by
+        # ``promote_task(force=True)``; the claim gate clears it atomically
+        # on first claim so the bypass is honoured exactly once. Existing rows
+        # get 0, which is the correct default (no bypass in flight).
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "force_promoted",
+            "force_promoted INTEGER NOT NULL DEFAULT 0",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -4302,23 +4328,41 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'cancelled') LIMIT 1",
+        #
+        # Exception: when the operator used ``promote_task(force=True)`` they
+        # have explicitly acknowledged undone parents and want the task to run
+        # now. ``force_promoted=1`` is the handshake between promote and claim;
+        # we clear it here so the bypass is honoured exactly once.
+        task_fp = conn.execute(
+            "SELECT force_promoted FROM tasks WHERE id = ? AND status = 'ready'",
             (task_id,),
         ).fetchone()
-        if undone:
+        if task_fp is None:
+            return None
+        if not task_fp["force_promoted"]:
+            undone = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'cancelled') LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if undone:
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {"reason": "parents_not_done"},
+                )
+                return None
+        # Clear the force_promoted flag (consume the one-shot bypass).
+        if task_fp["force_promoted"]:
             conn.execute(
-                "UPDATE tasks SET status = 'todo' "
-                "WHERE id = ? AND status = 'ready'",
+                "UPDATE tasks SET force_promoted = 0 WHERE id = ?",
                 (task_id,),
             )
-            _append_event(
-                conn, task_id, "claim_rejected",
-                {"reason": "parents_not_done"},
-            )
-            return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -6018,9 +6062,10 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', "
+            "    force_promoted = CASE WHEN ? THEN 1 ELSE force_promoted END "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
-            (task_id,),
+            (1 if force else 0, task_id),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
@@ -6035,7 +6080,13 @@ def promote_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked``/``scheduled`` -> ready or todo.
+    """Transition ``blocked``/``scheduled``/``todo`` -> ready or todo.
+
+    Accepts ``todo`` in addition to ``blocked`` and ``scheduled`` so that an
+    operator can recover a task that was demoted back to ``todo`` by the claim
+    gate (e.g. after ``promote --force`` was used but the task was later
+    manually inspected and confirmed ready to run now with all dependencies
+    considered satisfied).
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -6047,7 +6098,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled', 'todo')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -6088,7 +6139,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'todo')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -6291,6 +6342,40 @@ def decompose_triage_task(
         if root_row is None:
             return None
         if root_row["status"] != "triage":
+            return None
+
+        # Fail-closed guard: refuse to decompose while the root worktree
+        # has uncommitted changes or commits not yet merged upstream.
+        # Spawning children from a stale baseline means they miss the root's
+        # work and silently redo it from scratch (observed on t_3f1ea6d8).
+        # We add an audit comment and return None — the task stays in triage
+        # so a human or the operator can decide how to proceed.
+        if (
+            root_row["workspace_kind"] == "worktree"
+            and root_row["workspace_path"]
+            and _worktree_has_active_work(root_row["workspace_path"])
+        ):
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    task_id,
+                    author or "decomposer",
+                    (
+                        "Decomposition blocked: the root worktree at "
+                        + root_row["workspace_path"]
+                        + " has uncommitted changes or unmerged commits. "
+                        + "Commit or stash the local work, then retry decomposition."
+                    ),
+                    now,
+                ),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "decompose_blocked_dirty_worktree",
+                {"workspace_path": root_row["workspace_path"]},
+            )
             return None
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
@@ -6561,6 +6646,50 @@ def _git_toplevel(path: Path) -> Optional[Path]:
         return Path(out).expanduser().resolve()
     except Exception:
         return Path(out).expanduser()
+
+
+def _worktree_has_active_work(workspace_path: str) -> bool:
+    """Return True when the git worktree at *workspace_path* has local work
+    that has not been merged / pushed — either uncommitted changes (dirty
+    state) or commits that are ahead of the tracking upstream branch.
+
+    Fail-open (returns False) when the path does not exist, is not a git
+    repo, or the git commands are unavailable. The caller should treat False
+    as "we don't know; proceed" and log a warning if needed.
+    """
+    path = Path(workspace_path)
+    if not path.exists():
+        return False
+    try:
+        # 1. Uncommitted changes (staged + unstaged).
+        dirty = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            return True
+
+        # 2. Commits ahead of the upstream/tracking branch.
+        ahead = subprocess.run(
+            ["git", "-C", str(path), "log", "--oneline", "@{upstream}.."],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        if ahead.returncode == 0 and ahead.stdout.strip():
+            return True
+
+        return False
+    except Exception:
+        return False  # fail-open: cannot determine state, assume clean
 
 
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:

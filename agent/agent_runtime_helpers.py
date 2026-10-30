@@ -1880,8 +1880,8 @@ def anthropic_prompt_cache_policy(
     # qwen3.6-plus on opencode-go reports 0% cached tokens and burns through the subscription on every turn.
     # OpenCode Zen's relay rejects the Anthropic-style content block format that cache markers produce
     # (content becomes a block array instead of a plain string), causing HTTP 400 (#77217).
-    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model
-    if provider_lower in ALIBABA_FAMILY_PROVIDERS and is_qwen_model(model_lower):
+    from agent.prompt_caching import envelope_cache_route_opt_in
+    if envelope_cache_route_opt_in(provider_lower, model_lower, eff_base_url, eff_api_mode):
         return True, False
     return False, False
 

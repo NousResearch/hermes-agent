@@ -144,6 +144,38 @@ def is_qwen_model(model: str) -> bool:
     return "qwen" in (model or "").lower()
 
 
+def envelope_cache_route_opt_in(provider_lower: str, model_lower: str, base_url: str,
+                                api_mode: str) -> bool:
+    """``True`` for OpenAI-wire routes that accept Anthropic-style envelope ``cache_control``
+    markers and reward them with real hits: the Qwen/Alibaba family on OpenCode/DashScope,
+    and Z.AI's coding endpoint. Shared with :func:`anthropic_prompt_cache_policy` (its tail);
+    evidence for each branch below."""
+    if provider_lower in ALIBABA_FAMILY_PROVIDERS and is_qwen_model(model_lower):
+        return True
+    # Z.AI's coding endpoint (api.z.ai / open.bigmodel.cn, ``/coding/`` path) accepts envelope
+    # markers on chat_completions — measured 2026-10-27 on glm-5.3 (api.z.ai/api/coding/paas/v4):
+    # block-array content with cache_control returns 200 and the server reports hits in
+    # usage.prompt_tokens_details.cached_tokens, plain and ttl:"1h" variants alike. The endpoint
+    # serves only GLM models, so the route (host + path) is the gate, not a model matcher.
+    # Without markers the implicit per-API-key cache is node-local and eviction-prone under
+    # concurrent same-key load (deepseek-harness discussion #5227: 70% hit → 0% with a
+    # byte-stable prefix and ~100k-token sibling sessions); OpenCode ships the markers
+    # unconditionally on this endpoint. On the GLM Coding Plan cached tokens bill as normal
+    # usage, so markers are zero-downside. Scoped off: std /api/paas/v4, z.ai's /api/anthropic
+    # (unmeasured), and GLM via OpenRouter (measured: automatic caching already serves ~99%
+    # without markers; a marked request costs more).
+    from utils import base_url_host_matches
+
+    return (
+        api_mode == "chat_completions"
+        and "/coding/" in (base_url or "").lower()
+        and (
+            base_url_host_matches(base_url, "api.z.ai")
+            or base_url_host_matches(base_url, "open.bigmodel.cn")
+        )
+    )
+
+
 # ``prompt_caching.cache_ttl: auto`` picks the tier by who paces the session. The 1h tier
 # writes at 2x base vs 1.25x for 5m and only pays off when turns are more than five minutes
 # apart — a person stepping away and coming back. Machine-paced sessions call every few
